@@ -7,8 +7,12 @@ use std::fs;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Preferred streaming quality
+    /// Preferred streaming quality (legacy, kept for backward compatibility)
     pub quality: StreamQuality,
+    /// Custom resolution (e.g., "1920x1080")
+    pub resolution: Option<String>,
+    /// Custom FPS
+    pub fps: Option<u32>,
     /// Preferred video codec
     pub codec: VideoCodecSetting,
     /// Max bitrate in Mbps (200 = unlimited)
@@ -32,6 +36,7 @@ pub struct Settings {
 pub enum StreamQuality {
     #[default]
     Auto,
+    Custom,       // Use explicit resolution/fps values
     Low,          // 720p 30fps
     Medium,       // 1080p 60fps
     High,         // 1440p 60fps
@@ -55,6 +60,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             quality: StreamQuality::Auto,
+            resolution: Some("1920x1080".to_string()),
+            fps: Some(60),
             codec: VideoCodecSetting::H264,
             max_bitrate_mbps: 200, // 200 = unlimited
             region: None,
