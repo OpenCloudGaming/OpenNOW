@@ -108,6 +108,7 @@ This Custom GeForce NOW Client is an **independent project** not affiliated with
 ## Support
 
 If you find this project useful, consider:
+- [Sponsoring on GitHub](https://github.com/sponsors/zortos293)
 - Starring the repo
 - Reporting issues
 - Contributing code
