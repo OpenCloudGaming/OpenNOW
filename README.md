@@ -30,6 +30,7 @@ A custom GeForce NOW client built with Tauri (Rust + TypeScript) that unlocks pr
 
 ### TODO
 
+- [ ] NVIDIA account login (currently requires manual token)
 - [ ] Discord Rich Presence integration
 - [ ] Game availability notifications
 - [ ] Server queue time display
