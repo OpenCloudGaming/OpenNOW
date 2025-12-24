@@ -143,6 +143,9 @@ let currentCodec = "h264"; // Current video codec
 let currentMaxBitrate = 200; // Max bitrate in Mbps (200 = unlimited)
 let availableResolutions: string[] = []; // Available resolutions from subscription
 let availableFpsOptions: number[] = []; // Available FPS options from subscription
+let currentRegion = "auto"; // Preferred region (auto = lowest ping)
+let cachedServers: Server[] = []; // Cached server latency data
+let isTestingLatency = false; // Flag to prevent concurrent latency tests
 
 // Helper to get streaming params - uses direct resolution and fps values
 function getStreamingParams(): { resolution: string; fps: number } {
@@ -237,6 +240,264 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
   }
 }
 
+// Get latency class for color coding based on ping value
+function getLatencyClass(pingMs: number | undefined): string {
+  if (pingMs === undefined) return "latency-offline";
+  if (pingMs < 20) return "latency-excellent";
+  if (pingMs < 40) return "latency-good";
+  if (pingMs < 80) return "latency-fair";
+  if (pingMs < 120) return "latency-poor";
+  return "latency-bad";
+}
+
+// Format latency display text
+function formatLatency(pingMs: number | undefined, status: string): string {
+  if (status !== "Online") return status.toLowerCase();
+  if (pingMs === undefined) return "---";
+  return `${pingMs}ms`;
+}
+
+// Number of latency test rounds to average (ICMP ping is accurate, fewer rounds needed)
+const LATENCY_TEST_ROUNDS = 3;
+
+// Test latency to all regions with multiple rounds for accuracy
+async function testLatency(): Promise<Server[]> {
+  if (isTestingLatency) {
+    console.log("Latency test already in progress");
+    return cachedServers;
+  }
+
+  isTestingLatency = true;
+  console.log(`Starting latency test (${LATENCY_TEST_ROUNDS} rounds)...`);
+
+  // Update UI to show testing state
+  updateLatencyTestingUI(true, 0, LATENCY_TEST_ROUNDS);
+
+  try {
+    // Store results from all rounds: Map<serverId, pingValues[]>
+    const allResults: Map<string, number[]> = new Map();
+    let baseServers: Server[] = [];
+
+    // Run multiple rounds
+    for (let round = 0; round < LATENCY_TEST_ROUNDS; round++) {
+      console.log(`Latency test round ${round + 1}/${LATENCY_TEST_ROUNDS}...`);
+      updateLatencyTestingUI(true, round + 1, LATENCY_TEST_ROUNDS);
+
+      const servers = await invoke<Server[]>("get_servers", { accessToken: null });
+
+      if (round === 0) {
+        baseServers = servers;
+      }
+
+      // Collect ping values
+      for (const server of servers) {
+        if (server.status === "Online" && server.ping_ms !== undefined) {
+          if (!allResults.has(server.id)) {
+            allResults.set(server.id, []);
+          }
+          allResults.get(server.id)!.push(server.ping_ms);
+        }
+      }
+
+      // Small delay between rounds to avoid hammering servers
+      if (round < LATENCY_TEST_ROUNDS - 1) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+
+    // Calculate averaged results
+    const averagedServers: Server[] = baseServers.map(server => {
+      const pings = allResults.get(server.id);
+      if (pings && pings.length > 0) {
+        // Calculate average, excluding outliers (highest and lowest if we have enough samples)
+        let avgPing: number;
+        if (pings.length >= 3) {
+          // Remove highest and lowest, then average the rest
+          const sorted = [...pings].sort((a, b) => a - b);
+          const trimmed = sorted.slice(1, -1);
+          avgPing = Math.round(trimmed.reduce((a, b) => a + b, 0) / trimmed.length);
+        } else {
+          avgPing = Math.round(pings.reduce((a, b) => a + b, 0) / pings.length);
+        }
+        return { ...server, ping_ms: avgPing };
+      }
+      return server;
+    });
+
+    // Sort by ping
+    averagedServers.sort((a, b) => {
+      if (a.status === "Online" && b.status === "Online") {
+        return (a.ping_ms || 9999) - (b.ping_ms || 9999);
+      }
+      if (a.status === "Online") return -1;
+      if (b.status === "Online") return 1;
+      return 0;
+    });
+
+    cachedServers = averagedServers;
+
+    // Log summary
+    console.log(`Latency test complete (${LATENCY_TEST_ROUNDS} rounds averaged):`);
+    console.table(averagedServers.map(s => ({
+      Region: s.name,
+      "Avg Ping (ms)": s.ping_ms || "offline",
+      Status: s.status,
+      Samples: allResults.get(s.id)?.length || 0
+    })));
+
+    // Update the region dropdown with averaged latency data
+    populateRegionDropdown(averagedServers);
+
+    // Update status bar
+    updateStatusBarLatency();
+
+    return averagedServers;
+  } catch (error) {
+    console.error("Latency test failed:", error);
+    return cachedServers;
+  } finally {
+    isTestingLatency = false;
+    updateLatencyTestingUI(false, 0, LATENCY_TEST_ROUNDS);
+  }
+}
+
+// Update UI to show latency testing in progress
+function updateLatencyTestingUI(testing: boolean, currentRound: number = 0, totalRounds: number = 1): void {
+  const pingInfo = document.getElementById("ping-info");
+  if (pingInfo) {
+    if (testing) {
+      // Clear existing content
+      while (pingInfo.firstChild) {
+        pingInfo.removeChild(pingInfo.firstChild);
+      }
+      // Add spinner
+      const spinner = document.createElement("span");
+      spinner.className = "region-loading-spinner";
+      pingInfo.appendChild(spinner);
+      // Show progress
+      const progressText = currentRound > 0
+        ? ` Testing ${currentRound}/${totalRounds}...`
+        : " Testing...";
+      pingInfo.appendChild(document.createTextNode(progressText));
+      pingInfo.className = "";
+    }
+  }
+}
+
+// Populate region dropdown with latency data
+function populateRegionDropdown(servers: Server[]): void {
+  const regionSelect = document.getElementById("region-setting") as HTMLSelectElement;
+  if (!regionSelect) return;
+
+  // Save current selection
+  const currentValue = regionSelect.value || currentRegion;
+
+  // Clear existing options
+  while (regionSelect.firstChild) {
+    regionSelect.removeChild(regionSelect.firstChild);
+  }
+
+  // Add Auto option first
+  const autoOption = document.createElement("option");
+  autoOption.value = "auto";
+  const bestServer = servers.find(s => s.status === "Online");
+  if (bestServer && bestServer.ping_ms) {
+    autoOption.textContent = `Auto (${bestServer.name} - ${bestServer.ping_ms}ms)`;
+  } else {
+    autoOption.textContent = "Auto (Lowest Ping)";
+  }
+  regionSelect.appendChild(autoOption);
+
+  // Group servers by region
+  const regions: { [key: string]: Server[] } = {};
+  for (const server of servers) {
+    if (!regions[server.region]) {
+      regions[server.region] = [];
+    }
+    regions[server.region].push(server);
+  }
+
+  // Add region groups
+  for (const [regionName, regionServers] of Object.entries(regions)) {
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = regionName;
+
+    for (const server of regionServers) {
+      const option = document.createElement("option");
+      option.value = server.id;
+
+      const latencyText = formatLatency(server.ping_ms, server.status);
+
+      if (server.status === "Online" && server.ping_ms) {
+        option.textContent = `${server.name} - ${latencyText}`;
+        option.style.color = getLatencyColor(server.ping_ms);
+      } else {
+        option.textContent = `${server.name} (${latencyText})`;
+        option.disabled = server.status !== "Online";
+      }
+
+      optgroup.appendChild(option);
+    }
+
+    regionSelect.appendChild(optgroup);
+  }
+
+  // Restore selection
+  regionSelect.value = currentValue;
+  if (!regionSelect.value) {
+    regionSelect.value = "auto";
+  }
+  currentRegion = regionSelect.value;
+}
+
+// Get CSS color for latency value
+function getLatencyColor(pingMs: number | undefined): string {
+  if (pingMs === undefined) return "#666666";
+  if (pingMs < 20) return "#00c853";
+  if (pingMs < 40) return "#76b900";
+  if (pingMs < 80) return "#ffc107";
+  if (pingMs < 120) return "#ff9800";
+  return "#f44336";
+}
+
+// Update status bar with current region and ping
+function updateStatusBarLatency(): void {
+  const serverInfo = document.getElementById("server-info");
+  const pingInfo = document.getElementById("ping-info");
+
+  if (!serverInfo || !pingInfo) return;
+
+  let displayServer: Server | undefined;
+
+  if (currentRegion === "auto") {
+    // Find best server (first online one, already sorted by ping)
+    displayServer = cachedServers.find(s => s.status === "Online");
+    serverInfo.textContent = displayServer ? `Server: Auto (${displayServer.name})` : "Server: Auto";
+  } else {
+    // Find selected server
+    displayServer = cachedServers.find(s => s.id === currentRegion);
+    serverInfo.textContent = displayServer ? `Server: ${displayServer.name}` : `Server: ${currentRegion}`;
+  }
+
+  if (displayServer && displayServer.ping_ms !== undefined) {
+    pingInfo.textContent = `Ping: ${displayServer.ping_ms}ms`;
+    pingInfo.className = getLatencyClass(displayServer.ping_ms);
+  } else {
+    pingInfo.textContent = "Ping: --ms";
+    pingInfo.className = "";
+  }
+}
+
+// Get the server ID to use for session launch
+function getPreferredServerForSession(): string | undefined {
+  if (currentRegion === "auto") {
+    // Use the best (lowest ping) online server
+    const bestServer = cachedServers.find(s => s.status === "Online");
+    return bestServer?.id;
+  }
+  return currentRegion;
+}
+
 // DOM Elements
 const loginBtn = document.getElementById("login-btn")!;
 const userMenu = document.getElementById("user-menu")!;
@@ -268,6 +529,16 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Load initial data
   await loadHomeData();
+
+  // Run latency test in background on startup
+  testLatency().catch(err => console.error("Initial latency test failed:", err));
+
+  // Setup region dropdown change handler
+  const regionSelect = document.getElementById("region-setting") as HTMLSelectElement;
+  regionSelect?.addEventListener("change", () => {
+    currentRegion = regionSelect.value;
+    updateStatusBarLatency();
+  });
 });
 
 // Load settings from backend and apply to UI
@@ -283,6 +554,7 @@ async function loadSettings() {
     currentCodec = settings.codec || "h264";
     currentMaxBitrate = settings.max_bitrate_mbps || 200;
     discordRpcEnabled = settings.discord_rpc || false;
+    currentRegion = settings.region || "auto";
 
     // Apply to UI elements
     const resolutionEl = document.getElementById("resolution-setting") as HTMLSelectElement;
@@ -293,6 +565,7 @@ async function loadSettings() {
     const discordEl = document.getElementById("discord-setting") as HTMLInputElement;
     const telemetryEl = document.getElementById("telemetry-setting") as HTMLInputElement;
     const proxyEl = document.getElementById("proxy-setting") as HTMLInputElement;
+    const regionEl = document.getElementById("region-setting") as HTMLSelectElement;
 
     if (resolutionEl) resolutionEl.value = currentResolution;
     if (fpsEl) fpsEl.value = String(currentFps);
@@ -306,6 +579,7 @@ async function loadSettings() {
     if (discordEl) discordEl.checked = discordRpcEnabled;
     if (telemetryEl) telemetryEl.checked = settings.disable_telemetry ?? true;
     if (proxyEl && settings.proxy) proxyEl.value = settings.proxy;
+    if (regionEl) regionEl.value = currentRegion;
 
   } catch (error) {
     console.warn("Failed to load settings:", error);
@@ -1016,6 +1290,10 @@ async function launchGame(game: Game) {
     const streamParams = getStreamingParams();
     console.log("Using streaming params:", streamParams, "resolution:", currentResolution, "fps:", currentFps);
 
+    // Get preferred server based on region setting
+    const preferredServer = getPreferredServerForSession();
+    console.log("Using preferred server:", preferredServer || "default");
+
     const sessionResult = await invoke<{
       session_id: string;
       server: { ip: string; id: string };
@@ -1024,6 +1302,7 @@ async function launchGame(game: Game) {
         game_id: game.id,
         store_type: game.store.store_type,
         store_id: game.store.store_id,
+        preferred_server: preferredServer,
         quality_preset: currentQuality,
         resolution: streamParams.resolution,
         fps: streamParams.fps,
@@ -1162,6 +1441,7 @@ function createStreamingContainer(gameName: string): HTMLElement {
       </div>
     </div>
     <div class="stream-stats" id="stream-stats">
+      <span id="stats-region">Region: --</span>
       <span id="stats-fps">-- FPS</span>
       <span id="stats-latency">-- ms</span>
       <span id="stats-resolution">----x----</span>
@@ -1177,6 +1457,10 @@ function createStreamingContainer(gameName: string): HTMLElement {
         <div class="settings-section">
           <h4>Stream Info</h4>
           <div class="settings-info-grid">
+            <div class="info-item">
+              <span class="info-label">Region</span>
+              <span class="info-value" id="info-region">--</span>
+            </div>
             <div class="info-item">
               <span class="info-label">Resolution</span>
               <span class="info-value" id="info-resolution">--</span>
@@ -1308,6 +1592,21 @@ function createStreamingContainer(gameName: string): HTMLElement {
     }
     .stream-stats span {
       font-family: monospace;
+    }
+    /* Latency color coding for stats */
+    .stream-stats .latency-excellent,
+    .info-value.latency-excellent { color: #00c853 !important; }
+    .stream-stats .latency-good,
+    .info-value.latency-good { color: #76b900 !important; }
+    .stream-stats .latency-fair,
+    .info-value.latency-fair { color: #ffc107 !important; }
+    .stream-stats .latency-poor,
+    .info-value.latency-poor { color: #ff9800 !important; }
+    .stream-stats .latency-bad,
+    .info-value.latency-bad { color: #f44336 !important; }
+    #stats-region {
+      color: #76b900;
+      font-weight: 500;
     }
     .stream-settings-panel {
       position: absolute;
@@ -1511,6 +1810,7 @@ function updateStreamingStatsDisplay(stats: {
   codec: string;
 }): void {
   // Update overlay stats
+  const regionEl = document.getElementById("stats-region");
   const fpsEl = document.getElementById("stats-fps");
   const latencyEl = document.getElementById("stats-latency");
   const resEl = document.getElementById("stats-resolution");
@@ -1521,13 +1821,31 @@ function updateStreamingStatsDisplay(stats: {
     ? `${(stats.bitrate_kbps / 1000).toFixed(1)} Mbps`
     : `${stats.bitrate_kbps} kbps`;
 
+  // Get current region info
+  const currentServer = cachedServers.find(s => s.id === currentRegion) ||
+    (currentRegion === "auto" ? cachedServers.find(s => s.status === "Online") : null);
+
+  if (regionEl) {
+    regionEl.textContent = currentServer ? currentServer.name : (currentRegion === "auto" ? "Auto" : currentRegion);
+  }
+
   if (fpsEl) fpsEl.textContent = `${Math.round(stats.fps)} FPS`;
-  if (latencyEl) latencyEl.textContent = `${stats.latency_ms} ms`;
+
+  // Color code the latency
+  if (latencyEl) {
+    latencyEl.textContent = `${stats.latency_ms} ms`;
+    // Remove all latency classes first
+    latencyEl.classList.remove("latency-excellent", "latency-good", "latency-fair", "latency-poor", "latency-bad");
+    // Add appropriate class based on latency
+    latencyEl.classList.add(getLatencyClass(stats.latency_ms));
+  }
+
   if (resEl) resEl.textContent = stats.resolution || "----x----";
   if (codecEl) codecEl.textContent = stats.codec || "----";
   if (bitrateEl) bitrateEl.textContent = bitrateFormatted;
 
   // Update settings panel info
+  const infoRegionEl = document.getElementById("info-region");
   const infoResEl = document.getElementById("info-resolution");
   const infoFpsEl = document.getElementById("info-fps");
   const infoCodecEl = document.getElementById("info-codec");
@@ -1535,11 +1853,18 @@ function updateStreamingStatsDisplay(stats: {
   const infoLatencyEl = document.getElementById("info-latency");
   const infoPacketLossEl = document.getElementById("info-packet-loss");
 
+  if (infoRegionEl) {
+    infoRegionEl.textContent = currentServer ? currentServer.name : (currentRegion === "auto" ? "Auto" : currentRegion);
+  }
   if (infoResEl) infoResEl.textContent = stats.resolution || "--";
   if (infoFpsEl) infoFpsEl.textContent = `${Math.round(stats.fps)}`;
   if (infoCodecEl) infoCodecEl.textContent = stats.codec || "--";
   if (infoBitrateEl) infoBitrateEl.textContent = bitrateFormatted;
-  if (infoLatencyEl) infoLatencyEl.textContent = `${stats.latency_ms} ms`;
+  if (infoLatencyEl) {
+    infoLatencyEl.textContent = `${stats.latency_ms} ms`;
+    infoLatencyEl.classList.remove("latency-excellent", "latency-good", "latency-fair", "latency-poor", "latency-bad");
+    infoLatencyEl.classList.add(getLatencyClass(stats.latency_ms));
+  }
   if (infoPacketLossEl) infoPacketLossEl.textContent = `${(stats.packet_loss * 100).toFixed(2)}%`;
 }
 
@@ -1783,6 +2108,10 @@ async function saveSettings() {
   currentFps = parseInt(fpsEl?.value || "60", 10);
   currentCodec = codecEl?.value || "h264";
   currentMaxBitrate = parseInt(bitrateEl?.value || "200", 10);
+  currentRegion = regionEl?.value || "auto";
+
+  // Update status bar with new region selection
+  updateStatusBarLatency();
 
   const settings: Settings = {
     quality: "custom", // Mark as custom since we use explicit resolution/fps
