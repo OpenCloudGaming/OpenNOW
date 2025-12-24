@@ -127,6 +127,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Setup modals
   setupModals();
 
+  // Setup login modal
+  setupLoginModal();
+
   // Setup search
   setupSearch();
 
@@ -337,70 +340,61 @@ function updateAuthUI() {
   }
 }
 
-loginBtn.addEventListener("click", async () => {
-  try {
-    const result = await invoke<AuthState>("login");
-    if (result.is_authenticated) {
-      isAuthenticated = true;
-      currentUser = result.user || null;
-      updateAuthUI();
-    }
-  } catch (error) {
-    // Login opens browser, show token entry dialog
-    const errorMsg = String(error);
-    if (errorMsg.includes("NVAUTHTOKEN")) {
-      showTokenEntryDialog();
-    } else {
-      console.error("Login failed:", error);
-      alert("Login failed: " + errorMsg);
-    }
-  }
+// Show login modal when login button is clicked
+loginBtn.addEventListener("click", () => {
+  showModal("login-modal");
 });
 
-// Token entry dialog for manual auth
-function showTokenEntryDialog() {
-  const dialog = document.createElement("div");
-  dialog.className = "modal active";
-  dialog.id = "token-dialog";
-  dialog.innerHTML = `
-    <div class="modal-content" style="max-width: 500px;">
-      <div class="modal-header">
-        <h3>Enter Access Token</h3>
-        <button class="modal-close">&times;</button>
-      </div>
-      <div class="modal-body">
-        <p style="margin-bottom: 16px; color: var(--text-secondary);">
-          1. Login at <a href="https://play.geforcenow.com" target="_blank" style="color: var(--accent-color);">play.geforcenow.com</a><br>
-          2. Open DevTools (F12) > Application > Local Storage<br>
-          3. Copy the value of <code style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px;">NVAUTHTOKEN</code>
-        </p>
-        <div class="form-group">
-          <label for="token-input">Access Token:</label>
-          <textarea id="token-input" rows="4" style="width: 100%; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; color: var(--text-primary); font-family: monospace; resize: vertical;" placeholder="Paste your token here..."></textarea>
-        </div>
-      </div>
-      <div class="modal-footer" style="display: flex; gap: 12px; justify-content: flex-end;">
-        <button class="btn btn-secondary" id="token-cancel">Cancel</button>
-        <button class="btn btn-primary" id="token-submit">Login</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(dialog);
+// Setup login modal handlers
+function setupLoginModal() {
+  const loginModal = document.getElementById("login-modal");
+  const nvidiaLoginBtn = document.getElementById("nvidia-login-btn");
+  const tokenLoginBtn = document.getElementById("token-login-btn");
+  const tokenEntry = document.getElementById("token-entry");
+  const loginOptions = loginModal?.querySelector(".login-options");
+  const submitTokenBtn = document.getElementById("submit-token-btn");
+  const tokenInput = document.getElementById("token-input") as HTMLTextAreaElement;
 
-  const closeDialog = () => dialog.remove();
-  dialog.querySelector(".modal-close")?.addEventListener("click", closeDialog);
-  dialog.querySelector("#token-cancel")?.addEventListener("click", closeDialog);
-  dialog.addEventListener("click", (e) => {
-    if (e.target === dialog) closeDialog();
+  // NVIDIA OAuth login
+  nvidiaLoginBtn?.addEventListener("click", async () => {
+    console.log("Starting NVIDIA OAuth login...");
+    nvidiaLoginBtn.textContent = "Signing in...";
+    (nvidiaLoginBtn as HTMLButtonElement).disabled = true;
+
+    try {
+      const result = await invoke<AuthState>("login_oauth");
+      if (result.is_authenticated) {
+        isAuthenticated = true;
+        currentUser = result.user || null;
+        updateAuthUI();
+        hideAllModals();
+        console.log("NVIDIA OAuth login successful");
+      }
+    } catch (error) {
+      console.error("NVIDIA OAuth login failed:", error);
+      alert("Login failed: " + error);
+    } finally {
+      nvidiaLoginBtn.textContent = "Sign in with NVIDIA";
+      (nvidiaLoginBtn as HTMLButtonElement).disabled = false;
+    }
   });
 
-  dialog.querySelector("#token-submit")?.addEventListener("click", async () => {
-    const tokenInput = document.getElementById("token-input") as HTMLTextAreaElement;
-    const token = tokenInput.value.trim();
+  // Show token entry form
+  tokenLoginBtn?.addEventListener("click", () => {
+    if (loginOptions) (loginOptions as HTMLElement).classList.add("hidden");
+    if (tokenEntry) tokenEntry.classList.remove("hidden");
+  });
+
+  // Submit token
+  submitTokenBtn?.addEventListener("click", async () => {
+    const token = tokenInput?.value.trim();
     if (!token) {
       alert("Please enter a token");
       return;
     }
+
+    submitTokenBtn.textContent = "Validating...";
+    (submitTokenBtn as HTMLButtonElement).disabled = true;
 
     try {
       const result = await invoke<AuthState>("set_access_token", { token });
@@ -408,12 +402,27 @@ function showTokenEntryDialog() {
         isAuthenticated = true;
         currentUser = result.user || null;
         updateAuthUI();
-        closeDialog();
+        hideAllModals();
+        // Reset form
+        if (tokenInput) tokenInput.value = "";
+        if (loginOptions) (loginOptions as HTMLElement).classList.remove("hidden");
+        if (tokenEntry) tokenEntry.classList.add("hidden");
+        console.log("Token login successful");
       }
     } catch (error) {
       console.error("Token validation failed:", error);
       alert("Invalid token: " + error);
+    } finally {
+      submitTokenBtn.textContent = "Submit Token";
+      (submitTokenBtn as HTMLButtonElement).disabled = false;
     }
+  });
+
+  // Reset login modal when closed
+  loginModal?.querySelector(".modal-close")?.addEventListener("click", () => {
+    if (loginOptions) (loginOptions as HTMLElement).classList.remove("hidden");
+    if (tokenEntry) tokenEntry.classList.add("hidden");
+    if (tokenInput) tokenInput.value = "";
   });
 }
 

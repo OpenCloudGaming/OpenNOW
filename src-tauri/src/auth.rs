@@ -88,8 +88,53 @@ const REFRESH_THRESHOLD_PERCENT: f64 = 0.30;
 /// GFN Client User-Agent
 const GFN_USER_AGENT: &str = "NVIDIA GeForce NOW/2.0.64 (Windows; Win64; x64)";
 
-/// Device ID for GFN client identification
-const DEVICE_ID: &str = "gfnclient";
+/// IDP ID for NVIDIA identity provider
+const IDP_ID: &str = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg";
+
+/// Get or generate a stable device ID (SHA256 hash)
+fn get_device_id() -> String {
+    // Try to read device_id from official GFN client config
+    if let Some(app_data) = std::env::var_os("LOCALAPPDATA") {
+        let gfn_config = std::path::PathBuf::from(app_data)
+            .join("NVIDIA Corporation")
+            .join("GeForceNOW")
+            .join("sharedstorage.json");
+
+        if gfn_config.exists() {
+            if let Ok(content) = std::fs::read_to_string(&gfn_config) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(device_id) = json.get("gfnTelemetry")
+                        .and_then(|t| t.get("deviceId"))
+                        .and_then(|d| d.as_str()) {
+                        log::info!("Using device_id from official GFN client: {}", device_id);
+                        return device_id.to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    // Generate a stable device ID based on machine info
+    generate_stable_device_id()
+}
+
+/// Generate a stable device ID based on machine identifiers
+fn generate_stable_device_id() -> String {
+    let mut hasher = Sha256::new();
+
+    // Use hostname and username for a semi-stable ID
+    if let Ok(hostname) = std::env::var("COMPUTERNAME") {
+        hasher.update(hostname.as_bytes());
+    }
+    if let Ok(username) = std::env::var("USERNAME") {
+        hasher.update(username.as_bytes());
+    }
+    // Add a salt specific to this app
+    hasher.update(b"gfn-custom-client");
+
+    let result = hasher.finalize();
+    hex::encode(result)
+}
 
 /// Origin header for OAuth requests
 const GFN_ORIGIN: &str = "https://play.geforcenow.com";
@@ -242,8 +287,8 @@ fn parse_query_string(query: &str) -> std::collections::HashMap<String, String> 
         .collect()
 }
 
-/// Extract authorization code from HTTP request
-fn extract_auth_code(request: &str) -> Option<(String, String)> {
+/// Extract authorization code from HTTP request (state is optional for PKCE flows)
+fn extract_auth_code(request: &str) -> Option<String> {
     // Parse the GET request line
     let first_line = request.lines().next()?;
     let path = first_line.split_whitespace().nth(1)?;
@@ -253,10 +298,16 @@ fn extract_auth_code(request: &str) -> Option<(String, String)> {
     let query = &path[query_start + 1..];
     let params = parse_query_string(query);
 
-    let code = params.get("code")?.clone();
-    let state = params.get("state")?.clone();
+    // Check for error response first
+    if let Some(error) = params.get("error") {
+        log::error!("OAuth error: {}", error);
+        if let Some(desc) = params.get("error_description") {
+            log::error!("Error description: {}", desc);
+        }
+        return None;
+    }
 
-    Some((code, state))
+    params.get("code").cloned()
 }
 
 /// HTML response for successful login
@@ -407,43 +458,51 @@ pub async fn get_access_token() -> Result<String, String> {
         .ok_or_else(|| "Not authenticated - please login first".to_string())
 }
 
-/// Legacy OAuth login flow with localhost callback (may get 403 from NVIDIA)
+/// NVIDIA OAuth login flow with localhost callback (same as official client)
 #[command]
 pub async fn login_oauth() -> Result<AuthState, String> {
-    log::info!("Starting OAuth login flow (Authorization Code Flow with PKCE)");
+    log::info!("Starting NVIDIA OAuth login flow (Authorization Code Flow with PKCE)");
 
     // Find an available redirect port
     let port = find_available_port()
         .ok_or_else(|| "No available ports for OAuth callback".to_string())?;
 
     let redirect_uri = format!("http://localhost:{}", port);
-    let expected_state = generate_state();
     let nonce = generate_nonce();
 
     // Generate PKCE code verifier and challenge
     let code_verifier = generate_code_verifier();
     let code_challenge = generate_code_challenge(&code_verifier);
 
-    // Build OAuth authorization URL with PKCE
+    // Get device ID (from official client or generate)
+    let device_id = get_device_id();
+    log::info!("Using device_id: {}", device_id);
+
+    // Build OAuth authorization URL matching official GFN client format
+    // Format: https://login.nvidia.com/authorize?response_type=code&device_id=...
     let auth_url = format!(
-        "https://login.nvidia.com/oauth/authorize?\
+        "https://login.nvidia.com/authorize?\
+        response_type=code&\
+        device_id={}&\
+        scope={}&\
         client_id={}&\
         redirect_uri={}&\
-        response_type=code&\
-        scope={}&\
-        state={}&\
+        ui_locales=en_US&\
         nonce={}&\
+        prompt=select_account&\
         code_challenge={}&\
         code_challenge_method=S256&\
-        device_id={}",
+        idp_id={}",
+        device_id,
+        urlencoding::encode(OAUTH_SCOPES),
         STARFLEET_CLIENT_ID,
         urlencoding::encode(&redirect_uri),
-        urlencoding::encode(OAUTH_SCOPES),
-        expected_state,
         nonce,
         code_challenge,
-        DEVICE_ID
+        IDP_ID
     );
+
+    log::info!("OAuth URL: {}", auth_url);
 
     log::info!("Starting OAuth callback server on port {}", port);
 
@@ -471,20 +530,11 @@ pub async fn login_oauth() -> Result<AuthState, String> {
                     .map_err(|e| format!("Failed to read request: {}", e))?;
 
                 let request = String::from_utf8_lossy(&buffer[..n]);
+                log::debug!("Received callback request: {}", &request[..request.len().min(200)]);
 
-                // Check if this is a valid OAuth callback
-                if let Some((code, state)) = extract_auth_code(&request) {
-                    // Verify state parameter
-                    if state != expected_state {
-                        log::warn!("State mismatch: expected {}, got {}", expected_state, state);
-                        let response = format!(
-                            "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
-                            ERROR_HTML.len(),
-                            ERROR_HTML
-                        );
-                        let _ = socket.write_all(response.as_bytes()).await;
-                        continue;
-                    }
+                // Check if this is a valid OAuth callback with authorization code
+                if let Some(code) = extract_auth_code(&request) {
+                    log::info!("Received authorization code");
 
                     // Send success response
                     let response = format!(
