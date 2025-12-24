@@ -46,12 +46,12 @@ interface AuthState {
 }
 
 interface SubscriptionInfo {
-  membership_tier: string;
-  remaining_time_minutes?: number;
-  total_time_minutes?: number;
-  renewal_date?: string;
-  subscription_type?: string;
-  sub_type?: string;
+  membershipTier: string;
+  remainingTimeInMinutes?: number;
+  totalTimeInMinutes?: number;
+  renewalDateTime?: string;
+  type?: string;
+  subType?: string;
 }
 
 interface Settings {
@@ -336,7 +336,7 @@ async function checkAuthStatus() {
         });
         // Store subscription and update user's membership tier
         currentSubscription = subscription;
-        currentUser.membership_tier = subscription.membership_tier;
+        currentUser.membership_tier = subscription.membershipTier;
         console.log("Subscription:", subscription);
       } catch (subError) {
         console.warn("Failed to fetch subscription, using default tier:", subError);
@@ -366,8 +366,8 @@ function updateAuthUI() {
     }
     const userTime = document.getElementById("user-time");
     if (userTime && currentSubscription) {
-      const remaining = currentSubscription.remaining_time_minutes || 0;
-      const total = currentSubscription.total_time_minutes || 0;
+      const remaining = currentSubscription.remainingTimeInMinutes || 0;
+      const total = currentSubscription.totalTimeInMinutes || 0;
       const remainingHrs = Math.floor(remaining / 60);
       const totalHrs = Math.floor(total / 60);
       userTime.textContent = `${remainingHrs}h / ${totalHrs}h`;
