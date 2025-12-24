@@ -1257,6 +1257,20 @@ function createStreamingContainer(gameName: string): HTMLElement {
       height: 18px;
       accent-color: #76b900;
     }
+    /* Hide top bar (header with game name and buttons) in fullscreen mode */
+    #streaming-container:fullscreen .stream-header,
+    #streaming-container:-webkit-full-screen .stream-header,
+    #streaming-container:-moz-full-screen .stream-header,
+    #streaming-container:-ms-fullscreen .stream-header {
+      display: none !important;
+    }
+    /* Also hide settings panel in fullscreen mode */
+    #streaming-container:fullscreen .stream-settings-panel,
+    #streaming-container:-webkit-full-screen .stream-settings-panel,
+    #streaming-container:-moz-full-screen .stream-settings-panel,
+    #streaming-container:-ms-fullscreen .stream-settings-panel {
+      display: none !important;
+    }
   `;
 
   document.head.appendChild(style);
