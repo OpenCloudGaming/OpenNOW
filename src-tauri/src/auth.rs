@@ -68,7 +68,9 @@ struct JarvisUserInfo {
 /// The official GFN client uses static-login.nvidia.com which redirects to the proper OAuth flow
 #[allow(dead_code)]
 const STARFLEET_AUTH_URL: &str = "https://static-login.nvidia.com/service/gfn/login-start";
-// Primary token endpoint (used by GFN client)
+// UAS server endpoint (from GFN client config)
+const UAS_TOKEN_URL: &str = "https://uas.geforcenow.com/v1/oauth2/token";
+// Primary token endpoint
 const STARFLEET_TOKEN_URL: &str = "https://api.gdn.nvidia.com/v2/token";
 // Fallback token endpoint
 const STARFLEET_TOKEN_URL_ALT: &str = "https://login.nvidia.com/oauth/token";
@@ -605,8 +607,8 @@ async fn exchange_code(code: &str, redirect_uri: &str, code_verifier: &str) -> R
         ("code_verifier", code_verifier),
     ];
 
-    // Try primary endpoint first
-    let endpoints = [STARFLEET_TOKEN_URL, STARFLEET_TOKEN_URL_ALT];
+    // Try multiple endpoints - UAS first, then others
+    let endpoints = [UAS_TOKEN_URL, STARFLEET_TOKEN_URL, STARFLEET_TOKEN_URL_ALT];
     let mut last_error = String::new();
 
     for endpoint in endpoints {
