@@ -2672,6 +2672,23 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     if (hasPointerLock) {
       inputCaptureActive = true;
     }
+
+    // Hide/show main app UI based on pointer lock state
+    const appHeader = document.getElementById("app-header");
+    const statusBar = document.getElementById("status-bar");
+    const streamHeader = document.querySelector(".stream-header") as HTMLElement;
+
+    if (hasPointerLock) {
+      // Hide main app UI when mouse is locked
+      if (appHeader) appHeader.style.display = "none";
+      if (statusBar) statusBar.style.display = "none";
+      if (streamHeader) streamHeader.style.display = "none";
+    } else {
+      // Show main app UI when mouse is unlocked
+      if (appHeader) appHeader.style.display = "";
+      if (statusBar) statusBar.style.display = "";
+      if (streamHeader) streamHeader.style.display = "";
+    }
   };
 
   // Pointer lock error
