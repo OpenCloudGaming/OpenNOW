@@ -165,17 +165,22 @@
           <h2>Settings</h2>
           <div class="settings-form">
             <div class="setting-group">
-              <label>Streaming Quality</label>
-              <select id="quality-setting">
-                <option value="auto">Auto</option>
-                <option value="low">720p 30fps</option>
-                <option value="medium">1080p 60fps</option>
-                <option value="high">1440p 60fps</option>
-                <option value="ultra">4K 60fps</option>
-                <option value="high120">1080p 120fps</option>
-                <option value="ultra120">1440p 120fps</option>
-                <option value="competitive">1080p 240fps</option>
-                <option value="extreme">1080p 360fps</option>
+              <label>Resolution</label>
+              <select id="resolution-setting">
+                <option value="1280x720">1280x720 (720p)</option>
+                <option value="1920x1080" selected>1920x1080 (1080p)</option>
+                <option value="2560x1440">2560x1440 (1440p)</option>
+                <option value="3840x2160">3840x2160 (4K)</option>
+              </select>
+            </div>
+            <div class="setting-group">
+              <label>Frame Rate</label>
+              <select id="fps-setting">
+                <option value="30">30 FPS</option>
+                <option value="60" selected>60 FPS</option>
+                <option value="120">120 FPS</option>
+                <option value="240">240 FPS</option>
+                <option value="360">360 FPS</option>
               </select>
             </div>
             <div class="setting-group">
