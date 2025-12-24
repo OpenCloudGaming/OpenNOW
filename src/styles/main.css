@@ -13,6 +13,13 @@
   --shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   --radius: 8px;
   --radius-sm: 4px;
+  /* Latency colors */
+  --latency-excellent: #00c853;
+  --latency-good: #76b900;
+  --latency-fair: #ffc107;
+  --latency-poor: #ff9800;
+  --latency-bad: #f44336;
+  --latency-offline: #666666;
 }
 
 * {
@@ -459,6 +466,82 @@ select:focus {
   font-size: 12px;
   color: var(--text-muted);
 }
+
+/* Region selector with latency coloring */
+#region-setting {
+  width: 100%;
+}
+
+#region-setting option {
+  padding: 8px 12px;
+}
+
+.region-option {
+  display: flex;
+  justify-content: space-between;
+}
+
+/* Latency indicator badge */
+.latency-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.latency-excellent {
+  color: var(--latency-excellent);
+}
+
+.latency-good {
+  color: var(--latency-good);
+}
+
+.latency-fair {
+  color: var(--latency-fair);
+}
+
+.latency-poor {
+  color: var(--latency-poor);
+}
+
+.latency-bad {
+  color: var(--latency-bad);
+}
+
+.latency-offline {
+  color: var(--latency-offline);
+}
+
+/* Region testing loading state */
+.region-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  padding: 8px 0;
+}
+
+.region-loading-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--bg-tertiary);
+  border-top-color: var(--accent-green);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Status bar latency display */
+#ping-info.latency-excellent { color: var(--latency-excellent); }
+#ping-info.latency-good { color: var(--latency-good); }
+#ping-info.latency-fair { color: var(--latency-fair); }
+#ping-info.latency-poor { color: var(--latency-poor); }
+#ping-info.latency-bad { color: var(--latency-bad); }
 
 /* Status Bar */
 #status-bar {
