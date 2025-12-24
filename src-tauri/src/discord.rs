@@ -44,8 +44,8 @@ pub async fn init_discord() -> Result<bool, String> {
                 // Set initial presence
                 let _ = client.set_activity(
                     activity::Activity::new()
-                        .state("GeForce NOW via OpenNOW")
-                        .details("Browsing games")
+                        .state("Browsing games")
+                        .details("GeForce NOW via OpenNOW")
                         .assets(
                             activity::Assets::new()
                                 .large_image("gfn_logo")
@@ -285,8 +285,8 @@ pub async fn set_browsing_presence() -> Result<(), String> {
             client
                 .set_activity(
                     activity::Activity::new()
-                        .state("GeForce NOW via OpenNOW")
-                        .details("Browsing games")
+                        .state("Browsing games")
+                        .details("GeForce NOW via OpenNOW")
                         .assets(
                             activity::Assets::new()
                                 .large_image("gfn_logo")
