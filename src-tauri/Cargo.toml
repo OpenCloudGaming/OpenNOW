@@ -1,6 +1,6 @@
 [package]
 name = "gfn-client"
-version = "0.1.0"
+version = "0.0.2"
 description = "Custom GeForce Now Client"
 authors = ["Zortos"]
 edition = "2021"
