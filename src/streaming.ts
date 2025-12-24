@@ -2642,7 +2642,11 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   const handleClick = (e: MouseEvent) => {
     if (inputCaptureMode === 'pointerlock') {
       if (!hasPointerLock) {
-        videoElement.requestPointerLock();
+        // Use unadjustedMovement for raw mouse input without OS acceleration
+        (videoElement as any).requestPointerLock({ unadjustedMovement: true }).catch(() => {
+          // Fallback if unadjustedMovement not supported
+          videoElement.requestPointerLock();
+        });
       }
     } else {
       // Absolute mode - just activate capture
@@ -2709,7 +2713,11 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
       setTimeout(() => {
         if (!hasPointerLock) {
           console.log("Requesting pointer lock for fullscreen");
-          videoElement.requestPointerLock();
+          // Use unadjustedMovement for raw mouse input without OS acceleration
+          (videoElement as any).requestPointerLock({ unadjustedMovement: true }).catch(() => {
+            // Fallback if unadjustedMovement not supported
+            videoElement.requestPointerLock();
+          });
         }
       }, 100);
     } else {
