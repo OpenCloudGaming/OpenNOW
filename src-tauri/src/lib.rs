@@ -53,6 +53,7 @@ pub fn run() {
             auth::login_oauth,
             auth::set_access_token,
             auth::get_access_token,
+            auth::get_gfn_jwt,
             auth::logout,
             auth::get_auth_status,
             auth::refresh_token,
@@ -63,6 +64,7 @@ pub fn run() {
             api::search_games,
             api::get_game_details,
             api::get_servers,
+            api::fetch_subscription,
             // Streaming commands
             streaming::start_session,
             streaming::stop_session,

@@ -45,6 +45,15 @@ interface AuthState {
   };
 }
 
+interface SubscriptionInfo {
+  membership_tier: string;
+  remaining_time_minutes?: number;
+  total_time_minutes?: number;
+  renewal_date?: string;
+  subscription_type?: string;
+  sub_type?: string;
+}
+
 interface Settings {
   quality: string;
   codec: string;
@@ -80,6 +89,7 @@ interface Server {
 let currentView = "home";
 let isAuthenticated = false;
 let currentUser: AuthState["user"] | null = null;
+let currentSubscription: SubscriptionInfo | null = null;
 let games: Game[] = [];
 let discordRpcEnabled = false; // Discord presence toggle
 let currentQuality = "auto"; // Current quality preset
@@ -314,6 +324,26 @@ async function checkAuthStatus() {
     const status = await invoke<AuthState>("get_auth_status");
     isAuthenticated = status.is_authenticated;
     currentUser = status.user || null;
+
+    // Fetch real subscription tier from API if authenticated
+    if (isAuthenticated && currentUser) {
+      try {
+        const token = await invoke<string>("get_gfn_jwt");
+        const subscription = await invoke<SubscriptionInfo>("fetch_subscription", {
+          accessToken: token,
+          userId: currentUser.user_id,
+          vpcId: null,
+        });
+        // Store subscription and update user's membership tier
+        currentSubscription = subscription;
+        currentUser.membership_tier = subscription.membership_tier;
+        console.log("Subscription:", subscription);
+      } catch (subError) {
+        console.warn("Failed to fetch subscription, using default tier:", subError);
+        currentSubscription = null;
+      }
+    }
+
     updateAuthUI();
   } catch (error) {
     console.error("Failed to check auth status:", error);
@@ -328,11 +358,19 @@ function updateAuthUI() {
     if (userName) {
       userName.textContent = currentUser.display_name;
     }
-    if (currentUser.avatar_url) {
-      const avatar = document.getElementById("user-avatar") as HTMLImageElement;
-      if (avatar) {
-        avatar.src = currentUser.avatar_url;
-      }
+    const userTier = document.getElementById("user-tier");
+    if (userTier && currentUser.membership_tier) {
+      const tier = currentUser.membership_tier.toUpperCase();
+      userTier.textContent = tier;
+      userTier.className = `user-tier tier-${tier.toLowerCase()}`;
+    }
+    const userTime = document.getElementById("user-time");
+    if (userTime && currentSubscription) {
+      const remaining = currentSubscription.remaining_time_minutes || 0;
+      const total = currentSubscription.total_time_minutes || 0;
+      const remainingHrs = Math.floor(remaining / 60);
+      const totalHrs = Math.floor(total / 60);
+      userTime.textContent = `${remainingHrs}h / ${totalHrs}h`;
     }
   } else {
     loginBtn.classList.remove("hidden");
@@ -440,8 +478,8 @@ async function loadHomeData() {
   if (isAuthenticated) {
     console.log("User is authenticated, trying fetch_library...");
     try {
-      const accessToken = await invoke<string>("get_access_token");
-      console.log("Got access token, calling fetch_library...");
+      const accessToken = await invoke<string>("get_gfn_jwt");
+      console.log("Got GFN JWT token, calling fetch_library...");
       const response = await invoke<{ games: Game[] }>("fetch_library", {
         accessToken,
         vpcId: null, // Use default (Amsterdam)
@@ -463,7 +501,7 @@ async function loadHomeData() {
       // Fall back to main games panel
       console.log("Falling back to fetch_main_games...");
       try {
-        const accessToken = await invoke<string>("get_access_token").catch(() => null);
+        const accessToken = await invoke<string>("get_gfn_jwt").catch(() => null);
         const response = await invoke<{ games: Game[] }>("fetch_main_games", {
           accessToken,
           vpcId: null,
@@ -815,10 +853,10 @@ async function launchGame(game: Game) {
   console.log("Launching game:", game.title);
   hideAllModals();
 
-  // Get the access token first
+  // Get the GFN JWT token first (required for API authentication)
   let accessToken: string;
   try {
-    accessToken = await invoke<string>("get_access_token");
+    accessToken = await invoke<string>("get_gfn_jwt");
   } catch (e) {
     console.error("Not authenticated:", e);
     alert("Please login first to launch games.");
@@ -1379,7 +1417,7 @@ async function exitStreaming(): Promise<void> {
   // Stop backend session
   if (streamingUIState.sessionId) {
     try {
-      const accessToken = await invoke<string>("get_access_token");
+      const accessToken = await invoke<string>("get_gfn_jwt");
       await invoke("stop_streaming_flow", {
         sessionId: streamingUIState.sessionId,
         accessToken: accessToken,
