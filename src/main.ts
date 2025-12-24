@@ -104,6 +104,7 @@ interface Settings {
   max_bitrate_mbps: number;
   region?: string;
   discord_rpc: boolean;
+  discord_show_stats?: boolean;
   proxy?: string;
   disable_telemetry: boolean;
 }
@@ -135,7 +136,8 @@ let isAuthenticated = false;
 let currentUser: AuthState["user"] | null = null;
 let currentSubscription: SubscriptionInfo | null = null;
 let games: Game[] = [];
-let discordRpcEnabled = false; // Discord presence toggle
+let discordRpcEnabled = true; // Discord presence toggle (enabled by default)
+let discordShowStats = false; // Show resolution/fps/ms in Discord (default off)
 let currentQuality = "auto"; // Current quality preset (legacy/fallback)
 let currentResolution = "1920x1080"; // Current resolution (WxH format)
 let currentFps = 60; // Current FPS
@@ -553,7 +555,8 @@ async function loadSettings() {
     currentFps = settings.fps || 60;
     currentCodec = settings.codec || "h264";
     currentMaxBitrate = settings.max_bitrate_mbps || 200;
-    discordRpcEnabled = settings.discord_rpc || false;
+    discordRpcEnabled = settings.discord_rpc !== false; // Default to true
+    discordShowStats = settings.discord_show_stats === true; // Default to false
     currentRegion = settings.region || "auto";
 
     // Apply to UI elements
@@ -563,6 +566,7 @@ async function loadSettings() {
     const bitrateEl = document.getElementById("bitrate-setting") as HTMLInputElement;
     const bitrateValueEl = document.getElementById("bitrate-value");
     const discordEl = document.getElementById("discord-setting") as HTMLInputElement;
+    const discordStatsEl = document.getElementById("discord-stats-setting") as HTMLInputElement;
     const telemetryEl = document.getElementById("telemetry-setting") as HTMLInputElement;
     const proxyEl = document.getElementById("proxy-setting") as HTMLInputElement;
     const regionEl = document.getElementById("region-setting") as HTMLSelectElement;
@@ -577,6 +581,7 @@ async function loadSettings() {
       }
     }
     if (discordEl) discordEl.checked = discordRpcEnabled;
+    if (discordStatsEl) discordStatsEl.checked = discordShowStats;
     if (telemetryEl) telemetryEl.checked = settings.disable_telemetry ?? true;
     if (proxyEl && settings.proxy) proxyEl.value = settings.proxy;
     if (regionEl) regionEl.value = currentRegion;
@@ -1235,9 +1240,12 @@ interface StreamingUIState {
   phase: string;
   gpuType: string | null;
   serverIp: string | null;
+  region: string | null;
   inputCleanup: (() => void) | null;
   statsInterval: number | null;
   escCleanup: (() => void) | null;
+  lastDiscordUpdate: number;
+  gameStartTime: number;
 }
 
 let streamingUIState: StreamingUIState = {
@@ -1247,9 +1255,12 @@ let streamingUIState: StreamingUIState = {
   phase: "idle",
   gpuType: null,
   serverIp: null,
+  region: null,
   inputCleanup: null,
   statsInterval: null,
   escCleanup: null,
+  lastDiscordUpdate: 0,
+  gameStartTime: 0,
 };
 
 async function launchGame(game: Game) {
@@ -1344,16 +1355,27 @@ async function launchGame(game: Game) {
     streamingUIState.gpuType = streamingResult.gpu_type;
     streamingUIState.serverIp = streamingResult.server_ip;
 
+    // Determine the region name for display
+    const currentServer = cachedServers.find(s => s.id === currentRegion) ||
+      (currentRegion === "auto" ? cachedServers.find(s => s.status === "Online") : null);
+    streamingUIState.region = currentServer?.name || currentRegion;
+
     // Update overlay with success
     updateStreamingStatus(`Connected to ${streamingResult.gpu_type || "GPU"}`);
 
     // Update Discord presence to show playing (if enabled)
     if (discordRpcEnabled) {
       try {
+        // Store start time in seconds for Discord elapsed time
+        streamingUIState.gameStartTime = Math.floor(Date.now() / 1000);
         await invoke("set_game_presence", {
           gameName: game.title,
-          gameId: game.id,
+          region: streamingUIState.region,
+          resolution: discordShowStats ? currentResolution : null,
+          fps: discordShowStats ? currentFps : null,
+          latencyMs: null,
         });
+        streamingUIState.lastDiscordUpdate = Date.now();
       } catch (e) {
         console.warn("Discord presence update failed:", e);
       }
@@ -1388,6 +1410,26 @@ async function launchGame(game: Game) {
           const stats = await getStreamingStats();
           if (stats) {
             updateStreamingStatsDisplay(stats);
+
+            // Update Discord presence every 15 seconds with current stats
+            if (discordRpcEnabled && streamingUIState.gameName) {
+              const now = Date.now();
+              if (now - streamingUIState.lastDiscordUpdate >= 15000) {
+                try {
+                  await invoke("update_game_stats", {
+                    gameName: streamingUIState.gameName,
+                    region: streamingUIState.region,
+                    resolution: discordShowStats ? (stats.resolution || currentResolution) : null,
+                    fps: discordShowStats ? (stats.fps || null) : null,
+                    latencyMs: discordShowStats ? (stats.latency_ms || null) : null,
+                    startTime: streamingUIState.gameStartTime,
+                  });
+                  streamingUIState.lastDiscordUpdate = now;
+                } catch (e) {
+                  // Silently ignore Discord update failures
+                }
+              }
+            }
           }
         }
       }, 1000);
@@ -1923,9 +1965,12 @@ async function exitStreaming(): Promise<void> {
     phase: "idle",
     gpuType: null,
     serverIp: null,
+    region: null,
     inputCleanup: null,
     statsInterval: null,
     escCleanup: null,
+    lastDiscordUpdate: 0,
+    gameStartTime: 0,
   };
 
   // Reset Discord presence (if enabled)
@@ -2101,9 +2146,11 @@ async function saveSettings() {
   const proxyEl = document.getElementById("proxy-setting") as HTMLInputElement;
   const telemetryEl = document.getElementById("telemetry-setting") as HTMLInputElement;
   const discordEl = document.getElementById("discord-setting") as HTMLInputElement;
+  const discordStatsEl = document.getElementById("discord-stats-setting") as HTMLInputElement;
 
   // Update global state
   discordRpcEnabled = discordEl?.checked || false;
+  discordShowStats = discordStatsEl?.checked || false;
   currentResolution = resolutionEl?.value || "1920x1080";
   currentFps = parseInt(fpsEl?.value || "60", 10);
   currentCodec = codecEl?.value || "h264";
@@ -2121,6 +2168,7 @@ async function saveSettings() {
     max_bitrate_mbps: currentMaxBitrate,
     region: regionEl?.value || undefined,
     discord_rpc: discordRpcEnabled,
+    discord_show_stats: discordShowStats,
     proxy: proxyEl?.value || undefined,
     disable_telemetry: telemetryEl?.checked || true,
   };
