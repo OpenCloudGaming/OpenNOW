@@ -1107,6 +1107,74 @@ impl From<&str> for StoreType {
     }
 }
 
+/// Resolution option from subscription features
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolutionOption {
+    #[serde(rename = "heightInPixels")]
+    pub height: u32,
+    #[serde(rename = "widthInPixels")]
+    pub width: u32,
+    #[serde(rename = "framesPerSecond")]
+    pub fps: u32,
+    #[serde(rename = "isEntitled")]
+    pub is_entitled: bool,
+}
+
+/// Feature key-value from subscription
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeatureOption {
+    pub key: String,
+    #[serde(rename = "textValue")]
+    pub text_value: Option<String>,
+    #[serde(rename = "setValue")]
+    pub set_value: Option<Vec<String>>,
+    #[serde(rename = "booleanValue")]
+    pub boolean_value: Option<bool>,
+}
+
+/// Subscription features containing resolutions and feature flags
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionFeatures {
+    #[serde(default)]
+    pub resolutions: Vec<ResolutionOption>,
+    #[serde(default)]
+    pub features: Vec<FeatureOption>,
+}
+
+/// Streaming quality profile
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamingQualityProfile {
+    #[serde(rename = "clientStreamingQualityMode")]
+    pub mode: String,
+    #[serde(rename = "maxBitRate")]
+    pub max_bitrate: Option<BitrateConfig>,
+    pub resolution: Option<ResolutionConfig>,
+    #[serde(default)]
+    pub features: Vec<FeatureOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BitrateConfig {
+    #[serde(rename = "bitrateOption")]
+    pub bitrate_option: bool,
+    #[serde(rename = "bitrateValue")]
+    pub bitrate_value: u32,
+    #[serde(rename = "minBitrateValue")]
+    pub min_bitrate_value: u32,
+    #[serde(rename = "maxBitrateValue")]
+    pub max_bitrate_value: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolutionConfig {
+    #[serde(rename = "heightInPixels")]
+    pub height: u32,
+    #[serde(rename = "widthInPixels")]
+    pub width: u32,
+    #[serde(rename = "framesPerSecond")]
+    pub fps: u32,
+}
+
 /// Subscription info response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionInfo {
@@ -1122,6 +1190,12 @@ pub struct SubscriptionInfo {
     pub subscription_type: Option<String>,
     #[serde(rename = "subType")]
     pub sub_type: Option<String>,
+    /// Subscription features including resolutions and feature flags
+    #[serde(default)]
+    pub features: Option<SubscriptionFeatures>,
+    /// Streaming quality profiles (BALANCED, DATA_SAVER, COMPETITIVE, CINEMATIC)
+    #[serde(rename = "streamingQualities", default)]
+    pub streaming_qualities: Vec<StreamingQualityProfile>,
 }
 
 /// Fetch subscription/membership info from MES API

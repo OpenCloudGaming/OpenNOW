@@ -45,6 +45,45 @@ interface AuthState {
   };
 }
 
+interface ResolutionOption {
+  heightInPixels: number;
+  widthInPixels: number;
+  framesPerSecond: number;
+  isEntitled: boolean;
+}
+
+interface FeatureOption {
+  key: string;
+  textValue?: string;
+  setValue?: string[];
+  booleanValue?: boolean;
+}
+
+interface SubscriptionFeatures {
+  resolutions: ResolutionOption[];
+  features: FeatureOption[];
+}
+
+interface BitrateConfig {
+  bitrateOption: boolean;
+  bitrateValue: number;
+  minBitrateValue: number;
+  maxBitrateValue: number;
+}
+
+interface ResolutionConfig {
+  heightInPixels: number;
+  widthInPixels: number;
+  framesPerSecond: number;
+}
+
+interface StreamingQualityProfile {
+  clientStreamingQualityMode: string;
+  maxBitRate?: BitrateConfig;
+  resolution?: ResolutionConfig;
+  features: FeatureOption[];
+}
+
 interface SubscriptionInfo {
   membershipTier: string;
   remainingTimeInMinutes?: number;
@@ -52,10 +91,14 @@ interface SubscriptionInfo {
   renewalDateTime?: string;
   type?: string;
   subType?: string;
+  features?: SubscriptionFeatures;
+  streamingQualities?: StreamingQualityProfile[];
 }
 
 interface Settings {
   quality: string;
+  resolution?: string;
+  fps?: number;
   codec: string;
   max_bitrate_mbps: number;
   region?: string;
@@ -92,31 +135,104 @@ let currentUser: AuthState["user"] | null = null;
 let currentSubscription: SubscriptionInfo | null = null;
 let games: Game[] = [];
 let discordRpcEnabled = false; // Discord presence toggle
-let currentQuality = "auto"; // Current quality preset
+let currentQuality = "auto"; // Current quality preset (legacy/fallback)
+let currentResolution = "1920x1080"; // Current resolution (WxH format)
+let currentFps = 60; // Current FPS
 let currentCodec = "h264"; // Current video codec
 let currentMaxBitrate = 200; // Max bitrate in Mbps (200 = unlimited)
+let availableResolutions: string[] = []; // Available resolutions from subscription
+let availableFpsOptions: number[] = []; // Available FPS options from subscription
 
-// Helper to get streaming params from quality preset
-function getStreamingParams(quality: string): { resolution: string; fps: number } {
-  switch (quality) {
-    case "low":
-      return { resolution: "1280x720", fps: 30 };
-    case "medium":
-      return { resolution: "1920x1080", fps: 60 };
-    case "high":
-      return { resolution: "2560x1440", fps: 60 };
-    case "ultra":
-      return { resolution: "3840x2160", fps: 60 };
-    case "high120":
-      return { resolution: "1920x1080", fps: 120 };
-    case "ultra120":
-      return { resolution: "2560x1440", fps: 120 };
-    case "competitive":
-      return { resolution: "1920x1080", fps: 240 };
-    case "extreme":
-      return { resolution: "1920x1080", fps: 360 };
-    default: // auto
-      return { resolution: "1920x1080", fps: 60 };
+// Helper to get streaming params - uses direct resolution and fps values
+function getStreamingParams(): { resolution: string; fps: number } {
+  return { resolution: currentResolution, fps: currentFps };
+}
+
+// Populate resolution and FPS dropdowns from subscription data
+function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
+  const resolutionSelect = document.getElementById("resolution-setting") as HTMLSelectElement;
+  const fpsSelect = document.getElementById("fps-setting") as HTMLSelectElement;
+
+  if (!resolutionSelect || !fpsSelect) return;
+
+  // Default options if no subscription data
+  const defaultResolutions = [
+    { width: 1280, height: 720 },
+    { width: 1920, height: 1080 },
+    { width: 2560, height: 1440 },
+    { width: 3840, height: 2160 },
+  ];
+  const defaultFps = [30, 60, 120];
+
+  if (subscription?.features?.resolutions && subscription.features.resolutions.length > 0) {
+    // Extract unique resolutions and FPS from subscription
+    const resolutionSet = new Set<string>();
+    const fpsSet = new Set<number>();
+
+    for (const res of subscription.features.resolutions) {
+      if (res.isEntitled) {
+        resolutionSet.add(`${res.widthInPixels}x${res.heightInPixels}`);
+        fpsSet.add(res.framesPerSecond);
+      }
+    }
+
+    // Convert to sorted arrays
+    availableResolutions = Array.from(resolutionSet).sort((a, b) => {
+      const [aW] = a.split('x').map(Number);
+      const [bW] = b.split('x').map(Number);
+      return aW - bW;
+    });
+
+    availableFpsOptions = Array.from(fpsSet).sort((a, b) => a - b);
+
+    // Populate resolution dropdown
+    resolutionSelect.innerHTML = '';
+    for (const res of availableResolutions) {
+      const option = document.createElement('option');
+      option.value = res;
+      const [w, h] = res.split('x');
+      // Add friendly names for common resolutions
+      let label = res;
+      if (res === '1280x720') label = '1280x720 (720p)';
+      else if (res === '1920x1080') label = '1920x1080 (1080p)';
+      else if (res === '2560x1440') label = '2560x1440 (1440p)';
+      else if (res === '3840x2160') label = '3840x2160 (4K)';
+      else if (res === '5120x2880') label = '5120x2880 (5K)';
+      else if (res === '2560x1080') label = '2560x1080 (UW 1080p)';
+      else if (res === '3440x1440') label = '3440x1440 (UW 1440p)';
+      option.textContent = label;
+      resolutionSelect.appendChild(option);
+    }
+
+    // Populate FPS dropdown
+    fpsSelect.innerHTML = '';
+    for (const fps of availableFpsOptions) {
+      const option = document.createElement('option');
+      option.value = String(fps);
+      option.textContent = `${fps} FPS`;
+      fpsSelect.appendChild(option);
+    }
+
+    console.log(`Populated ${availableResolutions.length} resolutions and ${availableFpsOptions.length} FPS options from subscription`);
+  } else {
+    // Use defaults
+    availableResolutions = defaultResolutions.map(r => `${r.width}x${r.height}`);
+    availableFpsOptions = defaultFps;
+    console.log("Using default resolution/FPS options (no subscription data)");
+  }
+
+  // Set current values
+  resolutionSelect.value = currentResolution;
+  fpsSelect.value = String(currentFps);
+
+  // If current value not in options, select the first available
+  if (!resolutionSelect.value && availableResolutions.length > 0) {
+    resolutionSelect.value = availableResolutions[0];
+    currentResolution = availableResolutions[0];
+  }
+  if (!fpsSelect.value && availableFpsOptions.length > 0) {
+    fpsSelect.value = String(availableFpsOptions[0]);
+    currentFps = availableFpsOptions[0];
   }
 }
 
@@ -161,12 +277,15 @@ async function loadSettings() {
 
     // Apply to global state
     currentQuality = settings.quality || "auto";
+    currentResolution = settings.resolution || "1920x1080";
+    currentFps = settings.fps || 60;
     currentCodec = settings.codec || "h264";
     currentMaxBitrate = settings.max_bitrate_mbps || 200;
     discordRpcEnabled = settings.discord_rpc || false;
 
     // Apply to UI elements
-    const qualityEl = document.getElementById("quality-setting") as HTMLSelectElement;
+    const resolutionEl = document.getElementById("resolution-setting") as HTMLSelectElement;
+    const fpsEl = document.getElementById("fps-setting") as HTMLSelectElement;
     const codecEl = document.getElementById("codec-setting") as HTMLSelectElement;
     const bitrateEl = document.getElementById("bitrate-setting") as HTMLInputElement;
     const bitrateValueEl = document.getElementById("bitrate-value");
@@ -174,7 +293,8 @@ async function loadSettings() {
     const telemetryEl = document.getElementById("telemetry-setting") as HTMLInputElement;
     const proxyEl = document.getElementById("proxy-setting") as HTMLInputElement;
 
-    if (qualityEl) qualityEl.value = currentQuality;
+    if (resolutionEl) resolutionEl.value = currentResolution;
+    if (fpsEl) fpsEl.value = String(currentFps);
     if (codecEl) codecEl.value = currentCodec;
     if (bitrateEl) {
       bitrateEl.value = String(currentMaxBitrate);
@@ -338,10 +458,18 @@ async function checkAuthStatus() {
         currentSubscription = subscription;
         currentUser.membership_tier = subscription.membershipTier;
         console.log("Subscription:", subscription);
+
+        // Populate resolution and FPS dropdowns from subscription data
+        populateStreamingOptions(subscription);
       } catch (subError) {
         console.warn("Failed to fetch subscription, using default tier:", subError);
         currentSubscription = null;
+        // Use default streaming options
+        populateStreamingOptions(null);
       }
+    } else {
+      // Not authenticated - use default streaming options
+      populateStreamingOptions(null);
     }
 
     updateAuthUI();
@@ -884,8 +1012,8 @@ async function launchGame(game: Game) {
     console.log("Starting session with game ID:", game.id);
     updateStreamingStatus("Creating session...");
 
-    const streamParams = getStreamingParams(currentQuality);
-    console.log("Using streaming params:", streamParams, "quality:", currentQuality);
+    const streamParams = getStreamingParams();
+    console.log("Using streaming params:", streamParams, "resolution:", currentResolution, "fps:", currentFps);
 
     const sessionResult = await invoke<{
       session_id: string;
@@ -1614,7 +1742,8 @@ async function cancelStreaming() {
 
 // Settings
 async function saveSettings() {
-  const qualityEl = document.getElementById("quality-setting") as HTMLSelectElement;
+  const resolutionEl = document.getElementById("resolution-setting") as HTMLSelectElement;
+  const fpsEl = document.getElementById("fps-setting") as HTMLSelectElement;
   const codecEl = document.getElementById("codec-setting") as HTMLSelectElement;
   const bitrateEl = document.getElementById("bitrate-setting") as HTMLInputElement;
   const regionEl = document.getElementById("region-setting") as HTMLSelectElement;
@@ -1624,12 +1753,15 @@ async function saveSettings() {
 
   // Update global state
   discordRpcEnabled = discordEl?.checked || false;
-  currentQuality = qualityEl?.value || "auto";
+  currentResolution = resolutionEl?.value || "1920x1080";
+  currentFps = parseInt(fpsEl?.value || "60", 10);
   currentCodec = codecEl?.value || "h264";
   currentMaxBitrate = parseInt(bitrateEl?.value || "200", 10);
 
   const settings: Settings = {
-    quality: qualityEl?.value || "auto",
+    quality: "custom", // Mark as custom since we use explicit resolution/fps
+    resolution: currentResolution,
+    fps: currentFps,
     codec: codecEl?.value || "h264",
     max_bitrate_mbps: currentMaxBitrate,
     region: regionEl?.value || undefined,
@@ -1641,7 +1773,7 @@ async function saveSettings() {
   try {
     await invoke("save_settings", { settings });
     hideAllModals();
-    console.log("Settings saved");
+    console.log("Settings saved:", settings);
   } catch (error) {
     console.error("Failed to save settings:", error);
   }
