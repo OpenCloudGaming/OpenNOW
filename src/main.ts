@@ -1298,6 +1298,13 @@ function createStreamingContainer(gameName: string): HTMLElement {
       background: rgba(0,0,0,0.5);
       padding: 5px 10px;
       border-radius: 4px;
+      z-index: 10003;
+    }
+    #streaming-container:fullscreen .stream-stats,
+    #streaming-container:-webkit-full-screen .stream-stats {
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
     }
     .stream-stats span {
       font-family: monospace;
