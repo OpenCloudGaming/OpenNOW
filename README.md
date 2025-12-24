@@ -6,7 +6,12 @@ A custom GeForce NOW client built with Tauri (Rust + TypeScript) that unlocks pr
 
 [![Download](https://img.shields.io/github/v/release/zortos293/GFNClient?include_prereleases&label=Download&style=for-the-badge)](https://github.com/zortos293/GFNClient/releases/latest)
 
-**[Download Latest Release](https://github.com/zortos293/GFNClient/releases/tag/v0.0.1-dev)**
+**[Download Latest Release](https://github.com/zortos293/GFNClient/releases/latest)**
+
+### Available Platforms
+- **Windows**: `.msi` installer or `.exe` setup
+- **macOS**: `.dmg` disk image (experimental)
+- **Linux**: `.deb` package or `.AppImage` (experimental)
 
 ---
 
@@ -39,7 +44,7 @@ A custom GeForce NOW client built with Tauri (Rust + TypeScript) that unlocks pr
 - **Settings Persistence** - Quality, codec, bitrate, and region preferences saved
 - **Custom Proxy Support** - Route traffic through your own proxy
 
-### Known Bugs (v0.0.1-dev)
+### Known Bugs
 
 - **Session cleanup** - You need to close the session via the official GFN client (our client doesn't terminate sessions yet)
 - **ESC key broken** - ESC key doesn't work properly during streaming (will be fixed)
@@ -51,8 +56,8 @@ A custom GeForce NOW client built with Tauri (Rust + TypeScript) that unlocks pr
 - [ ] Game availability notifications
 - [ ] Server queue time display
 - [ ] Multi-region ping display
-- [ ] Linux support
-- [ ] macOS support
+- [x] Linux support (experimental)
+- [x] macOS support (experimental)
 - [ ] Controller support improvements
 - [ ] Stream recording
 - [ ] Custom overlay/OSD
