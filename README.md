@@ -2,6 +2,14 @@
 
 A custom GeForce NOW client built with Tauri (Rust + TypeScript) that unlocks premium streaming features and provides a cleaner gaming experience.
 
+## Download
+
+[![Download](https://img.shields.io/github/v/release/zortos293/GFNClient?include_prereleases&label=Download&style=for-the-badge)](https://github.com/zortos293/GFNClient/releases/latest)
+
+**[Download Latest Release](https://github.com/zortos293/GFNClient/releases/tag/v0.0.1-dev)**
+
+---
+
 ## Demo
 
 [![Demo Video](https://img.youtube.com/vi/bF84_CKopPQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=bF84_CKopPQ)
@@ -16,6 +24,9 @@ A custom GeForce NOW client built with Tauri (Rust + TypeScript) that unlocks pr
 
 ### Implemented
 
+- **NVIDIA OAuth Login** - Sign in with your NVIDIA account (OAuth 2.0 + PKCE)
+- **Subscription Tier Display** - Shows your membership tier (Free/Priority/Ultimate) with playtime remaining
+- **Discord Rich Presence** - Show what you're playing on Discord
 - **Native Client Headers** - Uses `NVIDIA-CLASSIC` streamer headers to unlock premium streaming capabilities
 - **High FPS Streaming** - Support for 120fps, 240fps, and 360fps modes
 - **Codec Selection** - Choose between H.264, H.265/HEVC, or AV1
@@ -28,10 +39,15 @@ A custom GeForce NOW client built with Tauri (Rust + TypeScript) that unlocks pr
 - **Settings Persistence** - Quality, codec, bitrate, and region preferences saved
 - **Custom Proxy Support** - Route traffic through your own proxy
 
+### Known Bugs (v0.0.1-dev)
+
+- **Session cleanup** - You need to close the session via the official GFN client (our client doesn't terminate sessions yet)
+- **ESC key broken** - ESC key doesn't work properly during streaming (will be fixed)
+
 ### TODO
 
-- [ ] NVIDIA account login (currently requires manual token)
-- [ ] Discord Rich Presence integration
+- [ ] Session termination from client
+- [ ] Fix ESC key during streaming
 - [ ] Game availability notifications
 - [ ] Server queue time display
 - [ ] Multi-region ping display
@@ -48,7 +64,7 @@ A custom GeForce NOW client built with Tauri (Rust + TypeScript) that unlocks pr
 | Component | Technology |
 |-----------|------------|
 | Frontend | TypeScript, Vite |
-| Backend | Rust (Tauri) |
+| Backend | Rust (Tauri 2.x) |
 | Streaming | WebRTC + NVST Protocol |
 | UI | Custom CSS |
 
