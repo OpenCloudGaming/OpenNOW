@@ -133,10 +133,16 @@ let lastBytesTimestamp = 0;
  * - Auth: WebSocket subprotocol x-nv-sessionid.{session_id}
  * - Protocol: JSON peer messaging with ackid, peer_info, peer_msg
  */
+export interface StreamingOptions {
+  resolution: string; // "2560x1440" format
+  fps: number;
+}
+
 export async function initializeStreaming(
   connectionState: StreamingConnectionState,
   accessToken: string,
-  videoContainer: HTMLElement
+  videoContainer: HTMLElement,
+  options?: StreamingOptions
 ): Promise<void> {
   console.log("Initializing streaming with:", connectionState);
 
@@ -202,8 +208,20 @@ export async function initializeStreaming(
   console.log("Stream IP:", streamIp);
   console.log("Session ID:", sessionId);
 
+  // Parse resolution from options or use defaults
+  let streamWidth = window.screen.width;
+  let streamHeight = window.screen.height;
+  if (options?.resolution) {
+    const [w, h] = options.resolution.split('x').map(Number);
+    if (w && h) {
+      streamWidth = w;
+      streamHeight = h;
+      console.log(`Using requested resolution: ${streamWidth}x${streamHeight}`);
+    }
+  }
+
   // Connect using the official GFN browser protocol
-  await connectGfnBrowserSignaling(streamIp, sessionId, webrtcConfig);
+  await connectGfnBrowserSignaling(streamIp, sessionId, webrtcConfig, streamWidth, streamHeight);
 }
 
 // GFN Browser Peer Protocol types
@@ -297,7 +315,9 @@ async function logIceDebugInfo(pc: RTCPeerConnection): Promise<void> {
 async function connectGfnBrowserSignaling(
   serverIp: string,
   sessionId: string,
-  config: WebRtcConfig
+  config: WebRtcConfig,
+  requestedWidth: number,
+  requestedHeight: number
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     // Generate random peer ID suffix (matching GFN browser format)
@@ -357,7 +377,7 @@ async function connectGfnBrowserSignaling(
           id: gfnPeerId,
           name: peerName,
           peer_role: 0, // 0 = client
-          resolution: `${window.screen.width}x${window.screen.height}`,
+          resolution: `${requestedWidth}x${requestedHeight}`,
           version: 2
         }
       };
@@ -893,9 +913,10 @@ async function handleGfnSdpOffer(
   console.log("Our ICE credentials - ufrag:", iceUfrag, "pwd:", icePwd.substring(0, 8) + "...");
   console.log("Our DTLS fingerprint:", fingerprint.substring(0, 30) + "...");
 
-  // Get viewport dimensions
-  const viewportWidth = window.screen.width;
-  const viewportHeight = window.screen.height;
+  // Use requested resolution for viewport dimensions (not screen dimensions)
+  const viewportWidth = requestedWidth;
+  const viewportHeight = requestedHeight;
+  console.log(`nvstSdp viewport: ${viewportWidth}x${viewportHeight}`);
 
   // Use bitrate from config (set by user in settings)
   const maxBitrateKbps = config.max_bitrate_kbps || 100000;
@@ -2642,7 +2663,11 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   const handleClick = (e: MouseEvent) => {
     if (inputCaptureMode === 'pointerlock') {
       if (!hasPointerLock) {
-        videoElement.requestPointerLock();
+        // Use unadjustedMovement for raw mouse input without OS acceleration
+        (videoElement as any).requestPointerLock({ unadjustedMovement: true }).catch(() => {
+          // Fallback if unadjustedMovement not supported
+          videoElement.requestPointerLock();
+        });
       }
     } else {
       // Absolute mode - just activate capture
@@ -2667,6 +2692,23 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     console.log("Pointer lock:", hasPointerLock);
     if (hasPointerLock) {
       inputCaptureActive = true;
+    }
+
+    // Hide/show main app UI based on pointer lock state
+    const appHeader = document.getElementById("app-header");
+    const statusBar = document.getElementById("status-bar");
+    const streamHeader = document.querySelector(".stream-header") as HTMLElement;
+
+    if (hasPointerLock) {
+      // Hide main app UI when mouse is locked
+      if (appHeader) appHeader.style.display = "none";
+      if (statusBar) statusBar.style.display = "none";
+      if (streamHeader) streamHeader.style.display = "none";
+    } else {
+      // Show main app UI when mouse is unlocked
+      if (appHeader) appHeader.style.display = "";
+      if (statusBar) statusBar.style.display = "";
+      if (streamHeader) streamHeader.style.display = "";
     }
   };
 
@@ -2709,7 +2751,11 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
       setTimeout(() => {
         if (!hasPointerLock) {
           console.log("Requesting pointer lock for fullscreen");
-          videoElement.requestPointerLock();
+          // Use unadjustedMovement for raw mouse input without OS acceleration
+          (videoElement as any).requestPointerLock({ unadjustedMovement: true }).catch(() => {
+            // Fallback if unadjustedMovement not supported
+            videoElement.requestPointerLock();
+          });
         }
       }, 100);
     } else {
