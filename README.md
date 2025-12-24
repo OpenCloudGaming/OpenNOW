@@ -1,39 +1,116 @@
-# Custom GeForce Now Client
+# Custom GeForce NOW Client
 
-## Introduction
-Welcome to the Custom GeForce Now Client! This client is designed to enhance your cloud gaming experience with GeForce Now across multiple platforms. With a range of unique features, it aims to provide a seamless and more informative gaming experience.
+A custom GeForce NOW client built with Tauri (Rust + TypeScript) that unlocks premium streaming features and provides a cleaner gaming experience.
 
-**Note:** This client is currently in active development. Features and functionalities might change as we progress. Stay tuned for updates!
+## Demo
+
+[![Demo Video](https://img.youtube.com/vi/bF84_CKopPQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=bF84_CKopPQ)
+
+**[Watch Demo on YouTube](https://www.youtube.com/watch?v=bF84_CKopPQ)**
+
+---
 
 ## Features
-- **Cross-Platform Compatibility:** Enjoy the convenience of using GeForce Now on all major platforms including Linux and Windows.
-- **Game Availability Notifications:** Stay updated with real-time notifications when your favorite games go online.
-- **Server Queue Times and Ping:** Monitor server queue times and check the ping for all servers to choose the best gaming experience.
-- **Custom Interface:** Experience a user-friendly and custom interface tailored to enhance your gaming experience.
-- **No Nvidia Telemetry:** Enjoy your games without Nvidia's telemetry for a more private and secure gaming experience.
-- **Custom Proxy Support:** Configure your own proxy settings for enhanced privacy and potentially better connection speeds.
 
-## Sponsorship and Support
-Your support can make a big difference! By sponsoring this project, you not only help in its development but also become eligible to receive custom proxies upon project completion. Sponsorship helps us to maintain and improve the client. For more information on how to sponsor, please visit {Coming soon}.
+### Implemented
 
-## Supporting the Project
-If you find this project helpful or interesting, don't forget to star it on GitHub to show your support! Your stars encourage us to keep improving and adding new features.
+- **Native Client Headers** - Uses `NVIDIA-CLASSIC` streamer headers to unlock premium streaming capabilities
+- **High FPS Streaming** - Support for 120fps, 240fps, and 360fps modes
+- **Codec Selection** - Choose between H.264, H.265/HEVC, or AV1
+- **Unlimited Bitrate** - Configurable from 20 Mbps up to unlimited
+- **Stable Resolution** - Disabled adaptive quality/resolution control for consistent streaming
+- **Raw Mouse Input** - Uses `getCoalescedEvents()` for 1:1 mouse movement without smoothing
+- **Fullscreen Control** - Hold ESC for 1 second to exit fullscreen (ESC still works in-game)
+- **No Telemetry** - NVIDIA telemetry disabled by default
+- **Persistent Auth** - Login tokens saved locally for convenience
+- **Settings Persistence** - Quality, codec, bitrate, and region preferences saved
+- **Custom Proxy Support** - Route traffic through your own proxy
 
-## Development Background
+### TODO
 
-**Reverse Engineering:** The development of the Custom GeForce Now Client has been made possible through careful reverse engineering. This process involved analyzing and understanding the workings of existing GeForce Now client to create a client that offers enhanced features and an improved user experience.
+- [ ] Discord Rich Presence integration
+- [ ] Game availability notifications
+- [ ] Server queue time display
+- [ ] Multi-region ping display
+- [ ] Linux support
+- [ ] macOS support
+- [ ] Controller support improvements
+- [ ] Stream recording
+- [ ] Custom overlay/OSD
 
-**Ethical Considerations:** It is important to note that the reverse engineering efforts were conducted ethically and in accordance with legal boundaries. The goal was not to replicate or redistribute Nvidia’s proprietary software, but to gain a deeper understanding of its functioning in order to develop independent, complementary functionalities.
+---
 
-**Compliance with Laws:** This project strictly adheres to legal guidelines regarding reverse engineering. It respects intellectual property rights and does not involve the unauthorized use or distribution of proprietary code owned by Nvidia Corporation.
+## Tech Stack
 
+| Component | Technology |
+|-----------|------------|
+| Frontend | TypeScript, Vite |
+| Backend | Rust (Tauri) |
+| Streaming | WebRTC + NVST Protocol |
+| UI | Custom CSS |
+
+---
+
+## Building
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org/) (v18+)
+- [Rust](https://rustup.rs/) (latest stable)
+- [Tauri CLI](https://tauri.app/v1/guides/getting-started/prerequisites)
+
+### Steps
+
+```bash
+# Clone the repository
+git clone https://github.com/zortos293/GFNClient.git
+cd GFNClient
+
+# Install dependencies
+npm install
+
+# Development mode
+npm run tauri dev
+
+# Build for production
+npm run tauri build
+```
+
+---
+
+## Configuration
+
+Settings are stored in `%APPDATA%/gfn-client/settings.json`:
+
+| Setting | Options | Default |
+|---------|---------|---------|
+| Quality | auto, low, medium, high, ultra, high120, ultra120, competitive, extreme | auto |
+| Codec | h264, h265, av1 | h264 |
+| Max Bitrate | 20-200 Mbps (200 = unlimited) | unlimited |
+| Region | auto or specific region | auto |
+
+---
 
 ## Disclaimer
 
-**Not Affiliated with Nvidia Corporation:** This Custom GeForce Now Client is an independent project developed by Zortos. It is not officially affiliated with, authorized, maintained, sponsored, or endorsed by Nvidia Corporation or any of its affiliates or subsidiaries. GeForce Now and Nvidia are trademarks of Nvidia Corporation, used here only for clarity and identification of the service our project is designed to complement.
+This Custom GeForce NOW Client is an **independent project** not affiliated with, authorized, or endorsed by NVIDIA Corporation.
 
-**Trademark Notice:** All trademarks, service marks, trade names, product names, and logos appearing in this project are the property of their respective owners. The use of these does not imply endorsement.
+- GeForce NOW and NVIDIA are trademarks of NVIDIA Corporation
+- Developed for educational and enhancement purposes
+- Users are responsible for compliance with applicable terms of service
+- No warranty provided; use at your own risk
 
-**Purpose of the Project:** This client is developed for educational and enhancement purposes, aiming to improve the user experience for gamers. It adheres to ethical coding practices and respects the intellectual property rights of others.
+---
 
-**User Responsibility:** Users of this Custom GeForce Now Client are responsible for ensuring that their use of the client complies with all applicable laws and terms of service. The developers of this client assume no liability for any misuse or violations that may occur.
+## Support
+
+If you find this project useful, consider:
+- Starring the repo
+- Reporting issues
+- Contributing code
+
+---
+
+## License
+
+This project is for educational purposes. See NVIDIA's Terms of Service regarding GeForce NOW usage.
