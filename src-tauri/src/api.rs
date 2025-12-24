@@ -1027,45 +1027,94 @@ const SERVER_ZONES: &[(&str, &str, &str)] = &[
     ("ap-japan", "Japan", "Asia-Pacific"),
 ];
 
+/// Test a single server's latency using TCP connect time (measures TCP handshake RTT)
+async fn test_server_latency(
+    client: &Client,
+    zone_id: &str,
+    name: &str,
+    region: &str,
+) -> Server {
+    let hostname = format!("{}.cloudmatchbeta.nvidiagrid.net", zone_id);
+    let server_url = format!("https://{}/v2/serverInfo", hostname);
+
+    // Measure TCP connect time to port 443 (HTTPS)
+    // This gives accurate network latency by timing the TCP handshake
+    let tcp_ping = async {
+        use tokio::net::TcpStream;
+        use std::net::ToSocketAddrs;
+
+        // Resolve hostname to IP first
+        let addr = format!("{}:443", hostname);
+        let socket_addr = tokio::task::spawn_blocking(move || {
+            addr.to_socket_addrs().ok().and_then(|mut addrs| addrs.next())
+        }).await.ok().flatten();
+
+        if let Some(socket_addr) = socket_addr {
+            // Measure TCP connect time (SYN -> SYN-ACK)
+            let start = std::time::Instant::now();
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                TcpStream::connect(socket_addr)
+            ).await {
+                Ok(Ok(_stream)) => {
+                    let elapsed = start.elapsed().as_millis() as u32;
+                    // TCP handshake is 1 RTT, so this is accurate latency
+                    Some(elapsed)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    };
+
+    // Run TCP ping and HTTP status check in parallel
+    let (ping_ms, http_result) = tokio::join!(
+        tcp_ping,
+        client.get(&server_url).timeout(std::time::Duration::from_secs(5)).send()
+    );
+
+    let status = match http_result {
+        Ok(response) if response.status().is_success() => ServerStatus::Online,
+        Ok(_) => ServerStatus::Maintenance,
+        Err(_) => {
+            if ping_ms.is_some() {
+                ServerStatus::Online
+            } else {
+                ServerStatus::Offline
+            }
+        }
+    };
+
+    Server {
+        id: zone_id.to_string(),
+        name: name.to_string(),
+        region: region.to_string(),
+        country: zone_id.split('-').nth(1).unwrap_or("Unknown").to_string(),
+        ping_ms,
+        queue_size: None,
+        status,
+    }
+}
+
 /// Get available servers with ping information
-/// Uses CloudMatch API to get server status
+/// Uses CloudMatch API to get server status - runs tests in parallel for speed
 #[command]
-pub async fn get_servers(access_token: Option<String>) -> Result<Vec<Server>, String> {
+pub async fn get_servers(_access_token: Option<String>) -> Result<Vec<Server>, String> {
     let client = Client::new();
 
-    // Build list of servers from known zones
-    let mut servers = Vec::new();
-
-    for (zone_id, name, region) in SERVER_ZONES {
-        let server_url = format!("https://{}.cloudmatchbeta.nvidiagrid.net/v2/serverInfo", zone_id);
-
-        // Try to get server info (this also serves as a basic connectivity test)
-        let start = std::time::Instant::now();
-        let result = client
-            .get(&server_url)
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
-            .await;
-
-        let (status, ping_ms) = match result {
-            Ok(response) if response.status().is_success() => {
-                let ping = start.elapsed().as_millis() as u32;
-                (ServerStatus::Online, Some(ping))
+    // Test all servers in parallel for fast results
+    let futures: Vec<_> = SERVER_ZONES
+        .iter()
+        .map(|(zone_id, name, region)| {
+            let client = client.clone();
+            async move {
+                test_server_latency(&client, zone_id, name, region).await
             }
-            Ok(_) => (ServerStatus::Maintenance, None),
-            Err(_) => (ServerStatus::Offline, None),
-        };
+        })
+        .collect();
 
-        servers.push(Server {
-            id: zone_id.to_string(),
-            name: name.to_string(),
-            region: region.to_string(),
-            country: zone_id.split('-').nth(1).unwrap_or("Unknown").to_string(),
-            ping_ms,
-            queue_size: None, // Would need UDS API to get queue info
-            status,
-        });
-    }
+    let mut servers: Vec<Server> = futures_util::future::join_all(futures).await;
 
     // Sort by ping (online servers first, then by ping)
     servers.sort_by(|a, b| {
