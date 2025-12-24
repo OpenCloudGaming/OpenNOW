@@ -2693,6 +2693,7 @@ dependencies = [
  "egui_extras",
  "env_logger",
  "futures-util",
+ "hex",
  "http",
  "image",
  "log",

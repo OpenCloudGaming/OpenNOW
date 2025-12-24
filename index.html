@@ -122,6 +122,37 @@
         </div>
       </div>
 
+      <!-- Login Modal -->
+      <div id="login-modal" class="modal hidden">
+        <div class="modal-content login-modal-content">
+          <button class="modal-close">&times;</button>
+          <h2>Sign In</h2>
+          <div class="login-options">
+            <button id="nvidia-login-btn" class="btn btn-primary btn-large login-option">
+              <span class="login-icon">&#9733;</span>
+              Sign in with NVIDIA
+            </button>
+            <div class="login-divider">
+              <span>or</span>
+            </div>
+            <button id="token-login-btn" class="btn btn-secondary btn-large login-option">
+              <span class="login-icon">&#128273;</span>
+              Enter Token Manually
+            </button>
+          </div>
+          <div id="token-entry" class="token-entry hidden">
+            <p class="token-instructions">
+              1. Go to <a href="https://play.geforcenow.com" target="_blank">play.geforcenow.com</a> and sign in<br>
+              2. Press F12 to open DevTools<br>
+              3. Go to Application > Local Storage<br>
+              4. Copy the NVAUTHTOKEN value
+            </p>
+            <textarea id="token-input" placeholder="Paste your NVAUTHTOKEN here..."></textarea>
+            <button id="submit-token-btn" class="btn btn-primary">Submit Token</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Settings Modal -->
       <div id="settings-modal" class="modal hidden">
         <div class="modal-content">
