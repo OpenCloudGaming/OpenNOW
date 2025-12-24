@@ -8,6 +8,11 @@ A custom GeForce NOW client built with Tauri (Rust + TypeScript) that unlocks pr
 
 **[Download Latest Release](https://github.com/zortos293/GFNClient/releases/latest)**
 
+### Available Platforms
+- **Windows**: `.msi` installer or `.exe` setup
+- **macOS**: `.dmg` disk image (experimental)
+- **Linux**: `.deb` package or `.AppImage` (experimental)
+
 ---
 
 ## Demo
@@ -51,8 +56,8 @@ A custom GeForce NOW client built with Tauri (Rust + TypeScript) that unlocks pr
 - [ ] Game availability notifications
 - [ ] Server queue time display
 - [ ] Multi-region ping display
-- [ ] Linux support
-- [ ] macOS support
+- [x] Linux support (experimental)
+- [x] macOS support (experimental)
 - [ ] Controller support improvements
 - [ ] Stream recording
 - [ ] Custom overlay/OSD
