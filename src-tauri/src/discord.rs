@@ -45,7 +45,6 @@ pub async fn init_discord() -> Result<bool, String> {
                 let _ = client.set_activity(
                     activity::Activity::new()
                         .state("Browsing games")
-                        .details("GeForce NOW via OpenNOW")
                         .assets(
                             activity::Assets::new()
                                 .large_image("gfn_logo")
@@ -115,7 +114,7 @@ pub async fn set_game_presence(
             } else if !stats_parts.is_empty() {
                 stats_parts.join(" ")
             } else {
-                "GeForce NOW via OpenNOW".to_string()
+                "Playing".to_string()
             };
 
             let activity = activity::Activity::new()
@@ -182,7 +181,7 @@ pub async fn update_game_stats(
             } else if !stats_parts.is_empty() {
                 stats_parts.join(" ")
             } else {
-                "GeForce NOW via OpenNOW".to_string()
+                "Playing".to_string()
             };
 
             // Use provided start_time to preserve elapsed time
@@ -286,7 +285,6 @@ pub async fn set_browsing_presence() -> Result<(), String> {
                 .set_activity(
                     activity::Activity::new()
                         .state("Browsing games")
-                        .details("GeForce NOW via OpenNOW")
                         .assets(
                             activity::Assets::new()
                                 .large_image("gfn_logo")
