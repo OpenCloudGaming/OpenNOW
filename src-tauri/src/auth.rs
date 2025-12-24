@@ -68,7 +68,10 @@ struct JarvisUserInfo {
 /// The official GFN client uses static-login.nvidia.com which redirects to the proper OAuth flow
 #[allow(dead_code)]
 const STARFLEET_AUTH_URL: &str = "https://static-login.nvidia.com/service/gfn/login-start";
-const STARFLEET_TOKEN_URL: &str = "https://login.nvidia.com/oauth/token";
+// Primary token endpoint (used by GFN client)
+const STARFLEET_TOKEN_URL: &str = "https://api.gdn.nvidia.com/v2/token";
+// Fallback token endpoint
+const STARFLEET_TOKEN_URL_ALT: &str = "https://login.nvidia.com/oauth/token";
 const LOGOUT_URL: &str = "https://static-login.nvidia.com/service/gfn/logout-start";
 
 /// Starfleet Client ID from GFN client - this is for the public NVIDIA login
@@ -602,35 +605,55 @@ async fn exchange_code(code: &str, redirect_uri: &str, code_verifier: &str) -> R
         ("code_verifier", code_verifier),
     ];
 
-    let response = client
-        .post(STARFLEET_TOKEN_URL)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("Origin", GFN_ORIGIN)
-        .header("Referer", "https://play.geforcenow.com/")
-        .form(&params)
-        .send()
-        .await
-        .map_err(|e| format!("Token exchange failed: {}", e))?;
+    // Try primary endpoint first
+    let endpoints = [STARFLEET_TOKEN_URL, STARFLEET_TOKEN_URL_ALT];
+    let mut last_error = String::new();
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("Token exchange failed with status {}: {}", status, body));
+    for endpoint in endpoints {
+        log::info!("Trying token exchange with endpoint: {}", endpoint);
+
+        let response = client
+            .post(endpoint)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("Origin", "https://play.geforcenow.com")
+            .header("Referer", "https://play.geforcenow.com/")
+            .header("Accept", "application/json")
+            .form(&params)
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let token_response: StarfleetTokenResponse = resp
+                        .json()
+                        .await
+                        .map_err(|e| format!("Failed to parse token response: {}", e))?;
+
+                    let expires_at = Utc::now() + chrono::Duration::seconds(token_response.expires_in);
+
+                    log::info!("Token exchange successful with endpoint: {}", endpoint);
+                    return Ok(Tokens {
+                        access_token: token_response.access_token,
+                        refresh_token: token_response.refresh_token,
+                        id_token: token_response.id_token,
+                        expires_at,
+                    });
+                } else {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    last_error = format!("Token exchange failed with status {}: {}", status, body);
+                    log::warn!("Endpoint {} failed: {}", endpoint, last_error);
+                }
+            }
+            Err(e) => {
+                last_error = format!("Token exchange request failed: {}", e);
+                log::warn!("Endpoint {} error: {}", endpoint, last_error);
+            }
+        }
     }
 
-    let token_response: StarfleetTokenResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse token response: {}", e))?;
-
-    let expires_at = Utc::now() + chrono::Duration::seconds(token_response.expires_in);
-
-    Ok(Tokens {
-        access_token: token_response.access_token,
-        refresh_token: token_response.refresh_token,
-        id_token: token_response.id_token,
-        expires_at,
-    })
+    Err(last_error)
 }
 
 /// JWT payload structure (decoded from access token)
