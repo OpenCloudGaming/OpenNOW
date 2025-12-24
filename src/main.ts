@@ -10,6 +10,7 @@ import {
   forceInputHandshake,
   isInputReady,
   getInputDebugInfo,
+  StreamingOptions,
 } from "./streaming";
 
 // Types
@@ -1089,8 +1090,12 @@ async function launchGame(game: Game) {
     const streamContainer = createStreamingContainer(game.title);
 
     try {
-      // Initialize WebRTC streaming
-      await initializeStreaming(streamingResult, accessToken, streamContainer);
+      // Initialize WebRTC streaming with user's selected resolution/fps
+      const streamingOptions: StreamingOptions = {
+        resolution: currentResolution,
+        fps: currentFps
+      };
+      await initializeStreaming(streamingResult, accessToken, streamContainer, streamingOptions);
 
       // Set up input capture
       const videoElement = document.getElementById("gfn-stream-video") as HTMLVideoElement;
