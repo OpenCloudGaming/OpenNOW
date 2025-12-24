@@ -140,6 +140,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Generate macOS .icns icon from PNG
+      - name: Generate macOS icon
+        if: matrix.target == 'macos'
+        run: |
+          mkdir -p src-tauri/icons/icon.iconset
+          sips -z 16 16 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_16x16.png
+          sips -z 32 32 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_16x16@2x.png
+          sips -z 32 32 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_32x32.png
+          sips -z 64 64 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_32x32@2x.png
+          sips -z 128 128 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_128x128.png
+          sips -z 256 256 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_128x128@2x.png
+          sips -z 256 256 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_256x256.png
+          sips -z 512 512 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_256x256@2x.png
+          sips -z 512 512 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_512x512.png
+          sips -z 1024 1024 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_512x512@2x.png
+          iconutil -c icns src-tauri/icons/icon.iconset -o src-tauri/icons/icon.icns
+          rm -rf src-tauri/icons/icon.iconset
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
