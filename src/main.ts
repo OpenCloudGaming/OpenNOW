@@ -1160,13 +1160,13 @@ function createStreamingContainer(gameName: string): HTMLElement {
           <button class="stream-btn stream-btn-danger" id="stream-exit-btn" title="Exit">✕</button>
         </div>
       </div>
-      <div class="stream-stats" id="stream-stats">
-        <span id="stats-fps">-- FPS</span>
-        <span id="stats-latency">-- ms</span>
-        <span id="stats-resolution">----x----</span>
-        <span id="stats-codec">----</span>
-        <span id="stats-bitrate">-- Mbps</span>
-      </div>
+    </div>
+    <div class="stream-stats" id="stream-stats">
+      <span id="stats-fps">-- FPS</span>
+      <span id="stats-latency">-- ms</span>
+      <span id="stats-resolution">----x----</span>
+      <span id="stats-codec">----</span>
+      <span id="stats-bitrate">-- Mbps</span>
     </div>
     <div class="stream-settings-panel" id="stream-settings-panel">
       <div class="settings-panel-header">
@@ -1298,6 +1298,13 @@ function createStreamingContainer(gameName: string): HTMLElement {
       background: rgba(0,0,0,0.5);
       padding: 5px 10px;
       border-radius: 4px;
+      z-index: 10003;
+    }
+    #streaming-container:fullscreen .stream-stats,
+    #streaming-container:-webkit-full-screen .stream-stats {
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
     }
     .stream-stats span {
       font-family: monospace;
