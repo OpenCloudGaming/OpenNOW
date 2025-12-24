@@ -1,0 +1,125 @@
+name: Auto Build and Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest release version
+        id: get_version
+        shell: bash
+        run: |
+          # Get the latest release tag, default to v0.0.1 if none exists
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.1")
+          echo "Latest tag: $LATEST_TAG"
+
+          # Extract version numbers (remove 'v' prefix and any suffix like '-dev')
+          VERSION=$(echo $LATEST_TAG | sed 's/^v//' | sed 's/-.*$//')
+
+          # Split into major, minor, patch
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f2)
+          PATCH=$(echo $VERSION | cut -d. -f3)
+
+          # Default to 0.0.1 if parsing fails
+          MAJOR=${MAJOR:-0}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-1}
+
+          # Increment patch version
+          NEW_PATCH=$((PATCH + 1))
+
+          # Ensure we start from at least v0.0.2
+          if [ "$MAJOR" -eq 0 ] && [ "$MINOR" -eq 0 ] && [ "$NEW_PATCH" -lt 2 ]; then
+            NEW_PATCH=2
+          fi
+
+          NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+          echo "New version: $NEW_VERSION"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "version_number=${MAJOR}.${MINOR}.${NEW_PATCH}" >> $GITHUB_OUTPUT
+
+      - name: Update version in package.json
+        shell: bash
+        run: |
+          VERSION="${{ steps.get_version.outputs.version_number }}"
+          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" package.json
+
+      - name: Update version in tauri.conf.json
+        shell: bash
+        run: |
+          VERSION="${{ steps.get_version.outputs.version_number }}"
+          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
+
+      - name: Update version in Cargo.toml
+        shell: bash
+        run: |
+          VERSION="${{ steps.get_version.outputs.version_number }}"
+          sed -i "s/^version = \"[^\"]*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ steps.get_version.outputs.version }}
+          releaseName: 'GFN Client ${{ steps.get_version.outputs.version }}'
+          releaseBody: |
+            ## GFN Client ${{ steps.get_version.outputs.version }}
+
+            This is an automated pre-release build from the main branch.
+
+            ### Downloads
+            - **Windows**: Download the `.msi` installer or `.exe` setup file below
+
+            ### Changes
+            See commit history for changes since last release.
+
+            ---
+
+            > **Note**: This is a pre-release build and may contain bugs.
+          releaseDraft: false
+          prerelease: true
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfn-client-${{ steps.get_version.outputs.version }}
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+          retention-days: 30
