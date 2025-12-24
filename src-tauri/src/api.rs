@@ -94,6 +94,12 @@ const CLOUDMATCH_URL: &str = "https://prod.cloudmatchbeta.nvidiagrid.net/v2";
 /// GFN client version
 const GFN_CLIENT_VERSION: &str = "2.0.80.173";
 
+/// MES (Membership/Subscription) API URL
+const MES_URL: &str = "https://mes.geforcenow.com/v4/subscriptions";
+
+/// GFN CEF User-Agent (native client)
+const GFN_CEF_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
+
 /// Persisted query hash for panels (MAIN, LIBRARY, etc.)
 const PANELS_QUERY_HASH: &str = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
 /// Persisted query hash for static app data
@@ -1099,4 +1105,74 @@ impl From<&str> for StoreType {
             other => StoreType::Other(other.to_string()),
         }
     }
+}
+
+/// Subscription info response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionInfo {
+    #[serde(rename = "membershipTier")]
+    pub membership_tier: String,
+    #[serde(rename = "remainingTimeInMinutes")]
+    pub remaining_time_minutes: Option<i32>,
+    #[serde(rename = "totalTimeInMinutes")]
+    pub total_time_minutes: Option<i32>,
+    #[serde(rename = "renewalDateTime")]
+    pub renewal_date: Option<String>,
+    #[serde(rename = "type")]
+    pub subscription_type: Option<String>,
+    #[serde(rename = "subType")]
+    pub sub_type: Option<String>,
+}
+
+/// Fetch subscription/membership info from MES API
+#[command]
+pub async fn fetch_subscription(
+    access_token: String,
+    user_id: String,
+    vpc_id: Option<String>,
+) -> Result<SubscriptionInfo, String> {
+    let client = Client::builder()
+        .user_agent(GFN_CEF_USER_AGENT)
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let vpc = vpc_id.as_deref().unwrap_or("NP-AMS-05");
+
+    let url = format!(
+        "{}?serviceName=gfn_pc&languageCode=en_US&vpcId={}&userId={}",
+        MES_URL, vpc, user_id
+    );
+
+    log::info!("Fetching subscription from: {}", url);
+
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("GFNJWT {}", access_token))
+        .header("Accept", "application/json, text/plain, */*")
+        .header("nv-client-id", LCARS_CLIENT_ID)
+        .header("nv-client-type", "NATIVE")
+        .header("nv-client-version", GFN_CLIENT_VERSION)
+        .header("nv-client-streamer", "NVIDIA-CLASSIC")
+        .header("nv-device-os", "WINDOWS")
+        .header("nv-device-type", "DESKTOP")
+        .header("nv-device-make", "UNKNOWN")
+        .header("nv-device-model", "UNKNOWN")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch subscription: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Subscription API failed with status {}: {}", status, body));
+    }
+
+    let subscription: SubscriptionInfo = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse subscription response: {}", e))?;
+
+    log::info!("Subscription tier: {}", subscription.membership_tier);
+
+    Ok(subscription)
 }

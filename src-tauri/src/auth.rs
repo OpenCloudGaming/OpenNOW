@@ -68,12 +68,11 @@ struct JarvisUserInfo {
 /// The official GFN client uses static-login.nvidia.com which redirects to the proper OAuth flow
 #[allow(dead_code)]
 const STARFLEET_AUTH_URL: &str = "https://static-login.nvidia.com/service/gfn/login-start";
-// UAS server endpoint (from GFN client config)
-const UAS_TOKEN_URL: &str = "https://uas.geforcenow.com/v1/oauth2/token";
-// Primary token endpoint
-const STARFLEET_TOKEN_URL: &str = "https://api.gdn.nvidia.com/v2/token";
-// Fallback token endpoint
-const STARFLEET_TOKEN_URL_ALT: &str = "https://login.nvidia.com/oauth/token";
+
+// Token endpoint - discovered from Burp Suite capture of official client
+// The official client POSTs to https://login.nvidia.com/token (NOT /oauth/token!)
+const STARFLEET_TOKEN_URL: &str = "https://login.nvidia.com/token";
+
 const LOGOUT_URL: &str = "https://static-login.nvidia.com/service/gfn/logout-start";
 
 /// Starfleet Client ID from GFN client - this is for the public NVIDIA login
@@ -86,15 +85,23 @@ const OAUTH_SCOPES: &str = "openid consent email tk_client age";
 const REDIRECT_PORTS: [u16; 5] = [2259, 6460, 7119, 8870, 9096];
 
 /// Token refresh duration: 27 days in milliseconds
+#[allow(dead_code)]
 const TOKEN_REFRESH_DURATION_MS: i64 = 2332800000;
 /// Refresh threshold: 30% of remaining lifetime
+#[allow(dead_code)]
 const REFRESH_THRESHOLD_PERCENT: f64 = 0.30;
 
-/// GFN Client User-Agent
-const GFN_USER_AGENT: &str = "NVIDIA GeForce NOW/2.0.64 (Windows; Win64; x64)";
+/// CEF Origin used by official client (required for CORS to work)
+const CEF_ORIGIN: &str = "https://nvfile";
+
+/// GFN CEF User-Agent (from Burp capture)
+const GFN_CEF_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
 
 /// IDP ID for NVIDIA identity provider
 const IDP_ID: &str = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg";
+
+/// Userinfo endpoint (from Burp capture - used when id_token is not available)
+const USERINFO_URL: &str = "https://login.nvidia.com/userinfo";
 
 /// Get or generate a stable device ID (SHA256 hash)
 fn get_device_id() -> String {
@@ -140,9 +147,6 @@ fn generate_stable_device_id() -> String {
     let result = hasher.finalize();
     hex::encode(result)
 }
-
-/// Origin header for OAuth requests
-const GFN_ORIGIN: &str = "https://play.geforcenow.com";
 
 /// Find an available port from the allowed redirect ports
 fn find_available_port() -> Option<u16> {
@@ -198,9 +202,31 @@ fn generate_code_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(hash)
 }
 
-/// Generate a nonce for OpenID Connect
+/// Generate a nonce for OpenID Connect (UUID format like official client)
 fn generate_nonce() -> String {
-    generate_random_string(32)
+    // Generate UUID-like format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    let mut hasher = Sha256::new();
+    hasher.update(timestamp.to_le_bytes());
+    hasher.update(std::process::id().to_le_bytes());
+    hasher.update(b"nonce");
+    let hash = hasher.finalize();
+
+    // Format as UUID
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        u32::from_le_bytes([hash[0], hash[1], hash[2], hash[3]]),
+        u16::from_le_bytes([hash[4], hash[5]]),
+        u16::from_le_bytes([hash[6], hash[7]]),
+        u16::from_le_bytes([hash[8], hash[9]]),
+        u64::from_le_bytes([hash[10], hash[11], hash[12], hash[13], hash[14], hash[15], 0, 0]) & 0xffffffffffff
+    )
 }
 
 /// Global auth state storage
@@ -423,8 +449,14 @@ pub async fn login() -> Result<AuthState, String> {
 pub async fn set_access_token(token: String) -> Result<AuthState, String> {
     log::info!("Setting access token manually");
 
-    // Try to get user info with this token to validate it
-    let user = get_user_info(&token).await?;
+    // Try to get user info - first try JWT decode, then /userinfo endpoint
+    let user = match decode_jwt_user_info(&token) {
+        Ok(user) => user,
+        Err(_) => {
+            log::info!("Token is not a JWT, trying /userinfo endpoint...");
+            fetch_userinfo(&token).await?
+        }
+    };
 
     let auth_state = AuthState {
         is_authenticated: true,
@@ -452,6 +484,7 @@ pub async fn set_access_token(token: String) -> Result<AuthState, String> {
 }
 
 /// Get the current access token if authenticated
+/// Note: For GFN API calls, use get_gfn_jwt() instead which returns the id_token
 #[command]
 pub async fn get_access_token() -> Result<String, String> {
     let storage = get_auth_storage();
@@ -463,19 +496,170 @@ pub async fn get_access_token() -> Result<String, String> {
         .ok_or_else(|| "Not authenticated - please login first".to_string())
 }
 
-/// NVIDIA OAuth login flow with localhost callback (same as official client)
+/// Get the GFN JWT token for API calls (this is the id_token, which is a JWT)
+/// The GFN API (games.geforce.com) expects a JWT with the GFNJWT auth scheme
+#[command]
+pub async fn get_gfn_jwt() -> Result<String, String> {
+    let storage = get_auth_storage();
+    let guard = storage.lock().await;
+
+    guard.as_ref()
+        .and_then(|state| state.tokens.as_ref())
+        .and_then(|tokens| tokens.id_token.clone())
+        .ok_or_else(|| "Not authenticated or no JWT token available - please login first".to_string())
+}
+
+/// OAuth callback result - can be either authorization code or implicit token
+enum OAuthCallbackResult {
+    Code(String),
+    Token { access_token: String, expires_in: Option<i64>, id_token: Option<String> },
+}
+
+/// Extract OAuth callback data - handles both code and token responses
+fn extract_oauth_callback(request: &str) -> Option<OAuthCallbackResult> {
+    // Parse the GET request line
+    let first_line = request.lines().next()?;
+    let path = first_line.split_whitespace().nth(1)?;
+
+    // The token might be in a URL fragment (#) which browsers don't send to server
+    // So we serve an HTML page that extracts it and posts it back
+
+    // Check for query string
+    let query_start = match path.find('?') {
+        Some(pos) => pos,
+        None => return None,
+    };
+
+    let query = &path[query_start + 1..];
+    let params = parse_query_string(query);
+
+    log::debug!("Parsing OAuth callback, path: {}, params: {:?}", path, params.keys().collect::<Vec<_>>());
+
+    // Check for error response first
+    if let Some(error) = params.get("error") {
+        log::error!("OAuth error: {}", error);
+        if let Some(desc) = params.get("error_description") {
+            log::error!("Error description: {}", desc);
+        }
+        return None;
+    }
+
+    // Check for implicit token first (from our /callback redirect)
+    // This is higher priority since implicit flow should return token directly
+    if let Some(token) = params.get("access_token") {
+        log::info!("Found access_token in callback params");
+        let expires_in = params.get("expires_in").and_then(|s| s.parse().ok());
+        let id_token = params.get("id_token").cloned();
+        return Some(OAuthCallbackResult::Token {
+            access_token: token.clone(),
+            expires_in,
+            id_token,
+        });
+    }
+
+    // Check for authorization code (fallback if NVIDIA returns code instead of token)
+    if let Some(code) = params.get("code") {
+        log::info!("Found authorization code in callback params");
+        return Some(OAuthCallbackResult::Code(code.clone()));
+    }
+
+    None
+}
+
+/// HTML page that captures token from URL fragment and redirects
+const TOKEN_CAPTURE_HTML: &str = r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>Processing Login...</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            text-align: center;
+            padding: 40px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 16px;
+            backdrop-filter: blur(10px);
+        }
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(118, 185, 0, 0.3);
+            border-top-color: #76b900;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        h1 { color: #76b900; margin-bottom: 10px; }
+        p { color: #aaa; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="spinner"></div>
+        <h1>Processing Login...</h1>
+        <p>Please wait while we complete authentication.</p>
+    </div>
+    <script>
+        // Extract token from URL fragment (hash)
+        const hash = window.location.hash.substring(1);
+        if (hash) {
+            // Redirect to same URL but with token in query string so server can read it
+            const params = new URLSearchParams(hash);
+            const accessToken = params.get('access_token');
+            const idToken = params.get('id_token');
+            const expiresIn = params.get('expires_in');
+
+            if (accessToken) {
+                // Redirect to callback with token in query params
+                const redirectUrl = window.location.origin + '/callback?' +
+                    'access_token=' + encodeURIComponent(accessToken) +
+                    (idToken ? '&id_token=' + encodeURIComponent(idToken) : '') +
+                    (expiresIn ? '&expires_in=' + encodeURIComponent(expiresIn) : '');
+                window.location.replace(redirectUrl);
+            }
+        } else if (window.location.search) {
+            // Already have query params, show success
+            document.querySelector('.spinner').style.display = 'none';
+            document.querySelector('h1').textContent = 'Login Successful!';
+            document.querySelector('h1').style.color = '#76b900';
+            document.querySelector('p').textContent = 'You can close this window.';
+            setTimeout(() => window.close(), 2000);
+        }
+    </script>
+</body>
+</html>"#;
+
+/// NVIDIA OAuth login flow with localhost callback
+/// Uses authorization code flow with PKCE (same as official GFN client)
 #[command]
 pub async fn login_oauth() -> Result<AuthState, String> {
-    log::info!("Starting NVIDIA OAuth login flow (Authorization Code Flow with PKCE)");
+    log::info!("=== Starting NVIDIA OAuth login flow (Authorization Code + PKCE) ===");
 
     // Find an available redirect port
+    log::info!("Finding available port from: {:?}", REDIRECT_PORTS);
     let port = find_available_port()
-        .ok_or_else(|| "No available ports for OAuth callback".to_string())?;
+        .ok_or_else(|| {
+            log::error!("No available ports found!");
+            "No available ports for OAuth callback. Ports 2259, 6460, 7119, 8870, 9096 are all in use.".to_string()
+        })?;
+    log::info!("Found available port: {}", port);
 
     let redirect_uri = format!("http://localhost:{}", port);
     let nonce = generate_nonce();
 
-    // Generate PKCE code verifier and challenge
+    // Generate PKCE code verifier and challenge (required by NVIDIA OAuth)
     let code_verifier = generate_code_verifier();
     let code_challenge = generate_code_challenge(&code_verifier);
 
@@ -483,21 +667,10 @@ pub async fn login_oauth() -> Result<AuthState, String> {
     let device_id = get_device_id();
     log::info!("Using device_id: {}", device_id);
 
-    // Build OAuth authorization URL matching official GFN client format
-    // Format: https://login.nvidia.com/authorize?response_type=code&device_id=...
+    // Build OAuth authorization URL using authorization code flow with PKCE
+    // This matches the official GFN client format exactly
     let auth_url = format!(
-        "https://login.nvidia.com/authorize?\
-        response_type=code&\
-        device_id={}&\
-        scope={}&\
-        client_id={}&\
-        redirect_uri={}&\
-        ui_locales=en_US&\
-        nonce={}&\
-        prompt=select_account&\
-        code_challenge={}&\
-        code_challenge_method=S256&\
-        idp_id={}",
+        "https://login.nvidia.com/authorize?response_type=code&device_id={}&scope={}&client_id={}&redirect_uri={}&ui_locales=en_US&nonce={}&prompt=select_account&code_challenge={}&code_challenge_method=S256&idp_id={}",
         device_id,
         urlencoding::encode(OAUTH_SCOPES),
         STARFLEET_CLIENT_ID,
@@ -509,28 +682,44 @@ pub async fn login_oauth() -> Result<AuthState, String> {
 
     log::info!("OAuth URL: {}", auth_url);
 
+    // Start TCP listener FIRST so it's ready when browser redirects back
     log::info!("Starting OAuth callback server on port {}", port);
-
-    // Start TCP listener for OAuth callback
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
         .await
-        .map_err(|e| format!("Failed to start callback server: {}", e))?;
+        .map_err(|e| {
+            log::error!("Failed to bind to port {}: {}", port, e);
+            format!("Failed to start callback server on port {}: {}", port, e)
+        })?;
+    log::info!("Callback server listening on port {}", port);
 
     // Open browser with auth URL
-    log::info!("Opening browser for authentication");
-    if let Err(e) = open::that(&auth_url) {
-        log::warn!("Failed to open browser automatically: {}. Please open: {}", e, auth_url);
+    log::info!("Opening browser for authentication...");
+    log::info!("Full OAuth URL: {}", auth_url);
+
+    // Use open crate which handles URL escaping properly on all platforms
+    match open::that(&auth_url) {
+        Ok(_) => log::info!("Browser opened successfully"),
+        Err(e) => {
+            log::error!("Failed to open browser: {}", e);
+            return Err(format!("Failed to open browser: {}. Please open manually: {}", e, auth_url));
+        }
     }
+
+    log::info!("Waiting for OAuth callback...");
+
+    // Clone values needed inside the async block
+    let redirect_uri_clone = redirect_uri.clone();
+    let code_verifier_clone = code_verifier.clone();
 
     // Wait for callback (with 5 minute timeout)
     let callback_result = tokio::time::timeout(
         std::time::Duration::from_secs(300),
-        async {
+        async move {
             loop {
                 let (mut socket, _) = listener.accept().await
                     .map_err(|e| format!("Failed to accept connection: {}", e))?;
 
-                let mut buffer = vec![0u8; 4096];
+                let mut buffer = vec![0u8; 8192];
                 let n = socket.read(&mut buffer).await
                     .map_err(|e| format!("Failed to read request: {}", e))?;
 
@@ -538,42 +727,87 @@ pub async fn login_oauth() -> Result<AuthState, String> {
                 log::debug!("Received callback request: {}", &request[..request.len().min(200)]);
 
                 // Check if this is a valid OAuth callback with authorization code
-                if let Some(code) = extract_auth_code(&request) {
-                    log::info!("Received authorization code");
+                if let Some(result) = extract_oauth_callback(&request) {
+                    match result {
+                        OAuthCallbackResult::Token { access_token, expires_in, id_token } => {
+                            log::info!("Received access token directly");
 
-                    // Send success response
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
-                        SUCCESS_HTML.len(),
-                        SUCCESS_HTML
-                    );
-                    let _ = socket.write_all(response.as_bytes()).await;
+                            // Send success response
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+                                SUCCESS_HTML.len(),
+                                SUCCESS_HTML
+                            );
+                            let _ = socket.write_all(response.as_bytes()).await;
 
-                    return Ok::<String, String>(code);
+                            let expires_at = Utc::now() + chrono::Duration::seconds(expires_in.unwrap_or(86400));
+                            return Ok::<Tokens, String>(Tokens {
+                                access_token,
+                                refresh_token: None,
+                                id_token,
+                                expires_at,
+                            });
+                        }
+                        OAuthCallbackResult::Code(code) => {
+                            log::info!("Received authorization code, attempting token exchange with PKCE verifier");
+
+                            // Try token exchange with the PKCE code_verifier
+                            match exchange_code(&code, &redirect_uri_clone, &code_verifier_clone).await {
+                                Ok(tokens) => {
+                                    let response = format!(
+                                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+                                        SUCCESS_HTML.len(),
+                                        SUCCESS_HTML
+                                    );
+                                    let _ = socket.write_all(response.as_bytes()).await;
+                                    return Ok(tokens);
+                                }
+                                Err(e) => {
+                                    log::error!("Token exchange failed: {}", e);
+                                    let response = format!(
+                                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+                                        ERROR_HTML.len(),
+                                        ERROR_HTML
+                                    );
+                                    let _ = socket.write_all(response.as_bytes()).await;
+                                    return Err(format!("Token exchange failed: {}. Please use manual token entry.", e));
+                                }
+                            }
+                        }
+                    }
                 }
 
-                // Handle favicon and other requests
-                let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-                let _ = socket.write_all(response.as_bytes()).await;
+                // Handle favicon and other requests - just return 200 for the main page
+                let first_line = request.lines().next().unwrap_or("");
+                let path = first_line.split_whitespace().nth(1).unwrap_or("");
+
+                if path == "/favicon.ico" {
+                    let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                    let _ = socket.write_all(response.as_bytes()).await;
+                } else {
+                    // For any other request, return a simple waiting page
+                    let waiting_html = r#"<!DOCTYPE html><html><head><title>Processing...</title></head><body style="background:#1a1a2e;color:#fff;display:flex;justify-content:center;align-items:center;height:100vh;font-family:sans-serif;"><h1>Processing login...</h1></body></html>"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+                        waiting_html.len(),
+                        waiting_html
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
             }
         }
     ).await;
 
-    let code = match callback_result {
-        Ok(Ok(code)) => code,
+    let tokens = match callback_result {
+        Ok(Ok(tokens)) => tokens,
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err("Login timeout - please try again".to_string()),
     };
 
-    log::info!("Received authorization code, exchanging for tokens");
-
-    // Exchange code for tokens (include code_verifier for PKCE)
-    let tokens = exchange_code(&code, &redirect_uri, &code_verifier).await?;
-
     log::info!("Tokens received, fetching user info");
 
-    // Get user info
-    let user = get_user_info(&tokens.access_token).await?;
+    // Get user info from tokens (prefer id_token which is JWT, fallback to /userinfo endpoint)
+    let user = get_user_info_from_tokens(&tokens).await?;
 
     let auth_state = AuthState {
         is_authenticated: true,
@@ -588,77 +822,85 @@ pub async fn login_oauth() -> Result<AuthState, String> {
         *guard = Some(auth_state.clone());
     }
 
+    // Persist to file
+    save_auth_to_file(&auth_state);
+
     log::info!("Login successful");
     Ok(auth_state)
 }
 
 /// Exchange authorization code for tokens (with PKCE code_verifier)
+/// Uses exact same request format as official GFN client (captured via Burp Suite)
 async fn exchange_code(code: &str, redirect_uri: &str, code_verifier: &str) -> Result<Tokens, String> {
+    log::info!("Exchanging authorization code for tokens...");
+    log::info!("Token endpoint: {}", STARFLEET_TOKEN_URL);
+    log::info!("Redirect URI: {}", redirect_uri);
+
     let client = Client::builder()
-        .user_agent(GFN_USER_AGENT)
+        .user_agent(GFN_CEF_USER_AGENT)
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
+    // NOTE: Official client does NOT include client_id in token request!
+    // Only: grant_type, code, redirect_uri, code_verifier
     let params = [
         ("grant_type", "authorization_code"),
         ("code", code),
-        ("client_id", STARFLEET_CLIENT_ID),
         ("redirect_uri", redirect_uri),
         ("code_verifier", code_verifier),
     ];
 
-    // Try multiple endpoints - UAS first, then others
-    let endpoints = [UAS_TOKEN_URL, STARFLEET_TOKEN_URL, STARFLEET_TOKEN_URL_ALT];
-    let mut last_error = String::new();
+    log::info!("Sending token exchange request...");
 
-    for endpoint in endpoints {
-        log::info!("Trying token exchange with endpoint: {}", endpoint);
+    let response = client
+        .post(STARFLEET_TOKEN_URL)
+        .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+        .header("Origin", CEF_ORIGIN)
+        .header("Referer", format!("{}/", CEF_ORIGIN))
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Sec-Fetch-Site", "cross-site")
+        .header("Sec-Fetch-Mode", "cors")
+        .header("Sec-Fetch-Dest", "empty")
+        .form(&params)
+        .send()
+        .await;
 
-        let response = client
-            .post(endpoint)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .header("Origin", "https://play.geforcenow.com")
-            .header("Referer", "https://play.geforcenow.com/")
-            .header("Accept", "application/json")
-            .form(&params)
-            .send()
-            .await;
+    match response {
+        Ok(resp) => {
+            let status = resp.status();
+            log::info!("Token exchange response status: {}", status);
 
-        match response {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    let token_response: StarfleetTokenResponse = resp
-                        .json()
-                        .await
-                        .map_err(|e| format!("Failed to parse token response: {}", e))?;
+            if status.is_success() {
+                let token_response: StarfleetTokenResponse = resp
+                    .json()
+                    .await
+                    .map_err(|e| format!("Failed to parse token response: {}", e))?;
 
-                    let expires_at = Utc::now() + chrono::Duration::seconds(token_response.expires_in);
+                let expires_at = Utc::now() + chrono::Duration::seconds(token_response.expires_in);
 
-                    log::info!("Token exchange successful with endpoint: {}", endpoint);
-                    return Ok(Tokens {
-                        access_token: token_response.access_token,
-                        refresh_token: token_response.refresh_token,
-                        id_token: token_response.id_token,
-                        expires_at,
-                    });
-                } else {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    last_error = format!("Token exchange failed with status {}: {}", status, body);
-                    log::warn!("Endpoint {} failed: {}", endpoint, last_error);
-                }
-            }
-            Err(e) => {
-                last_error = format!("Token exchange request failed: {}", e);
-                log::warn!("Endpoint {} error: {}", endpoint, last_error);
+                log::info!("Token exchange successful! Token expires in {} seconds", token_response.expires_in);
+                return Ok(Tokens {
+                    access_token: token_response.access_token,
+                    refresh_token: token_response.refresh_token,
+                    id_token: token_response.id_token,
+                    expires_at,
+                });
+            } else {
+                let body = resp.text().await.unwrap_or_default();
+                let error_msg = format!("Token exchange failed with status {}: {}", status, body);
+                log::error!("{}", error_msg);
+                return Err(error_msg);
             }
         }
+        Err(e) => {
+            let error_msg = format!("Token exchange request failed: {}", e);
+            log::error!("{}", error_msg);
+            return Err(error_msg);
+        }
     }
-
-    Err(last_error)
 }
 
-/// JWT payload structure (decoded from access token)
+/// JWT payload structure (decoded from id_token)
 #[derive(Debug, Deserialize)]
 struct JwtPayload {
     sub: String,
@@ -672,7 +914,142 @@ struct JwtPayload {
     picture: Option<String>,
 }
 
-/// Get user info by decoding the JWT token
+/// Userinfo endpoint response (from /userinfo API call)
+#[derive(Debug, Deserialize)]
+struct UserinfoResponse {
+    sub: String,
+    preferred_username: Option<String>,
+    email: Option<String>,
+    email_verified: Option<bool>,
+    picture: Option<String>,
+}
+
+/// Get user info from tokens - prefer id_token (JWT), fallback to /userinfo endpoint
+/// NVIDIA's access_token is NOT a JWT, but id_token is
+async fn get_user_info_from_tokens(tokens: &Tokens) -> Result<User, String> {
+    // First try to decode id_token if available (it's a JWT)
+    if let Some(id_token) = &tokens.id_token {
+        log::info!("Attempting to decode id_token as JWT...");
+        match decode_jwt_user_info(id_token) {
+            Ok(user) => {
+                log::info!("Successfully decoded user info from id_token");
+                return Ok(user);
+            }
+            Err(e) => {
+                log::warn!("Failed to decode id_token: {}, falling back to /userinfo endpoint", e);
+            }
+        }
+    } else {
+        log::info!("No id_token available, will call /userinfo endpoint");
+    }
+
+    // Fallback: call /userinfo endpoint with access_token as Bearer
+    log::info!("Fetching user info from /userinfo endpoint...");
+    fetch_userinfo(&tokens.access_token).await
+}
+
+/// Fetch user info from NVIDIA's /userinfo endpoint
+async fn fetch_userinfo(access_token: &str) -> Result<User, String> {
+    let client = Client::builder()
+        .user_agent(GFN_CEF_USER_AGENT)
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let response = client
+        .get(USERINFO_URL)
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Origin", CEF_ORIGIN)
+        .header("Referer", format!("{}/", CEF_ORIGIN))
+        .header("Accept", "application/json, text/plain, */*")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch userinfo: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Userinfo request failed with status {}: {}", status, body));
+    }
+
+    let userinfo: UserinfoResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse userinfo response: {}", e))?;
+
+    log::info!("Userinfo response: user_id={}, username={:?}", userinfo.sub, userinfo.preferred_username);
+
+    // Convert to User struct
+    let display_name = userinfo.preferred_username
+        .or_else(|| userinfo.email.as_ref().map(|e| e.split('@').next().unwrap_or("User").to_string()))
+        .unwrap_or_else(|| "User".to_string());
+
+    Ok(User {
+        user_id: userinfo.sub,
+        display_name,
+        email: userinfo.email,
+        avatar_url: userinfo.picture,
+        membership_tier: MembershipTier::Free, // /userinfo doesn't return tier, default to Free
+    })
+}
+
+/// Decode JWT and extract user info (used for id_token)
+fn decode_jwt_user_info(token: &str) -> Result<User, String> {
+    // JWT format: header.payload.signature
+    let parts: Vec<&str> = token.split('.').collect();
+
+    if parts.len() != 3 {
+        return Err("Invalid JWT token format".to_string());
+    }
+
+    // Decode the payload (second part)
+    let payload_b64 = parts[1];
+
+    // Add padding if needed for base64 decoding
+    let padded = match payload_b64.len() % 4 {
+        2 => format!("{}==", payload_b64),
+        3 => format!("{}=", payload_b64),
+        _ => payload_b64.to_string(),
+    };
+
+    // Use URL-safe base64 decoding (JWT uses URL-safe base64)
+    let payload_bytes = URL_SAFE_NO_PAD.decode(&padded)
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&padded))
+        .map_err(|e| format!("Failed to decode JWT payload: {}", e))?;
+
+    let payload_str = String::from_utf8(payload_bytes)
+        .map_err(|e| format!("Invalid UTF-8 in JWT payload: {}", e))?;
+
+    let payload: JwtPayload = serde_json::from_str(&payload_str)
+        .map_err(|e| format!("Failed to parse JWT payload: {}", e))?;
+
+    // Check if token is expired
+    let now = Utc::now().timestamp();
+    if payload.exp > 0 && payload.exp < now {
+        return Err("Token has expired".to_string());
+    }
+
+    // Parse membership tier from JWT claims
+    let membership_tier = match payload.gfn_tier.as_deref() {
+        Some("PRIORITY") | Some("priority") => MembershipTier::Priority,
+        Some("ULTIMATE") | Some("ultimate") => MembershipTier::Ultimate,
+        _ => MembershipTier::Free,
+    };
+
+    // Extract display name from email or preferred_username
+    let display_name = payload.preferred_username
+        .or_else(|| payload.email.as_ref().map(|e| e.split('@').next().unwrap_or("User").to_string()))
+        .unwrap_or_else(|| "User".to_string());
+
+    Ok(User {
+        user_id: payload.sub,
+        display_name,
+        email: payload.email,
+        avatar_url: payload.picture,
+        membership_tier,
+    })
+}
+
+/// Get user info by decoding the JWT token (legacy - used by set_access_token)
 /// The JWT contains user info in its payload, no API call needed
 async fn get_user_info(access_token: &str) -> Result<User, String> {
     // JWT format: header.payload.signature
@@ -828,10 +1205,11 @@ pub fn should_refresh_token(tokens: &Tokens) -> bool {
 #[command]
 pub async fn refresh_token(refresh_token: String) -> Result<Tokens, String> {
     let client = Client::builder()
-        .user_agent(GFN_USER_AGENT)
+        .user_agent(GFN_CEF_USER_AGENT)
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
+    // Refresh token request - may need client_id, keeping for now
     let params = [
         ("grant_type", "refresh_token"),
         ("refresh_token", &refresh_token),
@@ -840,9 +1218,10 @@ pub async fn refresh_token(refresh_token: String) -> Result<Tokens, String> {
 
     let response = client
         .post(STARFLEET_TOKEN_URL)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("Origin", GFN_ORIGIN)
-        .header("Referer", "https://play.geforcenow.com/")
+        .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+        .header("Origin", CEF_ORIGIN)
+        .header("Referer", format!("{}/", CEF_ORIGIN))
+        .header("Accept", "application/json, text/plain, */*")
         .form(&params)
         .send()
         .await

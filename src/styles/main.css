@@ -168,10 +168,50 @@ body {
   cursor: pointer;
 }
 
-.avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
+.user-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+#user-name {
+  font-weight: 500;
+}
+
+.user-tier {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.tier-free {
+  background: #4a4a4a;
+  color: #ccc;
+}
+
+.tier-priority {
+  background: linear-gradient(135deg, #1e88e5, #1565c0);
+  color: #fff;
+}
+
+.tier-ultimate {
+  background: linear-gradient(135deg, #76b900, #5a8f00);
+  color: #fff;
+}
+
+.tier-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-time {
+  font-size: 11px;
+  color: #888;
+  font-weight: 500;
 }
 
 /* Main Content */
