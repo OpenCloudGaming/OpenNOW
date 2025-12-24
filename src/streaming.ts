@@ -464,7 +464,7 @@ async function connectGfnBrowserSignaling(
 
               // Handle the SDP offer and create answer
               // This runs async - WebSocket may close during this, that's expected
-              handleGfnSdpOffer(innerMsg.sdp, ws, config, serverIp)
+              handleGfnSdpOffer(innerMsg.sdp, ws, config, serverIp, requestedWidth, requestedHeight)
                 .then(() => {
                   console.log("SDP offer handled successfully");
                   resolve();
@@ -540,7 +540,9 @@ async function handleGfnSdpOffer(
   serverSdp: string,
   ws: WebSocket,
   config: WebRtcConfig,
-  _serverIp: string  // Kept for potential future use (no longer used for ICE)
+  _serverIp: string,  // Kept for potential future use (no longer used for ICE)
+  requestedWidth: number,
+  requestedHeight: number
 ): Promise<void> {
   console.log("Setting up WebRTC with GFN SDP offer");
   console.log("SDP offer preview:", serverSdp.substring(0, 500));
