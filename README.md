@@ -8,6 +8,8 @@ A custom GeForce NOW client built with Tauri (Rust + TypeScript) that unlocks pr
 
 **[Watch Demo on YouTube](https://www.youtube.com/watch?v=bF84_CKopPQ)**
 
+*Settings: 1080p @ 240fps, H.264 codec*
+
 ---
 
 ## Features
