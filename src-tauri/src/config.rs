@@ -21,6 +21,8 @@ pub struct Settings {
     pub region: Option<String>,
     /// Enable Discord Rich Presence
     pub discord_rpc: bool,
+    /// Show stats (resolution, fps, ms) in Discord presence
+    pub discord_show_stats: Option<bool>,
     /// Custom proxy URL
     pub proxy: Option<String>,
     /// Disable telemetry
@@ -66,6 +68,7 @@ impl Default for Settings {
             max_bitrate_mbps: 200, // 200 = unlimited
             region: None,
             discord_rpc: false,
+            discord_show_stats: Some(false),
             proxy: None,
             disable_telemetry: true,
             start_minimized: false,
