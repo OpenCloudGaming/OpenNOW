@@ -72,11 +72,12 @@ jobs:
             git log --pretty=format:"- %s (%h)" --no-merges | head -50 > commits.txt
           fi
 
-          # Output commits for next step
+          # Output commits for next step (use unique delimiter)
+          DELIMITER="COMMITS_END_$(date +%s)"
           {
-            echo 'commits<<EOF'
+            echo "commits<<${DELIMITER}"
             cat commits.txt
-            echo 'EOF'
+            echo "${DELIMITER}"
           } >> $GITHUB_OUTPUT
 
       - name: Generate AI release notes
@@ -118,11 +119,12 @@ jobs:
           # Save to file for multi-line output
           echo "$NOTES" > release_notes.md
 
-          # Use heredoc for multiline output
+          # Use unique delimiter for multiline output
+          DELIMITER="NOTES_END_$(date +%s)"
           {
-            echo 'release_notes<<EOF'
+            echo "release_notes<<${DELIMITER}"
             cat release_notes.md
-            echo 'EOF'
+            echo "${DELIMITER}"
           } >> $GITHUB_OUTPUT
 
   # Second job: Build on all platforms
