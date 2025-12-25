@@ -165,23 +165,20 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ needs.get-version.outputs.version }}
-          releaseName: 'GFN Client ${{ needs.get-version.outputs.version }}'
+          releaseName: 'OpenNOW ${{ needs.get-version.outputs.version }}'
           releaseBody: |
-            ## GFN Client ${{ needs.get-version.outputs.version }}
+            ## OpenNOW ${{ needs.get-version.outputs.version }}
 
-            This is an automated pre-release build from the main branch.
+            Open source GeForce NOW client.
 
             ### Downloads
-            - **Windows**: `.msi` installer, `.exe` setup, or `gfn-client.exe` (portable)
+            - **Windows**: `.msi` or `.exe` installer
             - **macOS**: `.dmg` disk image
-            - **Linux**: `.deb` package or `.AppImage`
-
-            ### Changes
-            See commit history for changes since last release.
+            - **Linux**: `.deb` or `.AppImage`
 
             ---
 
-            > **Note**: This is a pre-release build and may contain bugs.
+            [Sponsor this project](https://github.com/sponsors/zortos293)
           releaseDraft: false
           prerelease: true
 
@@ -189,7 +186,7 @@ jobs:
         if: matrix.target == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: gfn-client-${{ needs.get-version.outputs.version }}-windows
+          name: opennow-${{ needs.get-version.outputs.version }}-windows
           path: |
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
@@ -200,7 +197,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
-          files: src-tauri/target/release/gfn-client.exe
+          files: src-tauri/target/release/opennow.exe
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -209,7 +206,7 @@ jobs:
         if: matrix.target == 'macos'
         uses: actions/upload-artifact@v4
         with:
-          name: gfn-client-${{ needs.get-version.outputs.version }}-macos
+          name: opennow-${{ needs.get-version.outputs.version }}-macos
           path: |
             src-tauri/target/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/macos/*.app
@@ -219,7 +216,7 @@ jobs:
         if: matrix.target == 'linux'
         uses: actions/upload-artifact@v4
         with:
-          name: gfn-client-${{ needs.get-version.outputs.version }}-linux
+          name: opennow-${{ needs.get-version.outputs.version }}-linux
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
