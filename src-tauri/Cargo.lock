@@ -4712,7 +4712,7 @@ dependencies = [
 
 [[package]]
 name = "opennow"
-version = "0.0.10"
+version = "0.0.12"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

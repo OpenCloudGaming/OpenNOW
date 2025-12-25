@@ -124,6 +124,8 @@ pub mod deep_link {
             StoreType::Ubisoft => format!("uplay://launch/{}", store_id),
             StoreType::Origin => format!("origin://launchgame/{}", store_id),
             StoreType::GoG => format!("goggalaxy://openGameView/{}", store_id),
+            StoreType::Xbox => format!("msxbox://game/?productId={}", store_id),
+            StoreType::EaApp => format!("origin://launchgame/{}", store_id),
             StoreType::Other(_) => format!("gfn://launch/{}", store_id),
         }
     }
@@ -136,6 +138,8 @@ pub mod deep_link {
             StoreType::Ubisoft => "UBISOFT",
             StoreType::Origin => "ORIGIN",
             StoreType::GoG => "GOG",
+            StoreType::Xbox => "XBOX",
+            StoreType::EaApp => "EA_APP",
             StoreType::Other(name) => name,
         };
 

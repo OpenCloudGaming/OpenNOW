@@ -2,6 +2,14 @@ use serde::{Deserialize, Serialize};
 use tauri::command;
 use reqwest::Client;
 
+/// Game variant (different store versions)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameVariant {
+    pub id: String,
+    pub store_type: StoreType,
+    pub supported_controls: Vec<String>,
+}
+
 /// Game information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Game {
@@ -14,6 +22,8 @@ pub struct Game {
     pub store: StoreInfo,
     pub status: GameStatus,
     pub supported_controls: Vec<String>,
+    #[serde(default)]
+    pub variants: Vec<GameVariant>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,14 +41,50 @@ pub struct StoreInfo {
     pub store_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StoreType {
     Steam,
     Epic,
     Ubisoft,
     Origin,
     GoG,
+    Xbox,
+    EaApp,
     Other(String),
+}
+
+impl Serialize for StoreType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for StoreType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(StoreType::from(s.as_str()))
+    }
+}
+
+impl std::fmt::Display for StoreType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StoreType::Steam => write!(f, "Steam"),
+            StoreType::Epic => write!(f, "Epic"),
+            StoreType::Ubisoft => write!(f, "Ubisoft"),
+            StoreType::Origin => write!(f, "Origin"),
+            StoreType::GoG => write!(f, "GOG"),
+            StoreType::Xbox => write!(f, "Xbox"),
+            StoreType::EaApp => write!(f, "EA"),
+            StoreType::Other(s) => write!(f, "{}", s),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +150,8 @@ const GFN_CEF_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Appl
 const PANELS_QUERY_HASH: &str = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
 /// Persisted query hash for static app data
 const STATIC_APP_DATA_HASH: &str = "fd555528201fe16f28011637244243e170368bc68e06b040a132a7c177c9ed2a";
+/// Persisted query hash for search
+const SEARCH_QUERY_HASH: &str = "7581d1b6e4d87013ac88e58bff8294b5a9fb4dee1aa0d98c1719dac9d8e9dcf7";
 
 /// GraphQL query for fetching game sections (featured games, categories)
 /// Based on GetGameSection query from GFN client
@@ -121,6 +169,7 @@ query GetGameSection($vpcId: String!, $locale: String!, $panelNames: [String!]!)
                         title
                         publisherName
                         images {
+                            GAME_BOX_ART
                             TV_BANNER
                             HERO_IMAGE
                             GAME_LOGO
@@ -162,6 +211,7 @@ query GetLibrary($vpcId: String!, $locale: String!, $panelNames: [String!]!) {
                         id
                         title
                         images {
+                            GAME_BOX_ART
                             TV_BANNER
                             HERO_IMAGE
                         }
@@ -349,6 +399,7 @@ fn static_game_to_game(entry: StaticGameEntry) -> Game {
         },
         status,
         supported_controls: vec!["keyboard".to_string(), "gamepad".to_string()],
+        variants: vec![],
     }
 }
 
@@ -540,6 +591,8 @@ struct LibraryApp {
 /// Image URLs from GraphQL - uses literal field names
 #[derive(Debug, Deserialize)]
 struct LibraryImages {
+    #[serde(rename = "GAME_BOX_ART")]
+    game_box_art: Option<String>,
     #[serde(rename = "TV_BANNER")]
     tv_banner: Option<String>,
     #[serde(rename = "HERO_IMAGE")]
@@ -730,9 +783,19 @@ fn library_app_to_game(app: LibraryApp) -> Game {
         .and_then(|v| v.supported_controls.clone())
         .unwrap_or_default();
 
+    // Collect all variants for store selection
+    let variants: Vec<GameVariant> = app.variants.as_ref()
+        .map(|vars| vars.iter().map(|v| GameVariant {
+            id: v.id.clone(),
+            store_type: StoreType::from(v.app_store.as_str()),
+            supported_controls: v.supported_controls.clone().unwrap_or_default(),
+        }).collect())
+        .unwrap_or_default();
+
     // Optimize image URLs (272px width for cards, webp format)
+    // Prefer GAME_BOX_ART over TV_BANNER for better quality box art
     let box_art = app.images.as_ref()
-        .and_then(|i| i.tv_banner.as_ref())
+        .and_then(|i| i.game_box_art.as_ref().or(i.tv_banner.as_ref()))
         .map(|url| optimize_image_url(url, 272));
 
     let hero = app.images.as_ref()
@@ -765,6 +828,7 @@ fn library_app_to_game(app: LibraryApp) -> Game {
         },
         status,
         supported_controls,
+        variants,
     }
 }
 
@@ -980,6 +1044,15 @@ pub async fn get_game_details(
         .and_then(|v| v.supported_controls.clone())
         .unwrap_or_default();
 
+    // Collect all variants for store selection
+    let variants: Vec<GameVariant> = app.variants.as_ref()
+        .map(|vars| vars.iter().map(|v| GameVariant {
+            id: v.id.clone(),
+            store_type: StoreType::from(v.app_store.as_str()),
+            supported_controls: v.supported_controls.clone().unwrap_or_default(),
+        }).collect())
+        .unwrap_or_default();
+
     Ok(Game {
         id: app.id,
         title: app.title,
@@ -994,6 +1067,7 @@ pub async fn get_game_details(
         },
         status,
         supported_controls,
+        variants,
     })
 }
 
@@ -1149,8 +1223,10 @@ impl From<&str> for StoreType {
             "steam" => StoreType::Steam,
             "epic" | "epicgames" => StoreType::Epic,
             "ubisoft" | "uplay" => StoreType::Ubisoft,
-            "origin" | "ea" => StoreType::Origin,
+            "origin" => StoreType::Origin,
             "gog" => StoreType::GoG,
+            "xbox" => StoreType::Xbox,
+            "ea_app" | "ea" => StoreType::EaApp,
             other => StoreType::Other(other.to_string()),
         }
     }
@@ -1224,6 +1300,30 @@ pub struct ResolutionConfig {
     pub fps: u32,
 }
 
+/// Storage addon attribute
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddonAttribute {
+    pub key: String,
+    #[serde(rename = "textValue")]
+    pub text_value: Option<String>,
+}
+
+/// Subscription addon (e.g., permanent storage)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionAddon {
+    pub uri: Option<String>,
+    pub id: String,
+    #[serde(rename = "type")]
+    pub addon_type: String,
+    #[serde(rename = "subType")]
+    pub sub_type: Option<String>,
+    #[serde(rename = "autoPayEnabled")]
+    pub auto_pay_enabled: Option<bool>,
+    #[serde(default)]
+    pub attributes: Vec<AddonAttribute>,
+    pub status: Option<String>,
+}
+
 /// Subscription info response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionInfo {
@@ -1245,6 +1345,9 @@ pub struct SubscriptionInfo {
     /// Streaming quality profiles (BALANCED, DATA_SAVER, COMPETITIVE, CINEMATIC)
     #[serde(rename = "streamingQualities", default)]
     pub streaming_qualities: Vec<StreamingQualityProfile>,
+    /// Subscription addons (e.g., permanent storage)
+    #[serde(default)]
+    pub addons: Vec<SubscriptionAddon>,
 }
 
 /// Fetch subscription/membership info from MES API
@@ -1298,4 +1401,237 @@ pub async fn fetch_subscription(
     log::info!("Subscription tier: {}", subscription.membership_tier);
 
     Ok(subscription)
+}
+
+/// Search result item from GraphQL
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchResultItem {
+    id: String,
+    title: String,
+    #[serde(default)]
+    images: Option<SearchImages>,
+    #[serde(default)]
+    variants: Option<Vec<SearchVariant>>,
+    #[serde(default)]
+    gfn: Option<SearchGfnStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchImages {
+    #[serde(rename = "GAME_BOX_ART")]
+    game_box_art: Option<String>,
+    #[serde(rename = "TV_BANNER")]
+    tv_banner: Option<String>,
+    #[serde(rename = "HERO_IMAGE")]
+    hero_image: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchVariant {
+    id: String,
+    app_store: String,
+    #[serde(default)]
+    supported_controls: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchGfnStatus {
+    #[serde(default)]
+    playability_state: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchData {
+    apps: AppsSearchResults,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppsSearchResults {
+    #[serde(default)]
+    items: Vec<SearchResultItem>,
+    #[serde(default)]
+    number_returned: i32,
+    #[serde(default)]
+    number_supported: i32,
+    page_info: Option<PageInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PageInfo {
+    has_next_page: bool,
+    end_cursor: Option<String>,
+    total_count: i32,
+}
+
+/// Search games using GraphQL persisted query
+#[command]
+pub async fn search_games_graphql(
+    query: String,
+    limit: Option<u32>,
+    access_token: Option<String>,
+    vpc_id: Option<String>,
+) -> Result<GamesResponse, String> {
+    let client = Client::new();
+    let vpc = vpc_id.as_deref().unwrap_or("NP-AMS-07");
+    let fetch_count = limit.unwrap_or(20) as i32;
+
+    let variables = serde_json::json!({
+        "searchString": query,
+        "vpcId": vpc,
+        "locale": DEFAULT_LOCALE,
+        "fetchCount": fetch_count,
+        "sortString": "itemMetadata.relevance:DESC,sortName:ASC",
+        "cursor": "",
+        "filters": {}
+    });
+
+    let extensions = serde_json::json!({
+        "persistedQuery": {
+            "sha256Hash": SEARCH_QUERY_HASH
+        }
+    });
+
+    let variables_str = serde_json::to_string(&variables)
+        .map_err(|e| format!("Failed to serialize variables: {}", e))?;
+    let extensions_str = serde_json::to_string(&extensions)
+        .map_err(|e| format!("Failed to serialize extensions: {}", e))?;
+
+    let hu_id = generate_hu_id();
+
+    let url = format!(
+        "{}?requestType=apps&extensions={}&huId={}&variables={}",
+        GRAPHQL_URL,
+        urlencoding::encode(&extensions_str),
+        urlencoding::encode(&hu_id),
+        urlencoding::encode(&variables_str)
+    );
+
+    log::info!("Searching games: {}", query);
+
+    let mut request = client
+        .get(&url)
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Content-Type", "application/graphql")
+        .header("Origin", "https://play.geforcenow.com")
+        .header("Referer", "https://play.geforcenow.com/")
+        .header("nv-client-id", LCARS_CLIENT_ID)
+        .header("nv-client-type", "NATIVE")
+        .header("nv-client-version", GFN_CLIENT_VERSION)
+        .header("nv-client-streamer", "NVIDIA-CLASSIC")
+        .header("nv-device-os", "WINDOWS")
+        .header("nv-device-type", "DESKTOP")
+        .header("nv-device-make", "UNKNOWN")
+        .header("nv-device-model", "UNKNOWN")
+        .header("nv-browser-type", "CHROME");
+
+    if let Some(token) = access_token {
+        request = request.header("Authorization", format!("GFNJWT {}", token));
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("Failed to search games: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        log::error!("Search API failed: {} - {}", status, body);
+        return Err(format!("API request failed with status {}: {}", status, body));
+    }
+
+    let body_text = response.text().await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    let graphql_response: GraphQLResponse<SearchData> = serde_json::from_str(&body_text)
+        .map_err(|e| format!("Failed to parse search response: {}", e))?;
+
+    if let Some(errors) = graphql_response.errors {
+        let error_msg = errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join(", ");
+        return Err(format!("GraphQL errors: {}", error_msg));
+    }
+
+    let search_results = graphql_response.data
+        .map(|d| d.apps)
+        .ok_or("No search results")?;
+
+    // Get total count before consuming items
+    let total_count = search_results.page_info
+        .as_ref()
+        .map(|p| p.total_count as u32)
+        .unwrap_or(search_results.number_supported as u32);
+
+    // Convert search results to Game structs
+    let games: Vec<Game> = search_results.items.into_iter().map(|item| {
+        let variant = item.variants.as_ref().and_then(|v| v.first());
+
+        let store_type = variant
+            .map(|v| StoreType::from(v.app_store.as_str()))
+            .unwrap_or(StoreType::Other("Unknown".to_string()));
+
+        let variant_id = variant.map(|v| v.id.clone()).unwrap_or_default();
+
+        let supported_controls = variant
+            .and_then(|v| v.supported_controls.clone())
+            .unwrap_or_default();
+
+        // Collect all variants for store selection
+        let variants: Vec<GameVariant> = item.variants.as_ref()
+            .map(|vars| vars.iter().map(|v| GameVariant {
+                id: v.id.clone(),
+                store_type: StoreType::from(v.app_store.as_str()),
+                supported_controls: v.supported_controls.clone().unwrap_or_default(),
+            }).collect())
+            .unwrap_or_default();
+
+        // Prefer GAME_BOX_ART over TV_BANNER for better quality box art
+        let box_art = item.images.as_ref()
+            .and_then(|i| i.game_box_art.as_ref().or(i.tv_banner.as_ref()))
+            .map(|url| optimize_image_url(url, 272));
+
+        let hero = item.images.as_ref()
+            .and_then(|i| i.hero_image.as_ref())
+            .map(|url| optimize_image_url(url, 1920));
+
+        let status = match item.gfn.as_ref()
+            .and_then(|g| g.playability_state.as_deref()) {
+            Some("PLAYABLE") => GameStatus::Available,
+            Some("MAINTENANCE") => GameStatus::Maintenance,
+            _ => GameStatus::Unavailable,
+        };
+
+        Game {
+            id: variant_id.clone(),
+            title: item.title,
+            publisher: None,
+            developer: None,
+            genres: vec![],
+            images: GameImages {
+                box_art,
+                hero,
+                thumbnail: None,
+                screenshots: vec![],
+            },
+            store: StoreInfo {
+                store_type,
+                store_id: variant_id,
+                store_url: None,
+            },
+            status,
+            supported_controls,
+            variants,
+        }
+    }).collect();
+
+    Ok(GamesResponse {
+        total_count,
+        games,
+        page: 0,
+        page_size: fetch_count as u32,
+    })
 }
