@@ -699,6 +699,80 @@ select {
   font-size: 15px;
 }
 
+/* Update Modal */
+.update-modal-content {
+  max-width: 500px;
+  text-align: center;
+}
+
+.update-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.update-icon {
+  width: 48px;
+  height: 48px;
+  color: var(--accent-green);
+}
+
+.update-version {
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+}
+
+.update-version span {
+  color: var(--accent-green);
+  font-weight: 600;
+}
+
+.update-changelog {
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  margin-bottom: 24px;
+  text-align: left;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.update-changelog h3 {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.update-changelog-content {
+  font-size: 14px;
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+.update-changelog-content ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.update-changelog-content li {
+  margin-bottom: 6px;
+}
+
+.update-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.update-actions .btn {
+  width: 100%;
+  justify-content: center;
+}
+
 .btn-ghost {
   background: transparent;
   color: var(--text-secondary);
