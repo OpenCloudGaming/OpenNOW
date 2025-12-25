@@ -725,9 +725,148 @@ const navItems = document.querySelectorAll(".nav-item");
 // Declare Lucide global (loaded via CDN)
 declare const lucide: { createIcons: () => void };
 
+// Current app version (updated by build)
+const APP_VERSION = "0.0.10";
+
+// Update checker
+interface GitHubRelease {
+  tag_name: string;
+  name: string;
+  body: string;
+  html_url: string;
+  prerelease: boolean;
+}
+
+async function checkForUpdates(): Promise<void> {
+  try {
+    const response = await fetch(
+      "https://api.github.com/repos/zortos293/GFNClient/releases/latest"
+    );
+
+    if (!response.ok) {
+      // Try getting the latest from all releases if no "latest" exists
+      const allResponse = await fetch(
+        "https://api.github.com/repos/zortos293/GFNClient/releases?per_page=1"
+      );
+      if (!allResponse.ok) return;
+
+      const releases = await allResponse.json();
+      if (releases.length === 0) return;
+
+      handleReleaseCheck(releases[0]);
+      return;
+    }
+
+    const release: GitHubRelease = await response.json();
+    handleReleaseCheck(release);
+  } catch (error) {
+    console.error("Failed to check for updates:", error);
+  }
+}
+
+function handleReleaseCheck(release: GitHubRelease): void {
+  const latestVersion = release.tag_name.replace(/^v/, "");
+  const currentVersion = APP_VERSION;
+
+  // Check if we should skip this version
+  const skippedVersion = localStorage.getItem("skippedVersion");
+  if (skippedVersion === latestVersion) {
+    console.log("Skipping version", latestVersion);
+    return;
+  }
+
+  // Compare versions
+  if (isNewerVersion(latestVersion, currentVersion)) {
+    console.log("Update available:", latestVersion);
+    showUpdateModal(release, latestVersion);
+  } else {
+    console.log("App is up to date:", currentVersion);
+  }
+}
+
+function isNewerVersion(latest: string, current: string): boolean {
+  const latestParts = latest.split(".").map(Number);
+  const currentParts = current.split(".").map(Number);
+
+  for (let i = 0; i < Math.max(latestParts.length, currentParts.length); i++) {
+    const l = latestParts[i] || 0;
+    const c = currentParts[i] || 0;
+    if (l > c) return true;
+    if (l < c) return false;
+  }
+  return false;
+}
+
+function showUpdateModal(release: GitHubRelease, version: string): void {
+  const modal = document.getElementById("update-modal");
+  const versionSpan = document.getElementById("update-version");
+  const changelogDiv = document.getElementById("update-changelog-content");
+  const downloadBtn = document.getElementById("update-download-btn") as HTMLAnchorElement;
+  const skipBtn = document.getElementById("update-skip-btn");
+  const laterBtn = document.getElementById("update-later-btn");
+
+  if (!modal || !versionSpan || !changelogDiv || !downloadBtn) return;
+
+  versionSpan.textContent = `v${version}`;
+
+  // Parse changelog from release body
+  const changelog = release.body || "No changelog available.";
+  changelogDiv.innerHTML = formatChangelog(changelog);
+
+  // Set download link
+  downloadBtn.href = release.html_url;
+
+  // Show modal
+  modal.classList.remove("hidden");
+
+  // Reinitialize Lucide icons
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons();
+  }
+
+  // Skip button - remember to skip this version
+  skipBtn?.addEventListener("click", () => {
+    localStorage.setItem("skippedVersion", version);
+    modal.classList.add("hidden");
+  });
+
+  // Later button - just close
+  laterBtn?.addEventListener("click", () => {
+    modal.classList.add("hidden");
+  });
+
+  // Close button
+  const closeBtn = modal.querySelector(".modal-close");
+  closeBtn?.addEventListener("click", () => {
+    modal.classList.add("hidden");
+  });
+}
+
+function formatChangelog(body: string): string {
+  // Convert markdown-style changelog to HTML
+  let html = body
+    // Convert headers
+    .replace(/^### (.+)$/gm, "<strong>$1</strong>")
+    .replace(/^## (.+)$/gm, "<strong>$1</strong>")
+    // Convert bullet points
+    .replace(/^[*-] (.+)$/gm, "<li>$1</li>")
+    // Convert newlines
+    .replace(/\n\n/g, "<br><br>")
+    .replace(/\n/g, " ");
+
+  // Wrap lists
+  if (html.includes("<li>")) {
+    html = html.replace(/(<li>.*<\/li>)/g, "<ul>$1</ul>");
+    // Clean up consecutive ul tags
+    html = html.replace(/<\/ul>\s*<ul>/g, "");
+  }
+
+  return html;
+}
+
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
-  console.log("GFN Custom Client initialized");
+  console.log("OpenNOW initialized");
 
   // Initialize Lucide icons
   if (typeof lucide !== 'undefined') {
@@ -763,6 +902,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Run latency test in background on startup
   testLatency().catch(err => console.error("Initial latency test failed:", err));
+
+  // Check for updates
+  checkForUpdates();
 
   // Check for active sessions after auth (if authenticated)
   if (isAuthenticated) {
