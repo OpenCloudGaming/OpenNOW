@@ -1501,9 +1501,11 @@ function setupLoginModal() {
       if (result.is_authenticated) {
         isAuthenticated = true;
         currentUser = result.user || null;
-        updateAuthUI();
         hideAllModals();
         console.log("NVIDIA OAuth login successful");
+        // Refresh subscription info and reload games
+        await checkAuthStatus();
+        await loadHomeData();
       }
     } catch (error) {
       console.error("NVIDIA OAuth login failed:", error);
@@ -1536,13 +1538,15 @@ function setupLoginModal() {
       if (result.is_authenticated) {
         isAuthenticated = true;
         currentUser = result.user || null;
-        updateAuthUI();
         hideAllModals();
         // Reset form
         if (tokenInput) tokenInput.value = "";
         if (loginOptions) (loginOptions as HTMLElement).classList.remove("hidden");
         if (tokenEntry) tokenEntry.classList.add("hidden");
         console.log("Token login successful");
+        // Refresh subscription info and reload games
+        await checkAuthStatus();
+        await loadHomeData();
       }
     } catch (error) {
       console.error("Token validation failed:", error);
@@ -1564,6 +1568,43 @@ function setupLoginModal() {
 // Data Loading
 async function loadHomeData() {
   console.log("Loading home data...");
+
+  // Show login prompt if not authenticated
+  if (!isAuthenticated) {
+    const featuredGames = document.getElementById("featured-games");
+    const recentGames = document.getElementById("recent-games");
+    const freeGames = document.getElementById("free-games");
+
+    const loginPrompt = `
+      <div class="login-prompt">
+        <i data-lucide="log-in" class="login-prompt-icon"></i>
+        <p>Please sign in to browse games</p>
+        <button class="btn btn-primary" onclick="document.getElementById('login-btn')?.click()">Sign In</button>
+      </div>
+    `;
+
+    if (featuredGames) featuredGames.innerHTML = loginPrompt;
+    if (recentGames) recentGames.innerHTML = '';
+    if (freeGames) freeGames.innerHTML = '';
+
+    // Hide the other sections when not logged in
+    const sections = document.querySelectorAll('#home-view .content-section');
+    sections.forEach((section, index) => {
+      if (index > 0) (section as HTMLElement).style.display = 'none';
+    });
+
+    // Reinitialize Lucide icons
+    if (typeof lucide !== 'undefined') {
+      lucide.createIcons();
+    }
+    return;
+  }
+
+  // Show all sections when logged in
+  const sections = document.querySelectorAll('#home-view .content-section');
+  sections.forEach(section => {
+    (section as HTMLElement).style.display = '';
+  });
 
   // Create placeholder games initially
   const placeholderGames = createPlaceholderGames();
@@ -1628,41 +1669,6 @@ async function loadHomeData() {
         } catch (e2) {
           console.error("All game loading failed:", e2);
         }
-      }
-    }
-  } else {
-    // Not authenticated - load public main games panel (has proper images)
-    console.log("Not authenticated, trying fetch_main_games...");
-    try {
-      const response = await invoke<{ games: Game[] }>("fetch_main_games", {
-        accessToken: null,
-        vpcId: null,
-      });
-      console.log("fetch_main_games response:", response);
-      if (response.games.length > 0) {
-        games = response.games;
-        console.log("Loaded", games.length, "public games with images");
-        console.log("First game images:", games[0]?.images);
-        renderGamesGrid("featured-games", games.slice(0, 6));
-        renderGamesGrid("recent-games", games.slice(6, 12));
-        renderGamesGrid("free-games", games.slice(12, 18));
-      }
-    } catch (error) {
-      console.error("Failed to load public games from fetch_main_games:", error);
-      // Final fallback to static list (no images)
-      console.log("Falling back to fetch_games...");
-      try {
-        const response = await invoke<{ games: Game[] }>("fetch_games", {
-          limit: 50,
-          offset: 0,
-        });
-        console.log("fetch_games response, games count:", response.games.length);
-        if (response.games.length > 0) {
-          games = response.games;
-          renderGamesGrid("featured-games", games.slice(0, 6));
-        }
-      } catch (e) {
-        console.error("Failed to load static games:", e);
       }
     }
   }

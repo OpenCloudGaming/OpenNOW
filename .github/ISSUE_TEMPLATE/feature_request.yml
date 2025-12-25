@@ -1,97 +1,21 @@
 name: Feature Request
-description: Suggest a new feature for GFNClient
-labels: ["enhancement", "feature"]
+description: Suggest a new feature
+labels: ["enhancement"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for taking the time to suggest a new feature!
-
-  - type: checkboxes
-    id: existing-issue
-    attributes:
-      label: Existing Issue Check
-      description: Please check if a similar feature request already exists
-      options:
-        - label: I have searched the existing issues and this feature has not been requested
-          required: true
-
   - type: textarea
     id: description
     attributes:
-      label: Feature Description
-      description: A clear and concise description of the feature you'd like to see
-      placeholder: Describe the feature...
+      label: What feature would you like?
+      description: Describe the feature and why it would be useful
+      placeholder: |
+        I'd like to see...
+
+        This would be useful because...
     validations:
       required: true
 
   - type: textarea
-    id: use-case
+    id: additional
     attributes:
-      label: Use Case
-      description: Why do you need this feature? What problem does it solve?
-      placeholder: Explain your use case...
-    validations:
-      required: true
-
-  - type: dropdown
-    id: category
-    attributes:
-      label: Feature Category
-      description: What area of the application does this feature relate to?
-      options:
-        - Streaming Quality
-        - User Interface
-        - Authentication
-        - Game Library
-        - Settings/Configuration
-        - Discord Integration
-        - Input/Controls
-        - Performance
-        - Platform Support (macOS/Windows/Linux)
-        - Other
-    validations:
-      required: true
-
-  - type: dropdown
-    id: platform
-    attributes:
-      label: Target Platform
-      description: Which platform(s) should this feature be available on?
-      multiple: true
-      options:
-        - All Platforms
-        - macOS
-        - Windows
-        - Linux
-    validations:
-      required: true
-
-  - type: textarea
-    id: proposed-solution
-    attributes:
-      label: Proposed Solution
-      description: If you have an idea of how this could be implemented, describe it here
-      placeholder: Describe your proposed solution...
-
-  - type: textarea
-    id: alternatives
-    attributes:
-      label: Alternatives Considered
-      description: Have you considered any alternative solutions or workarounds?
-      placeholder: Describe alternatives...
-
-  - type: textarea
-    id: additional-context
-    attributes:
-      label: Additional Context
-      description: Add any other context, screenshots, or references about the feature request
-      placeholder: Any additional information...
-
-  - type: checkboxes
-    id: contribution
-    attributes:
-      label: Contribution
-      description: Are you willing to help implement this feature?
-      options:
-        - label: I am willing to submit a pull request for this feature
+      label: Additional context (optional)
+      description: Screenshots, examples, or implementation ideas
