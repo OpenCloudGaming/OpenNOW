@@ -191,6 +191,13 @@
               </select>
             </div>
             <div class="setting-group">
+              <label>Audio Codec</label>
+              <select id="audio-codec-setting">
+                <option value="opus" selected>Opus (Default)</option>
+                <option value="opus-stereo">Opus Stereo (macOS)</option>
+              </select>
+            </div>
+            <div class="setting-group">
               <label>Max Bitrate: <span id="bitrate-value">Unlimited</span></label>
               <input type="range" id="bitrate-setting" min="20" max="200" value="200" step="10" />
               <div class="bitrate-labels">
@@ -227,6 +234,67 @@
               <input type="text" id="proxy-setting" placeholder="http://proxy:port" />
             </div>
             <button id="save-settings-btn" class="btn btn-primary">Save Settings</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Session Modal -->
+      <div id="active-session-modal" class="modal hidden">
+        <div class="modal-content session-modal-content">
+          <button class="modal-close">&times;</button>
+          <div class="session-modal-header">
+            <div class="session-icon">&#9654;</div>
+            <h2>Active Session Detected</h2>
+          </div>
+          <p class="session-modal-description">You have a running GeForce NOW session. To connect from this client, close any browser tabs or other clients streaming this session first.</p>
+          <div class="session-info-card">
+            <div class="session-info-row">
+              <span class="session-label">Game:</span>
+              <span class="session-value" id="active-session-game">--</span>
+            </div>
+            <div class="session-info-row">
+              <span class="session-label">GPU:</span>
+              <span class="session-value" id="active-session-gpu">--</span>
+            </div>
+            <div class="session-info-row">
+              <span class="session-label">Resolution:</span>
+              <span class="session-value" id="active-session-resolution">--</span>
+            </div>
+            <div class="session-info-row">
+              <span class="session-label">Server:</span>
+              <span class="session-value" id="active-session-server">--</span>
+            </div>
+          </div>
+          <div class="session-modal-actions">
+            <button id="connect-session-btn" class="btn btn-primary btn-large">Connect to Session</button>
+            <button id="terminate-session-btn" class="btn btn-secondary">End Session</button>
+            <button id="dismiss-session-btn" class="btn btn-ghost">Dismiss</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Session Conflict Modal (when trying to start a new game while session is running) -->
+      <div id="session-conflict-modal" class="modal hidden">
+        <div class="modal-content session-modal-content">
+          <button class="modal-close">&times;</button>
+          <div class="session-modal-header">
+            <div class="session-icon warning">&#9888;</div>
+            <h2>Session Already Running</h2>
+          </div>
+          <p class="session-modal-description">You already have an active session. Do you want to terminate it and start a new game?</p>
+          <div class="session-info-card">
+            <div class="session-info-row">
+              <span class="session-label">Current Game:</span>
+              <span class="session-value" id="conflict-session-game">--</span>
+            </div>
+            <div class="session-info-row">
+              <span class="session-label">GPU:</span>
+              <span class="session-value" id="conflict-session-gpu">--</span>
+            </div>
+          </div>
+          <div class="session-modal-actions">
+            <button id="terminate-and-launch-btn" class="btn btn-primary btn-large">Terminate & Launch New Game</button>
+            <button id="cancel-launch-btn" class="btn btn-secondary">Cancel</button>
           </div>
         </div>
       </div>
