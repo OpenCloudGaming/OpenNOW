@@ -15,6 +15,11 @@ env:
 jobs:
   # First job: Calculate the version and generate release notes
   get-version:
+    # Skip build if commit message contains [skip ci], [no build], or [skip build]
+    if: |
+      !contains(github.event.head_commit.message, '[skip ci]') &&
+      !contains(github.event.head_commit.message, '[no build]') &&
+      !contains(github.event.head_commit.message, '[skip build]')
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.get_version.outputs.version }}
