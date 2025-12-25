@@ -1380,6 +1380,7 @@ async function connectToExistingSession(session: ActiveSession) {
     });
 
     console.log("Session claimed successfully:", claimResult);
+    console.log("Claim result details - signalingUrl:", claimResult.signalingUrl, "serverIp:", claimResult.serverIp);
 
     // Update streaming state with claimed values
     if (claimResult.gpuType) {
@@ -1390,18 +1391,24 @@ async function connectToExistingSession(session: ActiveSession) {
     }
 
     // Use the updated signaling URL from claim response if available
+    // IMPORTANT: claimResult.signalingUrl should contain the NEW server IP after RESUME
     const actualSignalingUrl = claimResult.signalingUrl || session.signalingUrl;
+    console.log("Using signaling URL:", actualSignalingUrl, "(from claim:", !!claimResult.signalingUrl, ")");
 
     // Extract the stream IP from the UPDATED signaling URL (after claim)
     // This is important because the server may assign a different streaming endpoint
     let actualStreamIp = streamIp;
+    console.log("Original stream IP (before claim):", streamIp);
     if (actualSignalingUrl) {
       const match = actualSignalingUrl.match(/wss:\/\/([^:\/]+)/);
       if (match) {
         actualStreamIp = match[1];
         console.log("Updated stream IP from claim response:", actualStreamIp);
+      } else {
+        console.warn("Failed to extract IP from signaling URL:", actualSignalingUrl);
       }
     }
+    console.log("Final stream IP to use:", actualStreamIp);
 
     // Set up the backend session storage for reconnection
     // This is required for get_webrtc_config and other backend functions to work
