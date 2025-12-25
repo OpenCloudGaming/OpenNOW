@@ -1007,6 +1007,88 @@ select {
   color: var(--accent-green);
 }
 
+/* Storage Indicator */
+#storage-indicator,
+.storage-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-green) !important;
+}
+
+#storage-indicator svg,
+.storage-indicator svg {
+  width: 12px;
+  height: 12px;
+  color: var(--accent-green) !important;
+}
+
+#storage-indicator .storage-text,
+.storage-indicator .storage-text {
+  font-size: 12px;
+  color: var(--accent-green) !important;
+  white-space: nowrap;
+}
+
+#storage-indicator.storage-warning,
+#storage-indicator.storage-warning .storage-text,
+#storage-indicator.storage-warning svg,
+.storage-indicator.storage-warning,
+.storage-indicator.storage-warning .storage-text,
+.storage-indicator.storage-warning svg {
+  color: var(--latency-medium) !important;
+}
+
+#storage-indicator.storage-critical,
+#storage-indicator.storage-critical .storage-text,
+#storage-indicator.storage-critical svg,
+.storage-indicator.storage-critical,
+.storage-indicator.storage-critical .storage-text,
+.storage-indicator.storage-critical svg {
+  color: var(--latency-bad) !important;
+}
+
+/* Session Time Indicator */
+#session-time-indicator,
+.session-time-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-green) !important;
+}
+
+#session-time-indicator svg,
+.session-time-indicator svg {
+  width: 12px;
+  height: 12px;
+  color: var(--accent-green) !important;
+}
+
+#session-time-indicator .session-time-text,
+.session-time-indicator .session-time-text {
+  font-size: 12px;
+  color: var(--accent-green) !important;
+  white-space: nowrap;
+}
+
+#session-time-indicator.time-warning,
+#session-time-indicator.time-warning .session-time-text,
+#session-time-indicator.time-warning svg,
+.session-time-indicator.time-warning,
+.session-time-indicator.time-warning .session-time-text,
+.session-time-indicator.time-warning svg {
+  color: var(--latency-medium) !important;
+}
+
+#session-time-indicator.time-critical,
+#session-time-indicator.time-critical .session-time-text,
+#session-time-indicator.time-critical svg,
+.session-time-indicator.time-critical,
+.session-time-indicator.time-critical .session-time-text,
+.session-time-indicator.time-critical svg {
+  color: var(--latency-bad) !important;
+}
+
 /* Load More */
 .load-more {
   text-align: center;
