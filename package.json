@@ -1,6 +1,6 @@
 {
   "name": "opennow",
-  "version": "0.0.10",
+  "version": "0.0.12",
   "description": "OpenNOW - Open source GeForce NOW client",
   "type": "module",
   "scripts": {

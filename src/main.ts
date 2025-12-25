@@ -1,6 +1,7 @@
 // GFN Custom Client - Main Entry Point
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   initializeStreaming,
   setupInputCapture,
@@ -210,6 +211,12 @@ function setDropdownOptions(id: string, options: { value: string; text: string; 
 // ============================================
 
 // Types
+interface GameVariant {
+  id: string;
+  store_type: string;
+  supported_controls?: string[];
+}
+
 interface Game {
   id: string;
   title: string;
@@ -229,6 +236,7 @@ interface Game {
   };
   status?: string;
   supported_controls?: string[];
+  variants?: GameVariant[];
 }
 
 interface AuthState {
@@ -281,6 +289,21 @@ interface StreamingQualityProfile {
   features: FeatureOption[];
 }
 
+interface AddonAttribute {
+  key: string;
+  textValue?: string;
+}
+
+interface SubscriptionAddon {
+  uri?: string;
+  id: string;
+  type: string;
+  subType?: string;
+  autoPayEnabled?: boolean;
+  attributes: AddonAttribute[];
+  status?: string;
+}
+
 interface SubscriptionInfo {
   membershipTier: string;
   remainingTimeInMinutes?: number;
@@ -290,6 +313,7 @@ interface SubscriptionInfo {
   subType?: string;
   features?: SubscriptionFeatures;
   streamingQualities?: StreamingQualityProfile[];
+  addons?: SubscriptionAddon[];
 }
 
 interface Settings {
@@ -727,9 +751,6 @@ const navItems = document.querySelectorAll(".nav-item");
 // Declare Lucide global (loaded via CDN)
 declare const lucide: { createIcons: () => void };
 
-// Current app version (updated by build)
-const APP_VERSION = "0.0.10";
-
 // Update checker
 interface GitHubRelease {
   tag_name: string;
@@ -760,31 +781,35 @@ async function checkForUpdates(): Promise<void> {
     }
 
     // Use the first (most recent) release
-    handleReleaseCheck(releases[0]);
+    await handleReleaseCheck(releases[0]);
   } catch (error) {
     // Network errors, etc - silently ignore
     console.log("Update check skipped:", error instanceof Error ? error.message : "network error");
   }
 }
 
-function handleReleaseCheck(release: GitHubRelease): void {
+async function handleReleaseCheck(release: GitHubRelease): Promise<void> {
   const latestVersion = release.tag_name.replace(/^v/, "");
-  const currentVersion = APP_VERSION;
+  const currentVersion = await getVersion();
 
-  // Check if we should skip this version
-  const skippedVersion = localStorage.getItem("skippedVersion");
-  if (skippedVersion === latestVersion) {
-    console.log("Skipping version", latestVersion);
+  // First check if latest is actually newer than current
+  if (!isNewerVersion(latestVersion, currentVersion)) {
+    console.log("App is up to date:", currentVersion);
+    // Clear any skipped version since we're now at or past it
+    localStorage.removeItem("skippedVersion");
     return;
   }
 
-  // Compare versions
-  if (isNewerVersion(latestVersion, currentVersion)) {
-    console.log("Update available:", latestVersion);
-    showUpdateModal(release, latestVersion);
-  } else {
-    console.log("App is up to date:", currentVersion);
+  // Latest is newer - check if user explicitly skipped this version
+  const skippedVersion = localStorage.getItem("skippedVersion");
+  if (skippedVersion === latestVersion) {
+    console.log("User skipped version", latestVersion);
+    return;
   }
+
+  // Show update modal
+  console.log("Update available:", latestVersion);
+  showUpdateModal(release, latestVersion);
 }
 
 function isNewerVersion(latest: string, current: string): boolean {
@@ -1042,6 +1067,13 @@ function switchView(view: string) {
     v.classList.remove("hidden");
   });
 
+  // Clear search input and hide search view when navigating away
+  const searchInput = document.getElementById("search-input") as HTMLInputElement;
+  if (searchInput) {
+    searchInput.value = "";
+  }
+  hideSearchDropdown();
+
   currentView = view;
 
   // Load view-specific data
@@ -1293,6 +1325,169 @@ function updateNavbarSessionIndicator(session: ActiveSession | null) {
 // Hide navbar session indicator
 function hideNavbarSessionIndicator() {
   updateNavbarSessionIndicator(null);
+}
+
+// Update navbar with storage indicator
+function updateNavbarStorageIndicator(subscription: SubscriptionInfo | null) {
+  let indicator = document.getElementById("storage-indicator");
+
+  // Find permanent storage addon
+  const storageAddon = subscription?.addons?.find(
+    (addon) => addon.subType === "PERMANENT_STORAGE"
+  );
+
+  if (!storageAddon) {
+    // Remove indicator if no storage addon
+    indicator?.remove();
+    return;
+  }
+
+  // Extract storage info from attributes
+  const totalAttr = storageAddon.attributes.find(a => a.key === "TOTAL_STORAGE_SIZE_IN_GB");
+  const usedAttr = storageAddon.attributes.find(a => a.key === "USED_STORAGE_SIZE_IN_GB");
+  const regionAttr = storageAddon.attributes.find(a => a.key === "STORAGE_METRO_REGION_NAME");
+
+  const totalGB = parseInt(totalAttr?.textValue || "0", 10);
+  const usedGB = parseInt(usedAttr?.textValue || "0", 10);
+  const region = regionAttr?.textValue || "Unknown";
+
+  if (totalGB === 0) {
+    indicator?.remove();
+    return;
+  }
+
+  // Create indicator if it doesn't exist
+  if (!indicator) {
+    indicator = document.createElement("div");
+    indicator.id = "storage-indicator";
+    indicator.className = "storage-indicator";
+
+    // Insert in the status bar left section
+    const statusLeft = document.querySelector(".status-left");
+    if (statusLeft) {
+      statusLeft.appendChild(indicator);
+    }
+  }
+
+  // Clear existing content
+  indicator.replaceChildren();
+
+  // Calculate percentage for coloring
+  const percentage = Math.round((usedGB / totalGB) * 100);
+
+  // Determine color based on usage
+  let color = "#76b900"; // green
+  if (percentage >= 90) {
+    color = "#f44336"; // red
+  } else if (percentage >= 75) {
+    color = "#ffc107"; // yellow
+  }
+
+  // Create elements with inline color
+  const icon = document.createElement("i");
+  icon.setAttribute("data-lucide", "hard-drive");
+  icon.style.width = "12px";
+  icon.style.height = "12px";
+  icon.style.color = color;
+
+  const text = document.createElement("span");
+  text.textContent = `${usedGB} / ${totalGB} GB`;
+  text.style.color = color;
+  text.style.fontSize = "12px";
+
+  indicator.style.color = color;
+  indicator.appendChild(icon);
+  indicator.appendChild(text);
+  indicator.title = `Cloud Storage: ${usedGB} GB used of ${totalGB} GB\nLocation: ${region}`;
+
+  // Re-init Lucide icons for the new icon
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons();
+  }
+
+  // Apply color to SVG after Lucide creates it
+  setTimeout(() => {
+    const svg = indicator.querySelector("svg");
+    if (svg) {
+      svg.style.color = color;
+      svg.style.stroke = color;
+      svg.style.width = "12px";
+      svg.style.height = "12px";
+    }
+  }, 10);
+}
+
+// Update status bar with session time remaining
+function updateStatusBarSessionTime(subscription: SubscriptionInfo | null) {
+  let indicator = document.getElementById("session-time-indicator");
+
+  if (!subscription || !subscription.remainingTimeInMinutes) {
+    indicator?.remove();
+    return;
+  }
+
+  const remaining = subscription.remainingTimeInMinutes;
+  const total = subscription.totalTimeInMinutes || 0;
+  const remainingHrs = Math.floor(remaining / 60);
+  const totalHrs = Math.floor(total / 60);
+  const percentRemaining = total > 0 ? Math.round((remaining / total) * 100) : 100;
+
+  // Create indicator if it doesn't exist
+  if (!indicator) {
+    indicator = document.createElement("div");
+    indicator.id = "session-time-indicator";
+    indicator.className = "session-time-indicator";
+
+    // Insert in the status bar left section
+    const statusLeft = document.querySelector(".status-left");
+    if (statusLeft) {
+      statusLeft.appendChild(indicator);
+    }
+  }
+
+  // Clear existing content
+  indicator.replaceChildren();
+
+  // Determine color based on remaining time
+  let color = "#76b900"; // green
+  if (percentRemaining <= 10) {
+    color = "#f44336"; // red
+  } else if (percentRemaining <= 25) {
+    color = "#ffc107"; // yellow
+  }
+
+  // Create elements with inline color
+  const icon = document.createElement("i");
+  icon.setAttribute("data-lucide", "clock");
+  icon.style.width = "12px";
+  icon.style.height = "12px";
+  icon.style.color = color;
+
+  const text = document.createElement("span");
+  text.textContent = `${remainingHrs}h / ${totalHrs}h`;
+  text.style.color = color;
+  text.style.fontSize = "12px";
+
+  indicator.style.color = color;
+  indicator.appendChild(icon);
+  indicator.appendChild(text);
+  indicator.title = `Session time: ${remainingHrs} hours remaining of ${totalHrs} hours total`;
+
+  // Re-init Lucide icons
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons();
+  }
+
+  // Apply color to SVG after Lucide creates it
+  setTimeout(() => {
+    const svg = indicator.querySelector("svg");
+    if (svg) {
+      svg.style.color = color;
+      svg.style.stroke = color;
+      svg.style.width = "12px";
+      svg.style.height = "12px";
+    }
+  }, 10);
 }
 
 // Setup session modal handlers
@@ -1602,30 +1797,202 @@ function showSessionReconnectError(title: string, message: string) {
 }
 
 // Search
+let currentSearchQuery = "";
+let searchResultsCache: Game[] = [];
+
 function setupSearch() {
   let searchTimeout: number;
+  const searchDropdown = document.getElementById("search-dropdown")!;
 
   searchInput.addEventListener("input", () => {
     clearTimeout(searchTimeout);
-    searchTimeout = setTimeout(() => {
+    const query = searchInput.value.trim();
+
+    if (query.length < 2) {
+      hideSearchDropdown();
+      currentSearchQuery = "";
+      return;
+    }
+
+    searchTimeout = setTimeout(async () => {
+      currentSearchQuery = query;
+      await searchGamesForSuggestions(query);
+    }, 300);
+  });
+
+  // Handle Enter key for full search results
+  searchInput.addEventListener("keydown", async (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
       const query = searchInput.value.trim();
       if (query.length >= 2) {
-        searchGames(query);
+        hideSearchDropdown();
+        await showFullSearchResults(query);
       }
-    }, 300);
+    } else if (e.key === "Escape") {
+      hideSearchDropdown();
+    }
+  });
+
+  // Close dropdown when clicking outside
+  document.addEventListener("click", (e) => {
+    if (!searchInput.contains(e.target as Node) && !searchDropdown.contains(e.target as Node)) {
+      hideSearchDropdown();
+    }
   });
 }
 
-async function searchGames(query: string) {
-  try {
-    const results = await invoke<{ games: Game[] }>("search_games", {
-      query,
-      limit: 20,
+function hideSearchDropdown() {
+  const searchDropdown = document.getElementById("search-dropdown");
+  if (searchDropdown) {
+    searchDropdown.classList.add("hidden");
+  }
+}
+
+function showSearchDropdown(games: Game[]) {
+  const searchDropdown = document.getElementById("search-dropdown")!;
+  searchDropdown.replaceChildren();
+
+  if (games.length === 0) {
+    const noResults = document.createElement("div");
+    noResults.className = "search-dropdown-empty";
+    noResults.textContent = "No games found";
+    searchDropdown.appendChild(noResults);
+  } else {
+    games.forEach((game) => {
+      const item = document.createElement("div");
+      item.className = "search-dropdown-item";
+      item.dataset.gameId = game.id;
+
+      const img = document.createElement("img");
+      img.className = "search-dropdown-image";
+      img.src = game.images.box_art || game.images.thumbnail || getFallbackPlaceholder(game.title);
+      img.alt = game.title;
+      img.referrerPolicy = "no-referrer";
+      img.onerror = () => { img.src = getFallbackPlaceholder(game.title); };
+
+      const info = document.createElement("div");
+      info.className = "search-dropdown-info";
+
+      const title = document.createElement("div");
+      title.className = "search-dropdown-title";
+      title.textContent = game.title;
+
+      const store = document.createElement("div");
+      store.className = "search-dropdown-store";
+      store.textContent = game.store.store_type;
+
+      info.appendChild(title);
+      info.appendChild(store);
+      item.appendChild(img);
+      item.appendChild(info);
+
+      item.addEventListener("click", () => {
+        hideSearchDropdown();
+        showGameDetail(game.id);
+      });
+
+      searchDropdown.appendChild(item);
     });
-    console.log("Search results:", results);
+
+    // Add "View all results" link if there are more results
+    if (searchResultsCache.length >= 5) {
+      const viewAll = document.createElement("div");
+      viewAll.className = "search-dropdown-viewall";
+      viewAll.textContent = `View all results for "${currentSearchQuery}"`;
+      viewAll.addEventListener("click", async () => {
+        hideSearchDropdown();
+        await showFullSearchResults(currentSearchQuery);
+      });
+      searchDropdown.appendChild(viewAll);
+    }
+  }
+
+  searchDropdown.classList.remove("hidden");
+}
+
+async function searchGamesForSuggestions(query: string) {
+  try {
+    const token = isAuthenticated ? await invoke<string>("get_gfn_jwt").catch(() => null) : null;
+    const results = await invoke<{ games: Game[] }>("search_games_graphql", {
+      query,
+      limit: 5,
+      accessToken: token,
+      vpcId: null,
+    });
+    searchResultsCache = results.games;
+    showSearchDropdown(results.games);
   } catch (error) {
     console.error("Search failed:", error);
+    showSearchDropdown([]);
   }
+}
+
+async function showFullSearchResults(query: string) {
+  try {
+    const token = isAuthenticated ? await invoke<string>("get_gfn_jwt").catch(() => null) : null;
+    const results = await invoke<{ games: Game[]; total_count: number }>("search_games_graphql", {
+      query,
+      limit: 50,
+      accessToken: token,
+      vpcId: null,
+    });
+
+    // Show search results in main content area
+    currentView = "search";
+
+    // Deselect all nav items since search is not a nav view
+    navItems.forEach((item) => item.classList.remove("active"));
+
+    // Hide all other views
+    document.querySelectorAll(".view").forEach((v) => {
+      v.classList.remove("active");
+    });
+
+    // Get or create search results view
+    let searchView = document.getElementById("search-view");
+    if (!searchView) {
+      searchView = document.createElement("section");
+      searchView.id = "search-view";
+      searchView.className = "view";
+      document.getElementById("main-content")!.appendChild(searchView);
+    }
+
+    // Clear and populate search view
+    searchView.innerHTML = "";
+    searchView.classList.add("active");
+
+    // Create search results header
+    const header = document.createElement("div");
+    header.className = "search-results-header";
+    header.innerHTML = `
+      <h2>Search results for "${query}"</h2>
+      <span class="search-results-count">${results.total_count} games found</span>
+    `;
+    searchView.appendChild(header);
+
+    // Create games grid
+    const grid = document.createElement("div");
+    grid.className = "games-grid";
+    grid.id = "search-results-grid";
+    searchView.appendChild(grid);
+
+    // Store results in cache for showGameDetail
+    searchResultsCache = results.games;
+
+    // Render games
+    results.games.forEach((game) => {
+      grid.appendChild(createGameCard(game));
+    });
+
+  } catch (error) {
+    console.error("Full search failed:", error);
+  }
+}
+
+async function searchGames(query: string) {
+  // Keep legacy function for compatibility
+  await searchGamesForSuggestions(query);
 }
 
 // Authentication
@@ -1651,6 +2018,11 @@ async function checkAuthStatus() {
 
         // Populate resolution and FPS dropdowns from subscription data
         populateStreamingOptions(subscription);
+
+        // Update status bar indicators
+        console.log("Subscription addons:", subscription.addons);
+        updateNavbarStorageIndicator(subscription);
+        updateStatusBarSessionTime(subscription);
       } catch (subError) {
         console.warn("Failed to fetch subscription, using default tier:", subError);
         currentSubscription = null;
@@ -1682,13 +2054,10 @@ function updateAuthUI() {
       userTier.textContent = tier;
       userTier.className = `user-tier tier-${tier.toLowerCase()}`;
     }
+    // Hide user-time from top bar (now shown in status bar)
     const userTime = document.getElementById("user-time");
-    if (userTime && currentSubscription) {
-      const remaining = currentSubscription.remainingTimeInMinutes || 0;
-      const total = currentSubscription.totalTimeInMinutes || 0;
-      const remainingHrs = Math.floor(remaining / 60);
-      const totalHrs = Math.floor(total / 60);
-      userTime.textContent = `${remainingHrs}h / ${totalHrs}h`;
+    if (userTime) {
+      userTime.style.display = "none";
     }
   } else {
     loginBtn.classList.remove("hidden");
@@ -1915,6 +2284,18 @@ function getFallbackPlaceholder(title: string): string {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
+function getStoreIcon(storeType: string): string {
+  const iconMap: Record<string, string> = {
+    steam: "cloud",
+    epic: "gamepad-2",
+    ubisoft: "shield",
+    gog: "disc",
+    ea: "zap",
+    origin: "zap",
+  };
+  return iconMap[storeType] || "store";
+}
+
 // Safe DOM element creation
 function createGameCard(game: Game): HTMLElement {
   const card = document.createElement("div");
@@ -1983,9 +2364,9 @@ function createGameDetailElement(game: Game): HTMLElement {
   // Hero section with gradient overlay
   const hero = document.createElement("div");
   hero.className = "game-detail-hero";
-  hero.style.backgroundImage = `linear-gradient(to bottom, transparent 0%, rgba(26,26,46,0.8) 60%, rgba(26,26,46,1) 100%), url('${game.images.hero || game.images.box_art || ""}')`;
+  hero.style.backgroundImage = `linear-gradient(to bottom, transparent 0%, rgba(26,26,46,0.7) 50%, rgba(26,26,46,1) 100%), url('${game.images.hero || game.images.box_art || ""}')`;
 
-  // Content container
+  // Content container (side by side: box art + info)
   const content = document.createElement("div");
   content.className = "game-detail-content";
 
@@ -2016,19 +2397,25 @@ function createGameDetailElement(game: Game): HTMLElement {
     meta.appendChild(pubDev);
   }
 
-  // Store badge
+  // Store badge with icon
   const storeBadge = document.createElement("span");
-  storeBadge.className = `store-badge store-${game.store.store_type.toLowerCase()}`;
-  storeBadge.textContent = game.store.store_type;
+  const storeType = game.store.store_type.toLowerCase();
+  storeBadge.className = `store-badge store-${storeType}`;
+  storeBadge.innerHTML = `<i data-lucide="${getStoreIcon(storeType)}"></i>${game.store.store_type}`;
   meta.appendChild(storeBadge);
 
-  // Status indicator
+  // Status indicator with icon
   if (game.status) {
     const statusBadge = document.createElement("span");
     statusBadge.className = `status-badge status-${game.status.toLowerCase()}`;
-    statusBadge.textContent = game.status === "Available" ? "Ready to Play" : game.status;
+    const statusIcon = game.status === "Available" ? "circle-check" : "clock";
+    const statusText = game.status === "Available" ? "Ready to Play" : game.status;
+    statusBadge.innerHTML = `<i data-lucide="${statusIcon}"></i>${statusText}`;
     meta.appendChild(statusBadge);
   }
+
+  info.appendChild(titleEl);
+  info.appendChild(meta);
 
   // Genres
   if (game.genres && game.genres.length > 0) {
@@ -2043,43 +2430,111 @@ function createGameDetailElement(game: Game): HTMLElement {
     info.appendChild(genres);
   }
 
-  // Controls supported
+  // Controls supported with icons (deduplicated)
   if (game.supported_controls && game.supported_controls.length > 0) {
     const controls = document.createElement("div");
     controls.className = "game-detail-controls";
+
     const controlsLabel = document.createElement("span");
     controlsLabel.className = "controls-label";
-    controlsLabel.textContent = "Supported Controls: ";
+    controlsLabel.textContent = "Controls";
     controls.appendChild(controlsLabel);
-    controls.appendChild(document.createTextNode(game.supported_controls.join(", ")));
+
+    const controlIcons = document.createElement("div");
+    controlIcons.className = "control-icons";
+
+    // Deduplicate controls
+    const controlsLower = game.supported_controls.map(c => c.toLowerCase());
+    const hasKeyboard = controlsLower.some(c => c.includes("keyboard") || c.includes("mouse"));
+    const hasGamepad = controlsLower.some(c => c.includes("gamepad") || c.includes("controller"));
+    const hasTouch = controlsLower.some(c => c.includes("touch"));
+
+    if (hasKeyboard) {
+      const icon = document.createElement("span");
+      icon.className = "control-icon";
+      icon.innerHTML = `<i data-lucide="keyboard"></i>Keyboard & Mouse`;
+      controlIcons.appendChild(icon);
+    }
+    if (hasGamepad) {
+      const icon = document.createElement("span");
+      icon.className = "control-icon";
+      icon.innerHTML = `<i data-lucide="gamepad-2"></i>Controller`;
+      controlIcons.appendChild(icon);
+    }
+    if (hasTouch) {
+      const icon = document.createElement("span");
+      icon.className = "control-icon";
+      icon.innerHTML = `<i data-lucide="hand"></i>Touch`;
+      controlIcons.appendChild(icon);
+    }
+
+    controls.appendChild(controlIcons);
     info.appendChild(controls);
   }
 
   const desc = document.createElement("div");
   desc.className = "game-detail-description";
   desc.textContent = "Experience this game through GeForce NOW cloud gaming. Stream instantly without downloads.";
+  info.appendChild(desc);
 
   // Actions
   const actions = document.createElement("div");
   actions.className = "game-detail-actions";
 
+  // Track selected variant
+  let selectedVariantId = game.id;
+
+  // Store selector if multiple variants
+  if (game.variants && game.variants.length > 1) {
+    const storeSelector = document.createElement("div");
+    storeSelector.className = "store-selector";
+
+    const selectorLabel = document.createElement("span");
+    selectorLabel.className = "store-selector-label";
+    selectorLabel.textContent = "Play on:";
+    storeSelector.appendChild(selectorLabel);
+
+    const selectorBtns = document.createElement("div");
+    selectorBtns.className = "store-selector-buttons";
+
+    game.variants.forEach((variant, index) => {
+      const btn = document.createElement("button");
+      btn.className = `store-selector-btn${index === 0 ? " active" : ""}`;
+      btn.dataset.variantId = variant.id;
+      btn.textContent = variant.store_type;
+      btn.addEventListener("click", () => {
+        selectorBtns.querySelectorAll(".store-selector-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        selectedVariantId = variant.id;
+      });
+      selectorBtns.appendChild(btn);
+    });
+
+    storeSelector.appendChild(selectorBtns);
+    info.appendChild(storeSelector);
+  }
+
   const playBtn = document.createElement("button");
   playBtn.className = "btn btn-primary btn-large";
-  playBtn.textContent = "Play Now";
-  playBtn.addEventListener("click", () => launchGame(game));
+  playBtn.innerHTML = `<i data-lucide="play"></i> Play Now`;
+  playBtn.addEventListener("click", () => {
+    // Use selected variant ID
+    const gameToLaunch = { ...game, id: selectedVariantId };
+    launchGame(gameToLaunch);
+  });
 
   const favBtn = document.createElement("button");
   favBtn.className = "btn btn-secondary";
-  favBtn.textContent = "♡ Add to Library";
+  favBtn.innerHTML = `<i data-lucide="heart"></i> Add to Library`;
   favBtn.addEventListener("click", async () => {
-    favBtn.textContent = "♥ Added";
+    favBtn.innerHTML = `<i data-lucide="heart"></i> Added`;
     favBtn.classList.add("favorited");
-    // TODO: Call add_favorite API
+    lucide.createIcons();
   });
 
   const storeBtn = document.createElement("button");
   storeBtn.className = "btn btn-secondary";
-  storeBtn.textContent = `View on ${game.store.store_type}`;
+  storeBtn.innerHTML = `<i data-lucide="external-link"></i> View on ${game.store.store_type}`;
   storeBtn.addEventListener("click", () => {
     if (game.store.store_url) {
       window.open(game.store.store_url, "_blank");
@@ -2092,9 +2547,6 @@ function createGameDetailElement(game: Game): HTMLElement {
     actions.appendChild(storeBtn);
   }
 
-  info.appendChild(titleEl);
-  info.appendChild(meta);
-  info.appendChild(desc);
   info.appendChild(actions);
 
   content.appendChild(boxArt);
@@ -2135,7 +2587,9 @@ function createGameDetailElement(game: Game): HTMLElement {
 }
 
 async function showGameDetail(gameId: string) {
-  const game = games.find((g) => g.id === gameId) || createPlaceholderGames().find((g) => g.id === gameId);
+  const game = games.find((g) => g.id === gameId)
+    || searchResultsCache.find((g) => g.id === gameId)
+    || createPlaceholderGames().find((g) => g.id === gameId);
   if (!game) return;
 
   const detailContainer = document.getElementById("game-detail");
@@ -2144,6 +2598,9 @@ async function showGameDetail(gameId: string) {
   // Clear and append new content safely
   detailContainer.replaceChildren();
   detailContainer.appendChild(createGameDetailElement(game));
+
+  // Render Lucide icons in the new content
+  lucide.createIcons();
 
   showModal("game-modal");
 }
