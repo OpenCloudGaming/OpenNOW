@@ -1,18 +1,18 @@
 [package]
-name = "gfn-client"
-version = "0.0.2"
-description = "Custom GeForce Now Client"
-authors = ["Zortos"]
+name = "opennow"
+version = "0.1.0"
+description = "OpenNOW - Open source GeForce NOW client"
+authors = ["zortos293"]
 edition = "2021"
-default-run = "gfn-client"
+default-run = "opennow"
 
 [lib]
-name = "gfn_client_lib"
+name = "opennow_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 # Tauri app binary (main)
 [[bin]]
-name = "gfn-client"
+name = "opennow"
 path = "src/main.rs"
 
 
