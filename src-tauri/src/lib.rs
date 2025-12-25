@@ -64,6 +64,7 @@ pub fn run() {
             api::fetch_library,
             api::fetch_main_games,
             api::search_games,
+            api::search_games_graphql,
             api::get_game_details,
             api::get_servers,
             api::fetch_subscription,
