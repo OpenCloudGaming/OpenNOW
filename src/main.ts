@@ -1501,9 +1501,11 @@ function setupLoginModal() {
       if (result.is_authenticated) {
         isAuthenticated = true;
         currentUser = result.user || null;
-        updateAuthUI();
         hideAllModals();
         console.log("NVIDIA OAuth login successful");
+        // Refresh subscription info and reload games
+        await checkAuthStatus();
+        await loadHomeData();
       }
     } catch (error) {
       console.error("NVIDIA OAuth login failed:", error);
@@ -1536,13 +1538,15 @@ function setupLoginModal() {
       if (result.is_authenticated) {
         isAuthenticated = true;
         currentUser = result.user || null;
-        updateAuthUI();
         hideAllModals();
         // Reset form
         if (tokenInput) tokenInput.value = "";
         if (loginOptions) (loginOptions as HTMLElement).classList.remove("hidden");
         if (tokenEntry) tokenEntry.classList.add("hidden");
         console.log("Token login successful");
+        // Refresh subscription info and reload games
+        await checkAuthStatus();
+        await loadHomeData();
       }
     } catch (error) {
       console.error("Token validation failed:", error);
