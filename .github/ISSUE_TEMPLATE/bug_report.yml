@@ -27,6 +27,17 @@ body:
     validations:
       required: true
 
+  - type: dropdown
+    id: tier
+    attributes:
+      label: GeForce NOW Tier
+      options:
+        - Free
+        - Performance
+        - Ultimate
+    validations:
+      required: true
+
   - type: textarea
     id: logs
     attributes:
