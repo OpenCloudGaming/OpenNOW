@@ -87,10 +87,8 @@ jobs:
           VERSION: ${{ steps.get_version.outputs.version }}
         run: |
           # Create the prompt for OpenRouter (commits are safely passed via env var)
-          PROMPT="You are a release notes generator for OpenNOW, an open source GeForce NOW client built with Tauri. Generate clean, user-friendly release notes from these git commits. Categorize them into sections: ✨ Added (new features), 🔧 Changed (updates/improvements), 🐛 Fixed (bug fixes), and 🗑️ Removed (if any). Keep descriptions concise and user-focused. If a commit doesn't fit these categories, skip it. Only include sections that have items. Format in markdown. Do not include any introduction or conclusion text, just the categorized list.
-
-Git commits:
-$COMMITS"
+          PROMPT="You are a release notes generator for OpenNOW, an open source GeForce NOW client built with Tauri. Generate clean, user-friendly release notes from these git commits. Categorize them into sections: Added (new features), Changed (updates/improvements), Fixed (bug fixes), and Removed (if any). Keep descriptions concise and user-focused. If a commit doesn't fit these categories, skip it. Only include sections that have items. Format in markdown. Do not include any introduction or conclusion text, just the categorized list."
+          PROMPT=$(printf "%s\n\nGit commits:\n%s" "$PROMPT" "$COMMITS")
 
           # Build JSON payload safely using jq
           PAYLOAD=$(jq -n \
@@ -114,9 +112,7 @@ $COMMITS"
 
           # If API failed, create basic notes from commits
           if [ -z "$NOTES" ]; then
-            NOTES="### Changes
-
-$COMMITS"
+            NOTES=$(printf "### Changes\n\n%s" "$COMMITS")
           fi
 
           # Save to file for multi-line output
