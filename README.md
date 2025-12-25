@@ -55,7 +55,7 @@ A custom GeForce NOW client built with Tauri (Rust + TypeScript) that unlocks pr
 - [ ] Fix ESC key during streaming
 - [ ] Game availability notifications
 - [ ] Server queue time display
-- [ ] Multi-region ping display
+- [x] Multi-region ping display
 - [x] Linux support (experimental)
 - [x] macOS support (experimental)
 - [ ] Controller support improvements

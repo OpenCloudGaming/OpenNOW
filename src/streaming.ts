@@ -1197,6 +1197,10 @@ function createVideoElement(): HTMLVideoElement {
   video.muted = false; // Audio enabled
   video.controls = false; // No controls - this is a live stream
   video.disablePictureInPicture = true; // No PiP
+
+  // Low latency hints for reduced video decode latency
+  (video as any).latencyHint = "interactive";
+  (video as any).preservesPitch = false; // Disable pitch correction for lower latency
   video.style.cssText = `
     width: 100%;
     height: 100%;

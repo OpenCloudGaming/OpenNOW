@@ -97,6 +97,7 @@ pub fn run() {
             // Discord commands
             discord::init_discord,
             discord::set_game_presence,
+            discord::update_game_stats,
             discord::set_queue_presence,
             discord::set_browsing_presence,
             discord::clear_discord_presence,
