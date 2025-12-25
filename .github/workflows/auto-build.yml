@@ -72,13 +72,13 @@ jobs:
             git log --pretty=format:"- %s (%h)" --no-merges | head -50 > commits.txt
           fi
 
-          # Output commits for next step (use unique delimiter)
-          DELIMITER="COMMITS_END_$(date +%s)"
-          {
-            echo "commits<<${DELIMITER}"
-            cat commits.txt
-            echo "${DELIMITER}"
-          } >> $GITHUB_OUTPUT
+          # Ensure file ends with newline (git log --pretty=format doesn't add one)
+          echo "" >> commits.txt
+
+          # Output commits for next step
+          echo "commits<<COMMITS_HEREDOC_END" >> $GITHUB_OUTPUT
+          cat commits.txt >> $GITHUB_OUTPUT
+          echo "COMMITS_HEREDOC_END" >> $GITHUB_OUTPUT
 
       - name: Generate AI release notes
         id: generate_notes
@@ -116,16 +116,14 @@ jobs:
             NOTES=$(printf "### Changes\n\n%s" "$COMMITS")
           fi
 
-          # Save to file for multi-line output
+          # Save to file for multi-line output (ensure trailing newline)
           echo "$NOTES" > release_notes.md
+          echo "" >> release_notes.md
 
-          # Use unique delimiter for multiline output
-          DELIMITER="NOTES_END_$(date +%s)"
-          {
-            echo "release_notes<<${DELIMITER}"
-            cat release_notes.md
-            echo "${DELIMITER}"
-          } >> $GITHUB_OUTPUT
+          # Output release notes
+          echo "release_notes<<NOTES_HEREDOC_END" >> $GITHUB_OUTPUT
+          cat release_notes.md >> $GITHUB_OUTPUT
+          echo "NOTES_HEREDOC_END" >> $GITHUB_OUTPUT
 
   # Second job: Build on all platforms
   build:
