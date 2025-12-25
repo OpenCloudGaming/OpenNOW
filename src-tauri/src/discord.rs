@@ -3,9 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::command;
 
-/// Discord Application ID for GFN Client
-/// You can create your own at https://discord.com/developers/applications
-const DISCORD_APP_ID: &str = "1234567890123456789"; // Replace with your Discord App ID
+/// Discord Application ID for OpenNOW
+/// Created at https://discord.com/developers/applications
+const DISCORD_APP_ID: &str = "1453497742662959145"; // Replace with your Discord App ID
+
+/// GitHub repository URL
+const GITHUB_URL: &str = "https://github.com/zortos293/GFNClient";
 
 /// Discord presence state
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,12 +45,14 @@ pub async fn init_discord() -> Result<bool, String> {
                 let _ = client.set_activity(
                     activity::Activity::new()
                         .state("Browsing games")
-                        .details("GeForce NOW")
                         .assets(
                             activity::Assets::new()
                                 .large_image("gfn_logo")
-                                .large_text("GeForce NOW"),
-                        ),
+                                .large_text("OpenNOW"),
+                        )
+                        .buttons(vec![
+                            activity::Button::new("GitHub", GITHUB_URL),
+                        ]),
                 );
 
                 let guard = get_discord_client();
@@ -72,7 +77,10 @@ pub async fn init_discord() -> Result<bool, String> {
 #[command]
 pub async fn set_game_presence(
     game_name: String,
-    _game_id: Option<String>,
+    region: Option<String>,
+    resolution: Option<String>,
+    fps: Option<u32>,
+    latency_ms: Option<u32>,
 ) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let guard = get_discord_client();
@@ -84,23 +92,124 @@ pub async fn set_game_presence(
                 .unwrap()
                 .as_secs() as i64;
 
+            // Build stats string: "1080p 120fps 15ms"
+            let mut stats_parts: Vec<String> = Vec::new();
+            if let Some(res) = &resolution {
+                stats_parts.push(res.clone());
+            }
+            if let Some(f) = fps {
+                stats_parts.push(format!("{}fps", f));
+            }
+            if let Some(ms) = latency_ms {
+                stats_parts.push(format!("{}ms", ms));
+            }
+
+            // State shows region + stats
+            let state = if let Some(reg) = &region {
+                if stats_parts.is_empty() {
+                    reg.clone()
+                } else {
+                    format!("{} | {}", reg, stats_parts.join(" "))
+                }
+            } else if !stats_parts.is_empty() {
+                stats_parts.join(" ")
+            } else {
+                "Playing".to_string()
+            };
+
             let activity = activity::Activity::new()
-                .state("Playing via GeForce NOW")
+                .state(&state)
                 .details(&game_name)
                 .assets(
                     activity::Assets::new()
                         .large_image("gfn_logo")
-                        .large_text("GeForce NOW")
+                        .large_text("OpenNOW")
                         .small_image("playing")
                         .small_text("Playing"),
                 )
-                .timestamps(activity::Timestamps::new().start(start_time));
+                .timestamps(activity::Timestamps::new().start(start_time))
+                .buttons(vec![
+                    activity::Button::new("GitHub", GITHUB_URL),
+                ]);
 
             client
                 .set_activity(activity)
                 .map_err(|e| format!("Failed to set presence: {}", e))?;
 
-            log::info!("Discord presence updated: playing {}", game_name);
+            log::info!("Discord presence updated: playing {} ({})", game_name, state);
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
+/// Update Discord presence with streaming stats (call periodically during gameplay)
+#[command]
+pub async fn update_game_stats(
+    game_name: String,
+    region: Option<String>,
+    resolution: Option<String>,
+    fps: Option<u32>,
+    latency_ms: Option<u32>,
+    start_time: Option<i64>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let guard = get_discord_client();
+        let mut lock = guard.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+        if let Some(client) = lock.as_mut() {
+            // Build stats string
+            let mut stats_parts: Vec<String> = Vec::new();
+            if let Some(res) = &resolution {
+                stats_parts.push(res.clone());
+            }
+            if let Some(f) = fps {
+                stats_parts.push(format!("{}fps", f));
+            }
+            if let Some(ms) = latency_ms {
+                stats_parts.push(format!("{}ms", ms));
+            }
+
+            let state = if let Some(reg) = &region {
+                if stats_parts.is_empty() {
+                    reg.clone()
+                } else {
+                    format!("{} | {}", reg, stats_parts.join(" "))
+                }
+            } else if !stats_parts.is_empty() {
+                stats_parts.join(" ")
+            } else {
+                "Playing".to_string()
+            };
+
+            // Use provided start_time to preserve elapsed time
+            let timestamp = start_time.unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64
+            });
+
+            let activity = activity::Activity::new()
+                .state(&state)
+                .details(&game_name)
+                .assets(
+                    activity::Assets::new()
+                        .large_image("gfn_logo")
+                        .large_text("OpenNOW")
+                        .small_image("playing")
+                        .small_text("Playing"),
+                )
+                .timestamps(activity::Timestamps::new().start(timestamp))
+                .buttons(vec![
+                    activity::Button::new("GitHub", GITHUB_URL),
+                ]);
+
+            client
+                .set_activity(activity)
+                .map_err(|e| format!("Failed to set presence: {}", e))?;
         }
 
         Ok(())
@@ -133,10 +242,13 @@ pub async fn set_queue_presence(
                 .assets(
                     activity::Assets::new()
                         .large_image("gfn_logo")
-                        .large_text("GeForce NOW")
+                        .large_text("OpenNOW")
                         .small_image("queue")
                         .small_text("In Queue"),
-                );
+                )
+                .buttons(vec![
+                    activity::Button::new("GitHub", GITHUB_URL),
+                ]);
 
             // Add ETA if available
             if let Some(eta) = eta_seconds {
@@ -173,12 +285,14 @@ pub async fn set_browsing_presence() -> Result<(), String> {
                 .set_activity(
                     activity::Activity::new()
                         .state("Browsing games")
-                        .details("GeForce NOW")
                         .assets(
                             activity::Assets::new()
                                 .large_image("gfn_logo")
-                                .large_text("GeForce NOW"),
-                        ),
+                                .large_text("OpenNOW"),
+                        )
+                        .buttons(vec![
+                            activity::Button::new("GitHub", GITHUB_URL),
+                        ]),
                 )
                 .map_err(|e| format!("Failed to set presence: {}", e))?;
 
