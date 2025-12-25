@@ -16,6 +16,199 @@ import {
   StreamingOptions,
 } from "./streaming";
 
+// ============================================
+// Custom Dropdown Component
+// ============================================
+
+interface DropdownChangeCallback {
+  (value: string, text: string): void;
+}
+
+const dropdownCallbacks: Map<string, DropdownChangeCallback[]> = new Map();
+
+function initializeDropdowns() {
+  const dropdowns = document.querySelectorAll('.custom-dropdown');
+
+  dropdowns.forEach(dropdown => {
+    const trigger = dropdown.querySelector('.dropdown-trigger') as HTMLElement;
+    const menu = dropdown.querySelector('.dropdown-menu') as HTMLElement;
+    const options = dropdown.querySelectorAll('.dropdown-option');
+
+    if (!trigger || !menu) return;
+
+    // Toggle dropdown on click
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = dropdown.classList.contains('open');
+
+      // Close all other dropdowns
+      document.querySelectorAll('.custom-dropdown.open').forEach(d => {
+        if (d !== dropdown) d.classList.remove('open');
+      });
+
+      dropdown.classList.toggle('open', !isOpen);
+    });
+
+    // Keyboard navigation
+    trigger.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        trigger.click();
+      } else if (e.key === 'Escape') {
+        dropdown.classList.remove('open');
+      } else if (e.key === 'ArrowDown' && dropdown.classList.contains('open')) {
+        e.preventDefault();
+        const selected = menu.querySelector('.dropdown-option.selected') as HTMLElement;
+        const next = selected?.nextElementSibling as HTMLElement || menu.querySelector('.dropdown-option') as HTMLElement;
+        next?.click();
+      } else if (e.key === 'ArrowUp' && dropdown.classList.contains('open')) {
+        e.preventDefault();
+        const selected = menu.querySelector('.dropdown-option.selected') as HTMLElement;
+        const prev = selected?.previousElementSibling as HTMLElement || menu.querySelector('.dropdown-option:last-child') as HTMLElement;
+        prev?.click();
+      }
+    });
+
+    // Option selection
+    options.forEach(option => {
+      option.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const value = (option as HTMLElement).dataset.value || '';
+        const text = option.textContent || '';
+
+        // Update selected state
+        options.forEach(o => o.classList.remove('selected'));
+        option.classList.add('selected');
+
+        // Update trigger text
+        const triggerText = trigger.querySelector('.dropdown-text');
+        if (triggerText) triggerText.textContent = text;
+
+        // Close dropdown
+        dropdown.classList.remove('open');
+
+        // Fire change callbacks
+        const dropdownId = (dropdown as HTMLElement).dataset.dropdown;
+        if (dropdownId) {
+          const callbacks = dropdownCallbacks.get(dropdownId) || [];
+          callbacks.forEach(cb => cb(value, text));
+        }
+      });
+    });
+  });
+
+  // Close dropdowns when clicking outside
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.custom-dropdown.open').forEach(d => {
+      d.classList.remove('open');
+    });
+  });
+}
+
+// Get dropdown value
+function getDropdownValue(id: string): string {
+  const dropdown = document.querySelector(`[data-dropdown="${id}"]`);
+  if (!dropdown) return '';
+  const selected = dropdown.querySelector('.dropdown-option.selected') as HTMLElement;
+  return selected?.dataset.value || '';
+}
+
+// Set dropdown value
+function setDropdownValue(id: string, value: string): void {
+  const dropdown = document.querySelector(`[data-dropdown="${id}"]`);
+  if (!dropdown) return;
+
+  const options = dropdown.querySelectorAll('.dropdown-option');
+  const trigger = dropdown.querySelector('.dropdown-trigger');
+  const triggerText = trigger?.querySelector('.dropdown-text');
+
+  options.forEach(option => {
+    const optionEl = option as HTMLElement;
+    if (optionEl.dataset.value === value) {
+      options.forEach(o => o.classList.remove('selected'));
+      optionEl.classList.add('selected');
+      if (triggerText) triggerText.textContent = optionEl.textContent || '';
+    }
+  });
+}
+
+// Add change listener to dropdown
+function onDropdownChange(id: string, callback: DropdownChangeCallback): void {
+  if (!dropdownCallbacks.has(id)) {
+    dropdownCallbacks.set(id, []);
+  }
+  dropdownCallbacks.get(id)!.push(callback);
+}
+
+// Set dropdown options dynamically
+function setDropdownOptions(id: string, options: { value: string; text: string; selected?: boolean; className?: string }[]): void {
+  const dropdown = document.querySelector(`[data-dropdown="${id}"]`);
+  if (!dropdown) return;
+
+  const menu = dropdown.querySelector('.dropdown-menu');
+  const trigger = dropdown.querySelector('.dropdown-trigger');
+  const triggerText = trigger?.querySelector('.dropdown-text');
+
+  if (!menu) return;
+
+  // Clear existing options
+  menu.innerHTML = '';
+
+  // Add new options
+  options.forEach(opt => {
+    const optionEl = document.createElement('div');
+    let className = 'dropdown-option';
+    if (opt.selected) className += ' selected';
+    if (opt.className) className += ' ' + opt.className;
+    optionEl.className = className;
+    optionEl.dataset.value = opt.value;
+    optionEl.textContent = opt.text;
+
+    // Add click handler
+    optionEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+
+      // Update selected state (preserve custom classes)
+      menu.querySelectorAll('.dropdown-option').forEach(o => o.classList.remove('selected'));
+      optionEl.classList.add('selected');
+
+      // Update trigger text and color
+      if (triggerText) {
+        triggerText.textContent = opt.text;
+        // Apply color class to trigger if option has one
+        const trigger = dropdown.querySelector('.dropdown-trigger');
+        if (trigger) {
+          trigger.classList.remove('latency-excellent', 'latency-good', 'latency-fair', 'latency-poor', 'latency-bad');
+          if (opt.className) trigger.classList.add(opt.className);
+        }
+      }
+
+      // Close dropdown
+      dropdown.classList.remove('open');
+
+      // Fire change callbacks
+      const callbacks = dropdownCallbacks.get(id) || [];
+      callbacks.forEach(cb => cb(opt.value, opt.text));
+    });
+
+    menu.appendChild(optionEl);
+
+    // Update trigger text if this is the selected option
+    if (opt.selected && triggerText) {
+      triggerText.textContent = opt.text;
+      // Apply color class to trigger
+      const triggerEl = dropdown.querySelector('.dropdown-trigger');
+      if (triggerEl && opt.className) {
+        triggerEl.classList.add(opt.className);
+      }
+    }
+  });
+}
+
+// ============================================
+// Types
+// ============================================
+
 // Types
 interface Game {
   id: string;
@@ -176,11 +369,6 @@ function getStreamingParams(): { resolution: string; fps: number } {
 
 // Populate resolution and FPS dropdowns from subscription data
 function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
-  const resolutionSelect = document.getElementById("resolution-setting") as HTMLSelectElement;
-  const fpsSelect = document.getElementById("fps-setting") as HTMLSelectElement;
-
-  if (!resolutionSelect || !fpsSelect) return;
-
   // Default options if no subscription data
   const defaultResolutions = [
     { width: 1280, height: 720 },
@@ -189,6 +377,23 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
     { width: 3840, height: 2160 },
   ];
   const defaultFps = [30, 60, 120];
+
+  // Helper to get friendly resolution label
+  const getResolutionLabel = (res: string): string => {
+    const labels: { [key: string]: string } = {
+      '1280x720': '1280x720 (720p)',
+      '1920x1080': '1920x1080 (1080p)',
+      '2560x1440': '2560x1440 (1440p)',
+      '3840x2160': '3840x2160 (4K)',
+      '5120x2880': '5120x2880 (5K)',
+      '2560x1080': '2560x1080 (UW 1080p)',
+      '3440x1440': '3440x1440 (UW 1440p)',
+      '1920x800': '1920x800 (21:9)',
+      '2560x1600': '2560x1600 (16:10)',
+      '1680x1050': '1680x1050 (16:10)',
+    };
+    return labels[res] || res;
+  };
 
   if (subscription?.features?.resolutions && subscription.features.resolutions.length > 0) {
     // Extract unique resolutions and FPS from subscription
@@ -211,34 +416,6 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
 
     availableFpsOptions = Array.from(fpsSet).sort((a, b) => a - b);
 
-    // Populate resolution dropdown
-    resolutionSelect.innerHTML = '';
-    for (const res of availableResolutions) {
-      const option = document.createElement('option');
-      option.value = res;
-      const [w, h] = res.split('x');
-      // Add friendly names for common resolutions
-      let label = res;
-      if (res === '1280x720') label = '1280x720 (720p)';
-      else if (res === '1920x1080') label = '1920x1080 (1080p)';
-      else if (res === '2560x1440') label = '2560x1440 (1440p)';
-      else if (res === '3840x2160') label = '3840x2160 (4K)';
-      else if (res === '5120x2880') label = '5120x2880 (5K)';
-      else if (res === '2560x1080') label = '2560x1080 (UW 1080p)';
-      else if (res === '3440x1440') label = '3440x1440 (UW 1440p)';
-      option.textContent = label;
-      resolutionSelect.appendChild(option);
-    }
-
-    // Populate FPS dropdown
-    fpsSelect.innerHTML = '';
-    for (const fps of availableFpsOptions) {
-      const option = document.createElement('option');
-      option.value = String(fps);
-      option.textContent = `${fps} FPS`;
-      fpsSelect.appendChild(option);
-    }
-
     console.log(`Populated ${availableResolutions.length} resolutions and ${availableFpsOptions.length} FPS options from subscription`);
   } else {
     // Use defaults
@@ -247,19 +424,35 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
     console.log("Using default resolution/FPS options (no subscription data)");
   }
 
-  // Set current values
-  resolutionSelect.value = currentResolution;
-  fpsSelect.value = String(currentFps);
+  // Build resolution options for custom dropdown
+  const resolutionOptions = availableResolutions.map(res => ({
+    value: res,
+    text: getResolutionLabel(res),
+    selected: res === currentResolution
+  }));
 
-  // If current value not in options, select the first available
-  if (!resolutionSelect.value && availableResolutions.length > 0) {
-    resolutionSelect.value = availableResolutions[0];
-    currentResolution = availableResolutions[0];
+  // If current resolution not in list, select first available
+  if (!resolutionOptions.some(o => o.selected) && resolutionOptions.length > 0) {
+    resolutionOptions[0].selected = true;
+    currentResolution = resolutionOptions[0].value;
   }
-  if (!fpsSelect.value && availableFpsOptions.length > 0) {
-    fpsSelect.value = String(availableFpsOptions[0]);
-    currentFps = availableFpsOptions[0];
+
+  setDropdownOptions("resolution-setting", resolutionOptions);
+
+  // Build FPS options for custom dropdown
+  const fpsOptions = availableFpsOptions.map(fps => ({
+    value: String(fps),
+    text: `${fps} FPS`,
+    selected: fps === currentFps
+  }));
+
+  // If current FPS not in list, select first available
+  if (!fpsOptions.some(o => o.selected) && fpsOptions.length > 0) {
+    fpsOptions[0].selected = true;
+    currentFps = parseInt(fpsOptions[0].value, 10);
   }
+
+  setDropdownOptions("fps-setting", fpsOptions);
 }
 
 // Get latency class for color coding based on ping value
@@ -406,31 +599,37 @@ function updateLatencyTestingUI(testing: boolean, currentRound: number = 0, tota
   }
 }
 
+// Get latency class name for dropdown coloring
+function getLatencyClassName(pingMs: number | undefined): string {
+  if (pingMs === undefined) return '';
+  if (pingMs < 20) return 'latency-excellent';
+  if (pingMs < 40) return 'latency-good';
+  if (pingMs < 80) return 'latency-fair';
+  if (pingMs < 120) return 'latency-poor';
+  return 'latency-bad';
+}
+
 // Populate region dropdown with latency data
 function populateRegionDropdown(servers: Server[]): void {
-  const regionSelect = document.getElementById("region-setting") as HTMLSelectElement;
-  if (!regionSelect) return;
-
   // Save current selection
-  const currentValue = regionSelect.value || currentRegion;
+  const currentValue = getDropdownValue("region-setting") || currentRegion;
 
-  // Clear existing options
-  while (regionSelect.firstChild) {
-    regionSelect.removeChild(regionSelect.firstChild);
-  }
+  // Build options array
+  const options: { value: string; text: string; selected?: boolean; className?: string }[] = [];
 
   // Add Auto option first
-  const autoOption = document.createElement("option");
-  autoOption.value = "auto";
   const bestServer = servers.find(s => s.status === "Online");
-  if (bestServer && bestServer.ping_ms) {
-    autoOption.textContent = `Auto (${bestServer.name} - ${bestServer.ping_ms}ms)`;
-  } else {
-    autoOption.textContent = "Auto (Lowest Ping)";
-  }
-  regionSelect.appendChild(autoOption);
+  const autoText = bestServer && bestServer.ping_ms
+    ? `Auto (${bestServer.name} - ${bestServer.ping_ms}ms)`
+    : "Auto (Lowest Ping)";
+  options.push({
+    value: "auto",
+    text: autoText,
+    selected: currentValue === "auto",
+    className: bestServer ? getLatencyClassName(bestServer.ping_ms) : ''
+  });
 
-  // Group servers by region
+  // Group servers by region and add them
   const regions: { [key: string]: Server[] } = {};
   for (const server of servers) {
     if (!regions[server.region]) {
@@ -439,37 +638,33 @@ function populateRegionDropdown(servers: Server[]): void {
     regions[server.region].push(server);
   }
 
-  // Add region groups
+  // Add servers grouped by region
   for (const [regionName, regionServers] of Object.entries(regions)) {
-    const optgroup = document.createElement("optgroup");
-    optgroup.label = regionName;
-
     for (const server of regionServers) {
-      const option = document.createElement("option");
-      option.value = server.id;
+      if (server.status !== "Online") continue; // Skip offline servers
 
       const latencyText = formatLatency(server.ping_ms, server.status);
+      const text = server.ping_ms
+        ? `${regionName} - ${server.name} (${latencyText})`
+        : `${regionName} - ${server.name}`;
 
-      if (server.status === "Online" && server.ping_ms) {
-        option.textContent = `${server.name} - ${latencyText}`;
-        option.style.color = getLatencyColor(server.ping_ms);
-      } else {
-        option.textContent = `${server.name} (${latencyText})`;
-        option.disabled = server.status !== "Online";
-      }
-
-      optgroup.appendChild(option);
+      options.push({
+        value: server.id,
+        text: text,
+        selected: currentValue === server.id,
+        className: getLatencyClassName(server.ping_ms)
+      });
     }
-
-    regionSelect.appendChild(optgroup);
   }
 
-  // Restore selection
-  regionSelect.value = currentValue;
-  if (!regionSelect.value) {
-    regionSelect.value = "auto";
+  // Update the dropdown
+  setDropdownOptions("region-setting", options);
+
+  // Update current region if selection changed
+  const newValue = getDropdownValue("region-setting");
+  if (newValue) {
+    currentRegion = newValue;
   }
-  currentRegion = regionSelect.value;
 }
 
 // Get CSS color for latency value
@@ -527,9 +722,20 @@ const settingsBtn = document.getElementById("settings-btn")!;
 const searchInput = document.getElementById("search-input") as HTMLInputElement;
 const navItems = document.querySelectorAll(".nav-item");
 
+// Declare Lucide global (loaded via CDN)
+declare const lucide: { createIcons: () => void };
+
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
   console.log("GFN Custom Client initialized");
+
+  // Initialize Lucide icons
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons();
+  }
+
+  // Initialize custom dropdowns
+  initializeDropdowns();
 
   // Setup navigation
   setupNavigation();
@@ -569,9 +775,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // Setup region dropdown change handler
-  const regionSelect = document.getElementById("region-setting") as HTMLSelectElement;
-  regionSelect?.addEventListener("change", () => {
-    currentRegion = regionSelect.value;
+  onDropdownChange("region-setting", (value) => {
+    currentRegion = value;
     updateStatusBarLatency();
   });
 });
@@ -597,70 +802,56 @@ async function loadSettings() {
     discordShowStats = settings.discord_show_stats === true; // Default to false
     currentRegion = settings.region || "auto";
 
-    // Apply to UI elements
-    const resolutionEl = document.getElementById("resolution-setting") as HTMLSelectElement;
-    const fpsEl = document.getElementById("fps-setting") as HTMLSelectElement;
-    const codecEl = document.getElementById("codec-setting") as HTMLSelectElement;
-    const audioCodecEl = document.getElementById("audio-codec-setting") as HTMLSelectElement;
+    // Apply to UI elements (non-dropdown)
     const bitrateEl = document.getElementById("bitrate-setting") as HTMLInputElement;
     const bitrateValueEl = document.getElementById("bitrate-value");
     const discordEl = document.getElementById("discord-setting") as HTMLInputElement;
     const discordStatsEl = document.getElementById("discord-stats-setting") as HTMLInputElement;
     const telemetryEl = document.getElementById("telemetry-setting") as HTMLInputElement;
     const proxyEl = document.getElementById("proxy-setting") as HTMLInputElement;
-    const regionEl = document.getElementById("region-setting") as HTMLSelectElement;
 
-    // Update codec options based on platform
+    // Update codec dropdown options based on platform
     // H.265/HEVC is only supported with hardware decoding on macOS (VideoToolbox)
-    // AV1 has limited hardware support, keep it but warn
-    if (codecEl) {
-      const h265Option = codecEl.querySelector('option[value="h265"]');
-      if (h265Option) {
-        if (isMacOS) {
-          // On macOS, H.265 is supported via VideoToolbox
-          (h265Option as HTMLOptionElement).disabled = false;
-          (h265Option as HTMLOptionElement).textContent = "H.265/HEVC (Better Quality)";
-        } else {
-          // On Windows/Linux, H.265 WebRTC decoding is not widely supported
-          (h265Option as HTMLOptionElement).disabled = true;
-          (h265Option as HTMLOptionElement).textContent = "H.265/HEVC (macOS only)";
-        }
-      }
+    const codecOptions = [
+      { value: "h264", text: "H.264 (Best Compatibility)", selected: currentCodec === "h264" },
+      { value: "av1", text: "AV1 (Best Quality)", selected: currentCodec === "av1" },
+    ];
+    if (isMacOS) {
+      codecOptions.splice(1, 0, {
+        value: "h265",
+        text: "H.265/HEVC (Better Quality)",
+        selected: currentCodec === "h265"
+      });
+    } else if (currentCodec === "h265") {
+      // Fall back to H.264 if not on macOS
+      currentCodec = "h264";
+      codecOptions[0].selected = true;
     }
+    setDropdownOptions("codec-setting", codecOptions);
 
-    // Update audio codec options based on platform
-    // Opus Stereo mode works best on macOS with Core Audio
-    if (audioCodecEl) {
-      const opusStereoOption = audioCodecEl.querySelector('option[value="opus-stereo"]');
-      if (opusStereoOption) {
-        if (isMacOS) {
-          // On macOS, Opus Stereo is fully supported
-          (opusStereoOption as HTMLOptionElement).disabled = false;
-          (opusStereoOption as HTMLOptionElement).textContent = "Opus Stereo (Better Audio)";
-        } else {
-          // On Windows/Linux, stereo mode may have issues
-          (opusStereoOption as HTMLOptionElement).disabled = true;
-          (opusStereoOption as HTMLOptionElement).textContent = "Opus Stereo (macOS only)";
-        }
-      }
+    // Update audio codec dropdown options based on platform
+    const audioCodecOptions = [
+      { value: "opus", text: "Opus (Default)", selected: currentAudioCodec === "opus" },
+    ];
+    if (isMacOS) {
+      audioCodecOptions.push({
+        value: "opus-stereo",
+        text: "Opus Stereo (Better Audio)",
+        selected: currentAudioCodec === "opus-stereo"
+      });
+    } else if (currentAudioCodec === "opus-stereo") {
+      // Fall back to Opus if not on macOS
+      currentAudioCodec = "opus";
+      audioCodecOptions[0].selected = true;
     }
+    setDropdownOptions("audio-codec-setting", audioCodecOptions);
 
-    if (resolutionEl) resolutionEl.value = currentResolution;
-    if (fpsEl) fpsEl.value = String(currentFps);
-    if (codecEl) {
-      // If user had H.265 selected but we're not on macOS, fall back to H.264
-      if (currentCodec === "h265" && !isMacOS) {
-        currentCodec = "h264";
-      }
-      codecEl.value = currentCodec;
-    }
-    if (audioCodecEl) {
-      // If user had Opus Stereo selected but we're not on macOS, fall back to Opus
-      if (currentAudioCodec === "opus-stereo" && !isMacOS) {
-        currentAudioCodec = "opus";
-      }
-      audioCodecEl.value = currentAudioCodec;
-    }
+    // Apply dropdown values
+    setDropdownValue("resolution-setting", currentResolution);
+    setDropdownValue("fps-setting", String(currentFps));
+    setDropdownValue("region-setting", currentRegion);
+
+    // Apply non-dropdown values
     if (bitrateEl) {
       bitrateEl.value = String(currentMaxBitrate);
       if (bitrateValueEl) {
@@ -671,7 +862,6 @@ async function loadSettings() {
     if (discordStatsEl) discordStatsEl.checked = discordShowStats;
     if (telemetryEl) telemetryEl.checked = settings.disable_telemetry ?? true;
     if (proxyEl && settings.proxy) proxyEl.value = settings.proxy;
-    if (regionEl) regionEl.value = currentRegion;
 
   } catch (error) {
     console.warn("Failed to load settings:", error);
@@ -1983,9 +2173,9 @@ function createStreamingContainer(gameName: string): HTMLElement {
       <div class="stream-header">
         <span class="stream-game-name">${gameName}</span>
         <div class="stream-controls">
-          <button class="stream-btn" id="stream-fullscreen-btn" title="Fullscreen">⛶</button>
-          <button class="stream-btn" id="stream-settings-btn" title="Settings">⚙</button>
-          <button class="stream-btn stream-btn-danger" id="stream-exit-btn" title="Exit">✕</button>
+          <button class="stream-btn" id="stream-fullscreen-btn" title="Fullscreen"><i data-lucide="maximize"></i></button>
+          <button class="stream-btn" id="stream-settings-btn" title="Settings"><i data-lucide="settings"></i></button>
+          <button class="stream-btn stream-btn-danger" id="stream-exit-btn" title="Exit"><i data-lucide="x"></i></button>
         </div>
       </div>
     </div>
@@ -2000,7 +2190,7 @@ function createStreamingContainer(gameName: string): HTMLElement {
     <div class="stream-settings-panel" id="stream-settings-panel">
       <div class="settings-panel-header">
         <span>Stream Settings</span>
-        <button class="settings-close-btn" id="settings-close-btn">✕</button>
+        <button class="settings-close-btn" id="settings-close-btn"><i data-lucide="x"></i></button>
       </div>
       <div class="settings-panel-content">
         <div class="settings-section">
@@ -2105,14 +2295,21 @@ function createStreamingContainer(gameName: string): HTMLElement {
       gap: 8px;
     }
     .stream-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
       background: rgba(255,255,255,0.1);
       border: none;
       color: white;
-      padding: 8px 12px;
-      border-radius: 4px;
+      width: 36px;
+      height: 36px;
+      border-radius: 6px;
       cursor: pointer;
-      font-size: 16px;
       transition: background 0.2s;
+    }
+    .stream-btn svg {
+      width: 18px;
+      height: 18px;
     }
     .stream-btn:hover {
       background: rgba(255,255,255,0.2);
@@ -2263,6 +2460,11 @@ function createStreamingContainer(gameName: string): HTMLElement {
 
   document.head.appendChild(style);
   document.body.appendChild(container);
+
+  // Reinitialize Lucide icons for dynamically added content
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons();
+  }
 
   // Find the video wrapper to return
   const videoWrapper = container.querySelector(".stream-video-wrapper") as HTMLElement;
@@ -2759,11 +2961,10 @@ function showStreamingInfo(info: {
   if (spinner && info.phase === "Ready") {
     spinner.style.borderTopColor = "#76b900";
     spinner.style.animation = "none";
-    spinner.innerHTML = "✓";
+    spinner.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
     spinner.style.display = "flex";
     spinner.style.alignItems = "center";
     spinner.style.justifyContent = "center";
-    spinner.style.fontSize = "30px";
     spinner.style.color = "#76b900";
   }
 }
@@ -2791,26 +2992,28 @@ async function cancelStreaming() {
 
 // Settings
 async function saveSettings() {
-  const resolutionEl = document.getElementById("resolution-setting") as HTMLSelectElement;
-  const fpsEl = document.getElementById("fps-setting") as HTMLSelectElement;
-  const codecEl = document.getElementById("codec-setting") as HTMLSelectElement;
-  const audioCodecEl = document.getElementById("audio-codec-setting") as HTMLSelectElement;
   const bitrateEl = document.getElementById("bitrate-setting") as HTMLInputElement;
-  const regionEl = document.getElementById("region-setting") as HTMLSelectElement;
   const proxyEl = document.getElementById("proxy-setting") as HTMLInputElement;
   const telemetryEl = document.getElementById("telemetry-setting") as HTMLInputElement;
   const discordEl = document.getElementById("discord-setting") as HTMLInputElement;
   const discordStatsEl = document.getElementById("discord-stats-setting") as HTMLInputElement;
 
+  // Get dropdown values
+  const resolution = getDropdownValue("resolution-setting") || "1920x1080";
+  const fps = getDropdownValue("fps-setting") || "60";
+  const codec = getDropdownValue("codec-setting") || "h264";
+  const audioCodec = getDropdownValue("audio-codec-setting") || "opus";
+  const region = getDropdownValue("region-setting") || "auto";
+
   // Update global state
   discordRpcEnabled = discordEl?.checked || false;
   discordShowStats = discordStatsEl?.checked || false;
-  currentResolution = resolutionEl?.value || "1920x1080";
-  currentFps = parseInt(fpsEl?.value || "60", 10);
-  currentCodec = codecEl?.value || "h264";
-  currentAudioCodec = audioCodecEl?.value || "opus";
+  currentResolution = resolution;
+  currentFps = parseInt(fps, 10);
+  currentCodec = codec;
+  currentAudioCodec = audioCodec;
   currentMaxBitrate = parseInt(bitrateEl?.value || "200", 10);
-  currentRegion = regionEl?.value || "auto";
+  currentRegion = region;
 
   // Update status bar with new region selection
   updateStatusBarLatency();
@@ -2819,10 +3022,10 @@ async function saveSettings() {
     quality: "custom", // Mark as custom since we use explicit resolution/fps
     resolution: currentResolution,
     fps: currentFps,
-    codec: codecEl?.value || "h264",
-    audio_codec: audioCodecEl?.value || "opus",
+    codec: codec,
+    audio_codec: audioCodec,
     max_bitrate_mbps: currentMaxBitrate,
-    region: regionEl?.value || undefined,
+    region: region || undefined,
     discord_rpc: discordRpcEnabled,
     discord_show_stats: discordShowStats,
     proxy: proxyEl?.value || undefined,
