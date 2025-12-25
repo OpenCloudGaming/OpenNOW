@@ -1484,8 +1484,11 @@ pub async fn claim_session(
             .as_ref()
             .and_then(|conns| conns.first())
             .and_then(|conn| {
+                log::info!("Connection info IP from PUT response (fallback): {:?}", conn.ip);
                 conn.ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
             });
+
+        log::info!("Signaling URL from PUT fallback: {:?}", signaling_url);
 
         return Ok(ClaimSessionResponse {
             session_id: session.session_id,
@@ -1513,10 +1516,11 @@ pub async fn claim_session(
         .as_ref()
         .and_then(|conns| conns.first())
         .and_then(|conn| {
+            log::info!("Connection info IP from GET response: {:?}", conn.ip);
             conn.ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
         });
 
-    log::info!("Signaling URL from GET: {:?}", signaling_url);
+    log::info!("Final signaling URL being returned: {:?}", signaling_url);
 
     Ok(ClaimSessionResponse {
         session_id: updated_session.session_id,
