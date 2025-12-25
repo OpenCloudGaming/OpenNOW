@@ -13,12 +13,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # First job: Calculate the version
+  # First job: Calculate the version and generate release notes
   get-version:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.get_version.outputs.version }}
       version_number: ${{ steps.get_version.outputs.version_number }}
+      release_notes: ${{ steps.generate_notes.outputs.release_notes }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,6 +32,7 @@ jobs:
           # Get the latest release tag, default to v0.0.1 if none exists
           LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.1")
           echo "Latest tag: $LATEST_TAG"
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
 
           # Extract version numbers (remove 'v' prefix and any suffix like '-dev')
           VERSION=$(echo $LATEST_TAG | sed 's/^v//' | sed 's/-.*$//')
@@ -57,6 +59,75 @@ jobs:
           echo "New version: $NEW_VERSION"
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "version_number=${MAJOR}.${MINOR}.${NEW_PATCH}" >> $GITHUB_OUTPUT
+
+      - name: Get commits since last release
+        id: get_commits
+        run: |
+          LATEST_TAG="${{ steps.get_version.outputs.latest_tag }}"
+
+          # Get commits since last tag (or all commits if no tag exists)
+          if git rev-parse "$LATEST_TAG" >/dev/null 2>&1; then
+            git log "$LATEST_TAG"..HEAD --pretty=format:"- %s (%h)" --no-merges | head -50 > commits.txt
+          else
+            git log --pretty=format:"- %s (%h)" --no-merges | head -50 > commits.txt
+          fi
+
+          # Output commits for next step
+          {
+            echo 'commits<<EOF'
+            cat commits.txt
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
+      - name: Generate AI release notes
+        id: generate_notes
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          COMMITS: ${{ steps.get_commits.outputs.commits }}
+          VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          # Create the prompt for OpenRouter (commits are safely passed via env var)
+          PROMPT="You are a release notes generator for OpenNOW, an open source GeForce NOW client built with Tauri. Generate clean, user-friendly release notes from these git commits. Categorize them into sections: ✨ Added (new features), 🔧 Changed (updates/improvements), 🐛 Fixed (bug fixes), and 🗑️ Removed (if any). Keep descriptions concise and user-focused. If a commit doesn't fit these categories, skip it. Only include sections that have items. Format in markdown. Do not include any introduction or conclusion text, just the categorized list.
+
+Git commits:
+$COMMITS"
+
+          # Build JSON payload safely using jq
+          PAYLOAD=$(jq -n \
+            --arg prompt "$PROMPT" \
+            '{
+              "model": "google/gemini-3-flash-preview",
+              "messages": [{"role": "user", "content": $prompt}],
+              "max_tokens": 1000
+            }')
+
+          # Call OpenRouter API
+          RESPONSE=$(curl -s -X POST "https://openrouter.ai/api/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+            -H "HTTP-Referer: https://github.com/zortos293/GFNClient" \
+            -H "X-Title: OpenNOW Release Notes" \
+            -d "$PAYLOAD")
+
+          # Extract the content from response
+          NOTES=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
+
+          # If API failed, create basic notes from commits
+          if [ -z "$NOTES" ]; then
+            NOTES="### Changes
+
+$COMMITS"
+          fi
+
+          # Save to file for multi-line output
+          echo "$NOTES" > release_notes.md
+
+          # Use heredoc for multiline output
+          {
+            echo 'release_notes<<EOF'
+            cat release_notes.md
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
 
   # Second job: Build on all platforms
   build:
@@ -171,12 +242,14 @@ jobs:
 
             Open source GeForce NOW client.
 
+            ${{ needs.get-version.outputs.release_notes }}
+
+            ---
+
             ### Downloads
             - **Windows**: `.msi` or `.exe` installer
             - **macOS**: `.dmg` disk image
             - **Linux**: `.deb` or `.AppImage`
-
-            ---
 
             [Sponsor this project](https://github.com/sponsors/zortos293)
           releaseDraft: false
