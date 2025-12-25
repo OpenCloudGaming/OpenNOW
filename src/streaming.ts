@@ -1399,7 +1399,6 @@ async function sendAuthMessage(ws: WebSocket, accessToken: string): Promise<void
       capabilities: [
         "webrtc",
         "h264",
-        "h265",
         "av1",
         "opus",
         "datachannel",
@@ -1697,10 +1696,12 @@ async function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
  * Modify SDP to force a specific video codec by removing all other codecs
  */
 function preferCodec(sdp: string, codec: string): string {
+  // Map user codec selection to actual SDP codec name
+  // Note: H265 appears as "HEVC" in the SDP rtpmap, not "H265"
   const codecMap: Record<string, string> = {
     H264: "H264",
-    H265: "H265",
-    HEVC: "H265",
+    H265: "HEVC",   // SDP uses HEVC for H265
+    HEVC: "HEVC",
     AV1: "AV1",
   };
 
@@ -2869,6 +2870,10 @@ export async function getStreamingStats(): Promise<StreamingStats | null> {
 
     if (report.type === "codec" && report.mimeType?.includes("video")) {
       codec = report.mimeType.replace("video/", "");
+      // Normalize HEVC to H265 for display consistency
+      if (codec.toUpperCase() === "HEVC") {
+        codec = "H265";
+      }
     }
   });
 
