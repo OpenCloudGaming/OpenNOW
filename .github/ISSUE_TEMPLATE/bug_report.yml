@@ -1,91 +1,18 @@
 name: Bug Report
-description: Report a bug or unexpected behavior in GFNClient
+description: Report a bug or unexpected behavior
 labels: ["bug"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for taking the time to report a bug! Please fill out the form below to help us investigate.
-
-  - type: checkboxes
-    id: existing-issue
-    attributes:
-      label: Existing Issue Check
-      description: Please check if this bug has already been reported
-      options:
-        - label: I have searched the existing issues and this bug has not been reported
-          required: true
-
   - type: textarea
     id: description
     attributes:
-      label: Bug Description
-      description: A clear and concise description of what the bug is
-      placeholder: Describe the bug...
-    validations:
-      required: true
-
-  - type: textarea
-    id: steps-to-reproduce
-    attributes:
-      label: Steps to Reproduce
-      description: Steps to reproduce the behavior
+      label: What happened?
+      description: Describe the bug and how to reproduce it
       placeholder: |
-        1. Go to '...'
-        2. Click on '...'
-        3. Scroll down to '...'
-        4. See error
-    validations:
-      required: true
+        What went wrong?
 
-  - type: textarea
-    id: expected-behavior
-    attributes:
-      label: Expected Behavior
-      description: What you expected to happen
-      placeholder: Describe what should happen...
-    validations:
-      required: true
-
-  - type: textarea
-    id: actual-behavior
-    attributes:
-      label: Actual Behavior
-      description: What actually happened
-      placeholder: Describe what actually happened...
-    validations:
-      required: true
-
-  - type: dropdown
-    id: severity
-    attributes:
-      label: Severity
-      description: How severe is this bug?
-      options:
-        - Critical (App crashes, data loss, unusable)
-        - High (Major feature broken, no workaround)
-        - Medium (Feature partially broken, workaround exists)
-        - Low (Minor issue, cosmetic)
-    validations:
-      required: true
-
-  - type: dropdown
-    id: area
-    attributes:
-      label: Affected Area
-      description: What part of the application is affected?
-      options:
-        - Streaming/Video
-        - Audio
-        - Input (Keyboard/Mouse/Controller)
-        - Authentication/Login
-        - Game Library
-        - Session Management
-        - Settings
-        - Discord Integration
-        - UI/Display
-        - Fullscreen Mode
-        - Other
+        Steps to reproduce (if applicable):
+        1. ...
+        2. ...
     validations:
       required: true
 
@@ -93,68 +20,16 @@ body:
     id: os
     attributes:
       label: Operating System
-      description: What OS are you using?
       options:
-        - macOS 15 (Sequoia)
-        - macOS 14 (Sonoma)
-        - macOS 13 (Ventura)
-        - macOS 12 (Monterey)
-        - Windows 11
-        - Windows 10
-        - Linux (Ubuntu)
-        - Linux (Fedora)
-        - Linux (Arch)
-        - Linux (Other)
-    validations:
-      required: true
-
-  - type: input
-    id: app-version
-    attributes:
-      label: GFNClient Version
-      description: What version of GFNClient are you using?
-      placeholder: e.g., 1.0.0 or commit hash
-    validations:
-      required: true
-
-  - type: dropdown
-    id: gfn-tier
-    attributes:
-      label: GeForce NOW Tier
-      description: What GeForce NOW subscription tier are you using?
-      options:
-        - Free
-        - Priority
-        - Ultimate
+        - macOS
+        - Windows
+        - Linux
     validations:
       required: true
 
   - type: textarea
     id: logs
     attributes:
-      label: Logs/Error Messages
-      description: Please paste any relevant log output or error messages
-      placeholder: Paste logs here...
+      label: Logs or Screenshots (optional)
+      description: Paste error messages or drag images here
       render: shell
-
-  - type: textarea
-    id: screenshots
-    attributes:
-      label: Screenshots
-      description: If applicable, add screenshots to help explain your problem
-      placeholder: Drag and drop images here...
-
-  - type: textarea
-    id: additional-context
-    attributes:
-      label: Additional Context
-      description: Add any other context about the problem here
-      placeholder: Any additional information...
-
-  - type: checkboxes
-    id: contribution
-    attributes:
-      label: Contribution
-      description: Are you willing to help fix this bug?
-      options:
-        - label: I am willing to submit a pull request to fix this bug
