@@ -341,6 +341,8 @@ interface ActiveSession {
 // Active session state
 let detectedActiveSessions: ActiveSession[] = [];
 let pendingGameLaunch: Game | null = null;
+let sessionPollingInterval: number | null = null;
+const SESSION_POLLING_INTERVAL_MS = 10000; // Check every 10 seconds
 
 // State
 let currentView = "home";
@@ -725,9 +727,149 @@ const navItems = document.querySelectorAll(".nav-item");
 // Declare Lucide global (loaded via CDN)
 declare const lucide: { createIcons: () => void };
 
+// Current app version (updated by build)
+const APP_VERSION = "0.0.10";
+
+// Update checker
+interface GitHubRelease {
+  tag_name: string;
+  name: string;
+  body: string;
+  html_url: string;
+  prerelease: boolean;
+}
+
+async function checkForUpdates(): Promise<void> {
+  try {
+    // Use releases list instead of /latest to avoid 404 when no releases exist
+    const response = await fetch(
+      "https://api.github.com/repos/zortos293/GFNClient/releases?per_page=1"
+    );
+
+    if (!response.ok) {
+      console.log("Could not check for updates (API error)");
+      return;
+    }
+
+    const releases = await response.json();
+
+    if (!Array.isArray(releases) || releases.length === 0) {
+      // No releases published yet - this is expected for new projects
+      console.log("No releases found - skipping update check");
+      return;
+    }
+
+    // Use the first (most recent) release
+    handleReleaseCheck(releases[0]);
+  } catch (error) {
+    // Network errors, etc - silently ignore
+    console.log("Update check skipped:", error instanceof Error ? error.message : "network error");
+  }
+}
+
+function handleReleaseCheck(release: GitHubRelease): void {
+  const latestVersion = release.tag_name.replace(/^v/, "");
+  const currentVersion = APP_VERSION;
+
+  // Check if we should skip this version
+  const skippedVersion = localStorage.getItem("skippedVersion");
+  if (skippedVersion === latestVersion) {
+    console.log("Skipping version", latestVersion);
+    return;
+  }
+
+  // Compare versions
+  if (isNewerVersion(latestVersion, currentVersion)) {
+    console.log("Update available:", latestVersion);
+    showUpdateModal(release, latestVersion);
+  } else {
+    console.log("App is up to date:", currentVersion);
+  }
+}
+
+function isNewerVersion(latest: string, current: string): boolean {
+  const latestParts = latest.split(".").map(Number);
+  const currentParts = current.split(".").map(Number);
+
+  for (let i = 0; i < Math.max(latestParts.length, currentParts.length); i++) {
+    const l = latestParts[i] || 0;
+    const c = currentParts[i] || 0;
+    if (l > c) return true;
+    if (l < c) return false;
+  }
+  return false;
+}
+
+function showUpdateModal(release: GitHubRelease, version: string): void {
+  const modal = document.getElementById("update-modal");
+  const versionSpan = document.getElementById("update-version");
+  const changelogDiv = document.getElementById("update-changelog-content");
+  const downloadBtn = document.getElementById("update-download-btn") as HTMLAnchorElement;
+  const skipBtn = document.getElementById("update-skip-btn");
+  const laterBtn = document.getElementById("update-later-btn");
+
+  if (!modal || !versionSpan || !changelogDiv || !downloadBtn) return;
+
+  versionSpan.textContent = `v${version}`;
+
+  // Parse changelog from release body
+  const changelog = release.body || "No changelog available.";
+  changelogDiv.innerHTML = formatChangelog(changelog);
+
+  // Set download link
+  downloadBtn.href = release.html_url;
+
+  // Show modal
+  modal.classList.remove("hidden");
+
+  // Reinitialize Lucide icons
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons();
+  }
+
+  // Skip button - remember to skip this version
+  skipBtn?.addEventListener("click", () => {
+    localStorage.setItem("skippedVersion", version);
+    modal.classList.add("hidden");
+  });
+
+  // Later button - just close
+  laterBtn?.addEventListener("click", () => {
+    modal.classList.add("hidden");
+  });
+
+  // Close button
+  const closeBtn = modal.querySelector(".modal-close");
+  closeBtn?.addEventListener("click", () => {
+    modal.classList.add("hidden");
+  });
+}
+
+function formatChangelog(body: string): string {
+  // Convert markdown-style changelog to HTML
+  let html = body
+    // Convert headers
+    .replace(/^### (.+)$/gm, "<strong>$1</strong>")
+    .replace(/^## (.+)$/gm, "<strong>$1</strong>")
+    // Convert bullet points
+    .replace(/^[*-] (.+)$/gm, "<li>$1</li>")
+    // Convert newlines
+    .replace(/\n\n/g, "<br><br>")
+    .replace(/\n/g, " ");
+
+  // Wrap lists
+  if (html.includes("<li>")) {
+    html = html.replace(/(<li>.*<\/li>)/g, "<ul>$1</ul>");
+    // Clean up consecutive ul tags
+    html = html.replace(/<\/ul>\s*<ul>/g, "");
+  }
+
+  return html;
+}
+
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
-  console.log("GFN Custom Client initialized");
+  console.log("OpenNOW initialized");
 
   // Initialize Lucide icons
   if (typeof lucide !== 'undefined') {
@@ -764,6 +906,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Run latency test in background on startup
   testLatency().catch(err => console.error("Initial latency test failed:", err));
 
+  // Check for updates
+  checkForUpdates();
+
   // Check for active sessions after auth (if authenticated)
   if (isAuthenticated) {
     const sessions = await checkActiveSessions();
@@ -772,6 +917,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       updateNavbarSessionIndicator(sessions[0]);
       showActiveSessionModal(sessions[0]);
     }
+    // Start polling for active sessions every 10 seconds
+    startSessionPolling();
   }
 
   // Setup region dropdown change handler
@@ -993,6 +1140,66 @@ async function checkActiveSessions(): Promise<ActiveSession[]> {
   }
 }
 
+// Start polling for active sessions (when not streaming)
+function startSessionPolling() {
+  // Don't start if already polling or currently streaming
+  if (sessionPollingInterval !== null) {
+    console.log("Session polling already active");
+    return;
+  }
+
+  if (isStreamingActive()) {
+    console.log("Not starting session polling - currently streaming");
+    return;
+  }
+
+  if (!isAuthenticated) {
+    console.log("Not starting session polling - not authenticated");
+    return;
+  }
+
+  console.log("Starting session polling (every 10 seconds)");
+
+  sessionPollingInterval = window.setInterval(async () => {
+    // Stop polling if we started streaming
+    if (isStreamingActive()) {
+      console.log("Stopping session polling - streaming started");
+      stopSessionPolling();
+      return;
+    }
+
+    // Don't poll if not authenticated
+    if (!isAuthenticated) {
+      console.log("Stopping session polling - no longer authenticated");
+      stopSessionPolling();
+      return;
+    }
+
+    const sessions = await checkActiveSessions();
+    if (sessions.length > 0) {
+      // Update navbar indicator if not already showing
+      const existingIndicator = document.getElementById("active-session-indicator");
+      if (!existingIndicator) {
+        console.log("Active session detected via polling:", sessions[0].sessionId);
+        updateNavbarSessionIndicator(sessions[0]);
+        showActiveSessionModal(sessions[0]);
+      }
+    } else {
+      // No active sessions - hide indicator if showing
+      hideNavbarSessionIndicator();
+    }
+  }, SESSION_POLLING_INTERVAL_MS);
+}
+
+// Stop polling for active sessions
+function stopSessionPolling() {
+  if (sessionPollingInterval !== null) {
+    console.log("Stopping session polling");
+    window.clearInterval(sessionPollingInterval);
+    sessionPollingInterval = null;
+  }
+}
+
 // Find game title by app ID
 function getGameTitleByAppId(appId: number | undefined): string {
   if (!appId) return "Unknown Game";
@@ -1160,12 +1367,16 @@ function setupSessionModals() {
 async function connectToExistingSession(session: ActiveSession) {
   console.log("Connecting to existing session:", session.sessionId);
 
+  // Stop session polling while we're reconnecting/streaming
+  stopSessionPolling();
+
   // Get the GFN JWT token
   let accessToken: string;
   try {
     accessToken = await invoke<string>("get_gfn_jwt");
   } catch (e) {
     console.error("Not authenticated:", e);
+    startSessionPolling(); // Resume polling since we're not connecting
     return;
   }
 
@@ -1238,6 +1449,7 @@ async function connectToExistingSession(session: ActiveSession) {
     });
 
     console.log("Session claimed successfully:", claimResult);
+    console.log("Claim result details - signalingUrl:", claimResult.signalingUrl, "serverIp:", claimResult.serverIp);
 
     // Update streaming state with claimed values
     if (claimResult.gpuType) {
@@ -1247,19 +1459,25 @@ async function connectToExistingSession(session: ActiveSession) {
       streamingUIState.serverIp = claimResult.serverIp;
     }
 
-    // Use the updated signaling URL from claim response if available
+    // Use the signaling URL from the claim response (which is now from the polled GET when status is 2)
+    // The backend polls until the session transitions from status 6 to status 2/3, then returns
+    // the correct connectionInfo with the signaling URL.
+    // Fall back to original if claim response doesn't have one.
     const actualSignalingUrl = claimResult.signalingUrl || session.signalingUrl;
+    console.log("Using signaling URL from claim (polled until ready):", actualSignalingUrl);
+    console.log("Original session signalingUrl:", session.signalingUrl);
+    console.log("Claim result status:", claimResult.status);
 
-    // Extract the stream IP from the UPDATED signaling URL (after claim)
-    // This is important because the server may assign a different streaming endpoint
+    // Extract the stream IP from the signaling URL
     let actualStreamIp = streamIp;
     if (actualSignalingUrl) {
       const match = actualSignalingUrl.match(/wss:\/\/([^:\/]+)/);
       if (match) {
         actualStreamIp = match[1];
-        console.log("Updated stream IP from claim response:", actualStreamIp);
+        console.log("Extracted stream IP from signaling URL:", actualStreamIp);
       }
     }
+    console.log("Final stream IP to use:", actualStreamIp);
 
     // Set up the backend session storage for reconnection
     // This is required for get_webrtc_config and other backend functions to work
@@ -1346,6 +1564,9 @@ async function connectToExistingSession(session: ActiveSession) {
         // Ignore
       }
     }
+
+    // Resume session polling since reconnection failed
+    startSessionPolling();
   }
 }
 
@@ -1962,6 +2183,9 @@ async function launchGame(game: Game) {
   console.log("Launching game:", game.title);
   hideAllModals();
 
+  // Stop session polling while we're launching/streaming
+  stopSessionPolling();
+
   // Get the GFN JWT token first (required for API authentication)
   let accessToken: string;
   try {
@@ -1969,6 +2193,7 @@ async function launchGame(game: Game) {
   } catch (e) {
     console.error("Not authenticated:", e);
     alert("Please login first to launch games.");
+    startSessionPolling(); // Resume polling since we're not launching
     return;
   }
 
@@ -1977,6 +2202,7 @@ async function launchGame(game: Game) {
   if (activeSessions.length > 0) {
     // Show the conflict modal instead of launching
     showSessionConflictModal(activeSessions[0], game);
+    startSessionPolling(); // Resume polling since we're not launching
     return;
   }
 
@@ -2158,6 +2384,9 @@ async function launchGame(game: Game) {
         // Ignore
       }
     }
+
+    // Resume session polling since launch failed
+    startSessionPolling();
 
     alert(`Failed to launch game: ${error}`);
   }
@@ -2844,6 +3073,9 @@ async function exitStreaming(): Promise<void> {
   }
 
   console.log("Streaming exited");
+
+  // Resume session polling now that we're not streaming
+  startSessionPolling();
 }
 
 // Streaming overlay functions

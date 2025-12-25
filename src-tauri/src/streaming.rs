@@ -1261,12 +1261,20 @@ pub async fn get_active_sessions(
                 .as_ref()
                 .and_then(|c| c.ip.clone());
 
+            // Try to get signaling URL from connection_info first, then fall back to server_ip
             let signaling_url = s.connection_info
                 .as_ref()
                 .and_then(|conns| conns.first())
                 .and_then(|conn| {
                     conn.ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
+                })
+                .or_else(|| {
+                    // Fall back to server_ip if connection_info doesn't have the IP
+                    server_ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
                 });
+
+            log::info!("Session {} server_ip: {:?}, signaling_url: {:?}",
+                       s.session_id, server_ip, signaling_url);
 
             let (resolution, fps) = s.monitor_settings
                 .as_ref()
@@ -1476,8 +1484,11 @@ pub async fn claim_session(
             .as_ref()
             .and_then(|conns| conns.first())
             .and_then(|conn| {
+                log::info!("Connection info IP from PUT response (fallback): {:?}", conn.ip);
                 conn.ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
             });
+
+        log::info!("Signaling URL from PUT fallback: {:?}", signaling_url);
 
         return Ok(ClaimSessionResponse {
             session_id: session.session_id,
@@ -1505,10 +1516,11 @@ pub async fn claim_session(
         .as_ref()
         .and_then(|conns| conns.first())
         .and_then(|conn| {
+            log::info!("Connection info IP from GET response: {:?}", conn.ip);
             conn.ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
         });
 
-    log::info!("Signaling URL from GET: {:?}", signaling_url);
+    log::info!("Final signaling URL being returned: {:?}", signaling_url);
 
     Ok(ClaimSessionResponse {
         session_id: updated_session.session_id,
@@ -1627,6 +1639,19 @@ pub async fn terminate_session(
 
     log::info!("Session terminated: {}", session_id);
     Ok(())
+}
+
+/// Start streaming flow - polls session until ready
+/// This is the main entry point called by the frontend after start_session
+#[command]
+pub async fn start_streaming_flow(
+    session_id: String,
+    access_token: String,
+) -> Result<StreamingConnectionState, String> {
+    log::info!("Starting streaming flow for session: {}", session_id);
+
+    // Poll the session until it's ready
+    poll_session_until_ready(session_id, access_token, None).await
 }
 
 /// Stop streaming and cleanup

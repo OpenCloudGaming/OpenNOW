@@ -2677,55 +2677,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gfn-client"
-version = "0.0.2"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "bytes",
- "chrono",
- "clap",
- "core-graphics 0.24.0",
- "cpal",
- "crossbeam-channel",
- "dirs 5.0.1",
- "discord-rich-presence",
- "eframe",
- "egui_extras",
- "env_logger",
- "futures-util",
- "hex",
- "http",
- "image",
- "log",
- "native-tls",
- "open",
- "openh264",
- "parking_lot",
- "rand 0.8.5",
- "reqwest",
- "rfd",
- "serde",
- "serde_json",
- "sha2",
- "softbuffer",
- "tauri",
- "tauri-build",
- "tauri-plugin-http",
- "tauri-plugin-shell",
- "tauri-plugin-store",
- "thiserror 1.0.69",
- "tokio",
- "tokio-native-tls",
- "tokio-tungstenite",
- "url",
- "urlencoding",
- "uuid 1.19.0",
- "webrtc",
- "winit",
-]
-
-[[package]]
 name = "ghash"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4757,6 +4708,55 @@ dependencies = [
  "cc",
  "nasm-rs",
  "walkdir",
+]
+
+[[package]]
+name = "opennow"
+version = "0.0.10"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "clap",
+ "core-graphics 0.24.0",
+ "cpal",
+ "crossbeam-channel",
+ "dirs 5.0.1",
+ "discord-rich-presence",
+ "eframe",
+ "egui_extras",
+ "env_logger",
+ "futures-util",
+ "hex",
+ "http",
+ "image",
+ "log",
+ "native-tls",
+ "open",
+ "openh264",
+ "parking_lot",
+ "rand 0.8.5",
+ "reqwest",
+ "rfd",
+ "serde",
+ "serde_json",
+ "sha2",
+ "softbuffer",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-http",
+ "tauri-plugin-shell",
+ "tauri-plugin-store",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-tungstenite",
+ "url",
+ "urlencoding",
+ "uuid 1.19.0",
+ "webrtc",
+ "winit",
 ]
 
 [[package]]
