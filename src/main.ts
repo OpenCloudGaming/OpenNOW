@@ -1,9 +1,12 @@
 // GFN Custom Client - Main Entry Point
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   initializeStreaming,
   setupInputCapture,
   setInputCaptureMode,
+  suspendCursorCapture,
+  resumeCursorCapture,
   stopStreaming,
   getStreamingStats,
   isStreamingActive,
@@ -12,6 +15,199 @@ import {
   getInputDebugInfo,
   StreamingOptions,
 } from "./streaming";
+
+// ============================================
+// Custom Dropdown Component
+// ============================================
+
+interface DropdownChangeCallback {
+  (value: string, text: string): void;
+}
+
+const dropdownCallbacks: Map<string, DropdownChangeCallback[]> = new Map();
+
+function initializeDropdowns() {
+  const dropdowns = document.querySelectorAll('.custom-dropdown');
+
+  dropdowns.forEach(dropdown => {
+    const trigger = dropdown.querySelector('.dropdown-trigger') as HTMLElement;
+    const menu = dropdown.querySelector('.dropdown-menu') as HTMLElement;
+    const options = dropdown.querySelectorAll('.dropdown-option');
+
+    if (!trigger || !menu) return;
+
+    // Toggle dropdown on click
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = dropdown.classList.contains('open');
+
+      // Close all other dropdowns
+      document.querySelectorAll('.custom-dropdown.open').forEach(d => {
+        if (d !== dropdown) d.classList.remove('open');
+      });
+
+      dropdown.classList.toggle('open', !isOpen);
+    });
+
+    // Keyboard navigation
+    trigger.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        trigger.click();
+      } else if (e.key === 'Escape') {
+        dropdown.classList.remove('open');
+      } else if (e.key === 'ArrowDown' && dropdown.classList.contains('open')) {
+        e.preventDefault();
+        const selected = menu.querySelector('.dropdown-option.selected') as HTMLElement;
+        const next = selected?.nextElementSibling as HTMLElement || menu.querySelector('.dropdown-option') as HTMLElement;
+        next?.click();
+      } else if (e.key === 'ArrowUp' && dropdown.classList.contains('open')) {
+        e.preventDefault();
+        const selected = menu.querySelector('.dropdown-option.selected') as HTMLElement;
+        const prev = selected?.previousElementSibling as HTMLElement || menu.querySelector('.dropdown-option:last-child') as HTMLElement;
+        prev?.click();
+      }
+    });
+
+    // Option selection
+    options.forEach(option => {
+      option.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const value = (option as HTMLElement).dataset.value || '';
+        const text = option.textContent || '';
+
+        // Update selected state
+        options.forEach(o => o.classList.remove('selected'));
+        option.classList.add('selected');
+
+        // Update trigger text
+        const triggerText = trigger.querySelector('.dropdown-text');
+        if (triggerText) triggerText.textContent = text;
+
+        // Close dropdown
+        dropdown.classList.remove('open');
+
+        // Fire change callbacks
+        const dropdownId = (dropdown as HTMLElement).dataset.dropdown;
+        if (dropdownId) {
+          const callbacks = dropdownCallbacks.get(dropdownId) || [];
+          callbacks.forEach(cb => cb(value, text));
+        }
+      });
+    });
+  });
+
+  // Close dropdowns when clicking outside
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.custom-dropdown.open').forEach(d => {
+      d.classList.remove('open');
+    });
+  });
+}
+
+// Get dropdown value
+function getDropdownValue(id: string): string {
+  const dropdown = document.querySelector(`[data-dropdown="${id}"]`);
+  if (!dropdown) return '';
+  const selected = dropdown.querySelector('.dropdown-option.selected') as HTMLElement;
+  return selected?.dataset.value || '';
+}
+
+// Set dropdown value
+function setDropdownValue(id: string, value: string): void {
+  const dropdown = document.querySelector(`[data-dropdown="${id}"]`);
+  if (!dropdown) return;
+
+  const options = dropdown.querySelectorAll('.dropdown-option');
+  const trigger = dropdown.querySelector('.dropdown-trigger');
+  const triggerText = trigger?.querySelector('.dropdown-text');
+
+  options.forEach(option => {
+    const optionEl = option as HTMLElement;
+    if (optionEl.dataset.value === value) {
+      options.forEach(o => o.classList.remove('selected'));
+      optionEl.classList.add('selected');
+      if (triggerText) triggerText.textContent = optionEl.textContent || '';
+    }
+  });
+}
+
+// Add change listener to dropdown
+function onDropdownChange(id: string, callback: DropdownChangeCallback): void {
+  if (!dropdownCallbacks.has(id)) {
+    dropdownCallbacks.set(id, []);
+  }
+  dropdownCallbacks.get(id)!.push(callback);
+}
+
+// Set dropdown options dynamically
+function setDropdownOptions(id: string, options: { value: string; text: string; selected?: boolean; className?: string }[]): void {
+  const dropdown = document.querySelector(`[data-dropdown="${id}"]`);
+  if (!dropdown) return;
+
+  const menu = dropdown.querySelector('.dropdown-menu');
+  const trigger = dropdown.querySelector('.dropdown-trigger');
+  const triggerText = trigger?.querySelector('.dropdown-text');
+
+  if (!menu) return;
+
+  // Clear existing options
+  menu.innerHTML = '';
+
+  // Add new options
+  options.forEach(opt => {
+    const optionEl = document.createElement('div');
+    let className = 'dropdown-option';
+    if (opt.selected) className += ' selected';
+    if (opt.className) className += ' ' + opt.className;
+    optionEl.className = className;
+    optionEl.dataset.value = opt.value;
+    optionEl.textContent = opt.text;
+
+    // Add click handler
+    optionEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+
+      // Update selected state (preserve custom classes)
+      menu.querySelectorAll('.dropdown-option').forEach(o => o.classList.remove('selected'));
+      optionEl.classList.add('selected');
+
+      // Update trigger text and color
+      if (triggerText) {
+        triggerText.textContent = opt.text;
+        // Apply color class to trigger if option has one
+        const trigger = dropdown.querySelector('.dropdown-trigger');
+        if (trigger) {
+          trigger.classList.remove('latency-excellent', 'latency-good', 'latency-fair', 'latency-poor', 'latency-bad');
+          if (opt.className) trigger.classList.add(opt.className);
+        }
+      }
+
+      // Close dropdown
+      dropdown.classList.remove('open');
+
+      // Fire change callbacks
+      const callbacks = dropdownCallbacks.get(id) || [];
+      callbacks.forEach(cb => cb(opt.value, opt.text));
+    });
+
+    menu.appendChild(optionEl);
+
+    // Update trigger text if this is the selected option
+    if (opt.selected && triggerText) {
+      triggerText.textContent = opt.text;
+      // Apply color class to trigger
+      const triggerEl = dropdown.querySelector('.dropdown-trigger');
+      if (triggerEl && opt.className) {
+        triggerEl.classList.add(opt.className);
+      }
+    }
+  });
+}
+
+// ============================================
+// Types
+// ============================================
 
 // Types
 interface Game {
@@ -101,6 +297,7 @@ interface Settings {
   resolution?: string;
   fps?: number;
   codec: string;
+  audio_codec?: string;
   max_bitrate_mbps: number;
   region?: string;
   discord_rpc: boolean;
@@ -130,6 +327,21 @@ interface Server {
   status: string;
 }
 
+interface ActiveSession {
+  sessionId: string;
+  appId: number;
+  gpuType: string | null;
+  status: number;
+  serverIp: string | null;
+  signalingUrl: string | null;
+  resolution: string | null;
+  fps: number | null;
+}
+
+// Active session state
+let detectedActiveSessions: ActiveSession[] = [];
+let pendingGameLaunch: Game | null = null;
+
 // State
 let currentView = "home";
 let isAuthenticated = false;
@@ -142,6 +354,7 @@ let currentQuality = "auto"; // Current quality preset (legacy/fallback)
 let currentResolution = "1920x1080"; // Current resolution (WxH format)
 let currentFps = 60; // Current FPS
 let currentCodec = "h264"; // Current video codec
+let currentAudioCodec = "opus"; // Current audio codec
 let currentMaxBitrate = 200; // Max bitrate in Mbps (200 = unlimited)
 let availableResolutions: string[] = []; // Available resolutions from subscription
 let availableFpsOptions: number[] = []; // Available FPS options from subscription
@@ -156,11 +369,6 @@ function getStreamingParams(): { resolution: string; fps: number } {
 
 // Populate resolution and FPS dropdowns from subscription data
 function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
-  const resolutionSelect = document.getElementById("resolution-setting") as HTMLSelectElement;
-  const fpsSelect = document.getElementById("fps-setting") as HTMLSelectElement;
-
-  if (!resolutionSelect || !fpsSelect) return;
-
   // Default options if no subscription data
   const defaultResolutions = [
     { width: 1280, height: 720 },
@@ -169,6 +377,23 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
     { width: 3840, height: 2160 },
   ];
   const defaultFps = [30, 60, 120];
+
+  // Helper to get friendly resolution label
+  const getResolutionLabel = (res: string): string => {
+    const labels: { [key: string]: string } = {
+      '1280x720': '1280x720 (720p)',
+      '1920x1080': '1920x1080 (1080p)',
+      '2560x1440': '2560x1440 (1440p)',
+      '3840x2160': '3840x2160 (4K)',
+      '5120x2880': '5120x2880 (5K)',
+      '2560x1080': '2560x1080 (UW 1080p)',
+      '3440x1440': '3440x1440 (UW 1440p)',
+      '1920x800': '1920x800 (21:9)',
+      '2560x1600': '2560x1600 (16:10)',
+      '1680x1050': '1680x1050 (16:10)',
+    };
+    return labels[res] || res;
+  };
 
   if (subscription?.features?.resolutions && subscription.features.resolutions.length > 0) {
     // Extract unique resolutions and FPS from subscription
@@ -191,34 +416,6 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
 
     availableFpsOptions = Array.from(fpsSet).sort((a, b) => a - b);
 
-    // Populate resolution dropdown
-    resolutionSelect.innerHTML = '';
-    for (const res of availableResolutions) {
-      const option = document.createElement('option');
-      option.value = res;
-      const [w, h] = res.split('x');
-      // Add friendly names for common resolutions
-      let label = res;
-      if (res === '1280x720') label = '1280x720 (720p)';
-      else if (res === '1920x1080') label = '1920x1080 (1080p)';
-      else if (res === '2560x1440') label = '2560x1440 (1440p)';
-      else if (res === '3840x2160') label = '3840x2160 (4K)';
-      else if (res === '5120x2880') label = '5120x2880 (5K)';
-      else if (res === '2560x1080') label = '2560x1080 (UW 1080p)';
-      else if (res === '3440x1440') label = '3440x1440 (UW 1440p)';
-      option.textContent = label;
-      resolutionSelect.appendChild(option);
-    }
-
-    // Populate FPS dropdown
-    fpsSelect.innerHTML = '';
-    for (const fps of availableFpsOptions) {
-      const option = document.createElement('option');
-      option.value = String(fps);
-      option.textContent = `${fps} FPS`;
-      fpsSelect.appendChild(option);
-    }
-
     console.log(`Populated ${availableResolutions.length} resolutions and ${availableFpsOptions.length} FPS options from subscription`);
   } else {
     // Use defaults
@@ -227,19 +424,35 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
     console.log("Using default resolution/FPS options (no subscription data)");
   }
 
-  // Set current values
-  resolutionSelect.value = currentResolution;
-  fpsSelect.value = String(currentFps);
+  // Build resolution options for custom dropdown
+  const resolutionOptions = availableResolutions.map(res => ({
+    value: res,
+    text: getResolutionLabel(res),
+    selected: res === currentResolution
+  }));
 
-  // If current value not in options, select the first available
-  if (!resolutionSelect.value && availableResolutions.length > 0) {
-    resolutionSelect.value = availableResolutions[0];
-    currentResolution = availableResolutions[0];
+  // If current resolution not in list, select first available
+  if (!resolutionOptions.some(o => o.selected) && resolutionOptions.length > 0) {
+    resolutionOptions[0].selected = true;
+    currentResolution = resolutionOptions[0].value;
   }
-  if (!fpsSelect.value && availableFpsOptions.length > 0) {
-    fpsSelect.value = String(availableFpsOptions[0]);
-    currentFps = availableFpsOptions[0];
+
+  setDropdownOptions("resolution-setting", resolutionOptions);
+
+  // Build FPS options for custom dropdown
+  const fpsOptions = availableFpsOptions.map(fps => ({
+    value: String(fps),
+    text: `${fps} FPS`,
+    selected: fps === currentFps
+  }));
+
+  // If current FPS not in list, select first available
+  if (!fpsOptions.some(o => o.selected) && fpsOptions.length > 0) {
+    fpsOptions[0].selected = true;
+    currentFps = parseInt(fpsOptions[0].value, 10);
   }
+
+  setDropdownOptions("fps-setting", fpsOptions);
 }
 
 // Get latency class for color coding based on ping value
@@ -386,31 +599,37 @@ function updateLatencyTestingUI(testing: boolean, currentRound: number = 0, tota
   }
 }
 
+// Get latency class name for dropdown coloring
+function getLatencyClassName(pingMs: number | undefined): string {
+  if (pingMs === undefined) return '';
+  if (pingMs < 20) return 'latency-excellent';
+  if (pingMs < 40) return 'latency-good';
+  if (pingMs < 80) return 'latency-fair';
+  if (pingMs < 120) return 'latency-poor';
+  return 'latency-bad';
+}
+
 // Populate region dropdown with latency data
 function populateRegionDropdown(servers: Server[]): void {
-  const regionSelect = document.getElementById("region-setting") as HTMLSelectElement;
-  if (!regionSelect) return;
-
   // Save current selection
-  const currentValue = regionSelect.value || currentRegion;
+  const currentValue = getDropdownValue("region-setting") || currentRegion;
 
-  // Clear existing options
-  while (regionSelect.firstChild) {
-    regionSelect.removeChild(regionSelect.firstChild);
-  }
+  // Build options array
+  const options: { value: string; text: string; selected?: boolean; className?: string }[] = [];
 
   // Add Auto option first
-  const autoOption = document.createElement("option");
-  autoOption.value = "auto";
   const bestServer = servers.find(s => s.status === "Online");
-  if (bestServer && bestServer.ping_ms) {
-    autoOption.textContent = `Auto (${bestServer.name} - ${bestServer.ping_ms}ms)`;
-  } else {
-    autoOption.textContent = "Auto (Lowest Ping)";
-  }
-  regionSelect.appendChild(autoOption);
+  const autoText = bestServer && bestServer.ping_ms
+    ? `Auto (${bestServer.name} - ${bestServer.ping_ms}ms)`
+    : "Auto (Lowest Ping)";
+  options.push({
+    value: "auto",
+    text: autoText,
+    selected: currentValue === "auto",
+    className: bestServer ? getLatencyClassName(bestServer.ping_ms) : ''
+  });
 
-  // Group servers by region
+  // Group servers by region and add them
   const regions: { [key: string]: Server[] } = {};
   for (const server of servers) {
     if (!regions[server.region]) {
@@ -419,37 +638,33 @@ function populateRegionDropdown(servers: Server[]): void {
     regions[server.region].push(server);
   }
 
-  // Add region groups
+  // Add servers grouped by region
   for (const [regionName, regionServers] of Object.entries(regions)) {
-    const optgroup = document.createElement("optgroup");
-    optgroup.label = regionName;
-
     for (const server of regionServers) {
-      const option = document.createElement("option");
-      option.value = server.id;
+      if (server.status !== "Online") continue; // Skip offline servers
 
       const latencyText = formatLatency(server.ping_ms, server.status);
+      const text = server.ping_ms
+        ? `${regionName} - ${server.name} (${latencyText})`
+        : `${regionName} - ${server.name}`;
 
-      if (server.status === "Online" && server.ping_ms) {
-        option.textContent = `${server.name} - ${latencyText}`;
-        option.style.color = getLatencyColor(server.ping_ms);
-      } else {
-        option.textContent = `${server.name} (${latencyText})`;
-        option.disabled = server.status !== "Online";
-      }
-
-      optgroup.appendChild(option);
+      options.push({
+        value: server.id,
+        text: text,
+        selected: currentValue === server.id,
+        className: getLatencyClassName(server.ping_ms)
+      });
     }
-
-    regionSelect.appendChild(optgroup);
   }
 
-  // Restore selection
-  regionSelect.value = currentValue;
-  if (!regionSelect.value) {
-    regionSelect.value = "auto";
+  // Update the dropdown
+  setDropdownOptions("region-setting", options);
+
+  // Update current region if selection changed
+  const newValue = getDropdownValue("region-setting");
+  if (newValue) {
+    currentRegion = newValue;
   }
-  currentRegion = regionSelect.value;
 }
 
 // Get CSS color for latency value
@@ -507,9 +722,20 @@ const settingsBtn = document.getElementById("settings-btn")!;
 const searchInput = document.getElementById("search-input") as HTMLInputElement;
 const navItems = document.querySelectorAll(".nav-item");
 
+// Declare Lucide global (loaded via CDN)
+declare const lucide: { createIcons: () => void };
+
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
   console.log("GFN Custom Client initialized");
+
+  // Initialize Lucide icons
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons();
+  }
+
+  // Initialize custom dropdowns
+  initializeDropdowns();
 
   // Setup navigation
   setupNavigation();
@@ -519,6 +745,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Setup login modal
   setupLoginModal();
+
+  // Setup session modals
+  setupSessionModals();
 
   // Setup search
   setupSearch();
@@ -535,13 +764,26 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Run latency test in background on startup
   testLatency().catch(err => console.error("Initial latency test failed:", err));
 
+  // Check for active sessions after auth (if authenticated)
+  if (isAuthenticated) {
+    const sessions = await checkActiveSessions();
+    if (sessions.length > 0) {
+      // Show navbar indicator and modal
+      updateNavbarSessionIndicator(sessions[0]);
+      showActiveSessionModal(sessions[0]);
+    }
+  }
+
   // Setup region dropdown change handler
-  const regionSelect = document.getElementById("region-setting") as HTMLSelectElement;
-  regionSelect?.addEventListener("change", () => {
-    currentRegion = regionSelect.value;
+  onDropdownChange("region-setting", (value) => {
+    currentRegion = value;
     updateStatusBarLatency();
   });
 });
+
+// Detect if we're on macOS
+const isMacOS = navigator.platform.toUpperCase().includes("MAC") ||
+  navigator.userAgent.toUpperCase().includes("MAC");
 
 // Load settings from backend and apply to UI
 async function loadSettings() {
@@ -554,26 +796,62 @@ async function loadSettings() {
     currentResolution = settings.resolution || "1920x1080";
     currentFps = settings.fps || 60;
     currentCodec = settings.codec || "h264";
+    currentAudioCodec = settings.audio_codec || "opus";
     currentMaxBitrate = settings.max_bitrate_mbps || 200;
     discordRpcEnabled = settings.discord_rpc !== false; // Default to true
     discordShowStats = settings.discord_show_stats === true; // Default to false
     currentRegion = settings.region || "auto";
 
-    // Apply to UI elements
-    const resolutionEl = document.getElementById("resolution-setting") as HTMLSelectElement;
-    const fpsEl = document.getElementById("fps-setting") as HTMLSelectElement;
-    const codecEl = document.getElementById("codec-setting") as HTMLSelectElement;
+    // Apply to UI elements (non-dropdown)
     const bitrateEl = document.getElementById("bitrate-setting") as HTMLInputElement;
     const bitrateValueEl = document.getElementById("bitrate-value");
     const discordEl = document.getElementById("discord-setting") as HTMLInputElement;
     const discordStatsEl = document.getElementById("discord-stats-setting") as HTMLInputElement;
     const telemetryEl = document.getElementById("telemetry-setting") as HTMLInputElement;
     const proxyEl = document.getElementById("proxy-setting") as HTMLInputElement;
-    const regionEl = document.getElementById("region-setting") as HTMLSelectElement;
 
-    if (resolutionEl) resolutionEl.value = currentResolution;
-    if (fpsEl) fpsEl.value = String(currentFps);
-    if (codecEl) codecEl.value = currentCodec;
+    // Update codec dropdown options based on platform
+    // H.265/HEVC is only supported with hardware decoding on macOS (VideoToolbox)
+    const codecOptions = [
+      { value: "h264", text: "H.264 (Best Compatibility)", selected: currentCodec === "h264" },
+      { value: "av1", text: "AV1 (Best Quality)", selected: currentCodec === "av1" },
+    ];
+    if (isMacOS) {
+      codecOptions.splice(1, 0, {
+        value: "h265",
+        text: "H.265/HEVC (Better Quality)",
+        selected: currentCodec === "h265"
+      });
+    } else if (currentCodec === "h265") {
+      // Fall back to H.264 if not on macOS
+      currentCodec = "h264";
+      codecOptions[0].selected = true;
+    }
+    setDropdownOptions("codec-setting", codecOptions);
+
+    // Update audio codec dropdown options based on platform
+    const audioCodecOptions = [
+      { value: "opus", text: "Opus (Default)", selected: currentAudioCodec === "opus" },
+    ];
+    if (isMacOS) {
+      audioCodecOptions.push({
+        value: "opus-stereo",
+        text: "Opus Stereo (Better Audio)",
+        selected: currentAudioCodec === "opus-stereo"
+      });
+    } else if (currentAudioCodec === "opus-stereo") {
+      // Fall back to Opus if not on macOS
+      currentAudioCodec = "opus";
+      audioCodecOptions[0].selected = true;
+    }
+    setDropdownOptions("audio-codec-setting", audioCodecOptions);
+
+    // Apply dropdown values
+    setDropdownValue("resolution-setting", currentResolution);
+    setDropdownValue("fps-setting", String(currentFps));
+    setDropdownValue("region-setting", currentRegion);
+
+    // Apply non-dropdown values
     if (bitrateEl) {
       bitrateEl.value = String(currentMaxBitrate);
       if (bitrateValueEl) {
@@ -584,7 +862,6 @@ async function loadSettings() {
     if (discordStatsEl) discordStatsEl.checked = discordShowStats;
     if (telemetryEl) telemetryEl.checked = settings.disable_telemetry ?? true;
     if (proxyEl && settings.proxy) proxyEl.value = settings.proxy;
-    if (regionEl) regionEl.value = currentRegion;
 
   } catch (error) {
     console.warn("Failed to load settings:", error);
@@ -689,6 +966,418 @@ function hideAllModals() {
   document.querySelectorAll(".modal").forEach((modal) => {
     modal.classList.add("hidden");
   });
+}
+
+// ============================================================================
+// SESSION DETECTION
+// ============================================================================
+
+// Check for active sessions on startup or before launching a game
+async function checkActiveSessions(): Promise<ActiveSession[]> {
+  try {
+    console.log("Checking for active sessions...");
+    const accessToken = await invoke<string>("get_gfn_jwt");
+    console.log("Got JWT token, calling get_active_sessions...");
+    const sessions = await invoke<ActiveSession[]>("get_active_sessions", {
+      accessToken,
+    });
+    detectedActiveSessions = sessions;
+    console.log("Active sessions response:", sessions, `(${sessions.length})`);
+    if (sessions.length > 0) {
+      console.log("First session details:", JSON.stringify(sessions[0], null, 2));
+    }
+    return sessions;
+  } catch (error) {
+    console.error("Failed to check active sessions:", error);
+    return [];
+  }
+}
+
+// Find game title by app ID
+function getGameTitleByAppId(appId: number | undefined): string {
+  if (!appId) return "Unknown Game";
+  const game = games.find((g) => g.id === String(appId));
+  return game?.title || `Game ID: ${appId}`;
+}
+
+// Show the active session modal with session info
+function showActiveSessionModal(session: ActiveSession) {
+  const gameEl = document.getElementById("active-session-game");
+  const gpuEl = document.getElementById("active-session-gpu");
+  const resolutionEl = document.getElementById("active-session-resolution");
+  const serverEl = document.getElementById("active-session-server");
+
+  if (gameEl) gameEl.textContent = getGameTitleByAppId(session.appId);
+  if (gpuEl) gpuEl.textContent = session.gpuType || "Unknown GPU";
+  if (resolutionEl) {
+    const res = session.resolution || "Unknown";
+    const fps = session.fps ? `@ ${session.fps} FPS` : "";
+    resolutionEl.textContent = `${res} ${fps}`.trim();
+  }
+  if (serverEl) serverEl.textContent = session.serverIp || "Unknown";
+
+  // Also update navbar indicator
+  updateNavbarSessionIndicator(session);
+
+  showModal("active-session-modal");
+}
+
+// Show the session conflict modal when trying to launch a new game
+function showSessionConflictModal(existingSession: ActiveSession, newGame: Game) {
+  const gameEl = document.getElementById("conflict-session-game");
+  const gpuEl = document.getElementById("conflict-session-gpu");
+
+  if (gameEl) gameEl.textContent = getGameTitleByAppId(existingSession.appId);
+  if (gpuEl) gpuEl.textContent = existingSession.gpuType || "Unknown GPU";
+
+  pendingGameLaunch = newGame;
+  showModal("session-conflict-modal");
+}
+
+// Update navbar with active session indicator
+function updateNavbarSessionIndicator(session: ActiveSession | null) {
+  let indicator = document.getElementById("active-session-indicator");
+
+  if (!session) {
+    // Remove indicator if no session
+    indicator?.remove();
+    return;
+  }
+
+  // Create indicator if it doesn't exist
+  if (!indicator) {
+    indicator = document.createElement("div");
+    indicator.id = "active-session-indicator";
+    indicator.className = "active-session-indicator";
+
+    // Insert after nav items
+    const nav = document.querySelector(".main-nav");
+    if (nav) {
+      nav.appendChild(indicator);
+    }
+  }
+
+  // Clear existing content
+  indicator.replaceChildren();
+
+  const gameName = getGameTitleByAppId(session.appId);
+  const shortName = gameName.length > 20 ? gameName.substring(0, 20) + "..." : gameName;
+
+  // Create elements safely
+  const dot = document.createElement("span");
+  dot.className = "session-indicator-dot";
+
+  const text = document.createElement("span");
+  text.className = "session-indicator-text";
+  text.textContent = shortName;
+
+  const gpu = document.createElement("span");
+  gpu.className = "session-indicator-gpu";
+  gpu.textContent = session.gpuType || "GPU";
+
+  indicator.appendChild(dot);
+  indicator.appendChild(text);
+  indicator.appendChild(gpu);
+
+  // Click to show modal
+  indicator.onclick = () => showActiveSessionModal(session);
+}
+
+// Hide navbar session indicator
+function hideNavbarSessionIndicator() {
+  updateNavbarSessionIndicator(null);
+}
+
+// Setup session modal handlers
+function setupSessionModals() {
+  // Active session modal handlers
+  const connectBtn = document.getElementById("connect-session-btn");
+  const terminateBtn = document.getElementById("terminate-session-btn");
+  const dismissBtn = document.getElementById("dismiss-session-btn");
+
+  connectBtn?.addEventListener("click", async () => {
+    if (detectedActiveSessions.length > 0) {
+      hideAllModals();
+      await connectToExistingSession(detectedActiveSessions[0]);
+    }
+  });
+
+  terminateBtn?.addEventListener("click", async () => {
+    if (detectedActiveSessions.length > 0) {
+      try {
+        const accessToken = await invoke<string>("get_gfn_jwt");
+        await invoke("terminate_session", {
+          sessionId: detectedActiveSessions[0].sessionId,
+          accessToken,
+        });
+        console.log("Session terminated");
+        detectedActiveSessions = [];
+        hideNavbarSessionIndicator();
+        hideAllModals();
+      } catch (error) {
+        console.error("Failed to terminate session:", error);
+      }
+    }
+  });
+
+  dismissBtn?.addEventListener("click", () => {
+    hideAllModals();
+  });
+
+  // Session conflict modal handlers
+  const terminateAndLaunchBtn = document.getElementById("terminate-and-launch-btn");
+  const cancelLaunchBtn = document.getElementById("cancel-launch-btn");
+
+  terminateAndLaunchBtn?.addEventListener("click", async () => {
+    if (detectedActiveSessions.length > 0 && pendingGameLaunch) {
+      try {
+        const accessToken = await invoke<string>("get_gfn_jwt");
+        await invoke("terminate_session", {
+          sessionId: detectedActiveSessions[0].sessionId,
+          accessToken,
+        });
+        console.log("Session terminated, launching new game");
+        detectedActiveSessions = [];
+        hideNavbarSessionIndicator();
+        hideAllModals();
+        // Launch the pending game
+        const gameToLaunch = pendingGameLaunch;
+        pendingGameLaunch = null;
+        await launchGame(gameToLaunch);
+      } catch (error) {
+        console.error("Failed to terminate session:", error);
+      }
+    }
+  });
+
+  cancelLaunchBtn?.addEventListener("click", () => {
+    pendingGameLaunch = null;
+    hideAllModals();
+  });
+}
+
+// Connect to an existing session
+async function connectToExistingSession(session: ActiveSession) {
+  console.log("Connecting to existing session:", session.sessionId);
+
+  // Get the GFN JWT token
+  let accessToken: string;
+  try {
+    accessToken = await invoke<string>("get_gfn_jwt");
+  } catch (e) {
+    console.error("Not authenticated:", e);
+    return;
+  }
+
+  // Find the game for this session
+  const game = games.find((g) => g.id === String(session.appId));
+  const gameName = game?.title || `Game (${session.appId})`;
+
+  // Show streaming overlay
+  showStreamingOverlay(gameName, "Connecting to session...");
+
+  // Update Discord presence (if enabled)
+  if (discordRpcEnabled) {
+    try {
+      streamingUIState.gameStartTime = Math.floor(Date.now() / 1000);
+      await invoke("set_game_presence", {
+        gameName: gameName,
+        region: null,
+        resolution: discordShowStats ? session.resolution : null,
+        fps: discordShowStats ? session.fps : null,
+        latencyMs: null,
+      });
+    } catch (e) {
+      console.warn("Discord presence update failed:", e);
+    }
+  }
+
+  try {
+    // Set up streaming state
+    streamingUIState.sessionId = session.sessionId;
+    streamingUIState.gameName = gameName;
+    streamingUIState.active = true;
+    streamingUIState.gpuType = session.gpuType;
+    streamingUIState.serverIp = session.serverIp;
+
+    // Extract stream IP from signaling URL or connection info
+    // signalingUrl format: "wss://66-22-147-39.cloudmatchbeta.nvidiagrid.net:443/nvst/"
+    let streamIp: string | null = session.serverIp;
+    if (session.signalingUrl) {
+      const match = session.signalingUrl.match(/wss:\/\/([^:\/]+)/);
+      if (match) {
+        streamIp = match[1];
+      }
+    }
+
+    if (!streamIp || !session.signalingUrl) {
+      throw new Error("Missing stream IP or signaling URL for reconnection");
+    }
+
+    // IMPORTANT: Claim the session first with a PUT request
+    // This is required by the GFN server to "activate" the session for streaming
+    // Without this, the WebRTC connection will timeout
+    updateStreamingStatus("Claiming session...");
+    console.log("Claiming session with PUT request...");
+
+    interface ClaimSessionResponse {
+      sessionId: string;
+      status: number;
+      gpuType: string | null;
+      signalingUrl: string | null;
+      serverIp: string | null;
+    }
+
+    const claimResult = await invoke<ClaimSessionResponse>("claim_session", {
+      sessionId: session.sessionId,
+      serverIp: streamIp,
+      accessToken: accessToken,
+      appId: String(session.appId), // Must be string like "106466949"
+      resolution: session.resolution || "1920x1080",
+      fps: session.fps || 60,
+    });
+
+    console.log("Session claimed successfully:", claimResult);
+
+    // Update streaming state with claimed values
+    if (claimResult.gpuType) {
+      streamingUIState.gpuType = claimResult.gpuType;
+    }
+    if (claimResult.serverIp) {
+      streamingUIState.serverIp = claimResult.serverIp;
+    }
+
+    // Use the updated signaling URL from claim response if available
+    const actualSignalingUrl = claimResult.signalingUrl || session.signalingUrl;
+
+    // Extract the stream IP from the UPDATED signaling URL (after claim)
+    // This is important because the server may assign a different streaming endpoint
+    let actualStreamIp = streamIp;
+    if (actualSignalingUrl) {
+      const match = actualSignalingUrl.match(/wss:\/\/([^:\/]+)/);
+      if (match) {
+        actualStreamIp = match[1];
+        console.log("Updated stream IP from claim response:", actualStreamIp);
+      }
+    }
+
+    // Set up the backend session storage for reconnection
+    // This is required for get_webrtc_config and other backend functions to work
+    await invoke("setup_reconnect_session", {
+      sessionId: session.sessionId,
+      serverIp: actualStreamIp,
+      signalingUrl: actualSignalingUrl,
+      gpuType: claimResult.gpuType || session.gpuType,
+    });
+
+    console.log("Reconnect session setup complete");
+
+    // Build the streaming result object to pass to initializeStreaming
+    // Use type assertion since we're constructing a compatible object
+    // Use claimed session values which may be updated after the PUT request
+    const streamingResult = {
+      session_id: session.sessionId,
+      phase: "Ready" as const,
+      server_ip: claimResult.serverIp || actualStreamIp,
+      signaling_url: actualSignalingUrl,
+      gpu_type: claimResult.gpuType || session.gpuType,
+      connection_info: (actualStreamIp && session.serverIp) ? {
+        control_ip: (claimResult.serverIp || session.serverIp) as string,
+        control_port: 443,
+        stream_ip: actualStreamIp,
+        stream_port: 443,
+        resource_path: "/nvst/",
+      } : null,
+      error: null as string | null,
+    };
+
+    console.log("Streaming result for reconnect:", streamingResult);
+
+    updateStreamingStatus(`Connected to ${claimResult.gpuType || session.gpuType || "GPU"}`);
+    showStreamingInfo(streamingResult);
+
+    // Create fullscreen streaming container
+    const streamContainer = createStreamingContainer(gameName);
+
+    // Initialize WebRTC streaming
+    const streamingOptions: StreamingOptions = {
+      resolution: session.resolution || currentResolution,
+      fps: session.fps || currentFps
+    };
+    await initializeStreaming(streamingResult, accessToken, streamContainer, streamingOptions);
+
+    // Set up input capture
+    const videoElement = document.getElementById("gfn-stream-video") as HTMLVideoElement;
+    if (videoElement) {
+      streamingUIState.inputCleanup = setupInputCapture(videoElement);
+    }
+
+    // Start stats monitoring
+    streamingUIState.statsInterval = window.setInterval(async () => {
+      if (isStreamingActive()) {
+        const stats = await getStreamingStats();
+        if (stats) {
+          updateStreamingStatsDisplay(stats);
+        }
+      }
+    }, 1000);
+
+    console.log("Connected to existing session successfully");
+  } catch (error) {
+    console.error("Failed to connect to session:", error);
+    streamingUIState.active = false;
+    hideStreamingOverlay();
+
+    // Show a helpful error message
+    const errorMsg = String(error);
+    if (errorMsg.includes("timeout") || errorMsg.includes("Timeout")) {
+      showSessionReconnectError(
+        "Connection Timeout",
+        "Could not connect to the session. This usually happens when the session is already streaming to another client (like a browser tab).\n\nPlease close any other GFN clients or browser tabs running this session, then try again."
+      );
+    } else {
+      showSessionReconnectError("Connection Failed", errorMsg);
+    }
+
+    if (discordRpcEnabled) {
+      try {
+        await invoke("set_browsing_presence");
+      } catch (e) {
+        // Ignore
+      }
+    }
+  }
+}
+
+// Show reconnect error message
+function showSessionReconnectError(title: string, message: string) {
+  // Update the active session modal to show error
+  const gameEl = document.getElementById("active-session-game");
+  const gpuEl = document.getElementById("active-session-gpu");
+  const resolutionEl = document.getElementById("active-session-resolution");
+  const serverEl = document.getElementById("active-session-server");
+
+  // Create error display
+  const modal = document.getElementById("active-session-modal");
+  if (modal) {
+    const content = modal.querySelector(".session-modal-content");
+    if (content) {
+      const header = content.querySelector(".session-modal-header h2");
+      if (header) header.textContent = title;
+
+      const desc = content.querySelector(".session-modal-description");
+      if (desc) desc.textContent = message;
+
+      // Change icon to warning
+      const icon = content.querySelector(".session-icon");
+      if (icon) {
+        icon.classList.add("warning");
+        icon.textContent = "\u26A0"; // Warning symbol
+      }
+    }
+  }
+
+  showModal("active-session-modal");
 }
 
 // Search
@@ -1277,6 +1966,14 @@ async function launchGame(game: Game) {
     return;
   }
 
+  // Check for active sessions before launching
+  const activeSessions = await checkActiveSessions();
+  if (activeSessions.length > 0) {
+    // Show the conflict modal instead of launching
+    showSessionConflictModal(activeSessions[0], game);
+    return;
+  }
+
   // Show streaming overlay
   showStreamingOverlay(game.title, "Requesting session...");
 
@@ -1476,9 +2173,9 @@ function createStreamingContainer(gameName: string): HTMLElement {
       <div class="stream-header">
         <span class="stream-game-name">${gameName}</span>
         <div class="stream-controls">
-          <button class="stream-btn" id="stream-fullscreen-btn" title="Fullscreen">⛶</button>
-          <button class="stream-btn" id="stream-settings-btn" title="Settings">⚙</button>
-          <button class="stream-btn stream-btn-danger" id="stream-exit-btn" title="Exit">✕</button>
+          <button class="stream-btn" id="stream-fullscreen-btn" title="Fullscreen"><i data-lucide="maximize"></i></button>
+          <button class="stream-btn" id="stream-settings-btn" title="Settings"><i data-lucide="settings"></i></button>
+          <button class="stream-btn stream-btn-danger" id="stream-exit-btn" title="Exit"><i data-lucide="x"></i></button>
         </div>
       </div>
     </div>
@@ -1493,7 +2190,7 @@ function createStreamingContainer(gameName: string): HTMLElement {
     <div class="stream-settings-panel" id="stream-settings-panel">
       <div class="settings-panel-header">
         <span>Stream Settings</span>
-        <button class="settings-close-btn" id="settings-close-btn">✕</button>
+        <button class="settings-close-btn" id="settings-close-btn"><i data-lucide="x"></i></button>
       </div>
       <div class="settings-panel-content">
         <div class="settings-section">
@@ -1598,14 +2295,21 @@ function createStreamingContainer(gameName: string): HTMLElement {
       gap: 8px;
     }
     .stream-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
       background: rgba(255,255,255,0.1);
       border: none;
       color: white;
-      padding: 8px 12px;
-      border-radius: 4px;
+      width: 36px;
+      height: 36px;
+      border-radius: 6px;
       cursor: pointer;
-      font-size: 16px;
       transition: background 0.2s;
+    }
+    .stream-btn svg {
+      width: 18px;
+      height: 18px;
     }
     .stream-btn:hover {
       background: rgba(255,255,255,0.2);
@@ -1757,6 +2461,11 @@ function createStreamingContainer(gameName: string): HTMLElement {
   document.head.appendChild(style);
   document.body.appendChild(container);
 
+  // Reinitialize Lucide icons for dynamically added content
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons();
+  }
+
   // Find the video wrapper to return
   const videoWrapper = container.querySelector(".stream-video-wrapper") as HTMLElement;
 
@@ -1765,11 +2474,85 @@ function createStreamingContainer(gameName: string): HTMLElement {
     exitStreaming();
   });
 
-  document.getElementById("stream-fullscreen-btn")?.addEventListener("click", () => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
-    } else {
-      container.requestFullscreen();
+  document.getElementById("stream-fullscreen-btn")?.addEventListener("click", async () => {
+    console.log("Fullscreen button clicked");
+
+    // Try Tauri's window API first (works properly on macOS)
+    let tauriSuccess = false;
+    let enteringFullscreen = false;
+    try {
+      const appWindow = getCurrentWindow();
+      console.log("Got Tauri window:", appWindow);
+      const isFullscreen = await appWindow.isFullscreen();
+      console.log("Current fullscreen state:", isFullscreen);
+      enteringFullscreen = !isFullscreen;
+      await appWindow.setFullscreen(enteringFullscreen);
+      console.log("Fullscreen toggled to:", enteringFullscreen);
+      tauriSuccess = true;
+
+      // Manually handle pointer mode since browser fullscreenchange event won't fire
+      const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
+      if (enteringFullscreen) {
+        // Entering fullscreen - switch to pointer lock mode
+        console.log("Switching to pointer lock mode for fullscreen");
+        await setInputCaptureMode('pointerlock');
+        // On macOS, native cursor capture is handled by setInputCaptureMode via Tauri
+        // On other platforms, request browser pointer lock
+        if (!isMacOS) {
+          setTimeout(() => {
+            if (video) {
+              console.log("Requesting pointer lock on video element");
+              video.requestPointerLock();
+            }
+          }, 100);
+        }
+      } else {
+        // Exiting fullscreen - switch to absolute mode
+        console.log("Switching to absolute mode for windowed");
+        await setInputCaptureMode('absolute');
+        if (document.pointerLockElement) {
+          document.exitPointerLock();
+        }
+      }
+    } catch (e) {
+      console.error("Tauri fullscreen API error:", e);
+    }
+
+    // If Tauri failed, try browser API
+    if (!tauriSuccess) {
+      console.log("Falling back to browser fullscreen API");
+      const fullscreenElement = document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement ||
+        (document as any).msFullscreenElement;
+
+      if (fullscreenElement) {
+        console.log("Exiting fullscreen via browser API");
+        if (document.exitFullscreen) {
+          document.exitFullscreen().catch(err => console.error("exitFullscreen error:", err));
+        } else if ((document as any).webkitExitFullscreen) {
+          (document as any).webkitExitFullscreen();
+        } else if ((document as any).mozCancelFullScreen) {
+          (document as any).mozCancelFullScreen();
+        } else if ((document as any).msExitFullscreen) {
+          (document as any).msExitFullscreen();
+        }
+      } else {
+        console.log("Entering fullscreen via browser API on container:", container);
+        try {
+          if (container.requestFullscreen) {
+            await container.requestFullscreen();
+          } else if ((container as any).webkitRequestFullscreen) {
+            (container as any).webkitRequestFullscreen();
+          } else if ((container as any).mozRequestFullScreen) {
+            (container as any).mozRequestFullScreen();
+          } else if ((container as any).msRequestFullscreen) {
+            (container as any).msRequestFullscreen();
+          }
+        } catch (err) {
+          console.error("Browser fullscreen error:", err);
+        }
+      }
     }
   });
 
@@ -1798,9 +2581,63 @@ function createStreamingContainer(gameName: string): HTMLElement {
   // Hold ESC to exit fullscreen (1 second hold required)
   let escHoldStart = 0;
   let escHoldTimer: number | null = null;
+  let tauriFullscreenState = false; // Track Tauri fullscreen state
+
+  // Helper to check if in fullscreen (cross-browser)
+  const isBrowserFullscreen = () => document.fullscreenElement ||
+    (document as any).webkitFullscreenElement ||
+    (document as any).mozFullScreenElement ||
+    (document as any).msFullscreenElement;
+
+  // Helper to exit fullscreen using Tauri API (macOS) with browser fallback
+  const exitFullscreenAsync = async () => {
+    let exitedViaTauri = false;
+    try {
+      const appWindow = getCurrentWindow();
+      const isFullscreen = await appWindow.isFullscreen();
+      if (isFullscreen) {
+        await appWindow.setFullscreen(false);
+        exitedViaTauri = true;
+      }
+    } catch (e) {
+      // Fall through to browser API
+    }
+
+    // Browser API fallback
+    if (!exitedViaTauri) {
+      if (document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      } else if ((document as any).webkitExitFullscreen) {
+        (document as any).webkitExitFullscreen();
+      } else if ((document as any).mozCancelFullScreen) {
+        (document as any).mozCancelFullScreen();
+      } else if ((document as any).msExitFullscreen) {
+        (document as any).msExitFullscreen();
+      }
+    }
+
+    // Switch back to absolute mode and exit pointer lock
+    console.log("ESC exit: Switching to absolute mode");
+    await setInputCaptureMode('absolute');
+    if (document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+  };
+
+  // Periodically check Tauri fullscreen state for ESC handler
+  const updateTauriFullscreenState = async () => {
+    try {
+      const appWindow = getCurrentWindow();
+      tauriFullscreenState = await appWindow.isFullscreen();
+    } catch {
+      tauriFullscreenState = false;
+    }
+  };
+  const fullscreenCheckInterval = setInterval(updateTauriFullscreenState, 500);
 
   const escKeyDownHandler = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && document.fullscreenElement) {
+    const isFullscreen = isBrowserFullscreen() || tauriFullscreenState;
+    if (e.key === "Escape" && isFullscreen) {
       // Prevent browser's default behavior of exiting fullscreen on ESC
       e.preventDefault();
 
@@ -1809,7 +2646,7 @@ function createStreamingContainer(gameName: string): HTMLElement {
         escHoldStart = Date.now();
         escHoldTimer = window.setTimeout(() => {
           if (escHoldStart > 0) {
-            document.exitFullscreen().catch(() => {});
+            exitFullscreenAsync();
             escHoldStart = 0;
           }
         }, 1000); // 1 second hold
@@ -1830,13 +2667,31 @@ function createStreamingContainer(gameName: string): HTMLElement {
   document.addEventListener("keydown", escKeyDownHandler);
   document.addEventListener("keyup", escKeyUpHandler);
 
-  // Store cleanup for ESC handlers
+  // Window focus/blur handlers for macOS cursor capture
+  // When switching windows (Cmd+Tab), we need to release and recapture the cursor
+  const handleWindowBlur = () => {
+    console.log("Window blur - suspending cursor capture");
+    suspendCursorCapture();
+  };
+
+  const handleWindowFocus = () => {
+    console.log("Window focus - resuming cursor capture");
+    resumeCursorCapture();
+  };
+
+  window.addEventListener("blur", handleWindowBlur);
+  window.addEventListener("focus", handleWindowFocus);
+
+  // Store cleanup for ESC handlers, fullscreen check interval, and focus handlers
   streamingUIState.escCleanup = () => {
     document.removeEventListener("keydown", escKeyDownHandler);
     document.removeEventListener("keyup", escKeyUpHandler);
+    window.removeEventListener("blur", handleWindowBlur);
+    window.removeEventListener("focus", handleWindowFocus);
     if (escHoldTimer) {
       clearTimeout(escHoldTimer);
     }
+    clearInterval(fullscreenCheckInterval);
   };
 
   return videoWrapper;
@@ -2106,11 +2961,10 @@ function showStreamingInfo(info: {
   if (spinner && info.phase === "Ready") {
     spinner.style.borderTopColor = "#76b900";
     spinner.style.animation = "none";
-    spinner.innerHTML = "✓";
+    spinner.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
     spinner.style.display = "flex";
     spinner.style.alignItems = "center";
     spinner.style.justifyContent = "center";
-    spinner.style.fontSize = "30px";
     spinner.style.color = "#76b900";
   }
 }
@@ -2138,24 +2992,28 @@ async function cancelStreaming() {
 
 // Settings
 async function saveSettings() {
-  const resolutionEl = document.getElementById("resolution-setting") as HTMLSelectElement;
-  const fpsEl = document.getElementById("fps-setting") as HTMLSelectElement;
-  const codecEl = document.getElementById("codec-setting") as HTMLSelectElement;
   const bitrateEl = document.getElementById("bitrate-setting") as HTMLInputElement;
-  const regionEl = document.getElementById("region-setting") as HTMLSelectElement;
   const proxyEl = document.getElementById("proxy-setting") as HTMLInputElement;
   const telemetryEl = document.getElementById("telemetry-setting") as HTMLInputElement;
   const discordEl = document.getElementById("discord-setting") as HTMLInputElement;
   const discordStatsEl = document.getElementById("discord-stats-setting") as HTMLInputElement;
 
+  // Get dropdown values
+  const resolution = getDropdownValue("resolution-setting") || "1920x1080";
+  const fps = getDropdownValue("fps-setting") || "60";
+  const codec = getDropdownValue("codec-setting") || "h264";
+  const audioCodec = getDropdownValue("audio-codec-setting") || "opus";
+  const region = getDropdownValue("region-setting") || "auto";
+
   // Update global state
   discordRpcEnabled = discordEl?.checked || false;
   discordShowStats = discordStatsEl?.checked || false;
-  currentResolution = resolutionEl?.value || "1920x1080";
-  currentFps = parseInt(fpsEl?.value || "60", 10);
-  currentCodec = codecEl?.value || "h264";
+  currentResolution = resolution;
+  currentFps = parseInt(fps, 10);
+  currentCodec = codec;
+  currentAudioCodec = audioCodec;
   currentMaxBitrate = parseInt(bitrateEl?.value || "200", 10);
-  currentRegion = regionEl?.value || "auto";
+  currentRegion = region;
 
   // Update status bar with new region selection
   updateStatusBarLatency();
@@ -2164,9 +3022,10 @@ async function saveSettings() {
     quality: "custom", // Mark as custom since we use explicit resolution/fps
     resolution: currentResolution,
     fps: currentFps,
-    codec: codecEl?.value || "h264",
+    codec: codec,
+    audio_codec: audioCodec,
     max_bitrate_mbps: currentMaxBitrate,
-    region: regionEl?.value || undefined,
+    region: region || undefined,
     discord_rpc: discordRpcEnabled,
     discord_show_stats: discordShowStats,
     proxy: proxyEl?.value || undefined,

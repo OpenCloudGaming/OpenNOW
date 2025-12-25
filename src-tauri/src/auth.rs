@@ -364,18 +364,12 @@ const SUCCESS_HTML: &str = r#"<!DOCTYPE html>
             border-radius: 16px;
             backdrop-filter: blur(10px);
         }
-        .success-icon {
-            font-size: 64px;
-            color: #76b900;
-            margin-bottom: 20px;
-        }
         h1 { color: #76b900; margin-bottom: 10px; }
         p { color: #aaa; }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="success-icon">✓</div>
         <h1>Login Successful!</h1>
         <p>You can close this window and return to the GFN Client.</p>
     </div>

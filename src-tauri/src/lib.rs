@@ -17,6 +17,8 @@ mod config;
 mod discord;
 #[cfg(feature = "tauri-app")]
 mod proxy;
+#[cfg(feature = "tauri-app")]
+mod cursor;
 
 #[cfg(feature = "tauri-app")]
 use tauri::Manager;
@@ -86,6 +88,11 @@ pub fn run() {
             streaming::send_input_event,
             streaming::start_streaming_flow,
             streaming::stop_streaming_flow,
+            // Session detection commands
+            streaming::get_active_sessions,
+            streaming::terminate_session,
+            streaming::setup_reconnect_session,
+            streaming::claim_session,
             // Native WebSocket signaling (bypasses browser limitations)
             streaming::connect_signaling_native,
             streaming::send_signaling_message,
@@ -109,6 +116,10 @@ pub fn run() {
             proxy::enable_proxy,
             proxy::disable_proxy,
             proxy::test_proxy,
+            // Cursor capture commands (macOS native)
+            cursor::capture_cursor,
+            cursor::release_cursor,
+            cursor::is_cursor_captured,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
