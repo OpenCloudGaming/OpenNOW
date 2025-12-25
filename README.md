@@ -1,134 +1,106 @@
-# GFN Client
+<p align="center">
+  <img src="public/gfn-icon.svg" width="120" alt="OpenNOW">
+</p>
 
-A custom GeForce NOW client built with Tauri (Rust + TypeScript) that provides enhanced streaming features and a modern UI.
+<h1 align="center">OpenNOW</h1>
 
-## Download
+<p align="center">
+  <strong>Open source GeForce NOW client built from the ground up</strong>
+</p>
 
-[![Download](https://img.shields.io/github/v/release/zortos293/GFNClient?include_prereleases&label=Download&style=for-the-badge)](https://github.com/zortos293/GFNClient/releases/latest)
-
-**[Download Latest Release](https://github.com/zortos293/GFNClient/releases/latest)**
-
-### Available Platforms
-- **Windows**: `.msi` installer or `.exe` setup
-- **macOS**: `.dmg` disk image
-- **Linux**: `.deb` package or `.AppImage`
+<p align="center">
+  <a href="https://github.com/zortos293/GFNClient/releases/latest">
+    <img src="https://img.shields.io/github/v/release/zortos293/GFNClient?style=for-the-badge&label=Download" alt="Download">
+  </a>
+  <a href="https://github.com/zortos293/GFNClient/stargazers">
+    <img src="https://img.shields.io/github/stars/zortos293/GFNClient?style=for-the-badge" alt="Stars">
+  </a>
+  <a href="https://github.com/sponsors/zortos293">
+    <img src="https://img.shields.io/badge/Sponsor-EA4AAA?style=for-the-badge&logo=github-sponsors&logoColor=white" alt="Sponsor">
+  </a>
+</p>
 
 ---
 
-## Screenshots
+## About
 
-![Home Screen](https://img.youtube.com/vi/bF84_CKopPQ/maxresdefault.jpg)
+OpenNOW is a custom GeForce NOW client created by reverse engineering the official NVIDIA client. Built with Tauri (Rust + TypeScript), it removes artificial limitations and gives you full control over your cloud gaming experience.
 
-**[Watch Demo on YouTube](https://www.youtube.com/watch?v=bF84_CKopPQ)**
+**Why OpenNOW?**
+- No artificial limitations on FPS, resolution, or bitrate
+- Privacy focused - telemetry disabled by default
+- Open source and community-driven
+- Works on Windows, macOS, and Linux
+
+---
+
+## Download
+
+<p align="center">
+  <a href="https://github.com/zortos293/GFNClient/releases/latest">
+    <img src="https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows">
+  </a>
+  <a href="https://github.com/zortos293/GFNClient/releases/latest">
+    <img src="https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white" alt="macOS">
+  </a>
+  <a href="https://github.com/zortos293/GFNClient/releases/latest">
+    <img src="https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux">
+  </a>
+</p>
 
 ---
 
 ## Features
 
-### Streaming
-- **High FPS Modes** - 120fps, 240fps, and 360fps streaming
-- **Codec Selection** - H.264 (best compatibility) or AV1 (best quality)
-- **Opus Stereo Audio** - Enhanced audio for macOS
-- **Unlimited Bitrate** - Configurable from 20 Mbps to unlimited
-- **Stable Resolution** - No adaptive quality, consistent streaming
-- **Multi-Region Support** - Auto-select lowest ping server with latency display
-
-### Input
-- **Raw Mouse Input** - Uses `getCoalescedEvents()` for precise 1:1 movement
-- **Native macOS Cursor Capture** - Core Graphics integration for unlimited mouse movement
-- **Fullscreen Control** - Hold ESC for 1 second to exit (ESC still works in-game)
-
-### UI
-- **Modern Dark Theme** - Clean, minimal interface
-- **Custom Dropdowns** - Styled components replacing native OS elements
-- **Lucide Icons** - Consistent icon pack throughout the app
-- **Latency Color Coding** - Visual ping indicators for regions
-
-### Account
-- **NVIDIA OAuth Login** - Secure sign-in with OAuth 2.0 + PKCE
-- **Subscription Display** - Shows tier (Free/Priority/Ultimate) and playtime
-- **Discord Rich Presence** - Display current game on Discord
-- **Persistent Settings** - All preferences saved locally
-
-### Privacy
-- **No Telemetry** - NVIDIA telemetry disabled by default
-- **Custom Proxy Support** - Route traffic through your own proxy
-
----
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|------------|
-| Frontend | TypeScript, Vite |
-| Backend | Rust (Tauri 2.x) |
-| Streaming | WebRTC + NVST Protocol |
-| UI | Custom CSS, Lucide Icons |
+| Feature | Description |
+|---------|-------------|
+| **High FPS Streaming** | 120, 240, and 360 FPS modes |
+| **Codec Selection** | H.264 or AV1 |
+| **Unlimited Bitrate** | Up to 100+ Mbps |
+| **Raw Mouse Input** | Precise 1:1 movement |
+| **Discord Rich Presence** | Show what you're playing |
+| **Multi-Region** | Auto-select lowest ping server |
+| **Dark UI** | Clean, modern interface |
 
 ---
 
 ## Building
 
-### Prerequisites
-
-- [Node.js](https://nodejs.org/) (v18+)
-- [Rust](https://rustup.rs/) (latest stable)
-- [Tauri CLI](https://tauri.app/)
-
-### Development
-
 ```bash
-# Clone the repository
 git clone https://github.com/zortos293/GFNClient.git
 cd GFNClient
-
-# Install dependencies
 npm install
-
-# Run in development mode
 npm run tauri dev
-
-# Build for production
-npm run tauri build
 ```
 
----
-
-## Configuration
-
-Settings are stored in the app data directory:
-- **Windows**: `%APPDATA%/gfn-client/settings.json`
-- **macOS**: `~/Library/Application Support/gfn-client/settings.json`
-- **Linux**: `~/.config/gfn-client/settings.json`
-
-| Setting | Options | Default |
-|---------|---------|---------|
-| Resolution | 720p, 1080p, 1440p, 4K | 1080p |
-| Frame Rate | 30, 60, 120, 240, 360 FPS | 60 |
-| Codec | H.264, AV1 | H.264 |
-| Audio | Opus, Opus Stereo | Opus |
-| Max Bitrate | 20-200 Mbps (200 = unlimited) | Unlimited |
-| Region | Auto or specific region | Auto |
+**Requirements:** Node.js 18+, Rust, Tauri CLI
 
 ---
 
-## Contributing
+## Support the Project
 
-See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for guidelines.
+If OpenNOW is useful to you, consider sponsoring to support development:
+
+<p align="center">
+  <a href="https://github.com/sponsors/zortos293">
+    <img src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&logo=github-sponsors&logoColor=white" alt="Sponsor on GitHub">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/sponsors/zortos293">
+    <img src="https://raw.githubusercontent.com/zortos293/zortos293/main/sponsors.svg" width="600" alt="Sponsors">
+  </a>
+</p>
 
 ---
 
 ## Disclaimer
 
-This is an **independent project** not affiliated with, authorized, or endorsed by NVIDIA Corporation.
-
-- GeForce NOW and NVIDIA are trademarks of NVIDIA Corporation
-- Developed for educational and enhancement purposes
-- Users are responsible for compliance with applicable terms of service
-- No warranty provided; use at your own risk
+This is an **independent project** not affiliated with NVIDIA Corporation. Created through reverse engineering for educational purposes. GeForce NOW is a trademark of NVIDIA. Use at your own risk.
 
 ---
 
-## License
-
-This project is for educational purposes. See NVIDIA's Terms of Service regarding GeForce NOW usage.
+<p align="center">
+  Made by <a href="https://github.com/zortos293">zortos293</a>
+</p>

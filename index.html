@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/gfn-icon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GeForce NOW</title>
+    <title>OpenNOW</title>
     <link rel="stylesheet" href="/src/styles/main.css" />
     <script src="https://unpkg.com/lucide@latest"></script>
   </head>
@@ -312,6 +312,27 @@
           <div class="session-modal-actions">
             <button id="terminate-and-launch-btn" class="btn btn-primary btn-large">Terminate & Launch New Game</button>
             <button id="cancel-launch-btn" class="btn btn-secondary">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Update Modal -->
+      <div id="update-modal" class="modal hidden">
+        <div class="modal-content update-modal-content">
+          <button class="modal-close">&times;</button>
+          <div class="update-header">
+            <i data-lucide="download" class="update-icon"></i>
+            <h2>Update Available</h2>
+          </div>
+          <p class="update-version">A new version of OpenNOW is available: <span id="update-version"></span></p>
+          <div class="update-changelog">
+            <h3>Changelog</h3>
+            <div id="update-changelog-content"></div>
+          </div>
+          <div class="update-actions">
+            <a id="update-download-btn" href="#" target="_blank" class="btn btn-primary btn-large">Download Update</a>
+            <button id="update-skip-btn" class="btn btn-secondary">Skip This Version</button>
+            <button id="update-later-btn" class="btn btn-ghost">Remind Me Later</button>
           </div>
         </div>
       </div>

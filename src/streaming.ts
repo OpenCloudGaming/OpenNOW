@@ -175,14 +175,22 @@ export async function initializeStreaming(
 
   console.log("WebRTC config:", webrtcConfig);
 
-  // Extract stream IP from signaling_url (e.g., rtsps://80-84-170-155.cloudmatchbeta.nvidiagrid.net:322)
-  // The signaling_url contains the actual streaming server, not the CloudMatch server
+  // Extract stream IP from signaling_url
+  // Supports both formats:
+  // - RTSP: rtsps://80-84-170-155.cloudmatchbeta.nvidiagrid.net:322
+  // - WebSocket: wss://66-22-147-40.cloudmatchbeta.nvidiagrid.net:443/nvst/
   let streamIp: string | null = null;
+
+  console.log("Connection state for streaming:", {
+    signaling_url: connectionState.signaling_url,
+    server_ip: connectionState.server_ip,
+    connection_info: connectionState.connection_info,
+  });
 
   if (connectionState.signaling_url) {
     try {
-      // Parse the RTSP URL to get the hostname
-      const urlMatch = connectionState.signaling_url.match(/rtsps?:\/\/([^:/]+)/);
+      // Parse URL to get hostname - supports rtsps://, rtsp://, wss://, ws://
+      const urlMatch = connectionState.signaling_url.match(/(?:rtsps?|wss?):\/\/([^:/]+)/);
       if (urlMatch && urlMatch[1]) {
         streamIp = urlMatch[1];
         console.log("Extracted stream IP from signaling_url:", streamIp);
@@ -197,6 +205,9 @@ export async function initializeStreaming(
     streamIp = connectionState.connection_info.stream_ip ||
                connectionState.connection_info.control_ip ||
                connectionState.server_ip;
+    console.log("Using fallback stream IP:", streamIp, "from:",
+      connectionState.connection_info.stream_ip ? "stream_ip" :
+      connectionState.connection_info.control_ip ? "control_ip" : "server_ip");
   }
 
   if (!streamIp) {

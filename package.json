@@ -1,7 +1,7 @@
 {
-  "name": "gfn-client",
-  "version": "0.0.2",
-  "description": "Custom GeForce Now Client - Lightweight alternative",
+  "name": "opennow",
+  "version": "0.0.10",
+  "description": "OpenNOW - Open source GeForce NOW client",
   "type": "module",
   "scripts": {
     "dev": "vite",
