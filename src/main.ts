@@ -341,6 +341,8 @@ interface ActiveSession {
 // Active session state
 let detectedActiveSessions: ActiveSession[] = [];
 let pendingGameLaunch: Game | null = null;
+let sessionPollingInterval: number | null = null;
+const SESSION_POLLING_INTERVAL_MS = 10000; // Check every 10 seconds
 
 // State
 let currentView = "home";
@@ -915,6 +917,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       updateNavbarSessionIndicator(sessions[0]);
       showActiveSessionModal(sessions[0]);
     }
+    // Start polling for active sessions every 10 seconds
+    startSessionPolling();
   }
 
   // Setup region dropdown change handler
@@ -1136,6 +1140,66 @@ async function checkActiveSessions(): Promise<ActiveSession[]> {
   }
 }
 
+// Start polling for active sessions (when not streaming)
+function startSessionPolling() {
+  // Don't start if already polling or currently streaming
+  if (sessionPollingInterval !== null) {
+    console.log("Session polling already active");
+    return;
+  }
+
+  if (isStreamingActive()) {
+    console.log("Not starting session polling - currently streaming");
+    return;
+  }
+
+  if (!isAuthenticated) {
+    console.log("Not starting session polling - not authenticated");
+    return;
+  }
+
+  console.log("Starting session polling (every 10 seconds)");
+
+  sessionPollingInterval = window.setInterval(async () => {
+    // Stop polling if we started streaming
+    if (isStreamingActive()) {
+      console.log("Stopping session polling - streaming started");
+      stopSessionPolling();
+      return;
+    }
+
+    // Don't poll if not authenticated
+    if (!isAuthenticated) {
+      console.log("Stopping session polling - no longer authenticated");
+      stopSessionPolling();
+      return;
+    }
+
+    const sessions = await checkActiveSessions();
+    if (sessions.length > 0) {
+      // Update navbar indicator if not already showing
+      const existingIndicator = document.getElementById("active-session-indicator");
+      if (!existingIndicator) {
+        console.log("Active session detected via polling:", sessions[0].sessionId);
+        updateNavbarSessionIndicator(sessions[0]);
+        showActiveSessionModal(sessions[0]);
+      }
+    } else {
+      // No active sessions - hide indicator if showing
+      hideNavbarSessionIndicator();
+    }
+  }, SESSION_POLLING_INTERVAL_MS);
+}
+
+// Stop polling for active sessions
+function stopSessionPolling() {
+  if (sessionPollingInterval !== null) {
+    console.log("Stopping session polling");
+    window.clearInterval(sessionPollingInterval);
+    sessionPollingInterval = null;
+  }
+}
+
 // Find game title by app ID
 function getGameTitleByAppId(appId: number | undefined): string {
   if (!appId) return "Unknown Game";
@@ -1303,12 +1367,16 @@ function setupSessionModals() {
 async function connectToExistingSession(session: ActiveSession) {
   console.log("Connecting to existing session:", session.sessionId);
 
+  // Stop session polling while we're reconnecting/streaming
+  stopSessionPolling();
+
   // Get the GFN JWT token
   let accessToken: string;
   try {
     accessToken = await invoke<string>("get_gfn_jwt");
   } catch (e) {
     console.error("Not authenticated:", e);
+    startSessionPolling(); // Resume polling since we're not connecting
     return;
   }
 
@@ -1391,22 +1459,22 @@ async function connectToExistingSession(session: ActiveSession) {
       streamingUIState.serverIp = claimResult.serverIp;
     }
 
-    // Use the updated signaling URL from claim response if available
-    // IMPORTANT: claimResult.signalingUrl should contain the NEW server IP after RESUME
+    // Use the signaling URL from the claim response (which is now from the polled GET when status is 2)
+    // The backend polls until the session transitions from status 6 to status 2/3, then returns
+    // the correct connectionInfo with the signaling URL.
+    // Fall back to original if claim response doesn't have one.
     const actualSignalingUrl = claimResult.signalingUrl || session.signalingUrl;
-    console.log("Using signaling URL:", actualSignalingUrl, "(from claim:", !!claimResult.signalingUrl, ")");
+    console.log("Using signaling URL from claim (polled until ready):", actualSignalingUrl);
+    console.log("Original session signalingUrl:", session.signalingUrl);
+    console.log("Claim result status:", claimResult.status);
 
-    // Extract the stream IP from the UPDATED signaling URL (after claim)
-    // This is important because the server may assign a different streaming endpoint
+    // Extract the stream IP from the signaling URL
     let actualStreamIp = streamIp;
-    console.log("Original stream IP (before claim):", streamIp);
     if (actualSignalingUrl) {
       const match = actualSignalingUrl.match(/wss:\/\/([^:\/]+)/);
       if (match) {
         actualStreamIp = match[1];
-        console.log("Updated stream IP from claim response:", actualStreamIp);
-      } else {
-        console.warn("Failed to extract IP from signaling URL:", actualSignalingUrl);
+        console.log("Extracted stream IP from signaling URL:", actualStreamIp);
       }
     }
     console.log("Final stream IP to use:", actualStreamIp);
@@ -1496,6 +1564,9 @@ async function connectToExistingSession(session: ActiveSession) {
         // Ignore
       }
     }
+
+    // Resume session polling since reconnection failed
+    startSessionPolling();
   }
 }
 
@@ -2112,6 +2183,9 @@ async function launchGame(game: Game) {
   console.log("Launching game:", game.title);
   hideAllModals();
 
+  // Stop session polling while we're launching/streaming
+  stopSessionPolling();
+
   // Get the GFN JWT token first (required for API authentication)
   let accessToken: string;
   try {
@@ -2119,6 +2193,7 @@ async function launchGame(game: Game) {
   } catch (e) {
     console.error("Not authenticated:", e);
     alert("Please login first to launch games.");
+    startSessionPolling(); // Resume polling since we're not launching
     return;
   }
 
@@ -2127,6 +2202,7 @@ async function launchGame(game: Game) {
   if (activeSessions.length > 0) {
     // Show the conflict modal instead of launching
     showSessionConflictModal(activeSessions[0], game);
+    startSessionPolling(); // Resume polling since we're not launching
     return;
   }
 
@@ -2308,6 +2384,9 @@ async function launchGame(game: Game) {
         // Ignore
       }
     }
+
+    // Resume session polling since launch failed
+    startSessionPolling();
 
     alert(`Failed to launch game: ${error}`);
   }
@@ -2994,6 +3073,9 @@ async function exitStreaming(): Promise<void> {
   }
 
   console.log("Streaming exited");
+
+  // Resume session polling now that we're not streaming
+  startSessionPolling();
 }
 
 // Streaming overlay functions
