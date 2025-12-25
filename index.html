@@ -6,23 +6,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GeForce NOW</title>
     <link rel="stylesheet" href="/src/styles/main.css" />
+    <script src="https://unpkg.com/lucide@latest"></script>
   </head>
   <body>
     <div id="app">
       <!-- Header -->
       <header id="app-header">
         <div class="header-left">
-          <img src="/gfn-logo.svg" alt="GeForce NOW" class="logo" />
           <nav class="main-nav">
-            <a href="#" class="nav-item active" data-view="home">Home</a>
-            <a href="#" class="nav-item" data-view="library">My Library</a>
-            <a href="#" class="nav-item" data-view="store">Store</a>
+            <a href="#" class="nav-item active" data-view="home">
+              <i data-lucide="home" class="nav-icon"></i>
+              Home
+            </a>
+            <a href="#" class="nav-item" data-view="library">
+              <i data-lucide="library" class="nav-icon"></i>
+              My Library
+            </a>
           </nav>
         </div>
-        <div class="header-right">
+        <div class="header-center">
           <div class="search-container">
+            <i data-lucide="search" class="search-icon"></i>
             <input type="text" id="search-input" placeholder="Search games..." />
           </div>
+        </div>
+        <div class="header-right">
           <div class="user-section">
             <button id="login-btn" class="btn btn-primary">Sign In</button>
             <div id="user-menu" class="user-menu hidden">
@@ -33,10 +41,14 @@
                   <span id="user-time" class="user-time"></span>
                 </div>
               </div>
-              <button id="logout-btn" class="btn btn-small">Logout</button>
+              <button id="logout-btn" class="icon-btn" title="Logout">
+                <i data-lucide="log-out"></i>
+              </button>
             </div>
           </div>
-          <button id="settings-btn" class="icon-btn" title="Settings">⚙</button>
+          <button id="settings-btn" class="icon-btn" title="Settings">
+            <i data-lucide="settings"></i>
+          </button>
         </div>
       </header>
 
@@ -44,13 +56,6 @@
       <main id="main-content">
         <!-- Home View -->
         <section id="home-view" class="view active">
-          <div class="hero-section">
-            <div class="hero-content">
-              <h1>Welcome to GeForce NOW</h1>
-              <p>Play your favorite PC games instantly</p>
-            </div>
-          </div>
-
           <div class="content-section">
             <h2>Featured Games</h2>
             <div id="featured-games" class="games-grid"></div>
@@ -72,12 +77,18 @@
           <div class="library-header">
             <h1>My Library</h1>
             <div class="library-filters">
-              <select id="store-filter">
-                <option value="all">All Stores</option>
-                <option value="steam">Steam</option>
-                <option value="epic">Epic Games</option>
-                <option value="ubisoft">Ubisoft</option>
-              </select>
+              <div class="custom-dropdown compact" data-dropdown="store-filter">
+                <div class="dropdown-trigger" tabindex="0">
+                  <span class="dropdown-text">All Stores</span>
+                  <i data-lucide="chevron-down" class="dropdown-arrow"></i>
+                </div>
+                <div class="dropdown-menu">
+                  <div class="dropdown-option selected" data-value="all">All Stores</div>
+                  <div class="dropdown-option" data-value="steam">Steam</div>
+                  <div class="dropdown-option" data-value="epic">Epic Games</div>
+                  <div class="dropdown-option" data-value="ubisoft">Ubisoft</div>
+                </div>
+              </div>
               <button id="sync-library-btn" class="btn">Sync Library</button>
             </div>
           </div>
@@ -93,30 +104,6 @@
           </div>
         </section>
 
-        <!-- Store View -->
-        <section id="store-view" class="view hidden">
-          <div class="store-header">
-            <h1>All Games</h1>
-            <div class="store-filters">
-              <select id="genre-filter">
-                <option value="all">All Genres</option>
-                <option value="action">Action</option>
-                <option value="rpg">RPG</option>
-                <option value="strategy">Strategy</option>
-                <option value="sports">Sports</option>
-              </select>
-              <select id="sort-filter">
-                <option value="popular">Popular</option>
-                <option value="new">Newest</option>
-                <option value="name">A-Z</option>
-              </select>
-            </div>
-          </div>
-          <div id="all-games" class="games-grid"></div>
-          <div id="load-more" class="load-more">
-            <button id="load-more-btn" class="btn">Load More</button>
-          </div>
-        </section>
       </main>
 
       <!-- Game Detail Modal -->
@@ -134,14 +121,14 @@
           <h2>Sign In</h2>
           <div class="login-options">
             <button id="nvidia-login-btn" class="btn btn-primary btn-large login-option">
-              <span class="login-icon">&#9733;</span>
+              <i data-lucide="star" class="login-icon"></i>
               Sign in with NVIDIA
             </button>
             <div class="login-divider">
               <span>or</span>
             </div>
             <button id="token-login-btn" class="btn btn-secondary btn-large login-option">
-              <span class="login-icon">&#128273;</span>
+              <i data-lucide="key" class="login-icon"></i>
               Enter Token Manually
             </button>
           </div>
@@ -166,30 +153,60 @@
           <div class="settings-form">
             <div class="setting-group">
               <label>Resolution</label>
-              <select id="resolution-setting">
-                <option value="1280x720">1280x720 (720p)</option>
-                <option value="1920x1080" selected>1920x1080 (1080p)</option>
-                <option value="2560x1440">2560x1440 (1440p)</option>
-                <option value="3840x2160">3840x2160 (4K)</option>
-              </select>
+              <div class="custom-dropdown" data-dropdown="resolution-setting">
+                <div class="dropdown-trigger" tabindex="0">
+                  <span class="dropdown-text">1920x1080 (1080p)</span>
+                  <i data-lucide="chevron-down" class="dropdown-arrow"></i>
+                </div>
+                <div class="dropdown-menu">
+                  <div class="dropdown-option" data-value="1280x720">1280x720 (720p)</div>
+                  <div class="dropdown-option selected" data-value="1920x1080">1920x1080 (1080p)</div>
+                  <div class="dropdown-option" data-value="2560x1440">2560x1440 (1440p)</div>
+                  <div class="dropdown-option" data-value="3840x2160">3840x2160 (4K)</div>
+                </div>
+              </div>
             </div>
             <div class="setting-group">
               <label>Frame Rate</label>
-              <select id="fps-setting">
-                <option value="30">30 FPS</option>
-                <option value="60" selected>60 FPS</option>
-                <option value="120">120 FPS</option>
-                <option value="240">240 FPS</option>
-                <option value="360">360 FPS</option>
-              </select>
+              <div class="custom-dropdown" data-dropdown="fps-setting">
+                <div class="dropdown-trigger" tabindex="0">
+                  <span class="dropdown-text">60 FPS</span>
+                  <i data-lucide="chevron-down" class="dropdown-arrow"></i>
+                </div>
+                <div class="dropdown-menu">
+                  <div class="dropdown-option" data-value="30">30 FPS</div>
+                  <div class="dropdown-option selected" data-value="60">60 FPS</div>
+                  <div class="dropdown-option" data-value="120">120 FPS</div>
+                  <div class="dropdown-option" data-value="240">240 FPS</div>
+                  <div class="dropdown-option" data-value="360">360 FPS</div>
+                </div>
+              </div>
             </div>
             <div class="setting-group">
               <label>Video Codec</label>
-              <select id="codec-setting">
-                <option value="h264">H.264 (Best Compatibility)</option>
-                <option value="h265">H.265/HEVC (Better Quality)</option>
-                <option value="av1">AV1 (Best Quality, High CPU)</option>
-              </select>
+              <div class="custom-dropdown" data-dropdown="codec-setting">
+                <div class="dropdown-trigger" tabindex="0">
+                  <span class="dropdown-text">H.264 (Best Compatibility)</span>
+                  <i data-lucide="chevron-down" class="dropdown-arrow"></i>
+                </div>
+                <div class="dropdown-menu">
+                  <div class="dropdown-option selected" data-value="h264">H.264 (Best Compatibility)</div>
+                  <div class="dropdown-option" data-value="av1">AV1 (Best Quality)</div>
+                </div>
+              </div>
+            </div>
+            <div class="setting-group">
+              <label>Audio Codec</label>
+              <div class="custom-dropdown" data-dropdown="audio-codec-setting">
+                <div class="dropdown-trigger" tabindex="0">
+                  <span class="dropdown-text">Opus (Default)</span>
+                  <i data-lucide="chevron-down" class="dropdown-arrow"></i>
+                </div>
+                <div class="dropdown-menu">
+                  <div class="dropdown-option selected" data-value="opus">Opus (Default)</div>
+                  <div class="dropdown-option" data-value="opus-stereo">Opus Stereo (macOS)</div>
+                </div>
+              </div>
             </div>
             <div class="setting-group">
               <label>Max Bitrate: <span id="bitrate-value">Unlimited</span></label>
@@ -201,9 +218,15 @@
             </div>
             <div class="setting-group">
               <label>Preferred Region</label>
-              <select id="region-setting">
-                <option value="auto">Auto (Lowest Ping)</option>
-              </select>
+              <div class="custom-dropdown" data-dropdown="region-setting">
+                <div class="dropdown-trigger" tabindex="0">
+                  <span class="dropdown-text">Auto (Lowest Ping)</span>
+                  <i data-lucide="chevron-down" class="dropdown-arrow"></i>
+                </div>
+                <div class="dropdown-menu">
+                  <div class="dropdown-option selected" data-value="auto">Auto (Lowest Ping)</div>
+                </div>
+              </div>
             </div>
             <div class="setting-group">
               <label>
@@ -228,6 +251,67 @@
               <input type="text" id="proxy-setting" placeholder="http://proxy:port" />
             </div>
             <button id="save-settings-btn" class="btn btn-primary">Save Settings</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Session Modal -->
+      <div id="active-session-modal" class="modal hidden">
+        <div class="modal-content session-modal-content">
+          <button class="modal-close">&times;</button>
+          <div class="session-modal-header">
+            <div class="session-icon"><i data-lucide="play"></i></div>
+            <h2>Active Session Detected</h2>
+          </div>
+          <p class="session-modal-description">You have a running GeForce NOW session. To connect from this client, close any browser tabs or other clients streaming this session first.</p>
+          <div class="session-info-card">
+            <div class="session-info-row">
+              <span class="session-label">Game:</span>
+              <span class="session-value" id="active-session-game">--</span>
+            </div>
+            <div class="session-info-row">
+              <span class="session-label">GPU:</span>
+              <span class="session-value" id="active-session-gpu">--</span>
+            </div>
+            <div class="session-info-row">
+              <span class="session-label">Resolution:</span>
+              <span class="session-value" id="active-session-resolution">--</span>
+            </div>
+            <div class="session-info-row">
+              <span class="session-label">Server:</span>
+              <span class="session-value" id="active-session-server">--</span>
+            </div>
+          </div>
+          <div class="session-modal-actions">
+            <button id="connect-session-btn" class="btn btn-primary btn-large">Connect to Session</button>
+            <button id="terminate-session-btn" class="btn btn-secondary">End Session</button>
+            <button id="dismiss-session-btn" class="btn btn-ghost">Dismiss</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Session Conflict Modal (when trying to start a new game while session is running) -->
+      <div id="session-conflict-modal" class="modal hidden">
+        <div class="modal-content session-modal-content">
+          <button class="modal-close">&times;</button>
+          <div class="session-modal-header">
+            <div class="session-icon warning"><i data-lucide="alert-triangle"></i></div>
+            <h2>Session Already Running</h2>
+          </div>
+          <p class="session-modal-description">You already have an active session. Do you want to terminate it and start a new game?</p>
+          <div class="session-info-card">
+            <div class="session-info-row">
+              <span class="session-label">Current Game:</span>
+              <span class="session-value" id="conflict-session-game">--</span>
+            </div>
+            <div class="session-info-row">
+              <span class="session-label">GPU:</span>
+              <span class="session-value" id="conflict-session-gpu">--</span>
+            </div>
+          </div>
+          <div class="session-modal-actions">
+            <button id="terminate-and-launch-btn" class="btn btn-primary btn-large">Terminate & Launch New Game</button>
+            <button id="cancel-launch-btn" class="btn btn-secondary">Cancel</button>
           </div>
         </div>
       </div>

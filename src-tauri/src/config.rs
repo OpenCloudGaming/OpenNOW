@@ -15,6 +15,8 @@ pub struct Settings {
     pub fps: Option<u32>,
     /// Preferred video codec
     pub codec: VideoCodecSetting,
+    /// Preferred audio codec
+    pub audio_codec: AudioCodecSetting,
     /// Max bitrate in Mbps (200 = unlimited)
     pub max_bitrate_mbps: u32,
     /// Preferred server region
@@ -58,6 +60,15 @@ pub enum VideoCodecSetting {
     Av1,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AudioCodecSetting {
+    #[default]
+    Opus,
+    #[serde(rename = "opus-stereo")]
+    OpusStereo,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -65,6 +76,7 @@ impl Default for Settings {
             resolution: Some("1920x1080".to_string()),
             fps: Some(60),
             codec: VideoCodecSetting::H264,
+            audio_codec: AudioCodecSetting::Opus,
             max_bitrate_mbps: 200, // 200 = unlimited
             region: None,
             discord_rpc: false,

@@ -13,6 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "GeForce NOW",
         "width": 1280,
         "height": 800,
