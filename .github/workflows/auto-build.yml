@@ -15,6 +15,11 @@ env:
 jobs:
   # First job: Calculate the version and generate release notes
   get-version:
+    # Skip build if commit message contains [skip ci], [no build], or [skip build]
+    if: |
+      !contains(github.event.head_commit.message, '[skip ci]') &&
+      !contains(github.event.head_commit.message, '[no build]') &&
+      !contains(github.event.head_commit.message, '[skip build]')
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.get_version.outputs.version }}
@@ -66,11 +71,17 @@ jobs:
           LATEST_TAG="${{ steps.get_version.outputs.latest_tag }}"
 
           # Get commits since last tag (or all commits if no tag exists)
+          # Format: subject line + body (indented) for better AI context
+          FORMAT="- %s (%h)%n%w(0,2,2)%b"
           if git rev-parse "$LATEST_TAG" >/dev/null 2>&1; then
-            git log "$LATEST_TAG"..HEAD --pretty=format:"- %s (%h)" --no-merges | head -50 > commits.txt
+            git log "$LATEST_TAG"..HEAD --pretty=format:"$FORMAT" --no-merges | head -150 > commits.txt
           else
-            git log --pretty=format:"- %s (%h)" --no-merges | head -50 > commits.txt
+            git log --pretty=format:"$FORMAT" --no-merges | head -150 > commits.txt
           fi
+
+          # Clean up excessive blank lines from commits without bodies
+          sed -i 's/^[[:space:]]*$//g' commits.txt
+          cat -s commits.txt > commits_clean.txt && mv commits_clean.txt commits.txt
 
           # Ensure file ends with newline (git log --pretty=format doesn't add one)
           echo "" >> commits.txt
