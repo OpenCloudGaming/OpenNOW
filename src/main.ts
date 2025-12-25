@@ -739,28 +739,29 @@ interface GitHubRelease {
 
 async function checkForUpdates(): Promise<void> {
   try {
+    // Use releases list instead of /latest to avoid 404 when no releases exist
     const response = await fetch(
-      "https://api.github.com/repos/zortos293/GFNClient/releases/latest"
+      "https://api.github.com/repos/zortos293/GFNClient/releases?per_page=1"
     );
 
     if (!response.ok) {
-      // Try getting the latest from all releases if no "latest" exists
-      const allResponse = await fetch(
-        "https://api.github.com/repos/zortos293/GFNClient/releases?per_page=1"
-      );
-      if (!allResponse.ok) return;
-
-      const releases = await allResponse.json();
-      if (releases.length === 0) return;
-
-      handleReleaseCheck(releases[0]);
+      console.log("Could not check for updates (API error)");
       return;
     }
 
-    const release: GitHubRelease = await response.json();
-    handleReleaseCheck(release);
+    const releases = await response.json();
+
+    if (!Array.isArray(releases) || releases.length === 0) {
+      // No releases published yet - this is expected for new projects
+      console.log("No releases found - skipping update check");
+      return;
+    }
+
+    // Use the first (most recent) release
+    handleReleaseCheck(releases[0]);
   } catch (error) {
-    console.error("Failed to check for updates:", error);
+    // Network errors, etc - silently ignore
+    console.log("Update check skipped:", error instanceof Error ? error.message : "network error");
   }
 }
 
