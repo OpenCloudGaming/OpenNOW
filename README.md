@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="public/gfn-icon.svg" width="120" alt="OpenNOW">
-</p>
+
 
 <h1 align="center">OpenNOW</h1>
 
@@ -87,11 +85,6 @@ If OpenNOW is useful to you, consider sponsoring to support development:
   </a>
 </p>
 
-<p align="center">
-  <a href="https://github.com/sponsors/zortos293">
-    <img src="https://raw.githubusercontent.com/zortos293/zortos293/main/sponsors.svg" width="600" alt="Sponsors">
-  </a>
-</p>
 
 ---
 
