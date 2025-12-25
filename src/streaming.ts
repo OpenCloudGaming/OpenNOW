@@ -571,7 +571,7 @@ async function handleGfnSdpOffer(
   serverSdp: string,
   ws: WebSocket,
   config: WebRtcConfig,
-  _serverIp: string,  // Kept for potential future use (no longer used for ICE)
+  serverIp: string,
   requestedWidth: number,
   requestedHeight: number
 ): Promise<void> {
@@ -1074,12 +1074,58 @@ async function handleGfnSdpOffer(
     console.error("WebSocket not open, cannot send answer! State:", ws.readyState);
   }
 
-  // IMPORTANT: Do NOT manually add ICE candidates!
-  // The server will send its ICE candidate via trickle ICE (peer_msg with candidate field)
-  // The trickle ICE handler at lines 431-447 will add it when received
-  // Server's candidate will be on port 19450 (not 47998 from SDP media line)
-  console.log("Answer sent. Waiting for server's trickle ICE candidate...");
-  console.log("Note: Server uses ice-lite and will send its candidate via peer_msg");
+  // For ice-lite servers that don't send trickle ICE candidates,
+  // we need to construct the candidate manually from the server IP and SDP port
+  console.log("Answer sent. Adding server ICE candidate manually for ice-lite...");
+
+  // Extract port from the SDP (from m=audio or m=video line)
+  const portMatch = serverSdp.match(/m=(?:audio|video)\s+(\d+)/);
+  const serverPort = portMatch ? parseInt(portMatch[1], 10) : 47998;
+
+  // Convert serverIp from hostname format to IP
+  // Format: 80-250-101-43.cloudmatchbeta.nvidiagrid.net -> 80.250.101.43
+  let serverIpAddress = serverIp;
+  const ipMatch = serverIp.match(/^(\d+-\d+-\d+-\d+)\./);
+  if (ipMatch) {
+    serverIpAddress = ipMatch[1].replace(/-/g, ".");
+    console.log("Converted server hostname to IP:", serverIpAddress);
+  }
+
+  // Extract ICE credentials from server SDP
+  const serverUfragMatch = serverSdp.match(/a=ice-ufrag:(\S+)/);
+  const serverUfrag = serverUfragMatch ? serverUfragMatch[1] : "";
+
+  // Construct the ICE candidate
+  // Format: candidate:foundation component protocol priority ip port typ type
+  const candidateString = `candidate:1 1 udp 2130706431 ${serverIpAddress} ${serverPort} typ host`;
+  console.log("Constructed server ICE candidate:", candidateString);
+
+  try {
+    await pc.addIceCandidate(new RTCIceCandidate({
+      candidate: candidateString,
+      sdpMid: "0",
+      sdpMLineIndex: 0,
+      usernameFragment: serverUfrag
+    }));
+    console.log("Successfully added server ICE candidate");
+  } catch (e) {
+    console.warn("Failed to add constructed ICE candidate:", e);
+    // Try alternative format with different sdpMid values
+    for (const mid of ["1", "2", "3"]) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate({
+          candidate: candidateString,
+          sdpMid: mid,
+          sdpMLineIndex: parseInt(mid, 10),
+          usernameFragment: serverUfrag
+        }));
+        console.log(`Added server ICE candidate with sdpMid=${mid}`);
+        break;
+      } catch (e2) {
+        // Continue trying
+      }
+    }
+  }
 }
 
 /**
@@ -1662,11 +1708,10 @@ async function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
  */
 function preferCodec(sdp: string, codec: string): string {
   // Map user codec selection to actual SDP codec name
-  // Note: H265 appears as "HEVC" in the SDP rtpmap, not "H265"
   const codecMap: Record<string, string> = {
     H264: "H264",
-    H265: "HEVC",   // SDP uses HEVC for H265
-    HEVC: "HEVC",
+    H265: "H265",
+    HEVC: "H265",   // HEVC is the same as H265
     AV1: "AV1",
   };
 
