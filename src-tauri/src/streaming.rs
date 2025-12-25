@@ -1449,67 +1449,92 @@ pub async fn claim_session(
     let session = claim_response.session;
     log::info!("Session claimed! Status: {}, GPU: {:?}", session.status, session.gpu_type);
 
-    // After claiming, we need to GET the session info to get the updated connection details
-    // This is what the browser client does
-    log::info!("Fetching updated session info after claim...");
+    // After claiming, we need to poll GET the session info until status changes from 6 to 2
+    // The official browser client does this - it waits for the session to be "ready" (status 2)
+    // before connecting. Status 6 is a transitional state during claim.
+    log::info!("Polling session info until ready (status 2)...");
 
     let get_url = format!(
         "https://{}/v2/session/{}",
         server_ip, session_id
     );
 
-    let get_response = client
-        .get(&get_url)
-        .header("Authorization", format!("GFNJWT {}", access_token))
-        .header("Content-Type", "application/json")
-        .header("Origin", "https://play.geforcenow.com")
-        .header("nv-client-id", &client_id)
-        .header("nv-client-streamer", "WEBRTC")
-        .header("nv-client-type", "BROWSER")
-        .header("nv-client-version", "2.0.80.173")
-        .header("nv-browser-type", "CHROMIUM")
-        .header("nv-device-os", "MACOS")
-        .header("nv-device-type", "DESKTOP")
-        .header("x-device-id", &device_id)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to get session info: {}", e))?;
+    let mut updated_session: Option<ClaimSessionData> = None;
+    let max_attempts = 10;
 
-    if !get_response.status().is_success() {
-        let body = get_response.text().await.unwrap_or_default();
-        log::warn!("GET session info failed, using claim response: {}", body);
+    for attempt in 1..=max_attempts {
+        log::info!("GET session attempt {}/{}", attempt, max_attempts);
 
-        // Fall back to claim response
-        let signaling_url = session.connection_info
-            .as_ref()
-            .and_then(|conns| conns.first())
-            .and_then(|conn| {
-                log::info!("Connection info IP from PUT response (fallback): {:?}", conn.ip);
-                conn.ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
-            });
+        // Small delay between attempts (except first)
+        if attempt > 1 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
 
-        log::info!("Signaling URL from PUT fallback: {:?}", signaling_url);
+        let get_response = client
+            .get(&get_url)
+            .header("Authorization", format!("GFNJWT {}", access_token))
+            .header("Content-Type", "application/json")
+            .header("Origin", "https://play.geforcenow.com")
+            .header("nv-client-id", &client_id)
+            .header("nv-client-streamer", "WEBRTC")
+            .header("nv-client-type", "BROWSER")
+            .header("nv-client-version", "2.0.80.173")
+            .header("nv-browser-type", "CHROMIUM")
+            .header("nv-device-os", "MACOS")
+            .header("nv-device-type", "DESKTOP")
+            .header("x-device-id", &device_id)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to get session info: {}", e))?;
 
-        return Ok(ClaimSessionResponse {
-            session_id: session.session_id,
-            status: session.status,
-            gpu_type: session.gpu_type,
-            signaling_url,
-            server_ip: session.session_control_info
-                .and_then(|c| c.ip),
-        });
+        if !get_response.status().is_success() {
+            let body = get_response.text().await.unwrap_or_default();
+            log::warn!("GET session info failed on attempt {}: {}", attempt, body);
+            continue;
+        }
+
+        let get_response_text = get_response.text().await
+            .map_err(|e| format!("Failed to read GET session response: {}", e))?;
+
+        log::info!("GET session response (attempt {}): {}", attempt, &get_response_text[..std::cmp::min(300, get_response_text.len())]);
+
+        let get_session_response: ClaimSessionApiResponse = match serde_json::from_str(&get_response_text) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("Failed to parse GET session response on attempt {}: {}", attempt, e);
+                continue;
+            }
+        };
+
+        let sess = get_session_response.session;
+        log::info!("Session status on attempt {}: {}", attempt, sess.status);
+
+        // Status 2 = Ready, Status 3 = Running - both are good to connect
+        if sess.status == 2 || sess.status == 3 {
+            log::info!("Session is ready! Status: {}", sess.status);
+            updated_session = Some(sess);
+            break;
+        }
+
+        // If still status 6, keep polling
+        if sess.status == 6 {
+            log::info!("Session still transitioning (status 6), continuing to poll...");
+            // Store in case we run out of attempts
+            updated_session = Some(sess);
+        } else {
+            // Some other status, use it
+            log::info!("Session in status {}, using this", sess.status);
+            updated_session = Some(sess);
+            break;
+        }
     }
 
-    let get_response_text = get_response.text().await
-        .map_err(|e| format!("Failed to read GET session response: {}", e))?;
+    // Use the session data we got (either status 2/3 or the last status 6)
+    let updated_session = updated_session.ok_or_else(|| {
+        format!("Failed to get session info after {} attempts", max_attempts)
+    })?;
 
-    log::info!("GET session response: {}", &get_response_text[..std::cmp::min(500, get_response_text.len())]);
-
-    let get_session_response: ClaimSessionApiResponse = serde_json::from_str(&get_response_text)
-        .map_err(|e| format!("Failed to parse GET session response: {}", e))?;
-
-    let updated_session = get_session_response.session;
-    log::info!("Updated session status: {}, GPU: {:?}", updated_session.status, updated_session.gpu_type);
+    log::info!("Final session status: {}, GPU: {:?}", updated_session.status, updated_session.gpu_type);
 
     // Extract signaling URL from updated connection info
     let signaling_url = updated_session.connection_info

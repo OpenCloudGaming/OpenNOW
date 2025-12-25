@@ -1,6 +1,7 @@
 // GFN Custom Client - Main Entry Point
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   initializeStreaming,
   setupInputCapture,
@@ -281,6 +282,21 @@ interface StreamingQualityProfile {
   features: FeatureOption[];
 }
 
+interface AddonAttribute {
+  key: string;
+  textValue?: string;
+}
+
+interface SubscriptionAddon {
+  uri?: string;
+  id: string;
+  type: string;
+  subType?: string;
+  autoPayEnabled?: boolean;
+  attributes: AddonAttribute[];
+  status?: string;
+}
+
 interface SubscriptionInfo {
   membershipTier: string;
   remainingTimeInMinutes?: number;
@@ -290,6 +306,7 @@ interface SubscriptionInfo {
   subType?: string;
   features?: SubscriptionFeatures;
   streamingQualities?: StreamingQualityProfile[];
+  addons?: SubscriptionAddon[];
 }
 
 interface Settings {
@@ -727,9 +744,6 @@ const navItems = document.querySelectorAll(".nav-item");
 // Declare Lucide global (loaded via CDN)
 declare const lucide: { createIcons: () => void };
 
-// Current app version (updated by build)
-const APP_VERSION = "0.0.10";
-
 // Update checker
 interface GitHubRelease {
   tag_name: string;
@@ -760,31 +774,35 @@ async function checkForUpdates(): Promise<void> {
     }
 
     // Use the first (most recent) release
-    handleReleaseCheck(releases[0]);
+    await handleReleaseCheck(releases[0]);
   } catch (error) {
     // Network errors, etc - silently ignore
     console.log("Update check skipped:", error instanceof Error ? error.message : "network error");
   }
 }
 
-function handleReleaseCheck(release: GitHubRelease): void {
+async function handleReleaseCheck(release: GitHubRelease): Promise<void> {
   const latestVersion = release.tag_name.replace(/^v/, "");
-  const currentVersion = APP_VERSION;
+  const currentVersion = await getVersion();
 
-  // Check if we should skip this version
-  const skippedVersion = localStorage.getItem("skippedVersion");
-  if (skippedVersion === latestVersion) {
-    console.log("Skipping version", latestVersion);
+  // First check if latest is actually newer than current
+  if (!isNewerVersion(latestVersion, currentVersion)) {
+    console.log("App is up to date:", currentVersion);
+    // Clear any skipped version since we're now at or past it
+    localStorage.removeItem("skippedVersion");
     return;
   }
 
-  // Compare versions
-  if (isNewerVersion(latestVersion, currentVersion)) {
-    console.log("Update available:", latestVersion);
-    showUpdateModal(release, latestVersion);
-  } else {
-    console.log("App is up to date:", currentVersion);
+  // Latest is newer - check if user explicitly skipped this version
+  const skippedVersion = localStorage.getItem("skippedVersion");
+  if (skippedVersion === latestVersion) {
+    console.log("User skipped version", latestVersion);
+    return;
   }
+
+  // Show update modal
+  console.log("Update available:", latestVersion);
+  showUpdateModal(release, latestVersion);
 }
 
 function isNewerVersion(latest: string, current: string): boolean {
@@ -1295,6 +1313,169 @@ function hideNavbarSessionIndicator() {
   updateNavbarSessionIndicator(null);
 }
 
+// Update navbar with storage indicator
+function updateNavbarStorageIndicator(subscription: SubscriptionInfo | null) {
+  let indicator = document.getElementById("storage-indicator");
+
+  // Find permanent storage addon
+  const storageAddon = subscription?.addons?.find(
+    (addon) => addon.subType === "PERMANENT_STORAGE"
+  );
+
+  if (!storageAddon) {
+    // Remove indicator if no storage addon
+    indicator?.remove();
+    return;
+  }
+
+  // Extract storage info from attributes
+  const totalAttr = storageAddon.attributes.find(a => a.key === "TOTAL_STORAGE_SIZE_IN_GB");
+  const usedAttr = storageAddon.attributes.find(a => a.key === "USED_STORAGE_SIZE_IN_GB");
+  const regionAttr = storageAddon.attributes.find(a => a.key === "STORAGE_METRO_REGION_NAME");
+
+  const totalGB = parseInt(totalAttr?.textValue || "0", 10);
+  const usedGB = parseInt(usedAttr?.textValue || "0", 10);
+  const region = regionAttr?.textValue || "Unknown";
+
+  if (totalGB === 0) {
+    indicator?.remove();
+    return;
+  }
+
+  // Create indicator if it doesn't exist
+  if (!indicator) {
+    indicator = document.createElement("div");
+    indicator.id = "storage-indicator";
+    indicator.className = "storage-indicator";
+
+    // Insert in the status bar left section
+    const statusLeft = document.querySelector(".status-left");
+    if (statusLeft) {
+      statusLeft.appendChild(indicator);
+    }
+  }
+
+  // Clear existing content
+  indicator.replaceChildren();
+
+  // Calculate percentage for coloring
+  const percentage = Math.round((usedGB / totalGB) * 100);
+
+  // Determine color based on usage
+  let color = "#76b900"; // green
+  if (percentage >= 90) {
+    color = "#f44336"; // red
+  } else if (percentage >= 75) {
+    color = "#ffc107"; // yellow
+  }
+
+  // Create elements with inline color
+  const icon = document.createElement("i");
+  icon.setAttribute("data-lucide", "hard-drive");
+  icon.style.width = "12px";
+  icon.style.height = "12px";
+  icon.style.color = color;
+
+  const text = document.createElement("span");
+  text.textContent = `${usedGB} / ${totalGB} GB`;
+  text.style.color = color;
+  text.style.fontSize = "12px";
+
+  indicator.style.color = color;
+  indicator.appendChild(icon);
+  indicator.appendChild(text);
+  indicator.title = `Cloud Storage: ${usedGB} GB used of ${totalGB} GB\nLocation: ${region}`;
+
+  // Re-init Lucide icons for the new icon
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons();
+  }
+
+  // Apply color to SVG after Lucide creates it
+  setTimeout(() => {
+    const svg = indicator.querySelector("svg");
+    if (svg) {
+      svg.style.color = color;
+      svg.style.stroke = color;
+      svg.style.width = "12px";
+      svg.style.height = "12px";
+    }
+  }, 10);
+}
+
+// Update status bar with session time remaining
+function updateStatusBarSessionTime(subscription: SubscriptionInfo | null) {
+  let indicator = document.getElementById("session-time-indicator");
+
+  if (!subscription || !subscription.remainingTimeInMinutes) {
+    indicator?.remove();
+    return;
+  }
+
+  const remaining = subscription.remainingTimeInMinutes;
+  const total = subscription.totalTimeInMinutes || 0;
+  const remainingHrs = Math.floor(remaining / 60);
+  const totalHrs = Math.floor(total / 60);
+  const percentRemaining = total > 0 ? Math.round((remaining / total) * 100) : 100;
+
+  // Create indicator if it doesn't exist
+  if (!indicator) {
+    indicator = document.createElement("div");
+    indicator.id = "session-time-indicator";
+    indicator.className = "session-time-indicator";
+
+    // Insert in the status bar left section
+    const statusLeft = document.querySelector(".status-left");
+    if (statusLeft) {
+      statusLeft.appendChild(indicator);
+    }
+  }
+
+  // Clear existing content
+  indicator.replaceChildren();
+
+  // Determine color based on remaining time
+  let color = "#76b900"; // green
+  if (percentRemaining <= 10) {
+    color = "#f44336"; // red
+  } else if (percentRemaining <= 25) {
+    color = "#ffc107"; // yellow
+  }
+
+  // Create elements with inline color
+  const icon = document.createElement("i");
+  icon.setAttribute("data-lucide", "clock");
+  icon.style.width = "12px";
+  icon.style.height = "12px";
+  icon.style.color = color;
+
+  const text = document.createElement("span");
+  text.textContent = `${remainingHrs}h / ${totalHrs}h`;
+  text.style.color = color;
+  text.style.fontSize = "12px";
+
+  indicator.style.color = color;
+  indicator.appendChild(icon);
+  indicator.appendChild(text);
+  indicator.title = `Session time: ${remainingHrs} hours remaining of ${totalHrs} hours total`;
+
+  // Re-init Lucide icons
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons();
+  }
+
+  // Apply color to SVG after Lucide creates it
+  setTimeout(() => {
+    const svg = indicator.querySelector("svg");
+    if (svg) {
+      svg.style.color = color;
+      svg.style.stroke = color;
+      svg.style.width = "12px";
+      svg.style.height = "12px";
+    }
+  }, 10);
+}
+
 // Setup session modal handlers
 function setupSessionModals() {
   // Active session modal handlers
@@ -1651,6 +1832,11 @@ async function checkAuthStatus() {
 
         // Populate resolution and FPS dropdowns from subscription data
         populateStreamingOptions(subscription);
+
+        // Update status bar indicators
+        console.log("Subscription addons:", subscription.addons);
+        updateNavbarStorageIndicator(subscription);
+        updateStatusBarSessionTime(subscription);
       } catch (subError) {
         console.warn("Failed to fetch subscription, using default tier:", subError);
         currentSubscription = null;
@@ -1682,13 +1868,10 @@ function updateAuthUI() {
       userTier.textContent = tier;
       userTier.className = `user-tier tier-${tier.toLowerCase()}`;
     }
+    // Hide user-time from top bar (now shown in status bar)
     const userTime = document.getElementById("user-time");
-    if (userTime && currentSubscription) {
-      const remaining = currentSubscription.remainingTimeInMinutes || 0;
-      const total = currentSubscription.totalTimeInMinutes || 0;
-      const remainingHrs = Math.floor(remaining / 60);
-      const totalHrs = Math.floor(total / 60);
-      userTime.textContent = `${remainingHrs}h / ${totalHrs}h`;
+    if (userTime) {
+      userTime.style.display = "none";
     }
   } else {
     loginBtn.classList.remove("hidden");

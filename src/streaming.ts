@@ -503,6 +503,26 @@ async function connectGfnBrowserSignaling(
                   console.warn("Failed to add ICE candidate:", e);
                 }
               }
+            } else if (innerMsg.type === "candidate") {
+              // Alternative ICE candidate format
+              console.log("Received ICE candidate (type=candidate):", JSON.stringify(innerMsg));
+              if (streamingState.peerConnection && innerMsg.candidate) {
+                try {
+                  await streamingState.peerConnection.addIceCandidate(
+                    new RTCIceCandidate({
+                      candidate: innerMsg.candidate,
+                      sdpMid: innerMsg.sdpMid || "0",
+                      sdpMLineIndex: innerMsg.sdpMLineIndex ?? 0
+                    })
+                  );
+                  console.log("Added remote ICE candidate (alt format)");
+                } catch (e) {
+                  console.warn("Failed to add ICE candidate (alt format):", e);
+                }
+              }
+            } else {
+              // Log any unhandled peer_msg types for debugging
+              console.log("Unhandled peer_msg inner type:", JSON.stringify(innerMsg).substring(0, 300));
             }
           } catch (parseError) {
             console.log("peer_msg content is not JSON:", peerMsg.msg.substring(0, 100));
@@ -816,6 +836,17 @@ async function handleGfnSdpOffer(
           const version = size >= 4 ? view.getUint16(2, true) : 0;
           console.log(`  *** HANDSHAKE: New format (0x020E), version=${version}`);
           inputProtocolVersion = version;
+
+          // CRITICAL: Send handshake response back to server
+          // Echo the received bytes to acknowledge the handshake
+          try {
+            const response = new Uint8Array(bytes.slice(0, size));
+            inputChannel.send(response.buffer);
+            console.log("  *** HANDSHAKE RESPONSE SENT:", Array.from(response).map(b => b.toString(16).padStart(2, '0')).join(' '));
+          } catch (err) {
+            console.error("  Failed to send handshake response:", err);
+          }
+
           inputHandshakeComplete = true;
           inputHandshakeAttempts++;
           streamStartTime = Date.now();
@@ -824,6 +855,16 @@ async function handleGfnSdpOffer(
           // Old format: first word is the version directly
           console.log(`  *** HANDSHAKE: Old format, version=${firstWord}`);
           inputProtocolVersion = firstWord;
+
+          // CRITICAL: Send handshake response back to server
+          try {
+            const response = new Uint8Array(bytes.slice(0, size));
+            inputChannel.send(response.buffer);
+            console.log("  *** HANDSHAKE RESPONSE SENT:", Array.from(response).map(b => b.toString(16).padStart(2, '0')).join(' '));
+          } catch (err) {
+            console.error("  Failed to send handshake response:", err);
+          }
+
           inputHandshakeComplete = true;
           inputHandshakeAttempts++;
           streamStartTime = Date.now();

@@ -1224,6 +1224,30 @@ pub struct ResolutionConfig {
     pub fps: u32,
 }
 
+/// Storage addon attribute
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddonAttribute {
+    pub key: String,
+    #[serde(rename = "textValue")]
+    pub text_value: Option<String>,
+}
+
+/// Subscription addon (e.g., permanent storage)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionAddon {
+    pub uri: Option<String>,
+    pub id: String,
+    #[serde(rename = "type")]
+    pub addon_type: String,
+    #[serde(rename = "subType")]
+    pub sub_type: Option<String>,
+    #[serde(rename = "autoPayEnabled")]
+    pub auto_pay_enabled: Option<bool>,
+    #[serde(default)]
+    pub attributes: Vec<AddonAttribute>,
+    pub status: Option<String>,
+}
+
 /// Subscription info response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionInfo {
@@ -1245,6 +1269,9 @@ pub struct SubscriptionInfo {
     /// Streaming quality profiles (BALANCED, DATA_SAVER, COMPETITIVE, CINEMATIC)
     #[serde(rename = "streamingQualities", default)]
     pub streaming_qualities: Vec<StreamingQualityProfile>,
+    /// Subscription addons (e.g., permanent storage)
+    #[serde(default)]
+    pub addons: Vec<SubscriptionAddon>,
 }
 
 /// Fetch subscription/membership info from MES API
