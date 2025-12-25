@@ -1,0 +1,60 @@
+name: Question
+description: Ask a question about GFNClient
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question about GFNClient? We're here to help!
+
+        **Before asking**, please check:
+        - The README for setup instructions
+        - Existing issues for similar questions
+        - The wiki (if available)
+
+  - type: checkboxes
+    id: existing-check
+    attributes:
+      label: Pre-submission Checklist
+      description: Please confirm you've checked existing resources
+      options:
+        - label: I have read the README
+          required: true
+        - label: I have searched existing issues for my question
+          required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Question Category
+      description: What is your question about?
+      options:
+        - Installation/Setup
+        - Configuration/Settings
+        - Streaming Issues
+        - Authentication
+        - Game Compatibility
+        - Platform-specific (macOS/Windows/Linux)
+        - Development/Contributing
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your Question
+      description: What would you like to know?
+      placeholder: Ask your question here...
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Any additional information that might help us answer your question
+      placeholder: |
+        - What have you already tried?
+        - What OS are you using?
+        - Any error messages?

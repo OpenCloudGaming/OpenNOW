@@ -2497,14 +2497,108 @@ let inputCaptureMode: 'pointerlock' | 'absolute' = 'absolute';
 // Track if input is active (video element is focused/active)
 let inputCaptureActive = false;
 
+// macOS detection - pointer lock doesn't work in Tauri/WKWebView
+const isMacOS = navigator.platform.toUpperCase().includes("MAC") ||
+  navigator.userAgent.toUpperCase().includes("MAC");
+
+// Track if we're using macOS cursor-hidden mode (workaround for no pointer lock)
+let macOSCursorHidden = false;
+
 /**
  * Set input capture mode
  * - 'pointerlock': Use pointer lock for relative mouse (FPS games)
  * - 'absolute': Send absolute coordinates without pointer lock (menus, desktop)
+ *
+ * On macOS, pointer lock doesn't work in Tauri/WKWebView, so we use native
+ * Core Graphics APIs via Tauri commands to capture the cursor.
  */
-export function setInputCaptureMode(mode: 'pointerlock' | 'absolute'): void {
-  console.log("Setting input capture mode:", mode);
+export async function setInputCaptureMode(mode: 'pointerlock' | 'absolute'): Promise<void> {
+  console.log("Setting input capture mode:", mode, isMacOS ? "(macOS)" : "");
   inputCaptureMode = mode;
+
+  // On macOS, use native Tauri cursor capture (Core Graphics)
+  if (isMacOS) {
+    try {
+      if (mode === 'pointerlock') {
+        // Use native macOS cursor capture via Core Graphics
+        // This disassociates the mouse from cursor position, allowing unlimited movement
+        const captured = await invoke<boolean>("capture_cursor");
+        if (captured) {
+          macOSCursorHidden = true;
+          inputCaptureActive = true;
+          console.log("macOS: Native cursor capture enabled (CGAssociateMouseAndMouseCursorPosition)");
+        } else {
+          console.warn("macOS: Native cursor capture not available, falling back to CSS");
+          // Fallback to CSS cursor hiding
+          const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
+          const container = document.getElementById("streaming-container");
+          if (video) video.style.cursor = 'none';
+          if (container) container.style.cursor = 'none';
+          macOSCursorHidden = true;
+          inputCaptureActive = true;
+        }
+      } else {
+        // Release native cursor capture
+        await invoke<boolean>("release_cursor");
+        macOSCursorHidden = false;
+        // Restore cursor style
+        const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
+        const container = document.getElementById("streaming-container");
+        if (video) video.style.cursor = 'default';
+        if (container) container.style.cursor = 'default';
+        console.log("macOS: Native cursor capture released");
+      }
+    } catch (e) {
+      console.error("macOS cursor capture error:", e);
+    }
+  }
+}
+
+/**
+ * Suspend cursor capture temporarily (e.g., when window loses focus)
+ * On macOS, this releases the native cursor capture so user can interact with other apps
+ */
+export async function suspendCursorCapture(): Promise<void> {
+  if (!isMacOS || !macOSCursorHidden) return;
+
+  try {
+    await invoke<boolean>("release_cursor");
+    console.log("macOS: Cursor capture suspended (window blur)");
+  } catch (e) {
+    console.error("Failed to suspend cursor capture:", e);
+  }
+}
+
+/**
+ * Resume cursor capture (e.g., when window regains focus)
+ * On macOS, this re-enables native cursor capture if we were in pointer lock mode
+ */
+export async function resumeCursorCapture(): Promise<void> {
+  if (!isMacOS || !macOSCursorHidden) return;
+  if (inputCaptureMode !== 'pointerlock') return;
+
+  try {
+    const captured = await invoke<boolean>("capture_cursor");
+    if (captured) {
+      console.log("macOS: Cursor capture resumed (window focus)");
+    }
+  } catch (e) {
+    console.error("Failed to resume cursor capture:", e);
+  }
+}
+
+/**
+ * Check if we're currently in macOS cursor capture mode
+ */
+export function isMacOSCursorCaptured(): boolean {
+  return isMacOS && macOSCursorHidden;
+}
+
+/**
+ * Get current input capture mode
+ */
+export function getInputCaptureMode(): 'pointerlock' | 'absolute' {
+  return inputCaptureMode;
 }
 
 /**
@@ -2542,9 +2636,13 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Mouse move handler - uses getCoalescedEvents for raw, unsmoothed input
   const handleMouseMove = (e: MouseEvent) => {
-    // In pointer lock mode, require pointer lock
+    // In pointer lock mode, require pointer lock OR macOS cursor-hidden workaround
     if (inputCaptureMode === 'pointerlock') {
-      if (hasPointerLock) {
+      // On macOS, use cursor-hidden mode with movementX/movementY (no actual pointer lock)
+      // On other platforms, require actual pointer lock
+      const canSendRelative = hasPointerLock || (isMacOS && macOSCursorHidden && inputCaptureActive);
+
+      if (canSendRelative) {
         // Use coalesced events for raw mouse data (no browser smoothing)
         const events = (e as PointerEvent).getCoalescedEvents?.() || [e];
         for (const evt of events) {
@@ -2576,7 +2674,9 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Mouse button down
   const handleMouseDown = (e: MouseEvent) => {
-    const shouldCapture = hasPointerLock || (inputCaptureMode === 'absolute' && isMouseOverVideo(e));
+    // On macOS, also capture when cursor is hidden (pointerlock workaround)
+    const macOSCapture = isMacOS && macOSCursorHidden;
+    const shouldCapture = hasPointerLock || macOSCapture || (inputCaptureMode === 'absolute' && isMouseOverVideo(e));
 
     if (shouldCapture) {
       // Activate input capture on click
@@ -2596,7 +2696,8 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Mouse button up
   const handleMouseUp = (e: MouseEvent) => {
-    const shouldCapture = hasPointerLock || inputCaptureActive;
+    const macOSCapture = isMacOS && macOSCursorHidden;
+    const shouldCapture = hasPointerLock || macOSCapture || inputCaptureActive;
 
     if (shouldCapture) {
       sendInputEvent({
@@ -2609,7 +2710,8 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Mouse wheel
   const handleWheel = (e: WheelEvent) => {
-    const shouldCapture = hasPointerLock || (inputCaptureMode === 'absolute' && (inputCaptureActive || isMouseOverVideo(e)));
+    const macOSCapture = isMacOS && macOSCursorHidden;
+    const shouldCapture = hasPointerLock || macOSCapture || (inputCaptureMode === 'absolute' && (inputCaptureActive || isMouseOverVideo(e)));
 
     if (shouldCapture) {
       sendInputEvent({
@@ -2622,7 +2724,8 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Keyboard handlers
   const handleKeyDown = (e: KeyboardEvent) => {
-    const shouldCapture = hasPointerLock || inputCaptureActive;
+    const macOSCapture = isMacOS && macOSCursorHidden;
+    const shouldCapture = hasPointerLock || macOSCapture || inputCaptureActive;
 
     if (shouldCapture) {
       // ESC is sent to the game like any other key - fullscreen exit is handled separately
@@ -2645,7 +2748,8 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   };
 
   const handleKeyUp = (e: KeyboardEvent) => {
-    const shouldCapture = hasPointerLock || inputCaptureActive;
+    const macOSCapture = isMacOS && macOSCursorHidden;
+    const shouldCapture = hasPointerLock || macOSCapture || inputCaptureActive;
 
     if (shouldCapture) {
       // Use proper GFN key code mapping and modifier flags
@@ -2669,7 +2773,8 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   // Click handler - either get pointer lock or activate absolute capture
   const handleClick = (e: MouseEvent) => {
     if (inputCaptureMode === 'pointerlock') {
-      if (!hasPointerLock) {
+      // On macOS, we use native cursor capture via Core Graphics, not browser pointer lock
+      if (!hasPointerLock && !isMacOS) {
         // Use unadjustedMovement for raw mouse input without OS acceleration
         (videoElement as any).requestPointerLock({ unadjustedMovement: true }).catch(() => {
           // Fallback if unadjustedMovement not supported
@@ -2721,6 +2826,9 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Pointer lock error
   const handlePointerLockError = () => {
+    // On macOS, we don't use browser pointer lock, so ignore these errors
+    if (isMacOS) return;
+
     console.error("Pointer lock error - falling back to absolute mode");
     hasPointerLock = false;
     // Fall back to absolute mode if pointer lock fails
@@ -2755,16 +2863,19 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
       inputCaptureActive = true;
 
       // Request pointer lock after a small delay (fullscreen transition needs to complete)
-      setTimeout(() => {
-        if (!hasPointerLock) {
-          console.log("Requesting pointer lock for fullscreen");
-          // Use unadjustedMovement for raw mouse input without OS acceleration
-          (videoElement as any).requestPointerLock({ unadjustedMovement: true }).catch(() => {
-            // Fallback if unadjustedMovement not supported
-            videoElement.requestPointerLock();
-          });
-        }
-      }, 100);
+      // On macOS, we use native cursor capture via Core Graphics instead
+      if (!isMacOS) {
+        setTimeout(() => {
+          if (!hasPointerLock) {
+            console.log("Requesting pointer lock for fullscreen");
+            // Use unadjustedMovement for raw mouse input without OS acceleration
+            (videoElement as any).requestPointerLock({ unadjustedMovement: true }).catch(() => {
+              // Fallback if unadjustedMovement not supported
+              videoElement.requestPointerLock();
+            });
+          }
+        }, 100);
+      }
     } else {
       // Exiting fullscreen - switch to absolute mode
       if (hasPointerLock) {
@@ -2831,9 +2942,22 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
       document.exitPointerLock();
     }
 
-    // Exit fullscreen if active
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
+    // Exit fullscreen if active (cross-browser)
+    const fullscreenElement = document.fullscreenElement ||
+      (document as any).webkitFullscreenElement ||
+      (document as any).mozFullScreenElement ||
+      (document as any).msFullscreenElement;
+
+    if (fullscreenElement) {
+      if (document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      } else if ((document as any).webkitExitFullscreen) {
+        (document as any).webkitExitFullscreen();
+      } else if ((document as any).mozCancelFullScreen) {
+        (document as any).mozCancelFullScreen();
+      } else if ((document as any).msExitFullscreen) {
+        (document as any).msExitFullscreen();
+      }
     }
   };
 }
@@ -3033,10 +3157,36 @@ export function toggleFullscreen(): void {
     return;
   }
 
-  if (document.fullscreenElement) {
-    document.exitFullscreen();
+  // Cross-browser fullscreen check
+  const fullscreenElement = document.fullscreenElement ||
+    (document as any).webkitFullscreenElement ||
+    (document as any).mozFullScreenElement ||
+    (document as any).msFullscreenElement;
+
+  const element = streamingState.videoElement;
+
+  if (fullscreenElement) {
+    // Exit fullscreen - cross-browser
+    if (document.exitFullscreen) {
+      document.exitFullscreen();
+    } else if ((document as any).webkitExitFullscreen) {
+      (document as any).webkitExitFullscreen();
+    } else if ((document as any).mozCancelFullScreen) {
+      (document as any).mozCancelFullScreen();
+    } else if ((document as any).msExitFullscreen) {
+      (document as any).msExitFullscreen();
+    }
   } else {
-    streamingState.videoElement.requestFullscreen();
+    // Enter fullscreen - cross-browser (with Safari/WebKit support for macOS)
+    if (element.requestFullscreen) {
+      element.requestFullscreen();
+    } else if ((element as any).webkitRequestFullscreen) {
+      (element as any).webkitRequestFullscreen();
+    } else if ((element as any).mozRequestFullScreen) {
+      (element as any).mozRequestFullScreen();
+    } else if ((element as any).msRequestFullscreen) {
+      (element as any).msRequestFullscreen();
+    }
   }
 }
 

@@ -1865,6 +1865,528 @@ pub async fn start_streaming_flow(
     Ok(connection_state)
 }
 
+/// Active session info returned from the server
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveSession {
+    pub session_id: String,
+    pub app_id: i64,
+    pub gpu_type: Option<String>,
+    pub status: i32,
+    pub server_ip: Option<String>,
+    pub signaling_url: Option<String>,
+    pub resolution: Option<String>,
+    pub fps: Option<u32>,
+}
+
+/// Response from GET /v2/session endpoint
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetSessionsResponse {
+    #[serde(default)]
+    sessions: Vec<SessionFromApi>,
+    request_status: RequestStatus,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionFromApi {
+    session_id: String,
+    #[serde(default)]
+    session_request_data: Option<SessionRequestDataFromApi>,
+    #[serde(default)]
+    gpu_type: Option<String>,
+    #[serde(default)]
+    status: i32,
+    #[serde(default)]
+    session_control_info: Option<SessionControlInfo>,
+    #[serde(default)]
+    connection_info: Option<Vec<ConnectionInfo>>,
+    #[serde(default)]
+    monitor_settings: Option<Vec<MonitorSettingsFromApi>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionRequestDataFromApi {
+    #[serde(default)]
+    app_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MonitorSettingsFromApi {
+    #[serde(default)]
+    width_in_pixels: u32,
+    #[serde(default)]
+    height_in_pixels: u32,
+    #[serde(default)]
+    frames_per_second: u32,
+}
+
+/// Get active sessions from the CloudMatch server
+/// This checks if there are any running sessions that can be reconnected to
+#[command]
+pub async fn get_active_sessions(
+    access_token: String,
+) -> Result<Vec<ActiveSession>, String> {
+    log::info!("Checking for active sessions...");
+
+    let client = crate::proxy::create_proxied_client().await?;
+    let device_id = get_device_id();
+    let client_id = get_client_id();
+
+    // Use the prod endpoint which returns all user sessions
+    let session_url = format!("{}/v2/session", CLOUDMATCH_PROD_URL);
+
+    log::info!("Using device_id: {} for session check", device_id);
+
+    let response = client
+        .get(&session_url)
+        .header("Authorization", format!("GFNJWT {}", access_token))
+        .header("Content-Type", "application/json")
+        .header("Origin", "https://play.geforcenow.com")
+        .header("nv-client-id", &client_id)
+        .header("nv-client-streamer", "WEBRTC")
+        .header("nv-client-type", "BROWSER")
+        .header("nv-client-version", "2.0.80.173")
+        .header("nv-browser-type", "CHROMIUM")
+        .header("nv-device-make", "APPLE")
+        .header("nv-device-model", "UNKNOWN")
+        .header("nv-device-os", "MACOS")
+        .header("nv-device-type", "DESKTOP")
+        .header("x-device-id", &device_id)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to check sessions: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        log::warn!("Get sessions failed: {} - {}", status, body);
+        return Ok(vec![]); // Return empty on error, don't fail
+    }
+
+    let response_text = response.text().await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    log::info!("Active sessions raw response length: {} bytes", response_text.len());
+
+    // Try to parse as generic JSON first to see what we got
+    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&response_text) {
+        if let Some(sessions_arr) = json_value.get("sessions").and_then(|s| s.as_array()) {
+            log::info!("Raw sessions array contains {} items", sessions_arr.len());
+            for (i, session) in sessions_arr.iter().enumerate() {
+                let status = session.get("status").and_then(|s| s.as_i64()).unwrap_or(-1);
+                let session_id = session.get("sessionId").and_then(|s| s.as_str()).unwrap_or("unknown");
+                log::info!("  Session {}: id={}, status={}", i, session_id, status);
+            }
+        }
+    }
+
+    let sessions_response: GetSessionsResponse = serde_json::from_str(&response_text)
+        .map_err(|e| {
+            log::error!("Failed to parse sessions: {}", e);
+            format!("Failed to parse sessions response: {}", e)
+        })?;
+
+    if sessions_response.request_status.status_code != 1 {
+        log::warn!("Get sessions API error: {:?}", sessions_response.request_status.status_description);
+        return Ok(vec![]);
+    }
+
+    log::info!("Parsed {} sessions from response", sessions_response.sessions.len());
+
+    // Convert to our ActiveSession struct
+    // Session status values:
+    // 1 = Queued/Pending
+    // 2 = Ready/Connecting
+    // 3 = Running/Streaming (in-game)
+    // 4+ = Stopping/Stopped/Error
+    let active_sessions: Vec<ActiveSession> = sessions_response.sessions
+        .into_iter()
+        .filter(|s| {
+            log::info!("Session {} has status {}", s.session_id, s.status);
+            s.status == 2 || s.status == 3 // Include both ready and running states
+        })
+        .map(|s| {
+            let app_id = s.session_request_data
+                .as_ref()
+                .map(|d| d.app_id)
+                .unwrap_or(0);
+
+            let server_ip = s.session_control_info
+                .as_ref()
+                .and_then(|c| c.ip.clone());
+
+            let signaling_url = s.connection_info
+                .as_ref()
+                .and_then(|conns| conns.first())
+                .and_then(|conn| {
+                    conn.ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
+                });
+
+            let (resolution, fps) = s.monitor_settings
+                .as_ref()
+                .and_then(|ms| ms.first())
+                .map(|m| (
+                    Some(format!("{}x{}", m.width_in_pixels, m.height_in_pixels)),
+                    Some(m.frames_per_second)
+                ))
+                .unwrap_or((None, None));
+
+            ActiveSession {
+                session_id: s.session_id,
+                app_id,
+                gpu_type: s.gpu_type,
+                status: s.status,
+                server_ip,
+                signaling_url,
+                resolution,
+                fps,
+            }
+        })
+        .collect();
+
+    log::info!("Found {} active session(s) after filtering", active_sessions.len());
+    Ok(active_sessions)
+}
+
+/// Claim/Resume an active session by sending a PUT request
+/// This is required before connecting to an existing session
+/// The browser client makes this request to "activate" the session for streaming
+#[command]
+pub async fn claim_session(
+    session_id: String,
+    server_ip: String,
+    access_token: String,
+    app_id: String,
+    resolution: Option<String>,
+    fps: Option<u32>,
+) -> Result<ClaimSessionResponse, String> {
+    log::info!("Claiming session: {} on server {} for app {}", session_id, server_ip, app_id);
+
+    let client = crate::proxy::create_proxied_client().await?;
+    let device_id = get_device_id();
+    let client_id = get_client_id();
+    let sub_session_id = uuid::Uuid::new_v4().to_string();
+
+    // Parse resolution
+    let (width, height) = parse_resolution(resolution.as_deref());
+    let fps_val = fps.unwrap_or(60);
+
+    // Get timezone offset in milliseconds
+    let timezone_offset_ms = chrono::Local::now().offset().local_minus_utc() as i64 * 1000;
+
+    // Build the PUT URL - use the server IP directly like the browser does
+    // Format: PUT https://{server_ip}/v2/session/{sessionId}?keyboardLayout=m-us&languageCode=en_US
+    let claim_url = format!(
+        "https://{}/v2/session/{}?keyboardLayout=m-us&languageCode=en_US",
+        server_ip, session_id
+    );
+
+    log::info!("Claim URL: {}", claim_url);
+
+    // Build the RESUME payload matching browser client format exactly
+    // Note: appId must be a STRING, not a number
+    let resume_payload = serde_json::json!({
+        "action": 2,
+        "data": "RESUME",
+        "sessionRequestData": {
+            "audioMode": 2,
+            "remoteControllersBitmap": 0,
+            "sdrHdrMode": 0,
+            "networkTestSessionId": null,
+            "availableSupportedControllers": [],
+            "clientVersion": "30.0",
+            "deviceHashId": device_id,
+            "internalTitle": null,
+            "clientPlatformName": "browser",
+            "metaData": [
+                {"key": "SubSessionId", "value": sub_session_id},
+                {"key": "wssignaling", "value": "1"},
+                {"key": "GSStreamerType", "value": "WebRTC"},
+                {"key": "networkType", "value": "Unknown"},
+                {"key": "ClientImeSupport", "value": "0"},
+                {"key": "clientPhysicalResolution", "value": format!("{{\"horizontalPixels\":{},\"verticalPixels\":{}}}", width, height)},
+                {"key": "surroundAudioInfo", "value": "2"}
+            ],
+            "surroundAudioInfo": 0,
+            "clientTimezoneOffset": timezone_offset_ms,
+            "clientIdentification": "GFN-PC",
+            "parentSessionId": null,
+            "appId": app_id, // Must be string like "106466949"
+            "streamerVersion": 1,
+            "clientRequestMonitorSettings": [{
+                "widthInPixels": width,
+                "heightInPixels": height,
+                "framesPerSecond": fps_val,
+                "sdrHdrMode": 0,
+                "displayData": {
+                    "desiredContentMaxLuminance": 0,
+                    "desiredContentMinLuminance": 0,
+                    "desiredContentMaxFrameAverageLuminance": 0
+                },
+                "dpi": 0
+            }],
+            "appLaunchMode": 1,
+            "sdkVersion": "1.0",
+            "enhancedStreamMode": 1,
+            "useOps": true,
+            "clientDisplayHdrCapabilities": null,
+            "accountLinked": false,
+            "partnerCustomData": "",
+            "enablePersistingInGameSettings": false,
+            "secureRTSPSupported": false,
+            "userAge": 26,
+            "requestedStreamingFeatures": {
+                "reflex": false,
+                "bitDepth": 0,
+                "cloudGsync": false,
+                "enabledL4S": false,
+                "profile": 1,
+                "fallbackToLogicalResolution": false,
+                "chromaFormat": 0,
+                "prefilterMode": 0,
+                "hudStreamingMode": 0
+            }
+        },
+        "metaData": []
+    });
+
+    log::info!("Sending RESUME payload for session claim: appId={}", app_id);
+
+    let response = client
+        .put(&claim_url)
+        .header("Authorization", format!("GFNJWT {}", access_token))
+        .header("Content-Type", "application/json")
+        .header("Origin", "https://play.geforcenow.com")
+        .header("nv-client-id", &client_id)
+        .header("nv-client-streamer", "WEBRTC")
+        .header("nv-client-type", "BROWSER")
+        .header("nv-client-version", "2.0.80.173")
+        .header("nv-browser-type", "CHROMIUM")
+        .header("nv-device-os", "MACOS")
+        .header("nv-device-type", "DESKTOP")
+        .header("x-device-id", &device_id)
+        .json(&resume_payload)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to claim session: {}", e))?;
+
+    let status_code = response.status();
+    if !status_code.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        log::error!("Claim session failed: {} - {}", status_code, body);
+        return Err(format!("Claim session failed: {} - {}", status_code, body));
+    }
+
+    let response_text = response.text().await
+        .map_err(|e| format!("Failed to read claim response: {}", e))?;
+
+    log::info!("Claim session response: {}", &response_text[..std::cmp::min(500, response_text.len())]);
+
+    // Parse the response to get updated session info
+    let claim_response: ClaimSessionApiResponse = serde_json::from_str(&response_text)
+        .map_err(|e| format!("Failed to parse claim response: {}", e))?;
+
+    if claim_response.request_status.status_code != 1 {
+        let error = claim_response.request_status.status_description
+            .unwrap_or_else(|| "Unknown error".to_string());
+        return Err(format!("Claim session API error: {}", error));
+    }
+
+    let session = claim_response.session;
+    log::info!("Session claimed! Status: {}, GPU: {:?}", session.status, session.gpu_type);
+
+    // After claiming, we need to GET the session info to get the updated connection details
+    // This is what the browser client does
+    log::info!("Fetching updated session info after claim...");
+
+    let get_url = format!(
+        "https://{}/v2/session/{}",
+        server_ip, session_id
+    );
+
+    let get_response = client
+        .get(&get_url)
+        .header("Authorization", format!("GFNJWT {}", access_token))
+        .header("Content-Type", "application/json")
+        .header("Origin", "https://play.geforcenow.com")
+        .header("nv-client-id", &client_id)
+        .header("nv-client-streamer", "WEBRTC")
+        .header("nv-client-type", "BROWSER")
+        .header("nv-client-version", "2.0.80.173")
+        .header("nv-browser-type", "CHROMIUM")
+        .header("nv-device-os", "MACOS")
+        .header("nv-device-type", "DESKTOP")
+        .header("x-device-id", &device_id)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to get session info: {}", e))?;
+
+    if !get_response.status().is_success() {
+        let body = get_response.text().await.unwrap_or_default();
+        log::warn!("GET session info failed, using claim response: {}", body);
+
+        // Fall back to claim response
+        let signaling_url = session.connection_info
+            .as_ref()
+            .and_then(|conns| conns.first())
+            .and_then(|conn| {
+                conn.ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
+            });
+
+        return Ok(ClaimSessionResponse {
+            session_id: session.session_id,
+            status: session.status,
+            gpu_type: session.gpu_type,
+            signaling_url,
+            server_ip: session.session_control_info
+                .and_then(|c| c.ip),
+        });
+    }
+
+    let get_response_text = get_response.text().await
+        .map_err(|e| format!("Failed to read GET session response: {}", e))?;
+
+    log::info!("GET session response: {}", &get_response_text[..std::cmp::min(500, get_response_text.len())]);
+
+    let get_session_response: ClaimSessionApiResponse = serde_json::from_str(&get_response_text)
+        .map_err(|e| format!("Failed to parse GET session response: {}", e))?;
+
+    let updated_session = get_session_response.session;
+    log::info!("Updated session status: {}, GPU: {:?}", updated_session.status, updated_session.gpu_type);
+
+    // Extract signaling URL from updated connection info
+    let signaling_url = updated_session.connection_info
+        .as_ref()
+        .and_then(|conns| conns.first())
+        .and_then(|conn| {
+            conn.ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
+        });
+
+    log::info!("Signaling URL from GET: {:?}", signaling_url);
+
+    Ok(ClaimSessionResponse {
+        session_id: updated_session.session_id,
+        status: updated_session.status,
+        gpu_type: updated_session.gpu_type,
+        signaling_url,
+        server_ip: updated_session.session_control_info
+            .and_then(|c| c.ip),
+    })
+}
+
+/// Response from claim session
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimSessionResponse {
+    pub session_id: String,
+    pub status: i32,
+    pub gpu_type: Option<String>,
+    pub signaling_url: Option<String>,
+    pub server_ip: Option<String>,
+}
+
+/// API response for PUT /v2/session/{sessionId}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaimSessionApiResponse {
+    session: ClaimSessionData,
+    request_status: RequestStatus,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaimSessionData {
+    session_id: String,
+    #[serde(default)]
+    status: i32,
+    #[serde(default)]
+    gpu_type: Option<String>,
+    #[serde(default)]
+    session_control_info: Option<SessionControlInfo>,
+    #[serde(default)]
+    connection_info: Option<Vec<ConnectionInfo>>,
+}
+
+/// Set up session storage for reconnecting to an existing session
+/// This is used when we detect an active session and want to connect to it
+#[command]
+pub async fn setup_reconnect_session(
+    session_id: String,
+    server_ip: String,
+    signaling_url: String,
+    _gpu_type: Option<String>,
+) -> Result<(), String> {
+    log::info!("Setting up reconnect session: {} on {}", session_id, server_ip);
+
+    let session = StreamingSession {
+        session_id: session_id.clone(),
+        game_id: String::new(), // Unknown for reconnect
+        server: SessionServer {
+            id: String::new(),
+            name: String::from("Reconnected"),
+            region: String::new(),
+            ip: Some(server_ip.clone()),
+            zone: None,
+        },
+        status: SessionStatus::Running,
+        quality: StreamingQuality {
+            resolution: Resolution::R1080p,
+            fps: 60,
+            bitrate_kbps: 50000,
+            codec: VideoCodec::H264,
+            hdr_enabled: false,
+        },
+        stats: None,
+        webrtc_offer: None,
+        signaling_url: Some(signaling_url),
+    };
+
+    let storage = get_session_storage();
+    let mut guard = storage.lock().await;
+    *guard = Some(session);
+
+    log::info!("Reconnect session setup complete");
+    Ok(())
+}
+
+/// Terminate an active session
+#[command]
+pub async fn terminate_session(
+    session_id: String,
+    access_token: String,
+) -> Result<(), String> {
+    log::info!("Terminating session: {}", session_id);
+
+    let client = crate::proxy::create_proxied_client().await?;
+    let device_id = get_device_id();
+
+    // Try to delete from prod endpoint
+    let delete_url = format!("{}/v2/session/{}", CLOUDMATCH_PROD_URL, session_id);
+
+    let response = client
+        .delete(&delete_url)
+        .header("Authorization", format!("GFNJWT {}", access_token))
+        .header("Content-Type", "application/json")
+        .header("x-device-id", &device_id)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to terminate session: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        log::warn!("Session termination returned: {} - {}", status, body);
+        // Don't fail even if termination reports error - session might already be gone
+    }
+
+    log::info!("Session terminated: {}", session_id);
+    Ok(())
+}
+
 /// Stop streaming and cleanup
 #[command]
 pub async fn stop_streaming_flow(
