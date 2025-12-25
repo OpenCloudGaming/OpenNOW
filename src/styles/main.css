@@ -303,6 +303,30 @@ body {
   gap: 20px;
 }
 
+/* Login Prompt */
+.login-prompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  color: var(--text-secondary);
+  grid-column: 1 / -1;
+}
+
+.login-prompt-icon {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 16px;
+  color: var(--text-muted);
+}
+
+.login-prompt p {
+  font-size: 16px;
+  margin-bottom: 20px;
+}
+
 .game-card {
   background: var(--bg-secondary);
   border-radius: var(--radius);
