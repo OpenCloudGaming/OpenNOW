@@ -231,8 +231,15 @@ export async function initializeStreaming(
     }
   }
 
+  // Parse FPS from options or use default
+  let streamFps = 60; // Default FPS
+  if (options?.fps && options.fps > 0) {
+    streamFps = options.fps;
+    console.log(`Using requested FPS: ${streamFps}`);
+  }
+
   // Connect using the official GFN browser protocol
-  await connectGfnBrowserSignaling(streamIp, sessionId, webrtcConfig, streamWidth, streamHeight);
+  await connectGfnBrowserSignaling(streamIp, sessionId, webrtcConfig, streamWidth, streamHeight, streamFps);
 }
 
 // GFN Browser Peer Protocol types
@@ -328,7 +335,8 @@ async function connectGfnBrowserSignaling(
   sessionId: string,
   config: WebRtcConfig,
   requestedWidth: number,
-  requestedHeight: number
+  requestedHeight: number,
+  requestedFps: number
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     // Generate random peer ID suffix (matching GFN browser format)
@@ -475,7 +483,7 @@ async function connectGfnBrowserSignaling(
 
               // Handle the SDP offer and create answer
               // This runs async - WebSocket may close during this, that's expected
-              handleGfnSdpOffer(innerMsg.sdp, ws, config, serverIp, requestedWidth, requestedHeight)
+              handleGfnSdpOffer(innerMsg.sdp, ws, config, serverIp, requestedWidth, requestedHeight, requestedFps)
                 .then(() => {
                   console.log("SDP offer handled successfully");
                   resolve();
@@ -573,7 +581,8 @@ async function handleGfnSdpOffer(
   config: WebRtcConfig,
   serverIp: string,
   requestedWidth: number,
-  requestedHeight: number
+  requestedHeight: number,
+  requestedFps: number
 ): Promise<void> {
   console.log("Setting up WebRTC with GFN SDP offer");
   console.log("SDP offer preview:", serverSdp.substring(0, 500));
@@ -972,6 +981,11 @@ async function handleGfnSdpOffer(
   const viewportHeight = requestedHeight;
   console.log(`nvstSdp viewport: ${viewportWidth}x${viewportHeight}`);
 
+  // Calculate frame timing from requested FPS
+  // minTargetFrameTimeUs is the minimum time between frames in microseconds
+  const minTargetFrameTimeUs = Math.floor(1000000 / requestedFps);
+  console.log(`nvstSdp video.maxFPS: ${requestedFps} (minTargetFrameTimeUs: ${minTargetFrameTimeUs})`);
+
   // Use bitrate from config (set by user in settings)
   const maxBitrateKbps = config.max_bitrate_kbps || 100000;
   const minBitrateKbps = Math.min(10000, maxBitrateKbps / 10); // 10% of max or 10 Mbps
@@ -1001,6 +1015,16 @@ async function handleGfnSdpOffer(
     "a=vqos.resControl.enable:0",
     "a=vqos.resControl.qp.qpg.featureSetting:0",
     "a=bwe.useOwdCongestionControl:1",
+    // High FPS (120+) optimizations from official GFN client
+    ...(requestedFps >= 120 ? [
+      "a=bwe.iirFilterFactor:8",
+      "a=video.encoderFeatureSetting:47",
+      "a=video.encoderPreset:6",
+    ] : []),
+    // Ultra high FPS (240+) optimizations
+    ...(requestedFps >= 240 ? [
+      "a=video.enableNextCaptureMode:1",
+    ] : []),
     "a=video.enableRtpNack:1",
     "a=vqos.bw.txRxLag.minFeedbackTxDeltaMs:200",
     "a=vqos.adjustStreamingFpsDuringOutOfFocus:0",
@@ -1018,6 +1042,9 @@ async function handleGfnSdpOffer(
     "a=video.updateSplitEncodeStateDynamically:1",
     `a=video.clientViewportWd:${viewportWidth}`,
     `a=video.clientViewportHt:${viewportHeight}`,
+    `a=video.maxFPS:${requestedFps}`,
+    // For high FPS modes (120+), set maxStreamFpsEstimate
+    ...(requestedFps >= 120 ? [`a=vqos.maxStreamFpsEstimate:${requestedFps}`] : []),
     `a=video.initialBitrateKbps:${initialBitrateKbps}`,
     `a=video.initialPeakBitrateKbps:${initialBitrateKbps}`,
     `a=vqos.bw.maximumBitrateKbps:${maxBitrateKbps}`,
@@ -1032,7 +1059,7 @@ async function handleGfnSdpOffer(
     "a=video.adaptiveQuantization.spatialAQSetting:2",
     "a=video.adaptiveQuantization.temporalAQSetting:2",
     "a=video.enableAv1RcPrecisionFactor:0",
-    "a=video.framePacing.pid.minTargetFrameTimeUs:7936",
+    `a=video.framePacing.pid.minTargetFrameTimeUs:${minTargetFrameTimeUs}`,
     "a=video.parseRtcClientBlobs:1",
     "a=vqos.grc.enable:0",
     "a=vqos.qpDelta.qpDeltaIirFactor:60",
@@ -1048,7 +1075,7 @@ async function handleGfnSdpOffer(
     "a=msid:input_1",
     "a=ri.partialReliableThresholdMs:300",
     ""
-  ].join("\r\n");
+  ].join("\n");
 
   console.log("Built nvstSdp with ICE credentials and streaming params");
 
