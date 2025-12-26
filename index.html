@@ -160,10 +160,36 @@
                   <i data-lucide="chevron-down" class="dropdown-arrow"></i>
                 </div>
                 <div class="dropdown-menu">
+                  <!-- 4:3 / 5:4 Resolutions -->
+                  <div class="dropdown-option" data-value="1024x768">1024x768 (4:3)</div>
+                  <div class="dropdown-option" data-value="1280x1024">1280x1024 (5:4)</div>
+                  <div class="dropdown-option" data-value="1600x1200">1600x1200 (4:3)</div>
+                  <!-- 16:9 Standard -->
                   <div class="dropdown-option" data-value="1280x720">1280x720 (720p)</div>
+                  <div class="dropdown-option" data-value="1366x768">1366x768 (HD)</div>
+                  <div class="dropdown-option" data-value="1600x900">1600x900 (HD+)</div>
                   <div class="dropdown-option selected" data-value="1920x1080">1920x1080 (1080p)</div>
                   <div class="dropdown-option" data-value="2560x1440">2560x1440 (1440p)</div>
                   <div class="dropdown-option" data-value="3840x2160">3840x2160 (4K)</div>
+                  <div class="dropdown-option" data-value="5120x2880">5120x2880 (5K)</div>
+                  <!-- 16:10 Resolutions -->
+                  <div class="dropdown-option" data-value="1280x800">1280x800 (16:10)</div>
+                  <div class="dropdown-option" data-value="1440x900">1440x900 (16:10)</div>
+                  <div class="dropdown-option" data-value="1680x1050">1680x1050 (16:10)</div>
+                  <div class="dropdown-option" data-value="1920x1200">1920x1200 (16:10)</div>
+                  <div class="dropdown-option" data-value="2560x1600">2560x1600 (16:10)</div>
+                  <div class="dropdown-option" data-value="3840x1600">3840x1600 (16:10)</div>
+                  <!-- Ultrawide 21:9 -->
+                  <div class="dropdown-option" data-value="2560x1080">2560x1080 (21:9)</div>
+                  <div class="dropdown-option" data-value="3440x1440">3440x1440 (21:9 UW)</div>
+                  <!-- Super Ultrawide 32:9 -->
+                  <div class="dropdown-option" data-value="3840x1080">3840x1080 (32:9)</div>
+                  <div class="dropdown-option" data-value="5120x1440">5120x1440 (32:9 UW)</div>
+                  <!-- Other -->
+                  <div class="dropdown-option" data-value="1112x834">1112x834 (iPad)</div>
+                  <div class="dropdown-option" data-value="1680x720">1680x720 (21:9 HD)</div>
+                  <div class="dropdown-option" data-value="3456x2160">3456x2160 (16:10 4K)</div>
+                  <div class="dropdown-option" data-value="5120x2160">5120x2160 (21:9 5K)</div>
                 </div>
               </div>
             </div>
@@ -245,6 +271,12 @@
               <label>
                 <input type="checkbox" id="discord-stats-setting" />
                 Show Stats in Discord (resolution, fps, ms)
+              </label>
+            </div>
+            <div class="setting-group">
+              <label>
+                <input type="checkbox" id="reflex-setting" checked />
+                NVIDIA Reflex (Low Latency Mode)
               </label>
             </div>
             <div class="setting-group">

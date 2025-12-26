@@ -86,6 +86,8 @@ pub struct StartSessionRequest {
     pub fps: Option<u32>,
     pub codec: Option<String>,
     pub max_bitrate_mbps: Option<u32>,
+    /// Enable NVIDIA Reflex low-latency mode
+    pub reflex: Option<bool>,
 }
 
 /// CloudMatch session request - based on GFN native client protocol (from geronimo.log)
@@ -99,17 +101,16 @@ struct CloudMatchRequest {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionRequestData {
-    app_id: i64, // GFN internal app ID (NOT store ID)
+    app_id: String, // GFN internal app ID as STRING (browser format)
     internal_title: Option<String>,
     available_supported_controllers: Vec<i32>,
-    preferred_controller: i32,
     network_test_session_id: Option<String>,
     parent_session_id: Option<String>,
     client_identification: String,
     device_hash_id: String,
     client_version: String,
     sdk_version: String,
-    streamer_version: String,
+    streamer_version: i32, // NUMBER, not string (browser format)
     client_platform_name: String,
     client_request_monitor_settings: Vec<MonitorSettings>,
     use_ops: bool,
@@ -126,25 +127,28 @@ struct SessionRequestData {
     partner_custom_data: Option<String>,
     account_linked: bool,
     enable_persisting_in_game_settings: bool,
-    requested_audio_format: i32,
     user_age: i32,
     requested_streaming_features: Option<StreamingFeatures>,
-    transport: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MonitorSettings {
-    monitor_id: i32,
-    position_x: i32,
-    position_y: i32,
     width_in_pixels: u32,
     height_in_pixels: u32,
-    dpi: i32,
     frames_per_second: u32,
     sdr_hdr_mode: i32,
-    display_data: Option<DisplayData>,
-    hdr10_plus_gaming_data: Option<String>,
+    display_data: DisplayDataSimple,
+    dpi: i32,
+}
+
+/// Simplified DisplayData for browser format
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DisplayDataSimple {
+    desired_content_max_luminance: i32,
+    desired_content_min_luminance: i32,
+    desired_content_max_frame_average_luminance: i32,
 }
 
 #[derive(Debug, Serialize)]
@@ -412,8 +416,11 @@ pub async fn start_session(
         max_bitrate_mbps * 1000
     };
 
-    log::info!("Using resolution {}x{} @ {} FPS, codec: {:?}, max bitrate: {} kbps",
-               width, height, fps, codec, max_bitrate_kbps);
+    // Reflex: auto-enable for 120+ FPS if not explicitly set, or use user preference
+    let reflex_enabled = request.reflex.unwrap_or(fps >= 120);
+
+    log::info!("Using resolution {}x{} @ {} FPS, codec: {:?}, max bitrate: {} kbps, reflex: {}",
+               width, height, fps, codec, max_bitrate_kbps, reflex_enabled);
 
     // Determine zone to use (browser uses eu-netherlands-south)
     let zone = request.preferred_server.clone()
@@ -430,32 +437,31 @@ pub async fn start_session(
     // Build CloudMatch request matching the BROWSER client format exactly
     let cloudmatch_request = CloudMatchRequest {
         session_request_data: SessionRequestData {
-            app_id: request.game_id.parse::<i64>().unwrap_or(0), // Must be GFN app ID (e.g., 102048611)
+            app_id: request.game_id.clone(), // STRING format like browser ("100013311")
             internal_title: None,
             available_supported_controllers: vec![], // Browser sends empty
-            preferred_controller: 0,
-            network_test_session_id: Some("00000000-0000-0000-0000-000000000000".to_string()),
+            network_test_session_id: None, // Browser sends null
             parent_session_id: None,
             client_identification: "GFN-PC".to_string(),
             device_hash_id: device_id.clone(), // UUID format
             client_version: "30.0".to_string(),
-            sdk_version: "1.0".to_string(), // Browser uses 1.0
-            streamer_version: "1".to_string(), // Browser uses "1"
-            client_platform_name: "windows".to_string(), // Native client
+            sdk_version: "1.0".to_string(),
+            streamer_version: 1, // NUMBER, not string (browser format)
+            client_platform_name: "windows".to_string(), // Native Windows client
             client_request_monitor_settings: vec![MonitorSettings {
-                monitor_id: 0,
-                position_x: 0,
-                position_y: 0,
                 width_in_pixels: width,
                 height_in_pixels: height,
-                dpi: 0,
                 frames_per_second: fps,
-                sdr_hdr_mode: 0, // Browser uses 0
-                display_data: None,
-                hdr10_plus_gaming_data: None,
+                sdr_hdr_mode: 0,
+                display_data: DisplayDataSimple {
+                    desired_content_max_luminance: 0,
+                    desired_content_min_luminance: 0,
+                    desired_content_max_frame_average_luminance: 0,
+                },
+                dpi: 100, // Browser uses 100
             }],
-            use_ops: false, // Browser uses false
-            audio_mode: 0, // Browser uses 0
+            use_ops: true, // Browser uses true
+            audio_mode: 2, // 0=UNKNOWN, 1=STEREO, 2=5.1_SURROUND, 3=7.1_SURROUND
             meta_data: vec![
                 MetaDataEntry { key: "SubSessionId".to_string(), value: sub_session_id },
                 MetaDataEntry { key: "wssignaling".to_string(), value: "1".to_string() },
@@ -466,20 +472,34 @@ pub async fn start_session(
                 MetaDataEntry { key: "surroundAudioInfo".to_string(), value: "2".to_string() },
             ],
             sdr_hdr_mode: 0,
-            client_display_hdr_capabilities: None, // Browser sends null
+            client_display_hdr_capabilities: None,
             surround_audio_info: 0,
             remote_controllers_bitmap: 0,
             client_timezone_offset: timezone_offset_ms,
-            enhanced_stream_mode: 1, // Browser uses 1
+            enhanced_stream_mode: 1,
             app_launch_mode: 1,
-            secure_rtsp_supported: false, // Browser uses false
-            partner_custom_data: Some("".to_string()), // Browser sends empty string
-            account_linked: false,
+            secure_rtsp_supported: false,
+            partner_custom_data: Some("".to_string()),
+            account_linked: true, // Browser uses true
             enable_persisting_in_game_settings: false,
-            requested_audio_format: 0,
-            user_age: 0, // Browser uses 0
-            requested_streaming_features: None, // Browser sends null
-            transport: None,
+            user_age: 26, // Use a reasonable default age
+            requested_streaming_features: Some(StreamingFeatures {
+                reflex: reflex_enabled, // NVIDIA Reflex low-latency mode
+                bit_depth: 0,
+                cloud_gsync: false,
+                enabled_l4s: false,
+                mouse_movement_flags: 0,
+                true_hdr: false,
+                supported_hid_devices: 0,
+                profile: 0,
+                fallback_to_logical_resolution: false,
+                hid_devices: None,
+                chroma_format: 0,
+                prefilter_mode: 0,
+                prefilter_sharpness: 0,
+                prefilter_noise_reduction: 0,
+                hud_streaming_mode: 0,
+            }),
         },
     };
 
@@ -1377,14 +1397,14 @@ pub async fn claim_session(
                     "desiredContentMinLuminance": 0,
                     "desiredContentMaxFrameAverageLuminance": 0
                 },
-                "dpi": 0
+                "dpi": 100
             }],
             "appLaunchMode": 1,
             "sdkVersion": "1.0",
             "enhancedStreamMode": 1,
             "useOps": true,
             "clientDisplayHdrCapabilities": null,
-            "accountLinked": false,
+            "accountLinked": true,
             "partnerCustomData": "",
             "enablePersistingInGameSettings": false,
             "secureRTSPSupported": false,
