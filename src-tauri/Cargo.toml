@@ -27,7 +27,7 @@ tauri-plugin-store = { version = "2.0", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "cookies", "socks"] }
+reqwest = { version = "0.12", features = ["json", "cookies", "socks", "gzip", "deflate"] }
 url = "2.5"
 base64 = "0.22"
 sha2 = "0.10"
