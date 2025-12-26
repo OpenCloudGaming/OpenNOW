@@ -328,6 +328,7 @@ interface Settings {
   discord_show_stats?: boolean;
   proxy?: string;
   disable_telemetry: boolean;
+  reflex?: boolean; // NVIDIA Reflex low-latency mode
 }
 
 interface ProxyConfig {
@@ -387,6 +388,7 @@ let availableFpsOptions: number[] = []; // Available FPS options from subscripti
 let currentRegion = "auto"; // Preferred region (auto = lowest ping)
 let cachedServers: Server[] = []; // Cached server latency data
 let isTestingLatency = false; // Flag to prevent concurrent latency tests
+let reflexEnabled = true; // NVIDIA Reflex low-latency mode (auto-enabled for 120+ FPS)
 
 // Helper to get streaming params - uses direct resolution and fps values
 function getStreamingParams(): { resolution: string; fps: number } {
@@ -973,6 +975,7 @@ async function loadSettings() {
     discordRpcEnabled = settings.discord_rpc !== false; // Default to true
     discordShowStats = settings.discord_show_stats === true; // Default to false
     currentRegion = settings.region || "auto";
+    reflexEnabled = settings.reflex !== false; // Default to true
 
     // Apply to UI elements (non-dropdown)
     const bitrateEl = document.getElementById("bitrate-setting") as HTMLInputElement;
@@ -1034,6 +1037,9 @@ async function loadSettings() {
     if (discordStatsEl) discordStatsEl.checked = discordShowStats;
     if (telemetryEl) telemetryEl.checked = settings.disable_telemetry ?? true;
     if (proxyEl && settings.proxy) proxyEl.value = settings.proxy;
+
+    const reflexEl = document.getElementById("reflex-setting") as HTMLInputElement;
+    if (reflexEl) reflexEl.checked = reflexEnabled;
 
   } catch (error) {
     console.warn("Failed to load settings:", error);
@@ -2705,6 +2711,7 @@ async function launchGame(game: Game) {
         fps: streamParams.fps,
         codec: currentCodec,
         max_bitrate_mbps: currentMaxBitrate,
+        reflex: reflexEnabled, // NVIDIA Reflex low-latency mode
       },
       accessToken: accessToken,
     });
@@ -3692,6 +3699,7 @@ async function saveSettings() {
   const telemetryEl = document.getElementById("telemetry-setting") as HTMLInputElement;
   const discordEl = document.getElementById("discord-setting") as HTMLInputElement;
   const discordStatsEl = document.getElementById("discord-stats-setting") as HTMLInputElement;
+  const reflexEl = document.getElementById("reflex-setting") as HTMLInputElement;
 
   // Get dropdown values
   const resolution = getDropdownValue("resolution-setting") || "1920x1080";
@@ -3703,6 +3711,7 @@ async function saveSettings() {
   // Update global state
   discordRpcEnabled = discordEl?.checked || false;
   discordShowStats = discordStatsEl?.checked || false;
+  reflexEnabled = reflexEl?.checked ?? true;
   currentResolution = resolution;
   currentFps = parseInt(fps, 10);
   currentCodec = codec;
@@ -3725,6 +3734,7 @@ async function saveSettings() {
     discord_show_stats: discordShowStats,
     proxy: proxyEl?.value || undefined,
     disable_telemetry: telemetryEl?.checked || true,
+    reflex: reflexEnabled,
   };
 
   try {

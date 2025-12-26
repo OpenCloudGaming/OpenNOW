@@ -33,6 +33,8 @@ pub struct Settings {
     pub start_minimized: bool,
     /// Auto-update games library
     pub auto_refresh_library: bool,
+    /// Enable NVIDIA Reflex low-latency mode (auto-enabled for 120+ FPS)
+    pub reflex: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -85,6 +87,7 @@ impl Default for Settings {
             disable_telemetry: true,
             start_minimized: false,
             auto_refresh_library: true,
+            reflex: true, // Enabled by default for low-latency gaming
         }
     }
 }
