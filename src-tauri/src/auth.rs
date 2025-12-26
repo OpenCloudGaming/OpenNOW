@@ -158,11 +158,6 @@ fn find_available_port() -> Option<u16> {
     None
 }
 
-/// Generate a random state parameter for OAuth security
-fn generate_state() -> String {
-    generate_random_string(32)
-}
-
 /// Generate a random string of specified length (for PKCE and state)
 fn generate_random_string(len: usize) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -316,29 +311,6 @@ fn parse_query_string(query: &str) -> std::collections::HashMap<String, String> 
             ))
         })
         .collect()
-}
-
-/// Extract authorization code from HTTP request (state is optional for PKCE flows)
-fn extract_auth_code(request: &str) -> Option<String> {
-    // Parse the GET request line
-    let first_line = request.lines().next()?;
-    let path = first_line.split_whitespace().nth(1)?;
-
-    // Extract query string
-    let query_start = path.find('?')?;
-    let query = &path[query_start + 1..];
-    let params = parse_query_string(query);
-
-    // Check for error response first
-    if let Some(error) = params.get("error") {
-        log::error!("OAuth error: {}", error);
-        if let Some(desc) = params.get("error_description") {
-            log::error!("Error description: {}", desc);
-        }
-        return None;
-    }
-
-    params.get("code").cloned()
 }
 
 /// HTML response for successful login
@@ -559,81 +531,6 @@ fn extract_oauth_callback(request: &str) -> Option<OAuthCallbackResult> {
 
     None
 }
-
-/// HTML page that captures token from URL fragment and redirects
-const TOKEN_CAPTURE_HTML: &str = r#"<!DOCTYPE html>
-<html>
-<head>
-    <title>Processing Login...</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            color: #fff;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-        }
-        .container {
-            text-align: center;
-            padding: 40px;
-            background: rgba(255,255,255,0.1);
-            border-radius: 16px;
-            backdrop-filter: blur(10px);
-        }
-        .spinner {
-            width: 50px;
-            height: 50px;
-            border: 4px solid rgba(118, 185, 0, 0.3);
-            border-top-color: #76b900;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 20px;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        h1 { color: #76b900; margin-bottom: 10px; }
-        p { color: #aaa; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="spinner"></div>
-        <h1>Processing Login...</h1>
-        <p>Please wait while we complete authentication.</p>
-    </div>
-    <script>
-        // Extract token from URL fragment (hash)
-        const hash = window.location.hash.substring(1);
-        if (hash) {
-            // Redirect to same URL but with token in query string so server can read it
-            const params = new URLSearchParams(hash);
-            const accessToken = params.get('access_token');
-            const idToken = params.get('id_token');
-            const expiresIn = params.get('expires_in');
-
-            if (accessToken) {
-                // Redirect to callback with token in query params
-                const redirectUrl = window.location.origin + '/callback?' +
-                    'access_token=' + encodeURIComponent(accessToken) +
-                    (idToken ? '&id_token=' + encodeURIComponent(idToken) : '') +
-                    (expiresIn ? '&expires_in=' + encodeURIComponent(expiresIn) : '');
-                window.location.replace(redirectUrl);
-            }
-        } else if (window.location.search) {
-            // Already have query params, show success
-            document.querySelector('.spinner').style.display = 'none';
-            document.querySelector('h1').textContent = 'Login Successful!';
-            document.querySelector('h1').style.color = '#76b900';
-            document.querySelector('p').textContent = 'You can close this window.';
-            setTimeout(() => window.close(), 2000);
-        }
-    </script>
-</body>
-</html>"#;
 
 /// NVIDIA OAuth login flow with localhost callback
 /// Uses authorization code flow with PKCE (same as official GFN client)
@@ -1006,64 +903,6 @@ fn decode_jwt_user_info(token: &str) -> Result<User, String> {
     };
 
     // Use URL-safe base64 decoding (JWT uses URL-safe base64)
-    let payload_bytes = URL_SAFE_NO_PAD.decode(&padded)
-        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&padded))
-        .map_err(|e| format!("Failed to decode JWT payload: {}", e))?;
-
-    let payload_str = String::from_utf8(payload_bytes)
-        .map_err(|e| format!("Invalid UTF-8 in JWT payload: {}", e))?;
-
-    let payload: JwtPayload = serde_json::from_str(&payload_str)
-        .map_err(|e| format!("Failed to parse JWT payload: {}", e))?;
-
-    // Check if token is expired
-    let now = Utc::now().timestamp();
-    if payload.exp > 0 && payload.exp < now {
-        return Err("Token has expired".to_string());
-    }
-
-    // Parse membership tier from JWT claims
-    let membership_tier = match payload.gfn_tier.as_deref() {
-        Some("PRIORITY") | Some("priority") => MembershipTier::Priority,
-        Some("ULTIMATE") | Some("ultimate") => MembershipTier::Ultimate,
-        _ => MembershipTier::Free,
-    };
-
-    // Extract display name from email or preferred_username
-    let display_name = payload.preferred_username
-        .or_else(|| payload.email.as_ref().map(|e| e.split('@').next().unwrap_or("User").to_string()))
-        .unwrap_or_else(|| "User".to_string());
-
-    Ok(User {
-        user_id: payload.sub,
-        display_name,
-        email: payload.email,
-        avatar_url: payload.picture,
-        membership_tier,
-    })
-}
-
-/// Get user info by decoding the JWT token (legacy - used by set_access_token)
-/// The JWT contains user info in its payload, no API call needed
-async fn get_user_info(access_token: &str) -> Result<User, String> {
-    // JWT format: header.payload.signature
-    let parts: Vec<&str> = access_token.split('.').collect();
-
-    if parts.len() != 3 {
-        return Err("Invalid JWT token format".to_string());
-    }
-
-    // Decode the payload (second part)
-    let payload_b64 = parts[1];
-
-    // Add padding if needed for base64 decoding
-    let padded = match payload_b64.len() % 4 {
-        2 => format!("{}==", payload_b64),
-        3 => format!("{}=", payload_b64),
-        _ => payload_b64.to_string(),
-    };
-
-    // Use standard base64 decoding (JWT uses URL-safe base64)
     let payload_bytes = URL_SAFE_NO_PAD.decode(&padded)
         .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&padded))
         .map_err(|e| format!("Failed to decode JWT payload: {}", e))?;

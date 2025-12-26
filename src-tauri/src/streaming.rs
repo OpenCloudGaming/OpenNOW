@@ -290,22 +290,6 @@ pub struct IceServer {
     pub credential: Option<String>,
 }
 
-/// WebRTC signaling messages
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum SignalingMessage {
-    #[serde(rename = "offer")]
-    Offer { sdp: String },
-    #[serde(rename = "answer")]
-    Answer { sdp: String },
-    #[serde(rename = "candidate")]
-    IceCandidate { candidate: String, sdp_mid: Option<String>, sdp_m_line_index: Option<u32> },
-    #[serde(rename = "ready")]
-    Ready,
-    #[serde(rename = "bye")]
-    Bye,
-}
-
 /// WebRTC session info for frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebRTCSessionInfo {
@@ -335,13 +319,6 @@ const CLOUDMATCH_PROD_URL: &str = "https://prod.cloudmatchbeta.nvidiagrid.net";
 fn cloudmatch_zone_url(zone: &str) -> String {
     format!("https://{}.cloudmatchbeta.nvidiagrid.net", zone)
 }
-
-// STUN/TURN servers for WebRTC
-// NVIDIA's official server (TURN servers also handle STUN requests)
-const DEFAULT_ICE_SERVERS: &[&str] = &[
-    "stun:turn.gamestream.nvidia.com:19302",
-    "stun:stun.l.google.com:19302",
-];
 
 /// Parse resolution string to width/height
 /// Supports formats: "1080p", "1440p", "4k", "2160p", or "WIDTHxHEIGHT" (e.g., "2560x1440")
@@ -1087,44 +1064,6 @@ pub async fn get_webrtc_config(session_id: String) -> Result<WebRtcConfig, Strin
         audio_codec: "opus".to_string(),
         max_bitrate_kbps: session.quality.bitrate_kbps,
     })
-}
-
-/// Streaming event types for frontend
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum StreamingEvent {
-    #[serde(rename = "status_update")]
-    StatusUpdate {
-        phase: String,
-        message: String,
-        progress: Option<f32>,
-    },
-    #[serde(rename = "session_ready")]
-    SessionReady {
-        session_id: String,
-        gpu_type: String,
-        server_ip: String,
-    },
-    #[serde(rename = "streaming_started")]
-    StreamingStarted {
-        resolution: String,
-        fps: u32,
-        codec: String,
-    },
-    #[serde(rename = "stats_update")]
-    StatsUpdate {
-        fps: f32,
-        latency_ms: u32,
-        bitrate_kbps: u32,
-        packet_loss: f32,
-    },
-    #[serde(rename = "error")]
-    Error {
-        code: String,
-        message: String
-    },
-    #[serde(rename = "disconnected")]
-    Disconnected { reason: String },
 }
 
 /// Active session info returned from the server
