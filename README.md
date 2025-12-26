@@ -7,8 +7,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zortos293/GFNClient/releases/latest">
-    <img src="https://img.shields.io/github/v/release/zortos293/GFNClient?style=for-the-badge&label=Download" alt="Download">
+  <a href="https://github.com/zortos293/GFNClient/releases">
+    <img src="https://img.shields.io/github/v/tag/zortos293/GFNClient?style=for-the-badge&label=Download" alt="Download">
   </a>
   <a href="https://github.com/zortos293/GFNClient/stargazers">
     <img src="https://img.shields.io/github/stars/zortos293/GFNClient?style=for-the-badge" alt="Stars">
