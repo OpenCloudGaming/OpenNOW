@@ -200,11 +200,8 @@ jobs:
             libayatana-appindicator3-dev \
             libasound2-dev
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -215,7 +212,7 @@ jobs:
           workspaces: 'src-tauri -> target'
 
       - name: Install dependencies
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       # Generate macOS .icns icon from PNG
       - name: Generate macOS icon
