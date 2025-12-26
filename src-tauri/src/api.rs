@@ -1235,25 +1235,26 @@ impl From<&str> for StoreType {
 /// Resolution option from subscription features
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolutionOption {
-    #[serde(rename = "heightInPixels")]
+    #[serde(rename = "heightInPixels", default)]
     pub height: u32,
-    #[serde(rename = "widthInPixels")]
+    #[serde(rename = "widthInPixels", default)]
     pub width: u32,
-    #[serde(rename = "framesPerSecond")]
+    #[serde(rename = "framesPerSecond", default)]
     pub fps: u32,
-    #[serde(rename = "isEntitled")]
+    #[serde(rename = "isEntitled", default)]
     pub is_entitled: bool,
 }
 
 /// Feature key-value from subscription
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureOption {
-    pub key: String,
-    #[serde(rename = "textValue")]
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(rename = "textValue", default)]
     pub text_value: Option<String>,
-    #[serde(rename = "setValue")]
+    #[serde(rename = "setValue", default)]
     pub set_value: Option<Vec<String>>,
-    #[serde(rename = "booleanValue")]
+    #[serde(rename = "booleanValue", default)]
     pub boolean_value: Option<bool>,
 }
 
@@ -1269,10 +1270,11 @@ pub struct SubscriptionFeatures {
 /// Streaming quality profile
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamingQualityProfile {
-    #[serde(rename = "clientStreamingQualityMode")]
-    pub mode: String,
-    #[serde(rename = "maxBitRate")]
+    #[serde(rename = "clientStreamingQualityMode", default)]
+    pub mode: Option<String>,
+    #[serde(rename = "maxBitRate", default)]
     pub max_bitrate: Option<BitrateConfig>,
+    #[serde(default)]
     pub resolution: Option<ResolutionConfig>,
     #[serde(default)]
     pub features: Vec<FeatureOption>,
@@ -1280,54 +1282,58 @@ pub struct StreamingQualityProfile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BitrateConfig {
-    #[serde(rename = "bitrateOption")]
+    #[serde(rename = "bitrateOption", default)]
     pub bitrate_option: bool,
-    #[serde(rename = "bitrateValue")]
+    #[serde(rename = "bitrateValue", default)]
     pub bitrate_value: u32,
-    #[serde(rename = "minBitrateValue")]
+    #[serde(rename = "minBitrateValue", default)]
     pub min_bitrate_value: u32,
-    #[serde(rename = "maxBitrateValue")]
+    #[serde(rename = "maxBitrateValue", default)]
     pub max_bitrate_value: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolutionConfig {
-    #[serde(rename = "heightInPixels")]
+    #[serde(rename = "heightInPixels", default)]
     pub height: u32,
-    #[serde(rename = "widthInPixels")]
+    #[serde(rename = "widthInPixels", default)]
     pub width: u32,
-    #[serde(rename = "framesPerSecond")]
+    #[serde(rename = "framesPerSecond", default)]
     pub fps: u32,
 }
 
 /// Storage addon attribute
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddonAttribute {
-    pub key: String,
-    #[serde(rename = "textValue")]
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(rename = "textValue", default)]
     pub text_value: Option<String>,
 }
 
 /// Subscription addon (e.g., permanent storage)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionAddon {
+    #[serde(default)]
     pub uri: Option<String>,
-    pub id: String,
-    #[serde(rename = "type")]
-    pub addon_type: String,
-    #[serde(rename = "subType")]
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(rename = "type", default)]
+    pub addon_type: Option<String>,
+    #[serde(rename = "subType", default)]
     pub sub_type: Option<String>,
-    #[serde(rename = "autoPayEnabled")]
+    #[serde(rename = "autoPayEnabled", default)]
     pub auto_pay_enabled: Option<bool>,
     #[serde(default)]
     pub attributes: Vec<AddonAttribute>,
+    #[serde(default)]
     pub status: Option<String>,
 }
 
 /// Subscription info response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionInfo {
-    #[serde(rename = "membershipTier")]
+    #[serde(rename = "membershipTier", default = "default_membership_tier")]
     pub membership_tier: String,
     #[serde(rename = "remainingTimeInMinutes")]
     pub remaining_time_minutes: Option<i32>,
@@ -1350,6 +1356,10 @@ pub struct SubscriptionInfo {
     pub addons: Vec<SubscriptionAddon>,
 }
 
+fn default_membership_tier() -> String {
+    "FREE".to_string()
+}
+
 /// Fetch subscription/membership info from MES API
 #[command]
 pub async fn fetch_subscription(
@@ -1359,6 +1369,8 @@ pub async fn fetch_subscription(
 ) -> Result<SubscriptionInfo, String> {
     let client = Client::builder()
         .user_agent(GFN_CEF_USER_AGENT)
+        .gzip(true)
+        .deflate(true)
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
@@ -1375,6 +1387,7 @@ pub async fn fetch_subscription(
         .get(&url)
         .header("Authorization", format!("GFNJWT {}", access_token))
         .header("Accept", "application/json, text/plain, */*")
+        .header("Accept-Encoding", "gzip, deflate")
         .header("nv-client-id", LCARS_CLIENT_ID)
         .header("nv-client-type", "NATIVE")
         .header("nv-client-version", GFN_CLIENT_VERSION)
@@ -1388,17 +1401,36 @@ pub async fn fetch_subscription(
         .map_err(|e| format!("Failed to fetch subscription: {}", e))?;
 
     let status = response.status();
+    let content_type = response.headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+
+    log::debug!("Subscription response status: {}, content-type: {}", status, content_type);
+
+    let body = response.text().await
+        .map_err(|e| format!("Failed to read subscription response body: {}", e))?;
+
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        log::error!("Subscription API failed with status {}: {}", status, body);
         return Err(format!("Subscription API failed with status {}: {}", status, body));
     }
 
-    let subscription: SubscriptionInfo = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse subscription response: {}", e))?;
+    // Log raw response for debugging
+    log::debug!("Subscription raw response: {}", body);
 
-    log::info!("Subscription tier: {}", subscription.membership_tier);
+    let subscription: SubscriptionInfo = serde_json::from_str(&body)
+        .map_err(|e| {
+            log::error!("Failed to parse subscription response: {}. Raw response: {}", e, body);
+            format!("Failed to parse subscription response: {}. Check logs for raw response.", e)
+        })?;
+
+    log::info!("Subscription tier: {}, type: {:?}, subType: {:?}",
+        subscription.membership_tier,
+        subscription.subscription_type,
+        subscription.sub_type
+    );
 
     Ok(subscription)
 }
