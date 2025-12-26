@@ -1,3 +1,14 @@
+## GFN Client v0.0.2 - Bug Fixes
+
+### Fixed
+- **Game Settings Persistence** - In-game settings (graphics, controls, audio, etc.) now save correctly between sessions by enabling the `enable_persisting_in_game_settings` flag
+
+### Technical Details
+- Updated GeForce NOW API session requests to match official client behavior
+- Settings are now persisted server-side by NVIDIA's backend
+
+---
+
 ## GFN Client v0.0.1 - Development Build
 
 ### Features
