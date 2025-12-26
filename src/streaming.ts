@@ -102,6 +102,11 @@ export interface StreamingStats {
   packet_loss: number;
   resolution: string;
   codec: string;
+  // Input latency stats (in ms)
+  input_ipc_ms: number;      // Time to get mouse delta from Rust (IPC call)
+  input_send_ms: number;     // Time to send input over WebRTC
+  input_total_ms: number;    // Total input pipeline latency
+  input_rate: number;        // Input events per second
 }
 
 // Global streaming state
@@ -810,8 +815,8 @@ async function handleGfnSdpOffer(
   //   // ... then later setRemoteDescription is called
   console.log("Creating input_channel_v1 BEFORE SDP negotiation (per official GFN client)...");
   const inputChannel = pc.createDataChannel("input_channel_v1", {
-    ordered: true,
-    // Note: 'reliable' is deprecated, ordered:true with no maxRetransmits = reliable
+    ordered: false,        // Unordered for lowest latency (mouse deltas don't need ordering)
+    maxRetransmits: 0,     // No retransmits - if packet lost, next one will have updated position
   });
   inputChannel.binaryType = "arraybuffer";
 
@@ -1254,9 +1259,16 @@ function createVideoElement(): HTMLVideoElement {
   video.controls = false; // No controls - this is a live stream
   video.disablePictureInPicture = true; // No PiP
 
-  // Low latency hints for reduced video decode latency
+  // === LOW LATENCY OPTIMIZATIONS ===
+  // Hint for low-latency video decoding
   (video as any).latencyHint = "interactive";
-  (video as any).preservesPitch = false; // Disable pitch correction for lower latency
+  // Disable audio/video sync for lower latency (audio may drift slightly)
+  (video as any).disableRemotePlayback = true;
+  // Disable pitch correction for lower latency audio
+  (video as any).preservesPitch = false;
+  // Request hardware acceleration
+  (video as any).mozPreservesPitch = false;
+
   video.style.cssText = `
     width: 100%;
     height: 100%;
@@ -1271,13 +1283,35 @@ function createVideoElement(): HTMLVideoElement {
     video.play().catch(() => {});
   };
 
-  // Prevent seeking
+  // Prevent seeking and keep at live edge
   video.onseeking = () => {
-    // Reset to live
+    // Reset to live edge immediately
     if (video.seekable.length > 0) {
       video.currentTime = video.seekable.end(video.seekable.length - 1);
     }
   };
+
+  // Keep video at live edge - catch up if we fall behind
+  let lastCheck = 0;
+  const keepAtLiveEdge = () => {
+    const now = performance.now();
+    if (now - lastCheck > 1000) { // Check every second
+      lastCheck = now;
+      if (video.buffered.length > 0) {
+        const bufferedEnd = video.buffered.end(video.buffered.length - 1);
+        const lag = bufferedEnd - video.currentTime;
+        // If we're more than 100ms behind live, catch up
+        if (lag > 0.1) {
+          video.currentTime = bufferedEnd;
+          console.log(`Caught up to live edge (was ${(lag * 1000).toFixed(0)}ms behind)`);
+        }
+      }
+    }
+    if (video.parentNode) {
+      requestAnimationFrame(keepAtLiveEdge);
+    }
+  };
+  requestAnimationFrame(keepAtLiveEdge);
 
   // Handle video events
   video.onloadedmetadata = () => {
@@ -1286,6 +1320,44 @@ function createVideoElement(): HTMLVideoElement {
 
   video.onplay = () => {
     console.log("Video playback started");
+
+    // === LOW LATENCY: Use requestVideoFrameCallback for precise frame timing ===
+    // This fires exactly when a frame is presented, allowing tighter input sync
+    if ('requestVideoFrameCallback' in video) {
+      let frameCount = 0;
+      let lastFrameTime = 0;
+      let droppedFrames = 0;
+
+      const onVideoFrame = (now: number, metadata: any) => {
+        frameCount++;
+
+        // Log frame timing stats periodically
+        if (frameCount % 240 === 0) { // Every 240 frames (~1 second at 240fps)
+          const fps = 1000 / (now - lastFrameTime);
+          const totalFrames = metadata.presentedFrames || 0;
+          const newDropped = (metadata.droppedVideoFrames || 0) - droppedFrames;
+          droppedFrames = metadata.droppedVideoFrames || 0;
+
+          if (newDropped > 0) {
+            console.log(`Frame timing: ${fps.toFixed(1)}fps, dropped: ${newDropped} in last second`);
+          }
+        }
+        lastFrameTime = now;
+
+        // Keep at live edge - if processing delay detected, skip ahead
+        if (metadata.processingDuration && metadata.processingDuration > 8) { // >8ms processing = lag
+          console.log(`High processing delay: ${metadata.processingDuration.toFixed(1)}ms`);
+        }
+
+        // Continue callback loop
+        (video as any).requestVideoFrameCallback(onVideoFrame);
+      };
+
+      (video as any).requestVideoFrameCallback(onVideoFrame);
+      console.log("requestVideoFrameCallback enabled for low-latency frame sync");
+    } else {
+      console.log("requestVideoFrameCallback not supported");
+    }
   };
 
   video.onerror = (e) => {
@@ -1635,7 +1707,8 @@ async function handleSdpOffer(
   // BEFORE calling setRemoteDescription.
   console.log("Creating input_channel_v1 BEFORE SDP negotiation...");
   const inputChannel = pc.createDataChannel("input_channel_v1", {
-    ordered: true,
+    ordered: false,        // Unordered for lowest latency
+    maxRetransmits: 0,     // No retransmits for lowest latency
   });
   inputChannel.binaryType = "arraybuffer";
 
@@ -1857,6 +1930,25 @@ function handleTrack(event: RTCTrackEvent): void {
   console.log("Track received:", event.track.kind, event.track.id, "readyState:", event.track.readyState);
   console.log("Track settings:", JSON.stringify(event.track.getSettings()));
 
+  // === LOW LATENCY: Minimize jitter buffer ===
+  if (event.receiver) {
+    try {
+      // Set minimum jitter buffer delay for lowest latency
+      // This may cause more frame drops but reduces latency
+      if ('jitterBufferTarget' in event.receiver) {
+        (event.receiver as any).jitterBufferTarget = 0; // Minimum buffering
+        console.log("Set jitterBufferTarget to 0 for low latency");
+      }
+      // Also try playoutDelayHint if available
+      if ('playoutDelayHint' in event.receiver) {
+        (event.receiver as any).playoutDelayHint = 0;
+        console.log("Set playoutDelayHint to 0 for low latency");
+      }
+    } catch (e) {
+      console.log("Could not set jitter buffer target:", e);
+    }
+  }
+
   // Get or create the shared MediaStream
   let stream: MediaStream;
   if (event.streams && event.streams[0]) {
@@ -1981,10 +2073,10 @@ function createDataChannels(pc: RTCPeerConnection): void {
   };
   streamingState.dataChannels.set("control", controlChannel);
 
-  // Input channel - partially reliable for low latency (300ms max lifetime per GFN logs)
+  // Input channel - unreliable for lowest latency
   const inputChannel = pc.createDataChannel("input_channel_partially_reliable", {
-    ordered: true,
-    maxPacketLifeTime: 300,  // 300ms max retransmit time per official client
+    ordered: false,          // Unordered for lowest latency
+    maxRetransmits: 0,       // No retransmits - stale input is useless
     id: 6,  // SCTP stream 6 per logs
   });
   inputChannel.binaryType = "arraybuffer";
@@ -2541,73 +2633,259 @@ let inputCaptureMode: 'pointerlock' | 'absolute' = 'absolute';
 // Track if input is active (video element is focused/active)
 let inputCaptureActive = false;
 
-// macOS detection - pointer lock doesn't work in Tauri/WKWebView
+// Platform detection
 const isMacOS = navigator.platform.toUpperCase().includes("MAC") ||
   navigator.userAgent.toUpperCase().includes("MAC");
+const isWindows = navigator.platform.toUpperCase().includes("WIN") ||
+  navigator.userAgent.toUpperCase().includes("WIN");
 
-// Track if we're using macOS cursor-hidden mode (workaround for no pointer lock)
-let macOSCursorHidden = false;
+// Track if we're using native cursor capture (bypasses browser pointer lock)
+// This is used on macOS (Core Graphics) and Windows (Win32 ClipCursor)
+let nativeCursorCaptured = false;
+
+// Windows high-frequency mouse polling state
+let mousePollingActive = false;
+let mousePollingInterval: number | null = null;
+let mousePollingChannel: MessageChannel | null = null;
+
+// Input latency tracking
+const INPUT_LATENCY_SAMPLES = 100; // Rolling average over last 100 samples
+let ipcLatencySamples: number[] = [];
+let sendLatencySamples: number[] = [];
+let totalLatencySamples: number[] = [];
+let inputEventTimestamps: number[] = []; // For calculating events per second
+let lastInputStatsLog = 0;
+
+// Get average from samples array
+function getAverage(samples: number[]): number {
+  if (samples.length === 0) return 0;
+  return samples.reduce((a, b) => a + b, 0) / samples.length;
+}
+
+// Add sample to rolling buffer
+function addSample(samples: number[], value: number): void {
+  samples.push(value);
+  if (samples.length > INPUT_LATENCY_SAMPLES) {
+    samples.shift();
+  }
+}
+
+// Calculate input events per second
+function getInputRate(): number {
+  const now = performance.now();
+  // Remove timestamps older than 1 second
+  while (inputEventTimestamps.length > 0 && now - inputEventTimestamps[0] > 1000) {
+    inputEventTimestamps.shift();
+  }
+  return inputEventTimestamps.length;
+}
+
+// Export input latency stats for getStreamingStats
+export function getInputLatencyStats(): { ipc: number; send: number; total: number; rate: number } {
+  return {
+    ipc: Math.round(getAverage(ipcLatencySamples) * 100) / 100,
+    send: Math.round(getAverage(sendLatencySamples) * 100) / 100,
+    total: Math.round(getAverage(totalLatencySamples) * 100) / 100,
+    rate: getInputRate(),
+  };
+}
+
+// Start high-frequency mouse polling on Windows
+// Uses native 1000Hz polling thread + MessageChannel for minimal latency scheduling
+const startMousePolling = async () => {
+  if (!isWindows || mousePollingActive) return;
+
+  try {
+    const started = await invoke<boolean>("start_mouse_polling");
+    if (started) {
+      mousePollingActive = true;
+      console.log("High-frequency mouse polling started (1000Hz native + MessageChannel polling)");
+
+      // Use MessageChannel for tighter scheduling (bypasses 4ms timer clamping)
+      mousePollingChannel = new MessageChannel();
+      let lastPollTime = performance.now();
+      const MIN_POLL_INTERVAL = 1; // Minimum 1ms between polls
+
+      const pollMouse = () => {
+        if (!mousePollingActive || !nativeCursorCaptured) {
+          // Schedule next check even when inactive to allow resumption
+          if (mousePollingActive) {
+            mousePollingChannel?.port2.postMessage(null);
+          }
+          return;
+        }
+
+        const now = performance.now();
+        const elapsed = now - lastPollTime;
+
+        // Throttle to prevent overwhelming the IPC
+        if (elapsed < MIN_POLL_INTERVAL) {
+          mousePollingChannel?.port2.postMessage(null);
+          return;
+        }
+
+        lastPollTime = now;
+        const pipelineStart = now;
+
+        // Get accumulated deltas from native polling thread (non-blocking)
+        const ipcStart = performance.now();
+        invoke<[number, number]>("get_accumulated_mouse_delta").then(([dx, dy]) => {
+          const ipcEnd = performance.now();
+          const ipcTime = ipcEnd - ipcStart;
+
+          if (dx !== 0 || dy !== 0) {
+            // Track IPC latency
+            addSample(ipcLatencySamples, ipcTime);
+
+            // Track input event timestamp for rate calculation
+            inputEventTimestamps.push(performance.now());
+
+            // Send input and measure send time
+            const sendStart = performance.now();
+            sendInputEvent({
+              type: "mouse_move",
+              data: { dx, dy },
+            });
+            const sendEnd = performance.now();
+            const sendTime = sendEnd - sendStart;
+            addSample(sendLatencySamples, sendTime);
+
+            // Total pipeline latency
+            const totalTime = sendEnd - pipelineStart;
+            addSample(totalLatencySamples, totalTime);
+
+            // Log stats periodically (every 5 seconds)
+            const logNow = performance.now();
+            if (logNow - lastInputStatsLog > 5000) {
+              lastInputStatsLog = logNow;
+              const stats = getInputLatencyStats();
+              console.log(`[Input Stats] IPC: ${stats.ipc.toFixed(2)}ms | Send: ${stats.send.toFixed(2)}ms | Total: ${stats.total.toFixed(2)}ms | Rate: ${stats.rate}/s`);
+            }
+          }
+
+          // Schedule next poll immediately after IPC completes
+          if (mousePollingActive) {
+            mousePollingChannel?.port2.postMessage(null);
+          }
+        }).catch(() => {
+          // Schedule next poll even on error
+          if (mousePollingActive) {
+            mousePollingChannel?.port2.postMessage(null);
+          }
+        });
+      };
+
+      mousePollingChannel.port1.onmessage = pollMouse;
+      // Start the polling loop
+      mousePollingChannel.port2.postMessage(null);
+    }
+  } catch (e) {
+    console.error("Failed to start mouse polling:", e);
+  }
+};
+
+// Stop high-frequency mouse polling
+const stopMousePolling = async () => {
+  mousePollingActive = false;
+  if (mousePollingInterval !== null) {
+    clearInterval(mousePollingInterval);
+    mousePollingInterval = null;
+  }
+  if (mousePollingChannel !== null) {
+    mousePollingChannel.port1.close();
+    mousePollingChannel.port2.close();
+    mousePollingChannel = null;
+  }
+  try {
+    await invoke("stop_mouse_polling");
+    console.log("High-frequency mouse polling stopped");
+  } catch (e) {
+    // Ignore errors on stop
+  }
+};
 
 /**
  * Set input capture mode
  * - 'pointerlock': Use pointer lock for relative mouse (FPS games)
  * - 'absolute': Send absolute coordinates without pointer lock (menus, desktop)
  *
- * On macOS, pointer lock doesn't work in Tauri/WKWebView, so we use native
- * Core Graphics APIs via Tauri commands to capture the cursor.
+ * On macOS and Windows, we use native OS APIs via Tauri commands to capture the cursor,
+ * bypassing the browser's pointer lock which has issues (ESC exits, permission prompts).
  */
 export async function setInputCaptureMode(mode: 'pointerlock' | 'absolute'): Promise<void> {
-  console.log("Setting input capture mode:", mode, isMacOS ? "(macOS)" : "");
+  const platform = isMacOS ? "macOS" : isWindows ? "Windows" : "other";
+  console.log("Setting input capture mode:", mode, `(${platform})`);
   inputCaptureMode = mode;
 
-  // On macOS, use native Tauri cursor capture (Core Graphics)
-  if (isMacOS) {
+  // On macOS and Windows, use native Tauri cursor capture
+  if (isMacOS || isWindows) {
     try {
       if (mode === 'pointerlock') {
-        // Use native macOS cursor capture via Core Graphics
-        // This disassociates the mouse from cursor position, allowing unlimited movement
+        // Use native cursor capture via Tauri
+        // macOS: Core Graphics (CGAssociateMouseAndMouseCursorPosition)
+        // Windows: Win32 (ClipCursor + ShowCursor)
         const captured = await invoke<boolean>("capture_cursor");
         if (captured) {
-          macOSCursorHidden = true;
+          nativeCursorCaptured = true;
           inputCaptureActive = true;
-          console.log("macOS: Native cursor capture enabled (CGAssociateMouseAndMouseCursorPosition)");
+          // Also hide cursor via CSS as backup (prevents webview cursor flicker)
+          const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
+          const container = document.getElementById("streaming-container");
+          if (video) video.style.cursor = 'none';
+          if (container) container.style.cursor = 'none';
+          document.body.style.cursor = 'none';
+          // Start high-frequency mouse polling on Windows
+          if (isWindows) {
+            await startMousePolling();
+          }
+          console.log(`${platform}: Native cursor capture enabled`);
         } else {
-          console.warn("macOS: Native cursor capture not available, falling back to CSS");
+          console.warn(`${platform}: Native cursor capture not available, falling back to CSS`);
           // Fallback to CSS cursor hiding
           const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
           const container = document.getElementById("streaming-container");
           if (video) video.style.cursor = 'none';
           if (container) container.style.cursor = 'none';
-          macOSCursorHidden = true;
+          document.body.style.cursor = 'none';
+          nativeCursorCaptured = true;
           inputCaptureActive = true;
         }
       } else {
+        // Stop mouse polling first
+        if (isWindows) {
+          await stopMousePolling();
+        }
         // Release native cursor capture
         await invoke<boolean>("release_cursor");
-        macOSCursorHidden = false;
+        nativeCursorCaptured = false;
         // Restore cursor style
         const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
         const container = document.getElementById("streaming-container");
         if (video) video.style.cursor = 'default';
         if (container) container.style.cursor = 'default';
-        console.log("macOS: Native cursor capture released");
+        document.body.style.cursor = 'default';
+        console.log(`${platform}: Native cursor capture released`);
       }
     } catch (e) {
-      console.error("macOS cursor capture error:", e);
+      console.error(`${platform} cursor capture error:`, e);
     }
   }
 }
 
 /**
  * Suspend cursor capture temporarily (e.g., when window loses focus)
- * On macOS, this releases the native cursor capture so user can interact with other apps
+ * This releases native cursor capture so user can interact with other apps
  */
 export async function suspendCursorCapture(): Promise<void> {
-  if (!isMacOS || !macOSCursorHidden) return;
+  if (!nativeCursorCaptured) return;
 
   try {
+    // Stop mouse polling first
+    if (isWindows) {
+      await stopMousePolling();
+    }
     await invoke<boolean>("release_cursor");
-    console.log("macOS: Cursor capture suspended (window blur)");
+    console.log("Native cursor capture suspended (window blur)");
   } catch (e) {
     console.error("Failed to suspend cursor capture:", e);
   }
@@ -2615,16 +2893,20 @@ export async function suspendCursorCapture(): Promise<void> {
 
 /**
  * Resume cursor capture (e.g., when window regains focus)
- * On macOS, this re-enables native cursor capture if we were in pointer lock mode
+ * This re-enables native cursor capture if we were in pointer lock mode
  */
 export async function resumeCursorCapture(): Promise<void> {
-  if (!isMacOS || !macOSCursorHidden) return;
+  if (!nativeCursorCaptured) return;
   if (inputCaptureMode !== 'pointerlock') return;
 
   try {
     const captured = await invoke<boolean>("capture_cursor");
     if (captured) {
-      console.log("macOS: Cursor capture resumed (window focus)");
+      // Restart mouse polling on Windows
+      if (isWindows) {
+        await startMousePolling();
+      }
+      console.log("Native cursor capture resumed (window focus)");
     }
   } catch (e) {
     console.error("Failed to resume cursor capture:", e);
@@ -2632,10 +2914,10 @@ export async function resumeCursorCapture(): Promise<void> {
 }
 
 /**
- * Check if we're currently in macOS cursor capture mode
+ * Check if we're currently using native cursor capture
  */
-export function isMacOSCursorCaptured(): boolean {
-  return isMacOS && macOSCursorHidden;
+export function isNativeCursorCaptured(): boolean {
+  return nativeCursorCaptured;
 }
 
 /**
@@ -2683,15 +2965,18 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Mouse move handler - uses pointerrawupdate for lowest latency when available
   const handleMouseMove = (e: MouseEvent | PointerEvent) => {
-    // In pointer lock mode, require pointer lock OR macOS cursor-hidden workaround
+    // In pointer lock mode, require pointer lock OR native cursor capture
     if (inputCaptureMode === 'pointerlock') {
-      // On macOS, use cursor-hidden mode with movementX/movementY (no actual pointer lock)
-      // On other platforms, require actual pointer lock
-      const canSendRelative = hasPointerLock || (isMacOS && macOSCursorHidden && inputCaptureActive);
+      const canSendRelative = hasPointerLock || (nativeCursorCaptured && inputCaptureActive);
 
       if (canSendRelative) {
-        // Use coalesced events for raw mouse data (no browser smoothing)
-        // Skip coalescing for pointerrawupdate as it's already raw
+        // Windows with high-frequency polling: skip browser events, polling handles it
+        if (isWindows && mousePollingActive) {
+          return; // Mouse input handled by 1000Hz native polling thread
+        }
+
+        // macOS native or browser pointer lock: use movementX/movementY
+        // pointerrawupdate gives us individual events, no need to coalesce
         if (e.type === "pointerrawupdate") {
           if (e.movementX !== 0 || e.movementY !== 0) {
             sendInputEvent({
@@ -2700,6 +2985,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
             });
           }
         } else {
+          // For regular pointermove, get all coalesced events
           const events = (e as PointerEvent).getCoalescedEvents?.() || [e];
           for (const evt of events) {
             if (evt.movementX !== 0 || evt.movementY !== 0) {
@@ -2732,8 +3018,8 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   // Mouse button down
   const handleMouseDown = (e: MouseEvent) => {
     // On macOS, also capture when cursor is hidden (pointerlock workaround)
-    const macOSCapture = isMacOS && macOSCursorHidden;
-    const shouldCapture = hasPointerLock || macOSCapture || (inputCaptureMode === 'absolute' && isMouseOverVideo(e));
+    const nativeCapture = nativeCursorCaptured;
+    const shouldCapture = hasPointerLock || nativeCapture || (inputCaptureMode === 'absolute' && isMouseOverVideo(e));
 
     if (shouldCapture) {
       // Activate input capture on click
@@ -2753,8 +3039,8 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Mouse button up
   const handleMouseUp = (e: MouseEvent) => {
-    const macOSCapture = isMacOS && macOSCursorHidden;
-    const shouldCapture = hasPointerLock || macOSCapture || inputCaptureActive;
+    const nativeCapture = nativeCursorCaptured;
+    const shouldCapture = hasPointerLock || nativeCapture || inputCaptureActive;
 
     if (shouldCapture) {
       sendInputEvent({
@@ -2767,8 +3053,8 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Mouse wheel
   const handleWheel = (e: WheelEvent) => {
-    const macOSCapture = isMacOS && macOSCursorHidden;
-    const shouldCapture = hasPointerLock || macOSCapture || (inputCaptureMode === 'absolute' && (inputCaptureActive || isMouseOverVideo(e)));
+    const nativeCapture = nativeCursorCaptured;
+    const shouldCapture = hasPointerLock || nativeCapture || (inputCaptureMode === 'absolute' && (inputCaptureActive || isMouseOverVideo(e)));
 
     if (shouldCapture) {
       sendInputEvent({
@@ -2781,8 +3067,8 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Keyboard handlers
   const handleKeyDown = (e: KeyboardEvent) => {
-    const macOSCapture = isMacOS && macOSCursorHidden;
-    const shouldCapture = hasPointerLock || macOSCapture || inputCaptureActive;
+    const nativeCapture = nativeCursorCaptured;
+    const shouldCapture = hasPointerLock || nativeCapture || inputCaptureActive;
 
     if (shouldCapture) {
       // ESC is sent to the game like any other key - fullscreen exit is handled separately
@@ -2805,8 +3091,8 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   };
 
   const handleKeyUp = (e: KeyboardEvent) => {
-    const macOSCapture = isMacOS && macOSCursorHidden;
-    const shouldCapture = hasPointerLock || macOSCapture || inputCaptureActive;
+    const nativeCapture = nativeCursorCaptured;
+    const shouldCapture = hasPointerLock || nativeCapture || inputCaptureActive;
 
     if (shouldCapture) {
       // Use proper GFN key code mapping and modifier flags
@@ -2827,16 +3113,36 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     }
   };
 
+  // Helper to request pointer lock with keyboard lock (Windows only)
+  // Keyboard lock must be acquired BEFORE pointer lock to capture Escape key
+  const requestPointerLockWithKeyboardLock = async () => {
+    // On Windows, lock the Escape key first to prevent Chrome from exiting pointer lock
+    if (!isMacOS && navigator.keyboard?.lock) {
+      try {
+        await navigator.keyboard.lock(["Escape"]);
+        console.log("Keyboard lock enabled (Escape key captured)");
+      } catch (e) {
+        console.warn("Keyboard lock failed:", e);
+      }
+    }
+
+    // Now request pointer lock
+    try {
+      // Use unadjustedMovement for raw mouse input without OS acceleration
+      await (videoElement as any).requestPointerLock({ unadjustedMovement: true });
+    } catch {
+      // Fallback if unadjustedMovement not supported
+      videoElement.requestPointerLock();
+    }
+  };
+
   // Click handler - either get pointer lock or activate absolute capture
   const handleClick = (e: MouseEvent) => {
     if (inputCaptureMode === 'pointerlock') {
-      // On macOS, we use native cursor capture via Core Graphics, not browser pointer lock
-      if (!hasPointerLock && !isMacOS) {
-        // Use unadjustedMovement for raw mouse input without OS acceleration
-        (videoElement as any).requestPointerLock({ unadjustedMovement: true }).catch(() => {
-          // Fallback if unadjustedMovement not supported
-          videoElement.requestPointerLock();
-        });
+      // On macOS/Windows, we use native cursor capture, not browser pointer lock
+      // Only request browser pointer lock on other platforms
+      if (!hasPointerLock && !nativeCursorCaptured && !(isMacOS || isWindows)) {
+        requestPointerLockWithKeyboardLock();
       }
     } else {
       // Absolute mode - just activate capture
@@ -2861,6 +3167,12 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     console.log("Pointer lock:", hasPointerLock);
     if (hasPointerLock) {
       inputCaptureActive = true;
+    } else {
+      // Release keyboard lock when pointer lock is released
+      if (!isMacOS && navigator.keyboard?.unlock) {
+        navigator.keyboard.unlock();
+        console.log("Keyboard lock released");
+      }
     }
 
     // Hide/show main app UI based on pointer lock state
@@ -2883,8 +3195,8 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Pointer lock error
   const handlePointerLockError = () => {
-    // On macOS, we don't use browser pointer lock, so ignore these errors
-    if (isMacOS) return;
+    // On macOS/Windows, we use native cursor capture, so ignore browser pointer lock errors
+    if (isMacOS || isWindows) return;
 
     console.error("Pointer lock error - falling back to absolute mode");
     hasPointerLock = false;
@@ -2920,16 +3232,12 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
       inputCaptureActive = true;
 
       // Request pointer lock after a small delay (fullscreen transition needs to complete)
-      // On macOS, we use native cursor capture via Core Graphics instead
-      if (!isMacOS) {
+      // On macOS/Windows, we use native cursor capture instead of browser pointer lock
+      if (!(isMacOS || isWindows)) {
         setTimeout(() => {
           if (!hasPointerLock) {
             console.log("Requesting pointer lock for fullscreen");
-            // Use unadjustedMovement for raw mouse input without OS acceleration
-            (videoElement as any).requestPointerLock({ unadjustedMovement: true }).catch(() => {
-              // Fallback if unadjustedMovement not supported
-              videoElement.requestPointerLock();
-            });
+            requestPointerLockWithKeyboardLock();
           }
         }, 100);
       }
@@ -3092,6 +3400,9 @@ export async function getStreamingStats(): Promise<StreamingStats | null> {
     lastBytesTimestamp = now;
   }
 
+  // Get input latency stats
+  const inputStats = getInputLatencyStats();
+
   const currentStats: StreamingStats = {
     fps,
     latency_ms: Math.round(latency),
@@ -3099,6 +3410,10 @@ export async function getStreamingStats(): Promise<StreamingStats | null> {
     packet_loss: packetLoss,
     resolution,
     codec,
+    input_ipc_ms: inputStats.ipc,
+    input_send_ms: inputStats.send,
+    input_total_ms: inputStats.total,
+    input_rate: inputStats.rate,
   };
 
   streamingState.stats = currentStats;

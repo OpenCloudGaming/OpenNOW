@@ -258,7 +258,7 @@ interface ResolutionOption {
 }
 
 interface FeatureOption {
-  key: string;
+  key?: string;
   textValue?: string;
   setValue?: string[];
   booleanValue?: boolean;
@@ -283,24 +283,24 @@ interface ResolutionConfig {
 }
 
 interface StreamingQualityProfile {
-  clientStreamingQualityMode: string;
+  clientStreamingQualityMode?: string;
   maxBitRate?: BitrateConfig;
   resolution?: ResolutionConfig;
-  features: FeatureOption[];
+  features?: FeatureOption[];
 }
 
 interface AddonAttribute {
-  key: string;
+  key?: string;
   textValue?: string;
 }
 
 interface SubscriptionAddon {
   uri?: string;
-  id: string;
-  type: string;
+  id?: string;
+  type?: string;
   subType?: string;
   autoPayEnabled?: boolean;
-  attributes: AddonAttribute[];
+  attributes?: AddonAttribute[];
   status?: string;
 }
 
@@ -404,7 +404,7 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
     { width: 2560, height: 1440 },
     { width: 3840, height: 2160 },
   ];
-  const defaultFps = [30, 60, 120];
+  const defaultFps = [30, 60, 120, 240];
 
   // Helper to get friendly resolution label
   const getResolutionLabel = (res: string): string => {
@@ -424,15 +424,14 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
   };
 
   if (subscription?.features?.resolutions && subscription.features.resolutions.length > 0) {
-    // Extract unique resolutions and FPS from subscription
+    // Extract unique resolutions and FPS from subscription (ignore isEntitled - show all options)
     const resolutionSet = new Set<string>();
     const fpsSet = new Set<number>();
 
     for (const res of subscription.features.resolutions) {
-      if (res.isEntitled) {
-        resolutionSet.add(`${res.widthInPixels}x${res.heightInPixels}`);
-        fpsSet.add(res.framesPerSecond);
-      }
+      // Show all resolutions/FPS regardless of entitlement
+      resolutionSet.add(`${res.widthInPixels}x${res.heightInPixels}`);
+      fpsSet.add(res.framesPerSecond);
     }
 
     // Convert to sorted arrays
@@ -442,9 +441,13 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
       return aW - bW;
     });
 
+    // Always include high FPS options even if not in API response
+    fpsSet.add(120);
+    fpsSet.add(240);
+
     availableFpsOptions = Array.from(fpsSet).sort((a, b) => a - b);
 
-    console.log(`Populated ${availableResolutions.length} resolutions and ${availableFpsOptions.length} FPS options from subscription`);
+    console.log(`Populated ${availableResolutions.length} resolutions and ${availableFpsOptions.length} FPS options from subscription (ignoring entitlement)`);
   } else {
     // Use defaults
     availableResolutions = defaultResolutions.map(r => `${r.width}x${r.height}`);
@@ -955,9 +958,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 });
 
-// Detect if we're on macOS
+// Detect platform
 const isMacOS = navigator.platform.toUpperCase().includes("MAC") ||
   navigator.userAgent.toUpperCase().includes("MAC");
+const isWindows = navigator.platform.toUpperCase().includes("WIN") ||
+  navigator.userAgent.toUpperCase().includes("WIN");
 
 // Load settings from backend and apply to UI
 async function loadSettings() {
@@ -985,23 +990,14 @@ async function loadSettings() {
     const telemetryEl = document.getElementById("telemetry-setting") as HTMLInputElement;
     const proxyEl = document.getElementById("proxy-setting") as HTMLInputElement;
 
-    // Update codec dropdown options based on platform
-    // H.265/HEVC is only supported with hardware decoding on macOS (VideoToolbox)
+    // Update codec dropdown options
+    // H.265/HEVC has lower decode latency on modern GPUs (RTX 20/30/40 series, AMD RX 5000+)
+    // Available on all platforms with hardware decode support
     const codecOptions = [
       { value: "h264", text: "H.264 (Best Compatibility)", selected: currentCodec === "h264" },
+      { value: "h265", text: "H.265/HEVC (Lower Latency)", selected: currentCodec === "h265" },
       { value: "av1", text: "AV1 (Best Quality)", selected: currentCodec === "av1" },
     ];
-    if (isMacOS) {
-      codecOptions.splice(1, 0, {
-        value: "h265",
-        text: "H.265/HEVC (Better Quality)",
-        selected: currentCodec === "h265"
-      });
-    } else if (currentCodec === "h265") {
-      // Fall back to H.264 if not on macOS
-      currentCodec = "h264";
-      codecOptions[0].selected = true;
-    }
     setDropdownOptions("codec-setting", codecOptions);
 
     // Update audio codec dropdown options based on platform
@@ -1349,9 +1345,9 @@ function updateNavbarStorageIndicator(subscription: SubscriptionInfo | null) {
   }
 
   // Extract storage info from attributes
-  const totalAttr = storageAddon.attributes.find(a => a.key === "TOTAL_STORAGE_SIZE_IN_GB");
-  const usedAttr = storageAddon.attributes.find(a => a.key === "USED_STORAGE_SIZE_IN_GB");
-  const regionAttr = storageAddon.attributes.find(a => a.key === "STORAGE_METRO_REGION_NAME");
+  const totalAttr = storageAddon.attributes?.find(a => a.key === "TOTAL_STORAGE_SIZE_IN_GB");
+  const usedAttr = storageAddon.attributes?.find(a => a.key === "USED_STORAGE_SIZE_IN_GB");
+  const regionAttr = storageAddon.attributes?.find(a => a.key === "STORAGE_METRO_REGION_NAME");
 
   const totalGB = parseInt(totalAttr?.textValue || "0", 10);
   const usedGB = parseInt(usedAttr?.textValue || "0", 10);
@@ -2885,6 +2881,9 @@ function createStreamingContainer(gameName: string): HTMLElement {
       <span id="stats-resolution">----x----</span>
       <span id="stats-codec">----</span>
       <span id="stats-bitrate">-- Mbps</span>
+      <span class="stats-separator">|</span>
+      <span id="stats-input-total" title="Total input pipeline latency">Input: -- ms</span>
+      <span id="stats-input-rate" title="Input events per second">-- evt/s</span>
     </div>
     <div class="stream-settings-panel" id="stream-settings-panel">
       <div class="settings-panel-header">
@@ -2922,6 +2921,27 @@ function createStreamingContainer(gameName: string): HTMLElement {
             <div class="info-item">
               <span class="info-label">Packet Loss</span>
               <span class="info-value" id="info-packet-loss">--</span>
+            </div>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h4>Input Latency</h4>
+          <div class="settings-info-grid">
+            <div class="info-item">
+              <span class="info-label">IPC Call</span>
+              <span class="info-value" id="info-input-ipc">--</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Send</span>
+              <span class="info-value" id="info-input-send">--</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Total Pipeline</span>
+              <span class="info-value" id="info-input-total">--</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Input Rate</span>
+              <span class="info-value" id="info-input-rate">--</span>
             </div>
           </div>
         </div>
@@ -3053,6 +3073,22 @@ function createStreamingContainer(gameName: string): HTMLElement {
       color: #76b900;
       font-weight: 500;
     }
+    .stats-separator {
+      color: #555;
+      margin: 0 5px;
+    }
+    #stats-input-total {
+      color: #8be9fd;
+    }
+    #stats-input-rate {
+      color: #bd93f9;
+    }
+    /* Input latency color coding */
+    .input-excellent { color: #00c853 !important; }
+    .input-good { color: #76b900 !important; }
+    .input-fair { color: #ffc107 !important; }
+    .input-poor { color: #ff9800 !important; }
+    .input-bad { color: #f44336 !important; }
     .stream-settings-panel {
       position: absolute;
       top: 60px;
@@ -3195,13 +3231,39 @@ function createStreamingContainer(gameName: string): HTMLElement {
         // Entering fullscreen - switch to pointer lock mode
         console.log("Switching to pointer lock mode for fullscreen");
         await setInputCaptureMode('pointerlock');
-        // On macOS, native cursor capture is handled by setInputCaptureMode via Tauri
-        // On other platforms, request browser pointer lock
-        if (!isMacOS) {
-          setTimeout(() => {
+        // On macOS/Windows, native cursor capture is handled by setInputCaptureMode via Tauri
+        // No need for browser pointer lock - it has issues (ESC exits, permission prompts)
+        // On other platforms (Linux), fall back to browser pointer lock
+        if (!(isMacOS || isWindows)) {
+          setTimeout(async () => {
             if (video) {
+              // IMPORTANT: Keyboard Lock API requires browser-level fullscreen (not just Tauri window fullscreen)
+              // Request browser fullscreen on the video element first
+              try {
+                if (!document.fullscreenElement) {
+                  console.log("Requesting browser fullscreen for Keyboard Lock API");
+                  await video.requestFullscreen();
+                }
+              } catch (e) {
+                console.warn("Browser fullscreen failed:", e);
+              }
+
+              // Lock Escape key BEFORE pointer lock to prevent Chrome from exiting on ESC
+              // Keyboard Lock API requires JavaScript-initiated fullscreen to be active
+              if (navigator.keyboard?.lock) {
+                try {
+                  await navigator.keyboard.lock(["Escape"]);
+                  console.log("Keyboard lock enabled (Escape key captured)");
+                } catch (e) {
+                  console.warn("Keyboard lock failed:", e);
+                }
+              }
               console.log("Requesting pointer lock on video element");
-              video.requestPointerLock();
+              try {
+                await (video as any).requestPointerLock({ unadjustedMovement: true });
+              } catch {
+                video.requestPointerLock();
+              }
             }
           }, 100);
         }
@@ -3209,8 +3271,20 @@ function createStreamingContainer(gameName: string): HTMLElement {
         // Exiting fullscreen - switch to absolute mode
         console.log("Switching to absolute mode for windowed");
         await setInputCaptureMode('absolute');
-        if (document.pointerLockElement) {
-          document.exitPointerLock();
+        // On platforms using browser pointer lock, clean up
+        if (!(isMacOS || isWindows)) {
+          // Release keyboard lock
+          if (navigator.keyboard?.unlock) {
+            navigator.keyboard.unlock();
+            console.log("Keyboard lock released");
+          }
+          if (document.pointerLockElement) {
+            document.exitPointerLock();
+          }
+          // Exit browser fullscreen if active
+          if (document.fullscreenElement) {
+            document.exitFullscreen().catch(() => {});
+          }
         }
       }
     } catch (e) {
@@ -3396,6 +3470,15 @@ function createStreamingContainer(gameName: string): HTMLElement {
   return videoWrapper;
 }
 
+// Get input latency class for color coding
+function getInputLatencyClass(ms: number): string {
+  if (ms < 1) return 'input-excellent';
+  if (ms < 2) return 'input-good';
+  if (ms < 5) return 'input-fair';
+  if (ms < 10) return 'input-poor';
+  return 'input-bad';
+}
+
 // Update streaming stats display
 function updateStreamingStatsDisplay(stats: {
   fps: number;
@@ -3404,6 +3487,10 @@ function updateStreamingStatsDisplay(stats: {
   packet_loss: number;
   resolution: string;
   codec: string;
+  input_ipc_ms?: number;
+  input_send_ms?: number;
+  input_total_ms?: number;
+  input_rate?: number;
 }): void {
   // Update overlay stats
   const regionEl = document.getElementById("stats-region");
@@ -3412,6 +3499,8 @@ function updateStreamingStatsDisplay(stats: {
   const resEl = document.getElementById("stats-resolution");
   const codecEl = document.getElementById("stats-codec");
   const bitrateEl = document.getElementById("stats-bitrate");
+  const inputTotalEl = document.getElementById("stats-input-total");
+  const inputRateEl = document.getElementById("stats-input-rate");
 
   const bitrateFormatted = stats.bitrate_kbps >= 1000
     ? `${(stats.bitrate_kbps / 1000).toFixed(1)} Mbps`
@@ -3440,6 +3529,16 @@ function updateStreamingStatsDisplay(stats: {
   if (codecEl) codecEl.textContent = stats.codec || "----";
   if (bitrateEl) bitrateEl.textContent = bitrateFormatted;
 
+  // Update input latency stats in overlay
+  if (inputTotalEl && stats.input_total_ms !== undefined) {
+    inputTotalEl.textContent = `Input: ${stats.input_total_ms.toFixed(2)} ms`;
+    inputTotalEl.classList.remove("input-excellent", "input-good", "input-fair", "input-poor", "input-bad");
+    inputTotalEl.classList.add(getInputLatencyClass(stats.input_total_ms));
+  }
+  if (inputRateEl && stats.input_rate !== undefined) {
+    inputRateEl.textContent = `${stats.input_rate} evt/s`;
+  }
+
   // Update settings panel info
   const infoRegionEl = document.getElementById("info-region");
   const infoResEl = document.getElementById("info-resolution");
@@ -3448,6 +3547,12 @@ function updateStreamingStatsDisplay(stats: {
   const infoBitrateEl = document.getElementById("info-bitrate");
   const infoLatencyEl = document.getElementById("info-latency");
   const infoPacketLossEl = document.getElementById("info-packet-loss");
+
+  // Input latency panel elements
+  const infoInputIpcEl = document.getElementById("info-input-ipc");
+  const infoInputSendEl = document.getElementById("info-input-send");
+  const infoInputTotalEl = document.getElementById("info-input-total");
+  const infoInputRateEl = document.getElementById("info-input-rate");
 
   if (infoRegionEl) {
     infoRegionEl.textContent = currentServer ? currentServer.name : (currentRegion === "auto" ? "Auto" : currentRegion);
@@ -3462,6 +3567,26 @@ function updateStreamingStatsDisplay(stats: {
     infoLatencyEl.classList.add(getLatencyClass(stats.latency_ms));
   }
   if (infoPacketLossEl) infoPacketLossEl.textContent = `${(stats.packet_loss * 100).toFixed(2)}%`;
+
+  // Update input latency panel stats
+  if (infoInputIpcEl && stats.input_ipc_ms !== undefined) {
+    infoInputIpcEl.textContent = `${stats.input_ipc_ms.toFixed(2)} ms`;
+    infoInputIpcEl.classList.remove("input-excellent", "input-good", "input-fair", "input-poor", "input-bad");
+    infoInputIpcEl.classList.add(getInputLatencyClass(stats.input_ipc_ms));
+  }
+  if (infoInputSendEl && stats.input_send_ms !== undefined) {
+    infoInputSendEl.textContent = `${stats.input_send_ms.toFixed(2)} ms`;
+    infoInputSendEl.classList.remove("input-excellent", "input-good", "input-fair", "input-poor", "input-bad");
+    infoInputSendEl.classList.add(getInputLatencyClass(stats.input_send_ms));
+  }
+  if (infoInputTotalEl && stats.input_total_ms !== undefined) {
+    infoInputTotalEl.textContent = `${stats.input_total_ms.toFixed(2)} ms`;
+    infoInputTotalEl.classList.remove("input-excellent", "input-good", "input-fair", "input-poor", "input-bad");
+    infoInputTotalEl.classList.add(getInputLatencyClass(stats.input_total_ms));
+  }
+  if (infoInputRateEl && stats.input_rate !== undefined) {
+    infoInputRateEl.textContent = `${stats.input_rate} evt/s`;
+  }
 }
 
 // Exit streaming and cleanup

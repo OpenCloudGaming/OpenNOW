@@ -100,10 +100,17 @@ pub fn run() {
             proxy::enable_proxy,
             proxy::disable_proxy,
             proxy::test_proxy,
-            // Cursor capture commands (macOS native)
+            // Cursor capture commands (macOS and Windows native)
             cursor::capture_cursor,
             cursor::release_cursor,
             cursor::is_cursor_captured,
+            cursor::get_mouse_delta,
+            cursor::recenter_cursor,
+            // High-frequency mouse polling (Windows)
+            cursor::start_mouse_polling,
+            cursor::stop_mouse_polling,
+            cursor::get_accumulated_mouse_delta,
+            cursor::is_mouse_polling_active,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
