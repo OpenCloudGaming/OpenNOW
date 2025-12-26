@@ -128,14 +128,8 @@ pub struct GamesResponse {
 const GRAPHQL_URL: &str = "https://games.geforce.com/graphql";
 /// Static JSON endpoint for game list (public, no auth required)
 const STATIC_GAMES_URL: &str = "https://static.nvidiagrid.net/supported-public-game-list/locales/gfnpc-en-US.json";
-/// Image CDN base URL
-#[allow(dead_code)]
-const IMAGE_CDN_BASE: &str = "https://img.nvidiagrid.net";
 /// LCARS Client ID
 const LCARS_CLIENT_ID: &str = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
-/// CloudMatch server for streaming sessions
-#[allow(dead_code)]
-const CLOUDMATCH_URL: &str = "https://prod.cloudmatchbeta.nvidiagrid.net/v2";
 
 /// GFN client version
 const GFN_CLIENT_VERSION: &str = "2.0.80.173";
@@ -148,101 +142,8 @@ const GFN_CEF_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Appl
 
 /// Persisted query hash for panels (MAIN, LIBRARY, etc.)
 const PANELS_QUERY_HASH: &str = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
-/// Persisted query hash for static app data
-const STATIC_APP_DATA_HASH: &str = "fd555528201fe16f28011637244243e170368bc68e06b040a132a7c177c9ed2a";
 /// Persisted query hash for search
 const SEARCH_QUERY_HASH: &str = "7581d1b6e4d87013ac88e58bff8294b5a9fb4dee1aa0d98c1719dac9d8e9dcf7";
-
-/// GraphQL query for fetching game sections (featured games, categories)
-/// Based on GetGameSection query from GFN client
-const GET_GAME_SECTION_QUERY: &str = r#"
-query GetGameSection($vpcId: String!, $locale: String!, $panelNames: [String!]!) {
-    panels(vpcId: $vpcId, locale: $locale, panelNames: $panelNames) {
-        name
-        sections {
-            id
-            title
-            items {
-                ... on GameItem {
-                    app {
-                        id
-                        title
-                        publisherName
-                        images {
-                            GAME_BOX_ART
-                            TV_BANNER
-                            HERO_IMAGE
-                            GAME_LOGO
-                        }
-                        variants {
-                            id
-                            shortName
-                            appStore
-                            supportedControls
-                            gfn {
-                                status
-                            }
-                        }
-                        gfn {
-                            playabilityState
-                            minimumMembershipTierLabel
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-"#;
-
-/// GraphQL query for fetching user's library
-const GET_LIBRARY_QUERY: &str = r#"
-query GetLibrary($vpcId: String!, $locale: String!, $panelNames: [String!]!) {
-    panels(vpcId: $vpcId, locale: $locale, panelNames: $panelNames) {
-        id
-        name
-        sections {
-            id
-            title
-            items {
-                __typename
-                ... on GameItem {
-                    app {
-                        id
-                        title
-                        images {
-                            GAME_BOX_ART
-                            TV_BANNER
-                            HERO_IMAGE
-                        }
-                        library {
-                            favorited
-                        }
-                        variants {
-                            id
-                            shortName
-                            appStore
-                            supportedControls
-                            gfn {
-                                library {
-                                    status
-                                    selected
-                                }
-                                status
-                            }
-                        }
-                        gfn {
-                            playabilityState
-                            playType
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-"#;
-
 
 /// GraphQL query for detailed app/game data
 /// Based on GetAppDataQueryForAppId from GFN client
@@ -293,24 +194,6 @@ query GetAppDataQueryForAppId($vpcId: String!, $locale: String!, $appIds: [Strin
         itemMetadata {
             favorited
         }
-    }
-}
-"#;
-
-/// GraphQL mutation to add game to favorites
-const ADD_FAVORITE_MUTATION: &str = r#"
-mutation AddFavoriteApp($appId: String!, $locale: String!) {
-    addFavoriteApp(appId: $appId, locale: $locale) {
-        appId
-    }
-}
-"#;
-
-/// GraphQL mutation to remove game from favorites
-const REMOVE_FAVORITE_MUTATION: &str = r#"
-mutation RemoveFavoriteApp($appId: String!, $locale: String!) {
-    removeFavoriteApp(appId: $appId, locale: $locale) {
-        appId
     }
 }
 "#;
@@ -1203,17 +1086,6 @@ pub async fn get_servers(_access_token: Option<String>) -> Result<Vec<Server>, S
     });
 
     Ok(servers)
-}
-
-/// Helper function to build image URLs
-pub fn build_image_url(path: &str, width: Option<u32>, height: Option<u32>) -> String {
-    let mut url = format!("{}/{}", IMAGE_CDN_BASE, path);
-
-    if let (Some(w), Some(h)) = (width, height) {
-        url = format!("{}?w={}&h={}", url, w, h);
-    }
-
-    url
 }
 
 /// Parse store type from string
