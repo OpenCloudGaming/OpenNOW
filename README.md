@@ -32,6 +32,14 @@ OpenNOW is a custom GeForce NOW client created by reverse engineering the offici
 
 ---
 
+## Screenshot
+
+<p align="center">
+  <img src="img.png" alt="OpenNOW Screenshot" width="800">
+</p>
+
+---
+
 ## Download
 
 <p align="center">
