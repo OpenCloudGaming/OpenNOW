@@ -231,8 +231,15 @@ export async function initializeStreaming(
     }
   }
 
+  // Parse FPS from options or use default
+  let streamFps = 60; // Default FPS
+  if (options?.fps && options.fps > 0) {
+    streamFps = options.fps;
+    console.log(`Using requested FPS: ${streamFps}`);
+  }
+
   // Connect using the official GFN browser protocol
-  await connectGfnBrowserSignaling(streamIp, sessionId, webrtcConfig, streamWidth, streamHeight);
+  await connectGfnBrowserSignaling(streamIp, sessionId, webrtcConfig, streamWidth, streamHeight, streamFps);
 }
 
 // GFN Browser Peer Protocol types
@@ -328,7 +335,8 @@ async function connectGfnBrowserSignaling(
   sessionId: string,
   config: WebRtcConfig,
   requestedWidth: number,
-  requestedHeight: number
+  requestedHeight: number,
+  requestedFps: number
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     // Generate random peer ID suffix (matching GFN browser format)
@@ -475,7 +483,7 @@ async function connectGfnBrowserSignaling(
 
               // Handle the SDP offer and create answer
               // This runs async - WebSocket may close during this, that's expected
-              handleGfnSdpOffer(innerMsg.sdp, ws, config, serverIp, requestedWidth, requestedHeight)
+              handleGfnSdpOffer(innerMsg.sdp, ws, config, serverIp, requestedWidth, requestedHeight, requestedFps)
                 .then(() => {
                   console.log("SDP offer handled successfully");
                   resolve();
@@ -573,7 +581,8 @@ async function handleGfnSdpOffer(
   config: WebRtcConfig,
   serverIp: string,
   requestedWidth: number,
-  requestedHeight: number
+  requestedHeight: number,
+  requestedFps: number
 ): Promise<void> {
   console.log("Setting up WebRTC with GFN SDP offer");
   console.log("SDP offer preview:", serverSdp.substring(0, 500));
@@ -972,83 +981,119 @@ async function handleGfnSdpOffer(
   const viewportHeight = requestedHeight;
   console.log(`nvstSdp viewport: ${viewportWidth}x${viewportHeight}`);
 
+  console.log(`nvstSdp video.maxFPS: ${requestedFps}`);
+
   // Use bitrate from config (set by user in settings)
   const maxBitrateKbps = config.max_bitrate_kbps || 100000;
   const minBitrateKbps = Math.min(10000, maxBitrateKbps / 10); // 10% of max or 10 Mbps
   const initialBitrateKbps = Math.round(maxBitrateKbps * 0.5); // Start at 50%
   console.log(`Bitrate settings: max=${maxBitrateKbps}kbps, min=${minBitrateKbps}kbps, initial=${initialBitrateKbps}kbps`);
 
-  // Build nvstSdp as a proper SDP-like string (matching official GFN browser client format)
-  // This includes ICE credentials, DTLS fingerprint, and streaming parameters
+  // Build nvstSdp matching official GFN browser client format
+  // Based on Wl function from vendor_beautified.js
+  const isHighFps = requestedFps >= 120;
+  const is120Fps = requestedFps === 120;
+  const is240Fps = requestedFps >= 240;
+
   const nvstSdpString = [
     "v=0",
     "o=SdpTest test_id_13 14 IN IPv4 127.0.0.1",
     "s=-",
     "t=0 0",
-    "a=runtime.serverTraceCapture:2",
-    "a=runtime.maxVerboseEtlSizeMb:45",
     `a=general.icePassword:${icePwd}`,
     `a=general.iceUserNameFragment:${iceUfrag}`,
     `a=general.dtlsFingerprint:${fingerprint}`,
     "m=video 0 RTP/AVP",
     "a=msid:fbc-video-0",
+    // FEC settings
+    "a=vqos.fec.rateDropWindow:10",
     "a=vqos.fec.minRequiredFecPackets:2",
-    "a=vqos.drc.enable:0",
-    "a=vqos.drc.minRequiredBitrateCheckEnabled:0",
+    "a=vqos.fec.repairMinPercent:5",
+    "a=vqos.fec.repairPercent:5",
+    "a=vqos.fec.repairMaxPercent:35",
+    // DRC settings - disable for high FPS, use DFC instead
+    ...(isHighFps ? [
+      "a=vqos.drc.enable:0",
+      "a=vqos.dfc.enable:1",
+      "a=vqos.dfc.decodeFpsAdjPercent:85",
+      "a=vqos.dfc.targetDownCooldownMs:250",
+      "a=vqos.dfc.dfcAlgoVersion:2",
+      `a=vqos.dfc.minTargetFps:${is120Fps ? 100 : 60}`,
+    ] : [
+      "a=vqos.drc.minRequiredBitrateCheckEnabled:1",
+    ]),
+    // Video encoder settings
     "a=video.dx9EnableNv12:1",
     "a=video.dx9EnableHdr:1",
-    "a=vqos.qpg.enable:0",
-    "a=vqos.resControl.enable:0",
-    "a=vqos.resControl.qp.qpg.featureSetting:0",
+    "a=vqos.qpg.enable:1",
+    "a=vqos.resControl.qp.qpg.featureSetting:7",
     "a=bwe.useOwdCongestionControl:1",
     "a=video.enableRtpNack:1",
     "a=vqos.bw.txRxLag.minFeedbackTxDeltaMs:200",
-    "a=vqos.adjustStreamingFpsDuringOutOfFocus:0",
+    "a=vqos.drc.bitrateIirFilterFactor:18",
+    "a=video.packetSize:1140",
+    "a=packetPacing.minNumPacketsPerGroup:15",
+    // High FPS (120+) optimizations from official GFN client
+    ...(isHighFps ? [
+      "a=bwe.iirFilterFactor:8",
+      "a=video.encoderFeatureSetting:47",
+      "a=video.encoderPreset:6",
+      "a=vqos.resControl.cpmRtc.badNwSkipFramesCount:600",
+      "a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:9",
+      `a=video.fbcDynamicFpsGrabTimeoutMs:${is120Fps ? 6 : 18}`,
+      `a=vqos.resControl.cpmRtc.serverResolutionUpdateCoolDownCount:${is120Fps ? 6000 : 12000}`,
+    ] : []),
+    // Ultra high FPS (240+) optimizations
+    ...(is240Fps ? [
+      "a=video.enableNextCaptureMode:1",
+      "a=vqos.maxStreamFpsEstimate:240",
+      "a=video.videoSplitEncodeStripsPerFrame:3",
+      "a=video.updateSplitEncodeStateDynamically:1",
+    ] : []),
+    // Out of focus settings
+    "a=vqos.adjustStreamingFpsDuringOutOfFocus:1",
     "a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1",
     "a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1",
     "a=vqos.resControl.cpmRtc.featureMask:3",
-    "a=packetPacing.numGroups:5",
+    // Packet pacing
+    `a=packetPacing.numGroups:${is120Fps ? 3 : 5}`,
+    "a=packetPacing.maxDelayUs:1000",
+    "a=packetPacing.minNumPacketsFrame:10",
+    // NACK settings
     "a=video.rtpNackQueueLength:1024",
     "a=video.rtpNackQueueMaxPackets:512",
     "a=video.rtpNackMaxPacketCount:25",
-    "a=vqos.drc.qpMaxResThresholdAdj:0",
-    "a=vqos.grc.qpMaxResThresholdAdj:0",
-    "a=vqos.drc.iirFilterFactor:0",
-    "a=video.videoSplitEncodeStripsPerFrame:63",
-    "a=video.updateSplitEncodeStateDynamically:1",
+    // Resolution/quality settings
+    "a=vqos.drc.qpMaxResThresholdAdj:4",
+    "a=vqos.grc.qpMaxResThresholdAdj:4",
+    "a=vqos.drc.iirFilterFactor:100",
+    // Viewport and FPS
     `a=video.clientViewportWd:${viewportWidth}`,
     `a=video.clientViewportHt:${viewportHeight}`,
+    `a=video.maxFPS:${requestedFps}`,
+    // Bitrate settings
     `a=video.initialBitrateKbps:${initialBitrateKbps}`,
     `a=video.initialPeakBitrateKbps:${initialBitrateKbps}`,
     `a=vqos.bw.maximumBitrateKbps:${maxBitrateKbps}`,
     `a=vqos.bw.minimumBitrateKbps:${minBitrateKbps}`,
+    // Encoder settings
     "a=video.maxNumReferenceFrames:4",
     "a=video.mapRtpTimestampsToFrames:1",
     "a=video.encoderCscMode:3",
     "a=video.scalingFeature1:0",
-    "a=video.prefilterParams.prefilterModel:4",
-    "a=packetPacing.enableAccurateSleep:1",
-    "a=video.adaptiveQuantization.perfAdjEnablement:1",
-    "a=video.adaptiveQuantization.spatialAQSetting:2",
-    "a=video.adaptiveQuantization.temporalAQSetting:2",
-    "a=video.enableAv1RcPrecisionFactor:0",
-    "a=video.framePacing.pid.minTargetFrameTimeUs:7936",
-    "a=video.parseRtcClientBlobs:1",
-    "a=vqos.grc.enable:0",
-    "a=vqos.qpDelta.qpDeltaIirFactor:60",
-    "a=vqos.qpDelta.qpDeltaSurfaceAdjustmentStrengthPercent:70",
-    "a=vqos.qpDelta.qpDeltaThrottlePercent:100",
-    "a=vqos.sendEndOfSessionQosTelemetry:1",
-    "a=vqos.statsProcessorThread.flags:249",
+    "a=video.prefilterParams.prefilterModel:0",
+    // Audio track
     "m=audio 0 RTP/AVP",
     "a=msid:audio",
+    // Mic track
     "m=mic 0 RTP/AVP",
     "a=msid:mic",
+    // Input/application track
     "m=application 0 RTP/AVP",
     "a=msid:input_1",
     "a=ri.partialReliableThresholdMs:300",
     ""
-  ].join("\r\n");
+  ].join("\n");
 
   console.log("Built nvstSdp with ICE credentials and streaming params");
 
@@ -2079,24 +2124,13 @@ export function sendInputEvent(event: InputEvent): void {
   }
 
   inputEventCount++;
-  const now = Date.now();
 
-  // Log input state periodically (every 5 seconds) or on first input
-  const shouldLogStatus = inputEventCount === 1 || (now - lastInputLogTime > 5000);
-  if (shouldLogStatus) {
-    lastInputLogTime = now;
-    console.log("=== INPUT STATUS ===");
-    console.log(`  Events sent: ${inputEventCount}`);
-    console.log(`  Handshake complete: ${inputHandshakeComplete}`);
-    console.log(`  Handshake attempts: ${inputHandshakeAttempts}`);
-    console.log(`  Stream start time: ${streamStartTime}`);
+  // Log input state only on first input (avoid GC pauses from logging)
+  if (inputEventCount === 1) {
+    console.log("=== FIRST INPUT EVENT ===");
     console.log(`  Input channel: ${inputChannel?.label || 'none'} (${inputChannel?.readyState || 'n/a'})`);
-    console.log(`  Control channel: ${controlChannel?.label || 'none'} (${controlChannel?.readyState || 'n/a'})`);
-    console.log(`  Available channels:`);
-    streamingState.dataChannels.forEach((ch, name) => {
-      console.log(`    ${name}: ${ch.label} (state=${ch.readyState}, id=${ch.id})`);
-    });
-    console.log("====================");
+    console.log(`  Handshake complete: ${inputHandshakeComplete}`);
+    console.log("=========================");
   }
 
   try {
@@ -2644,8 +2678,11 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     );
   };
 
-  // Mouse move handler - uses getCoalescedEvents for raw, unsmoothed input
-  const handleMouseMove = (e: MouseEvent) => {
+  // Check if pointerrawupdate is supported (lower latency than pointermove)
+  const supportsRawUpdate = "onpointerrawupdate" in videoElement;
+
+  // Mouse move handler - uses pointerrawupdate for lowest latency when available
+  const handleMouseMove = (e: MouseEvent | PointerEvent) => {
     // In pointer lock mode, require pointer lock OR macOS cursor-hidden workaround
     if (inputCaptureMode === 'pointerlock') {
       // On macOS, use cursor-hidden mode with movementX/movementY (no actual pointer lock)
@@ -2654,13 +2691,23 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
       if (canSendRelative) {
         // Use coalesced events for raw mouse data (no browser smoothing)
-        const events = (e as PointerEvent).getCoalescedEvents?.() || [e];
-        for (const evt of events) {
-          if (evt.movementX !== 0 || evt.movementY !== 0) {
+        // Skip coalescing for pointerrawupdate as it's already raw
+        if (e.type === "pointerrawupdate") {
+          if (e.movementX !== 0 || e.movementY !== 0) {
             sendInputEvent({
               type: "mouse_move",
-              data: { dx: evt.movementX, dy: evt.movementY },
+              data: { dx: e.movementX, dy: e.movementY },
             });
+          }
+        } else {
+          const events = (e as PointerEvent).getCoalescedEvents?.() || [e];
+          for (const evt of events) {
+            if (evt.movementX !== 0 || evt.movementY !== 0) {
+              sendInputEvent({
+                type: "mouse_move",
+                data: { dx: evt.movementX, dy: evt.movementY },
+              });
+            }
           }
         }
       }
@@ -2909,12 +2956,19 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
   document.addEventListener("mozfullscreenchange", handleFullscreenChange);
   document.addEventListener("MSFullscreenChange", handleFullscreenChange);
-  document.addEventListener("pointermove", handleMouseMove as EventListener);
+  // Use pointerrawupdate for lowest latency when available, fallback to pointermove
+  if (supportsRawUpdate) {
+    document.addEventListener("pointerrawupdate", handleMouseMove as EventListener);
+    console.log("Using pointerrawupdate for low-latency mouse input");
+  } else {
+    document.addEventListener("pointermove", handleMouseMove as EventListener);
+    console.log("Using pointermove for mouse input (pointerrawupdate not supported)");
+  }
   document.addEventListener("mousedown", handleMouseDown);
   document.addEventListener("mouseup", handleMouseUp);
   document.addEventListener("wheel", handleWheel, { passive: false });
-  document.addEventListener("keydown", handleKeyDown);
-  document.addEventListener("keyup", handleKeyUp);
+  document.addEventListener("keydown", handleKeyDown, { passive: false });
+  document.addEventListener("keyup", handleKeyUp, { passive: false });
   window.addEventListener("blur", handleBlur);
 
   // Start in absolute mode - immediately active
@@ -2940,7 +2994,11 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
     document.removeEventListener("mozfullscreenchange", handleFullscreenChange);
     document.removeEventListener("MSFullscreenChange", handleFullscreenChange);
-    document.removeEventListener("pointermove", handleMouseMove as EventListener);
+    if (supportsRawUpdate) {
+      document.removeEventListener("pointerrawupdate", handleMouseMove as EventListener);
+    } else {
+      document.removeEventListener("pointermove", handleMouseMove as EventListener);
+    }
     document.removeEventListener("mousedown", handleMouseDown);
     document.removeEventListener("mouseup", handleMouseUp);
     document.removeEventListener("wheel", handleWheel);
