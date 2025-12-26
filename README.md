@@ -58,15 +58,32 @@ OpenNOW is a custom GeForce NOW client created by reverse engineering the offici
 
 ## Features
 
+### Streaming
 | Feature | Description |
 |---------|-------------|
-| **High FPS Streaming** | 120, 240, and 360 FPS modes |
-| **Codec Selection** | H.264 or AV1 |
-| **Unlimited Bitrate** | Up to 100+ Mbps |
-| **Raw Mouse Input** | Precise 1:1 movement |
-| **Discord Rich Presence** | Show what you're playing |
-| **Multi-Region** | Auto-select lowest ping server |
-| **Dark UI** | Clean, modern interface |
+| **High FPS Modes** | 60, 120, 240, and 360 FPS streaming |
+| **4K & 5K Resolutions** | Up to 5120x2880, ultrawide support (21:9, 32:9) |
+| **Video Codecs** | H.264, H.265 (HEVC), and AV1 |
+| **Audio Codecs** | Opus mono and stereo |
+| **Unlimited Bitrate** | Up to 200 Mbps (no artificial caps) |
+| **NVIDIA Reflex** | Low-latency mode for competitive gaming |
+
+### Input & Controls
+| Feature | Description |
+|---------|-------------|
+| **Raw Mouse Input** | 1:1 movement with `pointerrawupdate` events |
+| **Unadjusted Movement** | Bypasses OS mouse acceleration |
+| **Clipboard Paste** | Paste text directly into games (Ctrl+V) |
+| **Full Keyboard Capture** | All keys captured in fullscreen |
+
+### Experience
+| Feature | Description |
+|---------|-------------|
+| **Discord Rich Presence** | Shows current game with optional stats |
+| **Multi-Region Support** | Connect to any GFN server region |
+| **Privacy Focused** | Telemetry disabled by default |
+| **GPU Accelerated** | Hardware video decoding (Windows) |
+| **Dark UI** | Modern, clean interface |
 
 ---
 
