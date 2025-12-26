@@ -481,7 +481,7 @@ pub async fn start_session(
             secure_rtsp_supported: false,
             partner_custom_data: Some("".to_string()),
             account_linked: true, // Browser uses true
-            enable_persisting_in_game_settings: false,
+            enable_persisting_in_game_settings: true, // Enable persistent in-game settings
             user_age: 26, // Use a reasonable default age
             requested_streaming_features: Some(StreamingFeatures {
                 reflex: reflex_enabled, // NVIDIA Reflex low-latency mode
@@ -1406,7 +1406,7 @@ pub async fn claim_session(
             "clientDisplayHdrCapabilities": null,
             "accountLinked": true,
             "partnerCustomData": "",
-            "enablePersistingInGameSettings": false,
+            "enablePersistingInGameSettings": true,
             "secureRTSPSupported": false,
             "userAge": 26,
             "requestedStreamingFeatures": {
