@@ -689,10 +689,15 @@ impl Resolution {
 // SESSION POLLING & STREAMING MANAGEMENT
 // ============================================================================
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 /// Global flag to control polling loop
 static POLLING_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Global queue status for frontend to query
+static QUEUE_POSITION: AtomicI32 = AtomicI32::new(0);
+static QUEUE_ETA_MS: AtomicI32 = AtomicI32::new(0);
+static SESSION_STATUS: AtomicI32 = AtomicI32::new(0);
 
 /// Streaming connection state
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -799,8 +804,12 @@ pub async fn poll_session_until_ready(
 
     let mut last_status = -1;
     let mut last_step = -1;
-    let max_polls = 120; // Max ~3 minutes of polling
+    let mut last_queue_position = -1;
+    // Max polls for non-queue scenarios (~3 minutes)
+    // When in queue, we poll indefinitely until ready or cancelled
+    let max_non_queue_polls = 120;
     let mut poll_count = 0;
+    let mut in_queue = false;
 
     loop {
         if !POLLING_ACTIVE.load(Ordering::SeqCst) {
@@ -808,7 +817,10 @@ pub async fn poll_session_until_ready(
         }
 
         poll_count += 1;
-        if poll_count > max_polls {
+        
+        // Only apply timeout if not in queue
+        // When in queue (free tier users), we wait indefinitely
+        if !in_queue && poll_count > max_non_queue_polls {
             return Err("Session polling timeout - server not ready".to_string());
         }
 
@@ -852,19 +864,36 @@ pub async fn poll_session_until_ready(
         let status = session.status;
         let seat_info = session.seat_setup_info.as_ref();
         let step = seat_info.map(|s| s.seat_setup_step).unwrap_or(0);
+        let queue_position = seat_info.map(|s| s.queue_position).unwrap_or(0);
+        let eta_ms = seat_info.map(|s| s.seat_setup_eta).unwrap_or(0);
+
+        // Detect if we're in a queue (status 1 with queue_position > 0)
+        if status == 1 && queue_position > 0 {
+            in_queue = true;
+        } else if status == 2 || status == 3 {
+            // No longer in queue once session is ready
+            in_queue = false;
+        }
+
+        // Update global queue status for frontend to query
+        SESSION_STATUS.store(status, Ordering::SeqCst);
+        QUEUE_POSITION.store(queue_position, Ordering::SeqCst);
+        QUEUE_ETA_MS.store(eta_ms, Ordering::SeqCst);
 
         // Log status changes
-        if status != last_status || step != last_step {
+        if status != last_status || step != last_step || queue_position != last_queue_position {
             log::info!(
-                "Session status: {} (step: {}, queue: {}, eta: {}ms, gpu: {:?})",
+                "Session status: {} (step: {}, queue: {}, eta: {}ms, gpu: {:?}, in_queue: {})",
                 status,
                 step,
-                seat_info.map(|s| s.queue_position).unwrap_or(0),
-                seat_info.map(|s| s.seat_setup_eta).unwrap_or(0),
-                session.gpu_type
+                queue_position,
+                eta_ms,
+                session.gpu_type,
+                in_queue
             );
             last_status = status;
             last_step = step;
+            last_queue_position = queue_position;
         }
 
         // Status 2 = ready for streaming
@@ -934,15 +963,26 @@ pub async fn poll_session_until_ready(
             });
         }
 
-        // Status 1 = still setting up
-        // Status 0 or negative = error
+        // Status 1 = queued or setting up - keep polling (don't error out)
+        // Status 0 or negative = actual error
         if status <= 0 && session.error_code != 1 {
             POLLING_ACTIVE.store(false, Ordering::SeqCst);
             return Err(format!("Session failed with error code: {}", session.error_code));
         }
 
         // Wait before next poll
-        tokio::time::sleep(tokio::time::Duration::from_millis(interval)).await;
+        // Use longer interval when in queue to reduce server load
+        let poll_delay = if in_queue && queue_position > 5 {
+            // If deep in queue, poll every 5 seconds instead of 1.5
+            5000
+        } else if in_queue {
+            // If near front of queue, poll every 3 seconds
+            3000
+        } else {
+            interval
+        };
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(poll_delay)).await;
     }
 }
 
@@ -951,12 +991,43 @@ pub async fn poll_session_until_ready(
 pub fn cancel_polling() {
     log::info!("Cancelling session polling");
     POLLING_ACTIVE.store(false, Ordering::SeqCst);
+    // Reset queue status
+    SESSION_STATUS.store(0, Ordering::SeqCst);
+    QUEUE_POSITION.store(0, Ordering::SeqCst);
+    QUEUE_ETA_MS.store(0, Ordering::SeqCst);
 }
 
 /// Check if polling is active
 #[command]
 pub fn is_polling_active() -> bool {
     POLLING_ACTIVE.load(Ordering::SeqCst)
+}
+
+/// Queue status for frontend display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueStatus {
+    pub session_status: i32,
+    pub queue_position: i32,
+    pub eta_ms: i32,
+    pub is_in_queue: bool,
+}
+
+/// Get current queue status (non-blocking, can be called while polling)
+#[command]
+pub fn get_queue_status() -> QueueStatus {
+    let session_status = SESSION_STATUS.load(Ordering::SeqCst);
+    let queue_position = QUEUE_POSITION.load(Ordering::SeqCst);
+    let eta_ms = QUEUE_ETA_MS.load(Ordering::SeqCst);
+    
+    // We're in queue if status is 1 and queue_position > 0
+    let is_in_queue = session_status == 1 && queue_position > 0;
+    
+    QueueStatus {
+        session_status,
+        queue_position,
+        eta_ms,
+        is_in_queue,
+    }
 }
 
 // ============================================================================

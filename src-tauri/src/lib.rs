@@ -74,6 +74,7 @@ pub fn run() {
             streaming::poll_session_until_ready,
             streaming::cancel_polling,
             streaming::is_polling_active,
+            streaming::get_queue_status,
             streaming::get_webrtc_config,
             streaming::start_streaming_flow,
             streaming::stop_streaming_flow,

@@ -395,6 +395,23 @@ function getStreamingParams(): { resolution: string; fps: number } {
   return { resolution: currentResolution, fps: currentFps };
 }
 
+// Check if user is on free tier
+function isFreeTier(subscription: SubscriptionInfo | null): boolean {
+  if (!subscription) return true; // Assume free if no subscription data
+  const tier = subscription.membershipTier?.toUpperCase() || "FREE";
+  return tier === "FREE" || tier === "FOUNDER"; // FOUNDER is also a free tier variant
+}
+
+// Check if resolution is above 1080p (considering any aspect ratio)
+function isResolutionAbove1080p(resolution: string): boolean {
+  const parts = resolution.split('x');
+  if (parts.length !== 2) return false;
+  const height = parseInt(parts[1], 10);
+  // 1080p max height is 1080, anything above is considered premium
+  // For ultrawide 1080p (2560x1080), height is still 1080 so it's allowed
+  return height > 1080;
+}
+
 // Populate resolution and FPS dropdowns from subscription data
 function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
   // Default options if no subscription data
@@ -406,8 +423,12 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
   ];
   const defaultFps = [30, 60, 120, 240];
 
+  // Check if user is on free tier
+  const isFree = isFreeTier(subscription);
+  console.log(`User tier: ${subscription?.membershipTier || "FREE"}, isFree: ${isFree}`);
+
   // Helper to get friendly resolution label
-  const getResolutionLabel = (res: string): string => {
+  const getResolutionLabel = (res: string, disabled: boolean): string => {
     const labels: { [key: string]: string } = {
       '1280x720': '1280x720 (720p)',
       '1920x1080': '1920x1080 (1080p)',
@@ -420,7 +441,8 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
       '2560x1600': '2560x1600 (16:10)',
       '1680x1050': '1680x1050 (16:10)',
     };
-    return labels[res] || res;
+    const label = labels[res] || res;
+    return disabled ? `${label} (Priority/Ultimate)` : label;
   };
 
   if (subscription?.features?.resolutions && subscription.features.resolutions.length > 0) {
@@ -441,13 +463,15 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
       return aW - bW;
     });
 
-    // Always include high FPS options even if not in API response
-    fpsSet.add(120);
-    fpsSet.add(240);
+    // Always include high FPS options even if not in API response (for paid tiers)
+    if (!isFree) {
+      fpsSet.add(120);
+      fpsSet.add(240);
+    }
 
     availableFpsOptions = Array.from(fpsSet).sort((a, b) => a - b);
 
-    console.log(`Populated ${availableResolutions.length} resolutions and ${availableFpsOptions.length} FPS options from subscription (ignoring entitlement)`);
+    console.log(`Populated ${availableResolutions.length} resolutions and ${availableFpsOptions.length} FPS options from subscription`);
   } else {
     // Use defaults
     availableResolutions = defaultResolutions.map(r => `${r.width}x${r.height}`);
@@ -455,17 +479,30 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
     console.log("Using default resolution/FPS options (no subscription data)");
   }
 
+  // For free tier, filter out premium options
+  if (isFree) {
+    // Filter resolutions: keep only those at or below 1080p height
+    availableResolutions = availableResolutions.filter(res => !isResolutionAbove1080p(res));
+    
+    // Filter FPS: remove 240 and 360 fps options
+    availableFpsOptions = availableFpsOptions.filter(fps => fps < 240);
+    
+    console.log(`Free tier: Filtered to ${availableResolutions.length} resolutions and ${availableFpsOptions.length} FPS options`);
+  }
+
   // Build resolution options for custom dropdown
   const resolutionOptions = availableResolutions.map(res => ({
     value: res,
-    text: getResolutionLabel(res),
+    text: getResolutionLabel(res, false),
     selected: res === currentResolution
   }));
 
-  // If current resolution not in list, select first available
+  // If current resolution not in list, select highest available
   if (!resolutionOptions.some(o => o.selected) && resolutionOptions.length > 0) {
-    resolutionOptions[0].selected = true;
-    currentResolution = resolutionOptions[0].value;
+    // Select 1080p if available, otherwise the highest
+    const preferred = resolutionOptions.find(o => o.value === "1920x1080") || resolutionOptions[resolutionOptions.length - 1];
+    preferred.selected = true;
+    currentResolution = preferred.value;
   }
 
   setDropdownOptions("resolution-setting", resolutionOptions);
@@ -477,10 +514,12 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
     selected: fps === currentFps
   }));
 
-  // If current FPS not in list, select first available
+  // If current FPS not in list, select highest available
   if (!fpsOptions.some(o => o.selected) && fpsOptions.length > 0) {
-    fpsOptions[0].selected = true;
-    currentFps = parseInt(fpsOptions[0].value, 10);
+    // Select 60 FPS if available, otherwise the highest
+    const preferred = fpsOptions.find(o => o.value === "60") || fpsOptions[fpsOptions.length - 1];
+    preferred.selected = true;
+    currentFps = parseInt(preferred.value, 10);
   }
 
   setDropdownOptions("fps-setting", fpsOptions);
@@ -3667,6 +3706,70 @@ async function exitStreaming(): Promise<void> {
   startSessionPolling();
 }
 
+// Queue status polling interval
+let queueStatusInterval: number | null = null;
+
+// Queue status interface
+interface QueueStatus {
+  session_status: number;
+  queue_position: number;
+  eta_ms: number;
+  is_in_queue: boolean;
+}
+
+// Start polling for queue status updates
+function startQueueStatusPolling() {
+  // Clear any existing interval
+  if (queueStatusInterval !== null) {
+    clearInterval(queueStatusInterval);
+  }
+
+  // Poll every 2 seconds for queue status
+  queueStatusInterval = window.setInterval(async () => {
+    try {
+      const status = await invoke<QueueStatus>("get_queue_status");
+      
+      if (status.is_in_queue && status.queue_position > 0) {
+        // Update the overlay to show queue position
+        updateQueueDisplay(status.queue_position, status.eta_ms);
+      } else if (status.session_status === 2) {
+        // Session is ready, stop polling queue status
+        stopQueueStatusPolling();
+      }
+    } catch (e) {
+      // Silently ignore errors during queue polling
+      console.debug("Queue status poll error:", e);
+    }
+  }, 2000);
+}
+
+// Stop polling for queue status
+function stopQueueStatusPolling() {
+  if (queueStatusInterval !== null) {
+    clearInterval(queueStatusInterval);
+    queueStatusInterval = null;
+  }
+}
+
+// Update the queue display in the overlay
+function updateQueueDisplay(position: number, etaMs: number) {
+  const statusEl = document.getElementById("streaming-status");
+  const queueInfoEl = document.getElementById("queue-info");
+  
+  if (statusEl) {
+    statusEl.textContent = `Queue position: ${position}`;
+  }
+  
+  // Show/update the queue info section
+  if (queueInfoEl) {
+    queueInfoEl.style.display = "block";
+    const positionEl = document.getElementById("queue-position");
+    if (positionEl) {
+      positionEl.textContent = String(position);
+    }
+  }
+}
+
 // Streaming overlay functions
 function showStreamingOverlay(gameName: string, status: string) {
   // Remove existing overlay if any
@@ -3680,6 +3783,13 @@ function showStreamingOverlay(gameName: string, status: string) {
       <div class="streaming-spinner"></div>
       <h2 id="streaming-game-name">${gameName}</h2>
       <p id="streaming-status">${status}</p>
+      <div id="queue-info" style="display: none;">
+        <div class="queue-display">
+          <span class="queue-label">Position in Queue</span>
+          <span class="queue-position" id="queue-position">-</span>
+        </div>
+        <p class="queue-hint">Free tier users may experience longer wait times during peak hours.</p>
+      </div>
       <div id="streaming-info" style="display: none;">
         <div class="streaming-stat"><span>GPU:</span> <span id="streaming-gpu">-</span></div>
         <div class="streaming-stat"><span>Server:</span> <span id="streaming-server">-</span></div>
@@ -3733,6 +3843,37 @@ function showStreamingOverlay(gameName: string, status: string) {
       color: #aaa;
       margin-bottom: 20px;
     }
+    #queue-info {
+      background: rgba(118, 185, 0, 0.1);
+      border: 1px solid rgba(118, 185, 0, 0.3);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .queue-display {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .queue-label {
+      font-size: 14px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .queue-position {
+      font-size: 48px;
+      font-weight: bold;
+      color: #76b900;
+      line-height: 1;
+    }
+    .queue-hint {
+      font-size: 12px;
+      color: #666;
+      margin-top: 12px;
+      margin-bottom: 0;
+    }
     #streaming-info {
       background: rgba(255, 255, 255, 0.1);
       border-radius: 8px;
@@ -3759,6 +3900,9 @@ function showStreamingOverlay(gameName: string, status: string) {
 
   // Add cancel handler
   document.getElementById("streaming-cancel-btn")?.addEventListener("click", cancelStreaming);
+  
+  // Start polling for queue status
+  startQueueStatusPolling();
 }
 
 function updateStreamingStatus(status: string) {
@@ -3777,6 +3921,17 @@ function showStreamingInfo(info: {
   const gpuEl = document.getElementById("streaming-gpu");
   const serverEl = document.getElementById("streaming-server");
   const phaseEl = document.getElementById("streaming-phase");
+  const queueInfoEl = document.getElementById("queue-info");
+
+  // Hide queue info when session is ready
+  if (queueInfoEl && info.phase === "Ready") {
+    queueInfoEl.style.display = "none";
+  }
+  
+  // Stop queue polling when ready
+  if (info.phase === "Ready") {
+    stopQueueStatusPolling();
+  }
 
   if (infoEl) infoEl.style.display = "block";
   if (gpuEl) gpuEl.textContent = info.gpu_type || "Unknown";
@@ -3797,6 +3952,9 @@ function showStreamingInfo(info: {
 }
 
 function hideStreamingOverlay() {
+  // Stop queue status polling
+  stopQueueStatusPolling();
+  
   const overlay = document.getElementById("streaming-overlay");
   const style = document.getElementById("streaming-overlay-style");
   if (overlay) overlay.remove();
