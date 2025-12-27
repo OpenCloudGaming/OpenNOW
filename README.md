@@ -5,7 +5,6 @@
 <p align="center">
   <strong>Open source GeForce NOW client built from the ground up</strong>
 </p>
-
 <p align="center">
   <a href="https://github.com/zortos293/GFNClient/releases">
     <img src="https://img.shields.io/github/v/tag/zortos293/GFNClient?style=for-the-badge&label=Download" alt="Download">
@@ -15,6 +14,9 @@
   </a>
   <a href="https://github.com/sponsors/zortos293">
     <img src="https://img.shields.io/badge/Sponsor-EA4AAA?style=for-the-badge&logo=github-sponsors&logoColor=white" alt="Sponsor">
+  </a>
+  <a href="https://discord.gg/8EJYaJcNfD">
+    <img src="https://img.shields.io/badge/Discord-Join%20Us-7289da?style=for-the-badge&logo=discord" alt="Discord">
   </a>
 </p>
 
