@@ -4742,7 +4742,7 @@ dependencies = [
 
 [[package]]
 name = "opennow"
-version = "0.0.12"
+version = "0.0.18"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4767,6 +4767,7 @@ dependencies = [
  "openh264",
  "parking_lot",
  "rand 0.8.5",
+ "regex-lite",
  "reqwest",
  "rfd",
  "serde",
@@ -5736,6 +5737,12 @@ dependencies = [
  "memchr",
  "regex-syntax",
 ]
+
+[[package]]
+name = "regex-lite"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d942b98df5e658f56f20d592c7f868833fe38115e65c33003d8cd224b0155da"
 
 [[package]]
 name = "regex-syntax"

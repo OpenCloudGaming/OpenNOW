@@ -112,7 +112,7 @@ mod windows {
     const SPIF_SENDCHANGE: u32 = 0x0002;
 
     #[link(name = "user32")]
-    extern "system" {
+    unsafe extern "system" {
         fn GetCursorPos(lpPoint: *mut POINT) -> i32;
         fn SetCursorPos(x: i32, y: i32) -> i32;
         fn ShowCursor(bShow: i32) -> i32;
