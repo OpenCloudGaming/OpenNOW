@@ -201,6 +201,7 @@ jobs:
             libasound2-dev
 
       - name: Setup Bun
+        # Note: oven-sh/setup-bun@v2 enables Bun and dependency caching by default.
         uses: oven-sh/setup-bun@v2
 
       - name: Install Rust stable
