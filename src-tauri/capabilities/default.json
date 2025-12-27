@@ -23,7 +23,17 @@
     "core:window:allow-set-always-on-top",
     "core:window:allow-request-user-attention",
     "shell:allow-open",
-    "http:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://remote.printedwaste.com/*" },
+        { "url": "https://api.printedwaste.com/*" },
+        { "url": "https://*.nvidia.com/*" },
+        { "url": "https://*.nvidiagrid.net/*" },
+        { "url": "https://*.geforce.com/*" },
+        { "url": "https://*.geforcenow.com/*" }
+      ]
+    },
     "store:default"
   ]
 }

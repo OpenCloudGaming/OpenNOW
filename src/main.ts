@@ -17,6 +17,7 @@ import {
   getInputDebugInfo,
   StreamingOptions,
 } from "./streaming";
+import { initLogging, exportLogs, clearLogs } from "./logging";
 
 // ============================================
 // Custom Dropdown Component
@@ -145,13 +146,19 @@ function onDropdownChange(id: string, callback: DropdownChangeCallback): void {
 // Set dropdown options dynamically
 function setDropdownOptions(id: string, options: { value: string; text: string; selected?: boolean; className?: string }[]): void {
   const dropdown = document.querySelector(`[data-dropdown="${id}"]`);
-  if (!dropdown) return;
+  if (!dropdown) {
+    console.warn(`Dropdown not found: ${id}`);
+    return;
+  }
 
   const menu = dropdown.querySelector('.dropdown-menu');
   const trigger = dropdown.querySelector('.dropdown-trigger');
   const triggerText = trigger?.querySelector('.dropdown-text');
 
-  if (!menu) return;
+  if (!menu) {
+    console.warn(`Dropdown menu not found for: ${id}`);
+    return;
+  }
 
   // Clear existing options
   menu.innerHTML = '';
@@ -166,6 +173,11 @@ function setDropdownOptions(id: string, options: { value: string; text: string; 
     optionEl.dataset.value = opt.value;
     optionEl.textContent = opt.text;
 
+    // Store the option data for the click handler
+    const optValue = opt.value;
+    const optText = opt.text;
+    const optClassName = opt.className;
+
     // Add click handler
     optionEl.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -176,12 +188,12 @@ function setDropdownOptions(id: string, options: { value: string; text: string; 
 
       // Update trigger text and color
       if (triggerText) {
-        triggerText.textContent = opt.text;
+        triggerText.textContent = optText;
         // Apply color class to trigger if option has one
-        const trigger = dropdown.querySelector('.dropdown-trigger');
-        if (trigger) {
-          trigger.classList.remove('latency-excellent', 'latency-good', 'latency-fair', 'latency-poor', 'latency-bad');
-          if (opt.className) trigger.classList.add(opt.className);
+        const triggerEl = dropdown.querySelector('.dropdown-trigger');
+        if (triggerEl) {
+          triggerEl.classList.remove('latency-excellent', 'latency-good', 'latency-fair', 'latency-poor', 'latency-bad');
+          if (optClassName) triggerEl.classList.add(optClassName);
         }
       }
 
@@ -190,7 +202,7 @@ function setDropdownOptions(id: string, options: { value: string; text: string; 
 
       // Fire change callbacks
       const callbacks = dropdownCallbacks.get(id) || [];
-      callbacks.forEach(cb => cb(opt.value, opt.text));
+      callbacks.forEach(cb => cb(optValue, optText));
     });
 
     menu.appendChild(optionEl);
@@ -205,6 +217,8 @@ function setDropdownOptions(id: string, options: { value: string; text: string; 
       }
     }
   });
+
+  console.log(`Set ${options.length} options for dropdown: ${id}`);
 }
 
 // ============================================
@@ -249,6 +263,17 @@ interface AuthState {
     avatar_url?: string;
     membership_tier: string;
   };
+  provider?: LoginProvider;
+}
+
+// Login provider for multi-region support (camelCase to match Rust serde)
+interface LoginProvider {
+  idpId: string;
+  loginProviderCode: string;
+  loginProviderDisplayName: string;
+  loginProvider: string;
+  streamingServiceUrl: string;
+  loginProviderPriority: number;
 }
 
 interface ResolutionOption {
@@ -453,6 +478,13 @@ function isFreeTier(subscription: SubscriptionInfo | null): boolean {
   return tier === "FREE" || tier === "FOUNDER"; // FOUNDER is also a free tier variant
 }
 
+// Check if using an Alliance Partner (non-NVIDIA provider)
+// PrintedWaste queue data is only available for NVIDIA global servers
+function isAlliancePartner(): boolean {
+  if (!selectedLoginProvider) return false;
+  return selectedLoginProvider.loginProviderCode !== "NVIDIA";
+}
+
 // ============================================
 // PrintedWaste Queue API Integration
 // ============================================
@@ -526,6 +558,12 @@ async function fetchQueueData(): Promise<PrintedWasteQueueResponse | null> {
 
 // Get combined queue server info with ping data
 async function getQueueServersInfo(): Promise<QueueServerInfo[]> {
+  // Skip PrintedWaste queue for Alliance Partners - they have their own infrastructure
+  if (isAlliancePartner()) {
+    console.log("Skipping PrintedWaste queue - using Alliance Partner servers");
+    return [];
+  }
+
   const [mapping, queueData] = await Promise.all([
     fetchServerMapping(),
     fetchQueueData()
@@ -873,6 +911,12 @@ function stopQueueCountdown() {
 
 // Show queue times page (can be accessed from UI)
 async function showQueueTimesPage(): Promise<void> {
+  // Queue times are only available for NVIDIA global servers
+  if (isAlliancePartner()) {
+    alert("Queue times are only available for NVIDIA global servers. Alliance Partner servers have their own queue system.");
+    return;
+  }
+
   const servers = await getQueueServersInfo();
 
   if (servers.length === 0) {
@@ -1564,6 +1608,9 @@ function formatChangelog(body: string): string {
 
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
+  // Initialize frontend logging first (intercepts console.*)
+  initLogging();
+
   console.log("OpenNOW initialized");
 
   // Initialize Lucide icons
@@ -1785,6 +1832,50 @@ function setupModals() {
 
   // Save settings
   document.getElementById("save-settings-btn")?.addEventListener("click", saveSettings);
+
+  // Export logs button
+  document.getElementById("export-logs-btn")?.addEventListener("click", async () => {
+    const btn = document.getElementById("export-logs-btn") as HTMLButtonElement;
+    const originalText = btn.textContent;
+    btn.textContent = "Exporting...";
+    btn.disabled = true;
+
+    try {
+      const savedPath = await exportLogs();
+      console.log("Logs exported to:", savedPath);
+      btn.textContent = "Exported!";
+      setTimeout(() => {
+        btn.textContent = originalText;
+        btn.disabled = false;
+      }, 2000);
+    } catch (error) {
+      console.error("Failed to export logs:", error);
+      btn.textContent = originalText;
+      btn.disabled = false;
+      // Don't show error for cancelled export
+      if (error !== "Export cancelled") {
+        alert("Failed to export logs: " + error);
+      }
+    }
+  });
+
+  // Clear logs button
+  document.getElementById("clear-logs-btn")?.addEventListener("click", async () => {
+    const btn = document.getElementById("clear-logs-btn") as HTMLButtonElement;
+    const originalText = btn.textContent;
+
+    try {
+      await clearLogs();
+      console.log("Logs cleared");
+      btn.textContent = "Cleared!";
+      setTimeout(() => {
+        btn.textContent = originalText;
+      }, 2000);
+    } catch (error) {
+      console.error("Failed to clear logs:", error);
+      alert("Failed to clear logs: " + error);
+    }
+  });
 
   // Bitrate slider live update
   const bitrateSlider = document.getElementById("bitrate-setting") as HTMLInputElement;
@@ -2691,6 +2782,24 @@ async function checkAuthStatus() {
     isAuthenticated = status.is_authenticated;
     currentUser = status.user || null;
 
+    // Restore the login provider from saved auth state
+    if (status.provider) {
+      selectedLoginProvider = status.provider;
+      console.log("Restored login provider:", status.provider.loginProviderDisplayName);
+      
+      // Also set it in the backend memory (in case it wasn't restored there)
+      await invoke("set_login_provider", { provider: status.provider });
+      
+      // Fetch server info for the provider (discovers VPC ID and regions)
+      try {
+        const token = await invoke<string>("get_gfn_jwt");
+        const serverInfo = await invoke<{ vpcId: string | null; regions: [string, string][]; baseUrl: string | null }>("fetch_server_info", { accessToken: token });
+        console.log("Server info fetched for restored provider:", serverInfo);
+      } catch (e) {
+        console.warn("Failed to fetch server info for restored provider:", e);
+      }
+    }
+
     // Fetch real subscription tier from API if authenticated
     if (isAuthenticated && currentUser) {
       try {
@@ -2761,10 +2870,56 @@ function updateAuthUI() {
   }
 }
 
-// Show login modal when login button is clicked
-loginBtn.addEventListener("click", () => {
-  showModal("login-modal");
-});
+// Cached login providers
+let cachedLoginProviders: LoginProvider[] = [];
+let selectedLoginProvider: LoginProvider | null = null;
+
+// Fetch and populate login providers dropdown
+async function fetchAndPopulateLoginProviders(): Promise<void> {
+  try {
+    console.log("Fetching login providers...");
+    const providers = await invoke<LoginProvider[]>("fetch_login_providers");
+    cachedLoginProviders = providers;
+    console.log(`Fetched ${providers.length} login providers:`, providers.map(p => p.loginProviderDisplayName));
+
+    // Build dropdown options
+    const options = providers.map(provider => ({
+      value: provider.loginProviderCode,
+      text: provider.loginProviderDisplayName === "NVIDIA"
+        ? "NVIDIA (Global)"
+        : provider.loginProviderDisplayName,
+      selected: provider.loginProviderCode === "NVIDIA"
+    }));
+
+    console.log("Setting dropdown options:", options);
+    setDropdownOptions("login-provider", options);
+
+    // Set default provider (NVIDIA) and update button text
+    const nvidiaProvider = providers.find(p => p.loginProviderCode === "NVIDIA");
+    if (nvidiaProvider) {
+      selectedLoginProvider = nvidiaProvider;
+      updateLoginButtonText(nvidiaProvider.loginProviderDisplayName);
+      console.log("Default provider set to:", nvidiaProvider.loginProviderDisplayName);
+    } else if (providers.length > 0) {
+      // Fallback to first provider if NVIDIA not found
+      selectedLoginProvider = providers[0];
+      updateLoginButtonText(providers[0].loginProviderDisplayName);
+      console.log("Fallback provider set to:", providers[0].loginProviderDisplayName);
+    }
+  } catch (error) {
+    console.error("Failed to fetch login providers:", error);
+    // Keep default NVIDIA option and set button text
+    updateLoginButtonText("NVIDIA");
+  }
+}
+
+// Update login button text based on selected provider
+function updateLoginButtonText(providerName: string): void {
+  const loginBtnText = document.getElementById("login-btn-text");
+  if (loginBtnText) {
+    loginBtnText.textContent = `Sign in with ${providerName}`;
+  }
+}
 
 // Setup login modal handlers
 function setupLoginModal() {
@@ -2776,10 +2931,24 @@ function setupLoginModal() {
   const submitTokenBtn = document.getElementById("submit-token-btn");
   const tokenInput = document.getElementById("token-input") as HTMLTextAreaElement;
 
-  // NVIDIA OAuth login
+  // Handle provider dropdown change
+  onDropdownChange("login-provider", async (value, text) => {
+    console.log(`Login provider changed to: ${value} (${text})`);
+    const provider = cachedLoginProviders.find(p => p.loginProviderCode === value);
+    if (provider) {
+      selectedLoginProvider = provider;
+      await invoke("set_login_provider", { provider });
+      updateLoginButtonText(provider.loginProviderDisplayName);
+    }
+  });
+
+  // OAuth login with selected provider
   nvidiaLoginBtn?.addEventListener("click", async () => {
-    console.log("Starting NVIDIA OAuth login...");
-    nvidiaLoginBtn.textContent = "Signing in...";
+    const providerName = selectedLoginProvider?.loginProviderDisplayName || "NVIDIA";
+    console.log(`Starting OAuth login with provider: ${providerName}...`);
+
+    const loginBtnText = document.getElementById("login-btn-text");
+    if (loginBtnText) loginBtnText.textContent = "Signing in...";
     (nvidiaLoginBtn as HTMLButtonElement).disabled = true;
 
     try {
@@ -2788,16 +2957,37 @@ function setupLoginModal() {
         isAuthenticated = true;
         currentUser = result.user || null;
         hideAllModals();
-        console.log("NVIDIA OAuth login successful");
+        console.log("OAuth login successful");
+        
+        // Fetch server info for the selected provider (discovers VPC ID and regions)
+        try {
+          const token = await invoke<string>("get_gfn_jwt");
+          console.log("Fetching server info for provider...");
+          const serverInfo = await invoke<{ vpcId: string | null; regions: [string, string][]; baseUrl: string | null }>("fetch_server_info", { accessToken: token });
+          console.log("Server info fetched:", serverInfo);
+          if (serverInfo.vpcId) {
+            console.log(`Using VPC ID: ${serverInfo.vpcId}`);
+          }
+          if (serverInfo.regions.length > 0) {
+            console.log(`Provider has ${serverInfo.regions.length} regions:`, serverInfo.regions.map(r => r[0]));
+          }
+        } catch (serverInfoError) {
+          console.warn("Failed to fetch server info (will use defaults):", serverInfoError);
+        }
+        
         // Refresh subscription info and reload games
         await checkAuthStatus();
         await loadHomeData();
+        // Re-run latency test with provider-specific servers
+        testLatency().catch(err => console.error("Latency test after login failed:", err));
+        // Start session polling
+        startSessionPolling();
       }
     } catch (error) {
-      console.error("NVIDIA OAuth login failed:", error);
+      console.error("OAuth login failed:", error);
       alert("Login failed: " + error);
     } finally {
-      nvidiaLoginBtn.textContent = "Sign in with NVIDIA";
+      updateLoginButtonText(providerName);
       (nvidiaLoginBtn as HTMLButtonElement).disabled = false;
     }
   });
@@ -2830,9 +3020,24 @@ function setupLoginModal() {
         if (loginOptions) (loginOptions as HTMLElement).classList.remove("hidden");
         if (tokenEntry) tokenEntry.classList.add("hidden");
         console.log("Token login successful");
+        
+        // Fetch server info for the selected provider (discovers VPC ID and regions)
+        try {
+          const jwtToken = await invoke<string>("get_gfn_jwt");
+          console.log("Fetching server info for provider...");
+          const serverInfo = await invoke<{ vpcId: string | null; regions: [string, string][]; baseUrl: string | null }>("fetch_server_info", { accessToken: jwtToken });
+          console.log("Server info fetched:", serverInfo);
+        } catch (serverInfoError) {
+          console.warn("Failed to fetch server info (will use defaults):", serverInfoError);
+        }
+        
         // Refresh subscription info and reload games
         await checkAuthStatus();
         await loadHomeData();
+        // Re-run latency test with provider-specific servers
+        testLatency().catch(err => console.error("Latency test after login failed:", err));
+        // Start session polling
+        startSessionPolling();
       }
     } catch (error) {
       console.error("Token validation failed:", error);
@@ -2848,6 +3053,19 @@ function setupLoginModal() {
     if (loginOptions) (loginOptions as HTMLElement).classList.remove("hidden");
     if (tokenEntry) tokenEntry.classList.add("hidden");
     if (tokenInput) tokenInput.value = "";
+  });
+
+  // Fetch providers when login button is clicked (to show modal)
+  loginBtn?.addEventListener("click", async () => {
+    showModal("login-modal");
+    // Fetch providers if not already cached
+    if (cachedLoginProviders.length === 0) {
+      await fetchAndPopulateLoginProviders();
+    }
+    // Reinitialize Lucide icons for the modal
+    if (typeof lucide !== 'undefined') {
+      lucide.createIcons();
+    }
   });
 }
 
@@ -3359,8 +3577,9 @@ async function launchGame(game: Game) {
     return;
   }
 
-  // For free tier users, show server selection modal with queue times
-  if (isFreeTier(currentSubscription)) {
+  // For free tier users on NVIDIA servers, show server selection modal with queue times
+  // Skip for Alliance Partners as they have their own queue system
+  if (isFreeTier(currentSubscription) && !isAlliancePartner()) {
     const selectedServer = await showQueueSelectionModal(game);
     if (selectedServer === null && selectedQueueServer === null) {
       // User cancelled
