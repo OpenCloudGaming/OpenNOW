@@ -18,6 +18,12 @@
   </a>
 </p>
 
+--- 
+## Disclaimer
+
+This is an **independent project** not affiliated with NVIDIA Corporation. Created through reverse engineering for educational purposes. GeForce NOW is a trademark of NVIDIA. Use at your own risk.
+
+
 ---
 
 ## About
@@ -129,11 +135,6 @@ If OpenNOW is useful to you, consider sponsoring to support development:
 
 ---
 
-## Disclaimer
-
-This is an **independent project** not affiliated with NVIDIA Corporation. Created through reverse engineering for educational purposes. GeForce NOW is a trademark of NVIDIA. Use at your own risk.
-
----
 
 <p align="center">
   Made by <a href="https://github.com/zortos293">zortos293</a>
