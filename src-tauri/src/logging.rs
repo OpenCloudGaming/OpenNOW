@@ -51,7 +51,9 @@ fn sanitize_logs(content: &str) -> String {
     sanitized = base64_regex.replace_all(&sanitized, "[REDACTED_TOKEN]").to_string();
 
     // Redact IP addresses (keep for debugging but anonymize last octet)
-    let ip_regex = regex_lite::Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.)\d{1,3}\b").unwrap();
+    let ip_regex = regex_lite::Regex::new(
+        r"\b((?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.)(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"
+    ).unwrap();
     sanitized = ip_regex.replace_all(&sanitized, "${1}xxx").to_string();
 
     // Add header noting sanitization
