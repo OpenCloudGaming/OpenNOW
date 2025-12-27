@@ -92,11 +92,11 @@ OpenNOW is a custom GeForce NOW client created by reverse engineering the offici
 ```bash
 git clone https://github.com/zortos293/GFNClient.git
 cd GFNClient
-npm install
-npm run tauri dev
+bun install
+bun run tauri dev
 ```
 
-**Requirements:** Node.js 18+, Rust, Tauri CLI
+**Requirements:** Bun, Rust, Tauri CLI
 
 ---
 
