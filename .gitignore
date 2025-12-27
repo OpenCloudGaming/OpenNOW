@@ -1,9 +1,7 @@
 # Dependencies
 node_modules/
 
-# Lock files (use npm/package-lock.json only)
-bun.lock
-bun.lockb
+# Lock files (keep bun.lock, ignore others)
 yarn.lock
 pnpm-lock.yaml
 
