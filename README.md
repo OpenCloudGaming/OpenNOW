@@ -108,6 +108,16 @@ bun run tauri dev
 
 ## Troubleshooting
 
+
+### macOS: "App is damaged" or won't open
+
+macOS quarantines apps downloaded from the internet. To fix this, run:
+
+```bash
+xattr -d com.apple.quarantine /Applications/OpenNOW.app
+```
+
+
 If you encounter issues, please export your logs and attach them to your bug report:
 
 1. Open **Settings** (gear icon in the top right)
