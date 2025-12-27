@@ -46,3 +46,6 @@ test/
 src-tauri/gen/
 
 package-lock.json
+
+# AI Agent guidelines (local only)
+AGENTS.md
