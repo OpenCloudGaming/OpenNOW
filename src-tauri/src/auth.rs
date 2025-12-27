@@ -11,12 +11,192 @@ use sha2::{Sha256, Digest};
 use std::path::PathBuf;
 use std::fs;
 
+// ============================================
+// Multi-Region / Alliance Partner Support
+// ============================================
+
+/// Service URLs API endpoint
+const SERVICE_URLS_ENDPOINT: &str = "https://pcs.geforcenow.com/v1/serviceUrls";
+
+/// Login provider/endpoint from serviceUrls API
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginProvider {
+    /// Unique IDP ID used in OAuth authorization URL
+    pub idp_id: String,
+    /// Provider code (e.g., "NVIDIA", "KDD", "TWM")
+    pub login_provider_code: String,
+    /// Display name shown to users (e.g., "NVIDIA", "au", "Taiwan Mobile")
+    pub login_provider_display_name: String,
+    /// Internal provider name
+    pub login_provider: String,
+    /// Streaming service base URL for this provider
+    pub streaming_service_url: String,
+    /// Priority for sorting (lower = higher priority)
+    #[serde(default)]
+    pub login_provider_priority: i32,
+}
+
+/// Response from /v1/serviceUrls endpoint
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceUrlsResponse {
+    request_status: RequestStatus,
+    gfn_service_info: Option<GfnServiceInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestStatus {
+    status_code: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GfnServiceInfo {
+    default_provider: Option<String>,
+    gfn_service_endpoints: Vec<ServiceEndpoint>,
+    #[serde(default)]
+    login_preferred_providers: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceEndpoint {
+    idp_id: String,
+    login_provider_code: String,
+    login_provider_display_name: String,
+    login_provider: String,
+    streaming_service_url: String,
+    #[serde(default)]
+    login_provider_priority: i32,
+}
+
+/// Currently selected login provider (stored in memory)
+static SELECTED_PROVIDER: std::sync::OnceLock<Arc<Mutex<Option<LoginProvider>>>> = std::sync::OnceLock::new();
+
+fn get_selected_provider_storage() -> Arc<Mutex<Option<LoginProvider>>> {
+    SELECTED_PROVIDER.get_or_init(|| Arc::new(Mutex::new(None))).clone()
+}
+
+/// Get the currently selected provider's IDP ID (defaults to NVIDIA)
+pub async fn get_selected_idp_id() -> String {
+    let storage = get_selected_provider_storage();
+    let guard = storage.lock().await;
+    guard.as_ref()
+        .map(|p| p.idp_id.clone())
+        .unwrap_or_else(|| IDP_ID.to_string())
+}
+
+/// Get the currently selected provider's streaming service URL
+pub async fn get_streaming_base_url() -> String {
+    let storage = get_selected_provider_storage();
+    let guard = storage.lock().await;
+    guard.as_ref()
+        .map(|p| p.streaming_service_url.clone())
+        .unwrap_or_else(|| "https://prod.cloudmatchbeta.nvidiagrid.net/".to_string())
+}
+
+/// Fetch available login providers from GFN service URLs API
+#[command]
+pub async fn fetch_login_providers() -> Result<Vec<LoginProvider>, String> {
+    log::info!("Fetching login providers from {}", SERVICE_URLS_ENDPOINT);
+
+    let client = Client::builder()
+        .user_agent(GFN_CEF_USER_AGENT)
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let response = client
+        .get(SERVICE_URLS_ENDPOINT)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch service URLs: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Service URLs request failed with status {}: {}", status, body));
+    }
+
+    let service_response: ServiceUrlsResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse service URLs response: {}", e))?;
+
+    if service_response.request_status.status_code != 1 {
+        return Err(format!("Service URLs API returned error status: {}", service_response.request_status.status_code));
+    }
+
+    let service_info = service_response.gfn_service_info
+        .ok_or("No service info in response")?;
+
+    // Convert endpoints to LoginProvider structs
+    let mut providers: Vec<LoginProvider> = service_info.gfn_service_endpoints
+        .into_iter()
+        .map(|ep| LoginProvider {
+            idp_id: ep.idp_id,
+            login_provider_code: ep.login_provider_code,
+            login_provider_display_name: ep.login_provider_display_name,
+            login_provider: ep.login_provider,
+            streaming_service_url: ep.streaming_service_url,
+            login_provider_priority: ep.login_provider_priority,
+        })
+        .collect();
+
+    // Sort by priority (lower = higher priority)
+    providers.sort_by_key(|p| p.login_provider_priority);
+
+    log::info!("Found {} login providers", providers.len());
+    for provider in &providers {
+        log::debug!("  - {} ({}): {}", provider.login_provider_display_name, provider.login_provider_code, provider.idp_id);
+    }
+
+    Ok(providers)
+}
+
+/// Set the login provider to use for authentication
+#[command]
+pub async fn set_login_provider(provider: LoginProvider) -> Result<(), String> {
+    log::info!("Setting login provider to: {} ({})", provider.login_provider_display_name, provider.idp_id);
+
+    let storage = get_selected_provider_storage();
+    let mut guard = storage.lock().await;
+    *guard = Some(provider);
+
+    Ok(())
+}
+
+/// Get the currently selected login provider
+#[command]
+pub async fn get_selected_provider() -> Result<Option<LoginProvider>, String> {
+    let storage = get_selected_provider_storage();
+    let guard = storage.lock().await;
+    Ok(guard.clone())
+}
+
+/// Clear the selected login provider (reset to default NVIDIA)
+#[command]
+pub async fn clear_login_provider() -> Result<(), String> {
+    log::info!("Clearing login provider (resetting to NVIDIA default)");
+
+    let storage = get_selected_provider_storage();
+    let mut guard = storage.lock().await;
+    *guard = None;
+
+    Ok(())
+}
+
 /// Authentication state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthState {
     pub is_authenticated: bool,
     pub user: Option<User>,
     pub tokens: Option<Tokens>,
+    /// The login provider used for authentication (persisted for session restore)
+    #[serde(default)]
+    pub provider: Option<LoginProvider>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -424,6 +604,13 @@ pub async fn set_access_token(token: String) -> Result<AuthState, String> {
         }
     };
 
+    // Get the currently selected provider to save with auth state
+    let current_provider = {
+        let provider_storage = get_selected_provider_storage();
+        let provider_guard = provider_storage.lock().await;
+        provider_guard.clone()
+    };
+
     let auth_state = AuthState {
         is_authenticated: true,
         user: Some(user),
@@ -433,6 +620,7 @@ pub async fn set_access_token(token: String) -> Result<AuthState, String> {
             id_token: None,
             expires_at: Utc::now() + chrono::Duration::days(27), // Assume 27 day expiry
         }),
+        provider: current_provider,
     };
 
     // Store auth state in memory
@@ -534,9 +722,13 @@ fn extract_oauth_callback(request: &str) -> Option<OAuthCallbackResult> {
 
 /// NVIDIA OAuth login flow with localhost callback
 /// Uses authorization code flow with PKCE (same as official GFN client)
+/// Supports multi-region login via selected provider's idp_id
 #[command]
 pub async fn login_oauth() -> Result<AuthState, String> {
-    log::info!("=== Starting NVIDIA OAuth login flow (Authorization Code + PKCE) ===");
+    // Get the selected provider's IDP ID (defaults to NVIDIA if none selected)
+    let selected_idp_id = get_selected_idp_id().await;
+    log::info!("=== Starting OAuth login flow (Authorization Code + PKCE) ===");
+    log::info!("Using IDP ID: {}", selected_idp_id);
 
     // Find an available redirect port
     log::info!("Finding available port from: {:?}", REDIRECT_PORTS);
@@ -559,7 +751,7 @@ pub async fn login_oauth() -> Result<AuthState, String> {
     log::info!("Using device_id: {}", device_id);
 
     // Build OAuth authorization URL using authorization code flow with PKCE
-    // This matches the official GFN client format exactly
+    // Uses the selected provider's idp_id for multi-region/alliance partner support
     let auth_url = format!(
         "https://login.nvidia.com/authorize?response_type=code&device_id={}&scope={}&client_id={}&redirect_uri={}&ui_locales=en_US&nonce={}&prompt=select_account&code_challenge={}&code_challenge_method=S256&idp_id={}",
         device_id,
@@ -568,7 +760,7 @@ pub async fn login_oauth() -> Result<AuthState, String> {
         urlencoding::encode(&redirect_uri),
         nonce,
         code_challenge,
-        IDP_ID
+        selected_idp_id
     );
 
     log::info!("OAuth URL: {}", auth_url);
@@ -700,10 +892,18 @@ pub async fn login_oauth() -> Result<AuthState, String> {
     // Get user info from tokens (prefer id_token which is JWT, fallback to /userinfo endpoint)
     let user = get_user_info_from_tokens(&tokens).await?;
 
+    // Get the currently selected provider to save with auth state
+    let current_provider = {
+        let provider_storage = get_selected_provider_storage();
+        let provider_guard = provider_storage.lock().await;
+        provider_guard.clone()
+    };
+
     let auth_state = AuthState {
         is_authenticated: true,
         user: Some(user),
         tokens: Some(tokens),
+        provider: current_provider,
     };
 
     // Store auth state
@@ -1001,6 +1201,7 @@ pub async fn get_auth_status() -> Result<AuthState, String> {
                     is_authenticated: false,
                     user: None,
                     tokens: None,
+                    provider: None,
                 });
             }
         }
@@ -1011,11 +1212,23 @@ pub async fn get_auth_status() -> Result<AuthState, String> {
     let guard = storage.lock().await;
 
     match &*guard {
-        Some(state) => Ok(state.clone()),
+        Some(state) => {
+            // Restore the provider to memory if it was saved with auth state
+            if let Some(provider) = &state.provider {
+                let provider_storage = get_selected_provider_storage();
+                let mut provider_guard = provider_storage.lock().await;
+                if provider_guard.is_none() {
+                    log::info!("Restoring saved login provider: {}", provider.login_provider_display_name);
+                    *provider_guard = Some(provider.clone());
+                }
+            }
+            Ok(state.clone())
+        }
         None => Ok(AuthState {
             is_authenticated: false,
             user: None,
             tokens: None,
+            provider: None,
         }),
     }
 }
