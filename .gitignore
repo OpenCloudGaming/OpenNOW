@@ -46,3 +46,5 @@ test/
 
 # Generated schemas
 src-tauri/gen/
+
+package-lock.json
