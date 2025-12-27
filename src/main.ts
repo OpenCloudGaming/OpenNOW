@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import {
   initializeStreaming,
   setupInputCapture,
@@ -16,6 +17,7 @@ import {
   getInputDebugInfo,
   StreamingOptions,
 } from "./streaming";
+import { initLogging, exportLogs, clearLogs } from "./logging";
 
 // ============================================
 // Custom Dropdown Component
@@ -144,13 +146,19 @@ function onDropdownChange(id: string, callback: DropdownChangeCallback): void {
 // Set dropdown options dynamically
 function setDropdownOptions(id: string, options: { value: string; text: string; selected?: boolean; className?: string }[]): void {
   const dropdown = document.querySelector(`[data-dropdown="${id}"]`);
-  if (!dropdown) return;
+  if (!dropdown) {
+    console.warn(`Dropdown not found: ${id}`);
+    return;
+  }
 
   const menu = dropdown.querySelector('.dropdown-menu');
   const trigger = dropdown.querySelector('.dropdown-trigger');
   const triggerText = trigger?.querySelector('.dropdown-text');
 
-  if (!menu) return;
+  if (!menu) {
+    console.warn(`Dropdown menu not found for: ${id}`);
+    return;
+  }
 
   // Clear existing options
   menu.innerHTML = '';
@@ -165,6 +173,11 @@ function setDropdownOptions(id: string, options: { value: string; text: string; 
     optionEl.dataset.value = opt.value;
     optionEl.textContent = opt.text;
 
+    // Store the option data for the click handler
+    const optValue = opt.value;
+    const optText = opt.text;
+    const optClassName = opt.className;
+
     // Add click handler
     optionEl.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -175,12 +188,12 @@ function setDropdownOptions(id: string, options: { value: string; text: string; 
 
       // Update trigger text and color
       if (triggerText) {
-        triggerText.textContent = opt.text;
+        triggerText.textContent = optText;
         // Apply color class to trigger if option has one
-        const trigger = dropdown.querySelector('.dropdown-trigger');
-        if (trigger) {
-          trigger.classList.remove('latency-excellent', 'latency-good', 'latency-fair', 'latency-poor', 'latency-bad');
-          if (opt.className) trigger.classList.add(opt.className);
+        const triggerEl = dropdown.querySelector('.dropdown-trigger');
+        if (triggerEl) {
+          triggerEl.classList.remove('latency-excellent', 'latency-good', 'latency-fair', 'latency-poor', 'latency-bad');
+          if (optClassName) triggerEl.classList.add(optClassName);
         }
       }
 
@@ -189,7 +202,7 @@ function setDropdownOptions(id: string, options: { value: string; text: string; 
 
       // Fire change callbacks
       const callbacks = dropdownCallbacks.get(id) || [];
-      callbacks.forEach(cb => cb(opt.value, opt.text));
+      callbacks.forEach(cb => cb(optValue, optText));
     });
 
     menu.appendChild(optionEl);
@@ -204,6 +217,8 @@ function setDropdownOptions(id: string, options: { value: string; text: string; 
       }
     }
   });
+
+  console.log(`Set ${options.length} options for dropdown: ${id}`);
 }
 
 // ============================================
@@ -248,6 +263,17 @@ interface AuthState {
     avatar_url?: string;
     membership_tier: string;
   };
+  provider?: LoginProvider;
+}
+
+// Login provider for multi-region support (camelCase to match Rust serde)
+interface LoginProvider {
+  idpId: string;
+  loginProviderCode: string;
+  loginProviderDisplayName: string;
+  loginProvider: string;
+  streamingServiceUrl: string;
+  loginProviderPriority: number;
 }
 
 interface ResolutionOption {
@@ -352,6 +378,46 @@ interface Server {
   status: string;
 }
 
+// PrintedWaste API types for queue times
+interface PrintedWasteServerMapping {
+  title: string;
+  region: string;
+  is4080Server: boolean;
+  is5080Server: boolean;
+  nuked: boolean;
+}
+
+interface PrintedWasteQueueData {
+  QueuePosition: number;
+  "Last Updated": number;
+  Region: string;
+  eta?: number; // ETA in milliseconds
+}
+
+interface PrintedWasteQueueResponse {
+  status: boolean;
+  error: boolean;
+  data: { [serverId: string]: PrintedWasteQueueData };
+}
+
+interface PrintedWasteMappingResponse {
+  status: boolean;
+  error: boolean;
+  data: { [serverId: string]: PrintedWasteServerMapping };
+}
+
+// Combined server info for queue selection
+interface QueueServerInfo {
+  serverId: string;
+  displayName: string;  // e.g., "Oregon"
+  region: string;       // e.g., "US Northwest"
+  ping_ms?: number;
+  queuePosition: number;
+  etaSeconds?: number;
+  is4080Server: boolean;
+  is5080Server: boolean;
+}
+
 interface ActiveSession {
   sessionId: string;
   appId: number;
@@ -390,9 +456,622 @@ let cachedServers: Server[] = []; // Cached server latency data
 let isTestingLatency = false; // Flag to prevent concurrent latency tests
 let reflexEnabled = true; // NVIDIA Reflex low-latency mode (auto-enabled for 120+ FPS)
 
+// PrintedWaste queue data cache
+let cachedQueueData: PrintedWasteQueueResponse | null = null;
+let cachedServerMapping: PrintedWasteMappingResponse | null = null;
+let lastQueueFetch = 0;
+const QUEUE_CACHE_TTL_MS = 30000; // 30 second cache for queue data
+let selectedQueueServer: string | null = null; // User's selected server for queue
+let queueCountdownInterval: number | null = null; // Countdown timer interval
+let queueStartEta: number = 0; // Initial ETA when queue started (in seconds)
+let queueStartTime: number = 0; // When the queue started (timestamp)
+
 // Helper to get streaming params - uses direct resolution and fps values
 function getStreamingParams(): { resolution: string; fps: number } {
   return { resolution: currentResolution, fps: currentFps };
+}
+
+// Check if user is on free tier
+function isFreeTier(subscription: SubscriptionInfo | null): boolean {
+  if (!subscription) return true; // Assume free if no subscription data
+  const tier = subscription.membershipTier?.toUpperCase() || "FREE";
+  return tier === "FREE" || tier === "FOUNDER"; // FOUNDER is also a free tier variant
+}
+
+// Check if using an Alliance Partner (non-NVIDIA provider)
+// PrintedWaste queue data is only available for NVIDIA global servers
+function isAlliancePartner(): boolean {
+  if (!selectedLoginProvider) return false;
+  return selectedLoginProvider.loginProviderCode !== "NVIDIA";
+}
+
+// ============================================
+// PrintedWaste Queue API Integration
+// ============================================
+
+// Get the current app version for user agent
+async function getAppVersion(): Promise<string> {
+  try {
+    return await getVersion();
+  } catch {
+    return "0.0.12"; // Fallback version
+  }
+}
+
+// Fetch server mapping from PrintedWaste
+async function fetchServerMapping(): Promise<PrintedWasteMappingResponse | null> {
+  if (cachedServerMapping) {
+    return cachedServerMapping;
+  }
+
+  try {
+    const version = await getAppVersion();
+    const response = await tauriFetch("https://remote.printedwaste.com/config/GFN_SERVERID_TO_REGION_MAPPING", {
+      headers: {
+        "User-Agent": `OpenNOW/${version}`
+      }
+    });
+
+    if (!response.ok) {
+      console.error("Failed to fetch server mapping:", response.status);
+      return null;
+    }
+
+    cachedServerMapping = await response.json();
+    return cachedServerMapping;
+  } catch (error) {
+    console.error("Error fetching server mapping:", error);
+    return null;
+  }
+}
+
+// Fetch queue data from PrintedWaste
+async function fetchQueueData(): Promise<PrintedWasteQueueResponse | null> {
+  const now = Date.now();
+
+  // Return cached data if still valid
+  if (cachedQueueData && (now - lastQueueFetch) < QUEUE_CACHE_TTL_MS) {
+    return cachedQueueData;
+  }
+
+  try {
+    const version = await getAppVersion();
+    const response = await tauriFetch("https://api.printedwaste.com/gfn/queue/", {
+      headers: {
+        "User-Agent": `OpenNOW/${version}`
+      }
+    });
+
+    if (!response.ok) {
+      console.error("Failed to fetch queue data:", response.status);
+      return cachedQueueData; // Return stale cache on error
+    }
+
+    cachedQueueData = await response.json();
+    lastQueueFetch = now;
+    return cachedQueueData;
+  } catch (error) {
+    console.error("Error fetching queue data:", error);
+    return cachedQueueData; // Return stale cache on error
+  }
+}
+
+// Get combined queue server info with ping data
+async function getQueueServersInfo(): Promise<QueueServerInfo[]> {
+  // Skip PrintedWaste queue for Alliance Partners - they have their own infrastructure
+  if (isAlliancePartner()) {
+    console.log("Skipping PrintedWaste queue - using Alliance Partner servers");
+    return [];
+  }
+
+  const [mapping, queueData] = await Promise.all([
+    fetchServerMapping(),
+    fetchQueueData()
+  ]);
+
+  if (!mapping || !queueData) {
+    console.error("Failed to fetch queue server info");
+    return [];
+  }
+
+  const servers: QueueServerInfo[] = [];
+
+  for (const [serverId, serverData] of Object.entries(mapping.data)) {
+    // Skip nuked servers
+    if (serverData.nuked) continue;
+
+    // Only include RTX 4080 or 5080 servers
+    if (!serverData.is4080Server && !serverData.is5080Server) continue;
+
+    const queueInfo = queueData.data[serverId];
+    if (!queueInfo) continue; // Skip if no queue data
+
+    // Find ping from cached servers (match by region/name)
+    const cachedServer = cachedServers.find(s =>
+      s.name.toLowerCase().includes(serverData.title.toLowerCase()) ||
+      serverData.title.toLowerCase().includes(s.name.toLowerCase()) ||
+      s.id === serverId
+    );
+
+    servers.push({
+      serverId,
+      displayName: serverData.title,
+      region: serverData.region,
+      ping_ms: cachedServer?.ping_ms,
+      queuePosition: queueInfo.QueuePosition,
+      etaSeconds: queueInfo.eta ? Math.floor(queueInfo.eta / 1000) : undefined, // Convert ms to seconds
+      is4080Server: serverData.is4080Server,
+      is5080Server: serverData.is5080Server
+    });
+  }
+
+  // Sort by ping (best first), undefined pings go to end
+  servers.sort((a, b) => {
+    if (a.ping_ms === undefined && b.ping_ms === undefined) return 0;
+    if (a.ping_ms === undefined) return 1;
+    if (b.ping_ms === undefined) return -1;
+    return a.ping_ms - b.ping_ms;
+  });
+
+  return servers;
+}
+
+// Format ETA in a human-readable format
+function formatQueueEta(etaSeconds: number | undefined): string {
+  if (!etaSeconds || etaSeconds <= 0) return "Unknown";
+
+  if (etaSeconds < 60) {
+    return `${etaSeconds}s`;
+  } else if (etaSeconds < 3600) {
+    const minutes = Math.floor(etaSeconds / 60);
+    return `${minutes}m`;
+  } else if (etaSeconds < 86400) {
+    const hours = Math.floor(etaSeconds / 3600);
+    const minutes = Math.floor((etaSeconds % 3600) / 60);
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  } else {
+    const days = Math.floor(etaSeconds / 86400);
+    const hours = Math.floor((etaSeconds % 86400) / 3600);
+    return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  }
+}
+
+// Calculate auto-selected server based on ping and queue time
+function getAutoSelectedServer(servers: QueueServerInfo[]): QueueServerInfo | null {
+  if (servers.length === 0) return null;
+
+  // Score each server: lower is better
+  // We balance ping (important for gameplay) with queue time
+  // Ping weight: 1.0, Queue ETA weight: 0.1 (per minute)
+  const scored = servers.map(server => {
+    const pingScore = server.ping_ms ?? 500; // High penalty for unknown ping
+    const etaMinutes = (server.etaSeconds ?? 0) / 60;
+    // Cap ETA penalty to prevent extremely long queues from dominating
+    const etaScore = Math.min(etaMinutes * 0.1, 50);
+    return {
+      server,
+      score: pingScore + etaScore
+    };
+  });
+
+  scored.sort((a, b) => a.score - b.score);
+  return scored[0]?.server ?? null;
+}
+
+// Show the queue server selection modal (for free tier users)
+async function showQueueSelectionModal(game: Game): Promise<string | null> {
+  return new Promise(async (resolve) => {
+    // Fetch queue data
+    const servers = await getQueueServersInfo();
+
+    if (servers.length === 0) {
+      // No queue data available, proceed with normal flow
+      resolve(null);
+      return;
+    }
+
+    const autoServer = getAutoSelectedServer(servers);
+
+    // Remove existing modal if any
+    const existing = document.getElementById("queue-selection-modal");
+    if (existing) existing.remove();
+
+    const modal = document.createElement("div");
+    modal.id = "queue-selection-modal";
+    modal.className = "modal";
+    modal.innerHTML = `
+      <div class="modal-content queue-modal-content">
+        <button class="modal-close">&times;</button>
+        <h2>Select Server</h2>
+        <p class="queue-modal-subtitle">Choose a server to queue on based on your ping and current wait times.</p>
+
+        <div class="queue-server-list" id="queue-server-list">
+          <!-- Auto option -->
+          <div class="queue-server-item selected" data-server-id="auto" data-eta="${autoServer?.etaSeconds || 0}">
+            <div class="queue-server-info">
+              <span class="queue-server-name">Auto (Recommended)</span>
+              <span class="queue-server-detail">${autoServer ? `${autoServer.displayName} - Best balance of ping & wait` : 'Best available'}</span>
+            </div>
+            <div class="queue-server-stats">
+              <span class="queue-ping ${autoServer ? getLatencyClassName(autoServer.ping_ms) : ''}">${autoServer?.ping_ms ? `${autoServer.ping_ms}ms` : '--'}</span>
+              <span class="queue-wait">~${formatQueueEta(autoServer?.etaSeconds)}</span>
+            </div>
+          </div>
+
+          ${servers.map(server => `
+            <div class="queue-server-item" data-server-id="${server.serverId}" data-eta="${server.etaSeconds || 0}">
+              <div class="queue-server-info">
+                <span class="queue-server-name">${server.displayName}</span>
+                <span class="queue-server-detail">${server.is5080Server ? 'RTX 5080' : 'RTX 4080'}</span>
+              </div>
+              <div class="queue-server-stats">
+                <span class="queue-ping ${getLatencyClassName(server.ping_ms)}">${server.ping_ms ? `${server.ping_ms}ms` : '--'}</span>
+                <span class="queue-wait">~${formatQueueEta(server.etaSeconds)}</span>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="queue-modal-actions">
+          <button id="queue-start-btn" class="btn btn-primary btn-large">Start Queue</button>
+          <button id="queue-cancel-btn" class="btn btn-secondary">Cancel</button>
+        </div>
+
+        <div class="queue-attribution">
+          <span>Powered by <a href="https://printedwaste.com/gfn/" target="_blank" rel="noopener noreferrer">PrintedWaste</a></span>
+        </div>
+      </div>
+    `;
+
+    // Add modal styles
+    const style = document.createElement("style");
+    style.id = "queue-modal-style";
+    style.textContent = `
+      .queue-modal-content {
+        max-width: 500px;
+        max-height: 80vh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .queue-modal-subtitle {
+        color: var(--text-secondary);
+        font-size: 14px;
+        margin-bottom: 16px;
+      }
+      .queue-server-list {
+        flex: 1;
+        overflow-y: auto;
+        max-height: 350px;
+        margin-bottom: 16px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius);
+      }
+      .queue-server-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 16px;
+        cursor: pointer;
+        transition: background 0.15s;
+        border-bottom: 1px solid var(--border-color);
+      }
+      .queue-server-item:last-child {
+        border-bottom: none;
+      }
+      .queue-server-item:hover {
+        background: var(--bg-hover);
+      }
+      .queue-server-item.selected {
+        background: rgba(118, 185, 0, 0.15);
+        border-left: 3px solid var(--accent-green);
+      }
+      .queue-server-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .queue-server-name {
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+      .queue-server-detail {
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+      .queue-server-stats {
+        display: flex;
+        gap: 16px;
+        align-items: center;
+      }
+      .queue-ping {
+        font-family: monospace;
+        font-size: 14px;
+        min-width: 50px;
+        text-align: right;
+      }
+      .queue-wait {
+        font-size: 13px;
+        color: var(--text-secondary);
+        min-width: 70px;
+        text-align: right;
+      }
+      .queue-modal-actions {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .queue-modal-actions .btn {
+        flex: 1;
+      }
+      .queue-attribution {
+        text-align: center;
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+      .queue-attribution a {
+        color: var(--accent-green);
+        text-decoration: none;
+      }
+      .queue-attribution a:hover {
+        text-decoration: underline;
+      }
+    `;
+
+    document.head.appendChild(style);
+    document.body.appendChild(modal);
+
+    // Initialize Lucide icons if available
+    if (typeof lucide !== 'undefined') {
+      lucide.createIcons();
+    }
+
+    let selectedServerId = "auto";
+    let selectedEta = autoServer?.etaSeconds || 0;
+
+    // Handle server selection
+    const serverItems = modal.querySelectorAll('.queue-server-item');
+    serverItems.forEach(item => {
+      item.addEventListener('click', () => {
+        serverItems.forEach(i => i.classList.remove('selected'));
+        item.classList.add('selected');
+        selectedServerId = (item as HTMLElement).dataset.serverId || "auto";
+        selectedEta = parseInt((item as HTMLElement).dataset.eta || "0", 10);
+      });
+    });
+
+    // Handle start button
+    modal.querySelector('#queue-start-btn')?.addEventListener('click', () => {
+      selectedQueueServer = selectedServerId === "auto" ? (autoServer?.serverId || null) : selectedServerId;
+      queueStartEta = selectedEta;
+      queueStartTime = Date.now();
+      modal.remove();
+      style.remove();
+      resolve(selectedQueueServer);
+    });
+
+    // Handle cancel button
+    modal.querySelector('#queue-cancel-btn')?.addEventListener('click', () => {
+      modal.remove();
+      style.remove();
+      resolve(null);
+    });
+
+    // Handle close button
+    modal.querySelector('.modal-close')?.addEventListener('click', () => {
+      modal.remove();
+      style.remove();
+      resolve(null);
+    });
+
+    // Close on background click
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        modal.remove();
+        style.remove();
+        resolve(null);
+      }
+    });
+  });
+}
+
+// Start countdown timer for queue ETA
+function startQueueCountdown() {
+  if (queueCountdownInterval) {
+    clearInterval(queueCountdownInterval);
+  }
+
+  const updateCountdown = () => {
+    const queueEtaEl = document.getElementById("queue-eta");
+
+    if (!queueEtaEl || queueStartEta <= 0) return;
+
+    // Calculate remaining time
+    const elapsed = Math.floor((Date.now() - queueStartTime) / 1000);
+    const remaining = Math.max(0, queueStartEta - elapsed);
+
+    queueEtaEl.textContent = formatQueueEta(remaining);
+  };
+
+  // Update immediately and then every second
+  updateCountdown();
+  queueCountdownInterval = window.setInterval(updateCountdown, 1000);
+}
+
+// Stop countdown timer
+function stopQueueCountdown() {
+  if (queueCountdownInterval) {
+    clearInterval(queueCountdownInterval);
+    queueCountdownInterval = null;
+  }
+
+  queueStartEta = 0;
+  queueStartTime = 0;
+}
+
+// Show queue times page (can be accessed from UI)
+async function showQueueTimesPage(): Promise<void> {
+  // Queue times are only available for NVIDIA global servers
+  if (isAlliancePartner()) {
+    alert("Queue times are only available for NVIDIA global servers. Alliance Partner servers have their own queue system.");
+    return;
+  }
+
+  const servers = await getQueueServersInfo();
+
+  if (servers.length === 0) {
+    alert("Unable to fetch queue times. Please try again later.");
+    return;
+  }
+
+  // Remove existing modal if any
+  const existing = document.getElementById("queue-times-modal");
+  if (existing) existing.remove();
+
+  const modal = document.createElement("div");
+  modal.id = "queue-times-modal";
+  modal.className = "modal";
+  modal.innerHTML = `
+    <div class="modal-content queue-times-content">
+      <button class="modal-close">&times;</button>
+      <h2>Queue Times</h2>
+      <p class="queue-times-subtitle">Current wait times for RTX 4080/5080 servers, sorted by your ping.</p>
+
+      <div class="queue-times-list" id="queue-times-list">
+        ${servers.map(server => `
+          <div class="queue-times-item">
+            <div class="queue-times-info">
+              <span class="queue-times-name">${server.displayName}</span>
+              <span class="queue-times-gpu">${server.is5080Server ? 'RTX 5080' : 'RTX 4080'}</span>
+            </div>
+            <div class="queue-times-stats">
+              <span class="queue-times-ping ${getLatencyClassName(server.ping_ms)}">${server.ping_ms ? `${server.ping_ms}ms` : '--'}</span>
+              <span class="queue-times-wait">~${formatQueueEta(server.etaSeconds)}</span>
+              <span class="queue-times-position">#${server.queuePosition}</span>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+
+      <div class="queue-attribution">
+        <span>Powered by <a href="https://printedwaste.com/gfn/" target="_blank" rel="noopener noreferrer">PrintedWaste</a></span>
+      </div>
+    </div>
+  `;
+
+  // Add modal styles
+  const style = document.createElement("style");
+  style.id = "queue-times-modal-style";
+  style.textContent = `
+    .queue-times-content {
+      max-width: 550px;
+      max-height: 80vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .queue-times-subtitle {
+      color: var(--text-secondary);
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
+    .queue-times-list {
+      flex: 1;
+      overflow-y: auto;
+      max-height: 400px;
+      margin-bottom: 16px;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+    }
+    .queue-times-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .queue-times-item:last-child {
+      border-bottom: none;
+    }
+    .queue-times-item:nth-child(odd) {
+      background: var(--bg-tertiary);
+    }
+    .queue-times-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .queue-times-name {
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+    .queue-times-gpu {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .queue-times-stats {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+    .queue-times-ping {
+      font-family: monospace;
+      font-size: 14px;
+      min-width: 55px;
+      text-align: right;
+    }
+    .queue-times-wait {
+      font-size: 13px;
+      color: var(--text-secondary);
+      min-width: 70px;
+      text-align: right;
+    }
+    .queue-times-position {
+      font-size: 12px;
+      color: var(--text-muted);
+      min-width: 40px;
+      text-align: right;
+    }
+    .queue-attribution {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .queue-attribution a {
+      color: var(--accent-green);
+      text-decoration: none;
+    }
+    .queue-attribution a:hover {
+      text-decoration: underline;
+    }
+  `;
+
+  document.head.appendChild(style);
+  document.body.appendChild(modal);
+
+  // Handle close button
+  modal.querySelector('.modal-close')?.addEventListener('click', () => {
+    modal.remove();
+    style.remove();
+  });
+
+  // Close on background click
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      modal.remove();
+      style.remove();
+    }
+  });
+}
+
+// Check if resolution is above 1080p (considering any aspect ratio)
+function isResolutionAbove1080p(resolution: string): boolean {
+  const parts = resolution.split('x');
+  if (parts.length !== 2) return false;
+  const height = parseInt(parts[1], 10);
+  // 1080p max height is 1080, anything above is considered premium
+  // For ultrawide 1080p (2560x1080), height is still 1080 so it's allowed
+  return height > 1080;
 }
 
 // Populate resolution and FPS dropdowns from subscription data
@@ -406,8 +1085,12 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
   ];
   const defaultFps = [30, 60, 120, 240];
 
+  // Check if user is on free tier
+  const isFree = isFreeTier(subscription);
+  console.log(`User tier: ${subscription?.membershipTier || "FREE"}, isFree: ${isFree}`);
+
   // Helper to get friendly resolution label
-  const getResolutionLabel = (res: string): string => {
+  const getResolutionLabel = (res: string, disabled: boolean): string => {
     const labels: { [key: string]: string } = {
       '1280x720': '1280x720 (720p)',
       '1920x1080': '1920x1080 (1080p)',
@@ -420,7 +1103,8 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
       '2560x1600': '2560x1600 (16:10)',
       '1680x1050': '1680x1050 (16:10)',
     };
-    return labels[res] || res;
+    const label = labels[res] || res;
+    return disabled ? `${label} (Priority/Ultimate)` : label;
   };
 
   if (subscription?.features?.resolutions && subscription.features.resolutions.length > 0) {
@@ -441,13 +1125,15 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
       return aW - bW;
     });
 
-    // Always include high FPS options even if not in API response
-    fpsSet.add(120);
-    fpsSet.add(240);
+    // Always include high FPS options even if not in API response (for paid tiers)
+    if (!isFree) {
+      fpsSet.add(120);
+      fpsSet.add(240);
+    }
 
     availableFpsOptions = Array.from(fpsSet).sort((a, b) => a - b);
 
-    console.log(`Populated ${availableResolutions.length} resolutions and ${availableFpsOptions.length} FPS options from subscription (ignoring entitlement)`);
+    console.log(`Populated ${availableResolutions.length} resolutions and ${availableFpsOptions.length} FPS options from subscription`);
   } else {
     // Use defaults
     availableResolutions = defaultResolutions.map(r => `${r.width}x${r.height}`);
@@ -455,17 +1141,30 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
     console.log("Using default resolution/FPS options (no subscription data)");
   }
 
+  // For free tier, filter out premium options
+  if (isFree) {
+    // Filter resolutions: keep only those at or below 1080p height
+    availableResolutions = availableResolutions.filter(res => !isResolutionAbove1080p(res));
+    
+    // Filter FPS: remove 240 and 360 fps options
+    availableFpsOptions = availableFpsOptions.filter(fps => fps < 240);
+    
+    console.log(`Free tier: Filtered to ${availableResolutions.length} resolutions and ${availableFpsOptions.length} FPS options`);
+  }
+
   // Build resolution options for custom dropdown
   const resolutionOptions = availableResolutions.map(res => ({
     value: res,
-    text: getResolutionLabel(res),
+    text: getResolutionLabel(res, false),
     selected: res === currentResolution
   }));
 
-  // If current resolution not in list, select first available
+  // If current resolution not in list, select highest available
   if (!resolutionOptions.some(o => o.selected) && resolutionOptions.length > 0) {
-    resolutionOptions[0].selected = true;
-    currentResolution = resolutionOptions[0].value;
+    // Select 1080p if available, otherwise the highest
+    const preferred = resolutionOptions.find(o => o.value === "1920x1080") || resolutionOptions[resolutionOptions.length - 1];
+    preferred.selected = true;
+    currentResolution = preferred.value;
   }
 
   setDropdownOptions("resolution-setting", resolutionOptions);
@@ -477,10 +1176,12 @@ function populateStreamingOptions(subscription: SubscriptionInfo | null): void {
     selected: fps === currentFps
   }));
 
-  // If current FPS not in list, select first available
+  // If current FPS not in list, select highest available
   if (!fpsOptions.some(o => o.selected) && fpsOptions.length > 0) {
-    fpsOptions[0].selected = true;
-    currentFps = parseInt(fpsOptions[0].value, 10);
+    // Select 60 FPS if available, otherwise the highest
+    const preferred = fpsOptions.find(o => o.value === "60") || fpsOptions[fpsOptions.length - 1];
+    preferred.selected = true;
+    currentFps = parseInt(preferred.value, 10);
   }
 
   setDropdownOptions("fps-setting", fpsOptions);
@@ -738,6 +1439,14 @@ function updateStatusBarLatency(): void {
 
 // Get the server ID to use for session launch
 function getPreferredServerForSession(): string | undefined {
+  // If a queue server was selected (free tier users), use that
+  if (selectedQueueServer) {
+    const server = selectedQueueServer;
+    // Reset for next launch
+    selectedQueueServer = null;
+    return server;
+  }
+
   if (currentRegion === "auto") {
     // Use the best (lowest ping) online server
     const bestServer = cachedServers.find(s => s.status === "Online");
@@ -899,6 +1608,9 @@ function formatChangelog(body: string): string {
 
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
+  // Initialize frontend logging first (intercepts console.*)
+  initLogging();
+
   console.log("OpenNOW initialized");
 
   // Initialize Lucide icons
@@ -920,6 +1632,15 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Setup session modals
   setupSessionModals();
+
+  // Setup queue times nav click handler
+  const queueTimesNav = document.getElementById("queue-times-nav");
+  if (queueTimesNav) {
+    queueTimesNav.addEventListener("click", (e) => {
+      e.preventDefault();
+      showQueueTimesPage();
+    });
+  }
 
   // Setup search
   setupSearch();
@@ -1111,6 +1832,50 @@ function setupModals() {
 
   // Save settings
   document.getElementById("save-settings-btn")?.addEventListener("click", saveSettings);
+
+  // Export logs button
+  document.getElementById("export-logs-btn")?.addEventListener("click", async () => {
+    const btn = document.getElementById("export-logs-btn") as HTMLButtonElement;
+    const originalText = btn.textContent;
+    btn.textContent = "Exporting...";
+    btn.disabled = true;
+
+    try {
+      const savedPath = await exportLogs();
+      console.log("Logs exported to:", savedPath);
+      btn.textContent = "Exported!";
+      setTimeout(() => {
+        btn.textContent = originalText;
+        btn.disabled = false;
+      }, 2000);
+    } catch (error) {
+      console.error("Failed to export logs:", error);
+      btn.textContent = originalText;
+      btn.disabled = false;
+      // Don't show error for cancelled export
+      if (error !== "Export cancelled") {
+        alert("Failed to export logs: " + error);
+      }
+    }
+  });
+
+  // Clear logs button
+  document.getElementById("clear-logs-btn")?.addEventListener("click", async () => {
+    const btn = document.getElementById("clear-logs-btn") as HTMLButtonElement;
+    const originalText = btn.textContent;
+
+    try {
+      await clearLogs();
+      console.log("Logs cleared");
+      btn.textContent = "Cleared!";
+      setTimeout(() => {
+        btn.textContent = originalText;
+      }, 2000);
+    } catch (error) {
+      console.error("Failed to clear logs:", error);
+      alert("Failed to clear logs: " + error);
+    }
+  });
 
   // Bitrate slider live update
   const bitrateSlider = document.getElementById("bitrate-setting") as HTMLInputElement;
@@ -1490,6 +2255,19 @@ function updateStatusBarSessionTime(subscription: SubscriptionInfo | null) {
       svg.style.height = "12px";
     }
   }, 10);
+}
+
+// Update queue times nav visibility (only for free tier users)
+function updateQueueTimesLinkVisibility(subscription: SubscriptionInfo | null) {
+  const navItem = document.getElementById("queue-times-nav");
+  if (!navItem) return;
+
+  // Show nav item for free tier users who are authenticated
+  if (isAuthenticated && isFreeTier(subscription)) {
+    navItem.classList.remove("hidden");
+  } else {
+    navItem.classList.add("hidden");
+  }
 }
 
 // Setup session modal handlers
@@ -2004,6 +2782,24 @@ async function checkAuthStatus() {
     isAuthenticated = status.is_authenticated;
     currentUser = status.user || null;
 
+    // Restore the login provider from saved auth state
+    if (status.provider) {
+      selectedLoginProvider = status.provider;
+      console.log("Restored login provider:", status.provider.loginProviderDisplayName);
+      
+      // Also set it in the backend memory (in case it wasn't restored there)
+      await invoke("set_login_provider", { provider: status.provider });
+      
+      // Fetch server info for the provider (discovers VPC ID and regions)
+      try {
+        const token = await invoke<string>("get_gfn_jwt");
+        const serverInfo = await invoke<{ vpcId: string | null; regions: [string, string][]; baseUrl: string | null }>("fetch_server_info", { accessToken: token });
+        console.log("Server info fetched for restored provider:", serverInfo);
+      } catch (e) {
+        console.warn("Failed to fetch server info for restored provider:", e);
+      }
+    }
+
     // Fetch real subscription tier from API if authenticated
     if (isAuthenticated && currentUser) {
       try {
@@ -2025,15 +2821,22 @@ async function checkAuthStatus() {
         console.log("Subscription addons:", subscription.addons);
         updateNavbarStorageIndicator(subscription);
         updateStatusBarSessionTime(subscription);
+
+        // Show queue times link for free tier users
+        updateQueueTimesLinkVisibility(subscription);
       } catch (subError) {
         console.warn("Failed to fetch subscription, using default tier:", subError);
         currentSubscription = null;
         // Use default streaming options
         populateStreamingOptions(null);
+        // Show queue times link (assume free tier on error)
+        updateQueueTimesLinkVisibility(null);
       }
     } else {
       // Not authenticated - use default streaming options
       populateStreamingOptions(null);
+      // Hide queue times link when not authenticated
+      updateQueueTimesLinkVisibility(null);
     }
 
     updateAuthUI();
@@ -2067,10 +2870,56 @@ function updateAuthUI() {
   }
 }
 
-// Show login modal when login button is clicked
-loginBtn.addEventListener("click", () => {
-  showModal("login-modal");
-});
+// Cached login providers
+let cachedLoginProviders: LoginProvider[] = [];
+let selectedLoginProvider: LoginProvider | null = null;
+
+// Fetch and populate login providers dropdown
+async function fetchAndPopulateLoginProviders(): Promise<void> {
+  try {
+    console.log("Fetching login providers...");
+    const providers = await invoke<LoginProvider[]>("fetch_login_providers");
+    cachedLoginProviders = providers;
+    console.log(`Fetched ${providers.length} login providers:`, providers.map(p => p.loginProviderDisplayName));
+
+    // Build dropdown options
+    const options = providers.map(provider => ({
+      value: provider.loginProviderCode,
+      text: provider.loginProviderDisplayName === "NVIDIA"
+        ? "NVIDIA (Global)"
+        : provider.loginProviderDisplayName,
+      selected: provider.loginProviderCode === "NVIDIA"
+    }));
+
+    console.log("Setting dropdown options:", options);
+    setDropdownOptions("login-provider", options);
+
+    // Set default provider (NVIDIA) and update button text
+    const nvidiaProvider = providers.find(p => p.loginProviderCode === "NVIDIA");
+    if (nvidiaProvider) {
+      selectedLoginProvider = nvidiaProvider;
+      updateLoginButtonText(nvidiaProvider.loginProviderDisplayName);
+      console.log("Default provider set to:", nvidiaProvider.loginProviderDisplayName);
+    } else if (providers.length > 0) {
+      // Fallback to first provider if NVIDIA not found
+      selectedLoginProvider = providers[0];
+      updateLoginButtonText(providers[0].loginProviderDisplayName);
+      console.log("Fallback provider set to:", providers[0].loginProviderDisplayName);
+    }
+  } catch (error) {
+    console.error("Failed to fetch login providers:", error);
+    // Keep default NVIDIA option and set button text
+    updateLoginButtonText("NVIDIA");
+  }
+}
+
+// Update login button text based on selected provider
+function updateLoginButtonText(providerName: string): void {
+  const loginBtnText = document.getElementById("login-btn-text");
+  if (loginBtnText) {
+    loginBtnText.textContent = `Sign in with ${providerName}`;
+  }
+}
 
 // Setup login modal handlers
 function setupLoginModal() {
@@ -2082,10 +2931,24 @@ function setupLoginModal() {
   const submitTokenBtn = document.getElementById("submit-token-btn");
   const tokenInput = document.getElementById("token-input") as HTMLTextAreaElement;
 
-  // NVIDIA OAuth login
+  // Handle provider dropdown change
+  onDropdownChange("login-provider", async (value, text) => {
+    console.log(`Login provider changed to: ${value} (${text})`);
+    const provider = cachedLoginProviders.find(p => p.loginProviderCode === value);
+    if (provider) {
+      selectedLoginProvider = provider;
+      await invoke("set_login_provider", { provider });
+      updateLoginButtonText(provider.loginProviderDisplayName);
+    }
+  });
+
+  // OAuth login with selected provider
   nvidiaLoginBtn?.addEventListener("click", async () => {
-    console.log("Starting NVIDIA OAuth login...");
-    nvidiaLoginBtn.textContent = "Signing in...";
+    const providerName = selectedLoginProvider?.loginProviderDisplayName || "NVIDIA";
+    console.log(`Starting OAuth login with provider: ${providerName}...`);
+
+    const loginBtnText = document.getElementById("login-btn-text");
+    if (loginBtnText) loginBtnText.textContent = "Signing in...";
     (nvidiaLoginBtn as HTMLButtonElement).disabled = true;
 
     try {
@@ -2094,16 +2957,37 @@ function setupLoginModal() {
         isAuthenticated = true;
         currentUser = result.user || null;
         hideAllModals();
-        console.log("NVIDIA OAuth login successful");
+        console.log("OAuth login successful");
+        
+        // Fetch server info for the selected provider (discovers VPC ID and regions)
+        try {
+          const token = await invoke<string>("get_gfn_jwt");
+          console.log("Fetching server info for provider...");
+          const serverInfo = await invoke<{ vpcId: string | null; regions: [string, string][]; baseUrl: string | null }>("fetch_server_info", { accessToken: token });
+          console.log("Server info fetched:", serverInfo);
+          if (serverInfo.vpcId) {
+            console.log(`Using VPC ID: ${serverInfo.vpcId}`);
+          }
+          if (serverInfo.regions.length > 0) {
+            console.log(`Provider has ${serverInfo.regions.length} regions:`, serverInfo.regions.map(r => r[0]));
+          }
+        } catch (serverInfoError) {
+          console.warn("Failed to fetch server info (will use defaults):", serverInfoError);
+        }
+        
         // Refresh subscription info and reload games
         await checkAuthStatus();
         await loadHomeData();
+        // Re-run latency test with provider-specific servers
+        testLatency().catch(err => console.error("Latency test after login failed:", err));
+        // Start session polling
+        startSessionPolling();
       }
     } catch (error) {
-      console.error("NVIDIA OAuth login failed:", error);
+      console.error("OAuth login failed:", error);
       alert("Login failed: " + error);
     } finally {
-      nvidiaLoginBtn.textContent = "Sign in with NVIDIA";
+      updateLoginButtonText(providerName);
       (nvidiaLoginBtn as HTMLButtonElement).disabled = false;
     }
   });
@@ -2136,9 +3020,24 @@ function setupLoginModal() {
         if (loginOptions) (loginOptions as HTMLElement).classList.remove("hidden");
         if (tokenEntry) tokenEntry.classList.add("hidden");
         console.log("Token login successful");
+        
+        // Fetch server info for the selected provider (discovers VPC ID and regions)
+        try {
+          const jwtToken = await invoke<string>("get_gfn_jwt");
+          console.log("Fetching server info for provider...");
+          const serverInfo = await invoke<{ vpcId: string | null; regions: [string, string][]; baseUrl: string | null }>("fetch_server_info", { accessToken: jwtToken });
+          console.log("Server info fetched:", serverInfo);
+        } catch (serverInfoError) {
+          console.warn("Failed to fetch server info (will use defaults):", serverInfoError);
+        }
+        
         // Refresh subscription info and reload games
         await checkAuthStatus();
         await loadHomeData();
+        // Re-run latency test with provider-specific servers
+        testLatency().catch(err => console.error("Latency test after login failed:", err));
+        // Start session polling
+        startSessionPolling();
       }
     } catch (error) {
       console.error("Token validation failed:", error);
@@ -2154,6 +3053,19 @@ function setupLoginModal() {
     if (loginOptions) (loginOptions as HTMLElement).classList.remove("hidden");
     if (tokenEntry) tokenEntry.classList.add("hidden");
     if (tokenInput) tokenInput.value = "";
+  });
+
+  // Fetch providers when login button is clicked (to show modal)
+  loginBtn?.addEventListener("click", async () => {
+    showModal("login-modal");
+    // Fetch providers if not already cached
+    if (cachedLoginProviders.length === 0) {
+      await fetchAndPopulateLoginProviders();
+    }
+    // Reinitialize Lucide icons for the modal
+    if (typeof lucide !== 'undefined') {
+      lucide.createIcons();
+    }
   });
 }
 
@@ -2663,6 +3575,18 @@ async function launchGame(game: Game) {
     showSessionConflictModal(activeSessions[0], game);
     startSessionPolling(); // Resume polling since we're not launching
     return;
+  }
+
+  // For free tier users on NVIDIA servers, show server selection modal with queue times
+  // Skip for Alliance Partners as they have their own queue system
+  if (isFreeTier(currentSubscription) && !isAlliancePartner()) {
+    const selectedServer = await showQueueSelectionModal(game);
+    if (selectedServer === null && selectedQueueServer === null) {
+      // User cancelled
+      startSessionPolling();
+      return;
+    }
+    // If user selected a server, selectedQueueServer is already set
   }
 
   // Show streaming overlay
@@ -3667,6 +4591,77 @@ async function exitStreaming(): Promise<void> {
   startSessionPolling();
 }
 
+// Queue status polling interval
+let queueStatusInterval: number | null = null;
+
+// Queue status interface
+interface QueueStatus {
+  session_status: number;
+  queue_position: number;
+  eta_ms: number;
+  is_in_queue: boolean;
+}
+
+// Start polling for queue status updates
+function startQueueStatusPolling() {
+  // Clear any existing interval
+  if (queueStatusInterval !== null) {
+    clearInterval(queueStatusInterval);
+  }
+
+  // Start countdown timer if we have an ETA (free tier users)
+  if (queueStartEta > 0) {
+    startQueueCountdown();
+  }
+
+  // Poll every 2 seconds for queue status
+  queueStatusInterval = window.setInterval(async () => {
+    try {
+      const status = await invoke<QueueStatus>("get_queue_status");
+
+      if (status.is_in_queue && status.queue_position > 0) {
+        // Update the overlay to show queue position
+        updateQueueDisplay(status.queue_position, status.eta_ms);
+      } else if (status.session_status === 2) {
+        // Session is ready, stop polling queue status
+        stopQueueStatusPolling();
+      }
+    } catch (e) {
+      // Silently ignore errors during queue polling
+      console.debug("Queue status poll error:", e);
+    }
+  }, 2000);
+}
+
+// Stop polling for queue status
+function stopQueueStatusPolling() {
+  if (queueStatusInterval !== null) {
+    clearInterval(queueStatusInterval);
+    queueStatusInterval = null;
+  }
+  // Also stop the countdown timer
+  stopQueueCountdown();
+}
+
+// Update the queue display in the overlay
+function updateQueueDisplay(position: number, etaMs: number) {
+  const statusEl = document.getElementById("streaming-status");
+  const queueInfoEl = document.getElementById("queue-info");
+  
+  if (statusEl) {
+    statusEl.textContent = `Queue position: ${position}`;
+  }
+  
+  // Show/update the queue info section
+  if (queueInfoEl) {
+    queueInfoEl.style.display = "block";
+    const positionEl = document.getElementById("queue-position");
+    if (positionEl) {
+      positionEl.textContent = String(position);
+    }
+  }
+}
+
 // Streaming overlay functions
 function showStreamingOverlay(gameName: string, status: string) {
   // Remove existing overlay if any
@@ -3680,6 +4675,19 @@ function showStreamingOverlay(gameName: string, status: string) {
       <div class="streaming-spinner"></div>
       <h2 id="streaming-game-name">${gameName}</h2>
       <p id="streaming-status">${status}</p>
+      <div id="queue-info" style="display: none;">
+        <div class="queue-stats-row">
+          <div class="queue-display">
+            <span class="queue-label">Position in Queue</span>
+            <span class="queue-position" id="queue-position">-</span>
+          </div>
+          <div class="queue-display">
+            <span class="queue-label">Estimated Wait</span>
+            <span class="queue-eta" id="queue-eta">--</span>
+          </div>
+        </div>
+        <p class="queue-hint">Free tier users may experience longer wait times during peak hours.</p>
+      </div>
       <div id="streaming-info" style="display: none;">
         <div class="streaming-stat"><span>GPU:</span> <span id="streaming-gpu">-</span></div>
         <div class="streaming-stat"><span>Server:</span> <span id="streaming-server">-</span></div>
@@ -3733,6 +4741,48 @@ function showStreamingOverlay(gameName: string, status: string) {
       color: #aaa;
       margin-bottom: 20px;
     }
+    #queue-info {
+      background: rgba(118, 185, 0, 0.1);
+      border: 1px solid rgba(118, 185, 0, 0.3);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .queue-stats-row {
+      display: flex;
+      justify-content: center;
+      gap: 40px;
+    }
+    .queue-display {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .queue-label {
+      font-size: 14px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .queue-position {
+      font-size: 48px;
+      font-weight: bold;
+      color: #76b900;
+      line-height: 1;
+    }
+    .queue-eta {
+      font-size: 48px;
+      font-weight: bold;
+      color: #76b900;
+      line-height: 1;
+    }
+    .queue-hint {
+      font-size: 12px;
+      color: #666;
+      margin-top: 12px;
+      margin-bottom: 0;
+    }
     #streaming-info {
       background: rgba(255, 255, 255, 0.1);
       border-radius: 8px;
@@ -3759,6 +4809,9 @@ function showStreamingOverlay(gameName: string, status: string) {
 
   // Add cancel handler
   document.getElementById("streaming-cancel-btn")?.addEventListener("click", cancelStreaming);
+  
+  // Start polling for queue status
+  startQueueStatusPolling();
 }
 
 function updateStreamingStatus(status: string) {
@@ -3777,6 +4830,17 @@ function showStreamingInfo(info: {
   const gpuEl = document.getElementById("streaming-gpu");
   const serverEl = document.getElementById("streaming-server");
   const phaseEl = document.getElementById("streaming-phase");
+  const queueInfoEl = document.getElementById("queue-info");
+
+  // Hide queue info when session is ready
+  if (queueInfoEl && info.phase === "Ready") {
+    queueInfoEl.style.display = "none";
+  }
+  
+  // Stop queue polling when ready
+  if (info.phase === "Ready") {
+    stopQueueStatusPolling();
+  }
 
   if (infoEl) infoEl.style.display = "block";
   if (gpuEl) gpuEl.textContent = info.gpu_type || "Unknown";
@@ -3797,6 +4861,9 @@ function showStreamingInfo(info: {
 }
 
 function hideStreamingOverlay() {
+  // Stop queue status polling
+  stopQueueStatusPolling();
+  
   const overlay = document.getElementById("streaming-overlay");
   const style = document.getElementById("streaming-overlay-style");
   if (overlay) overlay.remove();
@@ -3937,4 +5004,6 @@ function createPlaceholderGames(): Game[] {
   setInputCaptureMode,
   // Get streaming state
   getStreamingState: () => streamingUIState,
+  // Queue times
+  showQueueTimesPage,
 };

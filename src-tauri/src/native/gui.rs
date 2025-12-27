@@ -1061,7 +1061,7 @@ async fn request_gfn_session(
             secure_rtsp_supported: false,
             partner_custom_data: Some("".to_string()),
             account_linked: false,
-            enable_persisting_in_game_settings: false,
+            enable_persisting_in_game_settings: true, // Enable persistent in-game settings
             requested_audio_format: 0,
             user_age: 0,
         },

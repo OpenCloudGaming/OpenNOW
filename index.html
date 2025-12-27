@@ -22,6 +22,10 @@
               <i data-lucide="library" class="nav-icon"></i>
               My Library
             </a>
+            <a href="#" class="nav-item hidden" id="queue-times-nav" title="View current queue times">
+              <i data-lucide="clock" class="nav-icon"></i>
+              Queue Times
+            </a>
           </nav>
         </div>
         <div class="header-center">
@@ -120,10 +124,27 @@
         <div class="modal-content login-modal-content">
           <button class="modal-close">&times;</button>
           <h2>Sign In</h2>
+
+          <!-- Region/Provider Selection -->
+          <div class="login-region-section">
+            <label class="login-region-label">Region / Provider</label>
+            <div class="custom-dropdown" data-dropdown="login-provider">
+              <div class="dropdown-trigger" tabindex="0">
+                <span class="dropdown-text">NVIDIA (Global)</span>
+                <i data-lucide="chevron-down" class="dropdown-arrow"></i>
+              </div>
+              <div class="dropdown-menu" id="login-provider-menu">
+                <div class="dropdown-option selected" data-value="NVIDIA">NVIDIA (Global)</div>
+                <!-- Other providers will be populated dynamically -->
+              </div>
+            </div>
+            <p class="login-region-hint">Select your region or alliance partner for login</p>
+          </div>
+
           <div class="login-options">
             <button id="nvidia-login-btn" class="btn btn-primary btn-large login-option">
-              <i data-lucide="star" class="login-icon"></i>
-              Sign in with NVIDIA
+              <i data-lucide="log-in" class="login-icon"></i>
+              <span id="login-btn-text">Sign in with NVIDIA</span>
             </button>
             <div class="login-divider">
               <span>or</span>
@@ -284,6 +305,14 @@
               <input type="text" id="proxy-setting" placeholder="http://proxy:port" />
             </div>
             <button id="save-settings-btn" class="btn btn-primary">Save Settings</button>
+            <div class="setting-group setting-divider">
+              <label>Troubleshooting</label>
+              <p class="setting-hint">Export logs to share with developers for debugging issues. Logs are automatically cleared when they exceed 10MB.</p>
+              <div class="troubleshooting-buttons">
+                <button id="export-logs-btn" class="btn btn-secondary">Export Logs</button>
+                <button id="clear-logs-btn" class="btn btn-ghost">Clear Logs</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>

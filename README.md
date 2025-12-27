@@ -92,11 +92,27 @@ OpenNOW is a custom GeForce NOW client created by reverse engineering the offici
 ```bash
 git clone https://github.com/zortos293/GFNClient.git
 cd GFNClient
-npm install
-npm run tauri dev
+bun install
+bun run tauri dev
 ```
 
-**Requirements:** Node.js 18+, Rust, Tauri CLI
+**Requirements:** Bun, Rust, Tauri CLI
+
+---
+
+## Troubleshooting
+
+If you encounter issues, please export your logs and attach them to your bug report:
+
+1. Open **Settings** (gear icon in the top right)
+2. Scroll down to the **Troubleshooting** section
+3. Click **Export Logs**
+4. Save the file and attach it to your [bug report](https://github.com/zortos293/GFNClient/issues/new?template=bug_report.yml)
+
+Logs are stored at:
+- **Windows:** `%APPDATA%\opennow\opennow.log`
+- **macOS:** `~/Library/Application Support/opennow/opennow.log`
+- **Linux:** `~/.local/share/opennow/opennow.log`
 
 ---
 

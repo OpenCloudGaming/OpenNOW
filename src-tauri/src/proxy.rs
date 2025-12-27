@@ -185,30 +185,3 @@ pub async fn create_proxied_client() -> Result<reqwest::Client, String> {
         .build()
         .map_err(|e| format!("Failed to create client: {}", e))
 }
-
-/// Check if a host should bypass the proxy
-pub fn should_bypass_proxy(config: &ProxyConfig, host: &str) -> bool {
-    if !config.enabled {
-        return true;
-    }
-
-    if config.bypass_local {
-        if host == "localhost" || host == "127.0.0.1" || host.ends_with(".local") {
-            return true;
-        }
-    }
-
-    for pattern in &config.bypass_list {
-        if pattern.starts_with("*.") {
-            // Wildcard pattern
-            let suffix = &pattern[1..];
-            if host.ends_with(suffix) {
-                return true;
-            }
-        } else if host == pattern {
-            return true;
-        }
-    }
-
-    false
-}
