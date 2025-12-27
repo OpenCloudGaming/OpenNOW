@@ -7,7 +7,7 @@ Thank you for your interest in contributing to GFNClient! This document provides
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) (latest stable)
-- [Node.js](https://nodejs.org/) (v18+) or [Bun](https://bun.sh/)
+- [Bun](https://bun.sh/) (latest)
 - Platform-specific dependencies for Tauri
 
 ### Development Setup

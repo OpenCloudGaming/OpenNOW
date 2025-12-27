@@ -2,6 +2,9 @@
 #[cfg(feature = "native-client")]
 pub mod native;
 
+// Logging module (always available)
+mod logging;
+
 // Tauri app modules (only when tauri-app feature enabled)
 #[cfg(feature = "tauri-app")]
 mod auth;
@@ -26,7 +29,10 @@ use tauri::Manager;
 #[cfg(feature = "tauri-app")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
+    // Initialize custom file logger instead of env_logger
+    if let Err(e) = logging::init() {
+        eprintln!("Failed to initialize logger: {}", e);
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -59,6 +65,11 @@ pub fn run() {
             auth::logout,
             auth::get_auth_status,
             auth::refresh_token,
+            // Multi-region login commands
+            auth::fetch_login_providers,
+            auth::set_login_provider,
+            auth::get_selected_provider,
+            auth::clear_login_provider,
             // API commands
             api::fetch_games,
             api::fetch_library,
@@ -68,12 +79,17 @@ pub fn run() {
             api::get_game_details,
             api::get_servers,
             api::fetch_subscription,
+            // Dynamic server info commands
+            api::fetch_server_info,
+            api::get_cached_server_info,
+            api::clear_server_info_cache,
             // Streaming commands
             streaming::start_session,
             streaming::stop_session,
             streaming::poll_session_until_ready,
             streaming::cancel_polling,
             streaming::is_polling_active,
+            streaming::get_queue_status,
             streaming::get_webrtc_config,
             streaming::start_streaming_flow,
             streaming::stop_streaming_flow,
@@ -111,6 +127,11 @@ pub fn run() {
             cursor::stop_mouse_polling,
             cursor::get_accumulated_mouse_delta,
             cursor::is_mouse_polling_active,
+            // Logging commands
+            logging::log_frontend,
+            logging::get_log_file_path,
+            logging::export_logs,
+            logging::clear_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
