@@ -3118,47 +3118,47 @@ async function loadHomeData() {
 
   // Try to load library data (requires authentication)
   if (isAuthenticated) {
-    console.log("User is authenticated, trying fetch_library...");
+    console.log("User is authenticated, trying fetch_main_games...");
     try {
       const accessToken = await invoke<string>("get_gfn_jwt");
-      console.log("Got GFN JWT token, calling fetch_library...");
-      const response = await invoke<{ games: Game[] }>("fetch_library", {
+      console.log("Got GFN JWT token, calling fetch_main_games...");
+      const response = await invoke<{ games: Game[] }>("fetch_main_games", {
         accessToken,
         vpcId: null, // Use default (Amsterdam)
       });
-      console.log("fetch_library response:", response);
+      console.log("fetch_main_games response:", response);
       if (response.games.length > 0) {
         games = response.games;
-        console.log("Loaded", games.length, "games from library with images");
+        console.log("Loaded", games.length, "games from main panel with images");
         console.log("First game:", games[0]);
         renderGamesGrid("featured-games", games.slice(0, 6));
         renderGamesGrid("recent-games", games.slice(6, 12));
         renderGamesGrid("free-games", games.slice(12, 18));
       } else {
-        console.log("Library returned 0 games, trying fetch_main_games...");
-        throw new Error("Empty library");
+        console.log("Main games returned 0 games, trying fetch_library...");
+        throw new Error("Empty main games");
       }
     } catch (error) {
-      console.error("Failed to load library:", error);
-      // Fall back to main games panel
-      console.log("Falling back to fetch_main_games...");
+      console.error("Failed to load main games:", error);
+      // Fall back to library
+      console.log("Falling back to fetch_library...");
       try {
         const accessToken = await invoke<string>("get_gfn_jwt").catch(() => null);
-        const response = await invoke<{ games: Game[] }>("fetch_main_games", {
+        const response = await invoke<{ games: Game[] }>("fetch_library", {
           accessToken,
           vpcId: null,
         });
-        console.log("fetch_main_games response:", response);
+        console.log("fetch_library response:", response);
         if (response.games.length > 0) {
           games = response.games;
-          console.log("Loaded", games.length, "games from main panel");
+          console.log("Loaded", games.length, "games from library");
           console.log("First game:", games[0]);
           renderGamesGrid("featured-games", games.slice(0, 6));
           renderGamesGrid("recent-games", games.slice(6, 12));
           renderGamesGrid("free-games", games.slice(12, 18));
         }
       } catch (e) {
-        console.error("Failed to load main games:", e);
+        console.error("Failed to load library:", e);
         // Final fallback to static games
         console.log("Falling back to fetch_games (no images)...");
         try {
@@ -3180,6 +3180,39 @@ async function loadHomeData() {
 
 async function loadLibraryData() {
   console.log("Loading library data...");
+
+  // Show placeholders while loading
+  const placeholderGames = createPlaceholderGames();
+  renderGamesGrid("recently-played", placeholderGames.slice(0, 6));
+  renderGamesGrid("my-games", placeholderGames);
+
+  try {
+    const accessToken = await invoke<string>("get_gfn_jwt");
+    console.log("Got GFN JWT token, calling fetch_library for library view...");
+    const response = await invoke<{ games: Game[] }>("fetch_library", {
+      accessToken,
+      vpcId: null,
+    });
+    console.log("fetch_library response for library view:", response);
+
+    if (response.games.length > 0) {
+      const libraryGames = response.games;
+      console.log("Loaded", libraryGames.length, "games for library view");
+
+      // Recently played: show first 6 games (API returns most recent first)
+      renderGamesGrid("recently-played", libraryGames.slice(0, 6));
+
+      // My games: show all library games
+      renderGamesGrid("my-games", libraryGames);
+    } else {
+      console.log("Library returned 0 games");
+      // Clear placeholders if no games
+      renderGamesGrid("recently-played", []);
+      renderGamesGrid("my-games", []);
+    }
+  } catch (error) {
+    console.error("Failed to load library data:", error);
+  }
 }
 
 async function loadStoreData() {
