@@ -41,6 +41,22 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: Logs or Screenshots (optional)
-      description: Paste error messages or drag images here
+      label: Logs (required)
+      description: |
+        Please export and attach your logs:
+        1. Open Settings (gear icon)
+        2. Scroll to Troubleshooting section
+        3. Click "Export Logs"
+        4. Drag the exported .log file here or paste its contents
+
+        Logs help us debug your issue much faster!
+      placeholder: Drag your exported log file here or paste the contents...
       render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots (optional)
+      description: If applicable, add screenshots to help explain your problem

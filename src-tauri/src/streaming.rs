@@ -403,6 +403,13 @@ pub async fn start_session(
     let zone = request.preferred_server.clone()
         .unwrap_or_else(|| "eu-netherlands-south".to_string());
 
+    // Check if we're using an Alliance Partner (non-NVIDIA provider)
+    // Alliance Partners use their own streaming URLs instead of cloudmatchbeta.nvidiagrid.net
+    let streaming_base_url = crate::auth::get_streaming_base_url().await;
+    let is_alliance_partner = !streaming_base_url.contains("cloudmatchbeta.nvidiagrid.net");
+    
+    log::info!("Streaming base URL: {}, is Alliance Partner: {}", streaming_base_url, is_alliance_partner);
+
     // Generate device and client IDs (UUID format like browser)
     let device_id = get_device_id();
     let client_id = get_client_id();
@@ -484,10 +491,21 @@ pub async fn start_session(
     log::debug!("Device ID: {}, Client ID: {}", device_id, client_id);
 
     // Build the session URL with query params
-    let session_url = format!(
-        "{}/v2/session?keyboardLayout=en-US&languageCode=en_US",
-        cloudmatch_zone_url(&zone)
-    );
+    // For Alliance Partners, use their streaming URL directly
+    // For NVIDIA, construct from zone
+    let session_url = if is_alliance_partner {
+        // Alliance Partners use their streaming URL directly
+        let base = streaming_base_url.trim_end_matches('/');
+        format!("{}/v2/session?keyboardLayout=en-US&languageCode=en_US", base)
+    } else {
+        // NVIDIA uses zone-based URLs
+        format!(
+            "{}/v2/session?keyboardLayout=en-US&languageCode=en_US",
+            cloudmatch_zone_url(&zone)
+        )
+    };
+    
+    log::info!("Session URL: {}", session_url);
 
     // Request session from CloudMatch with browser-style headers
     let response = client
@@ -625,8 +643,20 @@ pub async fn stop_session(
 
     let client = crate::proxy::create_proxied_client().await?;
 
-    // DELETE to https://{zone}.cloudmatchbeta.nvidiagrid.net:443/v2/session/{session_id}
-    let delete_url = format!("{}/v2/session/{}", cloudmatch_zone_url(&zone), session_id);
+    // Check if we're using an Alliance Partner
+    let streaming_base_url = crate::auth::get_streaming_base_url().await;
+    let is_alliance_partner = !streaming_base_url.contains("cloudmatchbeta.nvidiagrid.net");
+
+    // DELETE to session endpoint
+    // For Alliance Partners, use their streaming URL
+    let delete_url = if is_alliance_partner {
+        let base = streaming_base_url.trim_end_matches('/');
+        format!("{}/v2/session/{}", base, session_id)
+    } else {
+        format!("{}/v2/session/{}", cloudmatch_zone_url(&zone), session_id)
+    };
+    
+    log::info!("Delete URL: {} (Alliance Partner: {})", delete_url, is_alliance_partner);
 
     let response = client
         .delete(&delete_url)
@@ -791,13 +821,22 @@ pub async fn poll_session_until_ready(
 
     let client = crate::proxy::create_proxied_client().await?;
 
+    // Check if we're using an Alliance Partner
+    let streaming_base_url = crate::auth::get_streaming_base_url().await;
+    let is_alliance_partner = !streaming_base_url.contains("cloudmatchbeta.nvidiagrid.net");
+
     // Build polling URL using session control server
-    let poll_base = control_server
-        .map(|ip| format!("https://{}", ip))
-        .unwrap_or_else(|| cloudmatch_zone_url(&zone));
+    // For Alliance Partners, prefer their streaming URL
+    let poll_base = if is_alliance_partner {
+        streaming_base_url.trim_end_matches('/').to_string()
+    } else {
+        control_server
+            .map(|ip| format!("https://{}", ip))
+            .unwrap_or_else(|| cloudmatch_zone_url(&zone))
+    };
 
     let poll_url = format!("{}/v2/session/{}", poll_base, session_id);
-    log::info!("Polling URL: {}", poll_url);
+    log::info!("Polling URL: {} (Alliance Partner: {})", poll_url, is_alliance_partner);
 
     let device_id = get_device_id();
     let client_id = get_client_id();

@@ -1049,6 +1049,27 @@ select {
   color: var(--text-muted);
 }
 
+.setting-divider {
+  margin-top: 32px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
+}
+
+.setting-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.troubleshooting-buttons {
+  display: flex;
+  gap: 12px;
+}
+
+.troubleshooting-buttons .btn {
+  flex: 1;
+}
+
 /* Region selector with latency coloring */
 #region-setting {
   width: 100%;
@@ -1521,13 +1542,50 @@ select {
 
 /* Login Modal */
 .login-modal-content {
-  max-width: 400px;
+  max-width: 420px;
   text-align: center;
 }
 
 .login-modal-content h2 {
-  margin-bottom: 24px;
+  margin-bottom: 20px;
   color: var(--text-primary);
+}
+
+/* Login Region/Provider Selection */
+.login-region-section {
+  margin-bottom: 24px;
+  text-align: left;
+}
+
+.login-region-label {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.login-region-section .custom-dropdown {
+  width: 100%;
+}
+
+.login-region-section .dropdown-trigger {
+  width: 100%;
+  padding: 12px 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+}
+
+.login-region-section .dropdown-menu {
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.login-region-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 6px;
 }
 
 .login-options {

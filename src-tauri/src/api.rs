@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use tauri::command;
 use reqwest::Client;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+// Import auth module for streaming base URL
+use crate::auth;
 
 /// Game variant (different store versions)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +207,200 @@ query GetAppDataQueryForAppId($vpcId: String!, $locale: String!, $appIds: [Strin
 const DEFAULT_VPC_ID: &str = "GFN-PC";
 /// Default locale
 const DEFAULT_LOCALE: &str = "en_US";
+
+// ============================================
+// Dynamic Server Info & VPC ID Support
+// ============================================
+
+/// Server info response from /v2/serverInfo endpoint
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerInfoResponse {
+    version: Option<ServerVersion>,
+    #[serde(default)]
+    meta_data: Vec<ServerMetaData>,
+    #[serde(default)]
+    monitor_settings: Vec<serde_json::Value>,
+    request_status: Option<ServerInfoRequestStatus>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerVersion {
+    build_version: Option<String>,
+    name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ServerMetaData {
+    key: String,
+    value: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerInfoRequestStatus {
+    status_code: i32,
+    server_id: Option<String>,
+}
+
+/// Cached server info (VPC ID and region mappings)
+#[derive(Debug, Clone, Default)]
+pub struct CachedServerInfo {
+    /// The VPC ID (serverId from serverInfo response)
+    pub vpc_id: Option<String>,
+    /// Region name to URL mappings from metaData
+    pub regions: Vec<(String, String)>,
+    /// The base streaming URL for this provider
+    pub base_url: Option<String>,
+}
+
+/// Global storage for cached server info
+static CACHED_SERVER_INFO: std::sync::OnceLock<Arc<Mutex<CachedServerInfo>>> = std::sync::OnceLock::new();
+
+fn get_server_info_storage() -> Arc<Mutex<CachedServerInfo>> {
+    CACHED_SERVER_INFO.get_or_init(|| Arc::new(Mutex::new(CachedServerInfo::default()))).clone()
+}
+
+/// Fetch server info from the provider's /v2/serverInfo endpoint
+/// This discovers the VPC ID and available regions for the current provider
+#[command]
+pub async fn fetch_server_info(access_token: Option<String>) -> Result<CachedServerInfo, String> {
+    let base_url = auth::get_streaming_base_url().await;
+    let url = format!("{}v2/serverInfo", base_url);
+    
+    log::info!("Fetching server info from: {}", url);
+    
+    let client = Client::builder()
+        .user_agent(GFN_CEF_USER_AGENT)
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    
+    let mut request = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .header("nv-client-id", LCARS_CLIENT_ID)
+        .header("nv-client-type", "BROWSER")
+        .header("nv-client-version", GFN_CLIENT_VERSION)
+        .header("nv-client-streamer", "WEBRTC")
+        .header("nv-device-os", "WINDOWS")
+        .header("nv-device-type", "DESKTOP");
+    
+    if let Some(token) = &access_token {
+        request = request.header("Authorization", format!("GFNJWT {}", token));
+    }
+    
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch server info: {}", e))?;
+    
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Server info request failed with status {}: {}", status, body));
+    }
+    
+    let server_info: ServerInfoResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse server info: {}", e))?;
+    
+    // Extract VPC ID from requestStatus.serverId
+    let vpc_id = server_info.request_status
+        .as_ref()
+        .and_then(|s| s.server_id.clone());
+    
+    log::info!("Discovered VPC ID: {:?}", vpc_id);
+    
+    // Extract region mappings from metaData
+    // Format: key="REGION NAME", value="https://region-url.nvidiagrid.net"
+    // Also look for "gfn-regions" which lists available regions
+    let mut regions: Vec<(String, String)> = Vec::new();
+    let mut gfn_regions: Vec<String> = Vec::new();
+    
+    for meta in &server_info.meta_data {
+        if meta.key == "gfn-regions" {
+            // Split comma-separated region names
+            gfn_regions = meta.value.split(',').map(|s| s.trim().to_string()).collect();
+        } else if meta.value.starts_with("https://") {
+            // This is a region URL mapping
+            regions.push((meta.key.clone(), meta.value.clone()));
+        }
+    }
+    
+    log::info!("Discovered {} regions: {:?}", regions.len(), gfn_regions);
+    
+    // Cache the server info
+    let cached = CachedServerInfo {
+        vpc_id,
+        regions,
+        base_url: Some(base_url),
+    };
+    
+    {
+        let storage = get_server_info_storage();
+        let mut guard = storage.lock().await;
+        *guard = cached.clone();
+    }
+    
+    Ok(cached)
+}
+
+/// Get the current VPC ID (fetches server info if not cached)
+pub async fn get_current_vpc_id(access_token: Option<&str>) -> String {
+    // First check cache
+    {
+        let storage = get_server_info_storage();
+        let guard = storage.lock().await;
+        if let Some(vpc_id) = &guard.vpc_id {
+            return vpc_id.clone();
+        }
+    }
+    
+    // Try to fetch server info
+    if let Ok(info) = fetch_server_info(access_token.map(|s| s.to_string())).await {
+        if let Some(vpc_id) = info.vpc_id {
+            return vpc_id;
+        }
+    }
+    
+    // Fallback to default
+    DEFAULT_VPC_ID.to_string()
+}
+
+/// Get cached server info
+#[command]
+pub async fn get_cached_server_info() -> Result<CachedServerInfo, String> {
+    let storage = get_server_info_storage();
+    let guard = storage.lock().await;
+    Ok(guard.clone())
+}
+
+/// Clear cached server info (call on logout or provider change)
+#[command]
+pub async fn clear_server_info_cache() -> Result<(), String> {
+    let storage = get_server_info_storage();
+    let mut guard = storage.lock().await;
+    *guard = CachedServerInfo::default();
+    log::info!("Cleared server info cache");
+    Ok(())
+}
+
+/// Serialization support for CachedServerInfo
+impl Serialize for CachedServerInfo {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("CachedServerInfo", 3)?;
+        state.serialize_field("vpcId", &self.vpc_id)?;
+        state.serialize_field("regions", &self.regions)?;
+        state.serialize_field("baseUrl", &self.base_url)?;
+        state.end()
+    }
+}
 
 /// GraphQL response wrapper
 #[derive(Debug, Deserialize)]
@@ -722,12 +921,19 @@ pub async fn fetch_library(
     vpc_id: Option<String>,
 ) -> Result<GamesResponse, String> {
     let client = Client::new();
-    let vpc = vpc_id.as_deref().unwrap_or("NP-AMS-07"); // Default to Amsterdam
+    
+    // Use provided vpc_id, or fetch dynamically from server info
+    let vpc = match vpc_id {
+        Some(v) => v,
+        None => get_current_vpc_id(Some(&access_token)).await,
+    };
+    
+    log::info!("fetch_library: Using VPC ID: {}", vpc);
 
     let panels = fetch_panels_persisted(
         &client,
         vec!["LIBRARY"],
-        vpc,
+        &vpc,
         Some(&access_token),
     ).await?;
 
@@ -763,14 +969,19 @@ pub async fn fetch_main_games(
     vpc_id: Option<String>,
 ) -> Result<GamesResponse, String> {
     let client = Client::new();
-    let vpc = vpc_id.as_deref().unwrap_or("NP-AMS-07"); // Default to Amsterdam
+    
+    // Use provided vpc_id, or fetch dynamically from server info
+    let vpc = match vpc_id {
+        Some(v) => v,
+        None => get_current_vpc_id(access_token.as_deref()).await,
+    };
 
     log::info!("fetch_main_games: Starting with vpc={}", vpc);
 
     let panels = match fetch_panels_persisted(
         &client,
         vec!["MAIN"],
-        vpc,
+        &vpc,
         access_token.as_deref(),
     ).await {
         Ok(p) => {
@@ -1056,9 +1267,70 @@ async fn test_server_latency(
 
 /// Get available servers with ping information
 /// Uses CloudMatch API to get server status - runs tests in parallel for speed
+/// Dynamically fetches server regions from /v2/serverInfo endpoint
 #[command]
-pub async fn get_servers(_access_token: Option<String>) -> Result<Vec<Server>, String> {
+pub async fn get_servers(access_token: Option<String>) -> Result<Vec<Server>, String> {
     let client = Client::new();
+    
+    // Check if we have cached provider-specific regions
+    let mut cached_info = {
+        let storage = get_server_info_storage();
+        let guard = storage.lock().await;
+        guard.clone()
+    };
+    
+    // If no cached regions, fetch from serverInfo endpoint
+    // This works for both NVIDIA (prod.cloudmatchbeta) and Alliance Partners
+    if cached_info.regions.is_empty() {
+        log::info!("No cached server regions, fetching from serverInfo endpoint...");
+        
+        // Fetch server info (this will use the correct base URL based on selected provider)
+        match fetch_server_info(access_token).await {
+            Ok(info) => {
+                log::info!("Fetched {} regions from serverInfo", info.regions.len());
+                cached_info = info;
+            }
+            Err(e) => {
+                log::warn!("Failed to fetch serverInfo: {}, falling back to hardcoded zones", e);
+            }
+        }
+    }
+    
+    // If we have dynamic regions (from serverInfo), use those
+    if !cached_info.regions.is_empty() {
+        log::info!("Using {} dynamic server regions", cached_info.regions.len());
+        
+        let futures: Vec<_> = cached_info.regions
+            .iter()
+            .map(|(region_name, region_url)| {
+                let client = client.clone();
+                let name = region_name.clone();
+                let url = region_url.clone();
+                async move {
+                    test_provider_server_latency(&client, &name, &url).await
+                }
+            })
+            .collect();
+        
+        let mut servers: Vec<Server> = futures_util::future::join_all(futures).await;
+        
+        // Sort by ping (online servers first, then by ping)
+        servers.sort_by(|a, b| {
+            match (&a.status, &b.status) {
+                (ServerStatus::Online, ServerStatus::Online) => {
+                    a.ping_ms.cmp(&b.ping_ms)
+                }
+                (ServerStatus::Online, _) => std::cmp::Ordering::Less,
+                (_, ServerStatus::Online) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            }
+        });
+        
+        return Ok(servers);
+    }
+    
+    // Fall back to hardcoded NVIDIA server zones (only if serverInfo fetch failed)
+    log::info!("Using hardcoded NVIDIA server zones as fallback");
 
     // Test all servers in parallel for fast results
     let futures: Vec<_> = SERVER_ZONES
@@ -1086,6 +1358,90 @@ pub async fn get_servers(_access_token: Option<String>) -> Result<Vec<Server>, S
     });
 
     Ok(servers)
+}
+
+/// Test latency for a provider-specific server (uses full URL)
+async fn test_provider_server_latency(
+    client: &Client,
+    region_name: &str,
+    region_url: &str,
+) -> Server {
+    let server_url = format!("{}v2/serverInfo", region_url);
+    
+    // Extract hostname from URL for TCP ping
+    let hostname = region_url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
+    
+    // Extract server ID from URL
+    // For NVIDIA cloudmatchbeta URLs like "https://eu-netherlands-south.cloudmatchbeta.nvidiagrid.net"
+    // we need to extract "eu-netherlands-south" as the server ID for session URLs
+    // For other providers, fall back to name-based ID
+    let server_id = if hostname.contains(".cloudmatchbeta.nvidiagrid.net") {
+        // Extract subdomain (e.g., "eu-netherlands-south" from "eu-netherlands-south.cloudmatchbeta.nvidiagrid.net")
+        hostname.split('.').next().unwrap_or(hostname).to_string()
+    } else {
+        // For non-NVIDIA providers, use name-based ID
+        region_name.to_lowercase().replace(' ', "-")
+    };
+    
+    log::debug!("Server {} -> ID: {} (from URL: {})", region_name, server_id, region_url);
+    
+    // Measure TCP connect time to port 443 (HTTPS)
+    let tcp_ping = async {
+        use tokio::net::TcpStream;
+        use std::net::ToSocketAddrs;
+
+        let addr = format!("{}:443", hostname);
+        let socket_addr = tokio::task::spawn_blocking(move || {
+            addr.to_socket_addrs().ok().and_then(|mut addrs| addrs.next())
+        }).await.ok().flatten();
+
+        if let Some(socket_addr) = socket_addr {
+            let start = std::time::Instant::now();
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                TcpStream::connect(socket_addr)
+            ).await {
+                Ok(Ok(_stream)) => {
+                    let elapsed = start.elapsed().as_millis() as u32;
+                    Some(elapsed)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    };
+
+    // Run TCP ping and HTTP status check in parallel
+    let (ping_ms, http_result) = tokio::join!(
+        tcp_ping,
+        client.get(&server_url).timeout(std::time::Duration::from_secs(5)).send()
+    );
+
+    let status = match http_result {
+        Ok(response) if response.status().is_success() => ServerStatus::Online,
+        Ok(_) => ServerStatus::Maintenance,
+        Err(_) => {
+            if ping_ms.is_some() {
+                ServerStatus::Online
+            } else {
+                ServerStatus::Offline
+            }
+        }
+    };
+
+    Server {
+        id: server_id,
+        name: region_name.to_string(),
+        region: region_name.to_string(),
+        country: region_name.to_string(),
+        ping_ms,
+        queue_size: None,
+        status,
+    }
 }
 
 /// Parse store type from string
@@ -1381,12 +1737,18 @@ pub async fn search_games_graphql(
     vpc_id: Option<String>,
 ) -> Result<GamesResponse, String> {
     let client = Client::new();
-    let vpc = vpc_id.as_deref().unwrap_or("NP-AMS-07");
+    
+    // Use provided vpc_id, or fetch dynamically from server info
+    let vpc = match vpc_id {
+        Some(v) => v,
+        None => get_current_vpc_id(access_token.as_deref()).await,
+    };
+    
     let fetch_count = limit.unwrap_or(20) as i32;
 
     let variables = serde_json::json!({
         "searchString": query,
-        "vpcId": vpc,
+        "vpcId": &vpc,
         "locale": DEFAULT_LOCALE,
         "fetchCount": fetch_count,
         "sortString": "itemMetadata.relevance:DESC,sortName:ASC",
