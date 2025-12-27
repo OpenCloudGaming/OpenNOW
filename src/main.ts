@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import {
   initializeStreaming,
   setupInputCapture,
@@ -473,7 +474,7 @@ async function fetchServerMapping(): Promise<PrintedWasteMappingResponse | null>
 
   try {
     const version = await getAppVersion();
-    const response = await fetch("https://remote.printedwaste.com/config/GFN_SERVERID_TO_REGION_MAPPING", {
+    const response = await tauriFetch("https://remote.printedwaste.com/config/GFN_SERVERID_TO_REGION_MAPPING", {
       headers: {
         "User-Agent": `OpenNOW/${version}`
       }
@@ -503,7 +504,7 @@ async function fetchQueueData(): Promise<PrintedWasteQueueResponse | null> {
 
   try {
     const version = await getAppVersion();
-    const response = await fetch("https://api.printedwaste.com/gfn/queue/", {
+    const response = await tauriFetch("https://api.printedwaste.com/gfn/queue/", {
       headers: {
         "User-Agent": `OpenNOW/${version}`
       }
