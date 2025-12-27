@@ -352,6 +352,46 @@ interface Server {
   status: string;
 }
 
+// PrintedWaste API types for queue times
+interface PrintedWasteServerMapping {
+  title: string;
+  region: string;
+  is4080Server: boolean;
+  is5080Server: boolean;
+  nuked: boolean;
+}
+
+interface PrintedWasteQueueData {
+  QueuePosition: number;
+  "Last Updated": number;
+  Region: string;
+  eta?: number; // ETA in milliseconds
+}
+
+interface PrintedWasteQueueResponse {
+  status: boolean;
+  error: boolean;
+  data: { [serverId: string]: PrintedWasteQueueData };
+}
+
+interface PrintedWasteMappingResponse {
+  status: boolean;
+  error: boolean;
+  data: { [serverId: string]: PrintedWasteServerMapping };
+}
+
+// Combined server info for queue selection
+interface QueueServerInfo {
+  serverId: string;
+  displayName: string;  // e.g., "Oregon"
+  region: string;       // e.g., "US Northwest"
+  ping_ms?: number;
+  queuePosition: number;
+  etaSeconds?: number;
+  is4080Server: boolean;
+  is5080Server: boolean;
+}
+
 interface ActiveSession {
   sessionId: string;
   appId: number;
@@ -390,6 +430,16 @@ let cachedServers: Server[] = []; // Cached server latency data
 let isTestingLatency = false; // Flag to prevent concurrent latency tests
 let reflexEnabled = true; // NVIDIA Reflex low-latency mode (auto-enabled for 120+ FPS)
 
+// PrintedWaste queue data cache
+let cachedQueueData: PrintedWasteQueueResponse | null = null;
+let cachedServerMapping: PrintedWasteMappingResponse | null = null;
+let lastQueueFetch = 0;
+const QUEUE_CACHE_TTL_MS = 30000; // 30 second cache for queue data
+let selectedQueueServer: string | null = null; // User's selected server for queue
+let queueCountdownInterval: number | null = null; // Countdown timer interval
+let queueStartEta: number = 0; // Initial ETA when queue started (in seconds)
+let queueStartTime: number = 0; // When the queue started (timestamp)
+
 // Helper to get streaming params - uses direct resolution and fps values
 function getStreamingParams(): { resolution: string; fps: number } {
   return { resolution: currentResolution, fps: currentFps };
@@ -400,6 +450,573 @@ function isFreeTier(subscription: SubscriptionInfo | null): boolean {
   if (!subscription) return true; // Assume free if no subscription data
   const tier = subscription.membershipTier?.toUpperCase() || "FREE";
   return tier === "FREE" || tier === "FOUNDER"; // FOUNDER is also a free tier variant
+}
+
+// ============================================
+// PrintedWaste Queue API Integration
+// ============================================
+
+// Get the current app version for user agent
+async function getAppVersion(): Promise<string> {
+  try {
+    return await getVersion();
+  } catch {
+    return "0.0.12"; // Fallback version
+  }
+}
+
+// Fetch server mapping from PrintedWaste
+async function fetchServerMapping(): Promise<PrintedWasteMappingResponse | null> {
+  if (cachedServerMapping) {
+    return cachedServerMapping;
+  }
+
+  try {
+    const version = await getAppVersion();
+    const response = await fetch("https://remote.printedwaste.com/config/GFN_SERVERID_TO_REGION_MAPPING", {
+      headers: {
+        "User-Agent": `OpenNOW/${version}`
+      }
+    });
+
+    if (!response.ok) {
+      console.error("Failed to fetch server mapping:", response.status);
+      return null;
+    }
+
+    cachedServerMapping = await response.json();
+    return cachedServerMapping;
+  } catch (error) {
+    console.error("Error fetching server mapping:", error);
+    return null;
+  }
+}
+
+// Fetch queue data from PrintedWaste
+async function fetchQueueData(): Promise<PrintedWasteQueueResponse | null> {
+  const now = Date.now();
+
+  // Return cached data if still valid
+  if (cachedQueueData && (now - lastQueueFetch) < QUEUE_CACHE_TTL_MS) {
+    return cachedQueueData;
+  }
+
+  try {
+    const version = await getAppVersion();
+    const response = await fetch("https://api.printedwaste.com/gfn/queue/", {
+      headers: {
+        "User-Agent": `OpenNOW/${version}`
+      }
+    });
+
+    if (!response.ok) {
+      console.error("Failed to fetch queue data:", response.status);
+      return cachedQueueData; // Return stale cache on error
+    }
+
+    cachedQueueData = await response.json();
+    lastQueueFetch = now;
+    return cachedQueueData;
+  } catch (error) {
+    console.error("Error fetching queue data:", error);
+    return cachedQueueData; // Return stale cache on error
+  }
+}
+
+// Get combined queue server info with ping data
+async function getQueueServersInfo(): Promise<QueueServerInfo[]> {
+  const [mapping, queueData] = await Promise.all([
+    fetchServerMapping(),
+    fetchQueueData()
+  ]);
+
+  if (!mapping || !queueData) {
+    console.error("Failed to fetch queue server info");
+    return [];
+  }
+
+  const servers: QueueServerInfo[] = [];
+
+  for (const [serverId, serverData] of Object.entries(mapping.data)) {
+    // Skip nuked servers
+    if (serverData.nuked) continue;
+
+    // Only include RTX 4080 or 5080 servers
+    if (!serverData.is4080Server && !serverData.is5080Server) continue;
+
+    const queueInfo = queueData.data[serverId];
+    if (!queueInfo) continue; // Skip if no queue data
+
+    // Find ping from cached servers (match by region/name)
+    const cachedServer = cachedServers.find(s =>
+      s.name.toLowerCase().includes(serverData.title.toLowerCase()) ||
+      serverData.title.toLowerCase().includes(s.name.toLowerCase()) ||
+      s.id === serverId
+    );
+
+    servers.push({
+      serverId,
+      displayName: serverData.title,
+      region: serverData.region,
+      ping_ms: cachedServer?.ping_ms,
+      queuePosition: queueInfo.QueuePosition,
+      etaSeconds: queueInfo.eta ? Math.floor(queueInfo.eta / 1000) : undefined, // Convert ms to seconds
+      is4080Server: serverData.is4080Server,
+      is5080Server: serverData.is5080Server
+    });
+  }
+
+  // Sort by ping (best first), undefined pings go to end
+  servers.sort((a, b) => {
+    if (a.ping_ms === undefined && b.ping_ms === undefined) return 0;
+    if (a.ping_ms === undefined) return 1;
+    if (b.ping_ms === undefined) return -1;
+    return a.ping_ms - b.ping_ms;
+  });
+
+  return servers;
+}
+
+// Format ETA in a human-readable format
+function formatQueueEta(etaSeconds: number | undefined): string {
+  if (!etaSeconds || etaSeconds <= 0) return "Unknown";
+
+  if (etaSeconds < 60) {
+    return `${etaSeconds}s`;
+  } else if (etaSeconds < 3600) {
+    const minutes = Math.floor(etaSeconds / 60);
+    return `${minutes}m`;
+  } else if (etaSeconds < 86400) {
+    const hours = Math.floor(etaSeconds / 3600);
+    const minutes = Math.floor((etaSeconds % 3600) / 60);
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  } else {
+    const days = Math.floor(etaSeconds / 86400);
+    const hours = Math.floor((etaSeconds % 86400) / 3600);
+    return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  }
+}
+
+// Calculate auto-selected server based on ping and queue time
+function getAutoSelectedServer(servers: QueueServerInfo[]): QueueServerInfo | null {
+  if (servers.length === 0) return null;
+
+  // Score each server: lower is better
+  // We balance ping (important for gameplay) with queue time
+  // Ping weight: 1.0, Queue ETA weight: 0.1 (per minute)
+  const scored = servers.map(server => {
+    const pingScore = server.ping_ms ?? 500; // High penalty for unknown ping
+    const etaMinutes = (server.etaSeconds ?? 0) / 60;
+    // Cap ETA penalty to prevent extremely long queues from dominating
+    const etaScore = Math.min(etaMinutes * 0.1, 50);
+    return {
+      server,
+      score: pingScore + etaScore
+    };
+  });
+
+  scored.sort((a, b) => a.score - b.score);
+  return scored[0]?.server ?? null;
+}
+
+// Show the queue server selection modal (for free tier users)
+async function showQueueSelectionModal(game: Game): Promise<string | null> {
+  return new Promise(async (resolve) => {
+    // Fetch queue data
+    const servers = await getQueueServersInfo();
+
+    if (servers.length === 0) {
+      // No queue data available, proceed with normal flow
+      resolve(null);
+      return;
+    }
+
+    const autoServer = getAutoSelectedServer(servers);
+
+    // Remove existing modal if any
+    const existing = document.getElementById("queue-selection-modal");
+    if (existing) existing.remove();
+
+    const modal = document.createElement("div");
+    modal.id = "queue-selection-modal";
+    modal.className = "modal";
+    modal.innerHTML = `
+      <div class="modal-content queue-modal-content">
+        <button class="modal-close">&times;</button>
+        <h2>Select Server</h2>
+        <p class="queue-modal-subtitle">Choose a server to queue on based on your ping and current wait times.</p>
+
+        <div class="queue-server-list" id="queue-server-list">
+          <!-- Auto option -->
+          <div class="queue-server-item selected" data-server-id="auto" data-eta="${autoServer?.etaSeconds || 0}">
+            <div class="queue-server-info">
+              <span class="queue-server-name">Auto (Recommended)</span>
+              <span class="queue-server-detail">${autoServer ? `${autoServer.displayName} - Best balance of ping & wait` : 'Best available'}</span>
+            </div>
+            <div class="queue-server-stats">
+              <span class="queue-ping ${autoServer ? getLatencyClassName(autoServer.ping_ms) : ''}">${autoServer?.ping_ms ? `${autoServer.ping_ms}ms` : '--'}</span>
+              <span class="queue-wait">~${formatQueueEta(autoServer?.etaSeconds)}</span>
+            </div>
+          </div>
+
+          ${servers.map(server => `
+            <div class="queue-server-item" data-server-id="${server.serverId}" data-eta="${server.etaSeconds || 0}">
+              <div class="queue-server-info">
+                <span class="queue-server-name">${server.displayName}</span>
+                <span class="queue-server-detail">${server.is5080Server ? 'RTX 5080' : 'RTX 4080'}</span>
+              </div>
+              <div class="queue-server-stats">
+                <span class="queue-ping ${getLatencyClassName(server.ping_ms)}">${server.ping_ms ? `${server.ping_ms}ms` : '--'}</span>
+                <span class="queue-wait">~${formatQueueEta(server.etaSeconds)}</span>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="queue-modal-actions">
+          <button id="queue-start-btn" class="btn btn-primary btn-large">Start Queue</button>
+          <button id="queue-cancel-btn" class="btn btn-secondary">Cancel</button>
+        </div>
+
+        <div class="queue-attribution">
+          <span>Powered by <a href="https://printedwaste.com/gfn/" target="_blank" rel="noopener noreferrer">PrintedWaste</a></span>
+        </div>
+      </div>
+    `;
+
+    // Add modal styles
+    const style = document.createElement("style");
+    style.id = "queue-modal-style";
+    style.textContent = `
+      .queue-modal-content {
+        max-width: 500px;
+        max-height: 80vh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .queue-modal-subtitle {
+        color: var(--text-secondary);
+        font-size: 14px;
+        margin-bottom: 16px;
+      }
+      .queue-server-list {
+        flex: 1;
+        overflow-y: auto;
+        max-height: 350px;
+        margin-bottom: 16px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius);
+      }
+      .queue-server-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 16px;
+        cursor: pointer;
+        transition: background 0.15s;
+        border-bottom: 1px solid var(--border-color);
+      }
+      .queue-server-item:last-child {
+        border-bottom: none;
+      }
+      .queue-server-item:hover {
+        background: var(--bg-hover);
+      }
+      .queue-server-item.selected {
+        background: rgba(118, 185, 0, 0.15);
+        border-left: 3px solid var(--accent-green);
+      }
+      .queue-server-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .queue-server-name {
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+      .queue-server-detail {
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+      .queue-server-stats {
+        display: flex;
+        gap: 16px;
+        align-items: center;
+      }
+      .queue-ping {
+        font-family: monospace;
+        font-size: 14px;
+        min-width: 50px;
+        text-align: right;
+      }
+      .queue-wait {
+        font-size: 13px;
+        color: var(--text-secondary);
+        min-width: 70px;
+        text-align: right;
+      }
+      .queue-modal-actions {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .queue-modal-actions .btn {
+        flex: 1;
+      }
+      .queue-attribution {
+        text-align: center;
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+      .queue-attribution a {
+        color: var(--accent-green);
+        text-decoration: none;
+      }
+      .queue-attribution a:hover {
+        text-decoration: underline;
+      }
+    `;
+
+    document.head.appendChild(style);
+    document.body.appendChild(modal);
+
+    // Initialize Lucide icons if available
+    if (typeof lucide !== 'undefined') {
+      lucide.createIcons();
+    }
+
+    let selectedServerId = "auto";
+    let selectedEta = autoServer?.etaSeconds || 0;
+
+    // Handle server selection
+    const serverItems = modal.querySelectorAll('.queue-server-item');
+    serverItems.forEach(item => {
+      item.addEventListener('click', () => {
+        serverItems.forEach(i => i.classList.remove('selected'));
+        item.classList.add('selected');
+        selectedServerId = (item as HTMLElement).dataset.serverId || "auto";
+        selectedEta = parseInt((item as HTMLElement).dataset.eta || "0", 10);
+      });
+    });
+
+    // Handle start button
+    modal.querySelector('#queue-start-btn')?.addEventListener('click', () => {
+      selectedQueueServer = selectedServerId === "auto" ? (autoServer?.serverId || null) : selectedServerId;
+      queueStartEta = selectedEta;
+      queueStartTime = Date.now();
+      modal.remove();
+      style.remove();
+      resolve(selectedQueueServer);
+    });
+
+    // Handle cancel button
+    modal.querySelector('#queue-cancel-btn')?.addEventListener('click', () => {
+      modal.remove();
+      style.remove();
+      resolve(null);
+    });
+
+    // Handle close button
+    modal.querySelector('.modal-close')?.addEventListener('click', () => {
+      modal.remove();
+      style.remove();
+      resolve(null);
+    });
+
+    // Close on background click
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        modal.remove();
+        style.remove();
+        resolve(null);
+      }
+    });
+  });
+}
+
+// Start countdown timer for queue ETA
+function startQueueCountdown() {
+  if (queueCountdownInterval) {
+    clearInterval(queueCountdownInterval);
+  }
+
+  const updateCountdown = () => {
+    const queueEtaEl = document.getElementById("queue-eta");
+
+    if (!queueEtaEl || queueStartEta <= 0) return;
+
+    // Calculate remaining time
+    const elapsed = Math.floor((Date.now() - queueStartTime) / 1000);
+    const remaining = Math.max(0, queueStartEta - elapsed);
+
+    queueEtaEl.textContent = formatQueueEta(remaining);
+  };
+
+  // Update immediately and then every second
+  updateCountdown();
+  queueCountdownInterval = window.setInterval(updateCountdown, 1000);
+}
+
+// Stop countdown timer
+function stopQueueCountdown() {
+  if (queueCountdownInterval) {
+    clearInterval(queueCountdownInterval);
+    queueCountdownInterval = null;
+  }
+
+  queueStartEta = 0;
+  queueStartTime = 0;
+}
+
+// Show queue times page (can be accessed from UI)
+async function showQueueTimesPage(): Promise<void> {
+  const servers = await getQueueServersInfo();
+
+  if (servers.length === 0) {
+    alert("Unable to fetch queue times. Please try again later.");
+    return;
+  }
+
+  // Remove existing modal if any
+  const existing = document.getElementById("queue-times-modal");
+  if (existing) existing.remove();
+
+  const modal = document.createElement("div");
+  modal.id = "queue-times-modal";
+  modal.className = "modal";
+  modal.innerHTML = `
+    <div class="modal-content queue-times-content">
+      <button class="modal-close">&times;</button>
+      <h2>Queue Times</h2>
+      <p class="queue-times-subtitle">Current wait times for RTX 4080/5080 servers, sorted by your ping.</p>
+
+      <div class="queue-times-list" id="queue-times-list">
+        ${servers.map(server => `
+          <div class="queue-times-item">
+            <div class="queue-times-info">
+              <span class="queue-times-name">${server.displayName}</span>
+              <span class="queue-times-gpu">${server.is5080Server ? 'RTX 5080' : 'RTX 4080'}</span>
+            </div>
+            <div class="queue-times-stats">
+              <span class="queue-times-ping ${getLatencyClassName(server.ping_ms)}">${server.ping_ms ? `${server.ping_ms}ms` : '--'}</span>
+              <span class="queue-times-wait">~${formatQueueEta(server.etaSeconds)}</span>
+              <span class="queue-times-position">#${server.queuePosition}</span>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+
+      <div class="queue-attribution">
+        <span>Powered by <a href="https://printedwaste.com/gfn/" target="_blank" rel="noopener noreferrer">PrintedWaste</a></span>
+      </div>
+    </div>
+  `;
+
+  // Add modal styles
+  const style = document.createElement("style");
+  style.id = "queue-times-modal-style";
+  style.textContent = `
+    .queue-times-content {
+      max-width: 550px;
+      max-height: 80vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .queue-times-subtitle {
+      color: var(--text-secondary);
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
+    .queue-times-list {
+      flex: 1;
+      overflow-y: auto;
+      max-height: 400px;
+      margin-bottom: 16px;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+    }
+    .queue-times-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .queue-times-item:last-child {
+      border-bottom: none;
+    }
+    .queue-times-item:nth-child(odd) {
+      background: var(--bg-tertiary);
+    }
+    .queue-times-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .queue-times-name {
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+    .queue-times-gpu {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .queue-times-stats {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+    .queue-times-ping {
+      font-family: monospace;
+      font-size: 14px;
+      min-width: 55px;
+      text-align: right;
+    }
+    .queue-times-wait {
+      font-size: 13px;
+      color: var(--text-secondary);
+      min-width: 70px;
+      text-align: right;
+    }
+    .queue-times-position {
+      font-size: 12px;
+      color: var(--text-muted);
+      min-width: 40px;
+      text-align: right;
+    }
+    .queue-attribution {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .queue-attribution a {
+      color: var(--accent-green);
+      text-decoration: none;
+    }
+    .queue-attribution a:hover {
+      text-decoration: underline;
+    }
+  `;
+
+  document.head.appendChild(style);
+  document.body.appendChild(modal);
+
+  // Handle close button
+  modal.querySelector('.modal-close')?.addEventListener('click', () => {
+    modal.remove();
+    style.remove();
+  });
+
+  // Close on background click
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      modal.remove();
+      style.remove();
+    }
+  });
 }
 
 // Check if resolution is above 1080p (considering any aspect ratio)
@@ -777,6 +1394,14 @@ function updateStatusBarLatency(): void {
 
 // Get the server ID to use for session launch
 function getPreferredServerForSession(): string | undefined {
+  // If a queue server was selected (free tier users), use that
+  if (selectedQueueServer) {
+    const server = selectedQueueServer;
+    // Reset for next launch
+    selectedQueueServer = null;
+    return server;
+  }
+
   if (currentRegion === "auto") {
     // Use the best (lowest ping) online server
     const bestServer = cachedServers.find(s => s.status === "Online");
@@ -959,6 +1584,15 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Setup session modals
   setupSessionModals();
+
+  // Setup queue times nav click handler
+  const queueTimesNav = document.getElementById("queue-times-nav");
+  if (queueTimesNav) {
+    queueTimesNav.addEventListener("click", (e) => {
+      e.preventDefault();
+      showQueueTimesPage();
+    });
+  }
 
   // Setup search
   setupSearch();
@@ -1531,6 +2165,19 @@ function updateStatusBarSessionTime(subscription: SubscriptionInfo | null) {
   }, 10);
 }
 
+// Update queue times nav visibility (only for free tier users)
+function updateQueueTimesLinkVisibility(subscription: SubscriptionInfo | null) {
+  const navItem = document.getElementById("queue-times-nav");
+  if (!navItem) return;
+
+  // Show nav item for free tier users who are authenticated
+  if (isAuthenticated && isFreeTier(subscription)) {
+    navItem.classList.remove("hidden");
+  } else {
+    navItem.classList.add("hidden");
+  }
+}
+
 // Setup session modal handlers
 function setupSessionModals() {
   // Active session modal handlers
@@ -2064,15 +2711,22 @@ async function checkAuthStatus() {
         console.log("Subscription addons:", subscription.addons);
         updateNavbarStorageIndicator(subscription);
         updateStatusBarSessionTime(subscription);
+
+        // Show queue times link for free tier users
+        updateQueueTimesLinkVisibility(subscription);
       } catch (subError) {
         console.warn("Failed to fetch subscription, using default tier:", subError);
         currentSubscription = null;
         // Use default streaming options
         populateStreamingOptions(null);
+        // Show queue times link (assume free tier on error)
+        updateQueueTimesLinkVisibility(null);
       }
     } else {
       // Not authenticated - use default streaming options
       populateStreamingOptions(null);
+      // Hide queue times link when not authenticated
+      updateQueueTimesLinkVisibility(null);
     }
 
     updateAuthUI();
@@ -2702,6 +3356,17 @@ async function launchGame(game: Game) {
     showSessionConflictModal(activeSessions[0], game);
     startSessionPolling(); // Resume polling since we're not launching
     return;
+  }
+
+  // For free tier users, show server selection modal with queue times
+  if (isFreeTier(currentSubscription)) {
+    const selectedServer = await showQueueSelectionModal(game);
+    if (selectedServer === null && selectedQueueServer === null) {
+      // User cancelled
+      startSessionPolling();
+      return;
+    }
+    // If user selected a server, selectedQueueServer is already set
   }
 
   // Show streaming overlay
@@ -3724,11 +4389,16 @@ function startQueueStatusPolling() {
     clearInterval(queueStatusInterval);
   }
 
+  // Start countdown timer if we have an ETA (free tier users)
+  if (queueStartEta > 0) {
+    startQueueCountdown();
+  }
+
   // Poll every 2 seconds for queue status
   queueStatusInterval = window.setInterval(async () => {
     try {
       const status = await invoke<QueueStatus>("get_queue_status");
-      
+
       if (status.is_in_queue && status.queue_position > 0) {
         // Update the overlay to show queue position
         updateQueueDisplay(status.queue_position, status.eta_ms);
@@ -3749,6 +4419,8 @@ function stopQueueStatusPolling() {
     clearInterval(queueStatusInterval);
     queueStatusInterval = null;
   }
+  // Also stop the countdown timer
+  stopQueueCountdown();
 }
 
 // Update the queue display in the overlay
@@ -3784,9 +4456,15 @@ function showStreamingOverlay(gameName: string, status: string) {
       <h2 id="streaming-game-name">${gameName}</h2>
       <p id="streaming-status">${status}</p>
       <div id="queue-info" style="display: none;">
-        <div class="queue-display">
-          <span class="queue-label">Position in Queue</span>
-          <span class="queue-position" id="queue-position">-</span>
+        <div class="queue-stats-row">
+          <div class="queue-display">
+            <span class="queue-label">Position in Queue</span>
+            <span class="queue-position" id="queue-position">-</span>
+          </div>
+          <div class="queue-display">
+            <span class="queue-label">Estimated Wait</span>
+            <span class="queue-eta" id="queue-eta">--</span>
+          </div>
         </div>
         <p class="queue-hint">Free tier users may experience longer wait times during peak hours.</p>
       </div>
@@ -3850,6 +4528,11 @@ function showStreamingOverlay(gameName: string, status: string) {
       padding: 20px;
       margin-bottom: 20px;
     }
+    .queue-stats-row {
+      display: flex;
+      justify-content: center;
+      gap: 40px;
+    }
     .queue-display {
       display: flex;
       flex-direction: column;
@@ -3863,6 +4546,12 @@ function showStreamingOverlay(gameName: string, status: string) {
       letter-spacing: 1px;
     }
     .queue-position {
+      font-size: 48px;
+      font-weight: bold;
+      color: #76b900;
+      line-height: 1;
+    }
+    .queue-eta {
       font-size: 48px;
       font-weight: bold;
       color: #76b900;
@@ -4095,4 +4784,6 @@ function createPlaceholderGames(): Game[] {
   setInputCaptureMode,
   // Get streaming state
   getStreamingState: () => streamingUIState,
+  // Queue times
+  showQueueTimesPage,
 };
