@@ -240,7 +240,7 @@ mod win32 {
         let device = RAWINPUTDEVICE {
             usage_page: HID_USAGE_PAGE_GENERIC,
             usage: HID_USAGE_GENERIC_MOUSE,
-            flags: RIDEV_INPUTSINK, // Receive input even when not focused
+            flags: 0, // Only receive input when window is focused (prevents cursor jump in other apps)
             hwnd_target: hwnd,
         };
 
