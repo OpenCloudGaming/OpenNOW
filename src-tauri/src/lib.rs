@@ -3,6 +3,7 @@
 pub mod native;
 
 // Logging module (always available)
+mod utils;
 mod logging;
 
 // Tauri app modules (only when tauri-app feature enabled)
