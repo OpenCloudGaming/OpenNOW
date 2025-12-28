@@ -393,6 +393,27 @@ impl ApplicationHandler for GfnApp {
                     }
                 }
             }
+            WindowEvent::Focused(focused) => {
+                if focused {
+                    // Window regained focus - re-capture mouse if it was captured before
+                    if self.mouse_captured {
+                        info!("Window regained focus - re-capturing mouse");
+                        // Need to re-apply the cursor grab since Windows releases it on focus loss
+                        if let Some(window) = &self.window {
+                            // Try confined first, then locked
+                            if window.set_cursor_grab(CursorGrabMode::Confined).is_err() {
+                                let _ = window.set_cursor_grab(CursorGrabMode::Locked);
+                            }
+                            window.set_cursor_visible(false);
+                        }
+                    }
+                } else {
+                    // Window lost focus - cursor grab is automatically released by Windows
+                    if self.mouse_captured {
+                        info!("Window lost focus - cursor grab suspended");
+                    }
+                }
+            }
             _ => {}
         }
     }
