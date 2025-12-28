@@ -2635,18 +2635,36 @@ export async function setInputCaptureMode(mode: 'pointerlock' | 'absolute'): Pro
 
 /**
  * Suspend cursor capture temporarily (e.g., when window loses focus)
- * No-op since we use absolute mode with CSS cursor hiding
+ * On Windows, releases the cursor clip so user can interact with other windows
  */
 export async function suspendCursorCapture(): Promise<void> {
-  // No-op - absolute mode doesn't need suspend/resume
+  // Only need to handle this in fullscreen/pointer lock mode
+  if (inputCaptureMode === 'pointerlock' && inputCaptureActive) {
+    try {
+      // Release cursor clip on Windows when window loses focus
+      await invoke("unclip_cursor");
+      console.log("Cursor clip suspended (window lost focus)");
+    } catch (e) {
+      // Ignore errors - command may not exist on non-Windows
+    }
+  }
 }
 
 /**
  * Resume cursor capture (e.g., when window regains focus)
- * No-op since we use absolute mode with CSS cursor hiding
+ * On Windows, re-clips the cursor to the window
  */
 export async function resumeCursorCapture(): Promise<void> {
-  // No-op - absolute mode doesn't need suspend/resume
+  // Only need to handle this in fullscreen/pointer lock mode
+  if (inputCaptureMode === 'pointerlock' && inputCaptureActive) {
+    try {
+      // Re-clip cursor to window on Windows when window regains focus
+      await invoke("clip_cursor");
+      console.log("Cursor clip resumed (window regained focus)");
+    } catch (e) {
+      // Ignore errors - command may not exist on non-Windows
+    }
+  }
 }
 
 /**
@@ -2889,11 +2907,51 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     }
   };
 
+  // Track if we were in fullscreen when focus was lost (for re-locking on focus)
+  let wasInFullscreenPointerLock = false;
+
   // Blur handler - deactivate capture when window loses focus
   const handleBlur = () => {
-    if (inputCaptureActive && !hasPointerLock) {
-      // Keep capture active but note the window lost focus
+    if (inputCaptureActive) {
       console.log("Window blurred, input capture paused");
+      // Remember if we had pointer lock in fullscreen mode
+      if (hasPointerLock && inputCaptureMode === 'pointerlock') {
+        wasInFullscreenPointerLock = true;
+        console.log("Was in fullscreen pointer lock mode - will re-lock on focus");
+      }
+    }
+  };
+
+  // Focus handler - re-capture mouse when window regains focus
+  const handleFocus = async () => {
+    if (inputCaptureActive) {
+      console.log("Window focused, checking if we need to re-capture mouse");
+      
+      // Check if we're still in fullscreen
+      const isFullscreen = !!(
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement ||
+        (document as any).msFullscreenElement
+      );
+
+      // If we were in fullscreen pointer lock mode and are still in fullscreen, re-request pointer lock
+      if (wasInFullscreenPointerLock && isFullscreen && !document.pointerLockElement) {
+        console.log("Re-requesting pointer lock after focus regained");
+        wasInFullscreenPointerLock = false;
+        
+        // Small delay to ensure window is fully focused before requesting pointer lock
+        setTimeout(async () => {
+          try {
+            await requestPointerLockWithKeyboardLock();
+            console.log("Pointer lock re-acquired after focus");
+          } catch (e) {
+            console.warn("Failed to re-acquire pointer lock:", e);
+          }
+        }, 100);
+      } else {
+        wasInFullscreenPointerLock = false;
+      }
     }
   };
 
@@ -2958,6 +3016,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   document.addEventListener("keydown", handleKeyDown, { passive: false });
   document.addEventListener("keyup", handleKeyUp, { passive: false });
   window.addEventListener("blur", handleBlur);
+  window.addEventListener("focus", handleFocus);
 
   // Start in absolute mode - immediately active
   console.log("Input capture set up in", inputCaptureMode, "mode");
@@ -2993,6 +3052,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     document.removeEventListener("keydown", handleKeyDown);
     document.removeEventListener("keyup", handleKeyUp);
     window.removeEventListener("blur", handleBlur);
+    window.removeEventListener("focus", handleFocus);
 
     if (document.pointerLockElement === videoElement) {
       document.exitPointerLock();

@@ -1343,8 +1343,10 @@ function getLatencyClassName(pingMs: number | undefined): string {
 
 // Populate region dropdown with latency data
 function populateRegionDropdown(servers: Server[]): void {
-  // Save current selection
-  const currentValue = getDropdownValue("region-setting") || currentRegion;
+  // Use the saved currentRegion (from settings) as the source of truth
+  // Only fall back to dropdown value if currentRegion is not set
+  // This ensures the saved region persists across app restarts
+  const currentValue = currentRegion || getDropdownValue("region-setting") || "auto";
 
   // Build options array
   const options: { value: string; text: string; selected?: boolean; className?: string }[] = [];
@@ -1392,10 +1394,19 @@ function populateRegionDropdown(servers: Server[]): void {
   // Update the dropdown
   setDropdownOptions("region-setting", options);
 
-  // Update current region if selection changed
-  const newValue = getDropdownValue("region-setting");
-  if (newValue) {
-    currentRegion = newValue;
+  // Ensure the saved region is selected in the dropdown
+  // Don't overwrite currentRegion - it should only change when user explicitly selects a new region
+  if (currentValue && currentValue !== "auto") {
+    // Check if the saved region exists in the options
+    const regionExists = options.some(o => o.value === currentValue);
+    if (regionExists) {
+      setDropdownValue("region-setting", currentValue);
+    } else {
+      // Region no longer exists (server removed), fall back to auto
+      console.warn(`Saved region "${currentValue}" not found in server list, falling back to auto`);
+      setDropdownValue("region-setting", "auto");
+      currentRegion = "auto";
+    }
   }
 }
 
