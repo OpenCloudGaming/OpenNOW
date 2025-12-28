@@ -210,25 +210,13 @@ mod win32 {
     }
 
     /// Process a WM_INPUT message and extract mouse delta
+    /// Uses a stack-allocated buffer to avoid heap allocations on every mouse event
     pub fn process_raw_input(lparam: LPARAM) -> Option<(i32, i32)> {
         unsafe {
-            let mut size: u32 = 0;
+            // Use stack buffer - RAWINPUT for mouse is ~48 bytes, 64 is plenty
+            let mut buffer: [u8; 64] = [0; 64];
+            let mut size: u32 = buffer.len() as u32;
 
-            // Get required buffer size
-            GetRawInputData(
-                lparam as *mut c_void,
-                RID_INPUT,
-                null_mut(),
-                &mut size,
-                size_of::<RAWINPUTHEADER>() as u32,
-            );
-
-            if size == 0 {
-                return None;
-            }
-
-            // Allocate buffer and get data
-            let mut buffer = vec![0u8; size as usize];
             let result = GetRawInputData(
                 lparam as *mut c_void,
                 RID_INPUT,
@@ -237,7 +225,7 @@ mod win32 {
                 size_of::<RAWINPUTHEADER>() as u32,
             );
 
-            if result == u32::MAX {
+            if result == u32::MAX || result == 0 {
                 return None;
             }
 
