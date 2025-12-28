@@ -1,15 +1,13 @@
 //! Native cursor/mouse capture for macOS and Windows
-//! Uses Core Graphics APIs (macOS) or Win32 APIs (Windows) to properly capture mouse input
+//! Uses Core Graphics APIs (macOS) or Win32 Raw Input API (Windows) to properly capture mouse input
 
 use tauri::command;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(target_os = "windows")]
+use crate::raw_input;
 
 static CURSOR_CAPTURED: AtomicBool = AtomicBool::new(false);
-
-// High-frequency mouse polling state
-static MOUSE_POLLING_ACTIVE: AtomicBool = AtomicBool::new(false);
-static ACCUMULATED_DX: AtomicI32 = AtomicI32::new(0);
-static ACCUMULATED_DY: AtomicI32 = AtomicI32::new(0);
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -374,16 +372,16 @@ pub async fn capture_cursor() -> Result<bool, String> {
             return Ok(true); // Already captured
         }
 
-        // Update and store window center
-        if !windows::update_center() {
-            return Err("Failed to get window center".to_string());
+        // Start raw input to receive hardware mouse deltas
+        if let Err(e) = raw_input::start_raw_input() {
+            log::warn!("Failed to start raw input: {}, falling back to recentering", e);
+            // Fallback to old recentering method
+            if !windows::update_center() {
+                return Err("Failed to get window center".to_string());
+            }
+            windows::disable_mouse_acceleration();
+            windows::center_cursor();
         }
-
-        // Disable mouse acceleration for 1:1 raw input
-        windows::disable_mouse_acceleration();
-
-        // Center the cursor
-        windows::center_cursor();
 
         // Hide the cursor
         windows::hide_cursor();
@@ -392,7 +390,7 @@ pub async fn capture_cursor() -> Result<bool, String> {
         windows::clip_cursor_to_window();
 
         CURSOR_CAPTURED.store(true, Ordering::SeqCst);
-        log::info!("Cursor captured (Windows native with recentering, acceleration disabled)");
+        log::info!("Cursor captured (Windows native with Raw Input API)");
         Ok(true)
     }
 
@@ -432,7 +430,10 @@ pub async fn release_cursor() -> Result<bool, String> {
             return Ok(true); // Already released
         }
 
-        // Restore mouse acceleration settings
+        // Pause raw input (keep window alive for quick resume)
+        raw_input::pause_raw_input();
+
+        // Restore mouse acceleration settings (if we used fallback)
         windows::restore_mouse_acceleration();
 
         // Release cursor clipping
@@ -500,56 +501,18 @@ pub fn recenter_cursor() -> bool {
 }
 
 /// Start high-frequency mouse polling (Windows only)
-/// Polls at ~1000Hz and accumulates deltas for the frontend to read
+/// Now uses Raw Input API for hardware-level mouse deltas
 #[command]
 pub fn start_mouse_polling() -> bool {
     #[cfg(target_os = "windows")]
     {
-        if MOUSE_POLLING_ACTIVE.load(Ordering::SeqCst) {
-            return true; // Already running
-        }
         if !CURSOR_CAPTURED.load(Ordering::SeqCst) {
             return false; // Need cursor captured first
         }
 
-        MOUSE_POLLING_ACTIVE.store(true, Ordering::SeqCst);
-        ACCUMULATED_DX.store(0, Ordering::SeqCst);
-        ACCUMULATED_DY.store(0, Ordering::SeqCst);
-
-        // Spawn high-frequency polling thread
-        std::thread::spawn(|| {
-            use std::time::{Duration, Instant};
-
-            // Poll at ~1000Hz (1ms intervals)
-            let poll_interval = Duration::from_micros(1000);
-
-            while MOUSE_POLLING_ACTIVE.load(Ordering::SeqCst) &&
-                  CURSOR_CAPTURED.load(Ordering::SeqCst) {
-                let start = Instant::now();
-
-                // Get delta and recenter
-                let (dx, dy) = windows::get_delta_and_recenter();
-
-                // Accumulate deltas
-                if dx != 0 {
-                    ACCUMULATED_DX.fetch_add(dx, Ordering::SeqCst);
-                }
-                if dy != 0 {
-                    ACCUMULATED_DY.fetch_add(dy, Ordering::SeqCst);
-                }
-
-                // Sleep for remaining time in interval
-                let elapsed = start.elapsed();
-                if elapsed < poll_interval {
-                    std::thread::sleep(poll_interval - elapsed);
-                }
-            }
-
-            MOUSE_POLLING_ACTIVE.store(false, Ordering::SeqCst);
-            log::info!("Mouse polling thread stopped");
-        });
-
-        log::info!("High-frequency mouse polling started (1000Hz)");
+        // Raw input is already started by capture_cursor, just ensure it's active
+        raw_input::resume_raw_input();
+        log::info!("Mouse polling active (Raw Input API)");
         true
     }
 
@@ -562,22 +525,73 @@ pub fn start_mouse_polling() -> bool {
 /// Stop high-frequency mouse polling
 #[command]
 pub fn stop_mouse_polling() {
-    MOUSE_POLLING_ACTIVE.store(false, Ordering::SeqCst);
-    ACCUMULATED_DX.store(0, Ordering::SeqCst);
-    ACCUMULATED_DY.store(0, Ordering::SeqCst);
+    #[cfg(target_os = "windows")]
+    {
+        raw_input::pause_raw_input();
+    }
 }
 
 /// Get accumulated mouse deltas and reset accumulators
 /// Returns (dx, dy) accumulated since last call
 #[command]
 pub fn get_accumulated_mouse_delta() -> (i32, i32) {
-    let dx = ACCUMULATED_DX.swap(0, Ordering::SeqCst);
-    let dy = ACCUMULATED_DY.swap(0, Ordering::SeqCst);
-    (dx, dy)
+    #[cfg(target_os = "windows")]
+    {
+        raw_input::get_raw_mouse_delta()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        (0, 0)
+    }
 }
 
 /// Check if mouse polling is active
 #[command]
 pub fn is_mouse_polling_active() -> bool {
-    MOUSE_POLLING_ACTIVE.load(Ordering::SeqCst)
+    #[cfg(target_os = "windows")]
+    {
+        raw_input::is_raw_input_active()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+/// Clip cursor to the current window (prevents escape)
+#[command]
+pub fn clip_cursor() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let result = windows::clip_cursor_to_window();
+        if result {
+            log::info!("Cursor clipped to window");
+        }
+        result
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+/// Release cursor clipping (allow cursor to move freely)
+#[command]
+pub fn unclip_cursor() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let result = windows::release_clip();
+        if result {
+            log::info!("Cursor clip released");
+        }
+        result
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
+    }
 }

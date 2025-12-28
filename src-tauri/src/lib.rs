@@ -3,6 +3,7 @@
 pub mod native;
 
 // Logging module (always available)
+mod utils;
 mod logging;
 
 // Tauri app modules (only when tauri-app feature enabled)
@@ -22,6 +23,8 @@ mod discord;
 mod proxy;
 #[cfg(feature = "tauri-app")]
 mod cursor;
+#[cfg(feature = "tauri-app")]
+mod raw_input;
 
 #[cfg(feature = "tauri-app")]
 use tauri::Manager;
@@ -127,6 +130,9 @@ pub fn run() {
             cursor::stop_mouse_polling,
             cursor::get_accumulated_mouse_delta,
             cursor::is_mouse_polling_active,
+            // Cursor clipping (Windows)
+            cursor::clip_cursor,
+            cursor::unclip_cursor,
             // Logging commands
             logging::log_frontend,
             logging::get_log_file_path,
