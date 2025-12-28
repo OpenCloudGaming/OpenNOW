@@ -732,70 +732,36 @@ async function handleGfnSdpOffer(
     };
 
     channel.onmessage = (e) => {
-      const size = e.data instanceof ArrayBuffer ? e.data.byteLength : e.data.length;
-      console.log(`Data channel '${channel.label}' message, size:`, size);
-
-      // Decode control channel messages
+      // Handle binary data (most common during streaming)
       if (e.data instanceof ArrayBuffer && e.data.byteLength > 0) {
         const bytes = new Uint8Array(e.data);
-        console.log(`  First 32 bytes: ${Array.from(bytes.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
 
-        // Try to decode as text (might be JSON)
+        // Try to decode as JSON (control messages)
         try {
           const text = new TextDecoder().decode(e.data);
           if (text.startsWith('{') || text.startsWith('[')) {
             const json = JSON.parse(text);
-            console.log(`  JSON content:`, json);
-
-            // Log specific message types for debugging
-            if (json.videoStreamProgressEvent) {
-              console.log("  Video progress event received");
-            }
-            if (json.customMessage) {
-              console.log("  Custom message:", json.customMessage);
-            }
+            // Only log important messages
             if (json.inputReady !== undefined) {
-              console.log("  *** INPUT READY MESSAGE:", json.inputReady);
+              console.log("Input ready message:", json.inputReady);
             }
-          } else if (text.match(/^[\x20-\x7E\r\n\t]+$/)) {
-            // Printable ASCII
-            console.log(`  Text content:`, text.substring(0, 200));
           }
         } catch {
-          // Binary data - decode header
-          if (bytes.length >= 4) {
-            const view = new DataView(e.data);
-            const msgType = view.getUint16(0, true);
-            const flags = view.getUint16(2, true);
-            console.log(`  Binary msg type: 0x${msgType.toString(16)}, flags: 0x${flags.toString(16)}`);
-          }
-
-          // Check for handshake on server input channel
+          // Binary data - check for handshake on server input channel
           if (bytes.length === 4 && bytes[0] === 0x0e) {
-            console.log("  SERVER INPUT HANDSHAKE detected on", channel.label);
-            console.log("  Responding to server input handshake...");
+            console.log("Server input handshake detected on", channel.label);
             const response = new Uint8Array([bytes[0], bytes[1], bytes[2], bytes[3]]);
             try {
               channel.send(response.buffer);
-              console.log("  Server input handshake response sent");
+              console.log("Server input handshake complete");
               inputHandshakeComplete = true;
-              streamStartTime = Date.now(); // Set stream start time
-              // Use server's channel for input
+              streamStartTime = Date.now();
               streamingState.dataChannels.set("input", channel);
-              console.log("  Switched to server input channel for input events");
-              console.log("  Stream start time set:", streamStartTime);
             } catch (err) {
-              console.error("  Failed to send server input handshake:", err);
+              console.error("Failed to send server input handshake:", err);
             }
           }
         }
-      } else if (typeof e.data === 'string') {
-        console.log(`  String content:`, e.data.substring(0, 200));
-        // Try parsing as JSON
-        try {
-          const json = JSON.parse(e.data);
-          console.log(`  Parsed JSON:`, json);
-        } catch {}
       }
     };
 
@@ -1292,26 +1258,25 @@ function createVideoElement(): HTMLVideoElement {
   };
 
   // Keep video at live edge - catch up if we fall behind
-  let lastCheck = 0;
-  const keepAtLiveEdge = () => {
-    const now = performance.now();
-    if (now - lastCheck > 1000) { // Check every second
-      lastCheck = now;
-      if (video.buffered.length > 0) {
-        const bufferedEnd = video.buffered.end(video.buffered.length - 1);
-        const lag = bufferedEnd - video.currentTime;
-        // If we're more than 100ms behind live, catch up
-        if (lag > 0.1) {
-          video.currentTime = bufferedEnd;
+  // Use setInterval instead of requestAnimationFrame to reduce overhead
+  const liveEdgeInterval = setInterval(() => {
+    if (!video.parentNode) {
+      clearInterval(liveEdgeInterval);
+      return;
+    }
+    if (video.buffered.length > 0) {
+      const bufferedEnd = video.buffered.end(video.buffered.length - 1);
+      const lag = bufferedEnd - video.currentTime;
+      // If we're more than 100ms behind live, catch up
+      if (lag > 0.1) {
+        video.currentTime = bufferedEnd;
+        // Only log significant catch-ups to reduce console spam
+        if (lag > 0.5) {
           console.log(`Caught up to live edge (was ${(lag * 1000).toFixed(0)}ms behind)`);
         }
       }
     }
-    if (video.parentNode) {
-      requestAnimationFrame(keepAtLiveEdge);
-    }
-  };
-  requestAnimationFrame(keepAtLiveEdge);
+  }, 1000);
 
   // Handle video events
   video.onloadedmetadata = () => {
@@ -1325,28 +1290,23 @@ function createVideoElement(): HTMLVideoElement {
     // This fires exactly when a frame is presented, allowing tighter input sync
     if ('requestVideoFrameCallback' in video) {
       let frameCount = 0;
-      let lastFrameTime = 0;
       let droppedFrames = 0;
+      let lastDropLogTime = 0;
 
-      const onVideoFrame = (now: number, metadata: any) => {
+      const onVideoFrame = (_now: number, metadata: any) => {
         frameCount++;
 
-        // Log frame timing stats periodically
-        if (frameCount % 240 === 0) { // Every 240 frames (~1 second at 240fps)
-          const fps = 1000 / (now - lastFrameTime);
-          const totalFrames = metadata.presentedFrames || 0;
+        // Only log dropped frames, and throttle to once per 5 seconds max
+        if (frameCount % 300 === 0) { // Check every ~5 seconds at 60fps
           const newDropped = (metadata.droppedVideoFrames || 0) - droppedFrames;
           droppedFrames = metadata.droppedVideoFrames || 0;
+          const now = Date.now();
 
-          if (newDropped > 0) {
-            console.log(`Frame timing: ${fps.toFixed(1)}fps, dropped: ${newDropped} in last second`);
+          // Only log if frames were dropped and we haven't logged recently
+          if (newDropped > 5 && now - lastDropLogTime > 5000) {
+            console.log(`Dropped ${newDropped} frames in last 5 seconds`);
+            lastDropLogTime = now;
           }
-        }
-        lastFrameTime = now;
-
-        // Keep at live edge - if processing delay detected, skip ahead
-        if (metadata.processingDuration && metadata.processingDuration > 8) { // >8ms processing = lag
-          console.log(`High processing delay: ${metadata.processingDuration.toFixed(1)}ms`);
         }
 
         // Continue callback loop
@@ -1355,8 +1315,6 @@ function createVideoElement(): HTMLVideoElement {
 
       (video as any).requestVideoFrameCallback(onVideoFrame);
       console.log("requestVideoFrameCallback enabled for low-latency frame sync");
-    } else {
-      console.log("requestVideoFrameCallback not supported");
     }
   };
 
@@ -2128,26 +2086,13 @@ function handleStatsMessage(event: MessageEvent): void {
 
 /**
  * Start periodic stats collection
+ * NOTE: Stats are collected by main.ts UI interval, this just caches them in streamingState
+ * We use a longer interval (5s) to reduce overhead since UI already collects at 1s
  */
 function startStatsCollection(): void {
-  const collectStats = async () => {
-    if (!streamingState.connected || !streamingState.peerConnection) {
-      return;
-    }
-
-    const stats = await getStreamingStats();
-    if (stats) {
-      streamingState.stats = stats;
-      // Could emit an event here for UI updates
-    }
-
-    // Continue collecting
-    if (streamingState.connected) {
-      setTimeout(collectStats, 1000);
-    }
-  };
-
-  collectStats();
+  // Disabled - main.ts already collects stats every 1s for UI display
+  // Having two collectors causes duplicate getStats() calls which can cause lag spikes
+  // The UI interval in main.ts will update streamingState.stats via getStreamingStats()
 }
 
 /**
@@ -2517,6 +2462,26 @@ const USE_WRAPPER_BYTE = false;
 // Stream start time for relative timestamps
 let streamStartTime = 0;
 
+// Pre-allocated buffers for input events to reduce GC pressure
+// These are reused for each input event instead of allocating new ArrayBuffers
+const inputBuffers = {
+  mouseRel: new ArrayBuffer(22),
+  mouseAbs: new ArrayBuffer(26),
+  mouseButton: new ArrayBuffer(18),
+  mouseWheel: new ArrayBuffer(22),
+  keyboard: new ArrayBuffer(18),
+};
+const inputViews = {
+  mouseRel: new DataView(inputBuffers.mouseRel),
+  mouseAbs: new DataView(inputBuffers.mouseAbs),
+  mouseButton: new DataView(inputBuffers.mouseButton),
+  mouseWheel: new DataView(inputBuffers.mouseWheel),
+  keyboard: new DataView(inputBuffers.keyboard),
+};
+const inputBytes = {
+  mouseButton: new Uint8Array(inputBuffers.mouseButton),
+};
+
 /**
  * Encode input event for GFN protocol (from deobfuscated vendor.js)
  *
@@ -2533,6 +2498,8 @@ let streamStartTime = 0;
  *
  * Keyboard (18 bytes): Yc function
  *   [type 4B LE][keycode 2B BE][modifiers 2B BE][reserved 2B][timestamp 8B BE μs]
+ *
+ * NOTE: Uses pre-allocated buffers to avoid GC pressure from frequent allocations
  */
 function encodeInputEvent(event: InputEvent): ArrayBuffer {
   // Timestamp in microseconds (ms * 1000), relative to stream start
@@ -2546,11 +2513,8 @@ function encodeInputEvent(event: InputEvent): ArrayBuffer {
 
       // Check if we should use absolute positioning
       if (data.absolute && data.x !== undefined && data.y !== undefined) {
-        // Mouse Absolute (Gc with absolute=true): 26 bytes
-        // From GFN vendor.js analysis:
-        // [type 4B LE][x 2B BE][y 2B BE][reserved 2B BE][refWidth 2B BE][refHeight 2B BE][reserved 4B][timestamp 8B BE]
-        const buffer = new ArrayBuffer(26);
-        const view = new DataView(buffer);
+        // Mouse Absolute (Gc with absolute=true): 26 bytes - use pre-allocated buffer
+        const view = inputViews.mouseAbs;
         view.setUint32(0, GFN_INPUT_MOUSE_ABS, true);   // Type 5, LE
         view.setUint16(4, data.x, false);               // Absolute X, BE (0-65535)
         view.setUint16(6, data.y, false);               // Absolute Y, BE (0-65535)
@@ -2559,70 +2523,61 @@ function encodeInputEvent(event: InputEvent): ArrayBuffer {
         view.setUint16(12, 65535, false);               // Reference height, BE
         view.setUint32(14, 0, false);                   // Reserved
         view.setBigUint64(18, timestampUs, false);      // Timestamp μs, BE
-        return buffer;
+        return inputBuffers.mouseAbs;
       }
 
-      // Mouse Relative (Gc with absolute=false): 22 bytes
-      // [type 4B LE][dx 2B BE][dy 2B BE][reserved 2B BE][reserved 4B][timestamp 8B BE]
-      const buffer = new ArrayBuffer(22);
-      const view = new DataView(buffer);
+      // Mouse Relative (Gc with absolute=false): 22 bytes - use pre-allocated buffer
+      const view = inputViews.mouseRel;
       view.setUint32(0, GFN_INPUT_MOUSE_REL, true);   // Type 7, LE
       view.setInt16(4, data.dx, false);               // Delta X, BE (signed)
       view.setInt16(6, data.dy, false);               // Delta Y, BE (signed)
       view.setUint16(8, 0, false);                    // Reserved, BE
       view.setUint32(10, 0, false);                   // Reserved
       view.setBigUint64(14, timestampUs, false);      // Timestamp μs, BE
-      return buffer;
+      return inputBuffers.mouseRel;
     }
 
     case "mouse_button": {
-      // Mouse Button (xc): 18 bytes
-      // [type 4B LE][button 1B][pad 1B][reserved 4B][timestamp 8B BE]
-      // Button mapping: ja(button) = button + 1, so 0→1 (left), 1→2 (right), 2→3 (middle)
+      // Mouse Button (xc): 18 bytes - use pre-allocated buffer
       const data = event.data as MouseButtonData;
       const eventType = data.pressed ? GFN_INPUT_MOUSE_BUTTON_DOWN : GFN_INPUT_MOUSE_BUTTON_UP;
       const gfnButton = data.button + 1;  // GFN uses 1-based button indices
-      const buffer = new ArrayBuffer(18);
-      const view = new DataView(buffer);
-      const bytes = new Uint8Array(buffer);
+      const view = inputViews.mouseButton;
+      const bytes = inputBytes.mouseButton;
       view.setUint32(0, eventType, true);             // Type 8 or 9, LE
       bytes[4] = gfnButton;                           // Button as uint8 (1=left, 2=right, 3=middle)
       bytes[5] = 0;                                   // Padding
       view.setUint32(6, 0);                           // Reserved
       view.setBigUint64(10, timestampUs, false);      // Timestamp μs, BE
-      return buffer;
+      return inputBuffers.mouseButton;
     }
 
     case "mouse_wheel": {
-      // Mouse Wheel (Lc): 22 bytes
-      // [type 4B LE][horiz 2B BE][vert 2B BE][reserved 2B BE][reserved 4B][timestamp 8B BE]
+      // Mouse Wheel (Lc): 22 bytes - use pre-allocated buffer
       const data = event.data as MouseWheelData;
       // GFN expects wheel delta as multiples of 120, negated
       const wheelDelta = Math.round(data.deltaY / Math.abs(data.deltaY || 1) * -120);
-      const buffer = new ArrayBuffer(22);
-      const view = new DataView(buffer);
+      const view = inputViews.mouseWheel;
       view.setUint32(0, GFN_INPUT_MOUSE_WHEEL, true); // Type 10, LE
       view.setInt16(4, 0, false);                     // Horizontal wheel, BE
       view.setInt16(6, wheelDelta, false);            // Vertical wheel, BE
       view.setUint16(8, 0, false);                    // Reserved, BE
       view.setUint32(10, 0);                          // Reserved
       view.setBigUint64(14, timestampUs, false);      // Timestamp μs, BE
-      return buffer;
+      return inputBuffers.mouseWheel;
     }
 
     case "key": {
-      // Keyboard (Yc): 18 bytes
-      // [type 4B LE][keycode 2B BE][modifiers 2B BE][reserved 2B BE][timestamp 8B BE]
+      // Keyboard (Yc): 18 bytes - use pre-allocated buffer
       const data = event.data as KeyData;
       const eventType = data.pressed ? GFN_INPUT_KEY_DOWN : GFN_INPUT_KEY_UP;
-      const buffer = new ArrayBuffer(18);
-      const view = new DataView(buffer);
+      const view = inputViews.keyboard;
       view.setUint32(0, eventType, true);             // Type 3 or 4, LE
       view.setUint16(4, data.keyCode, false);         // Key code, BE
       view.setUint16(6, data.modifiers, false);       // Modifiers, BE
       view.setUint16(8, data.scanCode || 0, false);   // Reserved (or scancode), BE
       view.setBigUint64(10, timestampUs, false);      // Timestamp μs, BE
-      return buffer;
+      return inputBuffers.keyboard;
     }
 
     default:
