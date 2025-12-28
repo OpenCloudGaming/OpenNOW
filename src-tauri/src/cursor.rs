@@ -559,3 +559,39 @@ pub fn is_mouse_polling_active() -> bool {
         false
     }
 }
+
+/// Clip cursor to the current window (prevents escape)
+#[command]
+pub fn clip_cursor() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let result = windows::clip_cursor_to_window();
+        if result {
+            log::info!("Cursor clipped to window");
+        }
+        result
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+/// Release cursor clipping (allow cursor to move freely)
+#[command]
+pub fn unclip_cursor() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let result = windows::release_clip();
+        if result {
+            log::info!("Cursor clip released");
+        }
+        result
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
+    }
+}
