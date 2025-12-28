@@ -42,41 +42,20 @@ async function sendToBackend(level: string, ...args: unknown[]): Promise<void> {
 }
 
 /**
- * Initialize frontend logging - intercepts console methods
- * and sends logs to the backend for file storage
+ * Initialize frontend logging
+ * 
+ * NOTE: Console method overrides have been disabled to prevent memory leaks.
+ * The previous implementation sent every console.log/info/warn/error/debug to
+ * the backend via IPC, causing excessive memory usage (1GB+) due to:
+ * - JSON serialization overhead on every log call
+ * - IPC message queue buildup
+ * - String allocations that couldn't be GC'd fast enough
+ * 
+ * Now only critical errors (unhandled exceptions) are sent to the backend.
+ * Use logToBackend() explicitly for important messages that need file logging.
  */
 export function initLogging(): void {
-  // Override console.log
-  console.log = (...args: unknown[]) => {
-    originalConsole.log(...args);
-    sendToBackend("info", ...args);
-  };
-
-  // Override console.info
-  console.info = (...args: unknown[]) => {
-    originalConsole.info(...args);
-    sendToBackend("info", ...args);
-  };
-
-  // Override console.warn
-  console.warn = (...args: unknown[]) => {
-    originalConsole.warn(...args);
-    sendToBackend("warn", ...args);
-  };
-
-  // Override console.error
-  console.error = (...args: unknown[]) => {
-    originalConsole.error(...args);
-    sendToBackend("error", ...args);
-  };
-
-  // Override console.debug
-  console.debug = (...args: unknown[]) => {
-    originalConsole.debug(...args);
-    sendToBackend("debug", ...args);
-  };
-
-  // Capture unhandled errors
+  // Only capture unhandled errors - these are critical and infrequent
   window.addEventListener("error", (event) => {
     sendToBackend(
       "error",
@@ -89,7 +68,15 @@ export function initLogging(): void {
     sendToBackend("error", `Unhandled promise rejection: ${event.reason}`);
   });
 
-  originalConsole.log("[Logging] Frontend logging initialized");
+  originalConsole.log("[Logging] Frontend logging initialized (lightweight mode)");
+}
+
+/**
+ * Explicitly log a message to the backend file log
+ * Use this for important messages that should be persisted
+ */
+export async function logToBackend(level: "info" | "warn" | "error" | "debug", message: string): Promise<void> {
+  await sendToBackend(level, message);
 }
 
 /**
