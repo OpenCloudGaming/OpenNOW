@@ -1728,7 +1728,7 @@ async function loadSettings() {
     const codecOptions = [
       { value: "h264", text: "H.264 (Best Compatibility)", selected: currentCodec === "h264" },
       { value: "h265", text: "H.265/HEVC (Lower Latency)", selected: currentCodec === "h265" },
-      { value: "av1", text: "AV1 (Best Quality)", selected: currentCodec === "av1" },
+      { value: "av1", text: "AV1 (Requires AV1 Decoder - RTX 30+/RX 6000+)", selected: currentCodec === "av1" },
     ];
     setDropdownOptions("codec-setting", codecOptions);
 
