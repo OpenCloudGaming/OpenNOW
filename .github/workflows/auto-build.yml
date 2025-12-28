@@ -305,7 +305,9 @@ jobs:
           echo "CXX=aarch64-linux-gnu-g++" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
-      - name: Build Tauri app
+      # Build with release creation (main branch only)
+      - name: Build Tauri app (with release)
+        if: github.ref == 'refs/heads/main'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -335,6 +337,17 @@ jobs:
           prerelease: true
           args: ${{ matrix.target == 'linux-arm64' && '--target aarch64-unknown-linux-gnu' || (matrix.target == 'windows-arm64' && '--target aarch64-pc-windows-msvc' || '') }}
 
+      # Build without release creation (dev branch - artifacts only)
+      - name: Build Tauri app (dev - no release)
+        if: github.ref != 'refs/heads/main'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CC: ${{ matrix.target == 'linux-arm64' && 'aarch64-linux-gnu-gcc' || '' }}
+          CXX: ${{ matrix.target == 'linux-arm64' && 'aarch64-linux-gnu-g++' || '' }}
+        with:
+          args: ${{ matrix.target == 'linux-arm64' && '--target aarch64-unknown-linux-gnu' || (matrix.target == 'windows-arm64' && '--target aarch64-pc-windows-msvc' || '') }}
+
       - name: Upload Windows x64 artifacts
         if: matrix.target == 'windows'
         uses: actions/upload-artifact@v4
@@ -346,7 +359,7 @@ jobs:
           retention-days: 30
 
       - name: Upload Windows x64 portable exe to release
-        if: matrix.target == 'windows'
+        if: matrix.target == 'windows' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
@@ -366,7 +379,7 @@ jobs:
           retention-days: 30
 
       - name: Upload Windows ARM64 portable exe to release
-        if: matrix.target == 'windows-arm64'
+        if: matrix.target == 'windows-arm64' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
@@ -407,7 +420,7 @@ jobs:
 
       # Upload ARM64 builds to release
       - name: Upload Linux ARM64 to release
-        if: matrix.target == 'linux-arm64'
+        if: matrix.target == 'linux-arm64' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
@@ -419,7 +432,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Windows ARM64 installers to release
-        if: matrix.target == 'windows-arm64'
+        if: matrix.target == 'windows-arm64' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
