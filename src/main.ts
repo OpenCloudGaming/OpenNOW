@@ -1723,13 +1723,24 @@ async function loadSettings() {
     const proxyEl = document.getElementById("proxy-setting") as HTMLInputElement;
 
     // Update codec dropdown options
-    // H.265/HEVC has lower decode latency on modern GPUs (RTX 20/30/40 series, AMD RX 5000+)
-    // Available on all platforms with hardware decode support
-    const codecOptions = [
+    // H.265/HEVC only supported on macOS (Windows browser doesn't support HEVC decoding)
+    // AV1 requires RTX 30+/RX 6000+ for hardware decoding
+    const codecOptions: { value: string; text: string; selected?: boolean; disabled?: boolean }[] = [
       { value: "h264", text: "H.264 (Best Compatibility)", selected: currentCodec === "h264" },
-      { value: "h265", text: "H.265/HEVC (Lower Latency)", selected: currentCodec === "h265" },
-      { value: "av1", text: "AV1 (Requires AV1 Decoder - RTX 30+/RX 6000+)", selected: currentCodec === "av1" },
     ];
+    
+    if (isMacOS) {
+      codecOptions.push({ value: "h265", text: "H.265/HEVC (Lower Latency)", selected: currentCodec === "h265" });
+    }
+    
+    codecOptions.push({ value: "av1", text: "AV1 (Requires AV1 Decoder - RTX 30+/RX 6000+)", selected: currentCodec === "av1" });
+    
+    // If user had H.265 selected on Windows, fall back to H.264
+    if (isWindows && currentCodec === "h265") {
+      currentCodec = "h264";
+      codecOptions[0].selected = true;
+    }
+    
     setDropdownOptions("codec-setting", codecOptions);
 
     // Update audio codec dropdown options based on platform
