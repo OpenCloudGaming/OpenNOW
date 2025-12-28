@@ -2649,52 +2649,19 @@ let nativeCursorCaptured = false;
 // Windows high-frequency mouse polling state
 let mousePollingActive = false;
 let mousePollingInterval: number | null = null;
-let mousePollingChannel: MessageChannel | null = null;
 
-// Input latency tracking
-const INPUT_LATENCY_SAMPLES = 100; // Rolling average over last 100 samples
-let ipcLatencySamples: number[] = [];
-let sendLatencySamples: number[] = [];
-let totalLatencySamples: number[] = [];
-let inputEventTimestamps: number[] = []; // For calculating events per second
-let lastInputStatsLog = 0;
-
-// Get average from samples array
-function getAverage(samples: number[]): number {
-  if (samples.length === 0) return 0;
-  return samples.reduce((a, b) => a + b, 0) / samples.length;
-}
-
-// Add sample to rolling buffer
-function addSample(samples: number[], value: number): void {
-  samples.push(value);
-  if (samples.length > INPUT_LATENCY_SAMPLES) {
-    samples.shift();
-  }
-}
-
-// Calculate input events per second
-function getInputRate(): number {
-  const now = performance.now();
-  // Remove timestamps older than 1 second
-  while (inputEventTimestamps.length > 0 && now - inputEventTimestamps[0] > 1000) {
-    inputEventTimestamps.shift();
-  }
-  return inputEventTimestamps.length;
-}
-
-// Export input latency stats for getStreamingStats
+// Export input latency stats for getStreamingStats (simplified - no longer tracking detailed stats)
 export function getInputLatencyStats(): { ipc: number; send: number; total: number; rate: number } {
   return {
-    ipc: Math.round(getAverage(ipcLatencySamples) * 100) / 100,
-    send: Math.round(getAverage(sendLatencySamples) * 100) / 100,
-    total: Math.round(getAverage(totalLatencySamples) * 100) / 100,
-    rate: getInputRate(),
+    ipc: 0,
+    send: 0,
+    total: 0,
+    rate: mousePollingActive ? 120 : 0, // Approximate rate when polling is active
   };
 }
 
 // Start high-frequency mouse polling on Windows
-// Uses Raw Input API for hardware-level mouse deltas + MessageChannel for minimal latency scheduling
+// Uses Raw Input API for hardware-level mouse deltas
 const startMousePolling = async () => {
   if (!isWindows || mousePollingActive) return;
 
@@ -2702,85 +2669,27 @@ const startMousePolling = async () => {
     const started = await invoke<boolean>("start_mouse_polling");
     if (started) {
       mousePollingActive = true;
-      console.log("Raw Input mouse capture started (hardware deltas + MessageChannel polling)");
+      console.log("Raw Input mouse capture started");
 
-      // Use MessageChannel for tighter scheduling (bypasses 4ms timer clamping)
-      mousePollingChannel = new MessageChannel();
-      let lastPollTime = performance.now();
-      const MIN_POLL_INTERVAL = 1; // Minimum 1ms between polls
-
-      const pollMouse = () => {
+      // Use setInterval at ~120Hz - balances latency vs CPU usage
+      // Raw Input accumulates deltas between polls, so we don't lose any movement
+      mousePollingInterval = window.setInterval(() => {
         if (!mousePollingActive || !nativeCursorCaptured) {
-          // Schedule next check even when inactive to allow resumption
-          if (mousePollingActive) {
-            mousePollingChannel?.port2.postMessage(null);
-          }
           return;
         }
 
-        const now = performance.now();
-        const elapsed = now - lastPollTime;
-
-        // Throttle to prevent overwhelming the IPC
-        if (elapsed < MIN_POLL_INTERVAL) {
-          mousePollingChannel?.port2.postMessage(null);
-          return;
-        }
-
-        lastPollTime = now;
-        const pipelineStart = now;
-
-        // Get accumulated deltas from native polling thread (non-blocking)
-        const ipcStart = performance.now();
+        // Get accumulated deltas from Raw Input API
         invoke<[number, number]>("get_accumulated_mouse_delta").then(([dx, dy]) => {
-          const ipcEnd = performance.now();
-          const ipcTime = ipcEnd - ipcStart;
-
           if (dx !== 0 || dy !== 0) {
-            // Track IPC latency
-            addSample(ipcLatencySamples, ipcTime);
-
-            // Track input event timestamp for rate calculation
-            inputEventTimestamps.push(performance.now());
-
-            // Send input and measure send time
-            const sendStart = performance.now();
             sendInputEvent({
               type: "mouse_move",
               data: { dx, dy },
             });
-            const sendEnd = performance.now();
-            const sendTime = sendEnd - sendStart;
-            addSample(sendLatencySamples, sendTime);
-
-            // Total pipeline latency
-            const totalTime = sendEnd - pipelineStart;
-            addSample(totalLatencySamples, totalTime);
-
-            // Log stats periodically (every 60 seconds to reduce overhead)
-            const logNow = performance.now();
-            if (logNow - lastInputStatsLog > 60000) {
-              lastInputStatsLog = logNow;
-              const stats = getInputLatencyStats();
-              console.log(`[Input Stats] IPC: ${stats.ipc.toFixed(2)}ms | Send: ${stats.send.toFixed(2)}ms | Total: ${stats.total.toFixed(2)}ms | Rate: ${stats.rate}/s`);
-            }
-          }
-
-          // Schedule next poll immediately after IPC completes
-          if (mousePollingActive) {
-            mousePollingChannel?.port2.postMessage(null);
           }
         }).catch(() => {
-          // Schedule next poll even on error
-          if (mousePollingActive) {
-            mousePollingChannel?.port2.postMessage(null);
-          }
+          // Ignore errors silently
         });
-      };
-
-      mousePollingChannel.port1.onmessage = pollMouse;
-      // Start the polling loop
-      mousePollingChannel.port2.postMessage(null);
+      }, 8); // ~120Hz polling
     }
   } catch (e) {
     console.error("Failed to start mouse polling:", e);
@@ -2794,14 +2703,9 @@ const stopMousePolling = async () => {
     clearInterval(mousePollingInterval);
     mousePollingInterval = null;
   }
-  if (mousePollingChannel !== null) {
-    mousePollingChannel.port1.close();
-    mousePollingChannel.port2.close();
-    mousePollingChannel = null;
-  }
   try {
     await invoke("stop_mouse_polling");
-    console.log("High-frequency mouse polling stopped");
+    console.log("Mouse polling stopped");
   } catch (e) {
     // Ignore errors on stop
   }
