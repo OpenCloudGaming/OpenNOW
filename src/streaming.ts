@@ -2958,20 +2958,15 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
       inputCaptureMode = 'pointerlock';
       inputCaptureActive = true;
       
-      // Request pointer lock with unadjustedMovement for raw input
-      try {
-        await (videoElement as any).requestPointerLock({ unadjustedMovement: true });
-        console.log("Pointer lock acquired with unadjustedMovement");
-      } catch (e) {
-        // Fallback without unadjustedMovement
-        try {
-          await videoElement.requestPointerLock();
-          console.log("Pointer lock acquired (standard)");
-        } catch (e2) {
-          console.warn("Pointer lock failed:", e2);
-        }
-      }
+      // Use keyboard lock + pointer lock to capture Escape key (like official GFN client)
+      // This prevents browser from immediately exiting pointer lock when ESC is pressed
+      await requestPointerLockWithKeyboardLock();
     } else {
+      // Release keyboard lock first
+      if (navigator.keyboard?.unlock) {
+        navigator.keyboard.unlock();
+        console.log("Keyboard lock released (fullscreen exit)");
+      }
       // Exit pointer lock when leaving fullscreen
       if (document.pointerLockElement) {
         document.exitPointerLock();
