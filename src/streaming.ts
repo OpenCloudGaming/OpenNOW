@@ -189,8 +189,10 @@ export async function initializeStreaming(
   }
 
   // Get WebRTC config from backend
+  // Pass the signaling_url from connectionState to override any stale data in session storage
   const webrtcConfig = await invoke<WebRtcConfig>("get_webrtc_config", {
     sessionId: connectionState.session_id,
+    signalingUrlOverride: connectionState.signaling_url,
   });
 
   console.log("WebRTC config:", webrtcConfig);
