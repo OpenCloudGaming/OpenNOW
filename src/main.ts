@@ -2777,6 +2777,8 @@ async function searchGames(query: string) {
 
 // Authentication
 async function checkAuthStatus() {
+  let providerVpcId: string | null = null;
+
   try {
     const status = await invoke<AuthState>("get_auth_status");
     isAuthenticated = status.is_authenticated;
@@ -2795,6 +2797,7 @@ async function checkAuthStatus() {
         const token = await invoke<string>("get_gfn_jwt");
         const serverInfo = await invoke<{ vpcId: string | null; regions: [string, string][]; baseUrl: string | null }>("fetch_server_info", { accessToken: token });
         console.log("Server info fetched for restored provider:", serverInfo);
+        providerVpcId = serverInfo.vpcId;
       } catch (e) {
         console.warn("Failed to fetch server info for restored provider:", e);
       }
@@ -2807,7 +2810,7 @@ async function checkAuthStatus() {
         const subscription = await invoke<SubscriptionInfo>("fetch_subscription", {
           accessToken: token,
           userId: currentUser.user_id,
-          vpcId: null,
+          vpcId: providerVpcId,
         });
         // Store subscription and update user's membership tier
         currentSubscription = subscription;
