@@ -1343,8 +1343,10 @@ function getLatencyClassName(pingMs: number | undefined): string {
 
 // Populate region dropdown with latency data
 function populateRegionDropdown(servers: Server[]): void {
-  // Save current selection
-  const currentValue = getDropdownValue("region-setting") || currentRegion;
+  // Use the saved currentRegion (from settings) as the source of truth
+  // Only fall back to dropdown value if currentRegion is not set
+  // This ensures the saved region persists across app restarts
+  const currentValue = currentRegion || getDropdownValue("region-setting") || "auto";
 
   // Build options array
   const options: { value: string; text: string; selected?: boolean; className?: string }[] = [];
@@ -1392,10 +1394,19 @@ function populateRegionDropdown(servers: Server[]): void {
   // Update the dropdown
   setDropdownOptions("region-setting", options);
 
-  // Update current region if selection changed
-  const newValue = getDropdownValue("region-setting");
-  if (newValue) {
-    currentRegion = newValue;
+  // Ensure the saved region is selected in the dropdown
+  // Don't overwrite currentRegion - it should only change when user explicitly selects a new region
+  if (currentValue && currentValue !== "auto") {
+    // Check if the saved region exists in the options
+    const regionExists = options.some(o => o.value === currentValue);
+    if (regionExists) {
+      setDropdownValue("region-setting", currentValue);
+    } else {
+      // Region no longer exists (server removed), fall back to auto
+      console.warn(`Saved region "${currentValue}" not found in server list, falling back to auto`);
+      setDropdownValue("region-setting", "auto");
+      currentRegion = "auto";
+    }
   }
 }
 
@@ -1712,13 +1723,24 @@ async function loadSettings() {
     const proxyEl = document.getElementById("proxy-setting") as HTMLInputElement;
 
     // Update codec dropdown options
-    // H.265/HEVC has lower decode latency on modern GPUs (RTX 20/30/40 series, AMD RX 5000+)
-    // Available on all platforms with hardware decode support
-    const codecOptions = [
+    // H.265/HEVC only supported on macOS (Windows browser doesn't support HEVC decoding)
+    // AV1 requires RTX 30+/RX 6000+ for hardware decoding
+    const codecOptions: { value: string; text: string; selected?: boolean; disabled?: boolean }[] = [
       { value: "h264", text: "H.264 (Best Compatibility)", selected: currentCodec === "h264" },
-      { value: "h265", text: "H.265/HEVC (Lower Latency)", selected: currentCodec === "h265" },
-      { value: "av1", text: "AV1 (Best Quality)", selected: currentCodec === "av1" },
     ];
+    
+    if (isMacOS) {
+      codecOptions.push({ value: "h265", text: "H.265/HEVC (Lower Latency)", selected: currentCodec === "h265" });
+    }
+    
+    codecOptions.push({ value: "av1", text: "AV1 (Requires AV1 Decoder - RTX 30+/RX 6000+)", selected: currentCodec === "av1" });
+    
+    // If user had H.265 selected on Windows, fall back to H.264
+    if (isWindows && currentCodec === "h265") {
+      currentCodec = "h264";
+      codecOptions[0].selected = true;
+    }
+    
     setDropdownOptions("codec-setting", codecOptions);
 
     // Update audio codec dropdown options based on platform
@@ -2777,6 +2799,8 @@ async function searchGames(query: string) {
 
 // Authentication
 async function checkAuthStatus() {
+  let providerVpcId: string | null = null;
+
   try {
     const status = await invoke<AuthState>("get_auth_status");
     isAuthenticated = status.is_authenticated;
@@ -2795,6 +2819,7 @@ async function checkAuthStatus() {
         const token = await invoke<string>("get_gfn_jwt");
         const serverInfo = await invoke<{ vpcId: string | null; regions: [string, string][]; baseUrl: string | null }>("fetch_server_info", { accessToken: token });
         console.log("Server info fetched for restored provider:", serverInfo);
+        providerVpcId = serverInfo.vpcId;
       } catch (e) {
         console.warn("Failed to fetch server info for restored provider:", e);
       }
@@ -2807,7 +2832,7 @@ async function checkAuthStatus() {
         const subscription = await invoke<SubscriptionInfo>("fetch_subscription", {
           accessToken: token,
           userId: currentUser.user_id,
-          vpcId: null,
+          vpcId: providerVpcId,
         });
         // Store subscription and update user's membership tier
         currentSubscription = subscription;
@@ -3842,6 +3867,15 @@ function createStreamingContainer(gameName: string): HTMLElement {
       <span id="stats-input-total" title="Total input pipeline latency">Input: -- ms</span>
       <span id="stats-input-rate" title="Input events per second">-- evt/s</span>
     </div>
+    <div class="stream-exit-overlay" id="stream-exit-overlay">
+      <div class="exit-overlay-content">
+        <svg class="exit-progress-ring" viewBox="0 0 100 100">
+          <circle class="exit-progress-bg" cx="50" cy="50" r="45" />
+          <circle class="exit-progress-bar" cx="50" cy="50" r="45" />
+        </svg>
+        <span class="exit-overlay-text">Hold ESC to exit</span>
+      </div>
+    </div>
     <div class="stream-settings-panel" id="stream-settings-panel">
       <div class="settings-panel-header">
         <span>Stream Settings</span>
@@ -4138,15 +4172,72 @@ function createStreamingContainer(gameName: string): HTMLElement {
     #streaming-container:fullscreen .stream-header,
     #streaming-container:-webkit-full-screen .stream-header,
     #streaming-container:-moz-full-screen .stream-header,
-    #streaming-container:-ms-fullscreen .stream-header {
+    #streaming-container:-ms-fullscreen .stream-header,
+    #streaming-container.is-fullscreen .stream-header {
       display: none !important;
     }
     /* Also hide settings panel in fullscreen mode */
     #streaming-container:fullscreen .stream-settings-panel,
     #streaming-container:-webkit-full-screen .stream-settings-panel,
     #streaming-container:-moz-full-screen .stream-settings-panel,
-    #streaming-container:-ms-fullscreen .stream-settings-panel {
+    #streaming-container:-ms-fullscreen .stream-settings-panel,
+    #streaming-container.is-fullscreen .stream-settings-panel {
       display: none !important;
+    }
+    /* ESC exit overlay styles */
+    .stream-exit-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.7);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.15s ease, visibility 0.15s ease;
+      z-index: 10000;
+      pointer-events: none;
+    }
+    .stream-exit-overlay.active {
+      opacity: 1;
+      visibility: visible;
+    }
+    .exit-overlay-content {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+    .exit-progress-ring {
+      width: 100px;
+      height: 100px;
+      transform: rotate(-90deg);
+    }
+    .exit-progress-bg {
+      fill: none;
+      stroke: rgba(255, 255, 255, 0.2);
+      stroke-width: 6;
+    }
+    .exit-progress-bar {
+      fill: none;
+      stroke: #76b900;
+      stroke-width: 6;
+      stroke-linecap: round;
+      stroke-dasharray: 283;
+      stroke-dashoffset: 283;
+      transition: stroke-dashoffset 1s linear;
+    }
+    .stream-exit-overlay.active .exit-progress-bar {
+      stroke-dashoffset: 0;
+    }
+    .exit-overlay-text {
+      color: #fff;
+      font-size: 16px;
+      font-weight: 500;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
     }
   `;
 
@@ -4182,65 +4273,45 @@ function createStreamingContainer(gameName: string): HTMLElement {
       console.log("Fullscreen toggled to:", enteringFullscreen);
       tauriSuccess = true;
 
-      // Manually handle pointer mode since browser fullscreenchange event won't fire
+      // Toggle is-fullscreen class on container for CSS rules
+      const streamContainer = document.getElementById("streaming-container");
+      if (streamContainer) {
+        if (enteringFullscreen) {
+          streamContainer.classList.add("is-fullscreen");
+        } else {
+          streamContainer.classList.remove("is-fullscreen");
+        }
+      }
+
+      // Manually handle cursor hiding since browser fullscreenchange event won't fire for Tauri fullscreen
       const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
       if (enteringFullscreen) {
-        // Entering fullscreen - switch to pointer lock mode
-        console.log("Switching to pointer lock mode for fullscreen");
-        await setInputCaptureMode('pointerlock');
-        // On macOS/Windows, native cursor capture is handled by setInputCaptureMode via Tauri
-        // No need for browser pointer lock - it has issues (ESC exits, permission prompts)
-        // On other platforms (Linux), fall back to browser pointer lock
-        if (!(isMacOS || isWindows)) {
-          setTimeout(async () => {
-            if (video) {
-              // IMPORTANT: Keyboard Lock API requires browser-level fullscreen (not just Tauri window fullscreen)
-              // Request browser fullscreen on the video element first
-              try {
-                if (!document.fullscreenElement) {
-                  console.log("Requesting browser fullscreen for Keyboard Lock API");
-                  await video.requestFullscreen();
-                }
-              } catch (e) {
-                console.warn("Browser fullscreen failed:", e);
-              }
-
-              // Lock Escape key BEFORE pointer lock to prevent Chrome from exiting on ESC
-              // Keyboard Lock API requires JavaScript-initiated fullscreen to be active
-              if (navigator.keyboard?.lock) {
-                try {
-                  await navigator.keyboard.lock(["Escape"]);
-                  console.log("Keyboard lock enabled (Escape key captured)");
-                } catch (e) {
-                  console.warn("Keyboard lock failed:", e);
-                }
-              }
-              console.log("Requesting pointer lock on video element");
-              try {
-                await (video as any).requestPointerLock({ unadjustedMovement: true });
-              } catch {
-                video.requestPointerLock();
-              }
-            }
-          }, 100);
+        // Entering fullscreen - hide cursor, use absolute mode
+        console.log("Entering fullscreen - hiding cursor");
+        await setInputCaptureMode('pointerlock'); // This just hides cursor now
+        
+        // Also request browser fullscreen on the streaming container for proper fullscreen behavior
+        const container = document.getElementById("streaming-container");
+        if (container && !document.fullscreenElement) {
+          try {
+            await container.requestFullscreen();
+            console.log("Browser fullscreen requested on container");
+          } catch (e) {
+            console.warn("Browser fullscreen failed:", e);
+          }
         }
       } else {
-        // Exiting fullscreen - switch to absolute mode
-        console.log("Switching to absolute mode for windowed");
+        // Exiting fullscreen - show cursor
+        console.log("Exiting fullscreen - showing cursor");
         await setInputCaptureMode('absolute');
-        // On platforms using browser pointer lock, clean up
-        if (!(isMacOS || isWindows)) {
-          // Release keyboard lock
-          if (navigator.keyboard?.unlock) {
-            navigator.keyboard.unlock();
-            console.log("Keyboard lock released");
-          }
-          if (document.pointerLockElement) {
-            document.exitPointerLock();
-          }
-          // Exit browser fullscreen if active
-          if (document.fullscreenElement) {
-            document.exitFullscreen().catch(() => {});
+        
+        // Exit browser fullscreen if active
+        if (document.fullscreenElement) {
+          try {
+            await document.exitFullscreen();
+            console.log("Browser fullscreen exited");
+          } catch (e) {
+            console.warn("Failed to exit browser fullscreen:", e);
           }
         }
       }
@@ -4374,8 +4445,24 @@ function createStreamingContainer(gameName: string): HTMLElement {
       // Only start the hold timer if not already started
       if (escHoldStart === 0) {
         escHoldStart = Date.now();
+
+        // Show the exit overlay with animation
+        const exitOverlay = document.getElementById("stream-exit-overlay");
+        if (exitOverlay) {
+          exitOverlay.classList.add("active");
+        }
+
         escHoldTimer = window.setTimeout(() => {
           if (escHoldStart > 0) {
+            // Hide overlay before exiting
+            if (exitOverlay) {
+              exitOverlay.classList.remove("active");
+            }
+            // Remove is-fullscreen class
+            const streamContainer = document.getElementById("streaming-container");
+            if (streamContainer) {
+              streamContainer.classList.remove("is-fullscreen");
+            }
             exitFullscreenAsync();
             escHoldStart = 0;
           }
@@ -4390,6 +4477,11 @@ function createStreamingContainer(gameName: string): HTMLElement {
       if (escHoldTimer) {
         clearTimeout(escHoldTimer);
         escHoldTimer = null;
+      }
+      // Hide the exit overlay
+      const exitOverlay = document.getElementById("stream-exit-overlay");
+      if (exitOverlay) {
+        exitOverlay.classList.remove("active");
       }
     }
   };

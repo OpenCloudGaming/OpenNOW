@@ -417,11 +417,7 @@ fn get_auth_storage() -> Arc<Mutex<Option<AuthState>>> {
 
 /// Get the path to the auth storage file
 fn get_auth_file_path() -> PathBuf {
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."));
-    let app_dir = config_dir.join("gfn-client");
-    fs::create_dir_all(&app_dir).ok();
-    app_dir.join("auth.json")
+    crate::utils::get_app_data_dir().join("auth.json")
 }
 
 /// Save auth state to file

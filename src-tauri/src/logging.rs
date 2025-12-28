@@ -68,14 +68,7 @@ static FILE_LOGGER: std::sync::OnceLock<FileLogger> = std::sync::OnceLock::new()
 
 /// Get the log file path in the user's data directory
 pub fn get_log_path() -> PathBuf {
-    let data_dir = dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("opennow");
-
-    // Ensure directory exists
-    let _ = fs::create_dir_all(&data_dir);
-
-    data_dir.join("opennow.log")
+    crate::utils::get_app_data_dir().join("opennow.log")
 }
 
 /// Custom file logger that writes to both console and file

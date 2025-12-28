@@ -985,6 +985,17 @@ pub async fn poll_session_until_ready(
                 let mut guard = storage.lock().await;
                 if let Some(s) = guard.as_mut() {
                     s.status = SessionStatus::Running;
+
+                    // Update server IP and signaling URL from connection info
+                    if let Some(conn) = connection.as_ref() {
+                        s.server.ip = Some(conn.control_ip.clone());
+                        s.signaling_url = Some(conn.resource_path.clone());
+                    }
+
+                    // Update GPU type (stored in server name)
+                    if let Some(gpu) = session.gpu_type.clone() {
+                        s.server.name = gpu;
+                    }
                 }
             }
 
