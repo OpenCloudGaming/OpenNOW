@@ -22,6 +22,7 @@ static MESSAGE_WINDOW: Mutex<Option<isize>> = Mutex::new(None);
 mod win32 {
     use std::ffi::c_void;
     use std::mem::size_of;
+    use std::sync::atomic::{AtomicI32, Ordering};
 
     pub type HWND = isize;
     pub type WPARAM = usize;
@@ -44,6 +45,68 @@ mod win32 {
     // HID usage page and usage for mouse
     pub const HID_USAGE_PAGE_GENERIC: u16 = 0x01;
     pub const HID_USAGE_GENERIC_MOUSE: u16 = 0x02;
+
+    // Center position for cursor confinement
+    pub static CENTER_X: AtomicI32 = AtomicI32::new(0);
+    pub static CENTER_Y: AtomicI32 = AtomicI32::new(0);
+
+    #[link(name = "user32")]
+    extern "system" {
+        pub fn SetCursorPos(x: i32, y: i32) -> i32;
+        fn GetForegroundWindow() -> isize;
+        fn GetClientRect(hwnd: isize, rect: *mut RECT) -> i32;
+        fn ClientToScreen(hwnd: isize, point: *mut POINT) -> i32;
+    }
+
+    #[repr(C)]
+    struct POINT {
+        x: i32,
+        y: i32,
+    }
+
+    #[repr(C)]
+    struct RECT {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    /// Update the center position based on current window
+    pub fn update_center() -> bool {
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd == 0 {
+                return false;
+            }
+            let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            if GetClientRect(hwnd, &mut rect) == 0 {
+                return false;
+            }
+            let mut center = POINT {
+                x: rect.right / 2,
+                y: rect.bottom / 2,
+            };
+            if ClientToScreen(hwnd, &mut center) == 0 {
+                return false;
+            }
+            CENTER_X.store(center.x, Ordering::SeqCst);
+            CENTER_Y.store(center.y, Ordering::SeqCst);
+            true
+        }
+    }
+
+    /// Recenter the cursor to the stored center position
+    #[inline]
+    pub fn recenter_cursor() {
+        let cx = CENTER_X.load(Ordering::SeqCst);
+        let cy = CENTER_Y.load(Ordering::SeqCst);
+        if cx != 0 && cy != 0 {
+            unsafe {
+                SetCursorPos(cx, cy);
+            }
+        }
+    }
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -274,6 +337,8 @@ unsafe extern "system" fn raw_input_wnd_proc(
                     // Accumulate deltas atomically
                     ACCUMULATED_DX.fetch_add(dx, Ordering::SeqCst);
                     ACCUMULATED_DY.fetch_add(dy, Ordering::SeqCst);
+                    // Recenter cursor to prevent it from hitting screen edges
+                    recenter_cursor();
                 }
             }
             0
@@ -290,6 +355,13 @@ unsafe extern "system" fn raw_input_wnd_proc(
 /// Creates a message-only window to receive WM_INPUT messages
 #[cfg(target_os = "windows")]
 pub fn start_raw_input() -> Result<(), String> {
+    // Initialize center position for cursor confinement
+    if !update_center() {
+        return Err("Failed to get window center".to_string());
+    }
+    // Initial recenter
+    recenter_cursor();
+
     if RAW_INPUT_REGISTERED.load(Ordering::SeqCst) {
         RAW_INPUT_ACTIVE.store(true, Ordering::SeqCst);
         return Ok(());
