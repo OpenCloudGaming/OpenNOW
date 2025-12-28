@@ -986,9 +986,21 @@ pub async fn poll_session_until_ready(
                 if let Some(s) = guard.as_mut() {
                     s.status = SessionStatus::Running;
 
-                    // Update server IP and signaling URL from connection info
+                    // Update server IP from connection info
                     if let Some(conn) = connection.as_ref() {
                         s.server.ip = Some(conn.control_ip.clone());
+                    }
+
+                    // Update signaling URL directly from API response (more reliable than StreamConnectionInfo)
+                    // This ensures we get the full RTSP URL with the correct IP
+                    if let Some(sig_url) = session.connection_info.as_ref()
+                        .and_then(|conns| conns.first())
+                        .and_then(|conn| conn.resource_path.clone())
+                    {
+                        log::info!("Updating stored signaling_url to: {}", sig_url);
+                        s.signaling_url = Some(sig_url);
+                    } else if let Some(conn) = connection.as_ref() {
+                        // Fallback to StreamConnectionInfo.resource_path
                         s.signaling_url = Some(conn.resource_path.clone());
                     }
 
@@ -1121,15 +1133,21 @@ pub async fn get_webrtc_config(session_id: String) -> Result<WebRtcConfig, Strin
         if sig_url.starts_with("rtsps://") || sig_url.starts_with("rtsp://") {
             // Native client format: extract hostname from RTSP URL
             // e.g., rtsps://80-84-170-155.cloudmatchbeta.nvidiagrid.net:322
-            if let Some(host) = sig_url
+            let host = sig_url
                 .strip_prefix("rtsps://")
                 .or_else(|| sig_url.strip_prefix("rtsp://"))
                 .and_then(|s| s.split(':').next())
-                .or_else(|| sig_url.split("://").nth(1).and_then(|s| s.split('/').next()))
-            {
-                format!("wss://{}/nvst/", host)
+                .or_else(|| sig_url.split("://").nth(1).and_then(|s| s.split('/').next()));
+
+            // Validate the extracted host - it should not start with a dot (malformed URL)
+            // e.g., ".zai.geforcenow.nvidiagrid.net" is invalid
+            let valid_host = host.filter(|h| !h.is_empty() && !h.starts_with('.'));
+
+            if let Some(h) = valid_host {
+                format!("wss://{}/nvst/", h)
             } else {
-                // Fallback to server IP
+                // Malformed URL (e.g., rtsps://.zai...) - fallback to server IP
+                log::warn!("Malformed signaling URL '{}', falling back to server IP", sig_url);
                 session.server.ip.as_ref()
                     .map(|ip| format!("wss://{}:443/nvst/", ip))
                     .ok_or("No signaling URL available")?
