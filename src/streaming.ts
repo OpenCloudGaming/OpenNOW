@@ -2642,205 +2642,63 @@ const isMacOS = navigator.platform.toUpperCase().includes("MAC") ||
 const isWindows = navigator.platform.toUpperCase().includes("WIN") ||
   navigator.userAgent.toUpperCase().includes("WIN");
 
-// Track if we're using native cursor capture (bypasses browser pointer lock)
-// This is used on macOS (Core Graphics) and Windows (Win32 ClipCursor)
-let nativeCursorCaptured = false;
-
-// Windows high-frequency mouse polling state
-let mousePollingActive = false;
-let mousePollingInterval: number | null = null;
-
-// Export input latency stats for getStreamingStats (simplified - no longer tracking detailed stats)
+// Export input latency stats for getStreamingStats (not used with absolute mode)
 export function getInputLatencyStats(): { ipc: number; send: number; total: number; rate: number } {
-  return {
-    ipc: 0,
-    send: 0,
-    total: 0,
-    rate: mousePollingActive ? 120 : 0, // Approximate rate when polling is active
-  };
+  return { ipc: 0, send: 0, total: 0, rate: 0 };
 }
-
-// RAF handle for mouse polling
-let mousePollingRaf: number | null = null;
-
-// Start high-frequency mouse polling on Windows
-// Uses Raw Input API for hardware-level mouse deltas
-const startMousePolling = async () => {
-  if (!isWindows || mousePollingActive) return;
-
-  try {
-    const started = await invoke<boolean>("start_mouse_polling");
-    if (started) {
-      mousePollingActive = true;
-      console.log("Raw Input mouse capture started");
-
-      // Use requestAnimationFrame for display-synced polling
-      // This runs at monitor refresh rate (60/120/144/240Hz)
-      const pollMouse = () => {
-        if (!mousePollingActive || !nativeCursorCaptured) {
-          if (mousePollingActive) {
-            mousePollingRaf = requestAnimationFrame(pollMouse);
-          }
-          return;
-        }
-
-        // Get accumulated deltas from Raw Input API
-        invoke<[number, number]>("get_accumulated_mouse_delta").then(([dx, dy]) => {
-          if (dx !== 0 || dy !== 0) {
-            sendInputEvent({
-              type: "mouse_move",
-              data: { dx, dy },
-            });
-          }
-        }).catch(() => {
-          // Ignore errors silently
-        });
-
-        if (mousePollingActive) {
-          mousePollingRaf = requestAnimationFrame(pollMouse);
-        }
-      };
-
-      mousePollingRaf = requestAnimationFrame(pollMouse);
-    }
-  } catch (e) {
-    console.error("Failed to start mouse polling:", e);
-  }
-};
-
-// Stop high-frequency mouse polling
-const stopMousePolling = async () => {
-  mousePollingActive = false;
-  if (mousePollingInterval !== null) {
-    clearInterval(mousePollingInterval);
-    mousePollingInterval = null;
-  }
-  if (mousePollingRaf !== null) {
-    cancelAnimationFrame(mousePollingRaf);
-    mousePollingRaf = null;
-  }
-  try {
-    await invoke("stop_mouse_polling");
-    console.log("Mouse polling stopped");
-  } catch (e) {
-    // Ignore errors on stop
-  }
-};
 
 /**
  * Set input capture mode
- * - 'pointerlock': Use pointer lock for relative mouse (FPS games)
- * - 'absolute': Send absolute coordinates without pointer lock (menus, desktop)
+ * - 'pointerlock': Hide cursor (for fullscreen gaming)
+ * - 'absolute': Show cursor (for windowed mode)
  *
- * On macOS and Windows, we use native OS APIs via Tauri commands to capture the cursor,
- * bypassing the browser's pointer lock which has issues (ESC exits, permission prompts).
+ * We always use absolute coordinates since the server renders the cursor in the video stream.
+ * This avoids complex native cursor capture that causes memory leaks and stuttering.
  */
 export async function setInputCaptureMode(mode: 'pointerlock' | 'absolute'): Promise<void> {
-  const platform = isMacOS ? "macOS" : isWindows ? "Windows" : "other";
-  console.log("Setting input capture mode:", mode, `(${platform})`);
-  inputCaptureMode = mode;
+  console.log("Setting input capture mode:", mode);
+  inputCaptureMode = 'absolute'; // Always use absolute mode
+  inputCaptureActive = true;
 
-  // On macOS and Windows, use native Tauri cursor capture
-  if (isMacOS || isWindows) {
-    try {
-      if (mode === 'pointerlock') {
-        // Use native cursor capture via Tauri
-        // macOS: Core Graphics (CGAssociateMouseAndMouseCursorPosition)
-        // Windows: Win32 (ClipCursor + ShowCursor)
-        const captured = await invoke<boolean>("capture_cursor");
-        if (captured) {
-          nativeCursorCaptured = true;
-          inputCaptureActive = true;
-          // Also hide cursor via CSS as backup (prevents webview cursor flicker)
-          const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
-          const container = document.getElementById("streaming-container");
-          if (video) video.style.cursor = 'none';
-          if (container) container.style.cursor = 'none';
-          document.body.style.cursor = 'none';
-          // Start high-frequency mouse polling on Windows
-          if (isWindows) {
-            await startMousePolling();
-          }
-          console.log(`${platform}: Native cursor capture enabled`);
-        } else {
-          console.warn(`${platform}: Native cursor capture not available, falling back to CSS`);
-          // Fallback to CSS cursor hiding
-          const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
-          const container = document.getElementById("streaming-container");
-          if (video) video.style.cursor = 'none';
-          if (container) container.style.cursor = 'none';
-          document.body.style.cursor = 'none';
-          nativeCursorCaptured = true;
-          inputCaptureActive = true;
-        }
-      } else {
-        // Stop mouse polling first
-        if (isWindows) {
-          await stopMousePolling();
-        }
-        // Release native cursor capture
-        await invoke<boolean>("release_cursor");
-        nativeCursorCaptured = false;
-        // Restore cursor style
-        const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
-        const container = document.getElementById("streaming-container");
-        if (video) video.style.cursor = 'default';
-        if (container) container.style.cursor = 'default';
-        document.body.style.cursor = 'default';
-        console.log(`${platform}: Native cursor capture released`);
-      }
-    } catch (e) {
-      console.error(`${platform} cursor capture error:`, e);
-    }
+  const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
+  const container = document.getElementById("streaming-container");
+
+  if (mode === 'pointerlock') {
+    // Just hide cursor via CSS - no native capture needed
+    if (video) video.style.cursor = 'none';
+    if (container) container.style.cursor = 'none';
+    document.body.style.cursor = 'none';
+    console.log("Cursor hidden (absolute mode with CSS hide)");
+  } else {
+    // Show cursor
+    if (video) video.style.cursor = 'default';
+    if (container) container.style.cursor = 'default';
+    document.body.style.cursor = 'default';
+    console.log("Cursor visible (absolute mode)");
   }
 }
 
 /**
  * Suspend cursor capture temporarily (e.g., when window loses focus)
- * This releases native cursor capture so user can interact with other apps
+ * No-op since we use absolute mode with CSS cursor hiding
  */
 export async function suspendCursorCapture(): Promise<void> {
-  if (!nativeCursorCaptured) return;
-
-  try {
-    // Stop mouse polling first
-    if (isWindows) {
-      await stopMousePolling();
-    }
-    await invoke<boolean>("release_cursor");
-    console.log("Native cursor capture suspended (window blur)");
-  } catch (e) {
-    console.error("Failed to suspend cursor capture:", e);
-  }
+  // No-op - absolute mode doesn't need suspend/resume
 }
 
 /**
  * Resume cursor capture (e.g., when window regains focus)
- * This re-enables native cursor capture if we were in pointer lock mode
+ * No-op since we use absolute mode with CSS cursor hiding
  */
 export async function resumeCursorCapture(): Promise<void> {
-  if (!nativeCursorCaptured) return;
-  if (inputCaptureMode !== 'pointerlock') return;
-
-  try {
-    const captured = await invoke<boolean>("capture_cursor");
-    if (captured) {
-      // Restart mouse polling on Windows
-      if (isWindows) {
-        await startMousePolling();
-      }
-      console.log("Native cursor capture resumed (window focus)");
-    }
-  } catch (e) {
-    console.error("Failed to resume cursor capture:", e);
-  }
+  // No-op - absolute mode doesn't need suspend/resume
 }
 
 /**
  * Check if we're currently using native cursor capture
  */
 export function isNativeCursorCaptured(): boolean {
-  return nativeCursorCaptured;
+  return false; // We don't use native capture anymore
 }
 
 /**
@@ -2886,70 +2744,32 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   // Check if pointerrawupdate is supported (lower latency than pointermove)
   const supportsRawUpdate = "onpointerrawupdate" in videoElement;
 
-  // Mouse move handler - uses pointerrawupdate for lowest latency when available
+  // Mouse move handler - always uses absolute coordinates
+  // Server renders cursor in video stream, so we just send position
   const handleMouseMove = (e: MouseEvent | PointerEvent) => {
-    // In pointer lock mode, require pointer lock OR native cursor capture
-    if (inputCaptureMode === 'pointerlock') {
-      const canSendRelative = hasPointerLock || (nativeCursorCaptured && inputCaptureActive);
-
-      if (canSendRelative) {
-        // Windows with high-frequency polling: skip browser events, polling handles it
-        if (isWindows && mousePollingActive) {
-          return; // Mouse input handled by 1000Hz native polling thread
-        }
-
-        // macOS native or browser pointer lock: use movementX/movementY
-        // pointerrawupdate gives us individual events, no need to coalesce
-        if (e.type === "pointerrawupdate") {
-          if (e.movementX !== 0 || e.movementY !== 0) {
-            sendInputEvent({
-              type: "mouse_move",
-              data: { dx: e.movementX, dy: e.movementY },
-            });
-          }
-        } else {
-          // For regular pointermove, get all coalesced events
-          const events = (e as PointerEvent).getCoalescedEvents?.() || [e];
-          for (const evt of events) {
-            if (evt.movementX !== 0 || evt.movementY !== 0) {
-              sendInputEvent({
-                type: "mouse_move",
-                data: { dx: evt.movementX, dy: evt.movementY },
-              });
-            }
-          }
-        }
-      }
-    } else {
-      // In absolute mode, send if over video or input is captured
-      if (inputCaptureActive || isMouseOverVideo(e)) {
-        const coords = toAbsoluteCoords(e.clientX, e.clientY);
-        sendInputEvent({
-          type: "mouse_move",
-          data: {
-            dx: e.movementX,
-            dy: e.movementY,
-            absolute: true,
-            x: coords.x,
-            y: coords.y,
-          },
-        });
-      }
+    if (inputCaptureActive || isMouseOverVideo(e)) {
+      const coords = toAbsoluteCoords(e.clientX, e.clientY);
+      sendInputEvent({
+        type: "mouse_move",
+        data: {
+          dx: e.movementX,
+          dy: e.movementY,
+          absolute: true,
+          x: coords.x,
+          y: coords.y,
+        },
+      });
     }
   };
 
   // Mouse button down
   const handleMouseDown = (e: MouseEvent) => {
-    // On macOS, also capture when cursor is hidden (pointerlock workaround)
-    const nativeCapture = nativeCursorCaptured;
-    const shouldCapture = hasPointerLock || nativeCapture || (inputCaptureMode === 'absolute' && isMouseOverVideo(e));
-
-    if (shouldCapture) {
+    if (inputCaptureActive || isMouseOverVideo(e)) {
       // Activate input capture on click
-      if (!inputCaptureActive && inputCaptureMode === 'absolute') {
+      if (!inputCaptureActive) {
         inputCaptureActive = true;
         videoElement.focus();
-        console.log("Input capture activated (absolute mode)");
+        console.log("Input capture activated");
       }
 
       sendInputEvent({
@@ -2962,10 +2782,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Mouse button up
   const handleMouseUp = (e: MouseEvent) => {
-    const nativeCapture = nativeCursorCaptured;
-    const shouldCapture = hasPointerLock || nativeCapture || inputCaptureActive;
-
-    if (shouldCapture) {
+    if (inputCaptureActive) {
       sendInputEvent({
         type: "mouse_button",
         data: { button: e.button, pressed: false },
@@ -2976,10 +2793,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Mouse wheel
   const handleWheel = (e: WheelEvent) => {
-    const nativeCapture = nativeCursorCaptured;
-    const shouldCapture = hasPointerLock || nativeCapture || (inputCaptureMode === 'absolute' && (inputCaptureActive || isMouseOverVideo(e)));
-
-    if (shouldCapture) {
+    if (inputCaptureActive || isMouseOverVideo(e)) {
       sendInputEvent({
         type: "mouse_wheel",
         data: { deltaX: e.deltaX, deltaY: e.deltaY },
@@ -2990,12 +2804,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Keyboard handlers
   const handleKeyDown = (e: KeyboardEvent) => {
-    const nativeCapture = nativeCursorCaptured;
-    const shouldCapture = hasPointerLock || nativeCapture || inputCaptureActive;
-
-    if (shouldCapture) {
-      // ESC is sent to the game like any other key - fullscreen exit is handled separately
-      // Use proper GFN key code mapping and modifier flags
+    if (inputCaptureActive) {
       const vkCode = getVirtualKeyCode(e);
       const modifiers = getModifierFlags(e);
 
@@ -3003,7 +2812,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
         type: "key",
         data: {
           keyCode: vkCode,
-          scanCode: 0, // GFN uses scanCode field for other purposes
+          scanCode: 0,
           pressed: true,
           modifiers,
         },
@@ -3014,11 +2823,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   };
 
   const handleKeyUp = (e: KeyboardEvent) => {
-    const nativeCapture = nativeCursorCaptured;
-    const shouldCapture = hasPointerLock || nativeCapture || inputCaptureActive;
-
-    if (shouldCapture) {
-      // Use proper GFN key code mapping and modifier flags
+    if (inputCaptureActive) {
       const vkCode = getVirtualKeyCode(e);
       const modifiers = getModifierFlags(e);
 
@@ -3059,21 +2864,12 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     }
   };
 
-  // Click handler - either get pointer lock or activate absolute capture
-  const handleClick = (e: MouseEvent) => {
-    if (inputCaptureMode === 'pointerlock') {
-      // On macOS/Windows, we use native cursor capture, not browser pointer lock
-      // Only request browser pointer lock on other platforms
-      if (!hasPointerLock && !nativeCursorCaptured && !(isMacOS || isWindows)) {
-        requestPointerLockWithKeyboardLock();
-      }
-    } else {
-      // Absolute mode - just activate capture
-      if (!inputCaptureActive) {
-        inputCaptureActive = true;
-        videoElement.focus();
-        console.log("Input capture activated (click)");
-      }
+  // Click handler - activate input capture
+  const handleClick = () => {
+    if (!inputCaptureActive) {
+      inputCaptureActive = true;
+      videoElement.focus();
+      console.log("Input capture activated (click)");
     }
   };
 
@@ -3138,7 +2934,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     }
   };
 
-  // Fullscreen change handler - auto switch between pointer lock and absolute mode
+  // Fullscreen change handler - stay in absolute mode, just hide cursor
   const handleFullscreenChange = () => {
     const isFullscreen = !!(
       document.fullscreenElement ||
@@ -3149,29 +2945,20 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
     console.log("Fullscreen changed:", isFullscreen);
 
-    if (isFullscreen) {
-      // Entering fullscreen - switch to pointer lock mode
-      inputCaptureMode = 'pointerlock';
-      inputCaptureActive = true;
+    // Always use absolute mode - server renders cursor in video stream
+    inputCaptureMode = 'absolute';
+    inputCaptureActive = true;
 
-      // Request pointer lock after a small delay (fullscreen transition needs to complete)
-      // On macOS/Windows, we use native cursor capture instead of browser pointer lock
-      if (!(isMacOS || isWindows)) {
-        setTimeout(() => {
-          if (!hasPointerLock) {
-            console.log("Requesting pointer lock for fullscreen");
-            requestPointerLockWithKeyboardLock();
-          }
-        }, 100);
-      }
+    if (isFullscreen) {
+      // Hide cursor in fullscreen via CSS
+      videoElement.style.cursor = 'none';
+      document.body.style.cursor = 'none';
+      console.log("Fullscreen: cursor hidden, using absolute mode");
     } else {
-      // Exiting fullscreen - switch to absolute mode
-      if (hasPointerLock) {
-        document.exitPointerLock();
-      }
-      inputCaptureMode = 'absolute';
-      inputCaptureActive = true;
-      console.log("Switched to absolute mode (windowed)");
+      // Show cursor in windowed mode
+      videoElement.style.cursor = 'default';
+      document.body.style.cursor = 'default';
+      console.log("Windowed: cursor visible, using absolute mode");
     }
   };
 
