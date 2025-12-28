@@ -3812,6 +3812,15 @@ function createStreamingContainer(gameName: string): HTMLElement {
       <span id="stats-input-total" title="Total input pipeline latency">Input: -- ms</span>
       <span id="stats-input-rate" title="Input events per second">-- evt/s</span>
     </div>
+    <div class="stream-exit-overlay" id="stream-exit-overlay">
+      <div class="exit-overlay-content">
+        <svg class="exit-progress-ring" viewBox="0 0 100 100">
+          <circle class="exit-progress-bg" cx="50" cy="50" r="45" />
+          <circle class="exit-progress-bar" cx="50" cy="50" r="45" />
+        </svg>
+        <span class="exit-overlay-text">Hold ESC to exit</span>
+      </div>
+    </div>
     <div class="stream-settings-panel" id="stream-settings-panel">
       <div class="settings-panel-header">
         <span>Stream Settings</span>
@@ -4108,15 +4117,72 @@ function createStreamingContainer(gameName: string): HTMLElement {
     #streaming-container:fullscreen .stream-header,
     #streaming-container:-webkit-full-screen .stream-header,
     #streaming-container:-moz-full-screen .stream-header,
-    #streaming-container:-ms-fullscreen .stream-header {
+    #streaming-container:-ms-fullscreen .stream-header,
+    #streaming-container.is-fullscreen .stream-header {
       display: none !important;
     }
     /* Also hide settings panel in fullscreen mode */
     #streaming-container:fullscreen .stream-settings-panel,
     #streaming-container:-webkit-full-screen .stream-settings-panel,
     #streaming-container:-moz-full-screen .stream-settings-panel,
-    #streaming-container:-ms-fullscreen .stream-settings-panel {
+    #streaming-container:-ms-fullscreen .stream-settings-panel,
+    #streaming-container.is-fullscreen .stream-settings-panel {
       display: none !important;
+    }
+    /* ESC exit overlay styles */
+    .stream-exit-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.7);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.15s ease, visibility 0.15s ease;
+      z-index: 10000;
+      pointer-events: none;
+    }
+    .stream-exit-overlay.active {
+      opacity: 1;
+      visibility: visible;
+    }
+    .exit-overlay-content {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+    .exit-progress-ring {
+      width: 100px;
+      height: 100px;
+      transform: rotate(-90deg);
+    }
+    .exit-progress-bg {
+      fill: none;
+      stroke: rgba(255, 255, 255, 0.2);
+      stroke-width: 6;
+    }
+    .exit-progress-bar {
+      fill: none;
+      stroke: #76b900;
+      stroke-width: 6;
+      stroke-linecap: round;
+      stroke-dasharray: 283;
+      stroke-dashoffset: 283;
+      transition: stroke-dashoffset 1s linear;
+    }
+    .stream-exit-overlay.active .exit-progress-bar {
+      stroke-dashoffset: 0;
+    }
+    .exit-overlay-text {
+      color: #fff;
+      font-size: 16px;
+      font-weight: 500;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
     }
   `;
 
@@ -4151,6 +4217,16 @@ function createStreamingContainer(gameName: string): HTMLElement {
       await appWindow.setFullscreen(enteringFullscreen);
       console.log("Fullscreen toggled to:", enteringFullscreen);
       tauriSuccess = true;
+
+      // Toggle is-fullscreen class on container for CSS rules
+      const streamContainer = document.getElementById("streaming-container");
+      if (streamContainer) {
+        if (enteringFullscreen) {
+          streamContainer.classList.add("is-fullscreen");
+        } else {
+          streamContainer.classList.remove("is-fullscreen");
+        }
+      }
 
       // Manually handle pointer mode since browser fullscreenchange event won't fire
       const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
@@ -4344,8 +4420,24 @@ function createStreamingContainer(gameName: string): HTMLElement {
       // Only start the hold timer if not already started
       if (escHoldStart === 0) {
         escHoldStart = Date.now();
+
+        // Show the exit overlay with animation
+        const exitOverlay = document.getElementById("stream-exit-overlay");
+        if (exitOverlay) {
+          exitOverlay.classList.add("active");
+        }
+
         escHoldTimer = window.setTimeout(() => {
           if (escHoldStart > 0) {
+            // Hide overlay before exiting
+            if (exitOverlay) {
+              exitOverlay.classList.remove("active");
+            }
+            // Remove is-fullscreen class
+            const streamContainer = document.getElementById("streaming-container");
+            if (streamContainer) {
+              streamContainer.classList.remove("is-fullscreen");
+            }
             exitFullscreenAsync();
             escHoldStart = 0;
           }
@@ -4360,6 +4452,11 @@ function createStreamingContainer(gameName: string): HTMLElement {
       if (escHoldTimer) {
         clearTimeout(escHoldTimer);
         escHoldTimer = null;
+      }
+      // Hide the exit overlay
+      const exitOverlay = document.getElementById("stream-exit-overlay");
+      if (exitOverlay) {
+        exitOverlay.classList.remove("active");
       }
     }
   };
