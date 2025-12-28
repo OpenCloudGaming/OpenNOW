@@ -2660,6 +2660,9 @@ export function getInputLatencyStats(): { ipc: number; send: number; total: numb
   };
 }
 
+// RAF handle for mouse polling
+let mousePollingRaf: number | null = null;
+
 // Start high-frequency mouse polling on Windows
 // Uses Raw Input API for hardware-level mouse deltas
 const startMousePolling = async () => {
@@ -2671,10 +2674,13 @@ const startMousePolling = async () => {
       mousePollingActive = true;
       console.log("Raw Input mouse capture started");
 
-      // Use setInterval at ~120Hz - balances latency vs CPU usage
-      // Raw Input accumulates deltas between polls, so we don't lose any movement
-      mousePollingInterval = window.setInterval(() => {
+      // Use requestAnimationFrame for display-synced polling
+      // This runs at monitor refresh rate (60/120/144/240Hz)
+      const pollMouse = () => {
         if (!mousePollingActive || !nativeCursorCaptured) {
+          if (mousePollingActive) {
+            mousePollingRaf = requestAnimationFrame(pollMouse);
+          }
           return;
         }
 
@@ -2689,7 +2695,13 @@ const startMousePolling = async () => {
         }).catch(() => {
           // Ignore errors silently
         });
-      }, 8); // ~120Hz polling
+
+        if (mousePollingActive) {
+          mousePollingRaf = requestAnimationFrame(pollMouse);
+        }
+      };
+
+      mousePollingRaf = requestAnimationFrame(pollMouse);
     }
   } catch (e) {
     console.error("Failed to start mouse polling:", e);
@@ -2702,6 +2714,10 @@ const stopMousePolling = async () => {
   if (mousePollingInterval !== null) {
     clearInterval(mousePollingInterval);
     mousePollingInterval = null;
+  }
+  if (mousePollingRaf !== null) {
+    cancelAnimationFrame(mousePollingRaf);
+    mousePollingRaf = null;
   }
   try {
     await invoke("stop_mouse_polling");
