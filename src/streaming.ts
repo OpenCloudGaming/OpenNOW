@@ -2744,10 +2744,18 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   // Check if pointerrawupdate is supported (lower latency than pointermove)
   const supportsRawUpdate = "onpointerrawupdate" in videoElement;
 
-  // Mouse move handler - always uses absolute coordinates
-  // Server renders cursor in video stream, so we just send position
+  // Mouse move handler - uses relative movement in pointer lock, absolute otherwise
   const handleMouseMove = (e: MouseEvent | PointerEvent) => {
-    if (inputCaptureActive || isMouseOverVideo(e)) {
+    // In pointer lock mode (fullscreen), use relative movement
+    if (document.pointerLockElement === videoElement) {
+      if (e.movementX !== 0 || e.movementY !== 0) {
+        sendInputEvent({
+          type: "mouse_move",
+          data: { dx: e.movementX, dy: e.movementY },
+        });
+      }
+    } else if (inputCaptureActive || isMouseOverVideo(e)) {
+      // In windowed mode, use absolute coordinates
       const coords = toAbsoluteCoords(e.clientX, e.clientY);
       sendInputEvent({
         type: "mouse_move",
@@ -2934,7 +2942,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     }
   };
 
-  // Fullscreen change handler - hide cursor in fullscreen
+  // Fullscreen change handler - use pointer lock in fullscreen to confine cursor
   const handleFullscreenChange = async () => {
     const isFullscreen = !!(
       document.fullscreenElement ||
@@ -2945,27 +2953,32 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
     console.log("Fullscreen changed:", isFullscreen);
 
-    // Always use absolute mode - server renders cursor in video stream
-    inputCaptureMode = 'absolute';
-    inputCaptureActive = true;
-
     if (isFullscreen) {
-      // Hide cursor in fullscreen via CSS on all elements
-      videoElement.style.cursor = 'none';
-      document.body.style.cursor = 'none';
-      document.documentElement.style.cursor = 'none';
-      // Also set on streaming container
-      const container = document.getElementById("streaming-container");
-      if (container) container.style.cursor = 'none';
-      console.log("Fullscreen: cursor hidden");
+      // Request pointer lock to confine cursor - this is how official GFN client works
+      inputCaptureMode = 'pointerlock';
+      inputCaptureActive = true;
+      
+      // Request pointer lock with unadjustedMovement for raw input
+      try {
+        await (videoElement as any).requestPointerLock({ unadjustedMovement: true });
+        console.log("Pointer lock acquired with unadjustedMovement");
+      } catch (e) {
+        // Fallback without unadjustedMovement
+        try {
+          await videoElement.requestPointerLock();
+          console.log("Pointer lock acquired (standard)");
+        } catch (e2) {
+          console.warn("Pointer lock failed:", e2);
+        }
+      }
     } else {
-      // Show cursor in windowed mode
-      videoElement.style.cursor = 'default';
-      document.body.style.cursor = 'default';
-      document.documentElement.style.cursor = 'default';
-      const container = document.getElementById("streaming-container");
-      if (container) container.style.cursor = 'default';
-      console.log("Windowed: cursor visible");
+      // Exit pointer lock when leaving fullscreen
+      if (document.pointerLockElement) {
+        document.exitPointerLock();
+      }
+      inputCaptureMode = 'absolute';
+      inputCaptureActive = true;
+      console.log("Windowed: pointer lock released");
     }
   };
 
