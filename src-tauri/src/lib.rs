@@ -23,6 +23,8 @@ mod discord;
 mod proxy;
 #[cfg(feature = "tauri-app")]
 mod cursor;
+#[cfg(feature = "tauri-app")]
+mod raw_input;
 
 #[cfg(feature = "tauri-app")]
 use tauri::Manager;
