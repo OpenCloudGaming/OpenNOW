@@ -5,7 +5,6 @@
 <p align="center">
   <strong>Open source GeForce NOW client built from the ground up</strong>
 </p>
-
 <p align="center">
   <a href="https://github.com/zortos293/GFNClient/releases">
     <img src="https://img.shields.io/github/v/tag/zortos293/GFNClient?style=for-the-badge&label=Download" alt="Download">
@@ -16,7 +15,16 @@
   <a href="https://github.com/sponsors/zortos293">
     <img src="https://img.shields.io/badge/Sponsor-EA4AAA?style=for-the-badge&logo=github-sponsors&logoColor=white" alt="Sponsor">
   </a>
+  <a href="https://discord.gg/8EJYaJcNfD">
+    <img src="https://img.shields.io/badge/Discord-Join%20Us-7289da?style=for-the-badge&logo=discord" alt="Discord">
+  </a>
 </p>
+
+--- 
+## Disclaimer
+
+This is an **independent project** not affiliated with NVIDIA Corporation. Created through reverse engineering for educational purposes. GeForce NOW is a trademark of NVIDIA. Use at your own risk.
+
 
 ---
 
@@ -102,6 +110,16 @@ bun run tauri dev
 
 ## Troubleshooting
 
+
+### macOS: "App is damaged" or won't open
+
+macOS quarantines apps downloaded from the internet. To fix this, run:
+
+```bash
+xattr -d com.apple.quarantine /Applications/OpenNOW.app
+```
+
+
 If you encounter issues, please export your logs and attach them to your bug report:
 
 1. Open **Settings** (gear icon in the top right)
@@ -129,11 +147,6 @@ If OpenNOW is useful to you, consider sponsoring to support development:
 
 ---
 
-## Disclaimer
-
-This is an **independent project** not affiliated with NVIDIA Corporation. Created through reverse engineering for educational purposes. GeForce NOW is a trademark of NVIDIA. Use at your own risk.
-
----
 
 <p align="center">
   Made by <a href="https://github.com/zortos293">zortos293</a>
