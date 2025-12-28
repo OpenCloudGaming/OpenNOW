@@ -332,12 +332,12 @@ jobs:
             - **Windows ARM64**: `.msi` or `.exe` installer (for ARM devices)
             - **macOS**: `.dmg` disk image (Universal - Intel + Apple Silicon)
             - **Linux x64**: `.deb` or `.AppImage`
-            - **Linux ARM64**: `.deb` or `.AppImage` (Raspberry Pi, ARM servers)
+            - **Linux ARM64**: `.deb` or `.rpm` (Raspberry Pi, ARM servers)
 
             [Sponsor this project](https://github.com/sponsors/zortos293)
           releaseDraft: false
           prerelease: true
-          args: ${{ matrix.target == 'linux-arm64' && '--target aarch64-unknown-linux-gnu' || (matrix.target == 'windows-arm64' && '--target aarch64-pc-windows-msvc' || '') }}
+          args: ${{ matrix.target == 'linux-arm64' && '--target aarch64-unknown-linux-gnu --bundles deb,rpm' || (matrix.target == 'windows-arm64' && '--target aarch64-pc-windows-msvc' || '') }}
 
       # Build without release creation (dev branch - artifacts only)
       - name: Build Tauri app (dev - no release)
@@ -348,7 +348,7 @@ jobs:
           CC: ${{ matrix.target == 'linux-arm64' && 'aarch64-linux-gnu-gcc' || '' }}
           CXX: ${{ matrix.target == 'linux-arm64' && 'aarch64-linux-gnu-g++' || '' }}
         with:
-          args: ${{ matrix.target == 'linux-arm64' && '--target aarch64-unknown-linux-gnu' || (matrix.target == 'windows-arm64' && '--target aarch64-pc-windows-msvc' || '') }}
+          args: ${{ matrix.target == 'linux-arm64' && '--target aarch64-unknown-linux-gnu --bundles deb,rpm' || (matrix.target == 'windows-arm64' && '--target aarch64-pc-windows-msvc' || '') }}
 
       - name: Upload Windows x64 artifacts
         if: matrix.target == 'windows'
@@ -417,7 +417,7 @@ jobs:
           name: opennow-${{ needs.get-version.outputs.version }}-linux-arm64
           path: |
             src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb
-            src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+            src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/rpm/*.rpm
           retention-days: 30
 
       # Upload ARM64 builds to release
@@ -428,7 +428,7 @@ jobs:
           tag_name: ${{ needs.get-version.outputs.version }}
           files: |
             src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb
-            src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+            src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/rpm/*.rpm
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
