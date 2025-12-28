@@ -885,8 +885,8 @@ async function handleGfnSdpOffer(
           console.log("  *** INPUT HANDSHAKE COMPLETE! Ready for input events.");
         }
       } else {
-        // Post-handshake message (ACK, cursor position, etc.)
-        console.log("  Post-handshake message received");
+        // Post-handshake message (ACK, etc.)
+        console.log("  Post-handshake message received, size:", size);
       }
     }
   };
@@ -2069,7 +2069,8 @@ function createDataChannels(pc: RTCPeerConnection): void {
   controlChannel.onerror = (e) => console.error("Control channel error:", e);
   controlChannel.onclose = () => console.log("Control channel closed");
   controlChannel.onmessage = (e) => {
-    console.log("Control channel message received, size:", (e.data as ArrayBuffer).byteLength);
+    const size = (e.data as ArrayBuffer).byteLength;
+    console.log("Control channel message, size:", size);
   };
   streamingState.dataChannels.set("control", controlChannel);
 
@@ -2093,7 +2094,8 @@ function createDataChannels(pc: RTCPeerConnection): void {
   customChannel.binaryType = "arraybuffer";
   customChannel.onopen = () => console.log("Custom message channel open");
   customChannel.onmessage = (e) => {
-    console.log("Custom message received, size:", (e.data as ArrayBuffer).byteLength);
+    const size = (e.data as ArrayBuffer).byteLength;
+    console.log("Custom message received, size:", size);
   };
   streamingState.dataChannels.set("custom", customChannel);
 
@@ -2104,7 +2106,8 @@ function createDataChannels(pc: RTCPeerConnection): void {
     channel.binaryType = "arraybuffer";
     channel.onopen = () => console.log(`Server channel '${channel.label}' open`);
     channel.onmessage = (e) => {
-      console.log(`Server channel '${channel.label}' message, size:`, (e.data as ArrayBuffer).byteLength);
+      const size = (e.data as ArrayBuffer).byteLength;
+      console.log(`Server channel '${channel.label}' message, size:`, size);
     };
     streamingState.dataChannels.set(channel.label, channel);
   };
@@ -2754,9 +2757,9 @@ const startMousePolling = async () => {
             const totalTime = sendEnd - pipelineStart;
             addSample(totalLatencySamples, totalTime);
 
-            // Log stats periodically (every 5 seconds)
+            // Log stats periodically (every 60 seconds to reduce overhead)
             const logNow = performance.now();
-            if (logNow - lastInputStatsLog > 5000) {
+            if (logNow - lastInputStatsLog > 60000) {
               lastInputStatsLog = logNow;
               const stats = getInputLatencyStats();
               console.log(`[Input Stats] IPC: ${stats.ipc.toFixed(2)}ms | Send: ${stats.send.toFixed(2)}ms | Total: ${stats.total.toFixed(2)}ms | Rate: ${stats.rate}/s`);
