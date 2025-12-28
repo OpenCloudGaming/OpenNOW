@@ -124,11 +124,7 @@ impl Default for GfnConfig {
 
 /// Get the path to the settings file
 fn get_settings_file_path() -> PathBuf {
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."));
-    let app_dir = config_dir.join("gfn-client");
-    fs::create_dir_all(&app_dir).ok();
-    app_dir.join("settings.json")
+    crate::utils::get_app_data_dir().join("settings.json")
 }
 
 #[command]
