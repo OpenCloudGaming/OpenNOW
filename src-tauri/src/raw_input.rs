@@ -21,7 +21,6 @@ static MESSAGE_WINDOW: Mutex<Option<isize>> = Mutex::new(None);
 #[cfg(target_os = "windows")]
 mod win32 {
     use std::ffi::c_void;
-    use std::ptr::null_mut;
     use std::mem::size_of;
 
     pub type HWND = isize;
@@ -210,17 +209,23 @@ mod win32 {
     }
 
     /// Process a WM_INPUT message and extract mouse delta
-    /// Uses a stack-allocated buffer to avoid heap allocations on every mouse event
+    /// Uses a properly aligned stack buffer to avoid heap allocations
     pub fn process_raw_input(lparam: LPARAM) -> Option<(i32, i32)> {
         unsafe {
-            // Use stack buffer - RAWINPUT for mouse is ~48 bytes, 64 is plenty
-            let mut buffer: [u8; 64] = [0; 64];
-            let mut size: u32 = buffer.len() as u32;
+            // Use a properly aligned buffer for RAWINPUT struct
+            // RAWINPUT contains pointers which need 8-byte alignment on x64
+            #[repr(C, align(8))]
+            struct AlignedBuffer {
+                data: [u8; 64],
+            }
+            
+            let mut buffer = AlignedBuffer { data: [0; 64] };
+            let mut size: u32 = buffer.data.len() as u32;
 
             let result = GetRawInputData(
                 lparam as *mut c_void,
                 RID_INPUT,
-                buffer.as_mut_ptr() as *mut c_void,
+                buffer.data.as_mut_ptr() as *mut c_void,
                 &mut size,
                 size_of::<RAWINPUTHEADER>() as u32,
             );
@@ -229,8 +234,8 @@ mod win32 {
                 return None;
             }
 
-            // Parse the raw input
-            let raw = &*(buffer.as_ptr() as *const RAWINPUT);
+            // Parse the raw input - buffer is now properly aligned
+            let raw = &*(buffer.data.as_ptr() as *const RAWINPUT);
 
             // Check if it's mouse input
             if raw.header.dw_type != RIM_TYPEMOUSE {
