@@ -2914,20 +2914,30 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   const handleBlur = () => {
     if (inputCaptureActive) {
       console.log("Window blurred, input capture paused");
+      
+      // Check if we're currently in fullscreen with pointer lock
+      const isFullscreen = !!(
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement ||
+        (document as any).msFullscreenElement
+      );
+      
       // Remember if we had pointer lock in fullscreen mode
-      if (hasPointerLock && inputCaptureMode === 'pointerlock') {
+      // Note: Browser may exit fullscreen on blur, so check both conditions
+      if ((hasPointerLock || isFullscreen) && inputCaptureMode === 'pointerlock') {
         wasInFullscreenPointerLock = true;
-        console.log("Was in fullscreen pointer lock mode - will re-lock on focus");
+        console.log("Was in fullscreen pointer lock mode - will re-enter fullscreen on focus");
       }
     }
   };
 
   // Focus handler - re-capture mouse when window regains focus
   const handleFocus = async () => {
-    if (inputCaptureActive) {
-      console.log("Window focused, checking if we need to re-capture mouse");
+    if (inputCaptureActive && wasInFullscreenPointerLock) {
+      console.log("Window focused, re-entering fullscreen mode");
       
-      // Check if we're still in fullscreen
+      // Check if we're still in fullscreen (browser may have exited it on blur)
       const isFullscreen = !!(
         document.fullscreenElement ||
         (document as any).webkitFullscreenElement ||
@@ -2935,23 +2945,24 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
         (document as any).msFullscreenElement
       );
 
-      // If we were in fullscreen pointer lock mode and are still in fullscreen, re-request pointer lock
-      if (wasInFullscreenPointerLock && isFullscreen && !document.pointerLockElement) {
-        console.log("Re-requesting pointer lock after focus regained");
-        wasInFullscreenPointerLock = false;
-        
-        // Small delay to ensure window is fully focused before requesting pointer lock
-        setTimeout(async () => {
-          try {
+      wasInFullscreenPointerLock = false;
+
+      // Small delay to ensure window is fully focused
+      setTimeout(async () => {
+        try {
+          if (!isFullscreen) {
+            // Re-enter fullscreen - this will trigger handleFullscreenChange which requests pointer lock
+            console.log("Re-entering fullscreen after focus regained");
+            await videoElement.requestFullscreen();
+          } else if (!document.pointerLockElement) {
+            // Still in fullscreen but lost pointer lock, re-request it
+            console.log("Re-requesting pointer lock after focus regained");
             await requestPointerLockWithKeyboardLock();
-            console.log("Pointer lock re-acquired after focus");
-          } catch (e) {
-            console.warn("Failed to re-acquire pointer lock:", e);
           }
-        }, 100);
-      } else {
-        wasInFullscreenPointerLock = false;
-      }
+        } catch (e) {
+          console.warn("Failed to re-enter fullscreen/pointer lock:", e);
+        }
+      }, 150);
     }
   };
 
