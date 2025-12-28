@@ -4,6 +4,20 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+// Extend Document interface for vendor-prefixed fullscreen APIs
+interface FullscreenDocument extends Document {
+  webkitFullscreenElement?: Element;
+  mozFullScreenElement?: Element;
+  msFullscreenElement?: Element;
+}
+
+// Video frame callback metadata (for requestVideoFrameCallback)
+interface VideoFrameMetadata {
+  droppedVideoFrames?: number;
+  presentedFrames?: number;
+  presentationTime?: number;
+}
+
 // Types
 interface WebRtcConfig {
   session_id: string;
@@ -93,6 +107,7 @@ export interface StreamingState {
   retryCount: number;
   maxRetries: number;
   inputDebugLogged?: Set<string>;
+  liveEdgeIntervalId?: ReturnType<typeof setInterval>;
 }
 
 export interface StreamingStats {
@@ -732,70 +747,36 @@ async function handleGfnSdpOffer(
     };
 
     channel.onmessage = (e) => {
-      const size = e.data instanceof ArrayBuffer ? e.data.byteLength : e.data.length;
-      console.log(`Data channel '${channel.label}' message, size:`, size);
-
-      // Decode control channel messages
+      // Handle binary data (most common during streaming)
       if (e.data instanceof ArrayBuffer && e.data.byteLength > 0) {
         const bytes = new Uint8Array(e.data);
-        console.log(`  First 32 bytes: ${Array.from(bytes.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
 
-        // Try to decode as text (might be JSON)
+        // Try to decode as JSON (control messages)
         try {
           const text = new TextDecoder().decode(e.data);
           if (text.startsWith('{') || text.startsWith('[')) {
             const json = JSON.parse(text);
-            console.log(`  JSON content:`, json);
-
-            // Log specific message types for debugging
-            if (json.videoStreamProgressEvent) {
-              console.log("  Video progress event received");
-            }
-            if (json.customMessage) {
-              console.log("  Custom message:", json.customMessage);
-            }
+            // Only log important messages
             if (json.inputReady !== undefined) {
-              console.log("  *** INPUT READY MESSAGE:", json.inputReady);
+              console.log("Input ready message:", json.inputReady);
             }
-          } else if (text.match(/^[\x20-\x7E\r\n\t]+$/)) {
-            // Printable ASCII
-            console.log(`  Text content:`, text.substring(0, 200));
           }
         } catch {
-          // Binary data - decode header
-          if (bytes.length >= 4) {
-            const view = new DataView(e.data);
-            const msgType = view.getUint16(0, true);
-            const flags = view.getUint16(2, true);
-            console.log(`  Binary msg type: 0x${msgType.toString(16)}, flags: 0x${flags.toString(16)}`);
-          }
-
-          // Check for handshake on server input channel
+          // Binary data - check for handshake on server input channel
           if (bytes.length === 4 && bytes[0] === 0x0e) {
-            console.log("  SERVER INPUT HANDSHAKE detected on", channel.label);
-            console.log("  Responding to server input handshake...");
+            console.log("Server input handshake detected on", channel.label);
             const response = new Uint8Array([bytes[0], bytes[1], bytes[2], bytes[3]]);
             try {
               channel.send(response.buffer);
-              console.log("  Server input handshake response sent");
+              console.log("Server input handshake complete");
               inputHandshakeComplete = true;
-              streamStartTime = Date.now(); // Set stream start time
-              // Use server's channel for input
+              streamStartTime = Date.now();
               streamingState.dataChannels.set("input", channel);
-              console.log("  Switched to server input channel for input events");
-              console.log("  Stream start time set:", streamStartTime);
             } catch (err) {
-              console.error("  Failed to send server input handshake:", err);
+              console.error("Failed to send server input handshake:", err);
             }
           }
         }
-      } else if (typeof e.data === 'string') {
-        console.log(`  String content:`, e.data.substring(0, 200));
-        // Try parsing as JSON
-        try {
-          const json = JSON.parse(e.data);
-          console.log(`  Parsed JSON:`, json);
-        } catch {}
       }
     };
 
@@ -885,8 +866,8 @@ async function handleGfnSdpOffer(
           console.log("  *** INPUT HANDSHAKE COMPLETE! Ready for input events.");
         }
       } else {
-        // Post-handshake message (ACK, cursor position, etc.)
-        console.log("  Post-handshake message received");
+        // Post-handshake message (ACK, etc.)
+        console.log("  Post-handshake message received, size:", size);
       }
     }
   };
@@ -1292,26 +1273,32 @@ function createVideoElement(): HTMLVideoElement {
   };
 
   // Keep video at live edge - catch up if we fall behind
-  let lastCheck = 0;
-  const keepAtLiveEdge = () => {
-    const now = performance.now();
-    if (now - lastCheck > 1000) { // Check every second
-      lastCheck = now;
-      if (video.buffered.length > 0) {
-        const bufferedEnd = video.buffered.end(video.buffered.length - 1);
-        const lag = bufferedEnd - video.currentTime;
-        // If we're more than 100ms behind live, catch up
-        if (lag > 0.1) {
-          video.currentTime = bufferedEnd;
+  // Use setInterval instead of requestAnimationFrame to reduce overhead
+  // Store interval ID in streaming state so it can be cleared on disconnect
+  if (streamingState.liveEdgeIntervalId) {
+    clearInterval(streamingState.liveEdgeIntervalId);
+  }
+  streamingState.liveEdgeIntervalId = setInterval(() => {
+    if (!video.parentNode) {
+      if (streamingState.liveEdgeIntervalId) {
+        clearInterval(streamingState.liveEdgeIntervalId);
+        streamingState.liveEdgeIntervalId = undefined;
+      }
+      return;
+    }
+    if (video.buffered.length > 0) {
+      const bufferedEnd = video.buffered.end(video.buffered.length - 1);
+      const lag = bufferedEnd - video.currentTime;
+      // If we're more than 100ms behind live, catch up
+      if (lag > 0.1) {
+        video.currentTime = bufferedEnd;
+        // Only log significant catch-ups to reduce console spam
+        if (lag > 0.5) {
           console.log(`Caught up to live edge (was ${(lag * 1000).toFixed(0)}ms behind)`);
         }
       }
     }
-    if (video.parentNode) {
-      requestAnimationFrame(keepAtLiveEdge);
-    }
-  };
-  requestAnimationFrame(keepAtLiveEdge);
+  }, 1000);
 
   // Handle video events
   video.onloadedmetadata = () => {
@@ -1325,38 +1312,31 @@ function createVideoElement(): HTMLVideoElement {
     // This fires exactly when a frame is presented, allowing tighter input sync
     if ('requestVideoFrameCallback' in video) {
       let frameCount = 0;
-      let lastFrameTime = 0;
       let droppedFrames = 0;
+      let lastDropLogTime = 0;
 
-      const onVideoFrame = (now: number, metadata: any) => {
+      const onVideoFrame = (_now: number, metadata: VideoFrameMetadata) => {
         frameCount++;
 
-        // Log frame timing stats periodically
-        if (frameCount % 240 === 0) { // Every 240 frames (~1 second at 240fps)
-          const fps = 1000 / (now - lastFrameTime);
-          const totalFrames = metadata.presentedFrames || 0;
+        // Only log dropped frames, and throttle to once per 5 seconds max
+        if (frameCount % 300 === 0) { // Check every ~5 seconds at 60fps
           const newDropped = (metadata.droppedVideoFrames || 0) - droppedFrames;
           droppedFrames = metadata.droppedVideoFrames || 0;
+          const now = Date.now();
 
-          if (newDropped > 0) {
-            console.log(`Frame timing: ${fps.toFixed(1)}fps, dropped: ${newDropped} in last second`);
+          // Only log if frames were dropped and we haven't logged recently
+          if (newDropped > 5 && now - lastDropLogTime > 5000) {
+            console.log(`Dropped ${newDropped} frames in last 5 seconds`);
+            lastDropLogTime = now;
           }
-        }
-        lastFrameTime = now;
-
-        // Keep at live edge - if processing delay detected, skip ahead
-        if (metadata.processingDuration && metadata.processingDuration > 8) { // >8ms processing = lag
-          console.log(`High processing delay: ${metadata.processingDuration.toFixed(1)}ms`);
         }
 
         // Continue callback loop
-        (video as any).requestVideoFrameCallback(onVideoFrame);
+        video.requestVideoFrameCallback(onVideoFrame);
       };
 
-      (video as any).requestVideoFrameCallback(onVideoFrame);
+      video.requestVideoFrameCallback(onVideoFrame);
       console.log("requestVideoFrameCallback enabled for low-latency frame sync");
-    } else {
-      console.log("requestVideoFrameCallback not supported");
     }
   };
 
@@ -2069,7 +2049,8 @@ function createDataChannels(pc: RTCPeerConnection): void {
   controlChannel.onerror = (e) => console.error("Control channel error:", e);
   controlChannel.onclose = () => console.log("Control channel closed");
   controlChannel.onmessage = (e) => {
-    console.log("Control channel message received, size:", (e.data as ArrayBuffer).byteLength);
+    const size = (e.data as ArrayBuffer).byteLength;
+    console.log("Control channel message, size:", size);
   };
   streamingState.dataChannels.set("control", controlChannel);
 
@@ -2093,7 +2074,8 @@ function createDataChannels(pc: RTCPeerConnection): void {
   customChannel.binaryType = "arraybuffer";
   customChannel.onopen = () => console.log("Custom message channel open");
   customChannel.onmessage = (e) => {
-    console.log("Custom message received, size:", (e.data as ArrayBuffer).byteLength);
+    const size = (e.data as ArrayBuffer).byteLength;
+    console.log("Custom message received, size:", size);
   };
   streamingState.dataChannels.set("custom", customChannel);
 
@@ -2104,7 +2086,8 @@ function createDataChannels(pc: RTCPeerConnection): void {
     channel.binaryType = "arraybuffer";
     channel.onopen = () => console.log(`Server channel '${channel.label}' open`);
     channel.onmessage = (e) => {
-      console.log(`Server channel '${channel.label}' message, size:`, (e.data as ArrayBuffer).byteLength);
+      const size = (e.data as ArrayBuffer).byteLength;
+      console.log(`Server channel '${channel.label}' message, size:`, size);
     };
     streamingState.dataChannels.set(channel.label, channel);
   };
@@ -2125,26 +2108,13 @@ function handleStatsMessage(event: MessageEvent): void {
 
 /**
  * Start periodic stats collection
+ * NOTE: Stats are collected by main.ts UI interval, this just caches them in streamingState
+ * We use a longer interval (5s) to reduce overhead since UI already collects at 1s
  */
 function startStatsCollection(): void {
-  const collectStats = async () => {
-    if (!streamingState.connected || !streamingState.peerConnection) {
-      return;
-    }
-
-    const stats = await getStreamingStats();
-    if (stats) {
-      streamingState.stats = stats;
-      // Could emit an event here for UI updates
-    }
-
-    // Continue collecting
-    if (streamingState.connected) {
-      setTimeout(collectStats, 1000);
-    }
-  };
-
-  collectStats();
+  // Disabled - main.ts already collects stats every 1s for UI display
+  // Having two collectors causes duplicate getStats() calls which can cause lag spikes
+  // The UI interval in main.ts will update streamingState.stats via getStreamingStats()
 }
 
 /**
@@ -2514,6 +2484,26 @@ const USE_WRAPPER_BYTE = false;
 // Stream start time for relative timestamps
 let streamStartTime = 0;
 
+// Pre-allocated buffers for input events to reduce GC pressure
+// These are reused for each input event instead of allocating new ArrayBuffers
+const inputBuffers = {
+  mouseRel: new ArrayBuffer(22),
+  mouseAbs: new ArrayBuffer(26),
+  mouseButton: new ArrayBuffer(18),
+  mouseWheel: new ArrayBuffer(22),
+  keyboard: new ArrayBuffer(18),
+};
+const inputViews = {
+  mouseRel: new DataView(inputBuffers.mouseRel),
+  mouseAbs: new DataView(inputBuffers.mouseAbs),
+  mouseButton: new DataView(inputBuffers.mouseButton),
+  mouseWheel: new DataView(inputBuffers.mouseWheel),
+  keyboard: new DataView(inputBuffers.keyboard),
+};
+const inputBytes = {
+  mouseButton: new Uint8Array(inputBuffers.mouseButton),
+};
+
 /**
  * Encode input event for GFN protocol (from deobfuscated vendor.js)
  *
@@ -2530,6 +2520,8 @@ let streamStartTime = 0;
  *
  * Keyboard (18 bytes): Yc function
  *   [type 4B LE][keycode 2B BE][modifiers 2B BE][reserved 2B][timestamp 8B BE μs]
+ *
+ * NOTE: Uses pre-allocated buffers to avoid GC pressure from frequent allocations
  */
 function encodeInputEvent(event: InputEvent): ArrayBuffer {
   // Timestamp in microseconds (ms * 1000), relative to stream start
@@ -2543,11 +2535,8 @@ function encodeInputEvent(event: InputEvent): ArrayBuffer {
 
       // Check if we should use absolute positioning
       if (data.absolute && data.x !== undefined && data.y !== undefined) {
-        // Mouse Absolute (Gc with absolute=true): 26 bytes
-        // From GFN vendor.js analysis:
-        // [type 4B LE][x 2B BE][y 2B BE][reserved 2B BE][refWidth 2B BE][refHeight 2B BE][reserved 4B][timestamp 8B BE]
-        const buffer = new ArrayBuffer(26);
-        const view = new DataView(buffer);
+        // Mouse Absolute (Gc with absolute=true): 26 bytes - use pre-allocated buffer
+        const view = inputViews.mouseAbs;
         view.setUint32(0, GFN_INPUT_MOUSE_ABS, true);   // Type 5, LE
         view.setUint16(4, data.x, false);               // Absolute X, BE (0-65535)
         view.setUint16(6, data.y, false);               // Absolute Y, BE (0-65535)
@@ -2556,70 +2545,61 @@ function encodeInputEvent(event: InputEvent): ArrayBuffer {
         view.setUint16(12, 65535, false);               // Reference height, BE
         view.setUint32(14, 0, false);                   // Reserved
         view.setBigUint64(18, timestampUs, false);      // Timestamp μs, BE
-        return buffer;
+        return inputBuffers.mouseAbs;
       }
 
-      // Mouse Relative (Gc with absolute=false): 22 bytes
-      // [type 4B LE][dx 2B BE][dy 2B BE][reserved 2B BE][reserved 4B][timestamp 8B BE]
-      const buffer = new ArrayBuffer(22);
-      const view = new DataView(buffer);
+      // Mouse Relative (Gc with absolute=false): 22 bytes - use pre-allocated buffer
+      const view = inputViews.mouseRel;
       view.setUint32(0, GFN_INPUT_MOUSE_REL, true);   // Type 7, LE
       view.setInt16(4, data.dx, false);               // Delta X, BE (signed)
       view.setInt16(6, data.dy, false);               // Delta Y, BE (signed)
       view.setUint16(8, 0, false);                    // Reserved, BE
       view.setUint32(10, 0, false);                   // Reserved
       view.setBigUint64(14, timestampUs, false);      // Timestamp μs, BE
-      return buffer;
+      return inputBuffers.mouseRel;
     }
 
     case "mouse_button": {
-      // Mouse Button (xc): 18 bytes
-      // [type 4B LE][button 1B][pad 1B][reserved 4B][timestamp 8B BE]
-      // Button mapping: ja(button) = button + 1, so 0→1 (left), 1→2 (right), 2→3 (middle)
+      // Mouse Button (xc): 18 bytes - use pre-allocated buffer
       const data = event.data as MouseButtonData;
       const eventType = data.pressed ? GFN_INPUT_MOUSE_BUTTON_DOWN : GFN_INPUT_MOUSE_BUTTON_UP;
       const gfnButton = data.button + 1;  // GFN uses 1-based button indices
-      const buffer = new ArrayBuffer(18);
-      const view = new DataView(buffer);
-      const bytes = new Uint8Array(buffer);
+      const view = inputViews.mouseButton;
+      const bytes = inputBytes.mouseButton;
       view.setUint32(0, eventType, true);             // Type 8 or 9, LE
       bytes[4] = gfnButton;                           // Button as uint8 (1=left, 2=right, 3=middle)
       bytes[5] = 0;                                   // Padding
       view.setUint32(6, 0);                           // Reserved
       view.setBigUint64(10, timestampUs, false);      // Timestamp μs, BE
-      return buffer;
+      return inputBuffers.mouseButton;
     }
 
     case "mouse_wheel": {
-      // Mouse Wheel (Lc): 22 bytes
-      // [type 4B LE][horiz 2B BE][vert 2B BE][reserved 2B BE][reserved 4B][timestamp 8B BE]
+      // Mouse Wheel (Lc): 22 bytes - use pre-allocated buffer
       const data = event.data as MouseWheelData;
       // GFN expects wheel delta as multiples of 120, negated
       const wheelDelta = Math.round(data.deltaY / Math.abs(data.deltaY || 1) * -120);
-      const buffer = new ArrayBuffer(22);
-      const view = new DataView(buffer);
+      const view = inputViews.mouseWheel;
       view.setUint32(0, GFN_INPUT_MOUSE_WHEEL, true); // Type 10, LE
       view.setInt16(4, 0, false);                     // Horizontal wheel, BE
       view.setInt16(6, wheelDelta, false);            // Vertical wheel, BE
       view.setUint16(8, 0, false);                    // Reserved, BE
       view.setUint32(10, 0);                          // Reserved
       view.setBigUint64(14, timestampUs, false);      // Timestamp μs, BE
-      return buffer;
+      return inputBuffers.mouseWheel;
     }
 
     case "key": {
-      // Keyboard (Yc): 18 bytes
-      // [type 4B LE][keycode 2B BE][modifiers 2B BE][reserved 2B BE][timestamp 8B BE]
+      // Keyboard (Yc): 18 bytes - use pre-allocated buffer
       const data = event.data as KeyData;
       const eventType = data.pressed ? GFN_INPUT_KEY_DOWN : GFN_INPUT_KEY_UP;
-      const buffer = new ArrayBuffer(18);
-      const view = new DataView(buffer);
+      const view = inputViews.keyboard;
       view.setUint32(0, eventType, true);             // Type 3 or 4, LE
       view.setUint16(4, data.keyCode, false);         // Key code, BE
       view.setUint16(6, data.modifiers, false);       // Modifiers, BE
       view.setUint16(8, data.scanCode || 0, false);   // Reserved (or scancode), BE
       view.setBigUint64(10, timestampUs, false);      // Timestamp μs, BE
-      return buffer;
+      return inputBuffers.keyboard;
     }
 
     default:
@@ -2633,283 +2613,94 @@ let inputCaptureMode: 'pointerlock' | 'absolute' = 'absolute';
 // Track if input is active (video element is focused/active)
 let inputCaptureActive = false;
 
+// Helper to check fullscreen state across browsers
+function isFullscreen(): boolean {
+  const doc = document as FullscreenDocument;
+  return !!(
+    document.fullscreenElement ||
+    doc.webkitFullscreenElement ||
+    doc.mozFullScreenElement ||
+    doc.msFullscreenElement
+  );
+}
+
 // Platform detection
 const isMacOS = navigator.platform.toUpperCase().includes("MAC") ||
   navigator.userAgent.toUpperCase().includes("MAC");
 const isWindows = navigator.platform.toUpperCase().includes("WIN") ||
   navigator.userAgent.toUpperCase().includes("WIN");
 
-// Track if we're using native cursor capture (bypasses browser pointer lock)
-// This is used on macOS (Core Graphics) and Windows (Win32 ClipCursor)
-let nativeCursorCaptured = false;
-
-// Windows high-frequency mouse polling state
-let mousePollingActive = false;
-let mousePollingInterval: number | null = null;
-let mousePollingChannel: MessageChannel | null = null;
-
-// Input latency tracking
-const INPUT_LATENCY_SAMPLES = 100; // Rolling average over last 100 samples
-let ipcLatencySamples: number[] = [];
-let sendLatencySamples: number[] = [];
-let totalLatencySamples: number[] = [];
-let inputEventTimestamps: number[] = []; // For calculating events per second
-let lastInputStatsLog = 0;
-
-// Get average from samples array
-function getAverage(samples: number[]): number {
-  if (samples.length === 0) return 0;
-  return samples.reduce((a, b) => a + b, 0) / samples.length;
-}
-
-// Add sample to rolling buffer
-function addSample(samples: number[], value: number): void {
-  samples.push(value);
-  if (samples.length > INPUT_LATENCY_SAMPLES) {
-    samples.shift();
-  }
-}
-
-// Calculate input events per second
-function getInputRate(): number {
-  const now = performance.now();
-  // Remove timestamps older than 1 second
-  while (inputEventTimestamps.length > 0 && now - inputEventTimestamps[0] > 1000) {
-    inputEventTimestamps.shift();
-  }
-  return inputEventTimestamps.length;
-}
-
-// Export input latency stats for getStreamingStats
+/**
+ * Get input latency stats.
+ * Note: Returns zeros since we use absolute mode which doesn't track per-input latency.
+ * The actual streaming latency is measured via WebRTC stats in getStreamingStats().
+ */
 export function getInputLatencyStats(): { ipc: number; send: number; total: number; rate: number } {
-  return {
-    ipc: Math.round(getAverage(ipcLatencySamples) * 100) / 100,
-    send: Math.round(getAverage(sendLatencySamples) * 100) / 100,
-    total: Math.round(getAverage(totalLatencySamples) * 100) / 100,
-    rate: getInputRate(),
-  };
+  // Absolute mode doesn't track individual input latency - use WebRTC stats instead
+  return { ipc: 0, send: 0, total: 0, rate: 0 };
 }
-
-// Start high-frequency mouse polling on Windows
-// Uses native 1000Hz polling thread + MessageChannel for minimal latency scheduling
-const startMousePolling = async () => {
-  if (!isWindows || mousePollingActive) return;
-
-  try {
-    const started = await invoke<boolean>("start_mouse_polling");
-    if (started) {
-      mousePollingActive = true;
-      console.log("High-frequency mouse polling started (1000Hz native + MessageChannel polling)");
-
-      // Use MessageChannel for tighter scheduling (bypasses 4ms timer clamping)
-      mousePollingChannel = new MessageChannel();
-      let lastPollTime = performance.now();
-      const MIN_POLL_INTERVAL = 1; // Minimum 1ms between polls
-
-      const pollMouse = () => {
-        if (!mousePollingActive || !nativeCursorCaptured) {
-          // Schedule next check even when inactive to allow resumption
-          if (mousePollingActive) {
-            mousePollingChannel?.port2.postMessage(null);
-          }
-          return;
-        }
-
-        const now = performance.now();
-        const elapsed = now - lastPollTime;
-
-        // Throttle to prevent overwhelming the IPC
-        if (elapsed < MIN_POLL_INTERVAL) {
-          mousePollingChannel?.port2.postMessage(null);
-          return;
-        }
-
-        lastPollTime = now;
-        const pipelineStart = now;
-
-        // Get accumulated deltas from native polling thread (non-blocking)
-        const ipcStart = performance.now();
-        invoke<[number, number]>("get_accumulated_mouse_delta").then(([dx, dy]) => {
-          const ipcEnd = performance.now();
-          const ipcTime = ipcEnd - ipcStart;
-
-          if (dx !== 0 || dy !== 0) {
-            // Track IPC latency
-            addSample(ipcLatencySamples, ipcTime);
-
-            // Track input event timestamp for rate calculation
-            inputEventTimestamps.push(performance.now());
-
-            // Send input and measure send time
-            const sendStart = performance.now();
-            sendInputEvent({
-              type: "mouse_move",
-              data: { dx, dy },
-            });
-            const sendEnd = performance.now();
-            const sendTime = sendEnd - sendStart;
-            addSample(sendLatencySamples, sendTime);
-
-            // Total pipeline latency
-            const totalTime = sendEnd - pipelineStart;
-            addSample(totalLatencySamples, totalTime);
-
-            // Log stats periodically (every 5 seconds)
-            const logNow = performance.now();
-            if (logNow - lastInputStatsLog > 5000) {
-              lastInputStatsLog = logNow;
-              const stats = getInputLatencyStats();
-              console.log(`[Input Stats] IPC: ${stats.ipc.toFixed(2)}ms | Send: ${stats.send.toFixed(2)}ms | Total: ${stats.total.toFixed(2)}ms | Rate: ${stats.rate}/s`);
-            }
-          }
-
-          // Schedule next poll immediately after IPC completes
-          if (mousePollingActive) {
-            mousePollingChannel?.port2.postMessage(null);
-          }
-        }).catch(() => {
-          // Schedule next poll even on error
-          if (mousePollingActive) {
-            mousePollingChannel?.port2.postMessage(null);
-          }
-        });
-      };
-
-      mousePollingChannel.port1.onmessage = pollMouse;
-      // Start the polling loop
-      mousePollingChannel.port2.postMessage(null);
-    }
-  } catch (e) {
-    console.error("Failed to start mouse polling:", e);
-  }
-};
-
-// Stop high-frequency mouse polling
-const stopMousePolling = async () => {
-  mousePollingActive = false;
-  if (mousePollingInterval !== null) {
-    clearInterval(mousePollingInterval);
-    mousePollingInterval = null;
-  }
-  if (mousePollingChannel !== null) {
-    mousePollingChannel.port1.close();
-    mousePollingChannel.port2.close();
-    mousePollingChannel = null;
-  }
-  try {
-    await invoke("stop_mouse_polling");
-    console.log("High-frequency mouse polling stopped");
-  } catch (e) {
-    // Ignore errors on stop
-  }
-};
 
 /**
- * Set input capture mode
- * - 'pointerlock': Use pointer lock for relative mouse (FPS games)
- * - 'absolute': Send absolute coordinates without pointer lock (menus, desktop)
+ * Set cursor visibility for streaming.
+ * We always use absolute mouse coordinates since the server renders the cursor in the video stream.
+ * This function only controls whether the local cursor is hidden (fullscreen) or visible (windowed).
  *
- * On macOS and Windows, we use native OS APIs via Tauri commands to capture the cursor,
- * bypassing the browser's pointer lock which has issues (ESC exits, permission prompts).
+ * @param mode - 'pointerlock' hides cursor, 'absolute' shows cursor
  */
 export async function setInputCaptureMode(mode: 'pointerlock' | 'absolute'): Promise<void> {
-  const platform = isMacOS ? "macOS" : isWindows ? "Windows" : "other";
-  console.log("Setting input capture mode:", mode, `(${platform})`);
-  inputCaptureMode = mode;
+  console.log("Setting cursor visibility:", mode === 'pointerlock' ? 'hidden' : 'visible');
+  inputCaptureMode = 'absolute'; // Always use absolute coordinates
+  inputCaptureActive = true;
 
-  // On macOS and Windows, use native Tauri cursor capture
-  if (isMacOS || isWindows) {
-    try {
-      if (mode === 'pointerlock') {
-        // Use native cursor capture via Tauri
-        // macOS: Core Graphics (CGAssociateMouseAndMouseCursorPosition)
-        // Windows: Win32 (ClipCursor + ShowCursor)
-        const captured = await invoke<boolean>("capture_cursor");
-        if (captured) {
-          nativeCursorCaptured = true;
-          inputCaptureActive = true;
-          // Also hide cursor via CSS as backup (prevents webview cursor flicker)
-          const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
-          const container = document.getElementById("streaming-container");
-          if (video) video.style.cursor = 'none';
-          if (container) container.style.cursor = 'none';
-          document.body.style.cursor = 'none';
-          // Start high-frequency mouse polling on Windows
-          if (isWindows) {
-            await startMousePolling();
-          }
-          console.log(`${platform}: Native cursor capture enabled`);
-        } else {
-          console.warn(`${platform}: Native cursor capture not available, falling back to CSS`);
-          // Fallback to CSS cursor hiding
-          const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
-          const container = document.getElementById("streaming-container");
-          if (video) video.style.cursor = 'none';
-          if (container) container.style.cursor = 'none';
-          document.body.style.cursor = 'none';
-          nativeCursorCaptured = true;
-          inputCaptureActive = true;
-        }
-      } else {
-        // Stop mouse polling first
-        if (isWindows) {
-          await stopMousePolling();
-        }
-        // Release native cursor capture
-        await invoke<boolean>("release_cursor");
-        nativeCursorCaptured = false;
-        // Restore cursor style
-        const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
-        const container = document.getElementById("streaming-container");
-        if (video) video.style.cursor = 'default';
-        if (container) container.style.cursor = 'default';
-        document.body.style.cursor = 'default';
-        console.log(`${platform}: Native cursor capture released`);
-      }
-    } catch (e) {
-      console.error(`${platform} cursor capture error:`, e);
-    }
+  const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
+  const container = document.getElementById("streaming-container");
+
+  if (mode === 'pointerlock') {
+    // Hide cursor via CSS for fullscreen gaming
+    if (video) video.style.cursor = 'none';
+    if (container) container.style.cursor = 'none';
+    document.body.style.cursor = 'none';
+    console.log("Cursor hidden for fullscreen");
+  } else {
+    // Show cursor for windowed mode
+    if (video) video.style.cursor = 'default';
+    if (container) container.style.cursor = 'default';
+    document.body.style.cursor = 'default';
+    console.log("Cursor visible for windowed mode");
   }
 }
 
 /**
  * Suspend cursor capture temporarily (e.g., when window loses focus)
- * This releases native cursor capture so user can interact with other apps
+ * On Windows, releases the cursor clip so user can interact with other windows
  */
 export async function suspendCursorCapture(): Promise<void> {
-  if (!nativeCursorCaptured) return;
-
-  try {
-    // Stop mouse polling first
-    if (isWindows) {
-      await stopMousePolling();
+  // Only need to handle this in fullscreen/pointer lock mode
+  if (inputCaptureMode === 'pointerlock' && inputCaptureActive) {
+    try {
+      // Release cursor clip on Windows when window loses focus
+      await invoke("unclip_cursor");
+      console.log("Cursor clip suspended (window lost focus)");
+    } catch {
+      // Ignore errors - command may not exist on non-Windows
     }
-    await invoke<boolean>("release_cursor");
-    console.log("Native cursor capture suspended (window blur)");
-  } catch (e) {
-    console.error("Failed to suspend cursor capture:", e);
   }
 }
 
 /**
  * Resume cursor capture (e.g., when window regains focus)
- * This re-enables native cursor capture if we were in pointer lock mode
+ * On Windows, re-clips the cursor to the window
  */
 export async function resumeCursorCapture(): Promise<void> {
-  if (!nativeCursorCaptured) return;
-  if (inputCaptureMode !== 'pointerlock') return;
-
-  try {
-    const captured = await invoke<boolean>("capture_cursor");
-    if (captured) {
-      // Restart mouse polling on Windows
-      if (isWindows) {
-        await startMousePolling();
-      }
-      console.log("Native cursor capture resumed (window focus)");
+  // Only need to handle this in fullscreen/pointer lock mode
+  if (inputCaptureMode === 'pointerlock' && inputCaptureActive) {
+    try {
+      // Re-clip cursor to window on Windows when window regains focus
+      await invoke("clip_cursor");
+      console.log("Cursor clip resumed (window regained focus)");
+    } catch {
+      // Ignore errors - command may not exist on non-Windows
     }
-  } catch (e) {
-    console.error("Failed to resume cursor capture:", e);
   }
 }
 
@@ -2917,7 +2708,7 @@ export async function resumeCursorCapture(): Promise<void> {
  * Check if we're currently using native cursor capture
  */
 export function isNativeCursorCaptured(): boolean {
-  return nativeCursorCaptured;
+  return false; // We don't use native capture anymore
 }
 
 /**
@@ -2963,70 +2754,40 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   // Check if pointerrawupdate is supported (lower latency than pointermove)
   const supportsRawUpdate = "onpointerrawupdate" in videoElement;
 
-  // Mouse move handler - uses pointerrawupdate for lowest latency when available
+  // Mouse move handler - uses relative movement in pointer lock, absolute otherwise
   const handleMouseMove = (e: MouseEvent | PointerEvent) => {
-    // In pointer lock mode, require pointer lock OR native cursor capture
-    if (inputCaptureMode === 'pointerlock') {
-      const canSendRelative = hasPointerLock || (nativeCursorCaptured && inputCaptureActive);
-
-      if (canSendRelative) {
-        // Windows with high-frequency polling: skip browser events, polling handles it
-        if (isWindows && mousePollingActive) {
-          return; // Mouse input handled by 1000Hz native polling thread
-        }
-
-        // macOS native or browser pointer lock: use movementX/movementY
-        // pointerrawupdate gives us individual events, no need to coalesce
-        if (e.type === "pointerrawupdate") {
-          if (e.movementX !== 0 || e.movementY !== 0) {
-            sendInputEvent({
-              type: "mouse_move",
-              data: { dx: e.movementX, dy: e.movementY },
-            });
-          }
-        } else {
-          // For regular pointermove, get all coalesced events
-          const events = (e as PointerEvent).getCoalescedEvents?.() || [e];
-          for (const evt of events) {
-            if (evt.movementX !== 0 || evt.movementY !== 0) {
-              sendInputEvent({
-                type: "mouse_move",
-                data: { dx: evt.movementX, dy: evt.movementY },
-              });
-            }
-          }
-        }
-      }
-    } else {
-      // In absolute mode, send if over video or input is captured
-      if (inputCaptureActive || isMouseOverVideo(e)) {
-        const coords = toAbsoluteCoords(e.clientX, e.clientY);
+    // In pointer lock mode (fullscreen), use relative movement
+    if (document.pointerLockElement === videoElement) {
+      if (e.movementX !== 0 || e.movementY !== 0) {
         sendInputEvent({
           type: "mouse_move",
-          data: {
-            dx: e.movementX,
-            dy: e.movementY,
-            absolute: true,
-            x: coords.x,
-            y: coords.y,
-          },
+          data: { dx: e.movementX, dy: e.movementY },
         });
       }
+    } else if (inputCaptureActive || isMouseOverVideo(e)) {
+      // In windowed mode, use absolute coordinates
+      const coords = toAbsoluteCoords(e.clientX, e.clientY);
+      sendInputEvent({
+        type: "mouse_move",
+        data: {
+          dx: e.movementX,
+          dy: e.movementY,
+          absolute: true,
+          x: coords.x,
+          y: coords.y,
+        },
+      });
     }
   };
 
   // Mouse button down
   const handleMouseDown = (e: MouseEvent) => {
-    // On macOS, also capture when cursor is hidden (pointerlock workaround)
-    const nativeCapture = nativeCursorCaptured;
-    const shouldCapture = hasPointerLock || nativeCapture || (inputCaptureMode === 'absolute' && isMouseOverVideo(e));
-
-    if (shouldCapture) {
+    if (inputCaptureActive || isMouseOverVideo(e)) {
       // Activate input capture on click
-      if (!inputCaptureActive && inputCaptureMode === 'absolute') {
+      if (!inputCaptureActive) {
         inputCaptureActive = true;
         videoElement.focus();
-        console.log("Input capture activated (absolute mode)");
+        console.log("Input capture activated");
       }
 
       sendInputEvent({
@@ -3039,10 +2800,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Mouse button up
   const handleMouseUp = (e: MouseEvent) => {
-    const nativeCapture = nativeCursorCaptured;
-    const shouldCapture = hasPointerLock || nativeCapture || inputCaptureActive;
-
-    if (shouldCapture) {
+    if (inputCaptureActive) {
       sendInputEvent({
         type: "mouse_button",
         data: { button: e.button, pressed: false },
@@ -3053,10 +2811,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Mouse wheel
   const handleWheel = (e: WheelEvent) => {
-    const nativeCapture = nativeCursorCaptured;
-    const shouldCapture = hasPointerLock || nativeCapture || (inputCaptureMode === 'absolute' && (inputCaptureActive || isMouseOverVideo(e)));
-
-    if (shouldCapture) {
+    if (inputCaptureActive || isMouseOverVideo(e)) {
       sendInputEvent({
         type: "mouse_wheel",
         data: { deltaX: e.deltaX, deltaY: e.deltaY },
@@ -3067,12 +2822,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Keyboard handlers
   const handleKeyDown = (e: KeyboardEvent) => {
-    const nativeCapture = nativeCursorCaptured;
-    const shouldCapture = hasPointerLock || nativeCapture || inputCaptureActive;
-
-    if (shouldCapture) {
-      // ESC is sent to the game like any other key - fullscreen exit is handled separately
-      // Use proper GFN key code mapping and modifier flags
+    if (inputCaptureActive) {
       const vkCode = getVirtualKeyCode(e);
       const modifiers = getModifierFlags(e);
 
@@ -3080,7 +2830,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
         type: "key",
         data: {
           keyCode: vkCode,
-          scanCode: 0, // GFN uses scanCode field for other purposes
+          scanCode: 0,
           pressed: true,
           modifiers,
         },
@@ -3091,11 +2841,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   };
 
   const handleKeyUp = (e: KeyboardEvent) => {
-    const nativeCapture = nativeCursorCaptured;
-    const shouldCapture = hasPointerLock || nativeCapture || inputCaptureActive;
-
-    if (shouldCapture) {
-      // Use proper GFN key code mapping and modifier flags
+    if (inputCaptureActive) {
       const vkCode = getVirtualKeyCode(e);
       const modifiers = getModifierFlags(e);
 
@@ -3136,21 +2882,12 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     }
   };
 
-  // Click handler - either get pointer lock or activate absolute capture
-  const handleClick = (e: MouseEvent) => {
-    if (inputCaptureMode === 'pointerlock') {
-      // On macOS/Windows, we use native cursor capture, not browser pointer lock
-      // Only request browser pointer lock on other platforms
-      if (!hasPointerLock && !nativeCursorCaptured && !(isMacOS || isWindows)) {
-        requestPointerLockWithKeyboardLock();
-      }
-    } else {
-      // Absolute mode - just activate capture
-      if (!inputCaptureActive) {
-        inputCaptureActive = true;
-        videoElement.focus();
-        console.log("Input capture activated (click)");
-      }
+  // Click handler - activate input capture
+  const handleClick = () => {
+    if (!inputCaptureActive) {
+      inputCaptureActive = true;
+      videoElement.focus();
+      console.log("Input capture activated (click)");
     }
   };
 
@@ -3207,16 +2944,65 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     }
   };
 
+  // Track if we were in fullscreen when focus was lost (for re-locking on focus)
+  let wasInFullscreenPointerLock = false;
+  let fullscreenTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
   // Blur handler - deactivate capture when window loses focus
   const handleBlur = () => {
-    if (inputCaptureActive && !hasPointerLock) {
-      // Keep capture active but note the window lost focus
+    if (inputCaptureActive) {
       console.log("Window blurred, input capture paused");
+      
+      // Check if we're currently in fullscreen with pointer lock
+      const inFullscreen = isFullscreen();
+      
+      // Remember if we had pointer lock in fullscreen mode
+      // Note: Browser may exit fullscreen on blur, so check both conditions
+      if ((hasPointerLock || inFullscreen) && inputCaptureMode === 'pointerlock') {
+        wasInFullscreenPointerLock = true;
+        console.log("Was in fullscreen pointer lock mode - will re-enter fullscreen on focus");
+      }
     }
   };
 
-  // Fullscreen change handler - auto switch between pointer lock and absolute mode
-  const handleFullscreenChange = () => {
+  // Focus handler - re-capture mouse when window regains focus
+  const handleFocus = async () => {
+    if (inputCaptureActive && wasInFullscreenPointerLock) {
+      console.log("Window focused, re-entering fullscreen mode");
+      
+      // Check if we're still in fullscreen (browser may have exited it on blur)
+      const inFullscreen = isFullscreen();
+
+      wasInFullscreenPointerLock = false;
+
+      // Cancel any pending fullscreen timeout to prevent stacking
+      if (fullscreenTimeoutId) {
+        clearTimeout(fullscreenTimeoutId);
+        fullscreenTimeoutId = null;
+      }
+
+      // Small delay to ensure window is fully focused
+      fullscreenTimeoutId = setTimeout(async () => {
+        fullscreenTimeoutId = null;
+        try {
+          if (!inFullscreen) {
+            // Re-enter fullscreen - this will trigger handleFullscreenChange which requests pointer lock
+            console.log("Re-entering fullscreen after focus regained");
+            await videoElement.requestFullscreen();
+          } else if (!document.pointerLockElement) {
+            // Still in fullscreen but lost pointer lock, re-request it
+            console.log("Re-requesting pointer lock after focus regained");
+            await requestPointerLockWithKeyboardLock();
+          }
+        } catch (e) {
+          console.warn("Failed to re-enter fullscreen/pointer lock:", e);
+        }
+      }, 150);
+    }
+  };
+
+  // Fullscreen change handler - use pointer lock in fullscreen to confine cursor
+  const handleFullscreenChange = async () => {
     const isFullscreen = !!(
       document.fullscreenElement ||
       (document as any).webkitFullscreenElement ||
@@ -3227,28 +3013,26 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     console.log("Fullscreen changed:", isFullscreen);
 
     if (isFullscreen) {
-      // Entering fullscreen - switch to pointer lock mode
+      // Request pointer lock to confine cursor - this is how official GFN client works
       inputCaptureMode = 'pointerlock';
       inputCaptureActive = true;
-
-      // Request pointer lock after a small delay (fullscreen transition needs to complete)
-      // On macOS/Windows, we use native cursor capture instead of browser pointer lock
-      if (!(isMacOS || isWindows)) {
-        setTimeout(() => {
-          if (!hasPointerLock) {
-            console.log("Requesting pointer lock for fullscreen");
-            requestPointerLockWithKeyboardLock();
-          }
-        }, 100);
-      }
+      
+      // Use keyboard lock + pointer lock to capture Escape key (like official GFN client)
+      // This prevents browser from immediately exiting pointer lock when ESC is pressed
+      await requestPointerLockWithKeyboardLock();
     } else {
-      // Exiting fullscreen - switch to absolute mode
-      if (hasPointerLock) {
+      // Release keyboard lock first
+      if (navigator.keyboard?.unlock) {
+        navigator.keyboard.unlock();
+        console.log("Keyboard lock released (fullscreen exit)");
+      }
+      // Exit pointer lock when leaving fullscreen
+      if (document.pointerLockElement) {
         document.exitPointerLock();
       }
       inputCaptureMode = 'absolute';
       inputCaptureActive = true;
-      console.log("Switched to absolute mode (windowed)");
+      console.log("Windowed: pointer lock released");
     }
   };
 
@@ -3278,6 +3062,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
   document.addEventListener("keydown", handleKeyDown, { passive: false });
   document.addEventListener("keyup", handleKeyUp, { passive: false });
   window.addEventListener("blur", handleBlur);
+  window.addEventListener("focus", handleFocus);
 
   // Start in absolute mode - immediately active
   console.log("Input capture set up in", inputCaptureMode, "mode");
@@ -3313,6 +3098,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     document.removeEventListener("keydown", handleKeyDown);
     document.removeEventListener("keyup", handleKeyUp);
     window.removeEventListener("blur", handleBlur);
+    window.removeEventListener("focus", handleFocus);
 
     if (document.pointerLockElement === videoElement) {
       document.exitPointerLock();
@@ -3430,6 +3216,12 @@ export function stopStreaming(): void {
   if (heartbeatInterval) {
     clearInterval(heartbeatInterval);
     heartbeatInterval = null;
+  }
+
+  // Clear live edge interval
+  if (streamingState.liveEdgeIntervalId) {
+    clearInterval(streamingState.liveEdgeIntervalId);
+    streamingState.liveEdgeIntervalId = undefined;
   }
 
   // Close WebSocket
