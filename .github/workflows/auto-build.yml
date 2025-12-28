@@ -155,7 +155,7 @@ jobs:
           - platform: macos-latest
             target: macos
             arch: universal
-            rust_target: universal-apple-darwin
+            rust_target: aarch64-apple-darwin
           - platform: windows-latest
             target: windows
             arch: x86_64
@@ -249,24 +249,26 @@ jobs:
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
 
-      # Windows ARM64 setup
-      - name: Setup Windows ARM64 target
-        if: matrix.target == 'windows-arm64'
-        run: |
-          rustup target add aarch64-pc-windows-msvc
-
       - name: Setup Bun
         # Note: oven-sh/setup-bun@v2 enables Bun and dependency caching by default.
         uses: oven-sh/setup-bun@v2
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
+
+      - name: Add macOS targets (universal build)
+        if: matrix.target == 'macos'
+        run: |
+          rustup target add aarch64-apple-darwin
+          rustup target add x86_64-apple-darwin
 
       - name: Add Linux ARM64 target
         if: matrix.target == 'linux-arm64'
         run: rustup target add aarch64-unknown-linux-gnu
+
+      - name: Add Windows ARM64 target
+        if: matrix.target == 'windows-arm64'
+        run: rustup target add aarch64-pc-windows-msvc
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
