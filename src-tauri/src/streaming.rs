@@ -1116,20 +1116,35 @@ pub struct IceServerConfig {
 
 /// Get WebRTC configuration for streaming
 /// Returns the signaling URL and ICE servers needed for browser WebRTC connection
+/// 
+/// The `signaling_url_override` parameter allows the frontend to pass the correct
+/// signaling URL directly from the StreamingConnectionState, bypassing any stale
+/// data in the session storage.
 #[command]
-pub async fn get_webrtc_config(session_id: String) -> Result<WebRtcConfig, String> {
+pub async fn get_webrtc_config(
+    session_id: String,
+    signaling_url_override: Option<String>,
+) -> Result<WebRtcConfig, String> {
     let storage = get_session_storage();
     let guard = storage.lock().await;
 
     let session = guard.as_ref()
         .ok_or("No active session")?;
 
+    // Use the override URL if provided (from StreamingConnectionState which has the correct URL)
+    // Otherwise fall back to the stored session's signaling_url
+    let raw_signaling_url = signaling_url_override
+        .or_else(|| session.signaling_url.clone());
+
+    log::info!("get_webrtc_config: raw_signaling_url={:?}, server_ip={:?}", 
+               raw_signaling_url, session.server.ip);
+
     // Build signaling URL from session info
     // The signaling_url field may contain:
     // - A full RTSP URL (from native client): rtsps://80-84-170-155.cloudmatchbeta.nvidiagrid.net:322
     // - A path (from browser client): /nvst/
     // We need to extract the hostname and build a WebSocket URL
-    let signaling_url = if let Some(ref sig_url) = session.signaling_url {
+    let signaling_url = if let Some(ref sig_url) = raw_signaling_url {
         if sig_url.starts_with("rtsps://") || sig_url.starts_with("rtsp://") {
             // Native client format: extract hostname from RTSP URL
             // e.g., rtsps://80-84-170-155.cloudmatchbeta.nvidiagrid.net:322
@@ -1138,6 +1153,8 @@ pub async fn get_webrtc_config(session_id: String) -> Result<WebRtcConfig, Strin
                 .or_else(|| sig_url.strip_prefix("rtsp://"))
                 .and_then(|s| s.split(':').next())
                 .or_else(|| sig_url.split("://").nth(1).and_then(|s| s.split('/').next()));
+
+            log::debug!("Extracted host from RTSP URL: {:?}", host);
 
             // Validate the extracted host - it should not start with a dot (malformed URL)
             // e.g., ".zai.geforcenow.nvidiagrid.net" is invalid
