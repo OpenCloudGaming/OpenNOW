@@ -992,7 +992,7 @@ pub async fn poll_session_until_ready(
                     }
 
                     // Update signaling URL directly from API response (more reliable than StreamConnectionInfo)
-                    // This ensures we get the full RTSP URL with the correct IP
+                    // This stores the raw RTSP/WebRTC signaling URL from the API, which may be malformed for some partners
                     if let Some(sig_url) = session.connection_info.as_ref()
                         .and_then(|conns| conns.first())
                         .and_then(|conn| conn.resource_path.clone())
