@@ -2934,8 +2934,8 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     }
   };
 
-  // Fullscreen change handler - stay in absolute mode, just hide cursor
-  const handleFullscreenChange = () => {
+  // Fullscreen change handler - stay in absolute mode, just hide cursor and clip
+  const handleFullscreenChange = async () => {
     const isFullscreen = !!(
       document.fullscreenElement ||
       (document as any).webkitFullscreenElement ||
@@ -2953,12 +2953,28 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
       // Hide cursor in fullscreen via CSS
       videoElement.style.cursor = 'none';
       document.body.style.cursor = 'none';
-      console.log("Fullscreen: cursor hidden, using absolute mode");
+      // Clip cursor to window to prevent escape (Windows)
+      if (isWindows) {
+        try {
+          await invoke("clip_cursor");
+        } catch (e) {
+          console.warn("Failed to clip cursor:", e);
+        }
+      }
+      console.log("Fullscreen: cursor hidden and clipped");
     } else {
       // Show cursor in windowed mode
       videoElement.style.cursor = 'default';
       document.body.style.cursor = 'default';
-      console.log("Windowed: cursor visible, using absolute mode");
+      // Release cursor clip (Windows)
+      if (isWindows) {
+        try {
+          await invoke("unclip_cursor");
+        } catch (e) {
+          console.warn("Failed to unclip cursor:", e);
+        }
+      }
+      console.log("Windowed: cursor visible and unclipped");
     }
   };
 

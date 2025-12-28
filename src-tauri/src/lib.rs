@@ -130,6 +130,9 @@ pub fn run() {
             cursor::stop_mouse_polling,
             cursor::get_accumulated_mouse_delta,
             cursor::is_mouse_polling_active,
+            // Cursor clipping (Windows)
+            cursor::clip_cursor,
+            cursor::unclip_cursor,
             // Logging commands
             logging::log_frontend,
             logging::get_log_file_path,
