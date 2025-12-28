@@ -38,9 +38,9 @@ modules:
   - name: opennow
     buildsystem: simple
     build-commands:
-      # Install bun (or use npm from node20 extension)
-      - npm install
-      - npm run build
+      # Install bun and build
+      - curl -fsSL https://bun.sh/install | bash
+      - export PATH="$HOME/.bun/bin:$PATH" && bun install && bun run build
       - cd src-tauri && cargo build --release
       - install -Dm755 src-tauri/target/release/opennow /app/bin/opennow
       - install -Dm644 flatpak/com.zortos.opennow.desktop /app/share/applications/com.zortos.opennow.desktop

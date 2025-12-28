@@ -4,6 +4,20 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+// Extend Document interface for vendor-prefixed fullscreen APIs
+interface FullscreenDocument extends Document {
+  webkitFullscreenElement?: Element;
+  mozFullScreenElement?: Element;
+  msFullscreenElement?: Element;
+}
+
+// Video frame callback metadata (for requestVideoFrameCallback)
+interface VideoFrameMetadata {
+  droppedVideoFrames?: number;
+  presentedFrames?: number;
+  presentationTime?: number;
+}
+
 // Types
 interface WebRtcConfig {
   session_id: string;
@@ -93,6 +107,7 @@ export interface StreamingState {
   retryCount: number;
   maxRetries: number;
   inputDebugLogged?: Set<string>;
+  liveEdgeIntervalId?: ReturnType<typeof setInterval>;
 }
 
 export interface StreamingStats {
@@ -1259,9 +1274,16 @@ function createVideoElement(): HTMLVideoElement {
 
   // Keep video at live edge - catch up if we fall behind
   // Use setInterval instead of requestAnimationFrame to reduce overhead
-  const liveEdgeInterval = setInterval(() => {
+  // Store interval ID in streaming state so it can be cleared on disconnect
+  if (streamingState.liveEdgeIntervalId) {
+    clearInterval(streamingState.liveEdgeIntervalId);
+  }
+  streamingState.liveEdgeIntervalId = setInterval(() => {
     if (!video.parentNode) {
-      clearInterval(liveEdgeInterval);
+      if (streamingState.liveEdgeIntervalId) {
+        clearInterval(streamingState.liveEdgeIntervalId);
+        streamingState.liveEdgeIntervalId = undefined;
+      }
       return;
     }
     if (video.buffered.length > 0) {
@@ -1293,7 +1315,7 @@ function createVideoElement(): HTMLVideoElement {
       let droppedFrames = 0;
       let lastDropLogTime = 0;
 
-      const onVideoFrame = (_now: number, metadata: any) => {
+      const onVideoFrame = (_now: number, metadata: VideoFrameMetadata) => {
         frameCount++;
 
         // Only log dropped frames, and throttle to once per 5 seconds max
@@ -1310,10 +1332,10 @@ function createVideoElement(): HTMLVideoElement {
         }
 
         // Continue callback loop
-        (video as any).requestVideoFrameCallback(onVideoFrame);
+        video.requestVideoFrameCallback(onVideoFrame);
       };
 
-      (video as any).requestVideoFrameCallback(onVideoFrame);
+      video.requestVideoFrameCallback(onVideoFrame);
       console.log("requestVideoFrameCallback enabled for low-latency frame sync");
     }
   };
@@ -2591,45 +2613,60 @@ let inputCaptureMode: 'pointerlock' | 'absolute' = 'absolute';
 // Track if input is active (video element is focused/active)
 let inputCaptureActive = false;
 
+// Helper to check fullscreen state across browsers
+function isFullscreen(): boolean {
+  const doc = document as FullscreenDocument;
+  return !!(
+    document.fullscreenElement ||
+    doc.webkitFullscreenElement ||
+    doc.mozFullScreenElement ||
+    doc.msFullscreenElement
+  );
+}
+
 // Platform detection
 const isMacOS = navigator.platform.toUpperCase().includes("MAC") ||
   navigator.userAgent.toUpperCase().includes("MAC");
 const isWindows = navigator.platform.toUpperCase().includes("WIN") ||
   navigator.userAgent.toUpperCase().includes("WIN");
 
-// Export input latency stats for getStreamingStats (not used with absolute mode)
+/**
+ * Get input latency stats.
+ * Note: Returns zeros since we use absolute mode which doesn't track per-input latency.
+ * The actual streaming latency is measured via WebRTC stats in getStreamingStats().
+ */
 export function getInputLatencyStats(): { ipc: number; send: number; total: number; rate: number } {
+  // Absolute mode doesn't track individual input latency - use WebRTC stats instead
   return { ipc: 0, send: 0, total: 0, rate: 0 };
 }
 
 /**
- * Set input capture mode
- * - 'pointerlock': Hide cursor (for fullscreen gaming)
- * - 'absolute': Show cursor (for windowed mode)
+ * Set cursor visibility for streaming.
+ * We always use absolute mouse coordinates since the server renders the cursor in the video stream.
+ * This function only controls whether the local cursor is hidden (fullscreen) or visible (windowed).
  *
- * We always use absolute coordinates since the server renders the cursor in the video stream.
- * This avoids complex native cursor capture that causes memory leaks and stuttering.
+ * @param mode - 'pointerlock' hides cursor, 'absolute' shows cursor
  */
 export async function setInputCaptureMode(mode: 'pointerlock' | 'absolute'): Promise<void> {
-  console.log("Setting input capture mode:", mode);
-  inputCaptureMode = 'absolute'; // Always use absolute mode
+  console.log("Setting cursor visibility:", mode === 'pointerlock' ? 'hidden' : 'visible');
+  inputCaptureMode = 'absolute'; // Always use absolute coordinates
   inputCaptureActive = true;
 
   const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
   const container = document.getElementById("streaming-container");
 
   if (mode === 'pointerlock') {
-    // Just hide cursor via CSS - no native capture needed
+    // Hide cursor via CSS for fullscreen gaming
     if (video) video.style.cursor = 'none';
     if (container) container.style.cursor = 'none';
     document.body.style.cursor = 'none';
-    console.log("Cursor hidden (absolute mode with CSS hide)");
+    console.log("Cursor hidden for fullscreen");
   } else {
-    // Show cursor
+    // Show cursor for windowed mode
     if (video) video.style.cursor = 'default';
     if (container) container.style.cursor = 'default';
     document.body.style.cursor = 'default';
-    console.log("Cursor visible (absolute mode)");
+    console.log("Cursor visible for windowed mode");
   }
 }
 
@@ -2644,7 +2681,7 @@ export async function suspendCursorCapture(): Promise<void> {
       // Release cursor clip on Windows when window loses focus
       await invoke("unclip_cursor");
       console.log("Cursor clip suspended (window lost focus)");
-    } catch (e) {
+    } catch {
       // Ignore errors - command may not exist on non-Windows
     }
   }
@@ -2661,7 +2698,7 @@ export async function resumeCursorCapture(): Promise<void> {
       // Re-clip cursor to window on Windows when window regains focus
       await invoke("clip_cursor");
       console.log("Cursor clip resumed (window regained focus)");
-    } catch (e) {
+    } catch {
       // Ignore errors - command may not exist on non-Windows
     }
   }
@@ -2909,6 +2946,7 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
 
   // Track if we were in fullscreen when focus was lost (for re-locking on focus)
   let wasInFullscreenPointerLock = false;
+  let fullscreenTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
   // Blur handler - deactivate capture when window loses focus
   const handleBlur = () => {
@@ -2916,16 +2954,11 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
       console.log("Window blurred, input capture paused");
       
       // Check if we're currently in fullscreen with pointer lock
-      const isFullscreen = !!(
-        document.fullscreenElement ||
-        (document as any).webkitFullscreenElement ||
-        (document as any).mozFullScreenElement ||
-        (document as any).msFullscreenElement
-      );
+      const inFullscreen = isFullscreen();
       
       // Remember if we had pointer lock in fullscreen mode
       // Note: Browser may exit fullscreen on blur, so check both conditions
-      if ((hasPointerLock || isFullscreen) && inputCaptureMode === 'pointerlock') {
+      if ((hasPointerLock || inFullscreen) && inputCaptureMode === 'pointerlock') {
         wasInFullscreenPointerLock = true;
         console.log("Was in fullscreen pointer lock mode - will re-enter fullscreen on focus");
       }
@@ -2938,19 +2971,21 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
       console.log("Window focused, re-entering fullscreen mode");
       
       // Check if we're still in fullscreen (browser may have exited it on blur)
-      const isFullscreen = !!(
-        document.fullscreenElement ||
-        (document as any).webkitFullscreenElement ||
-        (document as any).mozFullScreenElement ||
-        (document as any).msFullscreenElement
-      );
+      const inFullscreen = isFullscreen();
 
       wasInFullscreenPointerLock = false;
 
+      // Cancel any pending fullscreen timeout to prevent stacking
+      if (fullscreenTimeoutId) {
+        clearTimeout(fullscreenTimeoutId);
+        fullscreenTimeoutId = null;
+      }
+
       // Small delay to ensure window is fully focused
-      setTimeout(async () => {
+      fullscreenTimeoutId = setTimeout(async () => {
+        fullscreenTimeoutId = null;
         try {
-          if (!isFullscreen) {
+          if (!inFullscreen) {
             // Re-enter fullscreen - this will trigger handleFullscreenChange which requests pointer lock
             console.log("Re-entering fullscreen after focus regained");
             await videoElement.requestFullscreen();
@@ -3181,6 +3216,12 @@ export function stopStreaming(): void {
   if (heartbeatInterval) {
     clearInterval(heartbeatInterval);
     heartbeatInterval = null;
+  }
+
+  // Clear live edge interval
+  if (streamingState.liveEdgeIntervalId) {
+    clearInterval(streamingState.liveEdgeIntervalId);
+    streamingState.liveEdgeIntervalId = undefined;
   }
 
   // Close WebSocket
