@@ -2694,7 +2694,7 @@ export function getInputLatencyStats(): { ipc: number; send: number; total: numb
 }
 
 // Start high-frequency mouse polling on Windows
-// Uses native 1000Hz polling thread + MessageChannel for minimal latency scheduling
+// Uses Raw Input API for hardware-level mouse deltas + MessageChannel for minimal latency scheduling
 const startMousePolling = async () => {
   if (!isWindows || mousePollingActive) return;
 
@@ -2702,7 +2702,7 @@ const startMousePolling = async () => {
     const started = await invoke<boolean>("start_mouse_polling");
     if (started) {
       mousePollingActive = true;
-      console.log("High-frequency mouse polling started (1000Hz native + MessageChannel polling)");
+      console.log("Raw Input mouse capture started (hardware deltas + MessageChannel polling)");
 
       // Use MessageChannel for tighter scheduling (bypasses 4ms timer clamping)
       mousePollingChannel = new MessageChannel();
