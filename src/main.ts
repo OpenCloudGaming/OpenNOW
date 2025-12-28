@@ -4228,65 +4228,35 @@ function createStreamingContainer(gameName: string): HTMLElement {
         }
       }
 
-      // Manually handle pointer mode since browser fullscreenchange event won't fire
+      // Manually handle cursor hiding since browser fullscreenchange event won't fire for Tauri fullscreen
       const video = document.getElementById("gfn-stream-video") as HTMLVideoElement;
       if (enteringFullscreen) {
-        // Entering fullscreen - switch to pointer lock mode
-        console.log("Switching to pointer lock mode for fullscreen");
-        await setInputCaptureMode('pointerlock');
-        // On macOS/Windows, native cursor capture is handled by setInputCaptureMode via Tauri
-        // No need for browser pointer lock - it has issues (ESC exits, permission prompts)
-        // On other platforms (Linux), fall back to browser pointer lock
-        if (!(isMacOS || isWindows)) {
-          setTimeout(async () => {
-            if (video) {
-              // IMPORTANT: Keyboard Lock API requires browser-level fullscreen (not just Tauri window fullscreen)
-              // Request browser fullscreen on the video element first
-              try {
-                if (!document.fullscreenElement) {
-                  console.log("Requesting browser fullscreen for Keyboard Lock API");
-                  await video.requestFullscreen();
-                }
-              } catch (e) {
-                console.warn("Browser fullscreen failed:", e);
-              }
-
-              // Lock Escape key BEFORE pointer lock to prevent Chrome from exiting on ESC
-              // Keyboard Lock API requires JavaScript-initiated fullscreen to be active
-              if (navigator.keyboard?.lock) {
-                try {
-                  await navigator.keyboard.lock(["Escape"]);
-                  console.log("Keyboard lock enabled (Escape key captured)");
-                } catch (e) {
-                  console.warn("Keyboard lock failed:", e);
-                }
-              }
-              console.log("Requesting pointer lock on video element");
-              try {
-                await (video as any).requestPointerLock({ unadjustedMovement: true });
-              } catch {
-                video.requestPointerLock();
-              }
-            }
-          }, 100);
+        // Entering fullscreen - hide cursor, use absolute mode
+        console.log("Entering fullscreen - hiding cursor");
+        await setInputCaptureMode('pointerlock'); // This just hides cursor now
+        
+        // Also request browser fullscreen on the streaming container for proper fullscreen behavior
+        const container = document.getElementById("streaming-container");
+        if (container && !document.fullscreenElement) {
+          try {
+            await container.requestFullscreen();
+            console.log("Browser fullscreen requested on container");
+          } catch (e) {
+            console.warn("Browser fullscreen failed:", e);
+          }
         }
       } else {
-        // Exiting fullscreen - switch to absolute mode
-        console.log("Switching to absolute mode for windowed");
+        // Exiting fullscreen - show cursor
+        console.log("Exiting fullscreen - showing cursor");
         await setInputCaptureMode('absolute');
-        // On platforms using browser pointer lock, clean up
-        if (!(isMacOS || isWindows)) {
-          // Release keyboard lock
-          if (navigator.keyboard?.unlock) {
-            navigator.keyboard.unlock();
-            console.log("Keyboard lock released");
-          }
-          if (document.pointerLockElement) {
-            document.exitPointerLock();
-          }
-          // Exit browser fullscreen if active
-          if (document.fullscreenElement) {
-            document.exitFullscreen().catch(() => {});
+        
+        // Exit browser fullscreen if active
+        if (document.fullscreenElement) {
+          try {
+            await document.exitFullscreen();
+            console.log("Browser fullscreen exited");
+          } catch (e) {
+            console.warn("Failed to exit browser fullscreen:", e);
           }
         }
       }
