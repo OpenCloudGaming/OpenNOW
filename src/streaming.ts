@@ -861,8 +861,9 @@ async function handleGfnSdpOffer(
   if (publicIpMatch) {
     const publicIp = publicIpMatch[1].replace(/-/g, ".");
 
-    // Find and replace private IPs (10.x.x.x, 172.16-31.x.x, 192.168.x.x) in ICE candidates
-    // Use non-capturing groups (?:...) to avoid messing up the capture group indices
+    // Find and replace private IPs (10.x.x.x, 172.16-31.x.x, 192.168.x.x) in ICE candidates.
+    // The 172.x range uses non-capturing groups (?:...) for the octet alternatives so the
+    // entire private IP is captured as a single group without shifting outer capture indices.
     const privateIpPattern = /a=candidate:(\d+)\s+(\d+)\s+udp\s+(\d+)\s+(10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+|192\.168\.\d+\.\d+)\s+(\d+)\s+typ\s+host/g;
 
     modifiedSdp = modifiedSdp.replace(privateIpPattern, (match, foundation, component, priority, _privateIp, port) => {
@@ -1101,7 +1102,7 @@ async function handleGfnSdpOffer(
       sdpMLineIndex: 0,
       usernameFragment: serverUfrag
     }));
-  } catch (e) {
+  } catch {
     // Try alternative format with different sdpMid values
     for (const mid of ["1", "2", "3"]) {
       try {
@@ -1112,7 +1113,7 @@ async function handleGfnSdpOffer(
           usernameFragment: serverUfrag
         }));
         break;
-      } catch (e2) {
+      } catch {
         // Continue trying
       }
     }
@@ -1331,12 +1332,12 @@ async function connectSignaling(
       // Try with GFNJWT subprotocol (some servers accept auth via subprotocol)
       // Format: ["GFNJWT-<token>"] or ["gfn", "v1"]
       ws = new WebSocket(url, ["gfn", "v1"]);
-    } catch (e) {
-      console.warn("WebSocket with subprotocol failed, trying plain:", e);
+    } catch (err) {
+      console.warn("WebSocket with subprotocol failed, trying plain:", err);
       try {
         ws = new WebSocket(url);
-      } catch (e2) {
-        reject(new Error(`Failed to create WebSocket: ${e2}`));
+      } catch (err2) {
+        reject(new Error(`Failed to create WebSocket: ${err2}`));
         return;
       }
     }
