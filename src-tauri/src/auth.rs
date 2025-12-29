@@ -135,13 +135,21 @@ pub async fn fetch_login_providers() -> Result<Vec<LoginProvider>, String> {
     // Convert endpoints to LoginProvider structs
     let mut providers: Vec<LoginProvider> = service_info.gfn_service_endpoints
         .into_iter()
-        .map(|ep| LoginProvider {
-            idp_id: ep.idp_id,
-            login_provider_code: ep.login_provider_code,
-            login_provider_display_name: ep.login_provider_display_name,
-            login_provider: ep.login_provider,
-            streaming_service_url: ep.streaming_service_url,
-            login_provider_priority: ep.login_provider_priority,
+        .map(|ep| {
+            // Rename "Brothers Pictures" to "bro.game" for better recognition
+            let display_name = if ep.login_provider_code == "BPC" {
+                "bro.game".to_string()
+            } else {
+                ep.login_provider_display_name
+            };
+            LoginProvider {
+                idp_id: ep.idp_id,
+                login_provider_code: ep.login_provider_code,
+                login_provider_display_name: display_name,
+                login_provider: ep.login_provider,
+                streaming_service_url: ep.streaming_service_url,
+                login_provider_priority: ep.login_provider_priority,
+            }
         })
         .collect();
 
