@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 
 /// Streaming session state
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamingSession {
     pub session_id: String,
     pub game_id: String,
@@ -14,9 +15,17 @@ pub struct StreamingSession {
     pub stats: Option<StreamingStats>,
     pub webrtc_offer: Option<String>,
     pub signaling_url: Option<String>,
+    /// ICE servers from session API (Alliance Partners like Zain provide TURN servers here)
+    #[serde(default)]
+    pub ice_servers: Vec<IceServerConfig>,
+    /// Media connection info from session API (usage=2 or usage=17)
+    /// Contains the real UDP port for streaming, instead of the dummy port 47998 in SDP
+    #[serde(default)]
+    pub media_connection_info: Option<MediaConnectionInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionServer {
     pub id: String,
     pub name: String,
@@ -39,6 +48,7 @@ pub enum SessionStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamingQuality {
     pub resolution: Resolution,
     pub fps: u32,
@@ -63,6 +73,7 @@ pub enum VideoCodec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamingStats {
     pub fps: f32,
     pub latency_ms: u32,
@@ -233,6 +244,27 @@ struct SessionData {
     error_code: i32,
     #[serde(default)]
     client_ip: Option<String>,
+    #[serde(default)]
+    ice_server_configuration: Option<IceServerConfiguration>,
+}
+
+/// ICE server configuration from session API (Alliance Partners like Zain provide TURN servers here)
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct IceServerConfiguration {
+    #[serde(default)]
+    ice_servers: Vec<SessionIceServer>,
+}
+
+/// Individual ICE server from session API
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SessionIceServer {
+    urls: String, // Can be a single URL like "turn:server:3478"
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    credential: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -257,15 +289,35 @@ struct SessionControlInfo {
     resource_path: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct ConnectionInfo {
+pub struct ConnectionInfo {
     #[serde(default)]
     ip: Option<String>,
     #[serde(default)]
     port: u16,
     #[serde(default)]
     resource_path: Option<String>,
+    /// Usage type for connection routing:
+    ///   - 2:  Primary media path (UDP) - used for streaming data
+    ///   - 14: Signaling (WSS) - used for WebRTC negotiation, NOT for media
+    ///   - 17: Alternative media path - used by some Alliance Partners (e.g., Zain)
+    ///         when primary media (usage=2) is not available
+    #[serde(default)]
+    usage: i32,
+    /// Protocol: 1 = TCP/WSS, 2 = UDP
+    #[serde(default)]
+    protocol: i32,
+}
+
+/// Media connection info extracted from session API (for Alliance Partners like Zain)
+/// The official client uses connectionInfo with usage=2 or usage=17 to get the real media port
+/// instead of using the dummy port 47998 from the SDP
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaConnectionInfo {
+    pub ip: String,
+    pub port: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -292,6 +344,7 @@ pub struct IceServer {
 
 /// WebRTC session info for frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WebRTCSessionInfo {
     pub session_id: String,
     pub signaling_url: String,
@@ -369,6 +422,41 @@ fn get_client_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// Extract media connection info from connectionInfo array
+/// Looks for entries with usage=2 (media) or usage=17 (alternative media)
+/// These contain the real UDP port for streaming, instead of the dummy port 47998 in SDP
+fn extract_media_connection_info(connection_info: Option<&Vec<ConnectionInfo>>) -> Option<MediaConnectionInfo> {
+    connection_info.and_then(|conns| {
+        // Find connection with usage=2 (media) or usage=17 (alternative media)
+        // Prefer usage=2, fall back to usage=17
+        let media_conn = conns.iter()
+            .find(|c| c.usage == 2)
+            .or_else(|| conns.iter().find(|c| c.usage == 17));
+
+        if let Some(conn) = media_conn {
+            if let Some(ref ip) = conn.ip {
+                if conn.port > 0 {
+                    log::debug!("Found media connection info: {}:{} (usage={}, protocol={})",
+                        ip, conn.port, conn.usage, conn.protocol);
+                    return Some(MediaConnectionInfo {
+                        ip: ip.clone(),
+                        port: conn.port,
+                    });
+                }
+            }
+        }
+
+        // Log all connection info entries for debugging only when media connection not found
+        log::debug!("No media connection info found, available entries:");
+        for conn in conns.iter() {
+            log::debug!("  - ip={:?}, port={}, usage={}, protocol={}",
+                conn.ip, conn.port, conn.usage, conn.protocol);
+        }
+
+        None
+    })
+}
+
 /// Start a streaming session with CloudMatch and get WebRTC signaling info
 /// Uses the browser client format which works with standard JWT authentication
 #[command]
@@ -376,8 +464,7 @@ pub async fn start_session(
     request: StartSessionRequest,
     access_token: String,
 ) -> Result<StreamingSession, String> {
-    log::info!("Starting streaming session for game: {}", request.game_id);
-    log::info!("Requested resolution: {:?}, fps: {:?}", request.resolution, request.fps);
+    log::info!("Starting session for game: {}", request.game_id);
 
     // Use proxy-aware client if configured
     let client = crate::proxy::create_proxied_client().await?;
@@ -396,7 +483,7 @@ pub async fn start_session(
     // Reflex: auto-enable for 120+ FPS if not explicitly set, or use user preference
     let reflex_enabled = request.reflex.unwrap_or(fps >= 120);
 
-    log::info!("Using resolution {}x{} @ {} FPS, codec: {:?}, max bitrate: {} kbps, reflex: {}",
+    log::debug!("Using resolution {}x{} @ {} FPS, codec: {:?}, max bitrate: {} kbps, reflex: {}",
                width, height, fps, codec, max_bitrate_kbps, reflex_enabled);
 
     // Determine zone to use (browser uses eu-netherlands-south)
@@ -408,7 +495,7 @@ pub async fn start_session(
     let streaming_base_url = crate::auth::get_streaming_base_url().await;
     let is_alliance_partner = !streaming_base_url.contains("cloudmatchbeta.nvidiagrid.net");
     
-    log::info!("Streaming base URL: {}, is Alliance Partner: {}", streaming_base_url, is_alliance_partner);
+    log::debug!("Streaming base URL: {}", streaming_base_url);
 
     // Generate device and client IDs (UUID format like browser)
     let device_id = get_device_id();
@@ -487,7 +574,7 @@ pub async fn start_session(
         },
     };
 
-    log::info!("Requesting session from CloudMatch zone: {}", zone);
+    log::debug!("Requesting session from zone: {}", zone);
     log::debug!("Device ID: {}, Client ID: {}", device_id, client_id);
 
     // Build the session URL with query params
@@ -505,7 +592,7 @@ pub async fn start_session(
         )
     };
     
-    log::info!("Session URL: {}", session_url);
+    log::debug!("Session URL: {}", session_url);
 
     // Request session from CloudMatch with browser-style headers
     let response = client
@@ -540,7 +627,7 @@ pub async fn start_session(
     let response_text = response.text().await
         .map_err(|e| format!("Failed to read response: {}", e))?;
 
-    log::info!("CloudMatch response: {}", &response_text[..std::cmp::min(500, response_text.len())]);
+    log::debug!("CloudMatch response length: {} bytes", response_text.len());
 
     let api_response: CloudMatchApiResponse = serde_json::from_str(&response_text)
         .map_err(|e| format!("Failed to parse CloudMatch response: {} - Response: {}", e, &response_text[..std::cmp::min(500, response_text.len())]))?;
@@ -556,7 +643,7 @@ pub async fn start_session(
     }
 
     let session_data = api_response.session;
-    log::info!("Session allocated: {}", session_data.session_id);
+    log::info!("Session created: {}", session_data.session_id);
 
     // Determine initial status from seat setup info
     let status = if let Some(ref seat_info) = session_data.seat_setup_info {
@@ -591,6 +678,30 @@ pub async fn start_session(
         .and_then(|conns| conns.first())
         .and_then(|conn| conn.resource_path.clone());
 
+    // Extract ICE servers from session API (Alliance Partners like Zain provide TURN servers here)
+    let ice_servers: Vec<IceServerConfig> = session_data.ice_server_configuration
+        .as_ref()
+        .map(|config| {
+            config.ice_servers.iter().map(|server| {
+                log::debug!("ICE server: {} (has credentials: {})",
+                    server.urls, server.username.is_some());
+                IceServerConfig {
+                    urls: vec![server.urls.clone()],
+                    username: server.username.clone(),
+                    credential: server.credential.clone(),
+                }
+            }).collect()
+        })
+        .unwrap_or_else(|| {
+            log::debug!("No ICE servers in session API response");
+            vec![]
+        });
+
+    // Extract media connection info from connectionInfo (usage=2 or usage=17)
+    // This contains the real UDP port for streaming, instead of the dummy port 47998 in SDP
+    // The official GFN client uses this to rewrite SDP candidates
+    let media_connection_info = extract_media_connection_info(session_data.connection_info.as_ref());
+
     let session = StreamingSession {
         session_id: session_data.session_id.clone(),
         game_id: request.game_id,
@@ -612,6 +723,8 @@ pub async fn start_session(
         stats: None,
         webrtc_offer: None,
         signaling_url,
+        ice_servers,
+        media_connection_info,
     };
 
     // Store session
@@ -630,7 +743,7 @@ pub async fn stop_session(
     session_id: String,
     access_token: String,
 ) -> Result<(), String> {
-    log::info!("Stopping streaming session: {}", session_id);
+    log::info!("Stopping session: {}", session_id);
 
     // Get the session to find the zone
     let zone = {
@@ -656,7 +769,7 @@ pub async fn stop_session(
         format!("{}/v2/session/{}", cloudmatch_zone_url(&zone), session_id)
     };
     
-    log::info!("Delete URL: {} (Alliance Partner: {})", delete_url, is_alliance_partner);
+    log::debug!("Delete URL: {}", delete_url);
 
     let response = client
         .delete(&delete_url)
@@ -679,7 +792,7 @@ pub async fn stop_session(
         *guard = None;
     }
 
-    log::info!("Session stopped: {}", session_id);
+    log::debug!("Session stopped: {}", session_id);
     Ok(())
 }
 
@@ -731,6 +844,7 @@ static SESSION_STATUS: AtomicI32 = AtomicI32::new(0);
 
 /// Streaming connection state
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamingConnectionState {
     pub session_id: String,
     pub phase: StreamingPhase,
@@ -753,6 +867,7 @@ pub enum StreamingPhase {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamConnectionInfo {
     pub control_ip: String,
     pub control_port: u16,
@@ -791,6 +906,8 @@ struct PollSessionData {
     monitor_settings: Option<serde_json::Value>,
     #[serde(default)]
     finalized_streaming_features: Option<serde_json::Value>,
+    #[serde(default)]
+    ice_server_configuration: Option<IceServerConfiguration>,
 }
 
 /// Poll session status until ready or error
@@ -801,9 +918,9 @@ pub async fn poll_session_until_ready(
     access_token: String,
     poll_interval_ms: Option<u64>,
 ) -> Result<StreamingConnectionState, String> {
-    let interval = poll_interval_ms.unwrap_or(1500); // Default 1.5 seconds
+    let interval = poll_interval_ms.unwrap_or(2000); // Default 2 seconds
 
-    log::info!("Starting session polling for {}", session_id);
+    log::debug!("Starting session polling for {}", session_id);
     POLLING_ACTIVE.store(true, Ordering::SeqCst);
 
     // Get session info for zone
@@ -836,7 +953,7 @@ pub async fn poll_session_until_ready(
     };
 
     let poll_url = format!("{}/v2/session/{}", poll_base, session_id);
-    log::info!("Polling URL: {} (Alliance Partner: {})", poll_url, is_alliance_partner);
+    log::debug!("Polling URL: {}", poll_url);
 
     let device_id = get_device_id();
     let client_id = get_client_id();
@@ -889,6 +1006,31 @@ pub async fn poll_session_until_ready(
         let response_text = response.text().await
             .map_err(|e| format!("Failed to read poll response: {}", e))?;
 
+        // Log raw response once when status changes to see full API response structure
+        if last_status == -1 {
+            // Log first ~2000 chars of response to see what fields are available
+            let preview = if response_text.len() > 2000 {
+                format!("{}...", &response_text[..2000])
+            } else {
+                response_text.clone()
+            };
+            log::debug!("Raw session poll response: {}", preview);
+
+            // Check if there's ICE server config in the response
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response_text) {
+                if let Some(session) = json.get("session") {
+                    if session.get("iceServerConfiguration").is_some() {
+                        log::debug!("Found iceServerConfiguration in session response");
+                    }
+                    // Log all top-level keys in session
+                    if let Some(obj) = session.as_object() {
+                        let keys: Vec<_> = obj.keys().collect();
+                        log::debug!("Session response keys: {:?}", keys);
+                    }
+                }
+            }
+        }
+
         let poll_response: PollSessionResponse = serde_json::from_str(&response_text)
             .map_err(|e| format!("Failed to parse poll response: {}", e))?;
 
@@ -919,17 +1061,11 @@ pub async fn poll_session_until_ready(
         QUEUE_POSITION.store(queue_position, Ordering::SeqCst);
         QUEUE_ETA_MS.store(eta_ms, Ordering::SeqCst);
 
-        // Log status changes
+        // Log status changes (only when there's a change)
         if status != last_status || step != last_step || queue_position != last_queue_position {
-            log::info!(
-                "Session status: {} (step: {}, queue: {}, eta: {}ms, gpu: {:?}, in_queue: {})",
-                status,
-                step,
-                queue_position,
-                eta_ms,
-                session.gpu_type,
-                in_queue
-            );
+            if queue_position > 0 || step > 0 {
+                log::info!("Session: step={}, queue={}", step, queue_position);
+            }
             last_status = status;
             last_step = step;
             last_queue_position = queue_position;
@@ -937,7 +1073,7 @@ pub async fn poll_session_until_ready(
 
         // Status 2 = ready for streaming
         if status == 2 {
-            log::info!("Session ready! GPU: {:?}", session.gpu_type);
+            log::info!("Session ready: {:?}", session.gpu_type);
 
             // Extract connection info for WebRTC streaming
             // Browser client uses port 443 with /nvst/ path for WebSocket signaling
@@ -997,7 +1133,7 @@ pub async fn poll_session_until_ready(
                         .and_then(|conns| conns.first())
                         .and_then(|conn| conn.resource_path.clone())
                     {
-                        log::info!("Updating stored signaling_url to: {}", sig_url);
+                        log::debug!("Signaling URL: {}", sig_url);
                         s.signaling_url = Some(sig_url);
                     } else if let Some(conn) = connection.as_ref() {
                         // Fallback to StreamConnectionInfo.resource_path
@@ -1008,21 +1144,49 @@ pub async fn poll_session_until_ready(
                     if let Some(gpu) = session.gpu_type.clone() {
                         s.server.name = gpu;
                     }
+
+                    // Update ICE servers from session API (Alliance Partners like Zain provide TURN servers here)
+                    if let Some(ice_config) = session.ice_server_configuration.as_ref() {
+                        let new_ice_servers: Vec<IceServerConfig> = ice_config.ice_servers.iter().map(|server| {
+                            log::debug!("ICE server (poll): {}", server.urls);
+                            IceServerConfig {
+                                urls: vec![server.urls.clone()],
+                                username: server.username.clone(),
+                                credential: server.credential.clone(),
+                            }
+                        }).collect();
+                        if !new_ice_servers.is_empty() {
+                            log::debug!("Updated ice_servers: {} servers", new_ice_servers.len());
+                            s.ice_servers = new_ice_servers;
+                        }
+                    }
+
+                    // Update media connection info from connectionInfo (usage=2 or usage=17)
+                    // This contains the real UDP port for streaming, instead of the dummy port 47998 in SDP
+                    let new_media_info = extract_media_connection_info(session.connection_info.as_ref());
+                    if new_media_info.is_some() {
+                        log::debug!("Updated media_connection_info");
+                        s.media_connection_info = new_media_info;
+                    }
                 }
             }
 
             POLLING_ACTIVE.store(false, Ordering::SeqCst);
 
-            return Ok(StreamingConnectionState {
-                session_id: session.session_id,
+            let result = StreamingConnectionState {
+                session_id: session.session_id.clone(),
                 phase: StreamingPhase::Ready,
-                server_ip: session.session_control_info.and_then(|c| c.ip),
-                signaling_url: session.connection_info
+                server_ip: session.session_control_info.as_ref().and_then(|c| c.ip.clone()),
+                signaling_url: session.connection_info.as_ref()
                     .and_then(|c| c.first().and_then(|i| i.resource_path.clone())),
-                connection_info: connection,
-                gpu_type: session.gpu_type,
+                connection_info: connection.clone(),
+                gpu_type: session.gpu_type.clone(),
                 error: None,
-            });
+            };
+
+            log::debug!("Returning StreamingConnectionState: session_id={}", result.session_id);
+
+            return Ok(result);
         }
 
         // Status 1 = queued or setting up - keep polling (don't error out)
@@ -1032,26 +1196,15 @@ pub async fn poll_session_until_ready(
             return Err(format!("Session failed with error code: {}", session.error_code));
         }
 
-        // Wait before next poll
-        // Use longer interval when in queue to reduce server load
-        let poll_delay = if in_queue && queue_position > 5 {
-            // If deep in queue, poll every 5 seconds instead of 1.5
-            5000
-        } else if in_queue {
-            // If near front of queue, poll every 3 seconds
-            3000
-        } else {
-            interval
-        };
-        
-        tokio::time::sleep(tokio::time::Duration::from_millis(poll_delay)).await;
+        // Wait before next poll - consistent 2 second interval
+        tokio::time::sleep(tokio::time::Duration::from_millis(interval)).await;
     }
 }
 
 /// Cancel active polling
 #[command]
 pub fn cancel_polling() {
-    log::info!("Cancelling session polling");
+    log::debug!("Cancelling session polling");
     POLLING_ACTIVE.store(false, Ordering::SeqCst);
     // Reset queue status
     SESSION_STATUS.store(0, Ordering::SeqCst);
@@ -1098,6 +1251,7 @@ pub fn get_queue_status() -> QueueStatus {
 
 /// WebRTC connection configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WebRtcConfig {
     pub session_id: String,
     pub signaling_url: String,
@@ -1105,9 +1259,14 @@ pub struct WebRtcConfig {
     pub video_codec: String,
     pub audio_codec: String,
     pub max_bitrate_kbps: u32,
+    /// Media connection info with real UDP port (for Alliance Partners)
+    /// When present, use this port instead of the SDP port (47998) for ICE candidates
+    #[serde(default)]
+    pub media_connection_info: Option<MediaConnectionInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IceServerConfig {
     pub urls: Vec<String>,
     pub username: Option<String>,
@@ -1136,7 +1295,7 @@ pub async fn get_webrtc_config(
     let raw_signaling_url = signaling_url_override
         .or_else(|| session.signaling_url.clone());
 
-    log::info!("get_webrtc_config: raw_signaling_url={:?}, server_ip={:?}", 
+    log::debug!("get_webrtc_config: raw_signaling_url={:?}, server_ip={:?}", 
                raw_signaling_url, session.server.ip);
 
     // Build signaling URL from session info
@@ -1185,7 +1344,32 @@ pub async fn get_webrtc_config(
             .ok_or("No signaling URL available")?
     };
 
-    log::info!("WebRTC signaling URL: {}", signaling_url);
+    log::debug!("WebRTC signaling URL: {}", signaling_url);
+
+    // Build ICE servers list:
+    // 1. Session API ICE servers first (Alliance Partners like Zain provide TURN servers here)
+    // 2. Default STUN servers as fallback
+    let mut ice_servers = Vec::new();
+
+    // Add ICE servers from session API (these may include TURN servers with credentials)
+    for server in &session.ice_servers {
+        ice_servers.push(server.clone());
+    }
+
+    // Always add default STUN servers as fallback
+    ice_servers.push(IceServerConfig {
+        urls: vec!["stun:s1.stun.gamestream.nvidia.com:19308".to_string()],
+        username: None,
+        credential: None,
+    });
+    ice_servers.push(IceServerConfig {
+        urls: vec![
+            "stun:stun.l.google.com:19302".to_string(),
+            "stun:stun1.l.google.com:19302".to_string(),
+        ],
+        username: None,
+        credential: None,
+    });
 
     // Determine video codec from quality settings
     let video_codec = match session.quality.codec {
@@ -1194,31 +1378,19 @@ pub async fn get_webrtc_config(
         VideoCodec::AV1 => "AV1",
     }.to_string();
 
+    // Log media connection info if available
+    if let Some(ref mci) = session.media_connection_info {
+        log::debug!("Media connection info: {}:{}", mci.ip, mci.port);
+    }
+
     Ok(WebRtcConfig {
         session_id: session.session_id.clone(),
         signaling_url,
-        ice_servers: vec![
-            // NVIDIA's official TURN server (also handles STUN)
-            IceServerConfig {
-                urls: vec![
-                    "stun:turn.gamestream.nvidia.com:19302".to_string(),
-                ],
-                username: None,
-                credential: None,
-            },
-            // Google STUN servers as fallback
-            IceServerConfig {
-                urls: vec![
-                    "stun:stun.l.google.com:19302".to_string(),
-                    "stun:stun1.l.google.com:19302".to_string(),
-                ],
-                username: None,
-                credential: None,
-            },
-        ],
+        ice_servers,
         video_codec,
         audio_codec: "opus".to_string(),
         max_bitrate_kbps: session.quality.bitrate_kbps,
+        media_connection_info: session.media_connection_info.clone(),
     })
 }
 
@@ -1287,16 +1459,16 @@ struct MonitorSettingsFromApi {
 pub async fn get_active_sessions(
     access_token: String,
 ) -> Result<Vec<ActiveSession>, String> {
-    log::info!("Checking for active sessions...");
+    log::debug!("Checking for active sessions...");
 
     let client = crate::proxy::create_proxied_client().await?;
     let device_id = get_device_id();
     let client_id = get_client_id();
 
-    // Use the prod endpoint which returns all user sessions
-    let session_url = format!("{}/v2/session", CLOUDMATCH_PROD_URL);
-
-    log::info!("Using device_id: {} for session check", device_id);
+    // Use the streaming base URL which handles Alliance Partners
+    let streaming_base_url = crate::auth::get_streaming_base_url().await;
+    let session_url = format!("{}/v2/session", streaming_base_url.trim_end_matches('/'));
+    log::debug!("Session check URL: {}", session_url);
 
     let response = client
         .get(&session_url)
@@ -1327,16 +1499,16 @@ pub async fn get_active_sessions(
     let response_text = response.text().await
         .map_err(|e| format!("Failed to read response: {}", e))?;
 
-    log::info!("Active sessions raw response length: {} bytes", response_text.len());
+    log::debug!("Active sessions response: {} bytes", response_text.len());
 
     // Try to parse as generic JSON first to see what we got
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&response_text) {
         if let Some(sessions_arr) = json_value.get("sessions").and_then(|s| s.as_array()) {
-            log::info!("Raw sessions array contains {} items", sessions_arr.len());
+            log::debug!("Found {} sessions", sessions_arr.len());
             for (i, session) in sessions_arr.iter().enumerate() {
                 let status = session.get("status").and_then(|s| s.as_i64()).unwrap_or(-1);
                 let session_id = session.get("sessionId").and_then(|s| s.as_str()).unwrap_or("unknown");
-                log::info!("  Session {}: id={}, status={}", i, session_id, status);
+                log::debug!("  Session {}: id={}, status={}", i, session_id, status);
             }
         }
     }
@@ -1662,13 +1834,21 @@ pub async fn claim_session(
 
     log::info!("Final signaling URL being returned: {:?}", signaling_url);
 
+    // Log connection info for debugging
+    if let Some(ref conn_info) = updated_session.connection_info {
+        for (i, conn) in conn_info.iter().enumerate() {
+            log::info!("Connection info [{}]: ip={:?} port={:?}", i, conn.ip, conn.port);
+        }
+    }
+
     Ok(ClaimSessionResponse {
-        session_id: updated_session.session_id,
+        session_id: updated_session.session_id.clone(),
         status: updated_session.status,
-        gpu_type: updated_session.gpu_type,
+        gpu_type: updated_session.gpu_type.clone(),
         signaling_url,
         server_ip: updated_session.session_control_info
             .and_then(|c| c.ip),
+        connection_info: updated_session.connection_info,
     })
 }
 
@@ -1681,6 +1861,7 @@ pub struct ClaimSessionResponse {
     pub gpu_type: Option<String>,
     pub signaling_url: Option<String>,
     pub server_ip: Option<String>,
+    pub connection_info: Option<Vec<ConnectionInfo>>,
 }
 
 /// API response for PUT /v2/session/{sessionId}
@@ -1713,8 +1894,27 @@ pub async fn setup_reconnect_session(
     server_ip: String,
     signaling_url: String,
     _gpu_type: Option<String>,
+    connection_info: Option<Vec<ConnectionInfo>>,
 ) -> Result<(), String> {
     log::info!("Setting up reconnect session: {} on {}", session_id, server_ip);
+
+    // Convert connection_info to MediaConnectionInfo if available
+    // Pick the one with usage=2 (media UDP) - NOT usage=14 (signaling WSS)
+    let media_connection_info = connection_info.as_ref().and_then(|conns| {
+        // Find the media connection (usage=2 is primary media, usage=17 is alternative)
+        let media_conn = conns.iter().find(|c| c.usage == 2)
+            .or_else(|| conns.iter().find(|c| c.usage == 17));
+
+        media_conn.and_then(|conn| {
+            conn.ip.as_ref().map(|ip| {
+                log::info!("Using media connection info for reconnect: ip={} port={} usage={}", ip, conn.port, conn.usage);
+                MediaConnectionInfo {
+                    ip: ip.clone(),
+                    port: conn.port,
+                }
+            })
+        })
+    });
 
     let session = StreamingSession {
         session_id: session_id.clone(),
@@ -1737,6 +1937,8 @@ pub async fn setup_reconnect_session(
         stats: None,
         webrtc_offer: None,
         signaling_url: Some(signaling_url),
+        ice_servers: vec![], // Reconnect doesn't have session API ICE servers
+        media_connection_info,
     };
 
     let storage = get_session_storage();

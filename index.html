@@ -378,6 +378,59 @@
         </div>
       </div>
 
+      <!-- Session Limit Error Modal -->
+      <div id="session-limit-modal" class="modal hidden">
+        <div class="modal-content session-modal-content">
+          <button class="modal-close">&times;</button>
+          <div class="session-modal-header">
+            <div class="session-icon warning"><i data-lucide="monitor-x"></i></div>
+            <h2>Session Limit Exceeded</h2>
+          </div>
+          <p class="session-modal-description">You already have an active GeForce NOW session running. Please close the existing session before starting a new one.</p>
+          <div class="session-info-card">
+            <div class="session-info-row">
+              <span class="session-label">Error:</span>
+              <span class="session-value" id="session-limit-error-message">SESSION_LIMIT_EXCEEDED_STATUS</span>
+            </div>
+          </div>
+          <p class="session-modal-description" style="margin-top: 12px; font-size: 13px; color: #aaa;">
+            This can happen if you have a session open in another browser tab, the official GFN client, or another device.
+          </p>
+          <div class="session-modal-actions">
+            <button id="session-limit-terminate-btn" class="btn btn-primary btn-large">Close Session & Retry</button>
+            <button id="session-limit-close-btn" class="btn btn-secondary">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Region Error Modal -->
+      <div id="region-error-modal" class="modal hidden">
+        <div class="modal-content session-modal-content">
+          <button class="modal-close">&times;</button>
+          <div class="session-modal-header">
+            <div class="session-icon warning"><i data-lucide="globe"></i></div>
+            <h2>Region Not Supported</h2>
+          </div>
+          <p class="session-modal-description">Your current region is not supported for streaming. This can happen due to geo-restrictions or network configuration issues.</p>
+          <div class="session-info-card">
+            <div class="session-info-row">
+              <span class="session-label">Error:</span>
+              <span class="session-value" id="region-error-message">REGION_NOT_SUPPORTED_FOR_STREAMING</span>
+            </div>
+          </div>
+          <p class="session-modal-description" style="margin-top: 12px; font-size: 13px; color: #aaa;">
+            <strong>Possible solutions:</strong><br>
+            - Use a VPN connected to a supported region<br>
+            - Check your internet connection settings<br>
+            - Try a different server region in settings
+          </p>
+          <div class="session-modal-actions">
+            <button id="region-error-retry-btn" class="btn btn-primary btn-large">Retry</button>
+            <button id="region-error-close-btn" class="btn btn-secondary">Close</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Update Modal -->
       <div id="update-modal" class="modal hidden">
         <div class="modal-content update-modal-content">

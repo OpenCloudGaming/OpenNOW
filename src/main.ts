@@ -2062,6 +2062,34 @@ function showSessionConflictModal(existingSession: ActiveSession, newGame: Game)
   showModal("session-conflict-modal");
 }
 
+// Store the game for retry
+let regionErrorGame: Game | null = null;
+let sessionLimitGame: Game | null = null;
+
+// Show region error modal
+function showRegionErrorModal(errorMessage: string, game: Game) {
+  const errorEl = document.getElementById("region-error-message");
+  if (errorEl) {
+    // Extract the status description from the error message
+    const match = errorMessage.match(/REGION_NOT_SUPPORTED[_A-Z]*\s*[A-F0-9]*/i);
+    errorEl.textContent = match ? match[0] : "Region not supported";
+  }
+  regionErrorGame = game;
+  showModal("region-error-modal");
+}
+
+// Show session limit exceeded modal
+function showSessionLimitModal(errorMessage: string, game: Game) {
+  const errorEl = document.getElementById("session-limit-error-message");
+  if (errorEl) {
+    // Extract the status description from the error message
+    const match = errorMessage.match(/SESSION_LIMIT[_A-Z]*\s*[A-F0-9]*/i);
+    errorEl.textContent = match ? match[0] : "Session limit exceeded";
+  }
+  sessionLimitGame = game;
+  showModal("session-limit-modal");
+}
+
 // Update navbar with active session indicator
 function updateNavbarSessionIndicator(session: ActiveSession | null) {
   let indicator = document.getElementById("active-session-indicator");
@@ -2358,6 +2386,64 @@ function setupSessionModals() {
     pendingGameLaunch = null;
     hideAllModals();
   });
+
+  // Region error modal handlers
+  const regionRetryBtn = document.getElementById("region-error-retry-btn");
+  const regionCloseBtn = document.getElementById("region-error-close-btn");
+
+  regionRetryBtn?.addEventListener("click", async () => {
+    hideAllModals();
+    if (regionErrorGame) {
+      const gameToRetry = regionErrorGame;
+      regionErrorGame = null;
+      await launchGame(gameToRetry);
+    }
+  });
+
+  regionCloseBtn?.addEventListener("click", () => {
+    regionErrorGame = null;
+    hideAllModals();
+  });
+
+  // Session limit modal handlers
+  const sessionLimitTerminateBtn = document.getElementById("session-limit-terminate-btn");
+  const sessionLimitCloseBtn = document.getElementById("session-limit-close-btn");
+
+  sessionLimitTerminateBtn?.addEventListener("click", async () => {
+    hideAllModals();
+    // Try to terminate any active sessions and retry
+    try {
+      const accessToken = await invoke<string>("get_gfn_jwt");
+      // Check for active sessions
+      const activeSessions = await invoke<ActiveSession[]>("get_active_sessions", { accessToken });
+
+      if (activeSessions.length > 0) {
+        // Terminate the first active session
+        await invoke("terminate_session", {
+          sessionId: activeSessions[0].sessionId,
+          accessToken,
+        });
+        console.log("Terminated existing session:", activeSessions[0].sessionId);
+        detectedActiveSessions = [];
+        hideNavbarSessionIndicator();
+      }
+
+      // Retry launching the game
+      if (sessionLimitGame) {
+        const gameToRetry = sessionLimitGame;
+        sessionLimitGame = null;
+        await launchGame(gameToRetry);
+      }
+    } catch (error) {
+      console.error("Failed to terminate session:", error);
+      alert(`Failed to terminate session: ${error}`);
+    }
+  });
+
+  sessionLimitCloseBtn?.addEventListener("click", () => {
+    sessionLimitGame = null;
+    hideAllModals();
+  });
 }
 
 // Connect to an existing session
@@ -2434,6 +2520,7 @@ async function connectToExistingSession(session: ActiveSession) {
       gpuType: string | null;
       signalingUrl: string | null;
       serverIp: string | null;
+      connectionInfo: Array<{ ip: string | null; port: number | null; usage: number }> | null;
     }
 
     const claimResult = await invoke<ClaimSessionResponse>("claim_session", {
@@ -2478,11 +2565,13 @@ async function connectToExistingSession(session: ActiveSession) {
 
     // Set up the backend session storage for reconnection
     // This is required for get_webrtc_config and other backend functions to work
+    // Pass connectionInfo for proper ICE candidate construction with real media ports
     await invoke("setup_reconnect_session", {
       sessionId: session.sessionId,
       serverIp: actualStreamIp,
       signalingUrl: actualSignalingUrl,
       gpuType: claimResult.gpuType || session.gpuType,
+      connectionInfo: claimResult.connectionInfo || null,
     });
 
     console.log("Reconnect session setup complete");
@@ -2490,18 +2579,32 @@ async function connectToExistingSession(session: ActiveSession) {
     // Build the streaming result object to pass to initializeStreaming
     // Use type assertion since we're constructing a compatible object
     // Use claimed session values which may be updated after the PUT request
+    //
+    // connectionInfo contains multiple entries with different usage types:
+    //   - usage=2:  Primary media path (UDP) - preferred for streaming
+    //   - usage=17: Alternative media path - used by some Alliance Partners (e.g., Zain)
+    //               when primary media entry is not available
+    //   - usage=14: Signaling (WSS) - MUST NOT be used for media traffic
+    //
+    // We prefer usage=2 and fall back to usage=17 for Alliance Partner compatibility
+    const mediaConn = claimResult.connectionInfo?.find(c => c.usage === 2)
+      || claimResult.connectionInfo?.find(c => c.usage === 17);
+    const realMediaPort = mediaConn?.port || 443;
+    const realMediaIp = mediaConn?.ip || actualStreamIp;
+    console.log("Using media connection info for reconnect - IP:", realMediaIp, "Port:", realMediaPort, "Usage:", mediaConn?.usage);
+
     const streamingResult = {
-      session_id: session.sessionId,
+      sessionId: session.sessionId,
       phase: "Ready" as const,
-      server_ip: claimResult.serverIp || actualStreamIp,
-      signaling_url: actualSignalingUrl,
-      gpu_type: claimResult.gpuType || session.gpuType,
-      connection_info: (actualStreamIp && session.serverIp) ? {
-        control_ip: (claimResult.serverIp || session.serverIp) as string,
-        control_port: 443,
-        stream_ip: actualStreamIp,
-        stream_port: 443,
-        resource_path: "/nvst/",
+      serverIp: claimResult.serverIp || actualStreamIp,
+      signalingUrl: actualSignalingUrl,
+      gpuType: claimResult.gpuType || session.gpuType,
+      connectionInfo: (actualStreamIp && session.serverIp) ? {
+        controlIp: (claimResult.serverIp || session.serverIp) as string,
+        controlPort: 443,
+        streamIp: realMediaIp,
+        streamPort: realMediaPort,
+        resourcePath: "/nvst/",
       } : null,
       error: null as string | null,
     };
@@ -3135,11 +3238,10 @@ async function loadHomeData() {
     (section as HTMLElement).style.display = '';
   });
 
-  // Create placeholder games initially
-  const placeholderGames = createPlaceholderGames();
-  renderGamesGrid("featured-games", placeholderGames.slice(0, 6));
-  renderGamesGrid("recent-games", placeholderGames.slice(6, 12));
-  renderGamesGrid("free-games", placeholderGames.slice(12, 18));
+  // Show loading spinners initially
+  showGridLoading("featured-games");
+  showGridLoading("recent-games");
+  showGridLoading("free-games");
 
   // Try to load library data (requires authentication)
   if (isAuthenticated) {
@@ -3206,10 +3308,9 @@ async function loadHomeData() {
 async function loadLibraryData() {
   console.log("Loading library data...");
 
-  // Show placeholders while loading
-  const placeholderGames = createPlaceholderGames();
-  renderGamesGrid("recently-played", placeholderGames.slice(0, 6));
-  renderGamesGrid("my-games", placeholderGames);
+  // Show loading spinners while loading
+  showGridLoading("recently-played");
+  showGridLoading("my-games");
 
   try {
     const accessToken = await invoke<string>("get_gfn_jwt");
@@ -3242,8 +3343,7 @@ async function loadLibraryData() {
 
 async function loadStoreData() {
   console.log("Loading store data...");
-  const placeholderGames = createPlaceholderGames();
-  renderGamesGrid("all-games", placeholderGames);
+  showGridLoading("all-games");
 }
 
 // Generate fallback placeholder SVG
@@ -3314,6 +3414,27 @@ function createGameCard(game: Game): HTMLElement {
   });
 
   return card;
+}
+
+// Show loading spinner in a grid container
+function showGridLoading(containerId: string) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  container.replaceChildren();
+
+  const loadingDiv = document.createElement("div");
+  loadingDiv.className = "grid-loading";
+
+  const spinner = document.createElement("div");
+  spinner.className = "grid-loading-spinner";
+
+  const text = document.createElement("span");
+  text.textContent = "Loading...";
+
+  loadingDiv.appendChild(spinner);
+  loadingDiv.appendChild(text);
+  container.appendChild(loadingDiv);
 }
 
 function renderGamesGrid(containerId: string, gamesList: Game[]) {
@@ -3676,7 +3797,8 @@ async function launchGame(game: Game) {
     console.log("Using preferred server:", preferredServer || "default");
 
     const sessionResult = await invoke<{
-      session_id: string;
+      sessionId: string;
+      signalingUrl: string | null;
       server: { ip: string; id: string };
     }>("start_session", {
       request: {
@@ -3695,36 +3817,49 @@ async function launchGame(game: Game) {
     });
 
     console.log("Session created:", sessionResult);
-    streamingUIState.sessionId = sessionResult.session_id;
+    streamingUIState.sessionId = sessionResult.sessionId;
     streamingUIState.gameName = game.title;
     streamingUIState.active = true;
 
     // Phase 2: Poll until ready and start streaming
     updateStreamingStatus("Waiting for server...");
 
-    const streamingResult = await invoke<{
-      session_id: string;
-      phase: string;
-      server_ip: string | null;
-      signaling_url: string | null;
-      gpu_type: string | null;
-      connection_info: {
-        control_ip: string;
-        control_port: number;
-        stream_ip: string | null;
-        stream_port: number;
-        resource_path: string;
-      } | null;
-      error: string | null;
-    }>("start_streaming_flow", {
-      sessionId: sessionResult.session_id,
-      accessToken: accessToken,
-    });
+    console.log("Calling start_streaming_flow for session:", sessionResult.sessionId);
+    let streamingResult;
+    try {
+      streamingResult = await invoke<{
+        sessionId: string;
+        phase: string;
+        serverIp: string | null;
+        signalingUrl: string | null;
+        gpuType: string | null;
+        connectionInfo: {
+          controlIp: string;
+          controlPort: number;
+          streamIp: string | null;
+          streamPort: number;
+          resourcePath: string;
+        } | null;
+        error: string | null;
+      }>("start_streaming_flow", {
+        sessionId: sessionResult.sessionId,
+        accessToken: accessToken,
+      });
+    } catch (e) {
+      console.error("start_streaming_flow failed:", e);
+      throw e;
+    }
 
     console.log("Streaming ready:", streamingResult);
+    console.log("  - sessionId:", streamingResult.sessionId);
+    console.log("  - phase:", streamingResult.phase);
+    console.log("  - serverIp:", streamingResult.serverIp);
+    console.log("  - signalingUrl:", streamingResult.signalingUrl);
+    console.log("  - connectionInfo:", streamingResult.connectionInfo);
+    console.log("  - gpuType:", streamingResult.gpuType);
     streamingUIState.phase = streamingResult.phase;
-    streamingUIState.gpuType = streamingResult.gpu_type;
-    streamingUIState.serverIp = streamingResult.server_ip;
+    streamingUIState.gpuType = streamingResult.gpuType;
+    streamingUIState.serverIp = streamingResult.serverIp;
 
     // Determine the region name for display
     const currentServer = cachedServers.find(s => s.id === currentRegion) ||
@@ -3732,7 +3867,7 @@ async function launchGame(game: Game) {
     streamingUIState.region = currentServer?.name || currentRegion;
 
     // Update overlay with success
-    updateStreamingStatus(`Connected to ${streamingResult.gpu_type || "GPU"}`);
+    updateStreamingStatus(`Connected to ${streamingResult.gpuType || "GPU"}`);
 
     // Update Discord presence to show playing (if enabled)
     if (discordRpcEnabled) {
@@ -3830,7 +3965,15 @@ async function launchGame(game: Game) {
     // Resume session polling since launch failed
     startSessionPolling();
 
-    alert(`Failed to launch game: ${error}`);
+    // Check for specific errors and show appropriate modals
+    const errorStr = String(error);
+    if (errorStr.includes("REGION_NOT_SUPPORTED")) {
+      showRegionErrorModal(errorStr, game);
+    } else if (errorStr.includes("SESSION_LIMIT")) {
+      showSessionLimitModal(errorStr, game);
+    } else {
+      alert(`Failed to launch game: ${error}`);
+    }
   }
 }
 
@@ -3863,9 +4006,6 @@ function createStreamingContainer(gameName: string): HTMLElement {
       <span id="stats-resolution">----x----</span>
       <span id="stats-codec">----</span>
       <span id="stats-bitrate">-- Mbps</span>
-      <span class="stats-separator">|</span>
-      <span id="stats-input-total" title="Total input pipeline latency">Input: -- ms</span>
-      <span id="stats-input-rate" title="Input events per second">-- evt/s</span>
     </div>
     <div class="stream-exit-overlay" id="stream-exit-overlay">
       <div class="exit-overlay-content">
@@ -3890,6 +4030,10 @@ function createStreamingContainer(gameName: string): HTMLElement {
               <span class="info-value" id="info-region">--</span>
             </div>
             <div class="info-item">
+              <span class="info-label">GPU</span>
+              <span class="info-value" id="info-gpu">--</span>
+            </div>
+            <div class="info-item">
               <span class="info-label">Resolution</span>
               <span class="info-value" id="info-resolution">--</span>
             </div>
@@ -3912,27 +4056,6 @@ function createStreamingContainer(gameName: string): HTMLElement {
             <div class="info-item">
               <span class="info-label">Packet Loss</span>
               <span class="info-value" id="info-packet-loss">--</span>
-            </div>
-          </div>
-        </div>
-        <div class="settings-section">
-          <h4>Input Latency</h4>
-          <div class="settings-info-grid">
-            <div class="info-item">
-              <span class="info-label">IPC Call</span>
-              <span class="info-value" id="info-input-ipc">--</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">Send</span>
-              <span class="info-value" id="info-input-send">--</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">Total Pipeline</span>
-              <span class="info-value" id="info-input-total">--</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">Input Rate</span>
-              <span class="info-value" id="info-input-rate">--</span>
             </div>
           </div>
         </div>
@@ -4064,22 +4187,6 @@ function createStreamingContainer(gameName: string): HTMLElement {
       color: #76b900;
       font-weight: 500;
     }
-    .stats-separator {
-      color: #555;
-      margin: 0 5px;
-    }
-    #stats-input-total {
-      color: #8be9fd;
-    }
-    #stats-input-rate {
-      color: #bd93f9;
-    }
-    /* Input latency color coding */
-    .input-excellent { color: #00c853 !important; }
-    .input-good { color: #76b900 !important; }
-    .input-fair { color: #ffc107 !important; }
-    .input-poor { color: #ff9800 !important; }
-    .input-bad { color: #f44336 !important; }
     .stream-settings-panel {
       position: absolute;
       top: 60px;
@@ -4519,15 +4626,6 @@ function createStreamingContainer(gameName: string): HTMLElement {
   return videoWrapper;
 }
 
-// Get input latency class for color coding
-function getInputLatencyClass(ms: number): string {
-  if (ms < 1) return 'input-excellent';
-  if (ms < 2) return 'input-good';
-  if (ms < 5) return 'input-fair';
-  if (ms < 10) return 'input-poor';
-  return 'input-bad';
-}
-
 // Update streaming stats display
 function updateStreamingStatsDisplay(stats: {
   fps: number;
@@ -4536,10 +4634,6 @@ function updateStreamingStatsDisplay(stats: {
   packet_loss: number;
   resolution: string;
   codec: string;
-  input_ipc_ms?: number;
-  input_send_ms?: number;
-  input_total_ms?: number;
-  input_rate?: number;
 }): void {
   // Update overlay stats
   const regionEl = document.getElementById("stats-region");
@@ -4548,9 +4642,6 @@ function updateStreamingStatsDisplay(stats: {
   const resEl = document.getElementById("stats-resolution");
   const codecEl = document.getElementById("stats-codec");
   const bitrateEl = document.getElementById("stats-bitrate");
-  const inputTotalEl = document.getElementById("stats-input-total");
-  const inputRateEl = document.getElementById("stats-input-rate");
-
   const bitrateFormatted = stats.bitrate_kbps >= 1000
     ? `${(stats.bitrate_kbps / 1000).toFixed(1)} Mbps`
     : `${stats.bitrate_kbps} kbps`;
@@ -4578,18 +4669,9 @@ function updateStreamingStatsDisplay(stats: {
   if (codecEl) codecEl.textContent = stats.codec || "----";
   if (bitrateEl) bitrateEl.textContent = bitrateFormatted;
 
-  // Update input latency stats in overlay
-  if (inputTotalEl && stats.input_total_ms !== undefined) {
-    inputTotalEl.textContent = `Input: ${stats.input_total_ms.toFixed(2)} ms`;
-    inputTotalEl.classList.remove("input-excellent", "input-good", "input-fair", "input-poor", "input-bad");
-    inputTotalEl.classList.add(getInputLatencyClass(stats.input_total_ms));
-  }
-  if (inputRateEl && stats.input_rate !== undefined) {
-    inputRateEl.textContent = `${stats.input_rate} evt/s`;
-  }
-
   // Update settings panel info
   const infoRegionEl = document.getElementById("info-region");
+  const infoGpuEl = document.getElementById("info-gpu");
   const infoResEl = document.getElementById("info-resolution");
   const infoFpsEl = document.getElementById("info-fps");
   const infoCodecEl = document.getElementById("info-codec");
@@ -4597,14 +4679,11 @@ function updateStreamingStatsDisplay(stats: {
   const infoLatencyEl = document.getElementById("info-latency");
   const infoPacketLossEl = document.getElementById("info-packet-loss");
 
-  // Input latency panel elements
-  const infoInputIpcEl = document.getElementById("info-input-ipc");
-  const infoInputSendEl = document.getElementById("info-input-send");
-  const infoInputTotalEl = document.getElementById("info-input-total");
-  const infoInputRateEl = document.getElementById("info-input-rate");
-
   if (infoRegionEl) {
     infoRegionEl.textContent = currentServer ? currentServer.name : (currentRegion === "auto" ? "Auto" : currentRegion);
+  }
+  if (infoGpuEl) {
+    infoGpuEl.textContent = streamingUIState.gpuType || "--";
   }
   if (infoResEl) infoResEl.textContent = stats.resolution || "--";
   if (infoFpsEl) infoFpsEl.textContent = `${Math.round(stats.fps)}`;
@@ -4616,26 +4695,6 @@ function updateStreamingStatsDisplay(stats: {
     infoLatencyEl.classList.add(getLatencyClass(stats.latency_ms));
   }
   if (infoPacketLossEl) infoPacketLossEl.textContent = `${(stats.packet_loss * 100).toFixed(2)}%`;
-
-  // Update input latency panel stats
-  if (infoInputIpcEl && stats.input_ipc_ms !== undefined) {
-    infoInputIpcEl.textContent = `${stats.input_ipc_ms.toFixed(2)} ms`;
-    infoInputIpcEl.classList.remove("input-excellent", "input-good", "input-fair", "input-poor", "input-bad");
-    infoInputIpcEl.classList.add(getInputLatencyClass(stats.input_ipc_ms));
-  }
-  if (infoInputSendEl && stats.input_send_ms !== undefined) {
-    infoInputSendEl.textContent = `${stats.input_send_ms.toFixed(2)} ms`;
-    infoInputSendEl.classList.remove("input-excellent", "input-good", "input-fair", "input-poor", "input-bad");
-    infoInputSendEl.classList.add(getInputLatencyClass(stats.input_send_ms));
-  }
-  if (infoInputTotalEl && stats.input_total_ms !== undefined) {
-    infoInputTotalEl.textContent = `${stats.input_total_ms.toFixed(2)} ms`;
-    infoInputTotalEl.classList.remove("input-excellent", "input-good", "input-fair", "input-poor", "input-bad");
-    infoInputTotalEl.classList.add(getInputLatencyClass(stats.input_total_ms));
-  }
-  if (infoInputRateEl && stats.input_rate !== undefined) {
-    infoInputRateEl.textContent = `${stats.input_rate} evt/s`;
-  }
 }
 
 // Exit streaming and cleanup
@@ -4947,8 +5006,8 @@ function updateStreamingStatus(status: string) {
 }
 
 function showStreamingInfo(info: {
-  gpu_type: string | null;
-  server_ip: string | null;
+  gpuType: string | null;
+  serverIp: string | null;
   phase: string;
 }) {
   const infoEl = document.getElementById("streaming-info");
@@ -4968,8 +5027,8 @@ function showStreamingInfo(info: {
   }
 
   if (infoEl) infoEl.style.display = "block";
-  if (gpuEl) gpuEl.textContent = info.gpu_type || "Unknown";
-  if (serverEl) serverEl.textContent = info.server_ip || "Unknown";
+  if (gpuEl) gpuEl.textContent = info.gpuType || "Unknown";
+  if (serverEl) serverEl.textContent = info.serverIp || "Unknown";
   if (phaseEl) phaseEl.textContent = info.phase;
 
   // Hide spinner when ready
