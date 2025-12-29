@@ -35,36 +35,38 @@ jobs:
       - name: Get latest release version
         id: get_version
         run: |
-          # Get the latest release tag, default to v0.0.1 if none exists
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.1")
+          # Get the latest release tag, default to v0.1.0 if none exists
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.1.0")
           echo "Latest tag: $LATEST_TAG"
           echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
 
           # Extract version numbers (remove 'v' prefix and any suffix like '-dev')
-          VERSION=$(echo $LATEST_TAG | sed 's/^v//' | sed 's/-.*$//')
+          VERSION=$(echo "$LATEST_TAG" | sed 's/^v//' | sed 's/-.*$//')
+          echo "Parsed version: $VERSION"
 
           # Split into major, minor, patch
-          MAJOR=$(echo $VERSION | cut -d. -f1)
-          MINOR=$(echo $VERSION | cut -d. -f2)
-          PATCH=$(echo $VERSION | cut -d. -f3)
+          MAJOR=$(echo "$VERSION" | cut -d. -f1 | grep -E '^[0-9]+$' || echo "0")
+          MINOR=$(echo "$VERSION" | cut -d. -f2 | grep -E '^[0-9]+$' || echo "1")
+          PATCH=$(echo "$VERSION" | cut -d. -f3 | grep -E '^[0-9]+$' || echo "0")
 
-          # Default to 0.0.1 if parsing fails
+          # Ensure values are valid numbers (default if empty/invalid)
           MAJOR=${MAJOR:-0}
-          MINOR=${MINOR:-0}
-          PATCH=${PATCH:-1}
+          MINOR=${MINOR:-1}
+          PATCH=${PATCH:-0}
+
+          echo "Parsed: MAJOR=$MAJOR, MINOR=$MINOR, PATCH=$PATCH"
 
           # Increment patch version
           NEW_PATCH=$((PATCH + 1))
 
-          # Ensure we start from at least v0.0.2
-          if [ "$MAJOR" -eq 0 ] && [ "$MINOR" -eq 0 ] && [ "$NEW_PATCH" -lt 2 ]; then
-            NEW_PATCH=2
-          fi
-
           NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+          VERSION_NUMBER="${MAJOR}.${MINOR}.${NEW_PATCH}"
+
           echo "New version: $NEW_VERSION"
+          echo "Version number: $VERSION_NUMBER"
+
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "version_number=${MAJOR}.${MINOR}.${NEW_PATCH}" >> $GITHUB_OUTPUT
+          echo "version_number=$VERSION_NUMBER" >> $GITHUB_OUTPUT
 
       - name: Get commits since last release
         id: get_commits
@@ -171,35 +173,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Update version in package.json
+      - name: Update version in all config files
         shell: bash
         run: |
           VERSION="${{ needs.get-version.outputs.version_number }}"
+          echo "Setting version to: $VERSION"
+
+          # Validate version is a valid semver (x.y.z format)
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format '$VERSION', using fallback 0.1.0"
+            VERSION="0.1.0"
+          fi
+
+          # Update package.json
           if [[ "$OSTYPE" == "darwin"* ]]; then
             sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" package.json
-          else
-            sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" package.json
-          fi
-
-      - name: Update version in tauri.conf.json
-        shell: bash
-        run: |
-          VERSION="${{ needs.get-version.outputs.version_number }}"
-          if [[ "$OSTYPE" == "darwin"* ]]; then
             sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
-          else
-            sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
-          fi
-
-      - name: Update version in Cargo.toml
-        shell: bash
-        run: |
-          VERSION="${{ needs.get-version.outputs.version_number }}"
-          if [[ "$OSTYPE" == "darwin"* ]]; then
             sed -i '' "s/^version = \"[^\"]*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
           else
+            sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" package.json
+            sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
             sed -i "s/^version = \"[^\"]*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
           fi
+
+          # Verify the versions were set correctly
+          echo "=== Verifying versions ==="
+          echo "package.json: $(grep '"version"' package.json | head -1)"
+          echo "tauri.conf.json: $(grep '"version"' src-tauri/tauri.conf.json | head -1)"
+          echo "Cargo.toml: $(grep '^version' src-tauri/Cargo.toml | head -1)"
 
       # Linux x86_64 dependencies
       - name: Install Linux dependencies (x86_64)
