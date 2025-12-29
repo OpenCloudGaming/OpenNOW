@@ -310,12 +310,20 @@ jobs:
           echo "CXX=aarch64-linux-gnu-g++" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
+      # Set Windows static CRT linking to fix "app can't run on your PC" error
+      # This embeds the Visual C++ runtime into the executable
+      - name: Set Windows RUSTFLAGS for static CRT
+        if: matrix.target == 'windows' || matrix.target == 'windows-arm64'
+        shell: bash
+        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> $GITHUB_ENV
+
       # Build with release creation (main branch only)
       - name: Build Tauri app (with release)
         if: github.ref == 'refs/heads/main'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUSTFLAGS: ${{ env.RUSTFLAGS }}
         with:
           tagName: ${{ needs.get-version.outputs.version }}
           releaseName: 'OpenNOW ${{ needs.get-version.outputs.version }}'
@@ -346,6 +354,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUSTFLAGS: ${{ env.RUSTFLAGS }}
         with:
           args: ${{ matrix.target == 'linux-arm64' && '--target aarch64-unknown-linux-gnu --bundles deb,rpm' || (matrix.target == 'windows-arm64' && '--target aarch64-pc-windows-msvc' || '') }}
 

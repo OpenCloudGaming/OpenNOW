@@ -20,12 +20,20 @@ interface VideoFrameMetadata {
 
 // Types
 interface WebRtcConfig {
-  session_id: string;
-  signaling_url: string;
-  ice_servers: IceServerConfig[];
-  video_codec: string;
-  audio_codec: string;
-  max_bitrate_kbps: number;
+  sessionId: string;
+  signalingUrl: string;
+  iceServers: IceServerConfig[];
+  videoCodec: string;
+  audioCodec: string;
+  maxBitrateKbps: number;
+  // Media connection info from session API (usage=2 or usage=17)
+  // Contains the real UDP port for streaming, instead of the dummy port 47998 in SDP
+  mediaConnectionInfo?: MediaConnectionInfo;
+}
+
+interface MediaConnectionInfo {
+  ip: string;
+  port: number;
 }
 
 interface IceServerConfig {
@@ -35,20 +43,20 @@ interface IceServerConfig {
 }
 
 interface StreamConnectionInfo {
-  control_ip: string;
-  control_port: number;
-  stream_ip: string | null;
-  stream_port: number;
-  resource_path: string;
+  controlIp: string;
+  controlPort: number;
+  streamIp: string | null;
+  streamPort: number;
+  resourcePath: string;
 }
 
 interface StreamingConnectionState {
-  session_id: string;
+  sessionId: string;
   phase: string;
-  server_ip: string | null;
-  signaling_url: string | null;
-  connection_info: StreamConnectionInfo | null;
-  gpu_type: string | null;
+  serverIp: string | null;
+  signalingUrl: string | null;
+  connectionInfo: StreamConnectionInfo | null;
+  gpuType: string | null;
   error: string | null;
 }
 
@@ -117,11 +125,6 @@ export interface StreamingStats {
   packet_loss: number;
   resolution: string;
   codec: string;
-  // Input latency stats (in ms)
-  input_ipc_ms: number;      // Time to get mouse delta from Rust (IPC call)
-  input_send_ms: number;     // Time to send input over WebRTC
-  input_total_ms: number;    // Total input pipeline latency
-  input_rate: number;        // Input events per second
 }
 
 // Global streaming state
@@ -146,6 +149,59 @@ let lastBytesReceived = 0;
 let lastBytesTimestamp = 0;
 
 /**
+ * Parse nvstSdp to extract TURN server credentials and ICE transport policy
+ *
+ * nvstSdp is NVIDIA's custom SDP-like format that contains streaming configuration.
+ * TURN info is in format: a=general.turnInfo:urls,username,credential|urls2,username2,credential2
+ * ICE policy is in format: a=general.iceTransportPolicy:0 (all) or 1 (relay)
+ */
+interface ParsedNvstTurnInfo {
+  turnServers: IceServerConfig[];
+  iceTransportPolicy: RTCIceTransportPolicy;
+}
+
+function parseNvstSdpTurnInfo(nvstSdp: string | undefined): ParsedNvstTurnInfo {
+  const result: ParsedNvstTurnInfo = {
+    turnServers: [],
+    iceTransportPolicy: "all",
+  };
+
+  if (!nvstSdp) {
+    // No nvstSdp provided
+    return result;
+  }
+
+  // Parse TURN info: a=general.turnInfo:urls,username,credential|...
+  const turnInfoMatch = nvstSdp.match(/a=general\.turnInfo:(.+)/);
+  if (turnInfoMatch) {
+    const turnInfoStr = turnInfoMatch[1].trim();
+    const turnEntries = turnInfoStr.split("|");
+    for (const entry of turnEntries) {
+      const parts = entry.split(",").map(p => p.trim());
+      if (parts.length >= 3) {
+        const [urls, username, credential] = parts;
+        if (urls && username && credential) {
+          result.turnServers.push({
+            urls: [urls],
+            username,
+            credential,
+          });
+        }
+      }
+    }
+  }
+
+  // Parse ICE transport policy: a=general.iceTransportPolicy:0 or 1
+  const policyMatch = nvstSdp.match(/a=general\.iceTransportPolicy:(\d+)/);
+  if (policyMatch) {
+    const policyValue = parseInt(policyMatch[1], 10);
+    result.iceTransportPolicy = policyValue === 1 ? "relay" : "all";
+  }
+
+  return result;
+}
+
+/**
  * Initialize streaming with the given connection info
  *
  * GFN Browser Signaling Protocol (discovered from play.geforcenow.com):
@@ -164,16 +220,14 @@ export async function initializeStreaming(
   videoContainer: HTMLElement,
   options?: StreamingOptions
 ): Promise<void> {
-  console.log("Initializing streaming with:", connectionState);
-
-  if (!connectionState.connection_info) {
+  if (!connectionState.connectionInfo) {
     throw new Error("No connection info available");
   }
 
   // Reset shared media stream to avoid leftover audio tracks
   sharedMediaStream = null;
 
-  streamingState.sessionId = connectionState.session_id;
+  streamingState.sessionId = connectionState.sessionId;
   streamingState.retryCount = 0;
 
   // Create video element
@@ -189,59 +243,37 @@ export async function initializeStreaming(
   }
 
   // Get WebRTC config from backend
-  // Pass the signaling_url from connectionState to override any stale data in session storage
-  // NOTE: Parameter names must be snake_case to match Rust command parameters
-  console.log("Calling get_webrtc_config with signaling_url_override:", connectionState.signaling_url);
   const webrtcConfig = await invoke<WebRtcConfig>("get_webrtc_config", {
-    session_id: connectionState.session_id,
-    signaling_url_override: connectionState.signaling_url,
+    sessionId: connectionState.sessionId,
+    signalingUrlOverride: connectionState.signalingUrl,
   });
-
-  console.log("WebRTC config:", webrtcConfig);
 
   // Extract stream IP from signaling_url
-  // Supports both formats:
-  // - RTSP: rtsps://80-84-170-155.cloudmatchbeta.nvidiagrid.net:322
-  // - WebSocket: wss://66-22-147-40.cloudmatchbeta.nvidiagrid.net:443/nvst/
   let streamIp: string | null = null;
 
-  console.log("Connection state for streaming:", {
-    signaling_url: connectionState.signaling_url,
-    server_ip: connectionState.server_ip,
-    connection_info: connectionState.connection_info,
-  });
-
-  if (connectionState.signaling_url) {
+  if (connectionState.signalingUrl) {
     try {
-      // Parse URL to get hostname - supports rtsps://, rtsp://, wss://, ws://
-      const urlMatch = connectionState.signaling_url.match(/(?:rtsps?|wss?):\/\/([^:/]+)/);
+      const urlMatch = connectionState.signalingUrl.match(/(?:rtsps?|wss?):\/\/([^:/]+)/);
       if (urlMatch && urlMatch[1]) {
         streamIp = urlMatch[1];
-        console.log("Extracted stream IP from signaling_url:", streamIp);
       }
     } catch (e) {
       console.warn("Failed to parse signaling_url:", e);
     }
   }
 
-  // Fallback to other sources if signaling_url parsing failed
+  // Fallback to other sources if signalingUrl parsing failed
   if (!streamIp) {
-    streamIp = connectionState.connection_info.stream_ip ||
-               connectionState.connection_info.control_ip ||
-               connectionState.server_ip;
-    console.log("Using fallback stream IP:", streamIp, "from:",
-      connectionState.connection_info.stream_ip ? "stream_ip" :
-      connectionState.connection_info.control_ip ? "control_ip" : "server_ip");
+    streamIp = connectionState.connectionInfo.streamIp ||
+               connectionState.connectionInfo.controlIp ||
+               connectionState.serverIp;
   }
 
   if (!streamIp) {
     throw new Error("No stream server IP available");
   }
 
-  const sessionId = connectionState.session_id;
-
-  console.log("Stream IP:", streamIp);
-  console.log("Session ID:", sessionId);
+  const sessionId = connectionState.sessionId;
 
   // Parse resolution from options or use defaults
   let streamWidth = window.screen.width;
@@ -251,16 +283,16 @@ export async function initializeStreaming(
     if (w && h) {
       streamWidth = w;
       streamHeight = h;
-      console.log(`Using requested resolution: ${streamWidth}x${streamHeight}`);
     }
   }
 
   // Parse FPS from options or use default
-  let streamFps = 60; // Default FPS
+  let streamFps = 60;
   if (options?.fps && options.fps > 0) {
     streamFps = options.fps;
-    console.log(`Using requested FPS: ${streamFps}`);
   }
+
+  console.log(`Starting stream: ${streamWidth}x${streamHeight}@${streamFps}fps`);
 
   // Connect using the official GFN browser protocol
   await connectGfnBrowserSignaling(streamIp, sessionId, webrtcConfig, streamWidth, streamHeight, streamFps);
@@ -374,10 +406,6 @@ async function connectGfnBrowserSignaling(
       signalingUrl += "&reconnect=1";
     }
 
-    console.log("GFN Browser Signaling URL:", signalingUrl);
-    console.log("Is reconnect:", isReconnect);
-    console.log("Session ID for subprotocol:", sessionId);
-
     // Auth via WebSocket subprotocol: x-nv-sessionid.{session_id}
     const subprotocol = `x-nv-sessionid.${sessionId}`;
 
@@ -404,13 +432,12 @@ async function connectGfnBrowserSignaling(
     }, 15000);
 
     ws.onopen = () => {
-      console.log("GFN WebSocket connected!");
-      console.log("Accepted protocol:", ws.protocol);
+      console.log("Signaling connected");
 
       // Mark for reconnect on future attempts
       isReconnect = true;
 
-      // Send peer_info immediately after connection (as seen in captures)
+      // Send peer_info immediately after connection
       const peerInfo: GfnPeerMessage = {
         ackid: ++gfnAckId,
         peer_info: {
@@ -425,7 +452,6 @@ async function connectGfnBrowserSignaling(
         }
       };
 
-      console.log("Sending peer_info:", JSON.stringify(peerInfo));
       ws.send(JSON.stringify(peerInfo));
 
       // Start heartbeat
@@ -441,8 +467,6 @@ async function connectGfnBrowserSignaling(
         ? event.data
         : new TextDecoder().decode(event.data);
 
-      console.log("GFN message received:", messageText.substring(0, 500));
-
       try {
         const message: GfnPeerMessage & { ack?: number } = JSON.parse(messageText);
 
@@ -451,15 +475,12 @@ async function connectGfnBrowserSignaling(
           // Don't ack our own peer_info echo (same id as us)
           const isOurEcho = message.peer_info?.id === gfnPeerId;
           if (!isOurEcho) {
-            const ackResponse = { ack: message.ackid };
-            console.log("Sending ack:", ackResponse);
-            ws.send(JSON.stringify(ackResponse));
+            ws.send(JSON.stringify({ ack: message.ackid }));
           }
         }
 
         // Handle heartbeat - respond with heartbeat
         if (message.hb !== undefined) {
-          console.log("Heartbeat received, responding");
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ hb: 1 }));
           }
@@ -468,59 +489,42 @@ async function connectGfnBrowserSignaling(
 
         // Handle ack responses to our messages
         if (message.ack !== undefined) {
-          console.log("Received ack for our message:", message.ack);
           return;
         }
 
         // Handle server peer_info
         if (message.peer_info) {
-          console.log("Server peer_info received:", message.peer_info);
           return;
         }
 
         // Handle peer messages (SDP offer, ICE candidates, etc.)
         if (message.peer_msg) {
           const peerMsg = message.peer_msg;
-          console.log(`Peer message from ${peerMsg.from} to ${peerMsg.to}`);
 
           try {
             const innerMsg = JSON.parse(peerMsg.msg);
 
             if (innerMsg.type === "offer") {
-              console.log("Received SDP offer, length:", innerMsg.sdp?.length);
-
               // Mark as resolved BEFORE processing - WebSocket may close during setup
-              // and that's OK for ice-lite servers (signaling is complete)
               if (!resolved) {
                 resolved = true;
                 clearTimeout(connectionTimeout);
               }
 
-              // Log full SDP to check for ICE candidates
-              console.log("Full SDP offer:");
-              console.log(innerMsg.sdp);
-
-              // Check for server ICE candidates in SDP
-              const candidateLines = innerMsg.sdp.match(/a=candidate:.*/g) || [];
-              console.log("Server ICE candidates in SDP:", candidateLines.length);
-              candidateLines.forEach((c: string) => console.log("  ", c));
+              // Parse nvstSdp for TURN server credentials
+              const nvstTurnInfo = parseNvstSdpTurnInfo(innerMsg.nvstSdp);
 
               // Handle the SDP offer and create answer
-              // This runs async - WebSocket may close during this, that's expected
-              handleGfnSdpOffer(innerMsg.sdp, ws, config, serverIp, requestedWidth, requestedHeight, requestedFps)
+              handleGfnSdpOffer(innerMsg.sdp, ws, config, serverIp, requestedWidth, requestedHeight, requestedFps, nvstTurnInfo)
                 .then(() => {
-                  console.log("SDP offer handled successfully");
                   resolve();
                 })
                 .catch((e) => {
                   console.error("Failed to handle SDP offer:", e);
                   reject(e);
                 });
-            } else if (innerMsg.type === "answer") {
-              console.log("Received SDP answer (unexpected for client)");
             } else if (innerMsg.candidate !== undefined) {
               // ICE candidate from server (trickle ICE)
-              console.log("Received trickle ICE candidate from server:", innerMsg.candidate);
               if (streamingState.peerConnection && innerMsg.candidate) {
                 try {
                   await streamingState.peerConnection.addIceCandidate(
@@ -530,14 +534,12 @@ async function connectGfnBrowserSignaling(
                       sdpMLineIndex: innerMsg.sdpMLineIndex
                     })
                   );
-                  console.log("Added remote ICE candidate");
                 } catch (e) {
                   console.warn("Failed to add ICE candidate:", e);
                 }
               }
             } else if (innerMsg.type === "candidate") {
               // Alternative ICE candidate format
-              console.log("Received ICE candidate (type=candidate):", JSON.stringify(innerMsg));
               if (streamingState.peerConnection && innerMsg.candidate) {
                 try {
                   await streamingState.peerConnection.addIceCandidate(
@@ -547,9 +549,8 @@ async function connectGfnBrowserSignaling(
                       sdpMLineIndex: innerMsg.sdpMLineIndex ?? 0
                     })
                   );
-                  console.log("Added remote ICE candidate (alt format)");
                 } catch (e) {
-                  console.warn("Failed to add ICE candidate (alt format):", e);
+                  console.warn("Failed to add ICE candidate:", e);
                 }
               }
             } else {
@@ -580,7 +581,9 @@ async function connectGfnBrowserSignaling(
     };
 
     ws.onclose = (event) => {
-      console.log("GFN WebSocket closed:", event.code, event.reason);
+      if (event.code !== 1000) {
+        console.log("Signaling closed:", event.code);
+      }
       if (heartbeatInterval) {
         clearInterval(heartbeatInterval);
         heartbeatInterval = null;
@@ -606,36 +609,42 @@ async function handleGfnSdpOffer(
   serverIp: string,
   requestedWidth: number,
   requestedHeight: number,
-  requestedFps: number
+  requestedFps: number,
+  nvstTurnInfo?: ParsedNvstTurnInfo
 ): Promise<void> {
-  console.log("Setting up WebRTC with GFN SDP offer");
-  console.log("SDP offer preview:", serverSdp.substring(0, 500));
+  console.log("Setting up WebRTC connection");
 
-  // Check for ice-lite in SDP
-  // With ice-lite, the server sends its actual ICE candidate via trickle ICE
-  // (the port in SDP m=audio line is NOT the actual port - server will send correct one)
-  const isIceLite = serverSdp.includes("a=ice-lite");
-  console.log("Server uses ice-lite:", isIceLite);
-
-  // Log ICE servers for debugging
-  console.log("ICE servers configuration:");
-  config.ice_servers.forEach((s, i) => {
-    console.log(`  [${i}] urls:`, s.urls);
-    if (s.username) console.log(`      username: ${s.username}`);
-    if (s.credential) console.log(`      has credential: yes`);
-  });
-
-  // Create RTCPeerConnection with proper configuration
-  // Settings based on official GFN browser client analysis
-  const pc = new RTCPeerConnection({
-    iceServers: config.ice_servers.map((s) => ({
+  // Merge ICE servers: config servers + TURN servers from nvstSdp
+  const allIceServers: RTCIceServer[] = [
+    ...config.iceServers.map((s) => ({
       urls: s.urls,
       username: s.username,
       credential: s.credential,
     })),
+  ];
+
+  // Add TURN servers from nvstSdp (these have credentials specific to this session)
+  if (nvstTurnInfo && nvstTurnInfo.turnServers.length > 0) {
+    for (const turn of nvstTurnInfo.turnServers) {
+      allIceServers.push({
+        urls: turn.urls,
+        username: turn.username,
+        credential: turn.credential,
+      });
+    }
+  }
+
+  // Determine ICE transport policy
+  const iceTransportPolicy = nvstTurnInfo?.iceTransportPolicy || "all";
+
+  // Create RTCPeerConnection with proper configuration
+  // Settings based on official GFN browser client analysis
+  const pc = new RTCPeerConnection({
+    iceServers: allIceServers,
     bundlePolicy: "max-bundle",      // Bundle all media over single transport
     rtcpMuxPolicy: "require",        // Multiplex RTP and RTCP
     iceCandidatePoolSize: 2,         // Official client uses 2
+    iceTransportPolicy,              // Use policy from server if specified
   } as RTCConfiguration);
 
   streamingState.peerConnection = pc;
@@ -645,9 +654,6 @@ async function handleGfnSdpOffer(
 
   pc.onicecandidate = (event) => {
     if (event.candidate) {
-      console.log("Local ICE candidate:", event.candidate.candidate);
-      console.log("  type:", event.candidate.type, "protocol:", event.candidate.protocol);
-
       // Send ICE candidate to server using GFN peer protocol
       const candidateMsg: GfnPeerMessage = {
         peer_msg: {
@@ -665,48 +671,26 @@ async function handleGfnSdpOffer(
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(candidateMsg));
       }
-    } else {
-      console.log("ICE gathering complete - all candidates sent");
     }
   };
 
-  pc.onicegatheringstatechange = () => {
-    console.log("ICE gathering state:", pc.iceGatheringState);
-  };
-
   pc.oniceconnectionstatechange = () => {
-    console.log("ICE connection state:", pc.iceConnectionState);
     if (pc.iceConnectionState === "connected") {
-      console.log("ICE connected! Media should start flowing.");
-    } else if (pc.iceConnectionState === "completed") {
-      console.log("ICE completed - connection fully established");
+      console.log("ICE connected");
     } else if (pc.iceConnectionState === "failed") {
       console.error("ICE connection failed!");
       logIceDebugInfo(pc);
     } else if (pc.iceConnectionState === "disconnected") {
-      console.warn("ICE disconnected - may reconnect or be checking...");
-      // Log debug info to understand why
+      console.warn("ICE disconnected");
       logIceDebugInfo(pc);
-    } else if (pc.iceConnectionState === "checking") {
-      console.log("ICE checking - connectivity checks in progress");
-      // Log candidate pairs being checked
-      setTimeout(() => logIceDebugInfo(pc), 1000);
     }
   };
 
-  pc.onsignalingstatechange = () => {
-    console.log("Signaling state:", pc.signalingState);
-  };
-
   pc.onconnectionstatechange = () => {
-    console.log("Connection state:", pc.connectionState);
     if (pc.connectionState === "connected") {
       streamingState.connected = true;
-      console.log("WebRTC fully connected!");
+      console.log("WebRTC connected");
       startStatsCollection();
-
-      // Connection is now fully established
-      // Input channel should already be open from initial setup
     } else if (pc.connectionState === "failed") {
       console.error("WebRTC connection failed");
       streamingState.connected = false;
@@ -719,34 +703,21 @@ async function handleGfnSdpOffer(
   // Set up handler for server-created data channels (control_channel, etc.)
   pc.ondatachannel = (event) => {
     const channel = event.channel;
-    console.log("=== SERVER CREATED DATA CHANNEL ===");
-    console.log("  Label:", channel.label);
-    console.log("  ID:", channel.id);
-    console.log("  Protocol:", channel.protocol);
-    console.log("  ordered:", channel.ordered, "maxRetransmits:", channel.maxRetransmits, "maxPacketLifeTime:", channel.maxPacketLifeTime);
     channel.binaryType = "arraybuffer";
 
     channel.onopen = () => {
-      console.log(`Data channel '${channel.label}' opened, readyState:`, channel.readyState);
       streamingState.dataChannels.set(channel.label, channel);
 
       // Also store with normalized names for easier lookup
       const lowerLabel = channel.label.toLowerCase();
       if (lowerLabel.includes("input") || lowerLabel.includes("ri_") || lowerLabel === "input_1") {
-        console.log("SERVER input channel opened - storing as 'server_input'");
         streamingState.dataChannels.set("server_input", channel);
-        // Also try using server's input channel
-        // Don't overwrite 'input' if we already have a working client channel
         if (!streamingState.dataChannels.has("input") || !inputHandshakeComplete) {
-          console.log("Using server's input channel as primary");
           streamingState.dataChannels.set("input", channel);
         }
       }
       if (lowerLabel.includes("control") || lowerLabel.includes("cc_")) {
-        console.log("Storing as 'control' channel");
         streamingState.dataChannels.set("control", channel);
-        console.log("Control channel ready");
-        // Input channel was already created before SDP negotiation (per official GFN client)
       }
     };
 
@@ -878,36 +849,35 @@ async function handleGfnSdpOffer(
 
   inputChannel.onerror = (e) => console.error("Input channel error:", e);
   inputChannel.onclose = () => {
-    console.log("Input channel closed");
     streamingState.dataChannels.delete("input");
     streamingState.dataChannels.delete("input_channel_v1");
   };
 
-  console.log("Input channel created, state:", inputChannel.readyState);
+  // Rewrite SDP to replace internal IPs with public IP from signaling URL
+  let modifiedSdp = serverSdp;
 
-  // NOTE: Don't add transceivers manually - the server's SDP offer already defines
-  // the media sections. Adding transceivers would create duplicates and potentially
-  // cause negotiation issues. The browser will automatically create transceivers
-  // when setRemoteDescription processes the offer's m= lines.
+  // Extract public IP from serverIp hostname (e.g., "95-178-87-234.zai..." -> "95.178.87.234")
+  const publicIpMatch = serverIp.match(/^(\d+-\d+-\d+-\d+)\./);
+  if (publicIpMatch) {
+    const publicIp = publicIpMatch[1].replace(/-/g, ".");
+
+    // Find and replace private IPs (10.x.x.x, 172.16-31.x.x, 192.168.x.x) in ICE candidates.
+    // The 172.x range uses non-capturing groups (?:...) for the octet alternatives so the
+    // entire private IP is captured as a single group without shifting outer capture indices.
+    const privateIpPattern = /a=candidate:(\d+)\s+(\d+)\s+udp\s+(\d+)\s+(10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+|192\.168\.\d+\.\d+)\s+(\d+)\s+typ\s+host/g;
+
+    modifiedSdp = modifiedSdp.replace(privateIpPattern, (match, foundation, component, priority, _privateIp, port) => {
+      return `a=candidate:${foundation} ${component} udp ${priority} ${publicIp} ${port} typ host`;
+    });
+  }
 
   // Set remote description (server's SDP offer)
   const remoteDesc = new RTCSessionDescription({
     type: "offer",
-    sdp: serverSdp,
+    sdp: modifiedSdp,
   });
 
   await pc.setRemoteDescription(remoteDesc);
-  console.log("Remote SDP offer set");
-
-  // Log ice-lite server's ICE credentials for debugging
-  if (isIceLite) {
-    const iceUfragMatch = serverSdp.match(/a=ice-ufrag:(\S+)/);
-    const icePwdMatch = serverSdp.match(/a=ice-pwd:(\S+)/);
-    const iceUfrag = iceUfragMatch ? iceUfragMatch[1] : "";
-    const icePwd = icePwdMatch ? icePwdMatch[1] : "";
-    console.log("Server ICE credentials - ufrag:", iceUfrag, "pwd:", icePwd.substring(0, 8) + "...");
-    console.log("Note: ice-lite server will send its candidate via trickle ICE, not in SDP");
-  }
 
   // Create answer
   const answer = await pc.createAnswer({
@@ -917,20 +887,15 @@ async function handleGfnSdpOffer(
 
   // Modify SDP to prefer certain codecs if needed
   if (answer.sdp) {
-    answer.sdp = preferCodec(answer.sdp, config.video_codec);
+    answer.sdp = preferCodec(answer.sdp, config.videoCodec);
   }
 
   await pc.setLocalDescription(answer);
-  console.log("Local SDP answer created");
-  console.log("Answer SDP preview:", answer.sdp?.substring(0, 500));
 
   // Wait briefly for some ICE candidates to be gathered
-  // Some ice-lite servers expect candidates in the answer SDP
-  console.log("Waiting for initial ICE candidates...");
   await new Promise<void>((resolve) => {
     let candidateCount = 0;
     const checkCandidates = () => {
-      // Check if we have at least one srflx candidate (public IP)
       const currentSdp = pc.localDescription?.sdp || "";
       const hasSrflx = currentSdp.includes("typ srflx");
       candidateCount++;
@@ -941,20 +906,12 @@ async function handleGfnSdpOffer(
         setTimeout(checkCandidates, 100);
       }
     };
-    // Start checking after a short delay
     setTimeout(checkCandidates, 50);
   });
 
   const currentSdp = pc.localDescription?.sdp || answer.sdp || "";
-  console.log("Sending answer with gathered candidates, SDP length:", currentSdp.length);
-
-  // Count candidates in our answer
-  const ourCandidates = currentSdp.match(/a=candidate:.*/g) || [];
-  console.log("Our candidates in answer SDP:", ourCandidates.length);
-  ourCandidates.forEach(c => console.log("  ", c.substring(0, 80)));
 
   // Extract ICE credentials and DTLS fingerprint from our answer SDP
-  // The server needs these in nvstSdp to complete the ICE/DTLS handshake
   const iceUfragMatch = currentSdp.match(/a=ice-ufrag:(\S+)/);
   const icePwdMatch = currentSdp.match(/a=ice-pwd:(\S+)/);
   const fingerprintMatch = currentSdp.match(/a=fingerprint:sha-256\s+(\S+)/);
@@ -963,21 +920,14 @@ async function handleGfnSdpOffer(
   const icePwd = icePwdMatch ? icePwdMatch[1] : "";
   const fingerprint = fingerprintMatch ? fingerprintMatch[1] : "";
 
-  console.log("Our ICE credentials - ufrag:", iceUfrag, "pwd:", icePwd.substring(0, 8) + "...");
-  console.log("Our DTLS fingerprint:", fingerprint.substring(0, 30) + "...");
-
-  // Use requested resolution for viewport dimensions (not screen dimensions)
+  // Use requested resolution for viewport dimensions
   const viewportWidth = requestedWidth;
   const viewportHeight = requestedHeight;
-  console.log(`nvstSdp viewport: ${viewportWidth}x${viewportHeight}`);
-
-  console.log(`nvstSdp video.maxFPS: ${requestedFps}`);
 
   // Use bitrate from config (set by user in settings)
-  const maxBitrateKbps = config.max_bitrate_kbps || 100000;
-  const minBitrateKbps = Math.min(10000, maxBitrateKbps / 10); // 10% of max or 10 Mbps
-  const initialBitrateKbps = Math.round(maxBitrateKbps * 0.5); // Start at 50%
-  console.log(`Bitrate settings: max=${maxBitrateKbps}kbps, min=${minBitrateKbps}kbps, initial=${initialBitrateKbps}kbps`);
+  const maxBitrateKbps = config.maxBitrateKbps || 100000;
+  const minBitrateKbps = Math.min(10000, maxBitrateKbps / 10);
+  const initialBitrateKbps = Math.round(maxBitrateKbps * 0.5);
 
   // Build nvstSdp matching official GFN browser client format
   // Based on Wl function from vendor_beautified.js
@@ -1114,16 +1064,28 @@ async function handleGfnSdpOffer(
   console.log("Answer sent. Adding server ICE candidate manually for ice-lite...");
 
   // Extract port from the SDP (from m=audio or m=video line)
+  // This is a DUMMY port (47998) for some Alliance Partners - the real port comes from connectionInfo
   const portMatch = serverSdp.match(/m=(?:audio|video)\s+(\d+)/);
-  const serverPort = portMatch ? parseInt(portMatch[1], 10) : 47998;
+  const sdpPort = portMatch ? parseInt(portMatch[1], 10) : 47998;
 
-  // Convert serverIp from hostname format to IP
-  // Format: 80-250-101-43.cloudmatchbeta.nvidiagrid.net -> 80.250.101.43
-  let serverIpAddress = serverIp;
-  const ipMatch = serverIp.match(/^(\d+-\d+-\d+-\d+)\./);
-  if (ipMatch) {
-    serverIpAddress = ipMatch[1].replace(/-/g, ".");
-    console.log("Converted server hostname to IP:", serverIpAddress);
+  // Use media connection info port if available (from session API connectionInfo with usage=2 or usage=17)
+  // This is the REAL UDP port for streaming, instead of the dummy port 47998 in SDP
+  // The official GFN client uses this to rewrite SDP candidates for Alliance Partners
+  let serverPort = sdpPort;
+  let serverIpAddress: string;
+
+  if (config.mediaConnectionInfo) {
+    // Use real port from session API connectionInfo (usage=2 or usage=17)
+    serverPort = config.mediaConnectionInfo.port;
+    serverIpAddress = config.mediaConnectionInfo.ip;
+    console.log(`Using media port ${serverPort} from session API`);
+  } else {
+    // Convert serverIp from hostname format to IP
+    serverIpAddress = serverIp;
+    const ipMatch = serverIp.match(/^(\d+-\d+-\d+-\d+)\./);
+    if (ipMatch) {
+      serverIpAddress = ipMatch[1].replace(/-/g, ".");
+    }
   }
 
   // Extract ICE credentials from server SDP
@@ -1131,9 +1093,7 @@ async function handleGfnSdpOffer(
   const serverUfrag = serverUfragMatch ? serverUfragMatch[1] : "";
 
   // Construct the ICE candidate
-  // Format: candidate:foundation component protocol priority ip port typ type
   const candidateString = `candidate:1 1 udp 2130706431 ${serverIpAddress} ${serverPort} typ host`;
-  console.log("Constructed server ICE candidate:", candidateString);
 
   try {
     await pc.addIceCandidate(new RTCIceCandidate({
@@ -1142,9 +1102,7 @@ async function handleGfnSdpOffer(
       sdpMLineIndex: 0,
       usernameFragment: serverUfrag
     }));
-    console.log("Successfully added server ICE candidate");
-  } catch (e) {
-    console.warn("Failed to add constructed ICE candidate:", e);
+  } catch {
     // Try alternative format with different sdpMid values
     for (const mid of ["1", "2", "3"]) {
       try {
@@ -1154,9 +1112,8 @@ async function handleGfnSdpOffer(
           sdpMLineIndex: parseInt(mid, 10),
           usernameFragment: serverUfrag
         }));
-        console.log(`Added server ICE candidate with sdpMid=${mid}`);
         break;
-      } catch (e2) {
+      } catch {
         // Continue trying
       }
     }
@@ -1375,12 +1332,12 @@ async function connectSignaling(
       // Try with GFNJWT subprotocol (some servers accept auth via subprotocol)
       // Format: ["GFNJWT-<token>"] or ["gfn", "v1"]
       ws = new WebSocket(url, ["gfn", "v1"]);
-    } catch (e) {
-      console.warn("WebSocket with subprotocol failed, trying plain:", e);
+    } catch (err) {
+      console.warn("WebSocket with subprotocol failed, trying plain:", err);
       try {
         ws = new WebSocket(url);
-      } catch (e2) {
-        reject(new Error(`Failed to create WebSocket: ${e2}`));
+      } catch (err2) {
+        reject(new Error(`Failed to create WebSocket: ${err2}`));
         return;
       }
     }
@@ -1653,7 +1610,7 @@ async function handleSdpOffer(
 
   // Create RTCPeerConnection with proper configuration
   const pc = new RTCPeerConnection({
-    iceServers: config.ice_servers.map((s) => ({
+    iceServers: config.iceServers.map((s) => ({
       urls: s.urls,
       username: s.username,
       credential: s.credential,
@@ -1759,7 +1716,7 @@ async function handleSdpOffer(
 
   // Modify SDP to prefer certain codecs if needed
   if (answer.sdp) {
-    answer.sdp = preferCodec(answer.sdp, config.video_codec);
+    answer.sdp = preferCodec(answer.sdp, config.videoCodec);
   }
 
   await pc.setLocalDescription(answer);
@@ -3190,9 +3147,6 @@ export async function getStreamingStats(): Promise<StreamingStats | null> {
     lastBytesTimestamp = now;
   }
 
-  // Get input latency stats
-  const inputStats = getInputLatencyStats();
-
   const currentStats: StreamingStats = {
     fps,
     latency_ms: Math.round(latency),
@@ -3200,10 +3154,6 @@ export async function getStreamingStats(): Promise<StreamingStats | null> {
     packet_loss: packetLoss,
     resolution,
     codec,
-    input_ipc_ms: inputStats.ipc,
-    input_send_ms: inputStats.send,
-    input_total_ms: inputStats.total,
-    input_rate: inputStats.rate,
   };
 
   streamingState.stats = currentStats;
