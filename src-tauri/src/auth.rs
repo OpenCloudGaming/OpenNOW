@@ -136,7 +136,8 @@ pub async fn fetch_login_providers() -> Result<Vec<LoginProvider>, String> {
     let mut providers: Vec<LoginProvider> = service_info.gfn_service_endpoints
         .into_iter()
         .map(|ep| {
-            // Rename "Brothers Pictures" to "bro.game" for better recognition
+            // Rename "Brothers Pictures" to "bro.game" for better user recognition
+            // API returns login_provider_code="BPC" for this provider
             let display_name = if ep.login_provider_code == "BPC" {
                 "bro.game".to_string()
             } else {

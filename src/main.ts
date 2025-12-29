@@ -2579,8 +2579,14 @@ async function connectToExistingSession(session: ActiveSession) {
     // Build the streaming result object to pass to initializeStreaming
     // Use type assertion since we're constructing a compatible object
     // Use claimed session values which may be updated after the PUT request
-    // Use connectionInfo from claim response for real media ports
-    // Pick usage=2 (media UDP) or usage=17 (alternative), NOT usage=14 (signaling WSS)
+    //
+    // connectionInfo contains multiple entries with different usage types:
+    //   - usage=2:  Primary media path (UDP) - preferred for streaming
+    //   - usage=17: Alternative media path - used by some Alliance Partners (e.g., Zain)
+    //               when primary media entry is not available
+    //   - usage=14: Signaling (WSS) - MUST NOT be used for media traffic
+    //
+    // We prefer usage=2 and fall back to usage=17 for Alliance Partner compatibility
     const mediaConn = claimResult.connectionInfo?.find(c => c.usage === 2)
       || claimResult.connectionInfo?.find(c => c.usage === 17);
     const realMediaPort = mediaConn?.port || 443;
@@ -3961,9 +3967,9 @@ async function launchGame(game: Game) {
 
     // Check for specific errors and show appropriate modals
     const errorStr = String(error);
-    if (errorStr.includes("REGION_NOT_SUPPORTED") || (errorStr.includes("region") && errorStr.includes("not supported"))) {
+    if (errorStr.includes("REGION_NOT_SUPPORTED")) {
       showRegionErrorModal(errorStr, game);
-    } else if (errorStr.includes("SESSION_LIMIT") || errorStr.includes("session limit")) {
+    } else if (errorStr.includes("SESSION_LIMIT")) {
       showSessionLimitModal(errorStr, game);
     } else {
       alert(`Failed to launch game: ${error}`);

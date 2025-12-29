@@ -298,7 +298,11 @@ pub struct ConnectionInfo {
     port: u16,
     #[serde(default)]
     resource_path: Option<String>,
-    /// Usage type: 14 = signaling, 2 = media (UDP), 17 = media (alternative)
+    /// Usage type for connection routing:
+    ///   - 2:  Primary media path (UDP) - used for streaming data
+    ///   - 14: Signaling (WSS) - used for WebRTC negotiation, NOT for media
+    ///   - 17: Alternative media path - used by some Alliance Partners (e.g., Zain)
+    ///         when primary media (usage=2) is not available
     #[serde(default)]
     usage: i32,
     /// Protocol: 1 = TCP/WSS, 2 = UDP
@@ -442,9 +446,10 @@ fn extract_media_connection_info(connection_info: Option<&Vec<ConnectionInfo>>) 
             }
         }
 
-        // Log all connection info entries for debugging
+        // Log all connection info entries for debugging only when media connection not found
+        log::debug!("No media connection info found, available entries:");
         for conn in conns.iter() {
-            log::debug!("connectionInfo entry: ip={:?}, port={}, usage={}, protocol={}",
+            log::debug!("  - ip={:?}, port={}, usage={}, protocol={}",
                 conn.ip, conn.port, conn.usage, conn.protocol);
         }
 
