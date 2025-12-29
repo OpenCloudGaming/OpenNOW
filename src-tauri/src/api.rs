@@ -267,6 +267,8 @@ fn get_server_info_storage() -> Arc<Mutex<CachedServerInfo>> {
 #[command]
 pub async fn fetch_server_info(access_token: Option<String>) -> Result<CachedServerInfo, String> {
     let base_url = auth::get_streaming_base_url().await;
+    // Ensure base_url ends with / for proper path joining
+    let base_url = if base_url.ends_with('/') { base_url } else { format!("{}/", base_url) };
     let url = format!("{}v2/serverInfo", base_url);
     
     log::info!("Fetching server info from: {}", url);
@@ -1366,7 +1368,13 @@ async fn test_provider_server_latency(
     region_name: &str,
     region_url: &str,
 ) -> Server {
-    let server_url = format!("{}v2/serverInfo", region_url);
+    // Ensure region_url ends with / for proper path joining
+    let region_url_normalized = if region_url.ends_with('/') {
+        region_url.to_string()
+    } else {
+        format!("{}/", region_url)
+    };
+    let server_url = format!("{}v2/serverInfo", region_url_normalized);
     
     // Extract hostname from URL for TCP ping
     let hostname = region_url
