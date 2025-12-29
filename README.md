@@ -20,6 +20,10 @@
   </a>
 </p>
 
+---
+## ⚠️ The app is being rebult using native libraries instead of web wrapper
+
+
 --- 
 ## Disclaimer
 
