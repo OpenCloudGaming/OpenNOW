@@ -35,6 +35,40 @@ pub struct Settings {
     pub auto_refresh_library: bool,
     /// Enable NVIDIA Reflex low-latency mode (auto-enabled for 120+ FPS)
     pub reflex: bool,
+
+    // Recording settings
+    /// Enable recording feature
+    pub recording_enabled: bool,
+    /// Recording quality (low, medium, high)
+    pub recording_quality: RecordingQuality,
+    /// Recording codec preference (h264 or av1)
+    pub recording_codec: RecordingCodec,
+    /// Enable Instant Replay (DVR buffer)
+    pub instant_replay_enabled: bool,
+    /// Instant Replay buffer duration in seconds
+    pub instant_replay_duration: u32,
+    /// Custom recording output directory (None = Videos/OpenNow)
+    pub recording_output_dir: Option<String>,
+}
+
+/// Recording quality presets
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RecordingQuality {
+    Low,      // 2.5 Mbps
+    #[default]
+    Medium,   // 5 Mbps
+    High,     // 8 Mbps
+}
+
+/// Recording codec preference
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RecordingCodec {
+    #[default]
+    Vp8,      // Software encoded - no GPU contention (recommended)
+    H264,     // May cause stuttering (competes with stream decoding)
+    Av1,      // Best quality (RTX 40+ only - separate encoder chip)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -88,6 +122,13 @@ impl Default for Settings {
             start_minimized: false,
             auto_refresh_library: true,
             reflex: true, // Enabled by default for low-latency gaming
+            // Recording defaults
+            recording_enabled: true,
+            recording_quality: RecordingQuality::Medium,
+            recording_codec: RecordingCodec::Vp8, // VP8 - no GPU contention, no stuttering
+            instant_replay_enabled: false,
+            instant_replay_duration: 60, // 60 seconds default
+            recording_output_dir: None, // Uses Videos/OpenNow by default
         }
     }
 }

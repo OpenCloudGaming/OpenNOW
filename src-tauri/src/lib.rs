@@ -25,6 +25,8 @@ mod proxy;
 mod cursor;
 #[cfg(feature = "tauri-app")]
 mod raw_input;
+#[cfg(feature = "tauri-app")]
+mod recording;
 
 #[cfg(feature = "tauri-app")]
 use tauri::Manager;
@@ -35,6 +37,25 @@ pub fn run() {
     // Initialize custom file logger instead of env_logger
     if let Err(e) = logging::init() {
         eprintln!("Failed to initialize logger: {}", e);
+    }
+
+    // Force hardware video acceleration in WebView2
+    // This fixes stuttering by enabling GPU-accelerated video decode
+    #[cfg(target_os = "windows")]
+    {
+        let flags = [
+            "--enable-features=VaapiVideoDecoder,VaapiVideoEncoder",
+            "--enable-accelerated-video-decode",
+            "--enable-accelerated-video-encode",
+            "--disable-gpu-driver-bug-workarounds",
+            "--ignore-gpu-blocklist",
+            "--enable-gpu-rasterization",
+            "--enable-zero-copy",
+            "--disable-features=UseChromeOSDirectVideoDecoder",
+        ].join(" ");
+
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", &flags);
+        log::info!("WebView2 hardware acceleration flags set: {}", flags);
     }
 
     tauri::Builder::default()
@@ -138,6 +159,13 @@ pub fn run() {
             logging::get_log_file_path,
             logging::export_logs,
             logging::clear_logs,
+            // Recording commands
+            recording::get_recordings_dir,
+            recording::save_recording,
+            recording::save_screenshot,
+            recording::open_recordings_folder,
+            recording::list_recordings,
+            recording::delete_recording,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
