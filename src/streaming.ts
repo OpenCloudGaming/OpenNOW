@@ -1233,9 +1233,8 @@ function createVideoElement(): HTMLVideoElement {
     }
   };
 
-  // Keep video at live edge - catch up if we fall behind
-  // Use setInterval instead of requestAnimationFrame to reduce overhead
-  // Store interval ID in streaming state so it can be cleared on disconnect
+  // Keep video at live edge - only intervene on major stalls
+  // Don't be aggressive - let WebRTC handle minor jitter
   if (streamingState.liveEdgeIntervalId) {
     clearInterval(streamingState.liveEdgeIntervalId);
   }
@@ -1250,16 +1249,14 @@ function createVideoElement(): HTMLVideoElement {
     if (video.buffered.length > 0) {
       const bufferedEnd = video.buffered.end(video.buffered.length - 1);
       const lag = bufferedEnd - video.currentTime;
-      // If we're more than 100ms behind live, catch up
-      if (lag > 0.1) {
+      // Only intervene on major stalls (>1 second behind)
+      // Let WebRTC jitter buffer handle normal variation
+      if (lag > 1.0) {
         video.currentTime = bufferedEnd;
-        // Only log significant catch-ups to reduce console spam
-        if (lag > 0.5) {
-          console.log(`Caught up to live edge (was ${(lag * 1000).toFixed(0)}ms behind)`);
-        }
+        console.log(`Major stall recovery (was ${(lag * 1000).toFixed(0)}ms behind)`);
       }
     }
-  }, 1000);
+  }, 2000); // Check less frequently - let WebRTC handle it
 
   // Handle video events
   video.onloadedmetadata = () => {
@@ -1871,19 +1868,20 @@ function handleTrack(event: RTCTrackEvent): void {
   console.log("Track received:", event.track.kind, event.track.id, "readyState:", event.track.readyState);
   console.log("Track settings:", JSON.stringify(event.track.getSettings()));
 
-  // === LOW LATENCY: Minimize jitter buffer ===
+  // === LOW LATENCY: Set small jitter buffer ===
+  // Don't set to 0 - causes stalls. Use small buffer for stability.
   if (event.receiver) {
     try {
-      // Set minimum jitter buffer delay for lowest latency
-      // This may cause more frame drops but reduces latency
+      // 50ms buffer balances latency vs stability
+      // 0 = too aggressive (causes FPS drops/stalls)
+      // 50ms = stable for gaming without noticeable latency
       if ('jitterBufferTarget' in event.receiver) {
-        (event.receiver as any).jitterBufferTarget = 0; // Minimum buffering
-        console.log("Set jitterBufferTarget to 0 for low latency");
+        (event.receiver as any).jitterBufferTarget = 0.05; // 50ms
+        console.log("Set jitterBufferTarget to 50ms");
       }
-      // Also try playoutDelayHint if available
       if ('playoutDelayHint' in event.receiver) {
-        (event.receiver as any).playoutDelayHint = 0;
-        console.log("Set playoutDelayHint to 0 for low latency");
+        (event.receiver as any).playoutDelayHint = 0.05; // 50ms
+        console.log("Set playoutDelayHint to 50ms");
       }
     } catch (e) {
       console.log("Could not set jitter buffer target:", e);
@@ -3338,3 +3336,19 @@ export function toggleMute(): boolean {
   }
   return false;
 }
+
+
+/**
+ * Get the current media stream for recording
+ */
+export function getMediaStream(): MediaStream | null {
+  return sharedMediaStream;
+}
+
+/**
+ * Get the current video element for screenshot capture
+ */
+export function getVideoElement(): HTMLVideoElement | null {
+  return streamingState.videoElement;
+}
+

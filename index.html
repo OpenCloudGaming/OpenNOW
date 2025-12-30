@@ -306,6 +306,29 @@
             </div>
             <button id="save-settings-btn" class="btn btn-primary">Save Settings</button>
             <div class="setting-group setting-divider">
+              <label>Recording</label>
+              <p class="setting-hint">VP8 is recommended - it uses software encoding and won't interfere with stream playback. H.264 may cause stuttering due to GPU contention.</p>
+              <div class="setting-group" style="margin-top: 12px;">
+                <label>Recording Codec</label>
+                <div class="custom-dropdown" data-dropdown="recording-codec-setting">
+                  <div class="dropdown-trigger" tabindex="0">
+                    <span class="dropdown-text">VP8 (No Stuttering)</span>
+                    <i data-lucide="chevron-down" class="dropdown-arrow"></i>
+                  </div>
+                  <div class="dropdown-menu">
+                    <div class="dropdown-option selected" data-value="vp8">VP8 (No Stuttering)</div>
+                    <div class="dropdown-option" data-value="av1">AV1 (RTX 40+ Only)</div>
+                    <div class="dropdown-option" data-value="h264">H.264 (May Stutter)</div>
+                  </div>
+                </div>
+              </div>
+              <div class="troubleshooting-buttons" style="margin-top: 12px;">
+                <button id="test-codecs-btn" class="btn btn-secondary">Test Codec Support</button>
+                <button id="open-recordings-btn" class="btn btn-ghost">Open Recordings Folder</button>
+              </div>
+              <div id="codec-results" class="codec-results" style="display: none;"></div>
+            </div>
+            <div class="setting-group setting-divider">
               <label>Troubleshooting</label>
               <p class="setting-hint">Export logs to share with developers for debugging issues. Logs are automatically cleared when they exceed 10MB.</p>
               <div class="troubleshooting-buttons">
