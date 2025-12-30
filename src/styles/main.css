@@ -1707,3 +1707,108 @@ select {
 #submit-token-btn {
   width: 100%;
 }
+
+/* Codec Test Results */
+.codec-results {
+  margin-top: 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+
+.codec-header {
+  font-size: 12px;
+  color: var(--accent-green);
+  font-weight: 600;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.codec-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.codec-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.codec-item.supported {
+  background: rgba(118, 185, 0, 0.1);
+}
+
+.codec-item.unsupported {
+  background: rgba(102, 102, 102, 0.1);
+  opacity: 0.6;
+}
+
+.codec-item.active {
+  background: rgba(118, 185, 0, 0.25);
+  border: 1px solid var(--accent-green);
+}
+
+.codec-indicator {
+  font-weight: bold;
+  width: 16px;
+  text-align: center;
+}
+
+.codec-item.supported .codec-indicator {
+  color: var(--accent-green);
+}
+
+.codec-item.unsupported .codec-indicator {
+  color: var(--text-muted);
+}
+
+.codec-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.codec-name {
+  color: var(--text-primary);
+}
+
+.codec-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: var(--accent-green);
+  color: #000;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+.codec-note {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.codec-section {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+
+.codec-subheader {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  font-weight: 500;
+}

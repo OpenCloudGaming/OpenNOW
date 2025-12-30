@@ -1,0 +1,404 @@
+//! GFN API Client
+//!
+//! HTTP API interactions with GeForce NOW services.
+
+mod cloudmatch;
+mod games;
+
+pub use cloudmatch::*;
+pub use games::*;
+
+use reqwest::Client;
+use parking_lot::RwLock;
+use log::{info, debug, warn};
+use serde::Deserialize;
+
+/// Cached VPC ID from serverInfo
+static CACHED_VPC_ID: RwLock<Option<String>> = RwLock::new(None);
+
+/// Server info response from /v2/serverInfo endpoint
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerInfoResponse {
+    request_status: Option<ServerInfoRequestStatus>,
+    #[serde(default)]
+    meta_data: Vec<ServerMetaData>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerInfoRequestStatus {
+    server_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ServerMetaData {
+    key: String,
+    value: String,
+}
+
+/// Dynamic server region from serverInfo API
+#[derive(Debug, Clone)]
+pub struct DynamicServerRegion {
+    pub name: String,
+    pub url: String,
+}
+
+/// Get the cached VPC ID or fetch it from serverInfo
+pub async fn get_vpc_id(client: &Client, token: Option<&str>) -> String {
+    // Check cache first
+    {
+        let cached = CACHED_VPC_ID.read();
+        if let Some(vpc_id) = cached.as_ref() {
+            return vpc_id.clone();
+        }
+    }
+
+    // Fetch from serverInfo endpoint
+    if let Some(vpc_id) = fetch_vpc_id_from_server_info(client, token).await {
+        // Cache it
+        *CACHED_VPC_ID.write() = Some(vpc_id.clone());
+        return vpc_id;
+    }
+
+    // Fallback to a common European VPC
+    "NP-AMS-08".to_string()
+}
+
+/// Fetch VPC ID from the /v2/serverInfo endpoint
+async fn fetch_vpc_id_from_server_info(client: &Client, token: Option<&str>) -> Option<String> {
+    let url = "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo";
+
+    info!("Fetching VPC ID from serverInfo: {}", url);
+
+    let mut request = client
+        .get(url)
+        .header("Accept", "application/json")
+        .header("nv-client-id", "ec7e38d4-03af-4b58-b131-cfb0495903ab")
+        .header("nv-client-type", "NATIVE")
+        .header("nv-client-version", "2.0.80.173")
+        .header("nv-client-streamer", "NVIDIA-CLASSIC")
+        .header("nv-device-os", "WINDOWS")
+        .header("nv-device-type", "DESKTOP");
+
+    if let Some(t) = token {
+        request = request.header("Authorization", format!("GFNJWT {}", t));
+    }
+
+    let response = match request.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Failed to fetch serverInfo: {}", e);
+            return None;
+        }
+    };
+
+    if !response.status().is_success() {
+        warn!("serverInfo returned status: {}", response.status());
+        return None;
+    }
+
+    let body = match response.text().await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("Failed to read serverInfo body: {}", e);
+            return None;
+        }
+    };
+
+    debug!("serverInfo response: {}", &body[..body.len().min(500)]);
+
+    let info: ServerInfoResponse = match serde_json::from_str(&body) {
+        Ok(i) => i,
+        Err(e) => {
+            warn!("Failed to parse serverInfo: {}", e);
+            return None;
+        }
+    };
+
+    let vpc_id = info.request_status
+        .and_then(|s| s.server_id);
+
+    info!("Discovered VPC ID: {:?}", vpc_id);
+    vpc_id
+}
+
+/// Clear the cached VPC ID (call on logout)
+pub fn clear_vpc_cache() {
+    *CACHED_VPC_ID.write() = None;
+}
+
+/// Fetch dynamic server regions from the /v2/serverInfo endpoint
+/// Uses the selected provider's streaming URL (supports Alliance partners)
+/// Returns regions discovered from metaData with their streaming URLs
+pub async fn fetch_dynamic_regions(client: &Client, token: Option<&str>) -> Vec<DynamicServerRegion> {
+    use crate::auth;
+
+    // Get the base URL from the selected provider (Alliance partners have different URLs)
+    let base_url = auth::get_streaming_base_url();
+    let url = format!("{}v2/serverInfo", base_url);
+
+    info!("[serverInfo] Fetching dynamic regions from: {}", url);
+
+    let mut request = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .header("nv-client-id", "ec7e38d4-03af-4b58-b131-cfb0495903ab")
+        .header("nv-client-type", "BROWSER")
+        .header("nv-client-version", "2.0.80.173")
+        .header("nv-client-streamer", "WEBRTC")
+        .header("nv-device-os", "WINDOWS")
+        .header("nv-device-type", "DESKTOP");
+
+    if let Some(t) = token {
+        request = request.header("Authorization", format!("GFNJWT {}", t));
+    }
+
+    let response = match request.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("[serverInfo] Failed to fetch: {}", e);
+            return Vec::new();
+        }
+    };
+
+    if !response.status().is_success() {
+        warn!("[serverInfo] Returned status: {}", response.status());
+        return Vec::new();
+    }
+
+    let body = match response.text().await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("[serverInfo] Failed to read body: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let info: ServerInfoResponse = match serde_json::from_str(&body) {
+        Ok(i) => i,
+        Err(e) => {
+            warn!("[serverInfo] Failed to parse: {}", e);
+            return Vec::new();
+        }
+    };
+
+    // Extract regions from metaData
+    // Format: key="REGION NAME", value="https://region-url.domain.net"
+    // For NVIDIA: URLs contain "nvidiagrid.net"
+    // For Alliance partners: URLs may have different domains
+    let mut regions: Vec<DynamicServerRegion> = Vec::new();
+
+    for meta in &info.meta_data {
+        // Skip special keys like "gfn-regions"
+        if meta.key == "gfn-regions" || meta.key.starts_with("gfn-") {
+            continue;
+        }
+
+        // Include entries where value is a streaming URL (https://)
+        // Don't filter by domain - Alliance partners have different domains
+        if meta.value.starts_with("https://") {
+            regions.push(DynamicServerRegion {
+                name: meta.key.clone(),
+                url: meta.value.clone(),
+            });
+        }
+    }
+
+    info!("[serverInfo] Found {} zones from API", regions.len());
+
+    // Also cache the VPC ID if available
+    if let Some(vpc_id) = info.request_status.and_then(|s| s.server_id) {
+        info!("[serverInfo] Discovered VPC ID: {}", vpc_id);
+        *CACHED_VPC_ID.write() = Some(vpc_id);
+    }
+
+    regions
+}
+
+/// HTTP client wrapper for GFN APIs
+pub struct GfnApiClient {
+    client: Client,
+    access_token: Option<String>,
+}
+
+impl GfnApiClient {
+    /// Create a new API client
+    pub fn new() -> Self {
+        let client = Client::builder()
+            .danger_accept_invalid_certs(true) // GFN servers may have self-signed certs
+            .gzip(true)
+            .build()
+            .expect("Failed to create HTTP client");
+
+        Self {
+            client,
+            access_token: None,
+        }
+    }
+
+    /// Set the access token for authenticated requests
+    pub fn set_access_token(&mut self, token: String) {
+        self.access_token = Some(token);
+    }
+
+    /// Get the HTTP client
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
+    /// Get the access token
+    pub fn token(&self) -> Option<&String> {
+        self.access_token.as_ref()
+    }
+}
+
+impl Default for GfnApiClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Common headers for GFN API requests
+pub fn gfn_headers() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("nv-browser-type", "CHROME"),
+        ("nv-client-streamer", "NVIDIA-CLASSIC"),
+        ("nv-client-type", "NATIVE"),
+        ("nv-client-version", "2.0.80.173"),
+        ("nv-device-os", "WINDOWS"),
+        ("nv-device-type", "DESKTOP"),
+    ]
+}
+
+/// MES (Membership/Subscription) API URL
+const MES_URL: &str = "https://mes.geforcenow.com/v4/subscriptions";
+
+/// LCARS Client ID
+const LCARS_CLIENT_ID: &str = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
+
+/// GFN client version
+const GFN_CLIENT_VERSION: &str = "2.0.80.173";
+
+/// Subscription response from MES API
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubscriptionResponse {
+    #[serde(default = "default_tier")]
+    membership_tier: String,
+    remaining_time_in_minutes: Option<i32>,
+    total_time_in_minutes: Option<i32>,
+    #[serde(default)]
+    addons: Vec<SubscriptionAddon>,
+}
+
+fn default_tier() -> String {
+    "FREE".to_string()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubscriptionAddon {
+    #[serde(rename = "type")]
+    addon_type: Option<String>,
+    sub_type: Option<String>,
+    #[serde(default)]
+    attributes: Vec<AddonAttribute>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AddonAttribute {
+    key: Option<String>,
+    #[serde(rename = "textValue")]
+    text_value: Option<String>,
+}
+
+/// Fetch subscription info from MES API
+pub async fn fetch_subscription(token: &str, user_id: &str) -> Result<crate::app::SubscriptionInfo, String> {
+    let client = Client::builder()
+        .gzip(true)
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    // Get VPC ID for request
+    let vpc_id = {
+        let cached = CACHED_VPC_ID.read();
+        cached.as_ref().cloned().unwrap_or_else(|| "NP-AMS-08".to_string())
+    };
+
+    let url = format!(
+        "{}?serviceName=gfn_pc&languageCode=en_US&vpcId={}&userId={}",
+        MES_URL, vpc_id, user_id
+    );
+
+    info!("Fetching subscription from: {}", url);
+
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("GFNJWT {}", token))
+        .header("Accept", "application/json")
+        .header("nv-client-id", LCARS_CLIENT_ID)
+        .header("nv-client-type", "NATIVE")
+        .header("nv-client-version", GFN_CLIENT_VERSION)
+        .header("nv-client-streamer", "NVIDIA-CLASSIC")
+        .header("nv-device-os", "WINDOWS")
+        .header("nv-device-type", "DESKTOP")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch subscription: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Subscription API failed with status {}: {}", status, body));
+    }
+
+    let body = response.text().await
+        .map_err(|e| format!("Failed to read subscription response: {}", e))?;
+
+    debug!("Subscription response: {}", &body[..body.len().min(500)]);
+
+    let sub: SubscriptionResponse = serde_json::from_str(&body)
+        .map_err(|e| format!("Failed to parse subscription: {}", e))?;
+
+    // Convert minutes to hours
+    let remaining_hours = sub.remaining_time_in_minutes
+        .map(|m| m as f32 / 60.0)
+        .unwrap_or(0.0);
+    let total_hours = sub.total_time_in_minutes
+        .map(|m| m as f32 / 60.0)
+        .unwrap_or(0.0);
+
+    // Check for persistent storage addon
+    let mut has_persistent_storage = false;
+    let mut storage_size_gb: Option<u32> = None;
+
+    for addon in &sub.addons {
+        if addon.addon_type.as_deref() == Some("ADDON")
+            && addon.sub_type.as_deref() == Some("PERMANENT_STORAGE")
+            && addon.status.as_deref() == Some("ACTIVE")
+        {
+            has_persistent_storage = true;
+            // Try to find storage size from attributes
+            for attr in &addon.attributes {
+                if attr.key.as_deref() == Some("storageSizeInGB") {
+                    if let Some(val) = attr.text_value.as_ref() {
+                        storage_size_gb = val.parse().ok();
+                    }
+                }
+            }
+        }
+    }
+
+    info!("Subscription: tier={}, hours={:.1}/{:.1}, storage={}",
+        sub.membership_tier, remaining_hours, total_hours, has_persistent_storage);
+
+    Ok(crate::app::SubscriptionInfo {
+        membership_tier: sub.membership_tier,
+        remaining_hours,
+        total_hours,
+        has_persistent_storage,
+        storage_size_gb,
+    })
+}

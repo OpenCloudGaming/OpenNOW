@@ -16,8 +16,11 @@ import {
   isInputReady,
   getInputDebugInfo,
   StreamingOptions,
+  getMediaStream,
+  getVideoElement,
 } from "./streaming";
 import { initLogging, exportLogs, clearLogs } from "./logging";
+import { getRecordingManager, openRecordingsFolder, testCodecSupport, RecordingState, RecordingCodecType, RecordingMode } from "./recording";
 
 // ============================================
 // Custom Dropdown Component
@@ -355,6 +358,7 @@ interface Settings {
   proxy?: string;
   disable_telemetry: boolean;
   reflex?: boolean; // NVIDIA Reflex low-latency mode
+  recording_codec?: string; // Recording codec preference: h264 or av1
 }
 
 interface ProxyConfig {
@@ -446,8 +450,9 @@ let discordShowStats = false; // Show resolution/fps/ms in Discord (default off)
 let currentQuality = "auto"; // Current quality preset (legacy/fallback)
 let currentResolution = "1920x1080"; // Current resolution (WxH format)
 let currentFps = 60; // Current FPS
-let currentCodec = "h264"; // Current video codec
+let currentCodec = "h264"; // Current video codec (for streaming)
 let currentAudioCodec = "opus"; // Current audio codec
+let currentRecordingCodec: RecordingCodecType = "h264"; // Recording codec preference
 let currentMaxBitrate = 200; // Max bitrate in Mbps (200 = unlimited)
 let availableResolutions: string[] = []; // Available resolutions from subscription
 let availableFpsOptions: number[] = []; // Available FPS options from subscription
@@ -1760,6 +1765,13 @@ async function loadSettings() {
     }
     setDropdownOptions("audio-codec-setting", audioCodecOptions);
 
+    // Load recording codec preference and apply to UI
+    // VP8 is default - software encoded, no GPU contention with stream
+    const recCodec = settings.recording_codec;
+    currentRecordingCodec = (recCodec === "av1" ? "av1" : recCodec === "h264" ? "h264" : "vp8") as RecordingCodecType;
+    getRecordingManager().setCodecPreference(currentRecordingCodec);
+    setDropdownValue("recording-codec-setting", currentRecordingCodec);
+
     // Apply dropdown values
     setDropdownValue("resolution-setting", currentResolution);
     setDropdownValue("fps-setting", String(currentFps));
@@ -1896,6 +1908,81 @@ function setupModals() {
     } catch (error) {
       console.error("Failed to clear logs:", error);
       alert("Failed to clear logs: " + error);
+    }
+  });
+
+  // Test codecs button
+  document.getElementById("test-codecs-btn")?.addEventListener("click", () => {
+    const resultsDiv = document.getElementById("codec-results");
+    if (!resultsDiv) return;
+
+    const codecs = testCodecSupport();
+    const currentCodec = getRecordingManager().getCurrentCodec();
+    const codecPref = getRecordingManager().getCodecPreference();
+
+    // Clear and show results
+    resultsDiv.style.display = "block";
+
+    // Build results using DOM methods
+    while (resultsDiv.firstChild) {
+      resultsDiv.removeChild(resultsDiv.firstChild);
+    }
+
+    // Add header
+    const header = document.createElement("div");
+    header.className = "codec-header";
+    header.textContent = "Active codec: " + currentCodec;
+    resultsDiv.appendChild(header);
+
+    const prefNote = document.createElement("div");
+    prefNote.className = "codec-note";
+    prefNote.textContent = "Preference: " + (codecPref === "av1" ? "AV1 (Best Quality)" : "H.264 (Best Compatibility)");
+    resultsDiv.appendChild(prefNote);
+
+    // Add codec list
+    const list = document.createElement("div");
+    list.className = "codec-list";
+
+    codecs.forEach(codec => {
+      const item = document.createElement("div");
+      item.className = "codec-item" + (codec.supported ? " supported" : " unsupported");
+      if (codec.codec === currentCodec) {
+        item.className += " active";
+      }
+
+      const indicator = document.createElement("span");
+      indicator.className = "codec-indicator";
+      indicator.textContent = codec.supported ? "✓" : "✗";
+      item.appendChild(indicator);
+
+      const info = document.createElement("span");
+      info.className = "codec-info";
+
+      const name = document.createElement("span");
+      name.className = "codec-name";
+      name.textContent = codec.description;
+      info.appendChild(name);
+
+      if (codec.hwAccelerated && codec.supported) {
+        const badge = document.createElement("span");
+        badge.className = "codec-badge";
+        badge.textContent = "GPU";
+        info.appendChild(badge);
+      }
+
+      item.appendChild(info);
+      list.appendChild(item);
+    });
+
+    resultsDiv.appendChild(list);
+  });
+
+  // Open recordings folder button
+  document.getElementById("open-recordings-btn")?.addEventListener("click", async () => {
+    try {
+      await openRecordingsFolder();
+    } catch (error) {
+      console.error("Failed to open recordings folder:", error);
     }
   });
 
@@ -3710,6 +3797,7 @@ interface StreamingUIState {
   inputCleanup: (() => void) | null;
   statsInterval: number | null;
   escCleanup: (() => void) | null;
+  recordingCleanup: (() => void) | null;
   lastDiscordUpdate: number;
   gameStartTime: number;
 }
@@ -3725,6 +3813,7 @@ let streamingUIState: StreamingUIState = {
   inputCleanup: null,
   statsInterval: null,
   escCleanup: null,
+  recordingCleanup: null,
   lastDiscordUpdate: 0,
   gameStartTime: 0,
 };
@@ -3993,6 +4082,9 @@ function createStreamingContainer(gameName: string): HTMLElement {
       <div class="stream-header">
         <span class="stream-game-name">${gameName}</span>
         <div class="stream-controls">
+          <button class="stream-btn" id="stream-screenshot-btn" title="Screenshot (F8)"><i data-lucide="camera"></i></button>
+          <button class="stream-btn" id="stream-record-btn" title="Record (F9)"><i data-lucide="circle"></i></button>
+          <button class="stream-btn" id="stream-replay-btn" title="Instant Replay (F6 toggle, F7 save)"><i data-lucide="rewind"></i></button>
           <button class="stream-btn" id="stream-fullscreen-btn" title="Fullscreen"><i data-lucide="maximize"></i></button>
           <button class="stream-btn" id="stream-settings-btn" title="Settings"><i data-lucide="settings"></i></button>
           <button class="stream-btn stream-btn-danger" id="stream-exit-btn" title="Exit"><i data-lucide="x"></i></button>
@@ -4000,6 +4092,8 @@ function createStreamingContainer(gameName: string): HTMLElement {
       </div>
     </div>
     <div class="stream-stats" id="stream-stats">
+      <span id="stats-recording" class="recording-indicator" style="display: none;"><span class="rec-dot"></span><span id="recording-duration">00:00</span></span>
+      <span id="stats-replay" class="replay-indicator" style="display: none;">REPLAY</span>
       <span id="stats-region">Region: --</span>
       <span id="stats-fps">-- FPS</span>
       <span id="stats-latency">-- ms</span>
@@ -4149,6 +4243,74 @@ function createStreamingContainer(gameName: string): HTMLElement {
     }
     .stream-btn-danger:hover {
       background: rgba(255,0,0,0.5);
+    }
+    /* Recording button states */
+    .stream-btn.recording-active {
+      background: rgba(255, 0, 0, 0.7);
+      animation: pulse-recording 1s infinite;
+    }
+    .stream-btn.replay-active {
+      background: rgba(118, 185, 0, 0.5);
+    }
+    @keyframes pulse-recording {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+    /* Recording indicator in stats bar */
+    .recording-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #ff4444;
+      font-weight: bold;
+      animation: blink-recording 1s infinite;
+    }
+    .rec-dot {
+      width: 8px;
+      height: 8px;
+      background: #ff4444;
+      border-radius: 50%;
+    }
+    @keyframes blink-recording {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .replay-indicator {
+      display: inline-flex;
+      align-items: center;
+      color: #76b900;
+      font-weight: bold;
+      font-size: 11px;
+      padding: 2px 6px;
+      background: rgba(118, 185, 0, 0.2);
+      border-radius: 3px;
+    }
+    .recording-toast {
+      position: fixed;
+      bottom: 80px;
+      right: 20px;
+      background: rgba(20, 20, 20, 0.95);
+      color: #fff;
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      z-index: 10010;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      animation: toast-slide-in 0.3s ease;
+      border-left: 3px solid #76b900;
+    }
+    .recording-toast.error {
+      border-left-color: #ff4444;
+    }
+    .recording-toast svg {
+      width: 18px;
+      height: 18px;
+    }
+    @keyframes toast-slide-in {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
     }
     .stream-stats {
       position: absolute;
@@ -4486,6 +4648,190 @@ function createStreamingContainer(gameName: string): HTMLElement {
     }
   });
 
+  // ============================================
+  // Recording Controls Setup
+  // ============================================
+  const recordingManager = getRecordingManager();
+  const recordBtn = document.getElementById("stream-record-btn");
+  const screenshotBtn = document.getElementById("stream-screenshot-btn");
+  const replayBtn = document.getElementById("stream-replay-btn");
+  const recordingIndicator = document.getElementById("stats-recording");
+  const recordingDurationEl = document.getElementById("recording-duration");
+  const replayIndicator = document.getElementById("stats-replay");
+
+  // Helper to show toast notifications
+  const showRecordingToast = (message: string, isError = false) => {
+    // Remove existing toast
+    document.querySelector(".recording-toast")?.remove();
+
+    const toast = document.createElement("div");
+    toast.className = `recording-toast${isError ? " error" : ""}`;
+
+    const icon = document.createElement("i");
+    icon.setAttribute("data-lucide", isError ? "alert-circle" : "check-circle");
+    toast.appendChild(icon);
+
+    const span = document.createElement("span");
+    span.textContent = message;
+    toast.appendChild(span);
+
+    document.body.appendChild(toast);
+
+    if (typeof lucide !== 'undefined') {
+      lucide.createIcons();
+    }
+
+    // Auto-remove after 3 seconds
+    setTimeout(() => toast.remove(), 3000);
+  };
+
+  // Initialize recording manager with stream and video element
+  const initRecordingManager = () => {
+    const stream = getMediaStream();
+    const video = getVideoElement();
+    if (stream) {
+      recordingManager.setStream(stream);
+      recordingManager.setVideoElement(video); // For canvas-based recording (no stutter)
+      recordingManager.setGameName(gameName);
+      console.log("Recording manager initialized with stream and video element (canvas mode)");
+    } else {
+      console.warn("No media stream available for recording");
+    }
+  };
+
+  // Update UI based on recording state
+  const updateRecordingUI = (state: RecordingState) => {
+    // Update record button
+    if (state.isRecording) {
+      recordBtn?.classList.add("recording-active");
+      if (recordingIndicator) recordingIndicator.style.display = "inline-flex";
+      if (recordingDurationEl) recordingDurationEl.textContent = recordingManager.formatDuration(state.duration);
+    } else {
+      recordBtn?.classList.remove("recording-active");
+      if (recordingIndicator) recordingIndicator.style.display = "none";
+    }
+  };
+
+  // Update replay button state
+  const updateReplayUI = () => {
+    if (recordingManager.isInstantReplayEnabled) {
+      replayBtn?.classList.add("replay-active");
+      if (replayIndicator) replayIndicator.style.display = "inline-flex";
+    } else {
+      replayBtn?.classList.remove("replay-active");
+      if (replayIndicator) replayIndicator.style.display = "none";
+    }
+  };
+
+  // Set up recording callbacks
+  recordingManager.onStateChanged(updateRecordingUI);
+  recordingManager.onSaved((filepath, isScreenshot) => {
+    const type = isScreenshot ? "Screenshot" : "Recording";
+    const filename = filepath.split(/[\\/]/).pop() || filepath;
+    showRecordingToast(`${type} saved: ${filename}`);
+  });
+
+  // Initialize after a short delay to ensure stream is ready
+  setTimeout(initRecordingManager, 500);
+
+  // Record button click
+  recordBtn?.addEventListener("click", async () => {
+    if (!recordingManager.isRecording) {
+      // Try to initialize stream if not already
+      if (!getMediaStream()) {
+        showRecordingToast("No stream available", true);
+        return;
+      }
+      initRecordingManager();
+      const success = await recordingManager.startRecording();
+      if (success) {
+        showRecordingToast("Recording started");
+      } else {
+        showRecordingToast("Failed to start recording", true);
+      }
+    } else {
+      await recordingManager.stopRecording();
+      showRecordingToast("Recording stopped, saving...");
+    }
+  });
+
+  // Screenshot button click
+  screenshotBtn?.addEventListener("click", async () => {
+    const video = getVideoElement();
+    if (!video) {
+      showRecordingToast("No video available", true);
+      return;
+    }
+    const success = await recordingManager.takeScreenshot(video);
+    if (!success) {
+      showRecordingToast("Failed to take screenshot", true);
+    }
+  });
+
+  // Replay button click - toggle instant replay
+  replayBtn?.addEventListener("click", () => {
+    if (!recordingManager.isInstantReplayEnabled) {
+      if (!getMediaStream()) {
+        showRecordingToast("No stream available", true);
+        return;
+      }
+      initRecordingManager();
+      const success = recordingManager.enableInstantReplay(60);
+      if (success) {
+        showRecordingToast("Instant Replay enabled (60s buffer)");
+        updateReplayUI();
+      } else {
+        showRecordingToast("Failed to enable Instant Replay", true);
+      }
+    } else {
+      recordingManager.disableInstantReplay();
+      showRecordingToast("Instant Replay disabled");
+      updateReplayUI();
+    }
+  });
+
+  // Keyboard shortcuts for recording
+  const recordingKeyHandler = async (e: KeyboardEvent) => {
+    // Only handle if streaming container is active
+    if (!document.getElementById("streaming-container")) return;
+
+    switch (e.key) {
+      case "F9": // Toggle recording
+        e.preventDefault();
+        recordBtn?.click();
+        break;
+      case "F8": // Screenshot
+        e.preventDefault();
+        screenshotBtn?.click();
+        break;
+      case "F7": // Save instant replay
+        e.preventDefault();
+        if (recordingManager.isInstantReplayEnabled) {
+          const success = await recordingManager.saveInstantReplay();
+          if (success) {
+            showRecordingToast("Instant Replay saved");
+          } else {
+            showRecordingToast("No replay data to save", true);
+          }
+        } else {
+          showRecordingToast("Instant Replay not enabled", true);
+        }
+        break;
+      case "F6": // Toggle instant replay
+        e.preventDefault();
+        replayBtn?.click();
+        break;
+    }
+  };
+
+  document.addEventListener("keydown", recordingKeyHandler);
+
+  // Store cleanup function for recording in state
+  streamingUIState.recordingCleanup = () => {
+    document.removeEventListener("keydown", recordingKeyHandler);
+    recordingManager.dispose();
+  };
+
   // Hold ESC to exit fullscreen (1 second hold required)
   let escHoldStart = 0;
   let escHoldTimer: number | null = null;
@@ -4713,6 +5059,12 @@ async function exitStreaming(): Promise<void> {
     streamingUIState.escCleanup = null;
   }
 
+  // Stop recording and cleanup
+  if (streamingUIState.recordingCleanup) {
+    streamingUIState.recordingCleanup();
+    streamingUIState.recordingCleanup = null;
+  }
+
   // Stop stats monitoring
   if (streamingUIState.statsInterval) {
     clearInterval(streamingUIState.statsInterval);
@@ -4756,6 +5108,7 @@ async function exitStreaming(): Promise<void> {
     inputCleanup: null,
     statsInterval: null,
     escCleanup: null,
+    recordingCleanup: null,
     lastDiscordUpdate: 0,
     gameStartTime: 0,
   };
@@ -5083,6 +5436,7 @@ async function saveSettings() {
   const codec = getDropdownValue("codec-setting") || "h264";
   const audioCodec = getDropdownValue("audio-codec-setting") || "opus";
   const region = getDropdownValue("region-setting") || "auto";
+  const recordingCodec = getDropdownValue("recording-codec-setting") || "h264";
 
   // Update global state
   discordRpcEnabled = discordEl?.checked || false;
@@ -5094,6 +5448,8 @@ async function saveSettings() {
   currentAudioCodec = audioCodec;
   currentMaxBitrate = parseInt(bitrateEl?.value || "200", 10);
   currentRegion = region;
+  currentRecordingCodec = (recordingCodec === "av1" ? "av1" : recordingCodec === "h264" ? "h264" : "vp8") as RecordingCodecType;
+  getRecordingManager().setCodecPreference(currentRecordingCodec);
 
   // Update status bar with new region selection
   updateStatusBarLatency();
@@ -5111,6 +5467,7 @@ async function saveSettings() {
     proxy: proxyEl?.value || undefined,
     disable_telemetry: telemetryEl?.checked || true,
     reflex: reflexEnabled,
+    recording_codec: currentRecordingCodec,
   };
 
   try {
