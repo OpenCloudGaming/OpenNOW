@@ -462,4 +462,318 @@ impl GfnApiClient {
 
         SessionState::Launching
     }
+
+    /// Get active sessions
+    /// Returns list of sessions with status 2 (Ready) or 3 (Streaming)
+    pub async fn get_active_sessions(&self) -> Result<Vec<ActiveSessionInfo>> {
+        let token = self.token()
+            .context("No access token")?;
+
+        let device_id = generate_uuid();
+        let client_id = generate_uuid();
+
+        // Get streaming base URL
+        let streaming_base_url = auth::get_streaming_base_url();
+        let session_url = format!("{}/v2/session", streaming_base_url.trim_end_matches('/'));
+
+        info!("Checking for active sessions at: {}", session_url);
+
+        let response = self.client.get(&session_url)
+            .header("User-Agent", GFN_USER_AGENT)
+            .header("Authorization", format!("GFNJWT {}", token))
+            .header("Content-Type", "application/json")
+            .header("nv-client-id", &client_id)
+            .header("nv-client-streamer", "NVIDIA-CLASSIC")
+            .header("nv-client-type", "NATIVE")
+            .header("nv-client-version", GFN_CLIENT_VERSION)
+            .header("nv-device-os", "WINDOWS")
+            .header("nv-device-type", "DESKTOP")
+            .header("x-device-id", &device_id)
+            .send()
+            .await
+            .context("Failed to get sessions")?;
+
+        let status = response.status();
+        let response_text = response.text().await
+            .context("Failed to read response")?;
+
+        if !status.is_success() {
+            warn!("Get sessions failed: {} - {}", status, &response_text[..response_text.len().min(200)]);
+            return Ok(vec![]);
+        }
+
+        debug!("Active sessions response: {} bytes", response_text.len());
+
+        let sessions_response: GetSessionsResponse = serde_json::from_str(&response_text)
+            .context("Failed to parse sessions response")?;
+
+        if sessions_response.request_status.status_code != 1 {
+            warn!("Get sessions API error: {:?}", sessions_response.request_status.status_description);
+            return Ok(vec![]);
+        }
+
+        info!("Found {} session(s) from API", sessions_response.sessions.len());
+
+        let active_sessions: Vec<ActiveSessionInfo> = sessions_response.sessions
+            .into_iter()
+            .filter(|s| {
+                debug!("Session {} has status {}", s.session_id, s.status);
+                s.status == 2 || s.status == 3
+            })
+            .map(|s| {
+                let app_id = s.session_request_data
+                    .as_ref()
+                    .map(|d| d.app_id)
+                    .unwrap_or(0);
+
+                let server_ip = s.session_control_info
+                    .as_ref()
+                    .and_then(|c| c.ip.clone());
+
+                let signaling_url = s.connection_info
+                    .as_ref()
+                    .and_then(|conns| conns.iter().find(|c| c.usage == 14))
+                    .and_then(|conn| {
+                        conn.ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
+                    })
+                    .or_else(|| {
+                        server_ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
+                    });
+
+                let (resolution, fps) = s.monitor_settings
+                    .as_ref()
+                    .and_then(|ms| ms.first())
+                    .map(|m| (
+                        Some(format!("{}x{}", m.width_in_pixels, m.height_in_pixels)),
+                        Some(m.frames_per_second)
+                    ))
+                    .unwrap_or((None, None));
+
+                ActiveSessionInfo {
+                    session_id: s.session_id,
+                    app_id,
+                    gpu_type: s.gpu_type,
+                    status: s.status,
+                    server_ip,
+                    signaling_url,
+                    resolution,
+                    fps,
+                }
+            })
+            .collect();
+
+        info!("Found {} active session(s)", active_sessions.len());
+        Ok(active_sessions)
+    }
+
+    /// Claim/Resume an existing session
+    /// Required before connecting to an existing session
+    pub async fn claim_session(
+        &self,
+        session_id: &str,
+        server_ip: &str,
+        app_id: &str,
+        settings: &Settings,
+    ) -> Result<SessionInfo> {
+        let token = self.token()
+            .context("No access token")?;
+
+        let device_id = generate_uuid();
+        let client_id = generate_uuid();
+        let sub_session_id = generate_uuid();
+
+        let (width, height) = settings.resolution_tuple();
+
+        let timezone_offset_ms = chrono::Local::now()
+            .offset()
+            .local_minus_utc() as i64 * 1000;
+
+        let claim_url = format!(
+            "https://{}/v2/session/{}?keyboardLayout=en-US&languageCode=en_US",
+            server_ip, session_id
+        );
+
+        info!("Claiming session: {} at {}", session_id, claim_url);
+
+        let resume_payload = serde_json::json!({
+            "action": 2,
+            "data": "RESUME",
+            "sessionRequestData": {
+                "audioMode": 2,
+                "remoteControllersBitmap": 0,
+                "sdrHdrMode": 0,
+                "networkTestSessionId": null,
+                "availableSupportedControllers": [],
+                "clientVersion": "30.0",
+                "deviceHashId": device_id,
+                "internalTitle": null,
+                "clientPlatformName": "windows",
+                "metaData": [
+                    {"key": "SubSessionId", "value": sub_session_id},
+                    {"key": "wssignaling", "value": "1"},
+                    {"key": "GSStreamerType", "value": "WebRTC"},
+                    {"key": "networkType", "value": "Unknown"},
+                    {"key": "ClientImeSupport", "value": "0"},
+                    {"key": "clientPhysicalResolution", "value": format!("{{\"horizontalPixels\":{},\"verticalPixels\":{}}}", width, height)},
+                    {"key": "surroundAudioInfo", "value": "2"}
+                ],
+                "surroundAudioInfo": 0,
+                "clientTimezoneOffset": timezone_offset_ms,
+                "clientIdentification": "GFN-PC",
+                "parentSessionId": null,
+                "appId": app_id,
+                "streamerVersion": 1,
+                "clientRequestMonitorSettings": [{
+                    "widthInPixels": width,
+                    "heightInPixels": height,
+                    "framesPerSecond": settings.fps,
+                    "sdrHdrMode": 0,
+                    "displayData": {
+                        "desiredContentMaxLuminance": 0,
+                        "desiredContentMinLuminance": 0,
+                        "desiredContentMaxFrameAverageLuminance": 0
+                    },
+                    "dpi": 100
+                }],
+                "appLaunchMode": 1,
+                "sdkVersion": "1.0",
+                "enhancedStreamMode": 1,
+                "useOps": true,
+                "clientDisplayHdrCapabilities": null,
+                "accountLinked": true,
+                "partnerCustomData": "",
+                "enablePersistingInGameSettings": true,
+                "secureRTSPSupported": false,
+                "userAge": 26,
+                "requestedStreamingFeatures": {
+                    "reflex": settings.fps >= 120,
+                    "bitDepth": 0,
+                    "cloudGsync": false,
+                    "enabledL4S": false,
+                    "mouseMovementFlags": 0,
+                    "trueHdr": false,
+                    "supportedHidDevices": 0,
+                    "profile": 0,
+                    "fallbackToLogicalResolution": false,
+                    "hidDevices": null,
+                    "chromaFormat": 0,
+                    "prefilterMode": 0,
+                    "prefilterSharpness": 0,
+                    "prefilterNoiseReduction": 0,
+                    "hudStreamingMode": 0
+                }
+            },
+            "metaData": []
+        });
+
+        let response = self.client.put(&claim_url)
+            .header("User-Agent", GFN_USER_AGENT)
+            .header("Authorization", format!("GFNJWT {}", token))
+            .header("Content-Type", "application/json")
+            .header("Origin", "https://play.geforcenow.com")
+            .header("Referer", "https://play.geforcenow.com/")
+            .header("nv-client-id", &client_id)
+            .header("nv-client-streamer", "NVIDIA-CLASSIC")
+            .header("nv-client-type", "NATIVE")
+            .header("nv-client-version", GFN_CLIENT_VERSION)
+            .header("nv-device-os", "WINDOWS")
+            .header("nv-device-type", "DESKTOP")
+            .header("x-device-id", &device_id)
+            .json(&resume_payload)
+            .send()
+            .await
+            .context("Claim session request failed")?;
+
+        let status = response.status();
+        let response_text = response.text().await
+            .context("Failed to read claim response")?;
+
+        if !status.is_success() {
+            return Err(anyhow::anyhow!("Claim session failed: {} - {}",
+                status, &response_text[..response_text.len().min(200)]));
+        }
+
+        let api_response: CloudMatchResponse = serde_json::from_str(&response_text)
+            .context("Failed to parse claim response")?;
+
+        if api_response.request_status.status_code != 1 {
+            let error = api_response.request_status.status_description
+                .unwrap_or_else(|| "Unknown error".to_string());
+            return Err(anyhow::anyhow!("Claim session error: {}", error));
+        }
+
+        info!("Session claimed! Polling until ready...");
+
+        let get_url = format!("https://{}/v2/session/{}", server_ip, session_id);
+
+        for attempt in 1..=10 {
+            if attempt > 1 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
+
+            let poll_response = self.client.get(&get_url)
+                .header("User-Agent", GFN_USER_AGENT)
+                .header("Authorization", format!("GFNJWT {}", token))
+                .header("Content-Type", "application/json")
+                .header("nv-client-id", &client_id)
+                .header("nv-client-streamer", "NVIDIA-CLASSIC")
+                .header("nv-client-type", "NATIVE")
+                .header("nv-client-version", GFN_CLIENT_VERSION)
+                .header("nv-device-os", "WINDOWS")
+                .header("nv-device-type", "DESKTOP")
+                .header("x-device-id", &device_id)
+                .send()
+                .await
+                .context("Poll claim request failed")?;
+
+            if !poll_response.status().is_success() {
+                continue;
+            }
+
+            let poll_text = poll_response.text().await
+                .context("Failed to read poll response")?;
+
+            let poll_api_response: CloudMatchResponse = match serde_json::from_str(&poll_text) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            let session_data = poll_api_response.session;
+            debug!("Claim poll attempt {}: status {}", attempt, session_data.status);
+
+            if session_data.status == 2 || session_data.status == 3 {
+                info!("Session ready after claim! Status: {}", session_data.status);
+
+                let state = Self::parse_session_state(&session_data);
+                let server_ip_final = session_data.streaming_server_ip().unwrap_or_else(|| server_ip.to_string());
+                let signaling_path = session_data.signaling_url();
+
+                let signaling_url = signaling_path.map(|path| {
+                    Self::build_signaling_url(&path, &server_ip_final)
+                }).or_else(|| {
+                    Some(format!("wss://{}:443/nvst/", server_ip_final))
+                });
+
+                let ice_servers = session_data.ice_servers();
+                let media_connection_info = session_data.media_connection_info();
+
+                return Ok(SessionInfo {
+                    session_id: session_data.session_id,
+                    server_ip: server_ip_final,
+                    zone: String::new(),
+                    state,
+                    gpu_type: session_data.gpu_type,
+                    signaling_url,
+                    ice_servers,
+                    media_connection_info,
+                });
+            }
+
+            if session_data.status != 6 {
+                break;
+            }
+        }
+
+        Err(anyhow::anyhow!("Session did not become ready after claiming"))
+    }
 }
