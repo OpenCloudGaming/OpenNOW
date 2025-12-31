@@ -2,6 +2,8 @@
 //!
 //! A high-performance, cross-platform streaming client for GFN.
 
+#![recursion_limit = "256"]
+
 mod app;
 mod api;
 mod auth;
