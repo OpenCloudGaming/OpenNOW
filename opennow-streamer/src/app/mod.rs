@@ -1351,7 +1351,7 @@ impl App {
         // Set local cursor dimensions for instant visual feedback
         // Parse resolution from settings (e.g., "1920x1080" -> width, height)
         let (width, height) = parse_resolution(&self.settings.resolution);
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         crate::input::set_local_cursor_dimensions(width, height);
 
         info!("Input system initialized: session timing + local cursor {}x{}", width, height);
@@ -1407,7 +1407,7 @@ impl App {
         crate::input::reset_session_timing();
 
         // Reset input coalescing and local cursor state
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         crate::input::reset_coalescing();
 
         self.cursor_captured = false;
