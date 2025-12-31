@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use parking_lot::Mutex;
-use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
+use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -20,7 +20,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use anyhow::{Result, Context};
-use log::{info, debug, warn, error};
+use log::{info, debug, warn};
 use bytes::Bytes;
 
 /// MIME type for H265/HEVC video codec
@@ -220,10 +220,9 @@ impl WebRtcPeer {
         }));
 
         // On peer connection state change (includes DTLS state)
-        let pc_for_state = peer_connection.clone();
+        let _pc_for_state = peer_connection.clone();
         peer_connection.on_peer_connection_state_change(Box::new(move |state| {
             info!("Peer connection state: {:?}", state);
-            let pc = pc_for_state.clone();
             Box::pin(async move {
                 match state {
                     webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected => {

@@ -13,14 +13,12 @@ pub use sdp::*;
 pub use datachannel::*;
 
 use std::sync::Arc;
-use parking_lot::Mutex;
 use tokio::sync::mpsc;
-use anyhow::{Result, Context};
+use anyhow::Result;
 use log::{info, warn, error, debug};
-use webrtc::ice_transport::ice_server::RTCIceServer;
 
 use crate::app::{SessionInfo, Settings, VideoCodec, SharedFrame};
-use crate::media::{VideoFrame, StreamStats, VideoDecoder, AudioDecoder, AudioPlayer, RtpDepacketizer, DepacketizerCodec, DecodeStats};
+use crate::media::{StreamStats, VideoDecoder, AudioDecoder, AudioPlayer, RtpDepacketizer, DepacketizerCodec};
 use crate::input::InputHandler;
 
 /// Active streaming session
@@ -284,7 +282,7 @@ pub async fn run_streaming(
     let mut last_stats_time = std::time::Instant::now();
     let mut frames_received: u64 = 0;
     let mut frames_decoded: u64 = 0;
-    let mut frames_dropped: u64 = 0;
+    let frames_dropped: u64 = 0;
     let mut bytes_received: u64 = 0;
     let mut last_frames_decoded: u64 = 0; // For actual FPS calculation
 

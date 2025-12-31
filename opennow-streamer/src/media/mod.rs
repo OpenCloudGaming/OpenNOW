@@ -108,7 +108,7 @@ impl VideoFrame {
         let height = self.height as usize;
         let y_stride = self.y_stride as usize;
         let u_stride = self.u_stride as usize;
-        let v_stride = self.v_stride as usize;
+        let _v_stride = self.v_stride as usize;
 
         for row in 0..height {
             let y_row_offset = row * y_stride;

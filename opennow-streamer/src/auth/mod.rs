@@ -4,7 +4,7 @@
 //! Supports multi-region login via Alliance Partners.
 
 use anyhow::{Result, Context};
-use log::{info, warn, debug};
+use log::{info, debug};
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Digest};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -104,7 +104,6 @@ struct ServiceEndpoint {
     login_provider_priority: i32,
 }
 
-/// Global selected provider storage
 lazy_static::lazy_static! {
     static ref SELECTED_PROVIDER: Arc<RwLock<Option<LoginProvider>>> = Arc::new(RwLock::new(None));
     static ref CACHED_PROVIDERS: Arc<RwLock<Vec<LoginProvider>>> = Arc::new(RwLock::new(Vec::new()));

@@ -157,8 +157,8 @@ jobs:
             rust_target: aarch64-unknown-linux-gnu
           - platform: macos-latest
             target: macos
-            arch: universal
-            rust_target: universal
+            arch: arm64
+            rust_target: aarch64-apple-darwin
           - platform: windows-latest
             target: windows
             arch: x86_64
@@ -200,11 +200,8 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Add macOS targets (universal build)
-        if: matrix.target == 'macos'
-        run: |
-          rustup target add aarch64-apple-darwin
-          rustup target add x86_64-apple-darwin
+      # macOS builds natively for ARM64 (macos-latest is ARM64)
+      # Intel Mac users can use Rosetta 2 to run ARM64 binaries
 
       - name: Add Linux ARM64 target
         if: matrix.target == 'linux-arm64'
@@ -222,30 +219,53 @@ jobs:
 
       # ==================== FFmpeg Installation ====================
 
-      - name: Install FFmpeg (Windows)
-        if: matrix.target == 'windows' || matrix.target == 'windows-arm64'
+      - name: Install FFmpeg (Windows x64)
+        if: matrix.target == 'windows'
         shell: pwsh
         run: |
-          # Download shared FFmpeg build from gyan.dev (includes all DLLs and dev files)
-          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z"
-          Write-Host "Downloading FFmpeg from $ffmpegUrl..."
-          Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.7z
-          
+          # Download shared FFmpeg build from BtbN (GitHub releases)
+          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-win64-lgpl-shared-8.0.zip"
+          Write-Host "Downloading FFmpeg x64 from $ffmpegUrl..."
+          Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.zip
+
           Write-Host "Extracting FFmpeg..."
-          7z x ffmpeg.7z -offmpeg
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg
           $ffmpegDir = (Get-ChildItem -Path ffmpeg -Directory)[0].FullName
           Write-Host "FFmpeg extracted to: $ffmpegDir"
-          
+
           # Set environment variables for ffmpeg-next crate
           echo "FFMPEG_DIR=$ffmpegDir" >> $env:GITHUB_ENV
           echo "PATH=$ffmpegDir\bin;$env:PATH" >> $env:GITHUB_ENV
-          
+
           # Store path for later bundling
           echo "FFMPEG_BIN_DIR=$ffmpegDir\bin" >> $env:GITHUB_ENV
-          
+
           Write-Host "FFmpeg setup complete"
           Write-Host "FFMPEG_DIR: $ffmpegDir"
-          Write-Host "FFMPEG_BIN_DIR: $ffmpegDir\bin"
+
+      - name: Install FFmpeg (Windows ARM64)
+        if: matrix.target == 'windows-arm64'
+        shell: pwsh
+        run: |
+          # Download ARM64 FFmpeg build from BtbN (GitHub releases)
+          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-winarm64-lgpl-shared-8.0.zip"
+          Write-Host "Downloading FFmpeg ARM64 from $ffmpegUrl..."
+          Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.zip
+
+          Write-Host "Extracting FFmpeg..."
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg
+          $ffmpegDir = (Get-ChildItem -Path ffmpeg -Directory)[0].FullName
+          Write-Host "FFmpeg extracted to: $ffmpegDir"
+
+          # Set environment variables for ffmpeg-next crate
+          echo "FFMPEG_DIR=$ffmpegDir" >> $env:GITHUB_ENV
+          echo "PATH=$ffmpegDir\bin;$env:PATH" >> $env:GITHUB_ENV
+
+          # Store path for later bundling
+          echo "FFMPEG_BIN_DIR=$ffmpegDir\bin" >> $env:GITHUB_ENV
+
+          Write-Host "FFmpeg ARM64 setup complete"
+          Write-Host "FFMPEG_DIR: $ffmpegDir"
 
       - name: Install FFmpeg (macOS)
         if: matrix.target == 'macos'
@@ -280,43 +300,43 @@ jobs:
         if: matrix.target == 'linux-arm64'
         run: |
           sudo apt-get update
-          sudo dpkg --add-architecture arm64
-          
-          # Add ARM64 repositories
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          
-          sudo apt-get update
-          
-          # Install cross-compilation toolchain
+
+          # Install cross-compilation toolchain and build dependencies
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
             pkg-config \
             clang \
-            libclang-dev
-          
-          # Install ARM64 FFmpeg libraries (some may not be available, continue on error)
-          sudo apt-get install -y \
-            libavcodec-dev:arm64 \
-            libavformat-dev:arm64 \
-            libavutil-dev:arm64 \
-            libswscale-dev:arm64 \
-            libswresample-dev:arm64 \
-            libavfilter-dev:arm64 \
-            libasound2-dev:arm64 \
-            libx11-dev:arm64 || echo "Warning: Some ARM64 packages may not be available"
-          
-          # Set up pkg-config for cross-compilation
-          echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
-          
+            libclang-dev \
+            wget
+
+          # Download pre-built FFmpeg ARM64 from BtbN
+          FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-linuxarm64-lgpl-shared-8.0.tar.xz"
+          echo "Downloading FFmpeg ARM64 from $FFMPEG_URL..."
+          wget -q "$FFMPEG_URL" -O ffmpeg.tar.xz
+
+          echo "Extracting FFmpeg..."
+          tar -xf ffmpeg.tar.xz
+          FFMPEG_DIR=$(ls -d ffmpeg-*/  | head -1)
+          FFMPEG_DIR=$(realpath "$FFMPEG_DIR")
+          echo "FFmpeg extracted to: $FFMPEG_DIR"
+
+          # Set FFmpeg environment for ffmpeg-next crate
+          echo "FFMPEG_DIR=$FFMPEG_DIR" >> $GITHUB_ENV
+          echo "FFMPEG_INCLUDE_DIR=$FFMPEG_DIR/include" >> $GITHUB_ENV
+          echo "FFMPEG_LIB_DIR=$FFMPEG_DIR/lib" >> $GITHUB_ENV
+
+          # Store for bundling
+          echo "FFMPEG_BIN_DIR=$FFMPEG_DIR/bin" >> $GITHUB_ENV
+
           # Set cross-compilation environment
           echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "CXX=aarch64-linux-gnu-g++" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$FFMPEG_DIR/lib/pkgconfig" >> $GITHUB_ENV
+
+          echo "FFmpeg ARM64 setup complete"
 
       # ==================== Build Native Client ====================
 
@@ -336,26 +356,14 @@ jobs:
           echo "Building for Windows ARM64..."
           cargo build --release --target aarch64-pc-windows-msvc --verbose
 
-      - name: Build native client (macOS Universal)
+      - name: Build native client (macOS ARM64)
         if: matrix.target == 'macos'
         shell: bash
         working-directory: opennow-streamer
         run: |
-          echo "Building for macOS (Universal Binary)..."
-          
-          # Build for both architectures
-          cargo build --release --target aarch64-apple-darwin --verbose
-          cargo build --release --target x86_64-apple-darwin --verbose
-          
-          # Create universal binary using lipo
-          mkdir -p target/release
-          lipo -create \
-            target/aarch64-apple-darwin/release/opennow-streamer \
-            target/x86_64-apple-darwin/release/opennow-streamer \
-            -output target/release/opennow-streamer
-          
-          echo "Universal binary created at target/release/opennow-streamer"
-          lipo -info target/release/opennow-streamer
+          echo "Building for macOS ARM64 (Apple Silicon)..."
+          cargo build --release --verbose
+          echo "macOS ARM64 build complete"
 
       - name: Build native client (Linux x64)
         if: matrix.target == 'linux'
@@ -392,10 +400,10 @@ jobs:
         shell: pwsh
         run: |
           $targetDir = "opennow-streamer/target/aarch64-pc-windows-msvc/release"
-          
-          Write-Host "Copying FFmpeg DLLs to $targetDir..."
+
+          Write-Host "Copying FFmpeg ARM64 DLLs to $targetDir..."
           Copy-Item "$env:FFMPEG_BIN_DIR\*.dll" -Destination $targetDir -Verbose
-          
+
           Write-Host "`n=== Bundled FFmpeg DLLs ==="
           Get-ChildItem $targetDir -Filter "*.dll" | ForEach-Object { Write-Host "  - $($_.Name)" }
 
@@ -404,52 +412,124 @@ jobs:
         shell: bash
         run: |
           cd opennow-streamer
-          
+
           BINARY="target/release/opennow-streamer"
           BUNDLE_DIR="target/release/bundle"
-          
+
           echo "Creating bundle directory structure..."
           mkdir -p "$BUNDLE_DIR/libs"
-          
+
           # Copy the binary
           cp "$BINARY" "$BUNDLE_DIR/"
           chmod +x "$BUNDLE_DIR/opennow-streamer"
-          
-          # Find and copy FFmpeg dylibs
-          echo ""
-          echo "=== Finding FFmpeg dependencies ==="
-          FFMPEG_LIBS=$(otool -L "$BINARY" | grep -E 'libav|libsw|libpostproc' | awk '{print $1}')
-          
-          for lib in $FFMPEG_LIBS; do
-            if [ -f "$lib" ]; then
-              libname=$(basename "$lib")
+
+          # Function to copy a library and fix its install name
+          copy_lib() {
+            local lib="$1"
+            local libname=$(basename "$lib")
+
+            if [ ! -f "$BUNDLE_DIR/libs/$libname" ] && [ -f "$lib" ]; then
               echo "Copying: $libname"
               cp "$lib" "$BUNDLE_DIR/libs/"
-              
-              # Update rpath in the binary
-              install_name_tool -change "$lib" "@executable_path/libs/$libname" "$BUNDLE_DIR/opennow-streamer"
+              chmod 755 "$BUNDLE_DIR/libs/$libname"
+
+              # Fix the library's own install name
+              install_name_tool -id "@executable_path/libs/$libname" "$BUNDLE_DIR/libs/$libname" 2>/dev/null || true
+              return 0
             fi
+            return 1
+          }
+
+          # Function to fix references in a binary/library
+          fix_refs() {
+            local target="$1"
+            for dep in $(otool -L "$target" | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}'); do
+              local depname=$(basename "$dep")
+              install_name_tool -change "$dep" "@executable_path/libs/$depname" "$target" 2>/dev/null || true
+            done
+          }
+
+          echo ""
+          echo "=== Phase 1: Copy direct FFmpeg dependencies ==="
+          for lib in $(otool -L "$BINARY" | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}'); do
+            copy_lib "$lib"
           done
-          
-          # Also handle Homebrew paths
-          for lib in $(otool -L "$BUNDLE_DIR/opennow-streamer" | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}'); do
-            if [[ "$lib" == *libav* ]] || [[ "$lib" == *libsw* ]] || [[ "$lib" == *libpostproc* ]]; then
-              libname=$(basename "$lib")
-              if [ -f "$lib" ] && [ ! -f "$BUNDLE_DIR/libs/$libname" ]; then
-                echo "Copying Homebrew lib: $libname"
-                cp "$lib" "$BUNDLE_DIR/libs/"
-                install_name_tool -change "$lib" "@executable_path/libs/$libname" "$BUNDLE_DIR/opennow-streamer"
-              fi
-            fi
+
+          echo ""
+          echo "=== Phase 2: Copy transitive dependencies (3 passes) ==="
+          for pass in 1 2 3; do
+            echo "Pass $pass..."
+            for bundled_lib in "$BUNDLE_DIR/libs/"*.dylib; do
+              [ -f "$bundled_lib" ] || continue
+              for dep in $(otool -L "$bundled_lib" | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}'); do
+                copy_lib "$dep"
+              done
+            done
           done
-          
+
+          echo ""
+          echo "=== Phase 3: Fix all library references ==="
+          # Fix the main binary
+          fix_refs "$BUNDLE_DIR/opennow-streamer"
+
+          # Fix all bundled libraries
+          for bundled_lib in "$BUNDLE_DIR/libs/"*.dylib; do
+            [ -f "$bundled_lib" ] || continue
+            fix_refs "$bundled_lib"
+          done
+
           echo ""
           echo "=== Bundled libraries ==="
-          ls -lh "$BUNDLE_DIR/libs/"
-          
+          ls -lh "$BUNDLE_DIR/libs/" | head -30
+
           echo ""
           echo "=== Final binary dependencies ==="
           otool -L "$BUNDLE_DIR/opennow-streamer"
+
+          echo ""
+          echo "=== Verifying no remaining Homebrew paths ==="
+          if otool -L "$BUNDLE_DIR/opennow-streamer" | grep -E '/opt/homebrew|/usr/local'; then
+            echo "WARNING: Some Homebrew paths remain (may be system libs, which is OK)"
+          else
+            echo "All Homebrew dependencies bundled successfully!"
+          fi
+
+      - name: Bundle FFmpeg libs (Linux ARM64)
+        if: matrix.target == 'linux-arm64'
+        shell: bash
+        run: |
+          cd opennow-streamer
+
+          BINARY="target/aarch64-unknown-linux-gnu/release/opennow-streamer"
+          BUNDLE_DIR="target/aarch64-unknown-linux-gnu/release/bundle"
+
+          echo "Creating bundle directory structure..."
+          mkdir -p "$BUNDLE_DIR/libs"
+
+          # Copy the binary
+          cp "$BINARY" "$BUNDLE_DIR/"
+          chmod +x "$BUNDLE_DIR/opennow-streamer"
+
+          # Copy FFmpeg shared libraries
+          echo "Copying FFmpeg libraries..."
+          cp "$FFMPEG_DIR"/lib/*.so* "$BUNDLE_DIR/libs/" 2>/dev/null || true
+
+          # Create wrapper script that sets LD_LIBRARY_PATH
+          cat > "$BUNDLE_DIR/run.sh" << 'WRAPPER'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export LD_LIBRARY_PATH="$SCRIPT_DIR/libs:$LD_LIBRARY_PATH"
+          exec "$SCRIPT_DIR/opennow-streamer" "$@"
+          WRAPPER
+          chmod +x "$BUNDLE_DIR/run.sh"
+
+          echo ""
+          echo "=== Bundled libraries ==="
+          ls -lh "$BUNDLE_DIR/libs/" | head -20
+
+          echo ""
+          echo "Bundle created at: $BUNDLE_DIR"
+          echo "Run with: ./run.sh"
 
       # ==================== Upload Artifacts ====================
 
@@ -494,7 +574,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: opennow-streamer-${{ needs.get-version.outputs.version }}-linux-arm64
-          path: opennow-streamer/target/aarch64-unknown-linux-gnu/release/opennow-streamer
+          path: opennow-streamer/target/aarch64-unknown-linux-gnu/release/bundle/
           retention-days: 30
 
       # ==================== Upload to GitHub Release (main branch only) ====================
@@ -515,13 +595,13 @@ jobs:
             ---
 
             ### Downloads
-            - **Windows x64**: Portable executable with FFmpeg DLLs
-            - **Windows ARM64**: Portable executable with FFmpeg DLLs (for ARM devices)
-            - **macOS**: Universal binary (Intel + Apple Silicon) with FFmpeg dylibs
-            - **Linux x64**: Portable binary (requires system FFmpeg)
-            - **Linux ARM64**: Portable binary (Raspberry Pi, ARM servers, requires system FFmpeg)
+            - **Windows x64**: Portable executable with bundled FFmpeg DLLs
+            - **Windows ARM64**: Portable executable with bundled FFmpeg DLLs (Surface Pro X, etc.)
+            - **macOS ARM64**: Apple Silicon native binary with bundled FFmpeg dylibs (Intel Macs can use Rosetta 2)
+            - **Linux x64**: Portable binary (requires system FFmpeg - see below)
+            - **Linux ARM64**: Portable bundle with FFmpeg libs (run via `./run.sh`)
 
-            **Linux users**: Install FFmpeg via your package manager:
+            **Linux x64 users**: Install FFmpeg via your package manager:
             ```bash
             # Ubuntu/Debian
             sudo apt install ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
@@ -588,7 +668,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
-          files: opennow-streamer/target/aarch64-unknown-linux-gnu/release/opennow-streamer
+          files: opennow-streamer/target/aarch64-unknown-linux-gnu/release/bundle/*
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
