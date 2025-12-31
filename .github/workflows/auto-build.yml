@@ -223,8 +223,8 @@ jobs:
         if: matrix.target == 'windows'
         shell: pwsh
         run: |
-          # Download shared FFmpeg build from BtbN (GitHub releases)
-          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-win64-lgpl-shared-8.0.zip"
+          # Download shared FFmpeg build from BtbN (GitHub releases) - use master-latest for stability
+          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip"
           Write-Host "Downloading FFmpeg x64 from $ffmpegUrl..."
           Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.zip
 
@@ -232,6 +232,12 @@ jobs:
           Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg
           $ffmpegDir = (Get-ChildItem -Path ffmpeg -Directory)[0].FullName
           Write-Host "FFmpeg extracted to: $ffmpegDir"
+
+          # List contents to verify structure
+          Write-Host "`n=== FFmpeg directory structure ==="
+          Get-ChildItem $ffmpegDir
+          Write-Host "`n=== Lib directory ==="
+          Get-ChildItem "$ffmpegDir\lib" -ErrorAction SilentlyContinue
 
           # Set environment variables for ffmpeg-next crate
           echo "FFMPEG_DIR=$ffmpegDir" >> $env:GITHUB_ENV
@@ -247,8 +253,8 @@ jobs:
         if: matrix.target == 'windows-arm64'
         shell: pwsh
         run: |
-          # Download ARM64 FFmpeg build from BtbN (GitHub releases)
-          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-winarm64-lgpl-shared-8.0.zip"
+          # Download ARM64 FFmpeg build from BtbN (GitHub releases) - use master-latest for stability
+          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-winarm64-lgpl-shared.zip"
           Write-Host "Downloading FFmpeg ARM64 from $ffmpegUrl..."
           Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.zip
 
@@ -301,6 +307,16 @@ jobs:
         run: |
           sudo apt-get update
 
+          # Enable ARM64 architecture for cross-compilation
+          sudo dpkg --add-architecture arm64
+
+          # Add ARM64 repositories
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+
+          sudo apt-get update
+
           # Install cross-compilation toolchain and build dependencies
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu \
@@ -308,10 +324,11 @@ jobs:
             pkg-config \
             clang \
             libclang-dev \
-            wget
+            wget \
+            libssl-dev:arm64
 
-          # Download pre-built FFmpeg ARM64 from BtbN
-          FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-linuxarm64-lgpl-shared-8.0.tar.xz"
+          # Download pre-built FFmpeg ARM64 from BtbN - use master-latest for stability
+          FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-lgpl-shared.tar.xz"
           echo "Downloading FFmpeg ARM64 from $FFMPEG_URL..."
           wget -q "$FFMPEG_URL" -O ffmpeg.tar.xz
 
@@ -335,6 +352,11 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$FFMPEG_DIR/lib/pkgconfig" >> $GITHUB_ENV
+
+          # Set OpenSSL paths for ARM64 cross-compilation
+          echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=/usr/include" >> $GITHUB_ENV
 
           echo "FFmpeg ARM64 setup complete"
 
@@ -411,6 +433,7 @@ jobs:
         if: matrix.target == 'macos'
         shell: bash
         run: |
+          set -e
           cd opennow-streamer
 
           BINARY="target/release/opennow-streamer"
@@ -418,6 +441,12 @@ jobs:
 
           echo "Creating bundle directory structure..."
           mkdir -p "$BUNDLE_DIR/libs"
+
+          # Check if binary exists
+          if [ ! -f "$BINARY" ]; then
+            echo "ERROR: Binary not found at $BINARY"
+            exit 1
+          fi
 
           # Copy the binary
           cp "$BINARY" "$BUNDLE_DIR/"
@@ -443,7 +472,7 @@ jobs:
           # Function to fix references in a binary/library
           fix_refs() {
             local target="$1"
-            for dep in $(otool -L "$target" | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}'); do
+            for dep in $(otool -L "$target" 2>/dev/null | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}'); do
               local depname=$(basename "$dep")
               install_name_tool -change "$dep" "@executable_path/libs/$depname" "$target" 2>/dev/null || true
             done
@@ -451,20 +480,31 @@ jobs:
 
           echo ""
           echo "=== Phase 1: Copy direct FFmpeg dependencies ==="
-          for lib in $(otool -L "$BINARY" | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}'); do
-            copy_lib "$lib"
-          done
+          DIRECT_DEPS=$(otool -L "$BINARY" 2>/dev/null | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}' || true)
+          if [ -z "$DIRECT_DEPS" ]; then
+            echo "No Homebrew dependencies found in binary (may be statically linked or using system libs)"
+          else
+            for lib in $DIRECT_DEPS; do
+              copy_lib "$lib"
+            done
+          fi
 
           echo ""
           echo "=== Phase 2: Copy transitive dependencies (3 passes) ==="
           for pass in 1 2 3; do
             echo "Pass $pass..."
-            for bundled_lib in "$BUNDLE_DIR/libs/"*.dylib; do
-              [ -f "$bundled_lib" ] || continue
-              for dep in $(otool -L "$bundled_lib" | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}'); do
-                copy_lib "$dep"
+            # Check if any dylibs exist in the libs directory
+            if ls "$BUNDLE_DIR/libs/"*.dylib 1>/dev/null 2>&1; then
+              for bundled_lib in "$BUNDLE_DIR/libs/"*.dylib; do
+                [ -f "$bundled_lib" ] || continue
+                for dep in $(otool -L "$bundled_lib" 2>/dev/null | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}'); do
+                  copy_lib "$dep"
+                done
               done
-            done
+            else
+              echo "  No dylibs to process"
+              break
+            fi
           done
 
           echo ""
@@ -472,15 +512,21 @@ jobs:
           # Fix the main binary
           fix_refs "$BUNDLE_DIR/opennow-streamer"
 
-          # Fix all bundled libraries
-          for bundled_lib in "$BUNDLE_DIR/libs/"*.dylib; do
-            [ -f "$bundled_lib" ] || continue
-            fix_refs "$bundled_lib"
-          done
+          # Fix all bundled libraries if they exist
+          if ls "$BUNDLE_DIR/libs/"*.dylib 1>/dev/null 2>&1; then
+            for bundled_lib in "$BUNDLE_DIR/libs/"*.dylib; do
+              [ -f "$bundled_lib" ] || continue
+              fix_refs "$bundled_lib"
+            done
+          fi
 
           echo ""
           echo "=== Bundled libraries ==="
-          ls -lh "$BUNDLE_DIR/libs/" | head -30
+          if ls "$BUNDLE_DIR/libs/"* 1>/dev/null 2>&1; then
+            ls -lh "$BUNDLE_DIR/libs/" | head -30
+          else
+            echo "  (no libraries bundled - using system/static linking)"
+          fi
 
           echo ""
           echo "=== Final binary dependencies ==="
