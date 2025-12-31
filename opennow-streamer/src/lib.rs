@@ -2,6 +2,8 @@
 //!
 //! Core components for the native GeForce NOW streaming client.
 
+#![recursion_limit = "256"]
+
 pub mod app;
 pub mod api;
 pub mod auth;
