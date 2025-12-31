@@ -157,7 +157,7 @@ pub struct SessionRequestData {
     pub requested_streaming_features: Option<StreamingFeatures>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MonitorSettings {
     pub width_in_pixels: u32,
@@ -168,7 +168,7 @@ pub struct MonitorSettings {
     pub dpi: i32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DisplayData {
     pub desired_content_max_luminance: i32,
