@@ -2111,6 +2111,7 @@ impl Renderer {
             .fixed_pos(egui::pos2(0.0, 0.0))
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
+                #[allow(deprecated)]
                 let screen_rect = ctx.screen_rect();
                 ui.allocate_response(screen_rect.size(), egui::Sense::click());
                 ui.painter().rect_filled(
@@ -2121,6 +2122,7 @@ impl Renderer {
             });
 
         // Modal window
+        #[allow(deprecated)]
         let screen_rect = ctx.screen_rect();
         let modal_pos = egui::pos2(
             (screen_rect.width() - modal_width) / 2.0,
