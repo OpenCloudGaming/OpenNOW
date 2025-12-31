@@ -5,6 +5,7 @@
 mod cloudmatch;
 mod games;
 
+#[allow(unused_imports)]
 pub use cloudmatch::*;
 pub use games::*;
 

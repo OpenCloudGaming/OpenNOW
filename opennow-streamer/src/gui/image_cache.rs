@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::RwLock;
-use log::{info, debug, warn};
+use log::{debug, warn};
 
 /// Image loading state
 #[derive(Clone)]
@@ -66,7 +66,7 @@ impl ImageCache {
         // Spawn async task to load image
         let client = self.client.clone();
         let url_clone = url.clone();
-        let images = Arc::new(self.images.read().clone());
+        let _images = Arc::new(self.images.read().clone());
 
         // We need to use a static or leaked reference for the cache update
         // For simplicity, we'll use a channel pattern
@@ -137,7 +137,6 @@ lazy_static::lazy_static! {
     static ref LOADED_IMAGES: RwLock<HashMap<String, ImageState>> = RwLock::new(HashMap::new());
 }
 
-/// Global image cache instance
 lazy_static::lazy_static! {
     pub static ref IMAGE_CACHE: ImageCache = ImageCache::new();
 }

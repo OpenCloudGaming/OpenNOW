@@ -3,7 +3,7 @@
 //! Decode Opus audio using FFmpeg and play through cpal.
 
 use anyhow::{Result, Context, anyhow};
-use log::{info, warn, error, debug};
+use log::{info, error, debug};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
@@ -53,7 +53,7 @@ impl AudioDecoder {
                 }
             };
 
-            let mut ctx = CodecContext::new_with_codec(codec);
+            let ctx = CodecContext::new_with_codec(codec);
 
             // Set parameters for Opus
             // Note: FFmpeg Opus decoder auto-detects most parameters from the bitstream

@@ -537,13 +537,11 @@ impl VideoDecoder {
             format,
             Pixel::VIDEOTOOLBOX
                 | Pixel::CUDA
-                | Pixel::VAAPI
                 | Pixel::VDPAU
                 | Pixel::QSV
                 | Pixel::D3D11
                 | Pixel::DXVA2_VLD
                 | Pixel::D3D11VA_VLD
-                | Pixel::D3D12
                 | Pixel::VULKAN
         )
     }

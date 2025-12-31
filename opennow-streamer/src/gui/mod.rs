@@ -9,5 +9,3 @@ pub mod image_cache;
 pub use renderer::Renderer;
 pub use stats_panel::StatsPanel;
 pub use image_cache::{get_image, request_image, update_cache};
-
-use winit::dpi::PhysicalSize;

@@ -59,7 +59,6 @@ pub use macos::{
 };
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use parking_lot::RwLock;
 
 /// Session timing state - resettable for each streaming session
