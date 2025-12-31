@@ -2091,6 +2091,11 @@ impl Renderer {
         if show_settings_modal {
             Self::render_settings_modal(ctx, settings, servers, selected_server_index, auto_server_selection, ping_testing, actions);
         }
+
+        // Session conflict dialog
+        if app.show_session_conflict {
+            Self::render_session_conflict_dialog(ctx, &app.active_sessions, app.pending_game_launch.as_ref(), actions);
+        }
     }
 
     /// Render the Settings modal with region selector and stream settings
@@ -2389,6 +2394,201 @@ impl Renderer {
 
                                 ui.add_space(20.0);
                             });
+                    });
+            });
+    }
+
+    /// Render the session conflict dialog
+    fn render_session_conflict_dialog(
+        ctx: &egui::Context,
+        active_sessions: &[ActiveSessionInfo],
+        pending_game: Option<&GameInfo>,
+        actions: &mut Vec<UiAction>,
+    ) {
+        use crate::app::session::ActiveSessionInfo;
+        use crate::app::GameInfo;
+
+        let modal_width = 500.0;
+        let modal_height = 300.0;
+
+        egui::Area::new(egui::Id::new("session_conflict_overlay"))
+            .fixed_pos(egui::pos2(0.0, 0.0))
+            .order(egui::Order::Middle)
+            .show(ctx, |ui| {
+                let screen_rect = ctx.screen_rect();
+                ui.allocate_response(screen_rect.size(), egui::Sense::click());
+                ui.painter().rect_filled(
+                    screen_rect,
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+                );
+            });
+
+        let screen_rect = ctx.screen_rect();
+        let modal_pos = egui::pos2(
+            (screen_rect.width() - modal_width) / 2.0,
+            (screen_rect.height() - modal_height) / 2.0,
+        );
+
+        egui::Area::new(egui::Id::new("session_conflict_modal"))
+            .fixed_pos(modal_pos)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(28, 28, 35))
+                    .corner_radius(12.0)
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 75)))
+                    .inner_margin(egui::Margin::same(20))
+                    .show(ui, |ui| {
+                        ui.set_min_size(egui::vec2(modal_width, modal_height));
+
+                        ui.label(
+                            egui::RichText::new("⚠ Active Session Detected")
+                                .size(20.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(255, 200, 80))
+                        );
+
+                        ui.add_space(15.0);
+
+                        if let Some(session) = active_sessions.first() {
+                            ui.label(
+                                egui::RichText::new("You have an active GFN session running:")
+                                    .size(14.0)
+                                    .color(egui::Color32::LIGHT_GRAY)
+                            );
+
+                            ui.add_space(10.0);
+
+                            egui::Frame::new()
+                                .fill(egui::Color32::from_rgb(40, 40, 50))
+                                .corner_radius(8.0)
+                                .inner_margin(egui::Margin::same(12))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("App ID:")
+                                                .size(13.0)
+                                                .color(egui::Color32::GRAY)
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!("{}", session.app_id))
+                                                .size(13.0)
+                                                .color(egui::Color32::WHITE)
+                                        );
+                                    });
+
+                                    if let Some(ref gpu) = session.gpu_type {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new("GPU:")
+                                                    .size(13.0)
+                                                    .color(egui::Color32::GRAY)
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(gpu)
+                                                    .size(13.0)
+                                                    .color(egui::Color32::WHITE)
+                                            );
+                                        });
+                                    }
+
+                                    if let Some(ref res) = session.resolution {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new("Resolution:")
+                                                    .size(13.0)
+                                                    .color(egui::Color32::GRAY)
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(format!("{} @ {}fps", res, session.fps.unwrap_or(60)))
+                                                    .size(13.0)
+                                                    .color(egui::Color32::WHITE)
+                                            );
+                                        });
+                                    }
+
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("Status:")
+                                                .size(13.0)
+                                                .color(egui::Color32::GRAY)
+                                        );
+                                        let status_text = match session.status {
+                                            2 => "Ready",
+                                            3 => "Running",
+                                            _ => "Unknown",
+                                        };
+                                        ui.label(
+                                            egui::RichText::new(status_text)
+                                                .size(13.0)
+                                                .color(egui::Color32::from_rgb(118, 185, 0))
+                                        );
+                                    });
+                                });
+
+                            ui.add_space(15.0);
+
+                            if pending_game.is_some() {
+                                ui.label(
+                                    egui::RichText::new("GFN only allows one session at a time. You can either:")
+                                        .size(13.0)
+                                        .color(egui::Color32::LIGHT_GRAY)
+                                );
+                            } else {
+                                ui.label(
+                                    egui::RichText::new("What would you like to do?")
+                                        .size(13.0)
+                                        .color(egui::Color32::LIGHT_GRAY)
+                                );
+                            }
+
+                            ui.add_space(15.0);
+
+                            ui.vertical_centered(|ui| {
+                                let resume_btn = egui::Button::new(
+                                    egui::RichText::new("Resume Existing Session")
+                                        .size(14.0)
+                                        .color(egui::Color32::WHITE)
+                                )
+                                .fill(egui::Color32::from_rgb(118, 185, 0))
+                                .min_size(egui::vec2(200.0, 35.0));
+
+                                if ui.add(resume_btn).clicked() {
+                                    actions.push(UiAction::ResumeSession(session.clone()));
+                                }
+
+                                ui.add_space(8.0);
+
+                                if let Some(game) = pending_game {
+                                    let terminate_btn = egui::Button::new(
+                                        egui::RichText::new(format!("End Session & Launch \"{}\"", game.title))
+                                            .size(14.0)
+                                            .color(egui::Color32::WHITE)
+                                    )
+                                    .fill(egui::Color32::from_rgb(220, 60, 60))
+                                    .min_size(egui::vec2(200.0, 35.0));
+
+                                    if ui.add(terminate_btn).clicked() {
+                                        actions.push(UiAction::TerminateAndLaunch(session.session_id.clone(), game.clone()));
+                                    }
+
+                                    ui.add_space(8.0);
+                                }
+
+                                let cancel_btn = egui::Button::new(
+                                    egui::RichText::new("Cancel")
+                                        .size(14.0)
+                                        .color(egui::Color32::LIGHT_GRAY)
+                                )
+                                .fill(egui::Color32::from_rgb(60, 60, 75))
+                                .min_size(egui::vec2(200.0, 35.0));
+
+                                if ui.add(cancel_btn).clicked() {
+                                    actions.push(UiAction::CloseSessionConflict);
+                                }
+                            });
+                        }
                     });
             });
     }
