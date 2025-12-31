@@ -373,3 +373,58 @@ impl CloudMatchSession {
             .unwrap_or_default()
     }
 }
+
+// ============================================
+// Session Management Types (GET /v2/session)
+// ============================================
+
+/// Response from GET /v2/session endpoint (list active sessions)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetSessionsResponse {
+    #[serde(default)]
+    pub sessions: Vec<SessionFromApi>,
+    pub request_status: RequestStatus,
+}
+
+/// Session data from GET /v2/session API
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFromApi {
+    pub session_id: String,
+    #[serde(default)]
+    pub session_request_data: Option<SessionRequestDataFromApi>,
+    #[serde(default)]
+    pub gpu_type: Option<String>,
+    #[serde(default)]
+    pub status: i32,
+    #[serde(default)]
+    pub session_control_info: Option<SessionControlInfo>,
+    #[serde(default)]
+    pub connection_info: Option<Vec<ConnectionInfoData>>,
+    #[serde(default)]
+    pub monitor_settings: Option<Vec<MonitorSettings>>,
+}
+
+/// Session request data from API (contains app_id)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRequestDataFromApi {
+    /// App ID as i64 (API returns it as number)
+    #[serde(default)]
+    pub app_id: i64,
+}
+
+/// Simplified active session info for UI
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveSessionInfo {
+    pub session_id: String,
+    pub app_id: i64,
+    pub gpu_type: Option<String>,
+    pub status: i32,
+    pub server_ip: Option<String>,
+    pub signaling_url: Option<String>,
+    pub resolution: Option<String>,
+    pub fps: Option<u32>,
+}
