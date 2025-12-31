@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - dev
+      - Native
   workflow_dispatch:
 
 permissions:
@@ -102,7 +103,7 @@ jobs:
           VERSION: ${{ steps.get_version.outputs.version }}
         run: |
           # Create the prompt for OpenRouter (commits are safely passed via env var)
-          PROMPT="You are a release notes generator for OpenNOW, an open source GeForce NOW client built with Tauri. Generate clean, user-friendly release notes from these git commits. Categorize them into sections: Added (new features), Changed (updates/improvements), Fixed (bug fixes), and Removed (if any). Keep descriptions concise and user-focused. If a commit doesn't fit these categories, skip it. Only include sections that have items. Format in markdown. Do not include any introduction or conclusion text, just the categorized list."
+          PROMPT="You are a release notes generator for OpenNOW, an open source native GeForce NOW client built with Rust. Generate clean, user-friendly release notes from these git commits. Categorize them into sections: Added (new features), Changed (updates/improvements), Fixed (bug fixes), and Removed (if any). Keep descriptions concise and user-focused. If a commit doesn't fit these categories, skip it. Only include sections that have items. Format in markdown. Do not include any introduction or conclusion text, just the categorized list."
           PROMPT=$(printf "%s\n\nGit commits:\n%s" "$PROMPT" "$COMMITS")
 
           # Build JSON payload safely using jq
@@ -157,7 +158,7 @@ jobs:
           - platform: macos-latest
             target: macos
             arch: universal
-            rust_target: aarch64-apple-darwin
+            rust_target: universal
           - platform: windows-latest
             target: windows
             arch: x86_64
@@ -173,7 +174,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Update version in all config files
+      - name: Update version in opennow-streamer/Cargo.toml
         shell: bash
         run: |
           VERSION="${{ needs.get-version.outputs.version_number }}"
@@ -185,77 +186,16 @@ jobs:
             VERSION="0.1.0"
           fi
 
-          # Update package.json
+          # Update opennow-streamer/Cargo.toml
           if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" package.json
-            sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
-            sed -i '' "s/^version = \"[^\"]*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+            sed -i '' "s/^version = \"[^\"]*\"/version = \"$VERSION\"/" opennow-streamer/Cargo.toml
           else
-            sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" package.json
-            sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
-            sed -i "s/^version = \"[^\"]*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+            sed -i "s/^version = \"[^\"]*\"/version = \"$VERSION\"/" opennow-streamer/Cargo.toml
           fi
 
-          # Verify the versions were set correctly
-          echo "=== Verifying versions ==="
-          echo "package.json: $(grep '"version"' package.json | head -1)"
-          echo "tauri.conf.json: $(grep '"version"' src-tauri/tauri.conf.json | head -1)"
-          echo "Cargo.toml: $(grep '^version' src-tauri/Cargo.toml | head -1)"
-
-      # Linux x86_64 dependencies
-      - name: Install Linux dependencies (x86_64)
-        if: matrix.target == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            librsvg2-dev \
-            patchelf \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            libasound2-dev
-
-      # Linux ARM64 cross-compilation dependencies
-      - name: Install Linux ARM64 cross-compilation dependencies
-        if: matrix.target == 'linux-arm64'
-        run: |
-          sudo apt-get update
-          sudo dpkg --add-architecture arm64
-          
-          # Add ARM64 repositories
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          
-          sudo apt-get update
-          
-          # Install cross-compilation toolchain
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu \
-            pkg-config
-          
-          # Install ARM64 libraries (some may not be available, continue on error)
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev:arm64 \
-            librsvg2-dev:arm64 \
-            libssl-dev:arm64 \
-            libgtk-3-dev:arm64 \
-            libayatana-appindicator3-dev:arm64 \
-            libasound2-dev:arm64 || echo "Warning: Some ARM64 packages may not be available"
-          
-          # Verify critical packages are installed
-          dpkg -l | grep -E "libwebkit2gtk.*arm64|libgtk-3.*arm64" || echo "Warning: Critical ARM64 packages may be missing"
-          
-          # Set up pkg-config for cross-compilation
-          echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
-
-      - name: Setup Bun
-        # Note: oven-sh/setup-bun@v2 enables Bun and dependency caching by default.
-        uses: oven-sh/setup-bun@v2
+          # Verify the version was set correctly
+          echo "=== Verifying version ==="
+          echo "opennow-streamer/Cargo.toml: $(grep '^version' opennow-streamer/Cargo.toml | head -1)"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -277,179 +217,378 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: 'src-tauri -> target'
+          workspaces: 'opennow-streamer -> target'
           key: ${{ matrix.target }}
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      # ==================== FFmpeg Installation ====================
 
-      # Generate macOS .icns icon from PNG
-      - name: Generate macOS icon
+      - name: Install FFmpeg (Windows)
+        if: matrix.target == 'windows' || matrix.target == 'windows-arm64'
+        shell: pwsh
+        run: |
+          # Download shared FFmpeg build from gyan.dev (includes all DLLs and dev files)
+          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z"
+          Write-Host "Downloading FFmpeg from $ffmpegUrl..."
+          Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.7z
+          
+          Write-Host "Extracting FFmpeg..."
+          7z x ffmpeg.7z -offmpeg
+          $ffmpegDir = (Get-ChildItem -Path ffmpeg -Directory)[0].FullName
+          Write-Host "FFmpeg extracted to: $ffmpegDir"
+          
+          # Set environment variables for ffmpeg-next crate
+          echo "FFMPEG_DIR=$ffmpegDir" >> $env:GITHUB_ENV
+          echo "PATH=$ffmpegDir\bin;$env:PATH" >> $env:GITHUB_ENV
+          
+          # Store path for later bundling
+          echo "FFMPEG_BIN_DIR=$ffmpegDir\bin" >> $env:GITHUB_ENV
+          
+          Write-Host "FFmpeg setup complete"
+          Write-Host "FFMPEG_DIR: $ffmpegDir"
+          Write-Host "FFMPEG_BIN_DIR: $ffmpegDir\bin"
+
+      - name: Install FFmpeg (macOS)
         if: matrix.target == 'macos'
         run: |
-          mkdir -p src-tauri/icons/icon.iconset
-          sips -z 16 16 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_16x16.png
-          sips -z 32 32 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_16x16@2x.png
-          sips -z 32 32 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_32x32.png
-          sips -z 64 64 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_32x32@2x.png
-          sips -z 128 128 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_128x128.png
-          sips -z 256 256 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_128x128@2x.png
-          sips -z 256 256 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_256x256.png
-          sips -z 512 512 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_256x256@2x.png
-          sips -z 512 512 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_512x512.png
-          sips -z 1024 1024 src-tauri/icons/icon.png --out src-tauri/icons/icon.iconset/icon_512x512@2x.png
-          iconutil -c icns src-tauri/icons/icon.iconset -o src-tauri/icons/icon.icns
-          rm -rf src-tauri/icons/icon.iconset
-          # Add icon.icns to tauri.conf.json
-          sed -i '' 's/"icons\/icon.png"/"icons\/icon.png", "icons\/icon.icns"/' src-tauri/tauri.conf.json
+          brew install ffmpeg pkg-config
+          echo "FFmpeg installed via Homebrew"
 
-      # Set cross-compilation environment for Linux ARM64
-      - name: Set Linux ARM64 cross-compile env
+      - name: Install FFmpeg (Linux x64)
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libswscale-dev \
+            libswresample-dev \
+            libavfilter-dev \
+            libavdevice-dev \
+            pkg-config \
+            libasound2-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libudev-dev \
+            clang \
+            libclang-dev
+          echo "FFmpeg development libraries installed"
+
+      - name: Install FFmpeg (Linux ARM64)
         if: matrix.target == 'linux-arm64'
         run: |
+          sudo apt-get update
+          sudo dpkg --add-architecture arm64
+          
+          # Add ARM64 repositories
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          
+          sudo apt-get update
+          
+          # Install cross-compilation toolchain
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            pkg-config \
+            clang \
+            libclang-dev
+          
+          # Install ARM64 FFmpeg libraries (some may not be available, continue on error)
+          sudo apt-get install -y \
+            libavcodec-dev:arm64 \
+            libavformat-dev:arm64 \
+            libavutil-dev:arm64 \
+            libswscale-dev:arm64 \
+            libswresample-dev:arm64 \
+            libavfilter-dev:arm64 \
+            libasound2-dev:arm64 \
+            libx11-dev:arm64 || echo "Warning: Some ARM64 packages may not be available"
+          
+          # Set up pkg-config for cross-compilation
+          echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
+          
+          # Set cross-compilation environment
           echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "CXX=aarch64-linux-gnu-g++" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
-      # Set Windows static CRT linking to fix "app can't run on your PC" error
-      # This embeds the Visual C++ runtime into the executable
-      - name: Set Windows RUSTFLAGS for static CRT
-        if: matrix.target == 'windows' || matrix.target == 'windows-arm64'
+      # ==================== Build Native Client ====================
+
+      - name: Build native client (Windows x64)
+        if: matrix.target == 'windows'
         shell: bash
-        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> $GITHUB_ENV
+        working-directory: opennow-streamer
+        run: |
+          echo "Building for Windows x64..."
+          cargo build --release --verbose
 
-      # Build with release creation (main branch only)
-      - name: Build Tauri app (with release)
-        if: github.ref == 'refs/heads/main'
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUSTFLAGS: ${{ env.RUSTFLAGS }}
-        with:
-          tagName: ${{ needs.get-version.outputs.version }}
-          releaseName: 'OpenNOW ${{ needs.get-version.outputs.version }}'
-          releaseBody: |
-            ## OpenNOW ${{ needs.get-version.outputs.version }}
+      - name: Build native client (Windows ARM64)
+        if: matrix.target == 'windows-arm64'
+        shell: bash
+        working-directory: opennow-streamer
+        run: |
+          echo "Building for Windows ARM64..."
+          cargo build --release --target aarch64-pc-windows-msvc --verbose
 
-            Open source GeForce NOW client.
+      - name: Build native client (macOS Universal)
+        if: matrix.target == 'macos'
+        shell: bash
+        working-directory: opennow-streamer
+        run: |
+          echo "Building for macOS (Universal Binary)..."
+          
+          # Build for both architectures
+          cargo build --release --target aarch64-apple-darwin --verbose
+          cargo build --release --target x86_64-apple-darwin --verbose
+          
+          # Create universal binary using lipo
+          mkdir -p target/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/opennow-streamer \
+            target/x86_64-apple-darwin/release/opennow-streamer \
+            -output target/release/opennow-streamer
+          
+          echo "Universal binary created at target/release/opennow-streamer"
+          lipo -info target/release/opennow-streamer
 
-            ${{ needs.get-version.outputs.release_notes }}
+      - name: Build native client (Linux x64)
+        if: matrix.target == 'linux'
+        shell: bash
+        working-directory: opennow-streamer
+        run: |
+          echo "Building for Linux x64..."
+          cargo build --release --verbose
 
-            ---
+      - name: Build native client (Linux ARM64)
+        if: matrix.target == 'linux-arm64'
+        shell: bash
+        working-directory: opennow-streamer
+        run: |
+          echo "Building for Linux ARM64..."
+          cargo build --release --target aarch64-unknown-linux-gnu --verbose
 
-            ### Downloads
-            - **Windows x64**: `.msi` or `.exe` installer
-            - **Windows ARM64**: `.msi` or `.exe` installer (for ARM devices)
-            - **macOS**: `.dmg` disk image (Universal - Intel + Apple Silicon)
-            - **Linux x64**: `.deb` or `.AppImage`
-            - **Linux ARM64**: `.deb` or `.rpm` (Raspberry Pi, ARM servers)
+      # ==================== Bundle FFmpeg Libraries ====================
 
-            [Sponsor this project](https://github.com/sponsors/zortos293)
-          releaseDraft: false
-          prerelease: true
-          args: ${{ matrix.target == 'linux-arm64' && '--target aarch64-unknown-linux-gnu --bundles deb,rpm' || (matrix.target == 'windows-arm64' && '--target aarch64-pc-windows-msvc' || '') }}
+      - name: Bundle FFmpeg DLLs (Windows x64)
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          $targetDir = "opennow-streamer/target/release"
+          
+          Write-Host "Copying FFmpeg DLLs to $targetDir..."
+          Copy-Item "$env:FFMPEG_BIN_DIR\*.dll" -Destination $targetDir -Verbose
+          
+          Write-Host "`n=== Bundled FFmpeg DLLs ==="
+          Get-ChildItem $targetDir -Filter "*.dll" | ForEach-Object { Write-Host "  - $($_.Name)" }
 
-      # Build without release creation (dev branch - artifacts only)
-      - name: Build Tauri app (dev - no release)
-        if: github.ref != 'refs/heads/main'
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUSTFLAGS: ${{ env.RUSTFLAGS }}
-        with:
-          args: ${{ matrix.target == 'linux-arm64' && '--target aarch64-unknown-linux-gnu --bundles deb,rpm' || (matrix.target == 'windows-arm64' && '--target aarch64-pc-windows-msvc' || '') }}
+      - name: Bundle FFmpeg DLLs (Windows ARM64)
+        if: matrix.target == 'windows-arm64'
+        shell: pwsh
+        run: |
+          $targetDir = "opennow-streamer/target/aarch64-pc-windows-msvc/release"
+          
+          Write-Host "Copying FFmpeg DLLs to $targetDir..."
+          Copy-Item "$env:FFMPEG_BIN_DIR\*.dll" -Destination $targetDir -Verbose
+          
+          Write-Host "`n=== Bundled FFmpeg DLLs ==="
+          Get-ChildItem $targetDir -Filter "*.dll" | ForEach-Object { Write-Host "  - $($_.Name)" }
+
+      - name: Bundle FFmpeg dylibs (macOS)
+        if: matrix.target == 'macos'
+        shell: bash
+        run: |
+          cd opennow-streamer
+          
+          BINARY="target/release/opennow-streamer"
+          BUNDLE_DIR="target/release/bundle"
+          
+          echo "Creating bundle directory structure..."
+          mkdir -p "$BUNDLE_DIR/libs"
+          
+          # Copy the binary
+          cp "$BINARY" "$BUNDLE_DIR/"
+          chmod +x "$BUNDLE_DIR/opennow-streamer"
+          
+          # Find and copy FFmpeg dylibs
+          echo ""
+          echo "=== Finding FFmpeg dependencies ==="
+          FFMPEG_LIBS=$(otool -L "$BINARY" | grep -E 'libav|libsw|libpostproc' | awk '{print $1}')
+          
+          for lib in $FFMPEG_LIBS; do
+            if [ -f "$lib" ]; then
+              libname=$(basename "$lib")
+              echo "Copying: $libname"
+              cp "$lib" "$BUNDLE_DIR/libs/"
+              
+              # Update rpath in the binary
+              install_name_tool -change "$lib" "@executable_path/libs/$libname" "$BUNDLE_DIR/opennow-streamer"
+            fi
+          done
+          
+          # Also handle Homebrew paths
+          for lib in $(otool -L "$BUNDLE_DIR/opennow-streamer" | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}'); do
+            if [[ "$lib" == *libav* ]] || [[ "$lib" == *libsw* ]] || [[ "$lib" == *libpostproc* ]]; then
+              libname=$(basename "$lib")
+              if [ -f "$lib" ] && [ ! -f "$BUNDLE_DIR/libs/$libname" ]; then
+                echo "Copying Homebrew lib: $libname"
+                cp "$lib" "$BUNDLE_DIR/libs/"
+                install_name_tool -change "$lib" "@executable_path/libs/$libname" "$BUNDLE_DIR/opennow-streamer"
+              fi
+            fi
+          done
+          
+          echo ""
+          echo "=== Bundled libraries ==="
+          ls -lh "$BUNDLE_DIR/libs/"
+          
+          echo ""
+          echo "=== Final binary dependencies ==="
+          otool -L "$BUNDLE_DIR/opennow-streamer"
+
+      # ==================== Upload Artifacts ====================
 
       - name: Upload Windows x64 artifacts
         if: matrix.target == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: opennow-${{ needs.get-version.outputs.version }}-windows-x64
+          name: opennow-streamer-${{ needs.get-version.outputs.version }}-windows-x64
           path: |
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/nsis/*.exe
+            opennow-streamer/target/release/opennow-streamer.exe
+            opennow-streamer/target/release/*.dll
           retention-days: 30
-
-      - name: Upload Windows x64 portable exe to release
-        if: matrix.target == 'windows' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ needs.get-version.outputs.version }}
-          files: src-tauri/target/release/opennow.exe
-          fail_on_unmatched_files: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Windows ARM64 artifacts
         if: matrix.target == 'windows-arm64'
         uses: actions/upload-artifact@v4
         with:
-          name: opennow-${{ needs.get-version.outputs.version }}-windows-arm64
+          name: opennow-streamer-${{ needs.get-version.outputs.version }}-windows-arm64
           path: |
-            src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
-            src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+            opennow-streamer/target/aarch64-pc-windows-msvc/release/opennow-streamer.exe
+            opennow-streamer/target/aarch64-pc-windows-msvc/release/*.dll
           retention-days: 30
-
-      - name: Upload Windows ARM64 portable exe to release
-        if: matrix.target == 'windows-arm64' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ needs.get-version.outputs.version }}
-          files: src-tauri/target/aarch64-pc-windows-msvc/release/opennow.exe
-          fail_on_unmatched_files: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload macOS artifacts
         if: matrix.target == 'macos'
         uses: actions/upload-artifact@v4
         with:
-          name: opennow-${{ needs.get-version.outputs.version }}-macos
-          path: |
-            src-tauri/target/release/bundle/dmg/*.dmg
-            src-tauri/target/release/bundle/macos/*.app
+          name: opennow-streamer-${{ needs.get-version.outputs.version }}-macos
+          path: opennow-streamer/target/release/bundle/
           retention-days: 30
 
       - name: Upload Linux x64 artifacts
         if: matrix.target == 'linux'
         uses: actions/upload-artifact@v4
         with:
-          name: opennow-${{ needs.get-version.outputs.version }}-linux-x64
-          path: |
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/appimage/*.AppImage
+          name: opennow-streamer-${{ needs.get-version.outputs.version }}-linux-x64
+          path: opennow-streamer/target/release/opennow-streamer
           retention-days: 30
 
       - name: Upload Linux ARM64 artifacts
         if: matrix.target == 'linux-arm64'
         uses: actions/upload-artifact@v4
         with:
-          name: opennow-${{ needs.get-version.outputs.version }}-linux-arm64
-          path: |
-            src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb
-            src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/rpm/*.rpm
+          name: opennow-streamer-${{ needs.get-version.outputs.version }}-linux-arm64
+          path: opennow-streamer/target/aarch64-unknown-linux-gnu/release/opennow-streamer
           retention-days: 30
 
-      # Upload ARM64 builds to release
-      - name: Upload Linux ARM64 to release
-        if: matrix.target == 'linux-arm64' && github.ref == 'refs/heads/main'
+      # ==================== Upload to GitHub Release (main branch only) ====================
+
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main' && matrix.target == 'linux'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.get-version.outputs.version }}
+          name: 'OpenNOW ${{ needs.get-version.outputs.version }}'
+          body: |
+            ## OpenNOW ${{ needs.get-version.outputs.version }}
+
+            Open source native GeForce NOW client built with Rust.
+
+            ${{ needs.get-version.outputs.release_notes }}
+
+            ---
+
+            ### Downloads
+            - **Windows x64**: Portable executable with FFmpeg DLLs
+            - **Windows ARM64**: Portable executable with FFmpeg DLLs (for ARM devices)
+            - **macOS**: Universal binary (Intel + Apple Silicon) with FFmpeg dylibs
+            - **Linux x64**: Portable binary (requires system FFmpeg)
+            - **Linux ARM64**: Portable binary (Raspberry Pi, ARM servers, requires system FFmpeg)
+
+            **Linux users**: Install FFmpeg via your package manager:
+            ```bash
+            # Ubuntu/Debian
+            sudo apt install ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+            
+            # Fedora/RHEL
+            sudo dnf install ffmpeg-free ffmpeg-free-devel
+            
+            # Arch
+            sudo pacman -S ffmpeg
+            ```
+
+            [Sponsor this project](https://github.com/sponsors/zortos293)
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows x64 to release
+        if: matrix.target == 'windows' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
           files: |
-            src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb
-            src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/rpm/*.rpm
+            opennow-streamer/target/release/opennow-streamer.exe
+            opennow-streamer/target/release/*.dll
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Windows ARM64 installers to release
+      - name: Upload Windows ARM64 to release
         if: matrix.target == 'windows-arm64' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
           files: |
-            src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
-            src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+            opennow-streamer/target/aarch64-pc-windows-msvc/release/opennow-streamer.exe
+            opennow-streamer/target/aarch64-pc-windows-msvc/release/*.dll
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload macOS to release
+        if: matrix.target == 'macos' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.get-version.outputs.version }}
+          files: opennow-streamer/target/release/bundle/*
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Linux x64 to release
+        if: matrix.target == 'linux' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.get-version.outputs.version }}
+          files: opennow-streamer/target/release/opennow-streamer
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Linux ARM64 to release
+        if: matrix.target == 'linux-arm64' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.get-version.outputs.version }}
+          files: opennow-streamer/target/aarch64-unknown-linux-gnu/release/opennow-streamer
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
