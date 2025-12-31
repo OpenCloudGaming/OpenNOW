@@ -1,23 +1,16 @@
 {
-  "name": "opennow",
+  "name": "opennow-streamer",
   "version": "0.1.0",
-  "description": "OpenNOW - Open source GeForce NOW client",
-  "type": "module",
+  "description": "OpenNOW - Native GeForce NOW streaming client built from the ground up",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri"
+    "build": "cd opennow-streamer && cargo build --release",
+    "dev": "cd opennow-streamer && cargo run",
+    "test": "cd opennow-streamer && cargo test"
   },
-  "dependencies": {
-    "@tauri-apps/plugin-http": "^2.0.0"
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zortos293/GFNClient.git"
   },
-  "devDependencies": {
-    "@tauri-apps/api": "^2.9.1",
-    "@tauri-apps/cli": "^2.9.6",
-    "esbuild": "^0.27.2",
-    "sharp": "^0.34.5",
-    "typescript": "^5.9.3",
-    "vite": "npm:rolldown-vite@^7.3.0"
-  }
+  "author": "zortos293",
+  "license": "MIT"
 }
