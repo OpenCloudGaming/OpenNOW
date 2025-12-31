@@ -13,7 +13,8 @@ use winit::window::{Window, WindowAttributes, Fullscreen, CursorGrabMode};
 #[cfg(target_os = "macos")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use crate::app::{App, AppState, UiAction, GamesTab, SettingChange};
+use crate::app::{App, AppState, UiAction, GamesTab, SettingChange, GameInfo};
+use crate::app::session::ActiveSessionInfo;
 use crate::media::{VideoFrame, PixelFormat};
 use super::StatsPanel;
 use super::image_cache;
@@ -1503,6 +1504,9 @@ impl Renderer {
                         auto_server_selection,
                         ping_testing,
                         show_settings_modal,
+                        app.show_session_conflict,
+                        &app.active_sessions,
+                        app.pending_game_launch.as_ref(),
                         &mut actions
                     );
                 }
@@ -1760,6 +1764,9 @@ impl Renderer {
         auto_server_selection: bool,
         ping_testing: bool,
         show_settings_modal: bool,
+        show_session_conflict: bool,
+        active_sessions: &[ActiveSessionInfo],
+        pending_game_launch: Option<&GameInfo>,
         actions: &mut Vec<UiAction>
     ) {
         // Top bar with tabs, search, and logout - subscription info moved to bottom
@@ -2093,8 +2100,8 @@ impl Renderer {
         }
 
         // Session conflict dialog
-        if app.show_session_conflict {
-            Self::render_session_conflict_dialog(ctx, &app.active_sessions, app.pending_game_launch.as_ref(), actions);
+        if show_session_conflict {
+            Self::render_session_conflict_dialog(ctx, active_sessions, pending_game_launch, actions);
         }
     }
 
@@ -2405,9 +2412,6 @@ impl Renderer {
         pending_game: Option<&GameInfo>,
         actions: &mut Vec<UiAction>,
     ) {
-        use crate::app::session::ActiveSessionInfo;
-        use crate::app::GameInfo;
-
         let modal_width = 500.0;
         let modal_height = 300.0;
 
@@ -2415,6 +2419,7 @@ impl Renderer {
             .fixed_pos(egui::pos2(0.0, 0.0))
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
+                #[allow(deprecated)]
                 let screen_rect = ctx.screen_rect();
                 ui.allocate_response(screen_rect.size(), egui::Sense::click());
                 ui.painter().rect_filled(
@@ -2424,6 +2429,7 @@ impl Renderer {
                 );
             });
 
+        #[allow(deprecated)]
         let screen_rect = ctx.screen_rect();
         let modal_pos = egui::pos2(
             (screen_rect.width() - modal_width) / 2.0,
