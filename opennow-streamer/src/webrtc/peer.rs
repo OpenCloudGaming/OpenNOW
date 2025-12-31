@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use parking_lot::Mutex;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
@@ -17,6 +18,7 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
+use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use anyhow::{Result, Context};
 use log::{info, debug, warn, error};
 use bytes::Bytes;
@@ -43,6 +45,11 @@ pub enum WebRtcEvent {
     Error(String),
 }
 
+/// Shared peer connection for PLI requests (static to allow access from decoder)
+static PEER_CONNECTION: Mutex<Option<Arc<RTCPeerConnection>>> = Mutex::new(None);
+/// Track SSRC for PLI
+static VIDEO_SSRC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// WebRTC peer for GFN streaming
 pub struct WebRtcPeer {
     peer_connection: Option<Arc<RTCPeerConnection>>,
@@ -52,6 +59,31 @@ pub struct WebRtcPeer {
     event_tx: mpsc::Sender<WebRtcEvent>,
     input_encoder: InputEncoder,
     handshake_complete: bool,
+}
+
+/// Request a keyframe (PLI - Picture Loss Indication)
+/// Call this when decode errors occur to recover the stream
+pub async fn request_keyframe() {
+    let pc = PEER_CONNECTION.lock().clone();
+    let ssrc = VIDEO_SSRC.load(std::sync::atomic::Ordering::Relaxed);
+
+    if let Some(pc) = pc {
+        if ssrc != 0 {
+            let pli = PictureLossIndication {
+                sender_ssrc: 0,
+                media_ssrc: ssrc,
+            };
+
+            match pc.write_rtcp(&[Box::new(pli)]).await {
+                Ok(_) => info!("Sent PLI (keyframe request) for SSRC {}", ssrc),
+                Err(e) => warn!("Failed to send PLI: {:?}", e),
+            }
+        } else {
+            debug!("Cannot send PLI: no video SSRC yet");
+        }
+    } else {
+        debug!("Cannot send PLI: no peer connection");
+    }
 }
 
 impl WebRtcPeer {
@@ -232,10 +264,30 @@ impl WebRtcPeer {
                         Ok((rtp_packet, _)) => {
                             packet_count += 1;
 
-                            // Only log first packet per track
+                            // Store SSRC for PLI on first video packet
                             if packet_count == 1 {
-                                info!("[{}] First RTP packet: {} bytes payload",
-                                    track_id_clone, rtp_packet.payload.len());
+                                info!("[{}] First RTP packet: {} bytes payload, SSRC: {}",
+                                    track_id_clone, rtp_packet.payload.len(), rtp_packet.header.ssrc);
+
+                                if track_kind == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video {
+                                    VIDEO_SSRC.store(rtp_packet.header.ssrc, std::sync::atomic::Ordering::Relaxed);
+
+                                    // Request keyframe immediately when video track starts
+                                    // This ensures we get an IDR frame to begin decoding
+                                    info!("Video track started - requesting initial keyframe");
+                                    let pc_clone = PEER_CONNECTION.lock().clone();
+                                    if let Some(pc) = pc_clone {
+                                        let pli = PictureLossIndication {
+                                            sender_ssrc: 0,
+                                            media_ssrc: rtp_packet.header.ssrc,
+                                        };
+                                        if let Err(e) = pc.write_rtcp(&[Box::new(pli)]).await {
+                                            warn!("Failed to send initial PLI: {:?}", e);
+                                        } else {
+                                            info!("Sent initial PLI for SSRC {}", rtp_packet.header.ssrc);
+                                        }
+                                    }
+                                }
                             }
 
                             if track_kind == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video {
@@ -358,6 +410,9 @@ impl WebRtcPeer {
             debug!("SDP: {}", line);
         }
         debug!("=== END SDP ===");
+
+        // Store in static for PLI requests
+        *PEER_CONNECTION.lock() = Some(peer_connection.clone());
 
         self.peer_connection = Some(peer_connection);
 

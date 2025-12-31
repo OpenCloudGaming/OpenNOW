@@ -37,6 +37,8 @@ struct OpenNowApp {
     modifiers: Modifiers,
     /// Track if we were streaming (for cursor lock state changes)
     was_streaming: bool,
+    /// Last frame time for frame rate limiting
+    last_frame_time: std::time::Instant,
 }
 
 /// Convert winit KeyCode to Windows Virtual Key code
@@ -127,6 +129,7 @@ impl OpenNowApp {
             renderer: None,
             modifiers: Modifiers::default(),
             was_streaming: false,
+            last_frame_time: std::time::Instant::now(),
         }
     }
 
@@ -287,6 +290,26 @@ impl ApplicationHandler for OpenNowApp {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // Frame rate limiting - sync to stream target FPS when streaming
+                let mut app_guard = self.app.lock();
+                let target_fps = if app_guard.state == AppState::Streaming {
+                    app_guard.stats.target_fps.max(60) // Use stream's target FPS (min 60)
+                } else {
+                    60 // UI mode: 60fps is enough
+                };
+                drop(app_guard);
+
+                let frame_duration = std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
+                let elapsed = self.last_frame_time.elapsed();
+                if elapsed < frame_duration {
+                    // Sleep for remaining time (avoid busy loop)
+                    let sleep_time = frame_duration - elapsed;
+                    if sleep_time.as_micros() > 500 {
+                        std::thread::sleep(sleep_time - std::time::Duration::from_micros(500));
+                    }
+                }
+                self.last_frame_time = std::time::Instant::now();
+
                 let mut app_guard = self.app.lock();
                 app_guard.update();
 
@@ -297,8 +320,8 @@ impl ApplicationHandler for OpenNowApp {
                     renderer.lock_cursor();
                     self.was_streaming = true;
 
-                    // Start Windows Raw Input for unaccelerated mouse movement
-                    #[cfg(target_os = "windows")]
+                    // Start Raw Input for unaccelerated mouse movement (Windows/macOS)
+                    #[cfg(any(target_os = "windows", target_os = "macos"))]
                     {
                         match input::start_raw_input() {
                             Ok(()) => info!("Raw input enabled - mouse acceleration disabled"),
@@ -311,7 +334,7 @@ impl ApplicationHandler for OpenNowApp {
                     self.was_streaming = false;
 
                     // Stop raw input
-                    #[cfg(target_os = "windows")]
+                    #[cfg(any(target_os = "windows", target_os = "macos"))]
                     {
                         input::stop_raw_input();
                     }
@@ -354,7 +377,7 @@ impl ApplicationHandler for OpenNowApp {
 
     fn device_event(&mut self, _event_loop: &ActiveEventLoop, _device_id: DeviceId, event: DeviceEvent) {
         // Only use winit's MouseMotion as fallback when raw input is not active
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         if input::is_raw_input_active() {
             return; // Raw input handles mouse movement
         }

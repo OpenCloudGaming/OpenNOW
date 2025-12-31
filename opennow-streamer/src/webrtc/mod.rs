@@ -8,7 +8,7 @@ mod sdp;
 mod datachannel;
 
 pub use signaling::{GfnSignaling, SignalingEvent, IceCandidate};
-pub use peer::{WebRtcPeer, WebRtcEvent};
+pub use peer::{WebRtcPeer, WebRtcEvent, request_keyframe};
 pub use sdp::*;
 pub use datachannel::*;
 
@@ -304,8 +304,8 @@ pub async fn run_streaming(
     let (input_event_tx, input_event_rx) = mpsc::channel::<InputEvent>(1024);
     input_handler.set_event_sender(input_event_tx.clone());
 
-    // Also set raw input sender for direct mouse events (Windows only)
-    #[cfg(target_os = "windows")]
+    // Also set raw input sender for direct mouse events (Windows/macOS)
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     crate::input::set_raw_input_sender(input_event_tx);
 
     info!("Input handler connected to streaming loop");
@@ -619,6 +619,11 @@ pub async fn run_streaming(
                         info!("First frame decoded (async) in {:.1}ms", decode_stat.decode_time_ms);
                     }
                 }
+
+                // Request keyframe if decoder is failing
+                if decode_stat.needs_keyframe {
+                    request_keyframe().await;
+                }
             }
             // Update stats periodically (interval persists across loop iterations)
             _ = stats_interval.tick() => {
@@ -660,7 +665,7 @@ pub async fn run_streaming(
     }
 
     // Clean up raw input sender
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     crate::input::clear_raw_input_sender();
 
     info!("Streaming session ended");

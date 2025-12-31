@@ -11,8 +11,8 @@
 mod windows;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(target_os = "linux")]
-mod linux;
+// TODO: Implement linux.rs when Linux platform support is added
+// For now, stubs are provided below for Linux
 
 mod protocol;
 
@@ -30,7 +30,26 @@ pub use windows::{
     update_raw_input_center,
     set_raw_input_sender,
     clear_raw_input_sender,
-    // New coalescing and local cursor functions
+    set_local_cursor_dimensions,
+    get_local_cursor_position,
+    get_local_cursor_normalized,
+    flush_pending_mouse_events,
+    get_coalesced_event_count,
+    reset_coalescing,
+};
+
+// Re-export raw input functions for macOS
+#[cfg(target_os = "macos")]
+pub use macos::{
+    start_raw_input,
+    stop_raw_input,
+    pause_raw_input,
+    resume_raw_input,
+    get_raw_mouse_delta,
+    is_raw_input_active,
+    update_raw_input_center,
+    set_raw_input_sender,
+    clear_raw_input_sender,
     set_local_cursor_dimensions,
     get_local_cursor_position,
     get_local_cursor_normalized,
@@ -108,39 +127,38 @@ pub fn session_elapsed_us() -> u64 {
     }
 }
 
-// Stubs for non-Windows platforms
-#[cfg(not(target_os = "windows"))]
+// Stubs for Linux (Windows and macOS have native implementations)
+#[cfg(target_os = "linux")]
 pub fn start_raw_input() -> Result<(), String> {
-    Err("Raw input only supported on Windows".to_string())
+    Err("Raw input not yet implemented for Linux".to_string())
 }
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn stop_raw_input() {}
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn pause_raw_input() {}
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn resume_raw_input() {}
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn get_raw_mouse_delta() -> (i32, i32) { (0, 0) }
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn is_raw_input_active() -> bool { false }
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn update_raw_input_center() {}
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn set_raw_input_sender(_sender: tokio::sync::mpsc::Sender<crate::webrtc::InputEvent>) {}
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn clear_raw_input_sender() {}
-// New stubs for non-Windows
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn set_local_cursor_dimensions(_width: u32, _height: u32) {}
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn get_local_cursor_position() -> (i32, i32) { (0, 0) }
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn get_local_cursor_normalized() -> (f32, f32) { (0.5, 0.5) }
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn flush_pending_mouse_events() {}
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn get_coalesced_event_count() -> u64 { 0 }
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn reset_coalescing() {}
 
 use std::collections::HashSet;

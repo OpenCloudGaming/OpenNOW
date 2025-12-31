@@ -232,6 +232,10 @@ impl GfnSignaling {
                                     if inner.get("type").and_then(|t| t.as_str()) == Some("offer") {
                                         if let Some(sdp) = inner.get("sdp").and_then(|s| s.as_str()) {
                                             info!("Received SDP offer, length: {}", sdp.len());
+                                            // Log full SDP for debugging (color space info, codec params)
+                                            for line in sdp.lines() {
+                                                debug!("SDP: {}", line);
+                                            }
                                             let _ = event_tx_clone.send(SignalingEvent::SdpOffer(sdp.to_string())).await;
                                         }
                                     }

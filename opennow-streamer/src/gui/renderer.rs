@@ -10,8 +10,11 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowAttributes, Fullscreen, CursorGrabMode};
 
+#[cfg(target_os = "macos")]
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
 use crate::app::{App, AppState, UiAction, GamesTab, SettingChange};
-use crate::media::VideoFrame;
+use crate::media::{VideoFrame, PixelFormat};
 use super::StatsPanel;
 use super::image_cache;
 use std::collections::HashMap;
@@ -67,17 +70,90 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Sample Y, U, V planes
     // Y is full resolution, U/V are half resolution (4:2:0 subsampling)
     // The sampler handles the upscaling of U/V automatically
-    let y = textureSample(y_texture, video_sampler, input.tex_coord).r;
-    let u = textureSample(u_texture, video_sampler, input.tex_coord).r - 0.5;
-    let v = textureSample(v_texture, video_sampler, input.tex_coord).r - 0.5;
+    let y_raw = textureSample(y_texture, video_sampler, input.tex_coord).r;
+    let u_raw = textureSample(u_texture, video_sampler, input.tex_coord).r;
+    let v_raw = textureSample(v_texture, video_sampler, input.tex_coord).r;
 
-    // BT.601 YUV to RGB conversion (full range)
-    // R = Y + 1.402 * V
-    // G = Y - 0.344 * U - 0.714 * V
-    // B = Y + 1.772 * U
-    let r = y + 1.402 * v;
-    let g = y - 0.344 * u - 0.714 * v;
-    let b = y + 1.772 * u;
+    // BT.709 YUV to RGB conversion (limited/TV range)
+    // Video uses limited range: Y [16-235], UV [16-240]
+    // First convert from limited range to full range
+    let y = (y_raw - 0.0625) * 1.1644;  // (Y - 16/255) * (255/219)
+    let u = (u_raw - 0.5) * 1.1384;      // (U - 128/255) * (255/224)
+    let v = (v_raw - 0.5) * 1.1384;      // (V - 128/255) * (255/224)
+
+    // BT.709 color matrix (HD content: 720p and above)
+    // R = Y + 1.5748 * V
+    // G = Y - 0.1873 * U - 0.4681 * V
+    // B = Y + 1.8556 * U
+    let r = y + 1.5748 * v;
+    let g = y - 0.1873 * u - 0.4681 * v;
+    let b = y + 1.8556 * u;
+
+    return vec4<f32>(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
+}
+"#;
+
+/// WGSL shader for NV12 format (VideoToolbox on macOS)
+/// NV12 has Y plane (R8) and interleaved UV plane (Rg8)
+/// This shader deinterleaves UV on the GPU - much faster than CPU scaler
+const NV12_SHADER: &str = r#"
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) tex_coord: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var positions = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>( 1.0,  1.0),
+    );
+
+    var tex_coords = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(1.0, 0.0),
+    );
+
+    var output: VertexOutput;
+    output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    output.tex_coord = tex_coords[vertex_index];
+    return output;
+}
+
+// NV12 textures: Y (R8, full res) and UV (Rg8, half res, interleaved)
+@group(0) @binding(0)
+var y_texture: texture_2d<f32>;
+@group(0) @binding(1)
+var uv_texture: texture_2d<f32>;
+@group(0) @binding(2)
+var video_sampler: sampler;
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    // Sample Y (full res) and UV (half res, interleaved)
+    let y_raw = textureSample(y_texture, video_sampler, input.tex_coord).r;
+    let uv = textureSample(uv_texture, video_sampler, input.tex_coord);
+    let u_raw = uv.r;  // U is in red channel
+    let v_raw = uv.g;  // V is in green channel
+
+    // BT.709 YUV to RGB conversion (limited/TV range - same as YUV420P path)
+    // VideoToolbox outputs limited range: Y [16-235], UV [16-240]
+    let y = (y_raw - 0.0625) * 1.1644;  // (Y - 16/255) * (255/219)
+    let u = (u_raw - 0.5) * 1.1384;      // (U - 128/255) * (255/224)
+    let v = (v_raw - 0.5) * 1.1384;      // (V - 128/255) * (255/224)
+
+    // BT.709 color matrix (HD content: 720p and above)
+    let r = y + 1.5748 * v;
+    let g = y - 0.1873 * u - 0.4681 * v;
+    let b = y + 1.8556 * u;
 
     return vec4<f32>(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
 }
@@ -101,12 +177,21 @@ pub struct Renderer {
     video_pipeline: wgpu::RenderPipeline,
     video_bind_group_layout: wgpu::BindGroupLayout,
     video_sampler: wgpu::Sampler,
-    // YUV planar textures (Y = full res, U/V = half res for 4:2:0)
+    // YUV420P planar textures (Y = full res, U/V = half res for 4:2:0)
     y_texture: Option<wgpu::Texture>,
     u_texture: Option<wgpu::Texture>,
     v_texture: Option<wgpu::Texture>,
     video_bind_group: Option<wgpu::BindGroup>,
     video_size: (u32, u32),
+
+    // NV12 pipeline (for VideoToolbox on macOS - faster than CPU scaler)
+    nv12_pipeline: wgpu::RenderPipeline,
+    nv12_bind_group_layout: wgpu::BindGroupLayout,
+    // NV12 textures: Y (R8) and UV interleaved (Rg8)
+    uv_texture: Option<wgpu::Texture>,
+    nv12_bind_group: Option<wgpu::BindGroup>,
+    // Current pixel format
+    current_format: PixelFormat,
 
     // Stats panel
     stats_panel: StatsPanel,
@@ -141,6 +226,15 @@ impl Renderer {
         let size = window.inner_size();
 
         info!("Window created: {}x{}", size.width, size.height);
+
+        // On macOS, enable high-performance mode and disable App Nap
+        #[cfg(target_os = "macos")]
+        Self::enable_macos_high_performance();
+
+        // On macOS, set display to 120Hz immediately (before fullscreen)
+        // This ensures Direct mode uses high refresh rate
+        #[cfg(target_os = "macos")]
+        Self::set_macos_display_mode_120hz();
 
         // Create wgpu instance
         // Force DX12 on Windows for better exclusive fullscreen support and lower latency
@@ -200,8 +294,7 @@ impl Renderer {
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
-        // Use Immediate present mode for lowest latency (no VSync)
-        // Fall back to Mailbox if Immediate not available, then Fifo (VSync)
+        // Use Immediate for lowest latency - frame pacing is handled by our render loop
         let present_mode = if surface_caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
             wgpu::PresentMode::Immediate
         } else if surface_caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
@@ -219,7 +312,7 @@ impl Renderer {
             present_mode,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
-            desired_maximum_frame_latency: 1, // Minimize frame queue for lower latency
+            desired_maximum_frame_latency: 1, // Minimum latency for streaming
         };
 
         surface.configure(&device, &config);
@@ -348,6 +441,87 @@ impl Renderer {
             ..Default::default()
         });
 
+        // Create NV12 pipeline (for VideoToolbox on macOS - GPU deinterleaving)
+        let nv12_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("NV12 Shader"),
+            source: wgpu::ShaderSource::Wgsl(NV12_SHADER.into()),
+        });
+
+        let nv12_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("NV12 Bind Group Layout"),
+            entries: &[
+                // Y texture (full resolution, R8)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // UV texture (half resolution, Rg8 interleaved)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Sampler
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let nv12_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("NV12 Pipeline Layout"),
+            bind_group_layouts: &[&nv12_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let nv12_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("NV12 Pipeline"),
+            layout: Some(&nv12_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &nv12_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &nv12_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         // Create stats panel
         let stats_panel = StatsPanel::new();
 
@@ -369,6 +543,11 @@ impl Renderer {
             v_texture: None,
             video_bind_group: None,
             video_size: (0, 0),
+            nv12_pipeline,
+            nv12_bind_group_layout,
+            uv_texture: None,
+            nv12_bind_group: None,
+            current_format: PixelFormat::YUV420P,
             stats_panel,
             fullscreen: false,
             consecutive_surface_errors: 0,
@@ -435,6 +614,11 @@ impl Renderer {
             self.config.present_mode,
             self.config.desired_maximum_frame_latency
         );
+
+        // On macOS, set ProMotion frame rate and disable VSync on every configure
+        // This ensures the Metal layer always requests 120fps from ProMotion
+        #[cfg(target_os = "macos")]
+        Self::disable_macos_vsync(&self.window);
     }
 
     /// Recover from swapchain errors (Outdated/Lost)
@@ -466,69 +650,73 @@ impl Renderer {
         self.fullscreen = !self.fullscreen;
 
         if self.fullscreen {
-            // Try to find the best video mode (highest refresh rate at current resolution)
-            let current_monitor = self.window.current_monitor();
+            // On macOS, use Core Graphics to force 120Hz display mode
+            #[cfg(target_os = "macos")]
+            Self::set_macos_display_mode_120hz();
 
-            if let Some(monitor) = current_monitor {
-                let current_size = self.window.inner_size();
-                let mut best_mode: Option<winit::monitor::VideoModeHandle> = None;
-                let mut best_refresh_rate: u32 = 0;
-
-                info!("Searching for video modes on monitor: {:?}", monitor.name());
-                info!("Current window size: {}x{}", current_size.width, current_size.height);
-
-                // Log all available video modes for debugging
-                let mut mode_count = 0;
-                for mode in monitor.video_modes() {
-                    let mode_size = mode.size();
-                    let refresh_rate = mode.refresh_rate_millihertz() / 1000; // Convert to Hz
-
-                    // Log high refresh rate modes (>= 100Hz) or modes matching our resolution
-                    if refresh_rate >= 100 || (mode_size.width == current_size.width && mode_size.height == current_size.height) {
-                        debug!(
-                            "  Available mode: {}x{} @ {}Hz ({}mHz)",
-                            mode_size.width,
-                            mode_size.height,
-                            refresh_rate,
-                            mode.refresh_rate_millihertz()
-                        );
-                    }
-                    mode_count += 1;
-
-                    // Match resolution (or close to it) and pick highest refresh rate
-                    if mode_size.width >= current_size.width && mode_size.height >= current_size.height {
-                        if refresh_rate > best_refresh_rate {
-                            best_refresh_rate = refresh_rate;
-                            best_mode = Some(mode);
-                        }
-                    }
-                }
-                info!("Total video modes available: {}", mode_count);
-
-                // If we found a high refresh rate mode, use exclusive fullscreen
-                if let Some(mode) = best_mode {
-                    let refresh_hz = mode.refresh_rate_millihertz() / 1000;
-                    info!(
-                        "SELECTED exclusive fullscreen: {}x{} @ {}Hz ({}mHz)",
-                        mode.size().width,
-                        mode.size().height,
-                        refresh_hz,
-                        mode.refresh_rate_millihertz()
-                    );
-
-                    // Use exclusive fullscreen for lowest latency (bypasses DWM compositor)
-                    self.window.set_fullscreen(Some(Fullscreen::Exclusive(mode)));
-                    return;
-                } else {
-                    info!("No suitable exclusive fullscreen mode found");
-                }
-            } else {
-                info!("No current monitor detected");
+            // Use borderless fullscreen on macOS (exclusive doesn't work well)
+            // The display mode is set separately via Core Graphics
+            #[cfg(target_os = "macos")]
+            {
+                info!("Entering borderless fullscreen with 120Hz display mode");
+                self.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                Self::disable_macos_vsync(&self.window);
+                return;
             }
 
-            // Fallback to borderless if no suitable mode found
-            info!("Entering borderless fullscreen (DWM compositor active - may limit to 60fps)");
-            self.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+            // On other platforms, try exclusive fullscreen
+            #[cfg(not(target_os = "macos"))]
+            {
+                let current_monitor = self.window.current_monitor();
+
+                if let Some(monitor) = current_monitor {
+                    let current_size = self.window.inner_size();
+                    let mut best_mode: Option<winit::monitor::VideoModeHandle> = None;
+                    let mut best_refresh_rate: u32 = 0;
+
+                    info!("Searching for video modes on monitor: {:?}", monitor.name());
+                    info!("Current window size: {}x{}", current_size.width, current_size.height);
+
+                    let mut mode_count = 0;
+                    let mut high_refresh_modes = Vec::new();
+                    for mode in monitor.video_modes() {
+                        let mode_size = mode.size();
+                        let refresh_rate = mode.refresh_rate_millihertz() / 1000;
+
+                        if refresh_rate >= 100 {
+                            high_refresh_modes.push(format!("{}x{}@{}Hz", mode_size.width, mode_size.height, refresh_rate));
+                        }
+                        mode_count += 1;
+
+                        if mode_size.width >= current_size.width && mode_size.height >= current_size.height {
+                            if refresh_rate > best_refresh_rate {
+                                best_refresh_rate = refresh_rate;
+                                best_mode = Some(mode);
+                            }
+                        }
+                    }
+                    info!("Total video modes: {} (high refresh >=100Hz: {:?})", mode_count, high_refresh_modes);
+
+                    if let Some(mode) = best_mode {
+                        let refresh_hz = mode.refresh_rate_millihertz() / 1000;
+                        info!(
+                            "SELECTED exclusive fullscreen: {}x{} @ {}Hz",
+                            mode.size().width,
+                            mode.size().height,
+                            refresh_hz
+                        );
+                        self.window.set_fullscreen(Some(Fullscreen::Exclusive(mode)));
+                        return;
+                    } else {
+                        info!("No suitable exclusive fullscreen mode found");
+                    }
+                } else {
+                    info!("No current monitor detected");
+                }
+
+                info!("Entering borderless fullscreen");
+                self.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+            }
         } else {
             info!("Exiting fullscreen");
             self.window.set_fullscreen(None);
@@ -573,6 +761,10 @@ impl Renderer {
                 );
                 self.fullscreen = true;
                 self.window.set_fullscreen(Some(Fullscreen::Exclusive(mode)));
+
+                #[cfg(target_os = "macos")]
+                Self::disable_macos_vsync(&self.window);
+
                 return;
             }
         }
@@ -580,6 +772,200 @@ impl Renderer {
         // Fallback
         self.fullscreen = true;
         self.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+
+        #[cfg(target_os = "macos")]
+        Self::disable_macos_vsync(&self.window);
+    }
+
+    /// Disable VSync on macOS Metal layer for unlimited FPS
+    /// This prevents the compositor from limiting frame rate
+    #[cfg(target_os = "macos")]
+    fn disable_macos_vsync(window: &Window) {
+        use cocoa::base::id;
+        use objc::{msg_send, sel, sel_impl};
+
+        // Get NSView from raw window handle
+        let ns_view = match window.window_handle() {
+            Ok(handle) => {
+                match handle.as_raw() {
+                    RawWindowHandle::AppKit(appkit) => appkit.ns_view.as_ptr() as id,
+                    _ => {
+                        warn!("macOS: Unexpected window handle type");
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("macOS: Could not get window handle: {:?}", e);
+                return;
+            }
+        };
+
+        unsafe {
+            // Get the layer from NSView
+            let layer: id = msg_send![ns_view, layer];
+            if layer.is_null() {
+                warn!("macOS: Could not get layer for VSync disable");
+                return;
+            }
+
+            // Check if it's a CAMetalLayer by checking class name
+            let class: id = msg_send![layer, class];
+            let class_name: id = msg_send![class, description];
+            let name_cstr: *const i8 = msg_send![class_name, UTF8String];
+
+            if !name_cstr.is_null() {
+                let name = std::ffi::CStr::from_ptr(name_cstr).to_string_lossy();
+                if name.contains("CAMetalLayer") {
+                    // Set preferredFrameRateRange for ProMotion displays FIRST
+                    // This tells macOS we want 120fps, preventing dynamic drop to 60Hz
+                    #[repr(C)]
+                    struct CAFrameRateRange {
+                        minimum: f32,
+                        maximum: f32,
+                        preferred: f32,
+                    }
+
+                    let frame_rate_range = CAFrameRateRange {
+                        minimum: 120.0,  // Minimum 120fps - don't allow lower
+                        maximum: 120.0,
+                        preferred: 120.0,
+                    };
+
+                    // Check if the layer responds to setPreferredFrameRateRange: (macOS 12+)
+                    let responds: bool = msg_send![layer, respondsToSelector: sel!(setPreferredFrameRateRange:)];
+                    if responds {
+                        let _: () = msg_send![layer, setPreferredFrameRateRange: frame_rate_range];
+                        info!("macOS: Set preferredFrameRateRange to 120fps fixed (ProMotion)");
+                    }
+
+                    // Keep displaySync ENABLED for ProMotion - it needs VSync to pace at 120Hz
+                    // Disabling it causes ProMotion to fall back to 60Hz
+                    let _: () = msg_send![layer, setDisplaySyncEnabled: true];
+                    info!("macOS: Configured CAMetalLayer for 120Hz ProMotion");
+                }
+            }
+        }
+    }
+
+    /// Set macOS display to 120Hz using Core Graphics
+    /// This bypasses winit's video mode selection which doesn't work well on macOS
+    #[cfg(target_os = "macos")]
+    fn set_macos_display_mode_120hz() {
+        use std::ffi::c_void;
+
+        // Core Graphics FFI
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGMainDisplayID() -> u32;
+            fn CGDisplayCopyAllDisplayModes(display: u32, options: *const c_void) -> *const c_void;
+            fn CFArrayGetCount(array: *const c_void) -> isize;
+            fn CFArrayGetValueAtIndex(array: *const c_void, idx: isize) -> *const c_void;
+            fn CGDisplayModeGetWidth(mode: *const c_void) -> usize;
+            fn CGDisplayModeGetHeight(mode: *const c_void) -> usize;
+            fn CGDisplayModeGetRefreshRate(mode: *const c_void) -> f64;
+            fn CGDisplaySetDisplayMode(display: u32, mode: *const c_void, options: *const c_void) -> i32;
+            fn CGDisplayPixelsWide(display: u32) -> usize;
+            fn CGDisplayPixelsHigh(display: u32) -> usize;
+            fn CFRelease(cf: *const c_void);
+        }
+
+        unsafe {
+            let display_id = CGMainDisplayID();
+            let current_width = CGDisplayPixelsWide(display_id);
+            let current_height = CGDisplayPixelsHigh(display_id);
+
+            info!("macOS: Searching for 120Hz mode on display {} (current: {}x{})",
+                display_id, current_width, current_height);
+
+            let modes = CGDisplayCopyAllDisplayModes(display_id, std::ptr::null());
+            if modes.is_null() {
+                warn!("macOS: Could not enumerate display modes");
+                return;
+            }
+
+            let count = CFArrayGetCount(modes);
+            let mut best_mode: *const c_void = std::ptr::null();
+            let mut best_refresh: f64 = 0.0;
+
+            for i in 0..count {
+                let mode = CFArrayGetValueAtIndex(modes, i);
+                let width = CGDisplayModeGetWidth(mode);
+                let height = CGDisplayModeGetHeight(mode);
+                let refresh = CGDisplayModeGetRefreshRate(mode);
+
+                // Look for modes matching current resolution with high refresh rate
+                if width == current_width && height == current_height {
+                    if refresh > best_refresh {
+                        best_refresh = refresh;
+                        best_mode = mode;
+                    }
+                    if refresh >= 100.0 {
+                        info!("  Found mode: {}x{} @ {:.1}Hz", width, height, refresh);
+                    }
+                }
+            }
+
+            if !best_mode.is_null() && best_refresh >= 119.0 {
+                let width = CGDisplayModeGetWidth(best_mode);
+                let height = CGDisplayModeGetHeight(best_mode);
+                info!("macOS: Setting display mode to {}x{} @ {:.1}Hz", width, height, best_refresh);
+
+                let result = CGDisplaySetDisplayMode(display_id, best_mode, std::ptr::null());
+                if result == 0 {
+                    info!("macOS: Successfully set 120Hz display mode!");
+                } else {
+                    warn!("macOS: Failed to set display mode, error: {}", result);
+                }
+            } else if best_refresh > 0.0 {
+                info!("macOS: No 120Hz mode found, best is {:.1}Hz - display may not support it", best_refresh);
+            } else {
+                warn!("macOS: No matching display modes found");
+            }
+
+            CFRelease(modes);
+        }
+    }
+
+    /// Enable high-performance mode on macOS
+    /// This disables App Nap and other power throttling that can limit FPS
+    #[cfg(target_os = "macos")]
+    fn enable_macos_high_performance() {
+        use cocoa::base::{id, nil};
+        use objc::{msg_send, sel, sel_impl, class};
+
+        unsafe {
+            // Get NSProcessInfo
+            let process_info: id = msg_send![class!(NSProcessInfo), processInfo];
+            if process_info == nil {
+                warn!("macOS: Could not get NSProcessInfo");
+                return;
+            }
+
+            // Activity options for high performance:
+            // NSActivityUserInitiated = 0x00FFFFFF (prevents App Nap, system sleep)
+            // NSActivityLatencyCritical = 0xFF00000000 (requests low latency scheduling)
+            let options: u64 = 0x00FFFFFF | 0xFF00000000;
+
+            // Create reason string
+            let reason: id = msg_send![class!(NSString), stringWithUTF8String: b"Streaming requires consistent frame timing\0".as_ptr()];
+
+            // Begin activity - this returns an object we should retain
+            let activity: id = msg_send![process_info, beginActivityWithOptions:options reason:reason];
+            if activity != nil {
+                // Retain the activity object to keep it alive for the app lifetime
+                let _: id = msg_send![activity, retain];
+                info!("macOS: High-performance mode enabled (App Nap disabled, latency-critical scheduling)");
+            } else {
+                warn!("macOS: Failed to enable high-performance mode");
+            }
+
+            // Also try to disable automatic termination
+            let _: () = msg_send![process_info, disableAutomaticTermination: reason];
+
+            // Disable sudden termination
+            let _: () = msg_send![process_info, disableSuddenTermination];
+        }
     }
 
     /// Lock cursor for streaming (captures mouse)
@@ -608,14 +994,21 @@ impl Renderer {
     }
 
     /// Update video textures from frame (GPU YUV->RGB conversion)
-    /// Uploads Y, U, V planes directly - NO CPU color conversion!
+    /// Supports both YUV420P (3 planes) and NV12 (2 planes) formats
+    /// NV12 is faster on macOS as it skips CPU-based scaler
     pub fn update_video(&mut self, frame: &VideoFrame) {
         let uv_width = frame.width / 2;
         let uv_height = frame.height / 2;
 
-        // Check if we need to recreate textures
-        if self.video_size != (frame.width, frame.height) {
-            // Y texture (full resolution, single channel)
+        // Check if we need to recreate textures (size or format change)
+        let format_changed = self.current_format != frame.format;
+        let size_changed = self.video_size != (frame.width, frame.height);
+
+        if size_changed || format_changed {
+            self.current_format = frame.format;
+            self.video_size = (frame.width, frame.height);
+
+            // Y texture is same for both formats (full resolution, R8)
             let y_texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("Y Texture"),
                 size: wgpu::Extent3d {
@@ -631,77 +1024,131 @@ impl Renderer {
                 view_formats: &[],
             });
 
-            // U texture (half resolution, single channel)
-            let u_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("U Texture"),
-                size: wgpu::Extent3d {
-                    width: uv_width,
-                    height: uv_height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
+            match frame.format {
+                PixelFormat::NV12 => {
+                    // NV12: UV plane is interleaved (Rg8, 2 bytes per pixel)
+                    let uv_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("UV Texture (NV12)"),
+                        size: wgpu::Extent3d {
+                            width: uv_width,
+                            height: uv_height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rg8Unorm, // 2-channel for interleaved UV
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    });
 
-            // V texture (half resolution, single channel)
-            let v_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("V Texture"),
-                size: wgpu::Extent3d {
-                    width: uv_width,
-                    height: uv_height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
+                    let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let uv_view = uv_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-            // Create bind group with all 3 textures
-            let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let u_view = u_texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let v_view = v_texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("NV12 Bind Group"),
+                        layout: &self.nv12_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&y_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(&uv_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::Sampler(&self.video_sampler),
+                            },
+                        ],
+                    });
 
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Video YUV Bind Group"),
-                layout: &self.video_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&y_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&u_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&v_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(&self.video_sampler),
-                    },
-                ],
-            });
+                    self.y_texture = Some(y_texture);
+                    self.uv_texture = Some(uv_texture);
+                    self.nv12_bind_group = Some(bind_group);
+                    // Clear YUV420P textures
+                    self.u_texture = None;
+                    self.v_texture = None;
+                    self.video_bind_group = None;
 
-            self.y_texture = Some(y_texture);
-            self.u_texture = Some(u_texture);
-            self.v_texture = Some(v_texture);
-            self.video_bind_group = Some(bind_group);
-            self.video_size = (frame.width, frame.height);
+                    info!("NV12 textures created: {}x{} (UV: {}x{}) - GPU deinterleaving enabled (CPU scaler bypassed!)",
+                        frame.width, frame.height, uv_width, uv_height);
+                }
+                PixelFormat::YUV420P => {
+                    // YUV420P: Separate U and V planes (R8 each)
+                    let u_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("U Texture"),
+                        size: wgpu::Extent3d {
+                            width: uv_width,
+                            height: uv_height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::R8Unorm,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    });
 
-            info!("Video YUV textures created: {}x{} (UV: {}x{}) - GPU color conversion enabled", 
-                frame.width, frame.height, uv_width, uv_height);
+                    let v_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("V Texture"),
+                        size: wgpu::Extent3d {
+                            width: uv_width,
+                            height: uv_height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::R8Unorm,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    });
+
+                    let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let u_view = u_texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let v_view = v_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+                    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Video YUV Bind Group"),
+                        layout: &self.video_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&y_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(&u_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::TextureView(&v_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::Sampler(&self.video_sampler),
+                            },
+                        ],
+                    });
+
+                    self.y_texture = Some(y_texture);
+                    self.u_texture = Some(u_texture);
+                    self.v_texture = Some(v_texture);
+                    self.video_bind_group = Some(bind_group);
+                    // Clear NV12 textures
+                    self.uv_texture = None;
+                    self.nv12_bind_group = None;
+
+                    info!("YUV420P textures created: {}x{} (UV: {}x{}) - GPU color conversion enabled",
+                        frame.width, frame.height, uv_width, uv_height);
+                }
+            }
         }
 
-        // Upload Y plane directly (no conversion!)
+        // Upload Y plane (same for both formats)
         if let Some(ref texture) = self.y_texture {
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -724,75 +1171,119 @@ impl Renderer {
             );
         }
 
-        // Upload U plane directly
-        if let Some(ref texture) = self.u_texture {
-            self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &frame.u_plane,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(frame.u_stride),
-                    rows_per_image: Some(uv_height),
-                },
-                wgpu::Extent3d {
-                    width: uv_width,
-                    height: uv_height,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
+        match frame.format {
+            PixelFormat::NV12 => {
+                // Upload interleaved UV plane (Rg8)
+                if let Some(ref texture) = self.uv_texture {
+                    self.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &frame.u_plane, // NV12: u_plane contains interleaved UV data
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(frame.u_stride), // stride for interleaved UV
+                            rows_per_image: Some(uv_height),
+                        },
+                        wgpu::Extent3d {
+                            width: uv_width,
+                            height: uv_height,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+            }
+            PixelFormat::YUV420P => {
+                // Upload separate U and V planes
+                if let Some(ref texture) = self.u_texture {
+                    self.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &frame.u_plane,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(frame.u_stride),
+                            rows_per_image: Some(uv_height),
+                        },
+                        wgpu::Extent3d {
+                            width: uv_width,
+                            height: uv_height,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
 
-        // Upload V plane directly
-        if let Some(ref texture) = self.v_texture {
-            self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &frame.v_plane,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(frame.v_stride),
-                    rows_per_image: Some(uv_height),
-                },
-                wgpu::Extent3d {
-                    width: uv_width,
-                    height: uv_height,
-                    depth_or_array_layers: 1,
-                },
-            );
+                if let Some(ref texture) = self.v_texture {
+                    self.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &frame.v_plane,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(frame.v_stride),
+                            rows_per_image: Some(uv_height),
+                        },
+                        wgpu::Extent3d {
+                            width: uv_width,
+                            height: uv_height,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+            }
         }
     }
 
     /// Render video frame to screen
+    /// Automatically selects the correct pipeline based on current pixel format
     fn render_video(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
-        if let Some(ref bind_group) = self.video_bind_group {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Video Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                ..Default::default()
-            });
+        // Determine which pipeline and bind group to use based on format
+        let (pipeline, bind_group) = match self.current_format {
+            PixelFormat::NV12 => {
+                if let Some(ref bg) = self.nv12_bind_group {
+                    (&self.nv12_pipeline, bg)
+                } else {
+                    return; // No bind group ready
+                }
+            }
+            PixelFormat::YUV420P => {
+                if let Some(ref bg) = self.video_bind_group {
+                    (&self.video_pipeline, bg)
+                } else {
+                    return; // No bind group ready
+                }
+            }
+        };
 
-            render_pass.set_pipeline(&self.video_pipeline);
-            render_pass.set_bind_group(0, bind_group, &[]);
-            render_pass.draw(0..6, 0..1); // Draw 6 vertices (2 triangles = 1 quad)
-        }
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Video Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
+
+        render_pass.set_pipeline(pipeline);
+        render_pass.set_bind_group(0, bind_group, &[]);
+        render_pass.draw(0..6, 0..1); // Draw 6 vertices (2 triangles = 1 quad)
     }
 
     /// Render frame and return UI actions
@@ -893,7 +1384,9 @@ impl Renderer {
         }
 
         // Render video or clear based on state
-        if app.state == AppState::Streaming && self.video_bind_group.is_some() {
+        // Check for either YUV420P (video_bind_group) or NV12 (nv12_bind_group)
+        let has_video = self.video_bind_group.is_some() || self.nv12_bind_group.is_some();
+        if app.state == AppState::Streaming && has_video {
             // Render video full-screen
             self.render_video(&mut encoder, &view);
         } else {

@@ -5,25 +5,49 @@
 mod video;
 mod audio;
 
+#[cfg(target_os = "macos")]
+pub mod videotoolbox;
+
 pub use video::{VideoDecoder, RtpDepacketizer, DepacketizerCodec, DecodeStats};
 pub use audio::*;
+
+#[cfg(target_os = "macos")]
+pub use videotoolbox::{ZeroCopyFrame, ZeroCopyTextureManager, CVPixelBufferWrapper};
+
+/// Pixel format of decoded video frame
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum PixelFormat {
+    /// YUV 4:2:0 planar (Y, U, V separate planes)
+    #[default]
+    YUV420P,
+    /// NV12 semi-planar (Y plane + interleaved UV plane)
+    /// More efficient on macOS VideoToolbox - skip CPU conversion
+    NV12,
+}
 
 /// Decoded video frame
 #[derive(Debug, Clone)]
 pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
+    /// Y plane (luma) - full resolution
     pub y_plane: Vec<u8>,
+    /// U plane (Cb chroma) - for YUV420P: half resolution
+    /// For NV12: this contains interleaved UV data
     pub u_plane: Vec<u8>,
+    /// V plane (Cr chroma) - for YUV420P: half resolution
+    /// For NV12: this is empty (UV is interleaved in u_plane)
     pub v_plane: Vec<u8>,
     pub y_stride: u32,
     pub u_stride: u32,
     pub v_stride: u32,
     pub timestamp_us: u64,
+    /// Pixel format (YUV420P or NV12)
+    pub format: PixelFormat,
 }
 
 impl VideoFrame {
-    /// Create empty frame
+    /// Create empty frame (YUV420P format)
     pub fn empty(width: u32, height: u32) -> Self {
         let y_size = (width * height) as usize;
         let uv_size = y_size / 4;
@@ -38,6 +62,7 @@ impl VideoFrame {
             u_stride: width / 2,
             v_stride: width / 2,
             timestamp_us: 0,
+            format: PixelFormat::YUV420P,
         }
     }
 
