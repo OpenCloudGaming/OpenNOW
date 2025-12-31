@@ -6,7 +6,7 @@ pub mod config;
 pub mod session;
 
 pub use config::{Settings, VideoCodec, AudioCodec, StreamQuality, StatsPosition};
-pub use session::{SessionInfo, SessionState};
+pub use session::{SessionInfo, SessionState, ActiveSessionInfo};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -135,6 +135,12 @@ pub enum UiAction {
     StartPingTest,
     /// Toggle settings modal
     ToggleSettingsModal,
+    /// Resume an active session
+    ResumeSession(ActiveSessionInfo),
+    /// Terminate existing session and start new game
+    TerminateAndLaunch(String, GameInfo),
+    /// Close session conflict dialog
+    CloseSessionConflict,
 }
 
 /// Setting changes
@@ -267,6 +273,15 @@ pub struct App {
     /// Whether settings modal is visible
     pub show_settings_modal: bool,
 
+    /// Active sessions detected
+    pub active_sessions: Vec<ActiveSessionInfo>,
+
+    /// Whether showing session conflict dialog
+    pub show_session_conflict: bool,
+
+    /// Pending game launch (waiting for session conflict resolution)
+    pub pending_game_launch: Option<GameInfo>,
+
     /// Last time we polled the session (for rate limiting)
     last_poll_time: std::time::Instant,
 
@@ -392,6 +407,9 @@ impl App {
             auto_server_selection: auto_server, // Load from settings
             ping_testing: false,
             show_settings_modal: false,
+            active_sessions: Vec::new(),
+            show_session_conflict: false,
+            pending_game_launch: None,
             last_poll_time: std::time::Instant::now(),
             render_frame_count: 0,
             last_render_fps_time: std::time::Instant::now(),
@@ -493,6 +511,16 @@ impl App {
                 if self.show_settings_modal && self.servers.is_empty() {
                     self.load_servers();
                 }
+            }
+            UiAction::ResumeSession(session_info) => {
+                self.resume_session(session_info);
+            }
+            UiAction::TerminateAndLaunch(session_id, game) => {
+                self.terminate_and_launch(session_id, game);
+            }
+            UiAction::CloseSessionConflict => {
+                self.show_session_conflict = false;
+                self.pending_game_launch = None;
             }
         }
     }
@@ -681,6 +709,24 @@ impl App {
         // Check for ping test results
         if self.ping_testing {
             self.load_ping_results();
+        }
+
+        // Check for active sessions from async check
+        if let Some(sessions) = Self::load_active_sessions_cache() {
+            self.active_sessions = sessions.clone();
+            if let Some(pending) = Self::load_pending_game_cache() {
+                self.pending_game_launch = Some(pending);
+                self.show_session_conflict = true;
+                Self::clear_active_sessions_cache();
+            }
+        }
+
+        // Check for launch proceed flag (after session termination)
+        if Self::check_launch_proceed_flag() {
+            if let Some(game) = Self::load_pending_game_cache() {
+                Self::clear_pending_game_cache();
+                self.start_new_session(&game);
+            }
         }
 
         // Poll session status when in session state
@@ -1094,7 +1140,47 @@ impl App {
     pub fn launch_game(&mut self, game: &GameInfo) {
         info!("Launching game: {} (ID: {})", game.title, game.id);
 
-        // Clear any old session data first
+        // Get token first
+        let token = match &self.auth_tokens {
+            Some(t) => t.jwt().to_string(),
+            None => {
+                self.error_message = Some("Not logged in".to_string());
+                return;
+            }
+        };
+
+        let game_clone = game.clone();
+
+        let mut api_client = GfnApiClient::new();
+        api_client.set_access_token(token);
+
+        let runtime = self.runtime.clone();
+        runtime.spawn(async move {
+            match api_client.get_active_sessions().await {
+                Ok(sessions) => {
+                    if !sessions.is_empty() {
+                        info!("Found {} active session(s)", sessions.len());
+                        Self::save_active_sessions_cache(&sessions);
+                        Self::save_pending_game_cache(&game_clone);
+                    } else {
+                        info!("No active sessions, proceeding with launch");
+                        Self::clear_active_sessions_cache();
+                        Self::save_launch_proceed_flag();
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to check active sessions: {}, proceeding with launch", e);
+                    Self::clear_active_sessions_cache();
+                    Self::save_launch_proceed_flag();
+                }
+            }
+        });
+    }
+
+    /// Start creating a new session (after checking for conflicts)
+    fn start_new_session(&mut self, game: &GameInfo) {
+        info!("Starting new session for: {}", game.title);
+
         Self::clear_session_cache();
         Self::clear_session_error();
 
@@ -1103,9 +1189,8 @@ impl App {
         self.status_message = format!("Starting {}...", game.title);
         self.error_message = None;
         self.is_loading = true;
-        self.last_poll_time = std::time::Instant::now() - POLL_INTERVAL; // Allow immediate first poll
+        self.last_poll_time = std::time::Instant::now() - POLL_INTERVAL;
 
-        // Get token and settings for session creation
         let token = match &self.auth_tokens {
             Some(t) => t.jwt().to_string(),
             None => {
@@ -1119,28 +1204,117 @@ impl App {
         let game_title = game.title.clone();
         let settings = self.settings.clone();
 
-        // Use selected server or default
         let zone = self.servers.get(self.selected_server_index)
             .map(|s| s.id.clone())
             .unwrap_or_else(|| "eu-netherlands-south".to_string());
 
-        // Create API client with token
         let mut api_client = GfnApiClient::new();
         api_client.set_access_token(token);
 
-        // Spawn async task to create and poll session
         let runtime = self.runtime.clone();
         runtime.spawn(async move {
-            // Create session
             match api_client.create_session(&app_id, &game_title, &settings, &zone).await {
                 Ok(session) => {
                     info!("Session created: {} (state: {:?})", session.session_id, session.state);
-                    // Save session info for polling
                     Self::save_session_cache(&session);
                 }
                 Err(e) => {
                     error!("Failed to create session: {}", e);
                     Self::save_session_error(&format!("Failed to create session: {}", e));
+                }
+            }
+        });
+    }
+
+    /// Resume an existing session
+    fn resume_session(&mut self, session_info: ActiveSessionInfo) {
+        info!("Resuming session: {}", session_info.session_id);
+
+        self.show_session_conflict = false;
+        self.pending_game_launch = None;
+        self.state = AppState::Session;
+        self.status_message = "Resuming session...".to_string();
+        self.error_message = None;
+        self.is_loading = true;
+        self.last_poll_time = std::time::Instant::now() - POLL_INTERVAL;
+
+        let token = match &self.auth_tokens {
+            Some(t) => t.jwt().to_string(),
+            None => {
+                self.error_message = Some("Not logged in".to_string());
+                self.is_loading = false;
+                return;
+            }
+        };
+
+        let server_ip = match session_info.server_ip {
+            Some(ip) => ip,
+            None => {
+                self.error_message = Some("Session has no server IP".to_string());
+                self.is_loading = false;
+                return;
+            }
+        };
+
+        let app_id = session_info.app_id.to_string();
+        let settings = self.settings.clone();
+
+        let mut api_client = GfnApiClient::new();
+        api_client.set_access_token(token);
+
+        let runtime = self.runtime.clone();
+        runtime.spawn(async move {
+            match api_client.claim_session(
+                &session_info.session_id,
+                &server_ip,
+                &app_id,
+                &settings,
+            ).await {
+                Ok(session) => {
+                    info!("Session claimed: {} (state: {:?})", session.session_id, session.state);
+                    Self::save_session_cache(&session);
+                }
+                Err(e) => {
+                    error!("Failed to claim session: {}", e);
+                    Self::save_session_error(&format!("Failed to resume session: {}", e));
+                }
+            }
+        });
+    }
+
+    /// Terminate existing session and start new game
+    fn terminate_and_launch(&mut self, session_id: String, game: GameInfo) {
+        info!("Terminating session {} and launching {}", session_id, game.title);
+
+        self.show_session_conflict = false;
+        self.pending_game_launch = None;
+        self.status_message = "Ending previous session...".to_string();
+
+        let token = match &self.auth_tokens {
+            Some(t) => t.jwt().to_string(),
+            None => {
+                self.error_message = Some("Not logged in".to_string());
+                return;
+            }
+        };
+
+        let mut api_client = GfnApiClient::new();
+        api_client.set_access_token(token);
+
+        let runtime = self.runtime.clone();
+        let game_for_launch = game.clone();
+        runtime.spawn(async move {
+            match api_client.stop_session(&session_id, "", None).await {
+                Ok(_) => {
+                    info!("Session terminated, waiting before launching new session");
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                    Self::save_launch_proceed_flag();
+                    Self::save_pending_game_cache(&game_for_launch);
+                }
+                Err(e) => {
+                    warn!("Session termination failed ({}), proceeding anyway", e);
+                    Self::save_launch_proceed_flag();
+                    Self::save_pending_game_cache(&game_for_launch);
                 }
             }
         });
@@ -1539,6 +1713,72 @@ impl App {
             let _ = std::fs::remove_file(path);
             info!("Cleared auth tokens");
         }
+    }
+
+    // Session conflict management cache
+    fn save_active_sessions_cache(sessions: &[ActiveSessionInfo]) {
+        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("active_sessions.json")) {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(json) = serde_json::to_string(sessions) {
+                let _ = std::fs::write(path, json);
+            }
+        }
+    }
+
+    fn load_active_sessions_cache() -> Option<Vec<ActiveSessionInfo>> {
+        let path = Self::get_app_data_dir()?.join("active_sessions.json");
+        let content = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    fn clear_active_sessions_cache() {
+        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("active_sessions.json")) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    fn save_pending_game_cache(game: &GameInfo) {
+        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("pending_game.json")) {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(json) = serde_json::to_string(game) {
+                let _ = std::fs::write(path, json);
+            }
+        }
+    }
+
+    fn load_pending_game_cache() -> Option<GameInfo> {
+        let path = Self::get_app_data_dir()?.join("pending_game.json");
+        let content = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    fn clear_pending_game_cache() {
+        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("pending_game.json")) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    fn save_launch_proceed_flag() {
+        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("launch_proceed.flag")) {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(path, "1");
+        }
+    }
+
+    fn check_launch_proceed_flag() -> bool {
+        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("launch_proceed.flag")) {
+            if path.exists() {
+                let _ = std::fs::remove_file(path);
+                return true;
+            }
+        }
+        false
     }
 
     // Games cache for async fetch
