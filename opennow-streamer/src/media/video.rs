@@ -16,7 +16,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 #[cfg(target_os = "windows")]
 use std::path::Path;
 
-use super::VideoFrame;
+use super::{VideoFrame, PixelFormat};
 use crate::app::{VideoCodec, SharedFrame};
 
 extern crate ffmpeg_next as ffmpeg;
@@ -141,6 +141,8 @@ pub struct DecodeStats {
     pub decode_time_ms: f32,
     /// Whether a frame was produced
     pub frame_produced: bool,
+    /// Whether a keyframe is needed (too many consecutive decode failures)
+    pub needs_keyframe: bool,
 }
 
 /// Video decoder using FFmpeg with hardware acceleration
@@ -161,6 +163,11 @@ impl VideoDecoder {
     pub fn new(codec: VideoCodec) -> Result<Self> {
         // Initialize FFmpeg
         ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {:?}", e))?;
+
+        // Suppress FFmpeg's "no frame" info messages (EAGAIN is normal for H.264)
+        unsafe {
+            ffmpeg::ffi::av_log_set_level(ffmpeg::ffi::AV_LOG_ERROR as i32);
+        }
 
         info!("Creating FFmpeg video decoder for {:?}", codec);
 
@@ -199,6 +206,11 @@ impl VideoDecoder {
     pub fn new_async(codec: VideoCodec, shared_frame: Arc<SharedFrame>) -> Result<(Self, tokio_mpsc::Receiver<DecodeStats>)> {
         // Initialize FFmpeg
         ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {:?}", e))?;
+
+        // Suppress FFmpeg's "no frame" info messages (EAGAIN is normal for H.264)
+        unsafe {
+            ffmpeg::ffi::av_log_set_level(ffmpeg::ffi::AV_LOG_ERROR as i32);
+        }
 
         info!("Creating FFmpeg video decoder (async mode) for {:?}", codec);
 
@@ -261,6 +273,9 @@ impl VideoDecoder {
             let mut width = 0u32;
             let mut height = 0u32;
             let mut frames_decoded = 0u64;
+            let mut consecutive_failures = 0u32;
+            let mut packets_received = 0u64;
+            const KEYFRAME_REQUEST_THRESHOLD: u32 = 10; // Request keyframe after 10 consecutive failures (was 30)
 
             while let Ok(cmd) = cmd_rx.recv() {
                 match cmd {
@@ -277,6 +292,8 @@ impl VideoDecoder {
                         let _ = frame_tx.send(result);
                     }
                     DecoderCommand::DecodeAsync { data, receive_time } => {
+                        packets_received += 1;
+
                         // Non-blocking mode - write directly to SharedFrame
                         let result = Self::decode_frame(
                             &mut decoder,
@@ -290,6 +307,37 @@ impl VideoDecoder {
                         let decode_time_ms = receive_time.elapsed().as_secs_f32() * 1000.0;
                         let frame_produced = result.is_some();
 
+                        // Track consecutive decode failures for PLI request
+                        // Note: EAGAIN (no frame) is normal for H.264 - decoder buffers B-frames
+                        let needs_keyframe = if frame_produced {
+                            // Only log recovery for significant failures (>5), not normal buffering
+                            if consecutive_failures > 5 {
+                                info!("Decoder: recovered after {} packets without output", consecutive_failures);
+                            }
+                            consecutive_failures = 0;
+                            false
+                        } else {
+                            consecutive_failures += 1;
+
+                            // Only log at higher thresholds - low counts are normal H.264 buffering
+                            if consecutive_failures == 30 {
+                                debug!("Decoder: {} packets without frame (packets: {}, decoded: {})",
+                                    consecutive_failures, packets_received, frames_decoded);
+                            }
+
+                            if consecutive_failures == KEYFRAME_REQUEST_THRESHOLD {
+                                warn!("Decoder: {} consecutive frames without output - requesting keyframe (packets: {}, decoded: {})",
+                                    consecutive_failures, packets_received, frames_decoded);
+                                true
+                            } else if consecutive_failures > KEYFRAME_REQUEST_THRESHOLD && consecutive_failures % 20 == 0 {
+                                // Keep requesting every 20 frames if still failing (~166ms at 120fps)
+                                warn!("Decoder: still failing after {} frames - requesting keyframe again", consecutive_failures);
+                                true
+                            } else {
+                                false
+                            }
+                        };
+
                         // Write frame directly to SharedFrame (zero-copy handoff)
                         if let Some(frame) = result {
                             if let Some(ref sf) = shared_frame {
@@ -302,6 +350,7 @@ impl VideoDecoder {
                             let _ = tx.try_send(DecodeStats {
                                 decode_time_ms,
                                 frame_produced,
+                                needs_keyframe,
                             });
                         }
                     }
@@ -315,44 +364,143 @@ impl VideoDecoder {
 
     /// Create decoder, trying hardware acceleration first
     fn create_decoder(codec_id: ffmpeg::codec::Id) -> Result<(decoder::Video, bool)> {
+        // On macOS, try VideoToolbox hardware acceleration
+        #[cfg(target_os = "macos")]
+        {
+            info!("macOS detected - attempting VideoToolbox hardware acceleration");
+
+            // Try to set up VideoToolbox hwaccel using FFmpeg's device API
+            unsafe {
+                use ffmpeg::ffi::*;
+                use std::ptr;
+
+                // Find the standard decoder
+                let codec = ffmpeg::codec::decoder::find(codec_id)
+                    .ok_or_else(|| anyhow!("Decoder not found for {:?}", codec_id))?;
+
+                let mut ctx = CodecContext::new_with_codec(codec);
+
+                // Get raw pointer to AVCodecContext
+                let raw_ctx = ctx.as_mut_ptr();
+
+                // Create VideoToolbox hardware device context
+                let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
+                let ret = av_hwdevice_ctx_create(
+                    &mut hw_device_ctx,
+                    AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    0,
+                );
+
+                if ret >= 0 && !hw_device_ctx.is_null() {
+                    // Attach hardware device context to codec context
+                    (*raw_ctx).hw_device_ctx = av_buffer_ref(hw_device_ctx);
+
+                    // Enable multi-threading
+                    (*raw_ctx).thread_count = 4;
+
+                    match ctx.decoder().video() {
+                        Ok(decoder) => {
+                            info!("VideoToolbox hardware decoder created successfully");
+                            // Don't free hw_device_ctx - it's now owned by the codec context
+                            return Ok((decoder, true));
+                        }
+                        Err(e) => {
+                            warn!("Failed to open VideoToolbox decoder: {:?}", e);
+                            av_buffer_unref(&mut hw_device_ctx);
+                        }
+                    }
+                } else {
+                    warn!("Failed to create VideoToolbox device context (error {})", ret);
+                }
+            }
+
+            // Fall back to software decoder on macOS
+            info!("Falling back to software decoder on macOS");
+            let codec = ffmpeg::codec::decoder::find(codec_id)
+                .ok_or_else(|| anyhow!("Decoder not found for {:?}", codec_id))?;
+
+            let mut ctx = CodecContext::new_with_codec(codec);
+            ctx.set_threading(ffmpeg::codec::threading::Config::count(4));
+
+            let decoder = ctx.decoder().video()?;
+            return Ok((decoder, false));
+        }
+
         // Check if Intel QSV runtime is available (cached, only checks once)
+        #[cfg(not(target_os = "macos"))]
         let qsv_available = check_qsv_available();
 
         // Try hardware decoders in order of preference
-        // CUVID requires NVIDIA GPU with NVDEC
-        // QSV requires Intel GPU with Media SDK / oneVPL runtime
-        // D3D11VA and DXVA2 are Windows-specific generic APIs
-        // We prioritize NVIDIA (cuvid) since it's most common for gaming PCs
+        // Platform-specific hardware decoders:
+        // - Windows: CUVID (NVIDIA), QSV (Intel), D3D11VA, DXVA2
+        // - Linux: CUVID, VAAPI, QSV
+        #[cfg(not(target_os = "macos"))]
         let hw_decoder_names: Vec<&str> = match codec_id {
             ffmpeg::codec::Id::H264 => {
-                let mut decoders = vec!["h264_cuvid"]; // NVIDIA first
-                if qsv_available {
-                    decoders.push("h264_qsv"); // Intel QSV (only if runtime detected)
+                #[cfg(target_os = "windows")]
+                {
+                    let mut decoders = vec!["h264_cuvid"]; // NVIDIA first
+                    if qsv_available {
+                        decoders.push("h264_qsv"); // Intel QSV (only if runtime detected)
+                    }
+                    decoders.push("h264_d3d11va"); // Windows D3D11 (AMD/Intel/NVIDIA)
+                    decoders.push("h264_dxva2");   // Windows DXVA2 (older API)
+                    decoders
                 }
-                decoders.push("h264_d3d11va"); // Windows D3D11 (AMD/Intel/NVIDIA)
-                decoders.push("h264_dxva2");   // Windows DXVA2 (older API)
-                decoders
+                #[cfg(target_os = "linux")]
+                {
+                    let mut decoders = vec!["h264_cuvid", "h264_vaapi"];
+                    if qsv_available {
+                        decoders.push("h264_qsv");
+                    }
+                    decoders
+                }
             }
             ffmpeg::codec::Id::HEVC => {
-                let mut decoders = vec!["hevc_cuvid"];
-                if qsv_available {
-                    decoders.push("hevc_qsv");
+                #[cfg(target_os = "windows")]
+                {
+                    let mut decoders = vec!["hevc_cuvid"];
+                    if qsv_available {
+                        decoders.push("hevc_qsv");
+                    }
+                    decoders.push("hevc_d3d11va");
+                    decoders.push("hevc_dxva2");
+                    decoders
                 }
-                decoders.push("hevc_d3d11va");
-                decoders.push("hevc_dxva2");
-                decoders
+                #[cfg(target_os = "linux")]
+                {
+                    let mut decoders = vec!["hevc_cuvid", "hevc_vaapi"];
+                    if qsv_available {
+                        decoders.push("hevc_qsv");
+                    }
+                    decoders
+                }
             }
             ffmpeg::codec::Id::AV1 => {
-                let mut decoders = vec!["av1_cuvid"];
-                if qsv_available {
-                    decoders.push("av1_qsv");
+                #[cfg(target_os = "windows")]
+                {
+                    let mut decoders = vec!["av1_cuvid"];
+                    if qsv_available {
+                        decoders.push("av1_qsv");
+                    }
+                    decoders
                 }
-                decoders
+                #[cfg(target_os = "linux")]
+                {
+                    let mut decoders = vec!["av1_cuvid", "av1_vaapi"];
+                    if qsv_available {
+                        decoders.push("av1_qsv");
+                    }
+                    decoders
+                }
             }
             _ => vec![],
         };
 
-        // Try hardware decoders
+        // Try hardware decoders (Windows/Linux)
+        #[cfg(not(target_os = "macos"))]
         for hw_name in &hw_decoder_names {
             if let Some(hw_codec) = ffmpeg::codec::decoder::find_by_name(hw_name) {
                 // new_with_codec returns Context directly, not Result
@@ -381,6 +529,62 @@ impl VideoDecoder {
 
         let decoder = ctx.decoder().video()?;
         Ok((decoder, false))
+    }
+
+    /// Check if a pixel format is a hardware format
+    fn is_hw_pixel_format(format: Pixel) -> bool {
+        matches!(
+            format,
+            Pixel::VIDEOTOOLBOX
+                | Pixel::CUDA
+                | Pixel::VAAPI
+                | Pixel::VDPAU
+                | Pixel::QSV
+                | Pixel::D3D11
+                | Pixel::DXVA2_VLD
+                | Pixel::D3D11VA_VLD
+                | Pixel::D3D12
+                | Pixel::VULKAN
+        )
+    }
+
+    /// Transfer hardware frame to system memory if needed
+    fn transfer_hw_frame_if_needed(frame: &FfmpegFrame) -> Option<FfmpegFrame> {
+        let format = frame.format();
+
+        if !Self::is_hw_pixel_format(format) {
+            // Not a hardware frame, no transfer needed
+            return None;
+        }
+
+        debug!("Transferring hardware frame (format: {:?}) to system memory", format);
+
+        unsafe {
+            use ffmpeg::ffi::*;
+
+            // Create a new frame for the software copy
+            let sw_frame_ptr = av_frame_alloc();
+            if sw_frame_ptr.is_null() {
+                warn!("Failed to allocate software frame");
+                return None;
+            }
+
+            // Transfer data from hardware frame to software frame
+            let ret = av_hwframe_transfer_data(sw_frame_ptr, frame.as_ptr(), 0);
+            if ret < 0 {
+                warn!("Failed to transfer hardware frame to software (error {})", ret);
+                av_frame_free(&mut (sw_frame_ptr as *mut _));
+                return None;
+            }
+
+            // Copy frame properties
+            (*sw_frame_ptr).width = frame.width() as i32;
+            (*sw_frame_ptr).height = frame.height() as i32;
+
+            // Wrap in FFmpeg frame type
+            // Note: This creates an owned frame that will be freed when dropped
+            Some(FfmpegFrame::wrap(sw_frame_ptr))
+        }
     }
 
     /// Decode a single frame (called in decoder thread)
@@ -431,13 +635,58 @@ impl VideoDecoder {
                 let h = frame.height();
                 let format = frame.format();
 
-                // Create/update scaler if needed (convert to YUV420P)
+                // Check if this is a hardware frame (e.g., VideoToolbox, CUDA, etc.)
+                // Hardware frames need to be transferred to system memory
+                let sw_frame = Self::transfer_hw_frame_if_needed(&frame);
+                let frame_to_use = sw_frame.as_ref().unwrap_or(&frame);
+                let actual_format = frame_to_use.format();
+
+                if *frames_decoded == 1 {
+                    info!("First decoded frame: {}x{}, format: {:?} (hw: {:?})", w, h, actual_format, format);
+                }
+
+                // Check if frame is NV12 - skip CPU scaler and pass directly to GPU
+                // NV12 has Y plane (full res) and UV plane (half res, interleaved)
+                // GPU shader will deinterleave UV - much faster than CPU scaler
+                if actual_format == Pixel::NV12 {
+                    *width = w;
+                    *height = h;
+
+                    // Extract Y plane (plane 0)
+                    let y_plane = frame_to_use.data(0).to_vec();
+                    let y_stride = frame_to_use.stride(0) as u32;
+
+                    // Extract interleaved UV plane (plane 1)
+                    // NV12: UV plane is half height, full width, 2 bytes per pixel (U, V interleaved)
+                    let uv_plane = frame_to_use.data(1).to_vec();
+                    let uv_stride = frame_to_use.stride(1) as u32;
+
+                    if *frames_decoded == 1 {
+                        info!("NV12 direct path: Y {}x{} stride {}, UV stride {} - GPU will handle conversion",
+                            w, h, y_stride, uv_stride);
+                    }
+
+                    return Some(VideoFrame {
+                        width: w,
+                        height: h,
+                        y_plane,
+                        u_plane: uv_plane, // Interleaved UV data
+                        v_plane: Vec::new(), // Empty for NV12
+                        y_stride,
+                        u_stride: uv_stride,
+                        v_stride: 0,
+                        timestamp_us: 0,
+                        format: PixelFormat::NV12,
+                    });
+                }
+
+                // For other formats, use scaler to convert to YUV420P
                 if scaler.is_none() || *width != w || *height != h {
                     *width = w;
                     *height = h;
 
                     match ScalerContext::get(
-                        format,
+                        actual_format,
                         w,
                         h,
                         Pixel::YUV420P,
@@ -451,21 +700,17 @@ impl VideoDecoder {
                             return None;
                         }
                     }
-
-                    if *frames_decoded == 1 {
-                        info!("First decoded frame: {}x{}, format: {:?}", w, h, format);
-                    }
                 }
 
-                // Convert to YUV420P if needed
+                // Convert to YUV420P
                 let mut yuv_frame = FfmpegFrame::empty();
                 if let Some(ref mut s) = scaler {
-                    if let Err(e) = s.run(&frame, &mut yuv_frame) {
+                    if let Err(e) = s.run(frame_to_use, &mut yuv_frame) {
                         warn!("Scaler run failed: {:?}", e);
                         return None;
                     }
                 } else {
-                    yuv_frame = frame;
+                    return None;
                 }
 
                 // Extract YUV planes
@@ -487,6 +732,7 @@ impl VideoDecoder {
                     u_stride,
                     v_stride,
                     timestamp_us: 0,
+                    format: PixelFormat::YUV420P,
                 })
             }
             Err(ffmpeg::Error::Other { errno }) if errno == libc::EAGAIN => None,
