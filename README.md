@@ -30,7 +30,7 @@ This is an **independent project** not affiliated with NVIDIA Corporation. Creat
 
 ## About
 
-OpenNOW is a custom GeForce NOW client created by reverse engineering the official NVIDIA client. Built with Tauri (Rust + TypeScript), it removes artificial limitations and gives you full control over your cloud gaming experience.
+OpenNOW is a custom GeForce NOW client created by reverse engineering the official NVIDIA client. Built as a native Rust application with high-performance GPU rendering (wgpu + egui), it removes artificial limitations and gives you full control over your cloud gaming experience.
 
 **Why OpenNOW?**
 - No artificial limitations on FPS, resolution, or bitrate
@@ -99,12 +99,18 @@ OpenNOW is a custom GeForce NOW client created by reverse engineering the offici
 
 ```bash
 git clone https://github.com/zortos293/GFNClient.git
-cd GFNClient
-bun install
-bun run tauri dev
+cd GFNClient/opennow-streamer
+cargo build --release
 ```
 
-**Requirements:** Bun, Rust, Tauri CLI
+To run in development mode:
+
+```bash
+cd opennow-streamer
+cargo run
+```
+
+**Requirements:** Rust toolchain (1.70+), FFmpeg development libraries
 
 ---
 
