@@ -14,6 +14,7 @@ pub const INPUT_MOUSE_REL: u32 = 7;
 pub const INPUT_MOUSE_BUTTON_DOWN: u32 = 8;
 pub const INPUT_MOUSE_BUTTON_UP: u32 = 9;
 pub const INPUT_MOUSE_WHEEL: u32 = 10;
+pub const INPUT_GAMEPAD: u32 = 12;  // Type 12 = Gamepad state (NOT 6!)
 
 /// Mouse buttons
 pub const MOUSE_BUTTON_LEFT: u8 = 0;
@@ -62,6 +63,19 @@ pub enum InputEvent {
     },
     /// Heartbeat (keep-alive)
     Heartbeat,
+    /// Gamepad state update
+    Gamepad {
+        controller_id: u8,
+        button_flags: u16,
+        left_trigger: u8,
+        right_trigger: u8,
+        left_stick_x: i16,
+        left_stick_y: i16,
+        right_stick_x: i16,
+        right_stick_y: i16,
+        flags: u16,
+        timestamp_us: u64,
+    },
 }
 
 /// Encoder for GFN input protocol
@@ -157,6 +171,58 @@ impl InputEncoder {
             InputEvent::Heartbeat => {
                 // Type 2 (Heartbeat): 4 bytes
                 self.buffer.put_u32_le(INPUT_HEARTBEAT);
+            }
+
+            InputEvent::Gamepad {
+                controller_id,
+                button_flags,
+                left_trigger,
+                right_trigger,
+                left_stick_x,
+                left_stick_y,
+                right_stick_x,
+                right_stick_y,
+                flags,
+                timestamp_us,
+            } => {
+                // Type 12 (Gamepad): 38 bytes total - from web client analysis
+                // Web client uses ALL LITTLE ENDIAN (DataView getUint16(true) = LE)
+                //
+                // Structure (from vendor_beautified.js fd() decoder):
+                // [0x00] Type:      4B LE (event type = 12)
+                // [0x04] Padding:   2B LE (reserved)
+                // [0x06] Index:     2B LE (gamepad index 0-3)
+                // [0x08] Bitmap:    2B LE (device type bitmap / flags)
+                // [0x0A] Padding:   2B LE (reserved)
+                // [0x0C] Buttons:   2B LE (button state bitmask)
+                // [0x0E] Trigger:   2B LE (packed: low=LT, high=RT, 0-255 each)
+                // [0x10] Axes[0]:   2B LE signed (Left X)
+                // [0x12] Axes[1]:   2B LE signed (Left Y)
+                // [0x14] Axes[2]:   2B LE signed (Right X)
+                // [0x16] Axes[3]:   2B LE signed (Right Y)
+                // [0x18] Padding:   2B LE (reserved)
+                // [0x1A] Padding:   2B LE (reserved)
+                // [0x1C] Padding:   2B LE (reserved)
+                // [0x1E] Timestamp: 8B LE (capture timestamp in microseconds)
+                // Total: 38 bytes
+
+                self.buffer.put_u32_le(INPUT_GAMEPAD);              // 0x00: Type = 12 (LE)
+                self.buffer.put_u16_le(0);                          // 0x04: Padding
+                self.buffer.put_u16_le(*controller_id as u16);      // 0x06: Index (LE)
+                self.buffer.put_u16_le(*flags);                     // 0x08: Bitmap/flags (LE)
+                self.buffer.put_u16_le(0);                          // 0x0A: Padding
+                self.buffer.put_u16_le(*button_flags);              // 0x0C: Buttons (LE)
+                // Pack triggers: low byte = LT, high byte = RT
+                let packed_triggers = (*left_trigger as u16) | ((*right_trigger as u16) << 8);
+                self.buffer.put_u16_le(packed_triggers);            // 0x0E: Triggers packed (LE)
+                self.buffer.put_i16_le(*left_stick_x);              // 0x10: Left X (LE)
+                self.buffer.put_i16_le(*left_stick_y);              // 0x12: Left Y (LE)
+                self.buffer.put_i16_le(*right_stick_x);             // 0x14: Right X (LE)
+                self.buffer.put_i16_le(*right_stick_y);             // 0x16: Right Y (LE)
+                self.buffer.put_u16_le(0);                          // 0x18: Padding
+                self.buffer.put_u16_le(0);                          // 0x1A: Padding
+                self.buffer.put_u16_le(0);                          // 0x1C: Padding
+                self.buffer.put_u64_le(*timestamp_us);              // 0x1E: Timestamp (LE)
             }
         }
 

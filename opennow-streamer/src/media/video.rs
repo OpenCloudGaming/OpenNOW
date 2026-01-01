@@ -16,7 +16,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 #[cfg(target_os = "windows")]
 use std::path::Path;
 
-use super::{VideoFrame, PixelFormat};
+use super::{VideoFrame, PixelFormat, ColorRange, ColorSpace};
 use crate::app::{VideoCodec, SharedFrame};
 
 extern crate ffmpeg_next as ffmpeg;
@@ -318,10 +318,13 @@ impl VideoDecoder {
         stats_tx: Option<tokio_mpsc::Sender<DecodeStats>>,
     ) -> Result<bool> {
         // Create decoder synchronously to report hw_accel status
+        info!("Creating decoder for codec {:?}...", codec_id);
         let (decoder, hw_accel) = Self::create_decoder(codec_id)?;
+        info!("Decoder created, hw_accel={}", hw_accel);
 
         // Spawn thread to handle decoding
         thread::spawn(move || {
+            info!("Decoder thread started for {:?}", codec_id);
             let mut decoder = decoder;
             let mut scaler: Option<ScalerContext> = None;
             let mut width = 0u32;
@@ -330,6 +333,7 @@ impl VideoDecoder {
             let mut consecutive_failures = 0u32;
             let mut packets_received = 0u64;
             const KEYFRAME_REQUEST_THRESHOLD: u32 = 10; // Request keyframe after 10 consecutive failures (was 30)
+            const FRAMES_TO_SKIP: u64 = 3; // Skip first N frames to let decoder settle with reference frames
 
             while let Ok(cmd) = cmd_rx.recv() {
                 match cmd {
@@ -395,9 +399,15 @@ impl VideoDecoder {
                         };
 
                         // Write frame directly to SharedFrame (zero-copy handoff)
+                        // Skip first few frames to let decoder settle with proper reference frames
+                        // This prevents green/corrupted frames during stream startup
                         if let Some(frame) = result {
-                            if let Some(ref sf) = shared_frame {
-                                sf.write(frame);
+                            if frames_decoded > FRAMES_TO_SKIP {
+                                if let Some(ref sf) = shared_frame {
+                                    sf.write(frame);
+                                }
+                            } else {
+                                debug!("Skipping frame {} (waiting for decoder to settle)", frames_decoded);
                             }
                         }
 
@@ -557,33 +567,41 @@ impl VideoDecoder {
 
         // Try hardware decoders (Windows/Linux)
         #[cfg(not(target_os = "macos"))]
-        for hw_name in &hw_decoder_names {
-            if let Some(hw_codec) = ffmpeg::codec::decoder::find_by_name(hw_name) {
-                // new_with_codec returns Context directly, not Result
-                let mut ctx = CodecContext::new_with_codec(hw_codec);
-                ctx.set_threading(ffmpeg::codec::threading::Config::count(4));
+        {
+            info!("Attempting hardware decoders for {:?}: {:?}", codec_id, hw_decoder_names);
+            for hw_name in &hw_decoder_names {
+                if let Some(hw_codec) = ffmpeg::codec::decoder::find_by_name(hw_name) {
+                    info!("Found hardware decoder: {}, attempting to open...", hw_name);
+                    // new_with_codec returns Context directly, not Result
+                    let mut ctx = CodecContext::new_with_codec(hw_codec);
+                    ctx.set_threading(ffmpeg::codec::threading::Config::count(4));
 
-                match ctx.decoder().video() {
-                    Ok(dec) => {
-                        info!("Successfully created hardware decoder: {}", hw_name);
-                        return Ok((dec, true));
+                    match ctx.decoder().video() {
+                        Ok(dec) => {
+                            info!("Successfully created hardware decoder: {}", hw_name);
+                            return Ok((dec, true));
+                        }
+                        Err(e) => {
+                            warn!("Failed to open hardware decoder {}: {:?}", hw_name, e);
+                        }
                     }
-                    Err(e) => {
-                        debug!("Failed to open hardware decoder {}: {:?}", hw_name, e);
-                    }
+                } else {
+                    debug!("Hardware decoder not found: {}", hw_name);
                 }
             }
         }
 
         // Fall back to software decoder
-        info!("Using software decoder (hardware acceleration not available)");
+        info!("Using software decoder for {:?}", codec_id);
         let codec = ffmpeg::codec::decoder::find(codec_id)
             .ok_or_else(|| anyhow!("Decoder not found for {:?}", codec_id))?;
+        info!("Found software decoder: {:?}", codec.name());
 
         let mut ctx = CodecContext::new_with_codec(codec);
         ctx.set_threading(ffmpeg::codec::threading::Config::count(4));
 
         let decoder = ctx.decoder().video()?;
+        info!("Software decoder opened successfully");
         Ok((decoder, false))
     }
 
@@ -641,6 +659,11 @@ impl VideoDecoder {
         }
     }
 
+    /// Calculate 256-byte aligned stride for GPU compatibility (wgpu/DX12 requirement)
+    fn get_aligned_stride(width: u32) -> u32 {
+        (width + 255) & !255
+    }
+
     /// Decode a single frame (called in decoder thread)
     fn decode_frame(
         decoder: &mut decoder::Video,
@@ -672,6 +695,7 @@ impl VideoDecoder {
         if let Some(pkt_data) = packet.data_mut() {
             pkt_data.copy_from_slice(&data);
         } else {
+            warn!("Failed to allocate packet data");
             return None;
         }
 
@@ -680,7 +704,7 @@ impl VideoDecoder {
             // EAGAIN means we need to receive frames first
             match e {
                 ffmpeg::Error::Other { errno } if errno == libc::EAGAIN => {}
-                _ => debug!("Send packet error: {:?}", e),
+                _ => warn!("Send packet error: {:?}", e),
             }
         }
 
@@ -700,47 +724,85 @@ impl VideoDecoder {
                 let frame_to_use = sw_frame.as_ref().unwrap_or(&frame);
                 let actual_format = frame_to_use.format();
 
+                // Extract color metadata
+                let color_range = match frame_to_use.color_range() {
+                    ffmpeg::util::color::range::Range::JPEG => ColorRange::Full,
+                    ffmpeg::util::color::range::Range::MPEG => ColorRange::Limited,
+                    _ => ColorRange::Limited, // Default to limited if unspecified (safest for video)
+                };
+
+                let color_space = match frame_to_use.color_space() {
+                    ffmpeg::util::color::space::Space::BT709 => ColorSpace::BT709,
+                    ffmpeg::util::color::space::Space::BT470BG => ColorSpace::BT601,
+                    ffmpeg::util::color::space::Space::SMPTE170M => ColorSpace::BT601,
+                    ffmpeg::util::color::space::Space::BT2020NCL => ColorSpace::BT2020,
+                    _ => ColorSpace::BT709, // Default to BT.709 for HD content
+                };
+
                 if *frames_decoded == 1 {
-                    info!("First decoded frame: {}x{}, format: {:?} (hw: {:?})", w, h, actual_format, format);
+                    info!("First decoded frame: {}x{}, format: {:?} (hw: {:?}), range: {:?}, space: {:?}", 
+                        w, h, actual_format, format, color_range, color_space);
                 }
 
                 // Check if frame is NV12 - skip CPU scaler and pass directly to GPU
                 // NV12 has Y plane (full res) and UV plane (half res, interleaved)
-                // GPU shader will deinterleave UV - much faster than CPU scaler
+                // GPU shader will handle color conversion - much faster than CPU scaler
                 if actual_format == Pixel::NV12 {
                     *width = w;
                     *height = h;
 
-                    // Extract Y plane (plane 0)
-                    let y_plane = frame_to_use.data(0).to_vec();
                     let y_stride = frame_to_use.stride(0) as u32;
-
-                    // Extract interleaved UV plane (plane 1)
-                    // NV12: UV plane is half height, full width, 2 bytes per pixel (U, V interleaved)
-                    let uv_plane = frame_to_use.data(1).to_vec();
                     let uv_stride = frame_to_use.stride(1) as u32;
+                    let uv_height = h / 2;
+
+                    // GPU texture upload requires 256-byte aligned rows (wgpu restriction)
+                    let aligned_y_stride = Self::get_aligned_stride(w);
+                    let aligned_uv_stride = Self::get_aligned_stride(w);
+
+                    let y_data = frame_to_use.data(0);
+                    let uv_data = frame_to_use.data(1);
+
+                    // Copy Y plane with alignment
+                    let mut y_plane = vec![0u8; (aligned_y_stride * h) as usize];
+                    for row in 0..h {
+                        let src_start = (row * y_stride) as usize;
+                        let src_end = src_start + w as usize;
+                        let dst_start = (row * aligned_y_stride) as usize;
+                        if src_end <= y_data.len() {
+                            y_plane[dst_start..dst_start + w as usize]
+                                .copy_from_slice(&y_data[src_start..src_end]);
+                        }
+                    }
+
+                    // Copy UV plane with alignment
+                    let mut uv_plane = vec![0u8; (aligned_uv_stride * uv_height) as usize];
+                    for row in 0..uv_height {
+                        let src_start = (row * uv_stride) as usize;
+                        let src_end = src_start + w as usize;
+                        let dst_start = (row * aligned_uv_stride) as usize;
+                        if src_end <= uv_data.len() {
+                            uv_plane[dst_start..dst_start + w as usize]
+                                .copy_from_slice(&uv_data[src_start..src_end]);
+                        }
+                    }
 
                     if *frames_decoded == 1 {
-                        // Debug: Check UV plane data for green screen debugging
-                        let uv_non_zero = uv_plane.iter().filter(|&&b| b != 0 && b != 128).take(10).count();
-                        let uv_sample: Vec<u8> = uv_plane.iter().take(32).cloned().collect();
-                        info!("NV12 direct path: Y {}x{} stride {}, UV stride {} - GPU will handle conversion",
-                            w, h, y_stride, uv_stride);
-                        info!("UV plane: {} bytes, non-zero/128 samples: {}, first 32 bytes: {:?}",
-                            uv_plane.len(), uv_non_zero, uv_sample);
+                        info!("NV12 direct GPU path: {}x{} - bypassing CPU scaler", w, h);
                     }
 
                     return Some(VideoFrame {
                         width: w,
                         height: h,
                         y_plane,
-                        u_plane: uv_plane, // Interleaved UV data
-                        v_plane: Vec::new(), // Empty for NV12
-                        y_stride,
-                        u_stride: uv_stride,
+                        u_plane: uv_plane,
+                        v_plane: Vec::new(),
+                        y_stride: aligned_y_stride,
+                        u_stride: aligned_uv_stride,
                         v_stride: 0,
                         timestamp_us: 0,
                         format: PixelFormat::NV12,
+                        color_range,
+                        color_space,
                     });
                 }
 
@@ -748,6 +810,8 @@ impl VideoDecoder {
                 if scaler.is_none() || *width != w || *height != h {
                     *width = w;
                     *height = h;
+
+                    info!("Creating scaler: {:?} {}x{} -> YUV420P {}x{}", actual_format, w, h, w, h);
 
                     match ScalerContext::get(
                         actual_format,
@@ -767,7 +831,11 @@ impl VideoDecoder {
                 }
 
                 // Convert to YUV420P
-                let mut yuv_frame = FfmpegFrame::empty();
+                // We must allocate the destination frame first!
+                let mut yuv_frame = FfmpegFrame::new(Pixel::YUV420P, w, h);
+                // get_buffer is not exposed/needed in this safe wrapper, FfmpegFrame::new handles structure
+                // Ideally we should just verify the scaler works.
+
                 if let Some(ref mut s) = scaler {
                     if let Err(e) = s.run(frame_to_use, &mut yuv_frame) {
                         warn!("Scaler run failed: {:?}", e);
@@ -777,26 +845,49 @@ impl VideoDecoder {
                     return None;
                 }
 
-                // Extract YUV planes
-                let y_plane = yuv_frame.data(0).to_vec();
-                let u_plane = yuv_frame.data(1).to_vec();
-                let v_plane = yuv_frame.data(2).to_vec();
-
+                // Extract YUV planes with alignment
                 let y_stride = yuv_frame.stride(0) as u32;
                 let u_stride = yuv_frame.stride(1) as u32;
                 let v_stride = yuv_frame.stride(2) as u32;
 
+                let aligned_y_stride = Self::get_aligned_stride(w);
+                let aligned_u_stride = Self::get_aligned_stride(w / 2);
+                let aligned_v_stride = Self::get_aligned_stride(w / 2);
+
+                let y_height = h;
+                let uv_height = h / 2;
+
+                let dim_y = w;
+                let dim_uv = w / 2;
+
+                // Helper to copy plane with alignment
+                let copy_plane = |src: &[u8], src_stride: usize, dst_stride: usize, width: usize, height: usize| -> Vec<u8> {
+                    let mut dst = vec![0u8; dst_stride * height];
+                    for row in 0..height {
+                        let src_start = row * src_stride;
+                        let src_end = src_start + width;
+                        let dst_start = row * dst_stride;
+                        let dst_end = dst_start + width;
+                        if src_end <= src.len() {
+                            dst[dst_start..dst_end].copy_from_slice(&src[src_start..src_end]);
+                        }
+                    }
+                    dst
+                };
+
                 Some(VideoFrame {
                     width: w,
                     height: h,
-                    y_plane,
-                    u_plane,
-                    v_plane,
-                    y_stride,
-                    u_stride,
-                    v_stride,
+                    y_plane: copy_plane(yuv_frame.data(0), y_stride as usize, aligned_y_stride as usize, dim_y as usize, y_height as usize),
+                    u_plane: copy_plane(yuv_frame.data(1), u_stride as usize, aligned_u_stride as usize, dim_uv as usize, uv_height as usize),
+                    v_plane: copy_plane(yuv_frame.data(2), v_stride as usize, aligned_v_stride as usize, dim_uv as usize, uv_height as usize),
+                    y_stride: aligned_y_stride,
+                    u_stride: aligned_u_stride,
+                    v_stride: aligned_v_stride,
                     timestamp_us: 0,
                     format: PixelFormat::YUV420P,
+                    color_range,
+                    color_space,
                 })
             }
             Err(ffmpeg::Error::Other { errno }) if errno == libc::EAGAIN => None,
