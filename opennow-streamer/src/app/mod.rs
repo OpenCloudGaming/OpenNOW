@@ -1165,12 +1165,14 @@ impl App {
                     } else {
                         info!("No active sessions, proceeding with launch");
                         Self::clear_active_sessions_cache();
+                        Self::save_pending_game_cache(&game_clone);
                         Self::save_launch_proceed_flag();
                     }
                 }
                 Err(e) => {
                     warn!("Failed to check active sessions: {}, proceeding with launch", e);
                     Self::clear_active_sessions_cache();
+                    Self::save_pending_game_cache(&game_clone);
                     Self::save_launch_proceed_flag();
                 }
             }
