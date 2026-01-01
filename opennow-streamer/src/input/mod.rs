@@ -15,8 +15,10 @@ mod macos;
 // For now, stubs are provided below for Linux
 
 mod protocol;
+pub mod controller;
 
 pub use protocol::*;
+pub use controller::ControllerManager;
 
 // Re-export raw input functions for Windows
 #[cfg(target_os = "windows")]

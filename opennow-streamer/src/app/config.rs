@@ -88,7 +88,7 @@ impl Default for Settings {
             resolution: "1920x1080".to_string(),
             fps: 60,
             codec: VideoCodec::H264,
-            max_bitrate_mbps: 50,
+            max_bitrate_mbps: 150,
 
             // Audio
             audio_codec: AudioCodec::Opus,
@@ -295,8 +295,7 @@ impl VideoCodec {
 
     /// Get all available codecs
     pub fn all() -> &'static [VideoCodec] {
-        // AV1 disabled for now due to color space issues with NVIDIA CUVID decoder
-        &[VideoCodec::H264, VideoCodec::H265]
+        &[VideoCodec::H264, VideoCodec::H265, VideoCodec::AV1]
     }
 }
 
