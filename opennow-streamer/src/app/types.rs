@@ -1,0 +1,206 @@
+//! Application Types
+//!
+//! Common types used across the application.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use parking_lot::Mutex;
+
+use crate::media::VideoFrame;
+use super::config::VideoCodec;
+
+/// Shared frame holder for zero-latency frame delivery
+/// Decoder writes latest frame, renderer reads it - no buffering
+pub struct SharedFrame {
+    frame: Mutex<Option<VideoFrame>>,
+    frame_count: AtomicU64,
+    last_read_count: AtomicU64,
+}
+
+impl SharedFrame {
+    pub fn new() -> Self {
+        Self {
+            frame: Mutex::new(None),
+            frame_count: AtomicU64::new(0),
+            last_read_count: AtomicU64::new(0),
+        }
+    }
+
+    /// Write a new frame (called by decoder)
+    pub fn write(&self, frame: VideoFrame) {
+        *self.frame.lock() = Some(frame);
+        self.frame_count.fetch_add(1, Ordering::Release);
+    }
+
+    /// Check if there's a new frame since last read
+    pub fn has_new_frame(&self) -> bool {
+        let current = self.frame_count.load(Ordering::Acquire);
+        let last = self.last_read_count.load(Ordering::Acquire);
+        current > last
+    }
+
+    /// Read the latest frame (called by renderer)
+    /// Returns None if no frame available or no new frame since last read
+    /// Uses take() instead of clone() to avoid copying ~3MB per frame
+    pub fn read(&self) -> Option<VideoFrame> {
+        let current = self.frame_count.load(Ordering::Acquire);
+        let last = self.last_read_count.load(Ordering::Acquire);
+
+        if current > last {
+            self.last_read_count.store(current, Ordering::Release);
+            self.frame.lock().take()  // Move instead of clone - zero copy
+        } else {
+            None
+        }
+    }
+
+    /// Get frame count for stats
+    pub fn frame_count(&self) -> u64 {
+        self.frame_count.load(Ordering::Relaxed)
+    }
+}
+
+impl Default for SharedFrame {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Parse resolution string (e.g., "1920x1080") into (width, height)
+/// Returns (1920, 1080) as default if parsing fails
+pub fn parse_resolution(res: &str) -> (u32, u32) {
+    let parts: Vec<&str> = res.split('x').collect();
+    if parts.len() == 2 {
+        let width = parts[0].parse().unwrap_or(1920);
+        let height = parts[1].parse().unwrap_or(1080);
+        (width, height)
+    } else {
+        (1920, 1080) // Default to 1080p
+    }
+}
+
+/// Game information
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GameInfo {
+    pub id: String,
+    pub title: String,
+    pub publisher: Option<String>,
+    pub image_url: Option<String>,
+    pub store: String,
+    pub app_id: Option<i64>,
+}
+
+/// Subscription information
+#[derive(Debug, Clone, Default)]
+pub struct SubscriptionInfo {
+    pub membership_tier: String,
+    pub remaining_hours: f32,
+    pub total_hours: f32,
+    pub has_persistent_storage: bool,
+    pub storage_size_gb: Option<u32>,
+}
+
+/// Current tab in Games view
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GamesTab {
+    AllGames,
+    MyLibrary,
+}
+
+impl Default for GamesTab {
+    fn default() -> Self {
+        GamesTab::AllGames
+    }
+}
+
+/// Server/Region information
+#[derive(Debug, Clone)]
+pub struct ServerInfo {
+    pub id: String,
+    pub name: String,
+    pub region: String,
+    pub url: Option<String>,
+    pub ping_ms: Option<u32>,
+    pub status: ServerStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerStatus {
+    Online,
+    Testing,
+    Offline,
+    Unknown,
+}
+
+/// UI actions that can be triggered from the renderer
+#[derive(Debug, Clone)]
+pub enum UiAction {
+    /// Start OAuth login flow
+    StartLogin,
+    /// Select a login provider
+    SelectProvider(usize),
+    /// Logout
+    Logout,
+    /// Launch a game by index
+    LaunchGame(usize),
+    /// Launch a specific game
+    LaunchGameDirect(GameInfo),
+    /// Stop streaming
+    StopStreaming,
+    /// Toggle stats overlay
+    ToggleStats,
+    /// Update search query
+    UpdateSearch(String),
+    /// Toggle settings panel
+    ToggleSettings,
+    /// Update a setting
+    UpdateSetting(SettingChange),
+    /// Refresh games list
+    RefreshGames,
+    /// Switch to a tab
+    SwitchTab(GamesTab),
+    /// Open game detail popup
+    OpenGamePopup(GameInfo),
+    /// Close game detail popup
+    CloseGamePopup,
+    /// Select a server/region
+    SelectServer(usize),
+    /// Enable auto server selection (best ping)
+    SetAutoServerSelection(bool),
+    /// Start ping test for all servers
+    StartPingTest,
+    /// Toggle settings modal
+    ToggleSettingsModal,
+    /// Resume an active session
+    ResumeSession(super::session::ActiveSessionInfo),
+    /// Terminate existing session and start new game
+    TerminateAndLaunch(String, GameInfo),
+    /// Close session conflict dialog
+    CloseSessionConflict,
+    /// Close AV1 warning dialog
+    CloseAV1Warning,
+}
+
+/// Setting changes
+#[derive(Debug, Clone)]
+pub enum SettingChange {
+    Resolution(String),
+    Fps(u32),
+    Codec(VideoCodec),
+    MaxBitrate(u32),
+    Fullscreen(bool),
+    VSync(bool),
+    LowLatency(bool),
+}
+
+/// Application state enum
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppState {
+    /// Login screen
+    Login,
+    /// Browsing games library
+    Games,
+    /// Session being set up (queue, launching)
+    Session,
+    /// Active streaming
+    Streaming,
+}

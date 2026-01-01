@@ -4,6 +4,8 @@
 
 mod renderer;
 mod stats_panel;
+mod shaders;
+pub mod screens;
 pub mod image_cache;
 
 pub use renderer::Renderer;

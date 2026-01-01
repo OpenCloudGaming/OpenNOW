@@ -18,147 +18,9 @@ use crate::app::session::ActiveSessionInfo;
 use crate::media::{VideoFrame, PixelFormat};
 use super::StatsPanel;
 use super::image_cache;
+use super::shaders::{VIDEO_SHADER, NV12_SHADER};
+use super::screens::{render_login_screen, render_session_screen, render_settings_modal, render_session_conflict_dialog, render_av1_warning_dialog};
 use std::collections::HashMap;
-
-/// WGSL shader for full-screen video quad with YUV to RGB conversion
-/// Uses 3 separate textures (Y, U, V) for GPU-accelerated color conversion
-/// This eliminates the CPU bottleneck of converting ~600M pixels/sec at 1440p165
-const VIDEO_SHADER: &str = r#"
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) tex_coord: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    // Full-screen quad (2 triangles = 6 vertices)
-    var positions = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0),  // bottom-left
-        vec2<f32>( 1.0, -1.0),  // bottom-right
-        vec2<f32>(-1.0,  1.0),  // top-left
-        vec2<f32>(-1.0,  1.0),  // top-left
-        vec2<f32>( 1.0, -1.0),  // bottom-right
-        vec2<f32>( 1.0,  1.0),  // top-right
-    );
-
-    var tex_coords = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 1.0),  // bottom-left
-        vec2<f32>(1.0, 1.0),  // bottom-right
-        vec2<f32>(0.0, 0.0),  // top-left
-        vec2<f32>(0.0, 0.0),  // top-left
-        vec2<f32>(1.0, 1.0),  // bottom-right
-        vec2<f32>(1.0, 0.0),  // top-right
-    );
-
-    var output: VertexOutput;
-    output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
-    output.tex_coord = tex_coords[vertex_index];
-    return output;
-}
-
-// YUV planar textures (Y = full res, U/V = half res)
-@group(0) @binding(0)
-var y_texture: texture_2d<f32>;
-@group(0) @binding(1)
-var u_texture: texture_2d<f32>;
-@group(0) @binding(2)
-var v_texture: texture_2d<f32>;
-@group(0) @binding(3)
-var video_sampler: sampler;
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Sample Y, U, V planes
-    // Y is full resolution, U/V are half resolution (4:2:0 subsampling)
-    // The sampler handles the upscaling of U/V automatically
-    let y_raw = textureSample(y_texture, video_sampler, input.tex_coord).r;
-    let u_raw = textureSample(u_texture, video_sampler, input.tex_coord).r;
-    let v_raw = textureSample(v_texture, video_sampler, input.tex_coord).r;
-
-    // BT.709 YUV to RGB conversion (limited/TV range)
-    // Video uses limited range: Y [16-235], UV [16-240]
-    // First convert from limited range to full range
-    let y = (y_raw - 0.0625) * 1.1644;  // (Y - 16/255) * (255/219)
-    let u = (u_raw - 0.5) * 1.1384;      // (U - 128/255) * (255/224)
-    let v = (v_raw - 0.5) * 1.1384;      // (V - 128/255) * (255/224)
-
-    // BT.709 color matrix (HD content: 720p and above)
-    // R = Y + 1.5748 * V
-    // G = Y - 0.1873 * U - 0.4681 * V
-    // B = Y + 1.8556 * U
-    let r = y + 1.5748 * v;
-    let g = y - 0.1873 * u - 0.4681 * v;
-    let b = y + 1.8556 * u;
-
-    return vec4<f32>(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
-}
-"#;
-
-/// WGSL shader for NV12 format (VideoToolbox on macOS)
-/// NV12 has Y plane (R8) and interleaved UV plane (Rg8)
-/// This shader deinterleaves UV on the GPU - much faster than CPU scaler
-const NV12_SHADER: &str = r#"
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) tex_coord: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    var positions = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>(-1.0,  1.0),
-        vec2<f32>(-1.0,  1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>( 1.0,  1.0),
-    );
-
-    var tex_coords = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(1.0, 0.0),
-    );
-
-    var output: VertexOutput;
-    output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
-    output.tex_coord = tex_coords[vertex_index];
-    return output;
-}
-
-// NV12 textures: Y (R8, full res) and UV (Rg8, half res, interleaved)
-@group(0) @binding(0)
-var y_texture: texture_2d<f32>;
-@group(0) @binding(1)
-var uv_texture: texture_2d<f32>;
-@group(0) @binding(2)
-var video_sampler: sampler;
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Sample Y (full res) and UV (half res, interleaved)
-    let y_raw = textureSample(y_texture, video_sampler, input.tex_coord).r;
-    let uv = textureSample(uv_texture, video_sampler, input.tex_coord);
-    let u_raw = uv.r;  // U is in red channel
-    let v_raw = uv.g;  // V is in green channel
-
-    // BT.709 YUV to RGB conversion (limited/TV range - same as YUV420P path)
-    // VideoToolbox outputs limited range: Y [16-235], UV [16-240]
-    let y = (y_raw - 0.0625) * 1.1644;  // (Y - 16/255) * (255/219)
-    let u = (u_raw - 0.5) * 1.1384;      // (U - 128/255) * (255/224)
-    let v = (v_raw - 0.5) * 1.1384;      // (V - 128/255) * (255/224)
-
-    // BT.709 color matrix (HD content: 720p and above)
-    let r = y + 1.5748 * v;
-    let g = y - 0.1873 * u - 0.4681 * v;
-    let b = y + 1.8556 * u;
-
-    return vec4<f32>(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
-}
-"#;
 
 /// Main renderer
 pub struct Renderer {
@@ -287,11 +149,13 @@ impl Renderer {
             .context("Failed to create device")?;
 
         // Configure surface
+        // Use non-sRGB (linear) format for video - H.264/HEVC output is already gamma-corrected
+        // Using sRGB format would apply double gamma correction, causing washed-out colors
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
             .formats
             .iter()
-            .find(|f| f.is_srgb())
+            .find(|f| !f.is_srgb())  // Prefer linear format for video
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
@@ -1481,7 +1345,7 @@ impl Renderer {
 
             match app_state {
                 AppState::Login => {
-                    self.render_login_screen(ctx, &login_providers, selected_provider_index, &status_message, is_loading, &mut actions);
+                    render_login_screen(ctx, &login_providers, selected_provider_index, &status_message, is_loading, &mut actions);
                 }
                 AppState::Games => {
                     // Update image cache for async loading
@@ -1505,13 +1369,14 @@ impl Renderer {
                         ping_testing,
                         show_settings_modal,
                         app.show_session_conflict,
+                        app.show_av1_warning,
                         &app.active_sessions,
                         app.pending_game_launch.as_ref(),
                         &mut actions
                     );
                 }
                 AppState::Session => {
-                    self.render_session_screen(ctx, &selected_game, &status_message, &error_message, &mut actions);
+                    render_session_screen(ctx, &selected_game, &status_message, &error_message, &mut actions);
                 }
                 AppState::Streaming => {
                     // Render stats overlay
@@ -1599,151 +1464,7 @@ impl Renderer {
         Ok(actions)
     }
 
-    fn render_login_screen(
-        &self,
-        ctx: &egui::Context,
-        login_providers: &[crate::auth::LoginProvider],
-        selected_provider_index: usize,
-        status_message: &str,
-        is_loading: bool,
-        actions: &mut Vec<UiAction>
-    ) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let available_height = ui.available_height();
-            let content_height = 400.0;
-            let top_padding = ((available_height - content_height) / 2.0).max(40.0);
-
-            ui.vertical_centered(|ui| {
-                ui.add_space(top_padding);
-
-                // Logo/Title with gradient-like effect
-                ui.label(
-                    egui::RichText::new("OpenNOW")
-                        .size(48.0)
-                        .color(egui::Color32::from_rgb(118, 185, 0)) // NVIDIA green
-                        .strong()
-                );
-
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("GeForce NOW Client")
-                        .size(14.0)
-                        .color(egui::Color32::from_rgb(150, 150, 150))
-                );
-
-                ui.add_space(60.0);
-
-                // Login card container
-                egui::Frame::new()
-                    .fill(egui::Color32::from_rgb(30, 30, 40))
-                    .corner_radius(12.0)
-                    .inner_margin(egui::Margin { left: 40, right: 40, top: 30, bottom: 30 })
-                    .show(ui, |ui| {
-                        ui.set_min_width(320.0);
-
-                        ui.vertical(|ui| {
-                            // Region selection label - centered
-                            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                                ui.label(
-                                    egui::RichText::new("Select Region")
-                                        .size(13.0)
-                                        .color(egui::Color32::from_rgb(180, 180, 180))
-                                );
-                            });
-
-                            ui.add_space(10.0);
-
-                            // Provider dropdown - centered using horizontal with spacing
-                            ui.horizontal(|ui| {
-                                let available_width = ui.available_width();
-                                let combo_width = 240.0;
-                                let padding = (available_width - combo_width) / 2.0;
-                                ui.add_space(padding.max(0.0));
-
-                                let selected_name = login_providers.get(selected_provider_index)
-                                    .map(|p| p.login_provider_display_name.as_str())
-                                    .unwrap_or("NVIDIA (Global)");
-
-                                egui::ComboBox::from_id_salt("provider_select")
-                                    .selected_text(selected_name)
-                                    .width(combo_width)
-                                    .show_ui(ui, |ui| {
-                                        for (i, provider) in login_providers.iter().enumerate() {
-                                            let is_selected = i == selected_provider_index;
-                                            if ui.selectable_label(is_selected, &provider.login_provider_display_name).clicked() {
-                                                actions.push(UiAction::SelectProvider(i));
-                                            }
-                                        }
-                                    });
-                            });
-
-                            ui.add_space(25.0);
-
-                            // Login button or loading state - centered
-                            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                                if is_loading {
-                                    ui.add_space(10.0);
-                                    ui.spinner();
-                                    ui.add_space(12.0);
-                                    ui.label(
-                                        egui::RichText::new("Opening browser...")
-                                            .size(13.0)
-                                            .color(egui::Color32::from_rgb(118, 185, 0))
-                                    );
-                                    ui.add_space(5.0);
-                                    ui.label(
-                                        egui::RichText::new("Complete login in your browser")
-                                            .size(11.0)
-                                            .color(egui::Color32::GRAY)
-                                    );
-                                } else {
-                                    let login_btn = egui::Button::new(
-                                        egui::RichText::new("Sign In")
-                                            .size(15.0)
-                                            .color(egui::Color32::WHITE)
-                                            .strong()
-                                    )
-                                    .fill(egui::Color32::from_rgb(118, 185, 0))
-                                    .corner_radius(6.0);
-
-                                    if ui.add_sized([240.0, 42.0], login_btn).clicked() {
-                                        actions.push(UiAction::StartLogin);
-                                    }
-
-                                    ui.add_space(15.0);
-
-                                    ui.label(
-                                        egui::RichText::new("Sign in with your NVIDIA account")
-                                            .size(11.0)
-                                            .color(egui::Color32::from_rgb(120, 120, 120))
-                                    );
-                                }
-                            });
-                        });
-                    });
-
-                ui.add_space(20.0);
-
-                // Status message (if any)
-                if !status_message.is_empty() && status_message != "Welcome to OpenNOW" {
-                    ui.label(
-                        egui::RichText::new(status_message)
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(150, 150, 150))
-                    );
-                }
-
-                ui.add_space(40.0);
-
-                // Footer info
-                ui.label(
-                    egui::RichText::new("Alliance Partners can select their region above")
-                        .size(10.0)
-                        .color(egui::Color32::from_rgb(80, 80, 80))
-                );
-            });
-        });
-    }
+    // render_login_screen moved to screens/login.rs
 
     fn render_games_screen(
         &self,
@@ -1765,6 +1486,7 @@ impl Renderer {
         ping_testing: bool,
         show_settings_modal: bool,
         show_session_conflict: bool,
+        show_av1_warning: bool,
         active_sessions: &[ActiveSessionInfo],
         pending_game_launch: Option<&GameInfo>,
         actions: &mut Vec<UiAction>
@@ -2096,508 +1818,23 @@ impl Renderer {
 
         // Settings modal
         if show_settings_modal {
-            Self::render_settings_modal(ctx, settings, servers, selected_server_index, auto_server_selection, ping_testing, actions);
+            render_settings_modal(ctx, settings, servers, selected_server_index, auto_server_selection, ping_testing, actions);
         }
 
         // Session conflict dialog
         if show_session_conflict {
-            Self::render_session_conflict_dialog(ctx, active_sessions, pending_game_launch, actions);
+            render_session_conflict_dialog(ctx, active_sessions, pending_game_launch, actions);
+        }
+
+        // AV1 hardware warning dialog
+        if show_av1_warning {
+            render_av1_warning_dialog(ctx, actions);
         }
     }
 
-    /// Render the Settings modal with region selector and stream settings
-    fn render_settings_modal(
-        ctx: &egui::Context,
-        settings: &crate::app::Settings,
-        servers: &[crate::app::ServerInfo],
-        selected_server_index: usize,
-        auto_server_selection: bool,
-        ping_testing: bool,
-        actions: &mut Vec<UiAction>,
-    ) {
-        let modal_width = 500.0;
-        let modal_height = 600.0;
-
-        // Dark overlay
-        egui::Area::new(egui::Id::new("settings_overlay"))
-            .fixed_pos(egui::pos2(0.0, 0.0))
-            .order(egui::Order::Middle)
-            .show(ctx, |ui| {
-                #[allow(deprecated)]
-                let screen_rect = ctx.screen_rect();
-                ui.allocate_response(screen_rect.size(), egui::Sense::click());
-                ui.painter().rect_filled(
-                    screen_rect,
-                    0.0,
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
-                );
-            });
-
-        // Modal window
-        #[allow(deprecated)]
-        let screen_rect = ctx.screen_rect();
-        let modal_pos = egui::pos2(
-            (screen_rect.width() - modal_width) / 2.0,
-            (screen_rect.height() - modal_height) / 2.0,
-        );
-
-        egui::Area::new(egui::Id::new("settings_modal"))
-            .fixed_pos(modal_pos)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(egui::Color32::from_rgb(28, 28, 35))
-                    .corner_radius(12.0)
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 75)))
-                    .inner_margin(egui::Margin::same(20))
-                    .show(ui, |ui| {
-                        ui.set_min_size(egui::vec2(modal_width, modal_height));
-
-                        // Header with close button
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Settings")
-                                    .size(20.0)
-                                    .strong()
-                                    .color(egui::Color32::WHITE)
-                            );
-
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let close_btn = egui::Button::new(
-                                    egui::RichText::new("✕")
-                                        .size(16.0)
-                                        .color(egui::Color32::WHITE)
-                                )
-                                .fill(egui::Color32::TRANSPARENT)
-                                .corner_radius(4.0);
-
-                                if ui.add(close_btn).clicked() {
-                                    actions.push(UiAction::ToggleSettingsModal);
-                                }
-                            });
-                        });
-
-                        ui.add_space(15.0);
-                        ui.separator();
-                        ui.add_space(15.0);
-
-                        egui::ScrollArea::vertical()
-                            .max_height(modal_height - 100.0)
-                            .show(ui, |ui| {
-                                // === Stream Settings Section ===
-                                ui.label(
-                                    egui::RichText::new("Stream Settings")
-                                        .size(16.0)
-                                        .strong()
-                                        .color(egui::Color32::WHITE)
-                                );
-                                ui.add_space(15.0);
-
-                                egui::Grid::new("settings_grid")
-                                    .num_columns(2)
-                                    .spacing([20.0, 12.0])
-                                    .min_col_width(100.0)
-                                    .show(ui, |ui| {
-                                        // Resolution dropdown
-                                        ui.label(
-                                            egui::RichText::new("Resolution")
-                                                .size(13.0)
-                                                .color(egui::Color32::GRAY)
-                                        );
-                                        egui::ComboBox::from_id_salt("resolution_combo")
-                                            .selected_text(&settings.resolution)
-                                            .width(180.0)
-                                            .show_ui(ui, |ui| {
-                                                for res in crate::app::config::RESOLUTIONS {
-                                                    if ui.selectable_label(settings.resolution == res.0, format!("{} ({})", res.0, res.1)).clicked() {
-                                                        actions.push(UiAction::UpdateSetting(SettingChange::Resolution(res.0.to_string())));
-                                                    }
-                                                }
-                                            });
-                                        ui.end_row();
-
-                                        // FPS dropdown
-                                        ui.label(
-                                            egui::RichText::new("FPS")
-                                                .size(13.0)
-                                                .color(egui::Color32::GRAY)
-                                        );
-                                        egui::ComboBox::from_id_salt("fps_combo")
-                                            .selected_text(format!("{} FPS", settings.fps))
-                                            .width(180.0)
-                                            .show_ui(ui, |ui| {
-                                                for fps in crate::app::config::FPS_OPTIONS {
-                                                    if ui.selectable_label(settings.fps == *fps, format!("{} FPS", fps)).clicked() {
-                                                        actions.push(UiAction::UpdateSetting(SettingChange::Fps(*fps)));
-                                                    }
-                                                }
-                                            });
-                                        ui.end_row();
-
-                                        // Codec dropdown
-                                        ui.label(
-                                            egui::RichText::new("Video Codec")
-                                                .size(13.0)
-                                                .color(egui::Color32::GRAY)
-                                        );
-                                        egui::ComboBox::from_id_salt("codec_combo")
-                                            .selected_text(settings.codec.display_name())
-                                            .width(180.0)
-                                            .show_ui(ui, |ui| {
-                                                for codec in crate::app::config::VideoCodec::all() {
-                                                    if ui.selectable_label(settings.codec == *codec, codec.display_name()).clicked() {
-                                                        actions.push(UiAction::UpdateSetting(SettingChange::Codec(*codec)));
-                                                    }
-                                                }
-                                            });
-                                        ui.end_row();
-
-                                        // Max Bitrate slider
-                                        ui.label(
-                                            egui::RichText::new("Max Bitrate")
-                                                .size(13.0)
-                                                .color(egui::Color32::GRAY)
-                                        );
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                egui::RichText::new(format!("{} Mbps", settings.max_bitrate_mbps))
-                                                    .size(13.0)
-                                                    .color(egui::Color32::WHITE)
-                                            );
-                                            ui.label(
-                                                egui::RichText::new("(200 = unlimited)")
-                                                    .size(10.0)
-                                                    .color(egui::Color32::GRAY)
-                                            );
-                                        });
-                                        ui.end_row();
-                                    });
-
-                                ui.add_space(25.0);
-                                ui.separator();
-                                ui.add_space(15.0);
-
-                                // === Server Region Section ===
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("Server Region")
-                                            .size(16.0)
-                                            .strong()
-                                            .color(egui::Color32::WHITE)
-                                    );
-
-                                    ui.add_space(20.0);
-
-                                    // Ping test button
-                                    let ping_btn_text = if ping_testing { "Testing..." } else { "Test Ping" };
-                                    let ping_btn = egui::Button::new(
-                                        egui::RichText::new(ping_btn_text)
-                                            .size(11.0)
-                                            .color(egui::Color32::WHITE)
-                                    )
-                                    .fill(if ping_testing {
-                                        egui::Color32::from_rgb(80, 80, 100)
-                                    } else {
-                                        egui::Color32::from_rgb(60, 120, 60)
-                                    })
-                                    .corner_radius(4.0);
-
-                                    if ui.add_sized([80.0, 24.0], ping_btn).clicked() && !ping_testing {
-                                        actions.push(UiAction::StartPingTest);
-                                    }
-
-                                    if ping_testing {
-                                        ui.spinner();
-                                    }
-                                });
-                                ui.add_space(10.0);
-
-                                // Server dropdown with Auto option and best server highlighted
-                                let selected_text = if auto_server_selection {
-                                    // Find best server for display
-                                    let best = servers.iter()
-                                        .filter(|s| s.status == crate::app::ServerStatus::Online && s.ping_ms.is_some())
-                                        .min_by_key(|s| s.ping_ms.unwrap_or(9999));
-                                    if let Some(best_server) = best {
-                                        format!("Auto: {} ({}ms)", best_server.name, best_server.ping_ms.unwrap_or(0))
-                                    } else {
-                                        "Auto (Best Ping)".to_string()
-                                    }
-                                } else {
-                                    servers.get(selected_server_index)
-                                        .map(|s| {
-                                            if let Some(ping) = s.ping_ms {
-                                                format!("{} ({}ms)", s.name, ping)
-                                            } else {
-                                                s.name.clone()
-                                            }
-                                        })
-                                        .unwrap_or_else(|| "Select a server...".to_string())
-                                };
-
-                                egui::ComboBox::from_id_salt("server_combo")
-                                    .selected_text(selected_text)
-                                    .width(300.0)
-                                    .show_ui(ui, |ui| {
-                                        // Auto option at the top
-                                        let auto_label = {
-                                            let best = servers.iter()
-                                                .filter(|s| s.status == crate::app::ServerStatus::Online && s.ping_ms.is_some())
-                                                .min_by_key(|s| s.ping_ms.unwrap_or(9999));
-                                            if let Some(best_server) = best {
-                                                format!("✨ Auto: {} ({}ms)", best_server.name, best_server.ping_ms.unwrap_or(0))
-                                            } else {
-                                                "✨ Auto (Best Ping)".to_string()
-                                            }
-                                        };
-
-                                        if ui.selectable_label(auto_server_selection, auto_label).clicked() {
-                                            actions.push(UiAction::SetAutoServerSelection(true));
-                                        }
-
-                                        ui.separator();
-                                        ui.add_space(5.0);
-
-                                        // Group by region
-                                        let regions = ["Europe", "North America", "Canada", "Asia-Pacific", "Other"];
-                                        for region in regions {
-                                            let region_servers: Vec<_> = servers
-                                                .iter()
-                                                .enumerate()
-                                                .filter(|(_, s)| s.region == region)
-                                                .collect();
-
-                                            if region_servers.is_empty() {
-                                                continue;
-                                            }
-
-                                            ui.label(
-                                                egui::RichText::new(region)
-                                                    .size(11.0)
-                                                    .strong()
-                                                    .color(egui::Color32::from_rgb(118, 185, 0))
-                                            );
-
-                                            for (idx, server) in region_servers {
-                                                let is_selected = !auto_server_selection && idx == selected_server_index;
-                                                let ping_text = match server.status {
-                                                    crate::app::ServerStatus::Online => {
-                                                        server.ping_ms.map(|p| format!(" ({}ms)", p)).unwrap_or_default()
-                                                    }
-                                                    crate::app::ServerStatus::Testing => " (testing...)".to_string(),
-                                                    crate::app::ServerStatus::Offline => " (offline)".to_string(),
-                                                    crate::app::ServerStatus::Unknown => "".to_string(),
-                                                };
-
-                                                let label = format!("  {}{}", server.name, ping_text);
-                                                if ui.selectable_label(is_selected, label).clicked() {
-                                                    actions.push(UiAction::SelectServer(idx));
-                                                }
-                                            }
-
-                                            ui.add_space(5.0);
-                                        }
-                                    });
-
-                                ui.add_space(20.0);
-                            });
-                    });
-            });
-    }
-
-    /// Render the session conflict dialog
-    fn render_session_conflict_dialog(
-        ctx: &egui::Context,
-        active_sessions: &[ActiveSessionInfo],
-        pending_game: Option<&GameInfo>,
-        actions: &mut Vec<UiAction>,
-    ) {
-        let modal_width = 500.0;
-        let modal_height = 300.0;
-
-        egui::Area::new(egui::Id::new("session_conflict_overlay"))
-            .fixed_pos(egui::pos2(0.0, 0.0))
-            .order(egui::Order::Middle)
-            .show(ctx, |ui| {
-                #[allow(deprecated)]
-                let screen_rect = ctx.screen_rect();
-                ui.allocate_response(screen_rect.size(), egui::Sense::click());
-                ui.painter().rect_filled(
-                    screen_rect,
-                    0.0,
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
-                );
-            });
-
-        #[allow(deprecated)]
-        let screen_rect = ctx.screen_rect();
-        let modal_pos = egui::pos2(
-            (screen_rect.width() - modal_width) / 2.0,
-            (screen_rect.height() - modal_height) / 2.0,
-        );
-
-        egui::Area::new(egui::Id::new("session_conflict_modal"))
-            .fixed_pos(modal_pos)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(egui::Color32::from_rgb(28, 28, 35))
-                    .corner_radius(12.0)
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 75)))
-                    .inner_margin(egui::Margin::same(20))
-                    .show(ui, |ui| {
-                        ui.set_min_size(egui::vec2(modal_width, modal_height));
-
-                        ui.label(
-                            egui::RichText::new("⚠ Active Session Detected")
-                                .size(20.0)
-                                .strong()
-                                .color(egui::Color32::from_rgb(255, 200, 80))
-                        );
-
-                        ui.add_space(15.0);
-
-                        if let Some(session) = active_sessions.first() {
-                            ui.label(
-                                egui::RichText::new("You have an active GFN session running:")
-                                    .size(14.0)
-                                    .color(egui::Color32::LIGHT_GRAY)
-                            );
-
-                            ui.add_space(10.0);
-
-                            egui::Frame::new()
-                                .fill(egui::Color32::from_rgb(40, 40, 50))
-                                .corner_radius(8.0)
-                                .inner_margin(egui::Margin::same(12))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new("App ID:")
-                                                .size(13.0)
-                                                .color(egui::Color32::GRAY)
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(format!("{}", session.app_id))
-                                                .size(13.0)
-                                                .color(egui::Color32::WHITE)
-                                        );
-                                    });
-
-                                    if let Some(ref gpu) = session.gpu_type {
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                egui::RichText::new("GPU:")
-                                                    .size(13.0)
-                                                    .color(egui::Color32::GRAY)
-                                            );
-                                            ui.label(
-                                                egui::RichText::new(gpu)
-                                                    .size(13.0)
-                                                    .color(egui::Color32::WHITE)
-                                            );
-                                        });
-                                    }
-
-                                    if let Some(ref res) = session.resolution {
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                egui::RichText::new("Resolution:")
-                                                    .size(13.0)
-                                                    .color(egui::Color32::GRAY)
-                                            );
-                                            ui.label(
-                                                egui::RichText::new(format!("{} @ {}fps", res, session.fps.unwrap_or(60)))
-                                                    .size(13.0)
-                                                    .color(egui::Color32::WHITE)
-                                            );
-                                        });
-                                    }
-
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new("Status:")
-                                                .size(13.0)
-                                                .color(egui::Color32::GRAY)
-                                        );
-                                        let status_text = match session.status {
-                                            2 => "Ready",
-                                            3 => "Running",
-                                            _ => "Unknown",
-                                        };
-                                        ui.label(
-                                            egui::RichText::new(status_text)
-                                                .size(13.0)
-                                                .color(egui::Color32::from_rgb(118, 185, 0))
-                                        );
-                                    });
-                                });
-
-                            ui.add_space(15.0);
-
-                            if pending_game.is_some() {
-                                ui.label(
-                                    egui::RichText::new("GFN only allows one session at a time. You can either:")
-                                        .size(13.0)
-                                        .color(egui::Color32::LIGHT_GRAY)
-                                );
-                            } else {
-                                ui.label(
-                                    egui::RichText::new("What would you like to do?")
-                                        .size(13.0)
-                                        .color(egui::Color32::LIGHT_GRAY)
-                                );
-                            }
-
-                            ui.add_space(15.0);
-
-                            ui.vertical_centered(|ui| {
-                                let resume_btn = egui::Button::new(
-                                    egui::RichText::new("Resume Existing Session")
-                                        .size(14.0)
-                                        .color(egui::Color32::WHITE)
-                                )
-                                .fill(egui::Color32::from_rgb(118, 185, 0))
-                                .min_size(egui::vec2(200.0, 35.0));
-
-                                if ui.add(resume_btn).clicked() {
-                                    actions.push(UiAction::ResumeSession(session.clone()));
-                                }
-
-                                ui.add_space(8.0);
-
-                                if let Some(game) = pending_game {
-                                    let terminate_btn = egui::Button::new(
-                                        egui::RichText::new(format!("End Session & Launch \"{}\"", game.title))
-                                            .size(14.0)
-                                            .color(egui::Color32::WHITE)
-                                    )
-                                    .fill(egui::Color32::from_rgb(220, 60, 60))
-                                    .min_size(egui::vec2(200.0, 35.0));
-
-                                    if ui.add(terminate_btn).clicked() {
-                                        actions.push(UiAction::TerminateAndLaunch(session.session_id.clone(), game.clone()));
-                                    }
-
-                                    ui.add_space(8.0);
-                                }
-
-                                let cancel_btn = egui::Button::new(
-                                    egui::RichText::new("Cancel")
-                                        .size(14.0)
-                                        .color(egui::Color32::LIGHT_GRAY)
-                                )
-                                .fill(egui::Color32::from_rgb(60, 60, 75))
-                                .min_size(egui::vec2(200.0, 35.0));
-
-                                if ui.add(cancel_btn).clicked() {
-                                    actions.push(UiAction::CloseSessionConflict);
-                                }
-                            });
-                        }
-                    });
-            });
-    }
+    // Note: render_settings_modal, render_session_conflict_dialog, render_av1_warning_dialog
+    // have been moved to src/gui/screens/dialogs.rs
+    // render_login_screen, render_session_screen moved to src/gui/screens/
 
     /// Render the game detail popup
     fn render_game_popup(
@@ -2829,104 +2066,29 @@ impl Renderer {
                                     .color(egui::Color32::WHITE)
                             );
 
-                            ui.add_space(2.0);
-
-                            // Store badge with color coding
-                            let store_color = match game.store.to_lowercase().as_str() {
-                                "steam" => egui::Color32::from_rgb(102, 192, 244),
-                                "epic" => egui::Color32::from_rgb(200, 200, 200),
-                                "ubisoft" | "uplay" => egui::Color32::from_rgb(0, 150, 255),
-                                "xbox" => egui::Color32::from_rgb(16, 124, 16),
-                                "gog" => egui::Color32::from_rgb(190, 130, 255),
-                                _ => egui::Color32::from_rgb(150, 150, 150),
-                            };
+                            // Store badge
                             ui.label(
-                                egui::RichText::new(&game.store.to_uppercase())
+                                egui::RichText::new(game.store.to_uppercase())
                                     .size(10.0)
-                                    .color(store_color)
+                                    .color(egui::Color32::from_rgb(100, 180, 255))
                             );
                         });
                     });
-                    ui.add_space(10.0);
+                    ui.add_space(8.0);
                 });
             });
-
-        // Make the card clickable - check for click on the response rect
-        let card_rect = response.response.rect;
-        if ui.rect_contains_pointer(card_rect) {
-            // Change cursor to pointer
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-
-            // Highlight on hover - subtle glow effect
-            ui.painter().rect_stroke(
-                card_rect,
-                8.0,
-                egui::Stroke::new(2.0, egui::Color32::from_rgb(118, 185, 0)),
-                egui::StrokeKind::Outside
-            );
-        }
 
         if response.response.interact(egui::Sense::click()).clicked() {
             actions.push(UiAction::OpenGamePopup(game_for_click));
         }
     }
 
-    fn render_session_screen(
-        &self,
-        ctx: &egui::Context,
-        selected_game: &Option<crate::app::GameInfo>,
-        status_message: &str,
-        error_message: &Option<String>,
-        actions: &mut Vec<UiAction>
-    ) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space(120.0);
-
-                // Game title
-                if let Some(ref game) = selected_game {
-                    ui.label(
-                        egui::RichText::new(&game.title)
-                            .size(28.0)
-                            .strong()
-                            .color(egui::Color32::WHITE)
-                    );
-                }
-
-                ui.add_space(40.0);
-
-                // Spinner
-                ui.spinner();
-
-                ui.add_space(20.0);
-
-                // Status
-                ui.label(
-                    egui::RichText::new(status_message)
-                        .size(16.0)
-                        .color(egui::Color32::LIGHT_GRAY)
-                );
-
-                // Error message
-                if let Some(ref error) = error_message {
-                    ui.add_space(20.0);
-                    ui.label(
-                        egui::RichText::new(error)
-                            .size(14.0)
-                            .color(egui::Color32::from_rgb(255, 100, 100))
-                    );
-                }
-
-                ui.add_space(40.0);
-
-                // Cancel button
-                if ui.button("Cancel").clicked() {
-                    actions.push(UiAction::StopStreaming);
-                }
-            });
-        });
-    }
+    // Note: render_session_conflict_dialog, render_av1_warning_dialog, render_session_screen
+    // have been moved to src/gui/screens/dialogs.rs and screens/session.rs
 }
+
+// End of impl Renderer block
+// Below is the standalone render_stats_panel function
 
 /// Render stats panel (standalone function)
 fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, position: crate::app::StatsPosition) {
@@ -2945,168 +2107,63 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(Color32::from_rgba_unmultiplied(0, 0, 0, 200))
-                .corner_radius(4.0)
-                .inner_margin(8.0)
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::same(10))
                 .show(ui, |ui| {
-                    ui.set_min_width(200.0);
-
-                    // Resolution
-                    let res_text = if stats.resolution.is_empty() {
-                        "Connecting...".to_string()
-                    } else {
-                        stats.resolution.clone()
-                    };
-
-                    ui.label(
-                        RichText::new(res_text)
-                            .font(FontId::monospace(13.0))
-                            .color(Color32::WHITE)
-                    );
-
-                    // Decoded FPS vs Render FPS (shows if renderer is bottlenecked)
-                    let decode_fps = stats.fps;
-                    let render_fps = stats.render_fps;
-                    let target_fps = stats.target_fps as f32;
-
-                    // Decode FPS color
-                    let decode_color = if target_fps > 0.0 {
-                        let ratio = decode_fps / target_fps;
-                        if ratio >= 0.8 { Color32::GREEN }
-                        else if ratio >= 0.5 { Color32::YELLOW }
-                        else { Color32::from_rgb(255, 100, 100) }
-                    } else { Color32::WHITE };
-
-                    // Render FPS color (critical - this is what you actually see)
-                    let render_color = if target_fps > 0.0 {
-                        let ratio = render_fps / target_fps;
-                        if ratio >= 0.8 { Color32::GREEN }
-                        else if ratio >= 0.5 { Color32::YELLOW }
-                        else { Color32::from_rgb(255, 100, 100) }
-                    } else { Color32::WHITE };
-
-                    // Show both FPS values
                     ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(format!("Decode: {:.0}", decode_fps))
-                                .font(FontId::monospace(11.0))
-                                .color(decode_color)
-                        );
-                        ui.label(
-                            RichText::new(format!(" | Render: {:.0}", render_fps))
-                                .font(FontId::monospace(11.0))
-                                .color(render_color)
-                        );
-                        if stats.target_fps > 0 {
+                        // Video stats (left)
+                        ui.vertical(|ui| {
                             ui.label(
-                                RichText::new(format!(" / {} fps", stats.target_fps))
-                                    .font(FontId::monospace(11.0))
-                                    .color(Color32::GRAY)
+                                RichText::new("VIDEO")
+                                    .font(FontId::monospace(10.0))
+                                    .color(Color32::from_rgb(120, 200, 120))
                             );
-                        }
+                            ui.label(
+                                RichText::new(&stats.resolution)
+                                    .font(FontId::monospace(11.0))
+                                    .color(Color32::WHITE)
+                            );
+                            ui.label(
+                                RichText::new(format!("{:.1} fps", stats.fps))
+                                    .font(FontId::monospace(11.0))
+                                    .color(Color32::WHITE)
+                            );
+                            ui.label(
+                                RichText::new(&stats.codec)
+                                    .font(FontId::monospace(11.0))
+                                    .color(Color32::LIGHT_GRAY)
+                            );
+                        });
+
+                        ui.add_space(20.0);
+
+                        // Network stats (right)
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new("NETWORK")
+                                    .font(FontId::monospace(10.0))
+                                    .color(Color32::from_rgb(120, 120, 200))
+                            );
+                            ui.label(
+                                RichText::new(format!("{:.1} Mbps", stats.bitrate_mbps))
+                                    .font(FontId::monospace(11.0))
+                                    .color(Color32::WHITE)
+                            );
+                            ui.label(
+                                RichText::new(format!("{:.1}ms", stats.latency_ms))
+                                    .font(FontId::monospace(11.0))
+                                    .color(Color32::WHITE)
+                            );
+                            // Show packet loss if relevant
+                            if stats.packet_loss > 0.0 {
+                                ui.label(
+                                    RichText::new(format!("{:.1}% loss", stats.packet_loss))
+                                        .font(FontId::monospace(11.0))
+                                        .color(Color32::from_rgb(255, 100, 100))
+                                );
+                            }
+                        });
                     });
-
-                    // Codec and bitrate
-                    if !stats.codec.is_empty() {
-                        ui.label(
-                            RichText::new(format!(
-                                "{} | {:.1} Mbps",
-                                stats.codec,
-                                stats.bitrate_mbps
-                            ))
-                            .font(FontId::monospace(11.0))
-                            .color(Color32::LIGHT_GRAY)
-                        );
-                    }
-
-                    // Latency (decode pipeline)
-                    let latency_color = if stats.latency_ms < 30.0 {
-                        Color32::GREEN
-                    } else if stats.latency_ms < 60.0 {
-                        Color32::YELLOW
-                    } else {
-                        Color32::RED
-                    };
-
-                    ui.label(
-                        RichText::new(format!("Decode: {:.0} ms", stats.latency_ms))
-                            .font(FontId::monospace(11.0))
-                            .color(latency_color)
-                    );
-
-                    // Input latency (event creation to transmission)
-                    if stats.input_latency_ms > 0.0 {
-                        let input_color = if stats.input_latency_ms < 2.0 {
-                            Color32::GREEN
-                        } else if stats.input_latency_ms < 5.0 {
-                            Color32::YELLOW
-                        } else {
-                            Color32::RED
-                        };
-
-                        ui.label(
-                            RichText::new(format!("Input: {:.1} ms", stats.input_latency_ms))
-                                .font(FontId::monospace(11.0))
-                                .color(input_color)
-                        );
-                    }
-
-                    if stats.packet_loss > 0.0 {
-                        let loss_color = if stats.packet_loss < 1.0 {
-                            Color32::YELLOW
-                        } else {
-                            Color32::RED
-                        };
-
-                        ui.label(
-                            RichText::new(format!("Packet Loss: {:.1}%", stats.packet_loss))
-                                .font(FontId::monospace(11.0))
-                                .color(loss_color)
-                        );
-                    }
-
-                    // Decode and render times
-                    if stats.decode_time_ms > 0.0 || stats.render_time_ms > 0.0 {
-                        ui.label(
-                            RichText::new(format!(
-                                "Decode: {:.1} ms | Render: {:.1} ms",
-                                stats.decode_time_ms,
-                                stats.render_time_ms
-                            ))
-                            .font(FontId::monospace(10.0))
-                            .color(Color32::GRAY)
-                        );
-                    }
-
-                    // Frame stats
-                    if stats.frames_received > 0 {
-                        ui.label(
-                            RichText::new(format!(
-                                "Frames: {} rx, {} dec, {} drop",
-                                stats.frames_received,
-                                stats.frames_decoded,
-                                stats.frames_dropped
-                            ))
-                            .font(FontId::monospace(10.0))
-                            .color(Color32::DARK_GRAY)
-                        );
-                    }
-
-                    // GPU and server info
-                    if !stats.gpu_type.is_empty() || !stats.server_region.is_empty() {
-                        let info = format!(
-                            "{}{}{}",
-                            stats.gpu_type,
-                            if !stats.gpu_type.is_empty() && !stats.server_region.is_empty() { " | " } else { "" },
-                            stats.server_region
-                        );
-
-                        ui.label(
-                            RichText::new(info)
-                                .font(FontId::monospace(10.0))
-                                .color(Color32::DARK_GRAY)
-                        );
-                    }
                 });
         });
 }
-

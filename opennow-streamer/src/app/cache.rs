@@ -1,0 +1,423 @@
+//! App Data Cache Management
+//!
+//! Handles caching of games, library, subscription, sessions, and tokens.
+
+use log::{error, info, warn};
+use std::path::PathBuf;
+
+use crate::auth::AuthTokens;
+use super::{GameInfo, SubscriptionInfo, SessionInfo, SessionState, ActiveSessionInfo};
+use crate::app::session::MediaConnectionInfo;
+
+/// Get the application data directory
+/// Creates directory if it doesn't exist
+pub fn get_app_data_dir() -> Option<PathBuf> {
+    use std::sync::OnceLock;
+    static APP_DATA_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+    APP_DATA_DIR.get_or_init(|| {
+        let data_dir = dirs::data_dir()?;
+        let app_dir = data_dir.join("opennow");
+
+        // Ensure directory exists
+        if let Err(e) = std::fs::create_dir_all(&app_dir) {
+            error!("Failed to create app data directory: {}", e);
+        }
+
+        // Migration: copy auth.json from legacy locations if it doesn't exist in new location
+        let new_auth = app_dir.join("auth.json");
+        if !new_auth.exists() {
+            // Try legacy opennow-streamer location (config_dir)
+            if let Some(config_dir) = dirs::config_dir() {
+                let legacy_path = config_dir.join("opennow-streamer").join("auth.json");
+                if legacy_path.exists() {
+                    if let Err(e) = std::fs::copy(&legacy_path, &new_auth) {
+                        warn!("Failed to migrate auth.json from legacy location: {}", e);
+                    } else {
+                        info!("Migrated auth.json from {:?} to {:?}", legacy_path, new_auth);
+                    }
+                }
+            }
+
+            // Try gfn-client location (config_dir)
+            if !new_auth.exists() {
+                if let Some(config_dir) = dirs::config_dir() {
+                    let legacy_path = config_dir.join("gfn-client").join("auth.json");
+                    if legacy_path.exists() {
+                        if let Err(e) = std::fs::copy(&legacy_path, &new_auth) {
+                            warn!("Failed to migrate auth.json from gfn-client: {}", e);
+                        } else {
+                            info!("Migrated auth.json from {:?} to {:?}", legacy_path, new_auth);
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(app_dir)
+    }).clone()
+}
+
+// ============================================================
+// Auth Token Cache
+// ============================================================
+
+pub fn tokens_path() -> Option<PathBuf> {
+    get_app_data_dir().map(|p| p.join("auth.json"))
+}
+
+pub fn load_tokens() -> Option<AuthTokens> {
+    let path = tokens_path()?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let tokens: AuthTokens = serde_json::from_str(&content).ok()?;
+
+    // Validate token is not expired
+    if tokens.is_expired() {
+        info!("Saved token expired, clearing auth file");
+        let _ = std::fs::remove_file(&path);
+        return None;
+    }
+
+    Some(tokens)
+}
+
+pub fn save_tokens(tokens: &AuthTokens) {
+    if let Some(path) = tokens_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(tokens) {
+            if let Err(e) = std::fs::write(&path, &json) {
+                error!("Failed to save tokens: {}", e);
+            } else {
+                info!("Saved tokens to {:?}", path);
+            }
+        }
+    }
+}
+
+pub fn clear_tokens() {
+    if let Some(path) = tokens_path() {
+        let _ = std::fs::remove_file(path);
+        info!("Cleared auth tokens");
+    }
+}
+
+// ============================================================
+// Games Cache
+// ============================================================
+
+fn games_cache_path() -> Option<PathBuf> {
+    get_app_data_dir().map(|p| p.join("games_cache.json"))
+}
+
+pub fn save_games_cache(games: &[GameInfo]) {
+    if let Some(path) = games_cache_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string(games) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+pub fn load_games_cache() -> Option<Vec<GameInfo>> {
+    let path = games_cache_path()?;
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+pub fn clear_games_cache() {
+    if let Some(path) = games_cache_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+// ============================================================
+// Library Cache
+// ============================================================
+
+fn library_cache_path() -> Option<PathBuf> {
+    get_app_data_dir().map(|p| p.join("library_cache.json"))
+}
+
+pub fn save_library_cache(games: &[GameInfo]) {
+    if let Some(path) = library_cache_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string(games) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+pub fn load_library_cache() -> Option<Vec<GameInfo>> {
+    let path = library_cache_path()?;
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+// ============================================================
+// Subscription Cache
+// ============================================================
+
+fn subscription_cache_path() -> Option<PathBuf> {
+    get_app_data_dir().map(|p| p.join("subscription_cache.json"))
+}
+
+pub fn save_subscription_cache(sub: &SubscriptionInfo) {
+    if let Some(path) = subscription_cache_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let cache = serde_json::json!({
+            "membership_tier": sub.membership_tier,
+            "remaining_hours": sub.remaining_hours,
+            "total_hours": sub.total_hours,
+            "has_persistent_storage": sub.has_persistent_storage,
+            "storage_size_gb": sub.storage_size_gb,
+        });
+        if let Ok(json) = serde_json::to_string(&cache) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+pub fn load_subscription_cache() -> Option<SubscriptionInfo> {
+    let path = subscription_cache_path()?;
+    let content = std::fs::read_to_string(path).ok()?;
+    let cache: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    Some(SubscriptionInfo {
+        membership_tier: cache.get("membership_tier")?.as_str()?.to_string(),
+        remaining_hours: cache.get("remaining_hours")?.as_f64()? as f32,
+        total_hours: cache.get("total_hours")?.as_f64()? as f32,
+        has_persistent_storage: cache.get("has_persistent_storage")?.as_bool()?,
+        storage_size_gb: cache.get("storage_size_gb").and_then(|v| v.as_u64()).map(|v| v as u32),
+    })
+}
+
+// ============================================================
+// Session Cache
+// ============================================================
+
+fn session_cache_path() -> Option<PathBuf> {
+    get_app_data_dir().map(|p| p.join("session_cache.json"))
+}
+
+fn session_error_path() -> Option<PathBuf> {
+    get_app_data_dir().map(|p| p.join("session_error.txt"))
+}
+
+pub fn save_session_cache(session: &SessionInfo) {
+    if let Some(path) = session_cache_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // Serialize session info
+        let cache = serde_json::json!({
+            "session_id": session.session_id,
+            "server_ip": session.server_ip,
+            "zone": session.zone,
+            "state": format!("{:?}", session.state),
+            "gpu_type": session.gpu_type,
+            "signaling_url": session.signaling_url,
+            "is_ready": session.is_ready(),
+            "is_queued": session.is_queued(),
+            "queue_position": session.queue_position(),
+            "media_connection_info": session.media_connection_info.as_ref().map(|mci| {
+                serde_json::json!({
+                    "ip": mci.ip,
+                    "port": mci.port,
+                })
+            }),
+        });
+        if let Ok(json) = serde_json::to_string(&cache) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+pub fn load_session_cache() -> Option<SessionInfo> {
+    let path = session_cache_path()?;
+    let content = std::fs::read_to_string(path).ok()?;
+    let cache: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    let state_str = cache.get("state")?.as_str()?;
+    let state = if state_str.contains("Ready") {
+        SessionState::Ready
+    } else if state_str.contains("Streaming") {
+        SessionState::Streaming
+    } else if state_str.contains("InQueue") {
+        // Parse queue position and eta from state string
+        let position = cache.get("queue_position")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        SessionState::InQueue { position, eta_secs: 0 }
+    } else if state_str.contains("Error") {
+        SessionState::Error(state_str.to_string())
+    } else if state_str.contains("Launching") {
+        SessionState::Launching
+    } else {
+        SessionState::Requesting
+    };
+
+    // Parse media_connection_info if present
+    let media_connection_info = cache.get("media_connection_info")
+        .and_then(|v| v.as_object())
+        .and_then(|obj| {
+            let ip = obj.get("ip")?.as_str()?.to_string();
+            let port = obj.get("port")?.as_u64()? as u16;
+            Some(MediaConnectionInfo { ip, port })
+        });
+
+    Some(SessionInfo {
+        session_id: cache.get("session_id")?.as_str()?.to_string(),
+        server_ip: cache.get("server_ip")?.as_str()?.to_string(),
+        zone: cache.get("zone")?.as_str()?.to_string(),
+        state,
+        gpu_type: cache.get("gpu_type").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        signaling_url: cache.get("signaling_url").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        ice_servers: Vec::new(),
+        media_connection_info,
+    })
+}
+
+pub fn clear_session_cache() {
+    if let Some(path) = session_cache_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+pub fn save_session_error(error: &str) {
+    if let Some(path) = session_error_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, error);
+    }
+}
+
+pub fn load_session_error() -> Option<String> {
+    let path = session_error_path()?;
+    std::fs::read_to_string(path).ok()
+}
+
+pub fn clear_session_error() {
+    if let Some(path) = session_error_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+// ============================================================
+// Active Sessions Cache (for conflict detection)
+// ============================================================
+
+pub fn save_active_sessions_cache(sessions: &[ActiveSessionInfo]) {
+    if let Some(path) = get_app_data_dir().map(|p| p.join("active_sessions.json")) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string(sessions) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+pub fn load_active_sessions_cache() -> Option<Vec<ActiveSessionInfo>> {
+    let path = get_app_data_dir()?.join("active_sessions.json");
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+pub fn clear_active_sessions_cache() {
+    if let Some(path) = get_app_data_dir().map(|p| p.join("active_sessions.json")) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+// ============================================================
+// Pending Game Cache
+// ============================================================
+
+pub fn save_pending_game_cache(game: &GameInfo) {
+    if let Some(path) = get_app_data_dir().map(|p| p.join("pending_game.json")) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string(game) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+pub fn load_pending_game_cache() -> Option<GameInfo> {
+    let path = get_app_data_dir()?.join("pending_game.json");
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+pub fn clear_pending_game_cache() {
+    if let Some(path) = get_app_data_dir().map(|p| p.join("pending_game.json")) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+// ============================================================
+// Launch Proceed Flag
+// ============================================================
+
+pub fn save_launch_proceed_flag() {
+    if let Some(path) = get_app_data_dir().map(|p| p.join("launch_proceed.flag")) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, "1");
+    }
+}
+
+pub fn check_launch_proceed_flag() -> bool {
+    if let Some(path) = get_app_data_dir().map(|p| p.join("launch_proceed.flag")) {
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+            return true;
+        }
+    }
+    false
+}
+
+// ============================================================
+// Ping Results Cache
+// ============================================================
+
+use super::types::ServerStatus;
+
+pub fn save_ping_results(results: &[(String, Option<u32>, ServerStatus)]) {
+    if let Some(path) = get_app_data_dir().map(|p| p.join("ping_results.json")) {
+        let cache: Vec<serde_json::Value> = results
+            .iter()
+            .map(|(id, ping, status)| {
+                serde_json::json!({
+                    "id": id,
+                    "ping_ms": ping,
+                    "status": format!("{:?}", status),
+                })
+            })
+            .collect();
+
+        if let Ok(json) = serde_json::to_string(&cache) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+pub fn load_ping_results() -> Option<Vec<serde_json::Value>> {
+    let path = get_app_data_dir()?.join("ping_results.json");
+    let content = std::fs::read_to_string(&path).ok()?;
+    let results: Vec<serde_json::Value> = serde_json::from_str(&content).ok()?;
+    // Clear the ping file after loading
+    let _ = std::fs::remove_file(&path);
+    Some(results)
+}

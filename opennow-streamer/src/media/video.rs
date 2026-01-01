@@ -122,6 +122,60 @@ fn check_qsv_available() -> bool {
     })
 }
 
+/// Cached AV1 hardware support check
+static AV1_HW_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Check if AV1 hardware decoding is supported on this system
+/// Returns true if NVIDIA CUVID (RTX 30+) or Intel QSV (11th gen+) is available
+pub fn is_av1_hardware_supported() -> bool {
+    *AV1_HW_AVAILABLE.get_or_init(|| {
+        // Initialize FFmpeg if not already done
+        let _ = ffmpeg::init();
+
+        // Check for NVIDIA CUVID AV1 decoder
+        let has_nvidia = ffmpeg::codec::decoder::find_by_name("av1_cuvid").is_some();
+
+        // Check for Intel QSV AV1 decoder (requires QSV runtime)
+        let has_intel = check_qsv_available() &&
+            ffmpeg::codec::decoder::find_by_name("av1_qsv").is_some();
+
+        // Check for AMD VAAPI (Linux only)
+        #[cfg(target_os = "linux")]
+        let has_amd = ffmpeg::codec::decoder::find_by_name("av1_vaapi").is_some();
+        #[cfg(not(target_os = "linux"))]
+        let has_amd = false;
+
+        // Check for VideoToolbox (macOS)
+        #[cfg(target_os = "macos")]
+        let has_videotoolbox = {
+            // VideoToolbox AV1 support was added in macOS 13 Ventura on Apple Silicon
+            // Check if the decoder exists in FFmpeg build
+            ffmpeg::codec::decoder::find_by_name("av1").map_or(false, |codec| {
+                // The standard av1 decoder with VideoToolbox hwaccel
+                // This is a heuristic - actual support depends on macOS version and hardware
+                true
+            })
+        };
+        #[cfg(not(target_os = "macos"))]
+        let has_videotoolbox = false;
+
+        let supported = has_nvidia || has_intel || has_amd || has_videotoolbox;
+
+        if supported {
+            let mut sources = Vec::new();
+            if has_nvidia { sources.push("NVIDIA NVDEC"); }
+            if has_intel { sources.push("Intel QSV"); }
+            if has_amd { sources.push("AMD VAAPI"); }
+            if has_videotoolbox { sources.push("Apple VideoToolbox"); }
+            info!("AV1 hardware decoding available via: {}", sources.join(", "));
+        } else {
+            info!("AV1 hardware decoding NOT available - will use software decode (slow)");
+        }
+
+        supported
+    })
+}
+
 /// Commands sent to the decoder thread
 enum DecoderCommand {
     /// Decode a packet and return result via channel (blocking mode)
@@ -288,6 +342,7 @@ impl VideoDecoder {
                             &mut height,
                             &mut frames_decoded,
                             &data,
+                            codec_id,
                         );
                         let _ = frame_tx.send(result);
                     }
@@ -302,6 +357,7 @@ impl VideoDecoder {
                             &mut height,
                             &mut frames_decoded,
                             &data,
+                            codec_id,
                         );
 
                         let decode_time_ms = receive_time.elapsed().as_secs_f32() * 1000.0;
@@ -593,14 +649,19 @@ impl VideoDecoder {
         height: &mut u32,
         frames_decoded: &mut u64,
         data: &[u8],
+        codec_id: ffmpeg::codec::Id,
     ) -> Option<VideoFrame> {
-        // Ensure data starts with start code
-        let data = if data.len() >= 4 && data[0..4] == [0, 0, 0, 1] {
+        // AV1 uses OBUs directly, no start codes needed
+        // H.264/H.265 need Annex B start codes (0x00 0x00 0x00 0x01)
+        let data = if codec_id == ffmpeg::codec::Id::AV1 {
+            // AV1 - use data as-is (OBU format)
+            data.to_vec()
+        } else if data.len() >= 4 && data[0..4] == [0, 0, 0, 1] {
             data.to_vec()
         } else if data.len() >= 3 && data[0..3] == [0, 0, 1] {
             data.to_vec()
         } else {
-            // Add start code
+            // Add start code for H.264/H.265
             let mut with_start = vec![0, 0, 0, 1];
             with_start.extend_from_slice(data);
             with_start
@@ -660,8 +721,13 @@ impl VideoDecoder {
                     let uv_stride = frame_to_use.stride(1) as u32;
 
                     if *frames_decoded == 1 {
+                        // Debug: Check UV plane data for green screen debugging
+                        let uv_non_zero = uv_plane.iter().filter(|&&b| b != 0 && b != 128).take(10).count();
+                        let uv_sample: Vec<u8> = uv_plane.iter().take(32).cloned().collect();
                         info!("NV12 direct path: Y {}x{} stride {}, UV stride {} - GPU will handle conversion",
                             w, h, y_stride, uv_stride);
+                        info!("UV plane: {} bytes, non-zero/128 samples: {}, first 32 bytes: {:?}",
+                            uv_plane.len(), uv_non_zero, uv_sample);
                     }
 
                     return Some(VideoFrame {
@@ -792,298 +858,5 @@ impl Drop for VideoDecoder {
     fn drop(&mut self) {
         // Signal decoder thread to stop
         let _ = self.cmd_tx.send(DecoderCommand::Stop);
-    }
-}
-
-/// Codec type for depacketizer
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DepacketizerCodec {
-    H264,
-    H265,
-}
-
-/// RTP depacketizer supporting H.264 and H.265/HEVC
-pub struct RtpDepacketizer {
-    codec: DepacketizerCodec,
-    buffer: Vec<u8>,
-    fragments: Vec<Vec<u8>>,
-    in_fragment: bool,
-    /// Cached VPS NAL unit (H.265 only)
-    vps: Option<Vec<u8>>,
-    /// Cached SPS NAL unit
-    sps: Option<Vec<u8>>,
-    /// Cached PPS NAL unit
-    pps: Option<Vec<u8>>,
-}
-
-impl RtpDepacketizer {
-    pub fn new() -> Self {
-        Self::with_codec(DepacketizerCodec::H264)
-    }
-
-    pub fn with_codec(codec: DepacketizerCodec) -> Self {
-        Self {
-            codec,
-            buffer: Vec::with_capacity(64 * 1024),
-            fragments: Vec::new(),
-            in_fragment: false,
-            vps: None,
-            sps: None,
-            pps: None,
-        }
-    }
-
-    /// Set the codec type
-    pub fn set_codec(&mut self, codec: DepacketizerCodec) {
-        self.codec = codec;
-        // Clear cached parameter sets when codec changes
-        self.vps = None;
-        self.sps = None;
-        self.pps = None;
-        self.buffer.clear();
-        self.in_fragment = false;
-    }
-
-    /// Process an RTP payload and return complete NAL units
-    pub fn process(&mut self, payload: &[u8]) -> Vec<Vec<u8>> {
-        match self.codec {
-            DepacketizerCodec::H264 => self.process_h264(payload),
-            DepacketizerCodec::H265 => self.process_h265(payload),
-        }
-    }
-
-    /// Process H.264 RTP payload
-    fn process_h264(&mut self, payload: &[u8]) -> Vec<Vec<u8>> {
-        let mut result = Vec::new();
-
-        if payload.is_empty() {
-            return result;
-        }
-
-        let nal_type = payload[0] & 0x1F;
-
-        match nal_type {
-            // Single NAL unit (1-23)
-            1..=23 => {
-                // Cache SPS/PPS for later use
-                if nal_type == 7 {
-                    debug!("H264: Caching SPS ({} bytes)", payload.len());
-                    self.sps = Some(payload.to_vec());
-                } else if nal_type == 8 {
-                    debug!("H264: Caching PPS ({} bytes)", payload.len());
-                    self.pps = Some(payload.to_vec());
-                }
-                result.push(payload.to_vec());
-            }
-
-            // STAP-A (24) - Single-time aggregation packet
-            24 => {
-                let mut offset = 1;
-                debug!("H264 STAP-A packet: {} bytes total", payload.len());
-
-                while offset + 2 <= payload.len() {
-                    let size = u16::from_be_bytes([payload[offset], payload[offset + 1]]) as usize;
-                    offset += 2;
-
-                    if offset + size > payload.len() {
-                        warn!("H264 STAP-A: invalid size {} at offset {}", size, offset);
-                        break;
-                    }
-
-                    let nal_data = payload[offset..offset + size].to_vec();
-                    let inner_nal_type = nal_data.first().map(|b| b & 0x1F).unwrap_or(0);
-
-                    // Cache SPS/PPS
-                    if inner_nal_type == 7 {
-                        self.sps = Some(nal_data.clone());
-                    } else if inner_nal_type == 8 {
-                        self.pps = Some(nal_data.clone());
-                    }
-
-                    result.push(nal_data);
-                    offset += size;
-                }
-            }
-
-            // FU-A (28) - Fragmentation unit
-            28 => {
-                if payload.len() < 2 {
-                    return result;
-                }
-
-                let fu_header = payload[1];
-                let start = (fu_header & 0x80) != 0;
-                let end = (fu_header & 0x40) != 0;
-                let inner_nal_type = fu_header & 0x1F;
-
-                if start {
-                    self.buffer.clear();
-                    self.in_fragment = true;
-                    let nal_header = (payload[0] & 0xE0) | inner_nal_type;
-                    self.buffer.push(nal_header);
-                    self.buffer.extend_from_slice(&payload[2..]);
-                } else if self.in_fragment {
-                    self.buffer.extend_from_slice(&payload[2..]);
-                }
-
-                if end && self.in_fragment {
-                    self.in_fragment = false;
-                    let inner_nal_type = self.buffer.first().map(|b| b & 0x1F).unwrap_or(0);
-
-                    // For IDR frames, prepend SPS/PPS
-                    if inner_nal_type == 5 {
-                        if let (Some(sps), Some(pps)) = (&self.sps, &self.pps) {
-                            result.push(sps.clone());
-                            result.push(pps.clone());
-                        }
-                    }
-
-                    result.push(self.buffer.clone());
-                }
-            }
-
-            _ => {
-                debug!("H264: Unknown NAL type: {}", nal_type);
-            }
-        }
-
-        result
-    }
-
-    /// Process H.265/HEVC RTP payload (RFC 7798)
-    fn process_h265(&mut self, payload: &[u8]) -> Vec<Vec<u8>> {
-        let mut result = Vec::new();
-
-        if payload.len() < 2 {
-            return result;
-        }
-
-        // H.265 NAL unit header is 2 bytes
-        // Type is in bits 1-6 of first byte: (byte0 >> 1) & 0x3F
-        let nal_type = (payload[0] >> 1) & 0x3F;
-
-        match nal_type {
-            // Single NAL unit (0-47, but 48 and 49 are special)
-            0..=47 => {
-                // Cache VPS/SPS/PPS for later use
-                match nal_type {
-                    32 => {
-                        debug!("H265: Caching VPS ({} bytes)", payload.len());
-                        self.vps = Some(payload.to_vec());
-                    }
-                    33 => {
-                        debug!("H265: Caching SPS ({} bytes)", payload.len());
-                        self.sps = Some(payload.to_vec());
-                    }
-                    34 => {
-                        debug!("H265: Caching PPS ({} bytes)", payload.len());
-                        self.pps = Some(payload.to_vec());
-                    }
-                    _ => {}
-                }
-                result.push(payload.to_vec());
-            }
-
-            // AP (48) - Aggregation Packet
-            48 => {
-                let mut offset = 2; // Skip the 2-byte NAL unit header
-                debug!("H265 AP packet: {} bytes total", payload.len());
-
-                while offset + 2 <= payload.len() {
-                    let size = u16::from_be_bytes([payload[offset], payload[offset + 1]]) as usize;
-                    offset += 2;
-
-                    if offset + size > payload.len() {
-                        warn!("H265 AP: invalid size {} at offset {}", size, offset);
-                        break;
-                    }
-
-                    let nal_data = payload[offset..offset + size].to_vec();
-
-                    if nal_data.len() >= 2 {
-                        let inner_nal_type = (nal_data[0] >> 1) & 0x3F;
-                        // Cache VPS/SPS/PPS
-                        match inner_nal_type {
-                            32 => self.vps = Some(nal_data.clone()),
-                            33 => self.sps = Some(nal_data.clone()),
-                            34 => self.pps = Some(nal_data.clone()),
-                            _ => {}
-                        }
-                    }
-
-                    result.push(nal_data);
-                    offset += size;
-                }
-            }
-
-            // FU (49) - Fragmentation Unit
-            49 => {
-                if payload.len() < 3 {
-                    return result;
-                }
-
-                // FU header is at byte 2
-                let fu_header = payload[2];
-                let start = (fu_header & 0x80) != 0;
-                let end = (fu_header & 0x40) != 0;
-                let inner_nal_type = fu_header & 0x3F;
-
-                if start {
-                    self.buffer.clear();
-                    self.in_fragment = true;
-
-                    // Reconstruct NAL unit header from original header + inner type
-                    // H265 NAL header: forbidden_zero_bit(1) | nal_unit_type(6) | nuh_layer_id(6) | nuh_temporal_id_plus1(3)
-                    // First byte: (forbidden_zero_bit << 7) | (inner_nal_type << 1) | (layer_id >> 5)
-                    // Second byte: (layer_id << 3) | temporal_id
-                    let layer_id = payload[0] & 0x01; // lowest bit of first byte
-                    let temporal_id = payload[1]; // second byte
-
-                    let nal_header_byte0 = (inner_nal_type << 1) | layer_id;
-                    let nal_header_byte1 = temporal_id;
-
-                    self.buffer.push(nal_header_byte0);
-                    self.buffer.push(nal_header_byte1);
-                    self.buffer.extend_from_slice(&payload[3..]);
-                } else if self.in_fragment {
-                    self.buffer.extend_from_slice(&payload[3..]);
-                }
-
-                if end && self.in_fragment {
-                    self.in_fragment = false;
-
-                    if self.buffer.len() >= 2 {
-                        let inner_nal_type = (self.buffer[0] >> 1) & 0x3F;
-
-                        // For IDR frames (types 19 and 20), prepend VPS/SPS/PPS
-                        if inner_nal_type == 19 || inner_nal_type == 20 {
-                            if let Some(vps) = &self.vps {
-                                result.push(vps.clone());
-                            }
-                            if let Some(sps) = &self.sps {
-                                result.push(sps.clone());
-                            }
-                            if let Some(pps) = &self.pps {
-                                result.push(pps.clone());
-                            }
-                        }
-                    }
-
-                    result.push(self.buffer.clone());
-                }
-            }
-
-            _ => {
-                debug!("H265: Unknown NAL type: {}", nal_type);
-            }
-        }
-
-        result
-    }
-}
-
-impl Default for RtpDepacketizer {
-    fn default() -> Self {
-        Self::new()
     }
 }

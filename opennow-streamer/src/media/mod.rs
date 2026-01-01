@@ -4,11 +4,13 @@
 
 mod video;
 mod audio;
+mod rtp;
 
 #[cfg(target_os = "macos")]
 pub mod videotoolbox;
 
-pub use video::{VideoDecoder, RtpDepacketizer, DepacketizerCodec, DecodeStats};
+pub use video::{VideoDecoder, DecodeStats, is_av1_hardware_supported};
+pub use rtp::{RtpDepacketizer, DepacketizerCodec};
 pub use audio::*;
 
 #[cfg(target_os = "macos")]

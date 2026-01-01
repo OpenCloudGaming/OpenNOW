@@ -4,13 +4,18 @@
 
 pub mod config;
 pub mod session;
+pub mod types;
+pub mod cache;
 
 pub use config::{Settings, VideoCodec, AudioCodec, StreamQuality, StatsPosition};
 pub use session::{SessionInfo, SessionState, ActiveSessionInfo};
+pub use types::{
+    SharedFrame, GameInfo, SubscriptionInfo, GamesTab, ServerInfo, ServerStatus,
+    UiAction, SettingChange, AppState, parse_resolution,
+};
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use log::{info, error, warn};
@@ -20,153 +25,11 @@ use crate::api::{self, GfnApiClient, DynamicServerRegion};
 
 use crate::input::InputHandler;
 
-use crate::media::{VideoFrame, StreamStats};
+use crate::media::StreamStats;
 use crate::webrtc::StreamingSession;
 
 /// Cache for dynamic regions fetched from serverInfo API
 static DYNAMIC_REGIONS_CACHE: RwLock<Option<Vec<DynamicServerRegion>>> = RwLock::new(None);
-
-/// Shared frame holder for zero-latency frame delivery
-/// Decoder writes latest frame, renderer reads it - no buffering
-pub struct SharedFrame {
-    frame: Mutex<Option<VideoFrame>>,
-    frame_count: AtomicU64,
-    last_read_count: AtomicU64,
-}
-
-impl SharedFrame {
-    pub fn new() -> Self {
-        Self {
-            frame: Mutex::new(None),
-            frame_count: AtomicU64::new(0),
-            last_read_count: AtomicU64::new(0),
-        }
-    }
-
-    /// Write a new frame (called by decoder)
-    pub fn write(&self, frame: VideoFrame) {
-        *self.frame.lock() = Some(frame);
-        self.frame_count.fetch_add(1, Ordering::Release);
-    }
-
-    /// Check if there's a new frame since last read
-    pub fn has_new_frame(&self) -> bool {
-        let current = self.frame_count.load(Ordering::Acquire);
-        let last = self.last_read_count.load(Ordering::Acquire);
-        current > last
-    }
-
-    /// Read the latest frame (called by renderer)
-    /// Returns None if no frame available or no new frame since last read
-    /// Uses take() instead of clone() to avoid copying ~3MB per frame
-    pub fn read(&self) -> Option<VideoFrame> {
-        let current = self.frame_count.load(Ordering::Acquire);
-        let last = self.last_read_count.load(Ordering::Acquire);
-
-        if current > last {
-            self.last_read_count.store(current, Ordering::Release);
-            self.frame.lock().take()  // Move instead of clone - zero copy
-        } else {
-            None
-        }
-    }
-
-    /// Get frame count for stats
-    pub fn frame_count(&self) -> u64 {
-        self.frame_count.load(Ordering::Relaxed)
-    }
-}
-
-impl Default for SharedFrame {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Parse resolution string (e.g., "1920x1080") into (width, height)
-/// Returns (1920, 1080) as default if parsing fails
-pub fn parse_resolution(res: &str) -> (u32, u32) {
-    let parts: Vec<&str> = res.split('x').collect();
-    if parts.len() == 2 {
-        let width = parts[0].parse().unwrap_or(1920);
-        let height = parts[1].parse().unwrap_or(1080);
-        (width, height)
-    } else {
-        (1920, 1080) // Default to 1080p
-    }
-}
-
-/// UI actions that can be triggered from the renderer
-#[derive(Debug, Clone)]
-pub enum UiAction {
-    /// Start OAuth login flow
-    StartLogin,
-    /// Select a login provider
-    SelectProvider(usize),
-    /// Logout
-    Logout,
-    /// Launch a game by index
-    LaunchGame(usize),
-    /// Launch a specific game
-    LaunchGameDirect(GameInfo),
-    /// Stop streaming
-    StopStreaming,
-    /// Toggle stats overlay
-    ToggleStats,
-    /// Update search query
-    UpdateSearch(String),
-    /// Toggle settings panel
-    ToggleSettings,
-    /// Update a setting
-    UpdateSetting(SettingChange),
-    /// Refresh games list
-    RefreshGames,
-    /// Switch to a tab
-    SwitchTab(GamesTab),
-    /// Open game detail popup
-    OpenGamePopup(GameInfo),
-    /// Close game detail popup
-    CloseGamePopup,
-    /// Select a server/region
-    SelectServer(usize),
-    /// Enable auto server selection (best ping)
-    SetAutoServerSelection(bool),
-    /// Start ping test for all servers
-    StartPingTest,
-    /// Toggle settings modal
-    ToggleSettingsModal,
-    /// Resume an active session
-    ResumeSession(ActiveSessionInfo),
-    /// Terminate existing session and start new game
-    TerminateAndLaunch(String, GameInfo),
-    /// Close session conflict dialog
-    CloseSessionConflict,
-}
-
-/// Setting changes
-#[derive(Debug, Clone)]
-pub enum SettingChange {
-    Resolution(String),
-    Fps(u32),
-    Codec(VideoCodec),
-    MaxBitrate(u32),
-    Fullscreen(bool),
-    VSync(bool),
-    LowLatency(bool),
-}
-
-/// Application state enum
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppState {
-    /// Login screen
-    Login,
-    /// Browsing games library
-    Games,
-    /// Session being set up (queue, launching)
-    Session,
-    /// Active streaming
-    Streaming,
-}
 
 /// Main application structure
 pub struct App {
@@ -279,6 +142,9 @@ pub struct App {
     /// Whether showing session conflict dialog
     pub show_session_conflict: bool,
 
+    /// Whether showing AV1 unsupported warning dialog
+    pub show_av1_warning: bool,
+
     /// Pending game launch (waiting for session conflict resolution)
     pub pending_game_launch: Option<GameInfo>,
 
@@ -294,58 +160,11 @@ pub struct App {
 /// Poll interval for session status (2 seconds)
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Game information
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct GameInfo {
-    pub id: String,
-    pub title: String,
-    pub publisher: Option<String>,
-    pub image_url: Option<String>,
-    pub store: String,
-    pub app_id: Option<i64>,
-}
+// Mutex re-export for streaming session
+use parking_lot::Mutex;
 
-/// Subscription information
-#[derive(Debug, Clone, Default)]
-pub struct SubscriptionInfo {
-    pub membership_tier: String,
-    pub remaining_hours: f32,
-    pub total_hours: f32,
-    pub has_persistent_storage: bool,
-    pub storage_size_gb: Option<u32>,
-}
-
-/// Current tab in Games view
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GamesTab {
-    AllGames,
-    MyLibrary,
-}
-
-impl Default for GamesTab {
-    fn default() -> Self {
-        GamesTab::AllGames
-    }
-}
-
-/// Server/Region information
-#[derive(Debug, Clone)]
-pub struct ServerInfo {
-    pub id: String,
-    pub name: String,
-    pub region: String,
-    pub url: Option<String>,
-    pub ping_ms: Option<u32>,
-    pub status: ServerStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServerStatus {
-    Online,
-    Testing,
-    Offline,
-    Unknown,
-}
+// VideoFrame re-import for current_frame field
+use crate::media::VideoFrame;
 
 impl App {
     /// Create new application instance
@@ -355,7 +174,7 @@ impl App {
         let auto_server = settings.auto_server_selection; // Save before move
 
         // Try to load saved tokens
-        let auth_tokens = Self::load_tokens();
+        let auth_tokens = cache::load_tokens();
         let has_token = auth_tokens.as_ref().map(|t| !t.is_expired()).unwrap_or(false);
 
         let initial_state = if has_token {
@@ -409,6 +228,7 @@ impl App {
             show_settings_modal: false,
             active_sessions: Vec::new(),
             show_session_conflict: false,
+            show_av1_warning: false,
             pending_game_launch: None,
             last_poll_time: std::time::Instant::now(),
             render_frame_count: 0,
@@ -458,7 +278,14 @@ impl App {
                 match change {
                     SettingChange::Resolution(res) => self.settings.resolution = res,
                     SettingChange::Fps(fps) => self.settings.fps = fps,
-                    SettingChange::Codec(codec) => self.settings.codec = codec,
+                    SettingChange::Codec(codec) => {
+                        // Check if AV1 is supported before enabling it
+                        if codec == VideoCodec::AV1 && !crate::media::is_av1_hardware_supported() {
+                            self.show_av1_warning = true;
+                        }
+                        // Still set the codec - user can use software decode if they want
+                        self.settings.codec = codec;
+                    }
                     SettingChange::MaxBitrate(bitrate) => self.settings.max_bitrate_mbps = bitrate,
                     SettingChange::Fullscreen(fs) => self.settings.fullscreen = fs,
                     SettingChange::VSync(vsync) => self.settings.vsync = vsync,
@@ -521,6 +348,9 @@ impl App {
             UiAction::CloseSessionConflict => {
                 self.show_session_conflict = false;
                 self.pending_game_launch = None;
+            }
+            UiAction::CloseAV1Warning => {
+                self.show_av1_warning = false;
             }
         }
     }
@@ -591,7 +421,7 @@ impl App {
                             info!("Token exchange successful!");
                             // Tokens will be picked up in update()
                             // For now, we store them in a temp file
-                            Self::save_tokens(&tokens);
+                            cache::save_tokens(&tokens);
                         }
                         Err(e) => {
                             error!("Token exchange failed: {}", e);
@@ -648,7 +478,7 @@ impl App {
 
         // Check if tokens were saved by OAuth callback
         if self.state == AppState::Login && self.is_loading {
-            if let Some(tokens) = Self::load_tokens() {
+            if let Some(tokens) = cache::load_tokens() {
                 if !tokens.is_expired() {
                     info!("OAuth login successful!");
                     self.auth_tokens = Some(tokens.clone());
@@ -665,7 +495,7 @@ impl App {
 
         // Check if games were fetched and saved to cache
         if self.state == AppState::Games && self.is_loading && self.games.is_empty() {
-            if let Some(games) = Self::load_games_cache() {
+            if let Some(games) = cache::load_games_cache() {
                 if !games.is_empty() {
                     // Check if cache has images - if not, it's old cache that needs refresh
                     let has_images = games.iter().any(|g| g.image_url.is_some());
@@ -676,7 +506,7 @@ impl App {
                         self.status_message = format!("Loaded {} games", self.games.len());
                     } else {
                         info!("Cache has {} games but no images - forcing refresh", games.len());
-                        Self::clear_games_cache();
+                        cache::clear_games_cache();
                         self.fetch_games();
                     }
                 }
@@ -685,7 +515,7 @@ impl App {
 
         // Check if library was fetched and saved to cache
         if self.state == AppState::Games && self.current_tab == GamesTab::MyLibrary && self.library_games.is_empty() {
-            if let Some(games) = Self::load_library_cache() {
+            if let Some(games) = cache::load_library_cache() {
                 if !games.is_empty() {
                     info!("Loaded {} games from library cache", games.len());
                     self.library_games = games;
@@ -697,7 +527,7 @@ impl App {
 
         // Check if subscription was fetched and saved to cache
         if self.state == AppState::Games && self.subscription.is_none() {
-            if let Some(sub) = Self::load_subscription_cache() {
+            if let Some(sub) = cache::load_subscription_cache() {
                 info!("Loaded subscription from cache: {}", sub.membership_tier);
                 self.subscription = Some(sub);
             }
@@ -712,19 +542,19 @@ impl App {
         }
 
         // Check for active sessions from async check
-        if let Some(sessions) = Self::load_active_sessions_cache() {
+        if let Some(sessions) = cache::load_active_sessions_cache() {
             self.active_sessions = sessions.clone();
-            if let Some(pending) = Self::load_pending_game_cache() {
+            if let Some(pending) = cache::load_pending_game_cache() {
                 self.pending_game_launch = Some(pending);
                 self.show_session_conflict = true;
-                Self::clear_active_sessions_cache();
+                cache::clear_active_sessions_cache();
             }
         }
 
         // Check for launch proceed flag (after session termination)
-        if Self::check_launch_proceed_flag() {
-            if let Some(game) = Self::load_pending_game_cache() {
-                Self::clear_pending_game_cache();
+        if cache::check_launch_proceed_flag() {
+            if let Some(game) = cache::load_pending_game_cache() {
+                cache::clear_pending_game_cache();
                 self.start_new_session(&game);
             }
         }
@@ -740,7 +570,7 @@ impl App {
         self.auth_tokens = None;
         self.user_info = None;
         auth::clear_login_provider();
-        Self::clear_tokens();
+        cache::clear_tokens();
         self.state = AppState::Login;
         self.games.clear();
         self.status_message = "Logged out".to_string();
@@ -766,7 +596,7 @@ impl App {
             match api_client.fetch_main_games(None).await {
                 Ok(games) => {
                     info!("Fetched {} games from GraphQL MAIN panel (with images)", games.len());
-                    Self::save_games_cache(&games);
+                    cache::save_games_cache(&games);
                 }
                 Err(e) => {
                     error!("Failed to fetch main games from GraphQL: {}", e);
@@ -776,7 +606,7 @@ impl App {
                     match api_client.fetch_public_games().await {
                         Ok(games) => {
                             info!("Fetched {} games from public list (fallback)", games.len());
-                            Self::save_games_cache(&games);
+                            cache::save_games_cache(&games);
                         }
                         Err(e2) => {
                             error!("Failed to fetch public games: {}", e2);
@@ -805,7 +635,7 @@ impl App {
             match api_client.fetch_library(None).await {
                 Ok(games) => {
                     info!("Fetched {} games from LIBRARY panel", games.len());
-                    Self::save_library_cache(&games);
+                    cache::save_library_cache(&games);
                 }
                 Err(e) => {
                     error!("Failed to fetch library: {}", e);
@@ -833,7 +663,7 @@ impl App {
                         sub.total_hours,
                         sub.has_persistent_storage
                     );
-                    Self::save_subscription_cache(&sub);
+                    cache::save_subscription_cache(&sub);
                 }
                 Err(e) => {
                     warn!("Failed to fetch subscription: {}", e);
@@ -1028,7 +858,7 @@ impl App {
             }
 
             // Save results to cache
-            Self::save_ping_results(&results);
+            cache::save_ping_results(&results);
         });
     }
 
@@ -1053,69 +883,43 @@ impl App {
         }
     }
 
-    /// Save ping results to cache (for async loading)
-    fn save_ping_results(results: &[(String, Option<u32>, ServerStatus)]) {
-        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("ping_results.json")) {
-            let cache: Vec<serde_json::Value> = results
-                .iter()
-                .map(|(id, ping, status)| {
-                    serde_json::json!({
-                        "id": id,
-                        "ping_ms": ping,
-                        "status": format!("{:?}", status),
-                    })
-                })
-                .collect();
-
-            if let Ok(json) = serde_json::to_string(&cache) {
-                let _ = std::fs::write(path, json);
-            }
-        }
-    }
-
     /// Load ping results from cache
     fn load_ping_results(&mut self) {
-        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("ping_results.json")) {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
-                    for result in results {
-                        if let Some(id) = result.get("id").and_then(|v| v.as_str()) {
-                            if let Some(server) = self.servers.iter_mut().find(|s| s.id == id) {
-                                server.ping_ms = result.get("ping_ms").and_then(|v| v.as_u64()).map(|v| v as u32);
-                                server.status = match result.get("status").and_then(|v| v.as_str()) {
-                                    Some("Online") => ServerStatus::Online,
-                                    Some("Offline") => ServerStatus::Offline,
-                                    _ => ServerStatus::Unknown,
-                                };
-                            }
-                        }
+        if let Some(results) = cache::load_ping_results() {
+            for result in results {
+                if let Some(id) = result.get("id").and_then(|v| v.as_str()) {
+                    if let Some(server) = self.servers.iter_mut().find(|s| s.id == id) {
+                        server.ping_ms = result.get("ping_ms").and_then(|v| v.as_u64()).map(|v| v as u32);
+                        server.status = match result.get("status").and_then(|v| v.as_str()) {
+                            Some("Online") => ServerStatus::Online,
+                            Some("Offline") => ServerStatus::Offline,
+                            _ => ServerStatus::Unknown,
+                        };
                     }
+                }
+            }
 
-                    // Clear the ping file after loading
-                    let _ = std::fs::remove_file(&path);
-                    self.ping_testing = false;
+            self.ping_testing = false;
 
-                    // Sort servers by ping (online first, then by ping)
-                    self.servers.sort_by(|a, b| {
-                        match (&a.status, &b.status) {
-                            (ServerStatus::Online, ServerStatus::Online) => {
-                                a.ping_ms.unwrap_or(9999).cmp(&b.ping_ms.unwrap_or(9999))
-                            }
-                            (ServerStatus::Online, _) => std::cmp::Ordering::Less,
-                            (_, ServerStatus::Online) => std::cmp::Ordering::Greater,
-                            _ => std::cmp::Ordering::Equal,
-                        }
-                    });
-
-                    // Update selected index after sort
-                    if self.auto_server_selection {
-                        // Auto-select best server
-                        self.select_best_server();
-                    } else if let Some(ref selected_id) = self.settings.selected_server {
-                        if let Some(idx) = self.servers.iter().position(|s| s.id == *selected_id) {
-                            self.selected_server_index = idx;
-                        }
+            // Sort servers by ping (online first, then by ping)
+            self.servers.sort_by(|a, b| {
+                match (&a.status, &b.status) {
+                    (ServerStatus::Online, ServerStatus::Online) => {
+                        a.ping_ms.unwrap_or(9999).cmp(&b.ping_ms.unwrap_or(9999))
                     }
+                    (ServerStatus::Online, _) => std::cmp::Ordering::Less,
+                    (_, ServerStatus::Online) => std::cmp::Ordering::Greater,
+                    _ => std::cmp::Ordering::Equal,
+                }
+            });
+
+            // Update selected index after sort
+            if self.auto_server_selection {
+                // Auto-select best server
+                self.select_best_server();
+            } else if let Some(ref selected_id) = self.settings.selected_server {
+                if let Some(idx) = self.servers.iter().position(|s| s.id == *selected_id) {
+                    self.selected_server_index = idx;
                 }
             }
         }
@@ -1160,20 +964,20 @@ impl App {
                 Ok(sessions) => {
                     if !sessions.is_empty() {
                         info!("Found {} active session(s)", sessions.len());
-                        Self::save_active_sessions_cache(&sessions);
-                        Self::save_pending_game_cache(&game_clone);
+                        cache::save_active_sessions_cache(&sessions);
+                        cache::save_pending_game_cache(&game_clone);
                     } else {
                         info!("No active sessions, proceeding with launch");
-                        Self::clear_active_sessions_cache();
-                        Self::save_pending_game_cache(&game_clone);
-                        Self::save_launch_proceed_flag();
+                        cache::clear_active_sessions_cache();
+                        cache::save_pending_game_cache(&game_clone);
+                        cache::save_launch_proceed_flag();
                     }
                 }
                 Err(e) => {
                     warn!("Failed to check active sessions: {}, proceeding with launch", e);
-                    Self::clear_active_sessions_cache();
-                    Self::save_pending_game_cache(&game_clone);
-                    Self::save_launch_proceed_flag();
+                    cache::clear_active_sessions_cache();
+                    cache::save_pending_game_cache(&game_clone);
+                    cache::save_launch_proceed_flag();
                 }
             }
         });
@@ -1183,8 +987,8 @@ impl App {
     fn start_new_session(&mut self, game: &GameInfo) {
         info!("Starting new session for: {}", game.title);
 
-        Self::clear_session_cache();
-        Self::clear_session_error();
+        cache::clear_session_cache();
+        cache::clear_session_error();
 
         self.selected_game = Some(game.clone());
         self.state = AppState::Session;
@@ -1218,11 +1022,11 @@ impl App {
             match api_client.create_session(&app_id, &game_title, &settings, &zone).await {
                 Ok(session) => {
                     info!("Session created: {} (state: {:?})", session.session_id, session.state);
-                    Self::save_session_cache(&session);
+                    cache::save_session_cache(&session);
                 }
                 Err(e) => {
                     error!("Failed to create session: {}", e);
-                    Self::save_session_error(&format!("Failed to create session: {}", e));
+                    cache::save_session_error(&format!("Failed to create session: {}", e));
                 }
             }
         });
@@ -1274,11 +1078,11 @@ impl App {
             ).await {
                 Ok(session) => {
                     info!("Session claimed: {} (state: {:?})", session.session_id, session.state);
-                    Self::save_session_cache(&session);
+                    cache::save_session_cache(&session);
                 }
                 Err(e) => {
                     error!("Failed to claim session: {}", e);
-                    Self::save_session_error(&format!("Failed to resume session: {}", e));
+                    cache::save_session_error(&format!("Failed to resume session: {}", e));
                 }
             }
         });
@@ -1310,13 +1114,13 @@ impl App {
                 Ok(_) => {
                     info!("Session terminated, waiting before launching new session");
                     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                    Self::save_launch_proceed_flag();
-                    Self::save_pending_game_cache(&game_for_launch);
+                    cache::save_launch_proceed_flag();
+                    cache::save_pending_game_cache(&game_for_launch);
                 }
                 Err(e) => {
                     warn!("Session termination failed ({}), proceeding anyway", e);
-                    Self::save_launch_proceed_flag();
-                    Self::save_pending_game_cache(&game_for_launch);
+                    cache::save_launch_proceed_flag();
+                    cache::save_pending_game_cache(&game_for_launch);
                 }
             }
         });
@@ -1325,14 +1129,14 @@ impl App {
     /// Poll session state and update UI
     fn poll_session_status(&mut self) {
         // First check cache for state updates (from in-flight or completed requests)
-        if let Some(session) = Self::load_session_cache() {
+        if let Some(session) = cache::load_session_cache() {
             if session.state == SessionState::Ready {
                 info!("Session ready! GPU: {:?}, Server: {}", session.gpu_type, session.server_ip);
                 self.status_message = format!(
                     "Connecting to GPU: {}",
                     session.gpu_type.as_deref().unwrap_or("Unknown")
                 );
-                Self::clear_session_cache();
+                cache::clear_session_cache();
                 self.start_streaming(session);
                 return;
             } else if let SessionState::InQueue { position, eta_secs } = session.state {
@@ -1340,7 +1144,7 @@ impl App {
             } else if let SessionState::Error(ref msg) = session.state {
                 self.error_message = Some(msg.clone());
                 self.is_loading = false;
-                Self::clear_session_cache();
+                cache::clear_session_cache();
                 return;
             } else {
                 self.status_message = "Setting up session...".to_string();
@@ -1353,7 +1157,7 @@ impl App {
             return;
         }
 
-        if let Some(session) = Self::load_session_cache() {
+        if let Some(session) = cache::load_session_cache() {
             let should_poll = matches!(
                 session.state,
                 SessionState::Requesting | SessionState::Launching | SessionState::InQueue { .. }
@@ -1384,7 +1188,7 @@ impl App {
                     match api_client.poll_session(&session_id, &zone, server_ip.as_deref()).await {
                         Ok(updated_session) => {
                             info!("Session poll: state={:?}", updated_session.state);
-                            Self::save_session_cache(&updated_session);
+                            cache::save_session_cache(&updated_session);
                         }
                         Err(e) => {
                             error!("Session poll failed: {}", e);
@@ -1395,119 +1199,10 @@ impl App {
         }
 
         // Check for session errors
-        if let Some(error) = Self::load_session_error() {
+        if let Some(error) = cache::load_session_error() {
             self.error_message = Some(error);
             self.is_loading = false;
-            Self::clear_session_error();
-        }
-    }
-
-    // Session cache helpers
-    fn session_cache_path() -> Option<std::path::PathBuf> {
-        Self::get_app_data_dir().map(|p| p.join("session_cache.json"))
-    }
-
-    fn session_error_path() -> Option<std::path::PathBuf> {
-        Self::get_app_data_dir().map(|p| p.join("session_error.txt"))
-    }
-
-    fn save_session_cache(session: &SessionInfo) {
-        if let Some(path) = Self::session_cache_path() {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            // Serialize session info (we need to make it serializable)
-            let cache = serde_json::json!({
-                "session_id": session.session_id,
-                "server_ip": session.server_ip,
-                "zone": session.zone,
-                "state": format!("{:?}", session.state),
-                "gpu_type": session.gpu_type,
-                "signaling_url": session.signaling_url,
-                "is_ready": session.is_ready(),
-                "is_queued": session.is_queued(),
-                "queue_position": session.queue_position(),
-                "media_connection_info": session.media_connection_info.as_ref().map(|mci| {
-                    serde_json::json!({
-                        "ip": mci.ip,
-                        "port": mci.port,
-                    })
-                }),
-            });
-            if let Ok(json) = serde_json::to_string(&cache) {
-                let _ = std::fs::write(path, json);
-            }
-        }
-    }
-
-    fn load_session_cache() -> Option<SessionInfo> {
-        let path = Self::session_cache_path()?;
-        let content = std::fs::read_to_string(path).ok()?;
-        let cache: serde_json::Value = serde_json::from_str(&content).ok()?;
-
-        let state_str = cache.get("state")?.as_str()?;
-        let state = if state_str.contains("Ready") {
-            SessionState::Ready
-        } else if state_str.contains("Streaming") {
-            SessionState::Streaming
-        } else if state_str.contains("InQueue") {
-            // Parse queue position and eta from state string
-            let position = cache.get("queue_position")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32;
-            SessionState::InQueue { position, eta_secs: 0 }
-        } else if state_str.contains("Error") {
-            SessionState::Error(state_str.to_string())
-        } else if state_str.contains("Launching") {
-            SessionState::Launching
-        } else {
-            SessionState::Requesting
-        };
-
-        // Parse media_connection_info if present
-        let media_connection_info = cache.get("media_connection_info")
-            .and_then(|v| v.as_object())
-            .and_then(|obj| {
-                let ip = obj.get("ip")?.as_str()?.to_string();
-                let port = obj.get("port")?.as_u64()? as u16;
-                Some(crate::app::session::MediaConnectionInfo { ip, port })
-            });
-
-        Some(SessionInfo {
-            session_id: cache.get("session_id")?.as_str()?.to_string(),
-            server_ip: cache.get("server_ip")?.as_str()?.to_string(),
-            zone: cache.get("zone")?.as_str()?.to_string(),
-            state,
-            gpu_type: cache.get("gpu_type").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            signaling_url: cache.get("signaling_url").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            ice_servers: Vec::new(),
-            media_connection_info,
-        })
-    }
-
-    fn clear_session_cache() {
-        if let Some(path) = Self::session_cache_path() {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-
-    fn save_session_error(error: &str) {
-        if let Some(path) = Self::session_error_path() {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(path, error);
-        }
-    }
-
-    fn load_session_error() -> Option<String> {
-        let path = Self::session_error_path()?;
-        std::fs::read_to_string(path).ok()
-    }
-
-    fn clear_session_error() {
-        if let Some(path) = Self::session_error_path() {
-            let _ = std::fs::remove_file(path);
+            cache::clear_session_error();
         }
     }
 
@@ -1577,7 +1272,7 @@ impl App {
         info!("Stopping streaming");
 
         // Clear session cache first to prevent stale session data
-        Self::clear_session_cache();
+        cache::clear_session_cache();
 
         // Reset input timing for next session
         crate::input::reset_session_timing();
@@ -1625,248 +1320,5 @@ impl App {
         self.user_info.as_ref()
             .map(|u| u.membership_tier.as_str())
             .unwrap_or("FREE")
-    }
-
-    // Token persistence helpers - cross-platform using data_dir/opennow
-    // Cached app data directory (initialized once)
-    fn get_app_data_dir() -> Option<std::path::PathBuf> {
-        use std::sync::OnceLock;
-        static APP_DATA_DIR: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
-
-        APP_DATA_DIR.get_or_init(|| {
-            let data_dir = dirs::data_dir()?;
-            let app_dir = data_dir.join("opennow");
-
-            // Ensure directory exists
-            if let Err(e) = std::fs::create_dir_all(&app_dir) {
-                error!("Failed to create app data directory: {}", e);
-            }
-
-            // Migration: copy auth.json from legacy locations if it doesn't exist in new location
-            let new_auth = app_dir.join("auth.json");
-            if !new_auth.exists() {
-                // Try legacy opennow-streamer location (config_dir)
-                if let Some(config_dir) = dirs::config_dir() {
-                    let legacy_path = config_dir.join("opennow-streamer").join("auth.json");
-                    if legacy_path.exists() {
-                        if let Err(e) = std::fs::copy(&legacy_path, &new_auth) {
-                            warn!("Failed to migrate auth.json from legacy location: {}", e);
-                        } else {
-                            info!("Migrated auth.json from {:?} to {:?}", legacy_path, new_auth);
-                        }
-                    }
-                }
-
-                // Try gfn-client location (config_dir)
-                if !new_auth.exists() {
-                    if let Some(config_dir) = dirs::config_dir() {
-                        let legacy_path = config_dir.join("gfn-client").join("auth.json");
-                        if legacy_path.exists() {
-                            if let Err(e) = std::fs::copy(&legacy_path, &new_auth) {
-                                warn!("Failed to migrate auth.json from gfn-client: {}", e);
-                            } else {
-                                info!("Migrated auth.json from {:?} to {:?}", legacy_path, new_auth);
-                            }
-                        }
-                    }
-                }
-            }
-
-            Some(app_dir)
-        }).clone()
-    }
-
-    fn tokens_path() -> Option<std::path::PathBuf> {
-        Self::get_app_data_dir().map(|p| p.join("auth.json"))
-    }
-
-    fn load_tokens() -> Option<AuthTokens> {
-        let path = Self::tokens_path()?;
-        let content = std::fs::read_to_string(&path).ok()?;
-        let tokens: AuthTokens = serde_json::from_str(&content).ok()?;
-
-        // Validate token is not expired
-        if tokens.is_expired() {
-            info!("Saved token expired, clearing auth file");
-            let _ = std::fs::remove_file(&path);
-            return None;
-        }
-
-        Some(tokens)
-    }
-
-    fn save_tokens(tokens: &AuthTokens) {
-        if let Some(path) = Self::tokens_path() {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(json) = serde_json::to_string_pretty(tokens) {
-                if let Err(e) = std::fs::write(&path, &json) {
-                    error!("Failed to save tokens: {}", e);
-                } else {
-                    info!("Saved tokens to {:?}", path);
-                }
-            }
-        }
-    }
-
-    fn clear_tokens() {
-        if let Some(path) = Self::tokens_path() {
-            let _ = std::fs::remove_file(path);
-            info!("Cleared auth tokens");
-        }
-    }
-
-    // Session conflict management cache
-    fn save_active_sessions_cache(sessions: &[ActiveSessionInfo]) {
-        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("active_sessions.json")) {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(json) = serde_json::to_string(sessions) {
-                let _ = std::fs::write(path, json);
-            }
-        }
-    }
-
-    fn load_active_sessions_cache() -> Option<Vec<ActiveSessionInfo>> {
-        let path = Self::get_app_data_dir()?.join("active_sessions.json");
-        let content = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&content).ok()
-    }
-
-    fn clear_active_sessions_cache() {
-        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("active_sessions.json")) {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-
-    fn save_pending_game_cache(game: &GameInfo) {
-        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("pending_game.json")) {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(json) = serde_json::to_string(game) {
-                let _ = std::fs::write(path, json);
-            }
-        }
-    }
-
-    fn load_pending_game_cache() -> Option<GameInfo> {
-        let path = Self::get_app_data_dir()?.join("pending_game.json");
-        let content = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&content).ok()
-    }
-
-    fn clear_pending_game_cache() {
-        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("pending_game.json")) {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-
-    fn save_launch_proceed_flag() {
-        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("launch_proceed.flag")) {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(path, "1");
-        }
-    }
-
-    fn check_launch_proceed_flag() -> bool {
-        if let Some(path) = Self::get_app_data_dir().map(|p| p.join("launch_proceed.flag")) {
-            if path.exists() {
-                let _ = std::fs::remove_file(path);
-                return true;
-            }
-        }
-        false
-    }
-
-    // Games cache for async fetch
-    fn games_cache_path() -> Option<std::path::PathBuf> {
-        Self::get_app_data_dir().map(|p| p.join("games_cache.json"))
-    }
-
-    fn save_games_cache(games: &[GameInfo]) {
-        if let Some(path) = Self::games_cache_path() {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(json) = serde_json::to_string(games) {
-                let _ = std::fs::write(path, json);
-            }
-        }
-    }
-
-    fn load_games_cache() -> Option<Vec<GameInfo>> {
-        let path = Self::games_cache_path()?;
-        let content = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&content).ok()
-    }
-
-    fn clear_games_cache() {
-        if let Some(path) = Self::games_cache_path() {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-
-    // Library cache for async fetch
-    fn library_cache_path() -> Option<std::path::PathBuf> {
-        Self::get_app_data_dir().map(|p| p.join("library_cache.json"))
-    }
-
-    fn save_library_cache(games: &[GameInfo]) {
-        if let Some(path) = Self::library_cache_path() {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(json) = serde_json::to_string(games) {
-                let _ = std::fs::write(path, json);
-            }
-        }
-    }
-
-    fn load_library_cache() -> Option<Vec<GameInfo>> {
-        let path = Self::library_cache_path()?;
-        let content = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&content).ok()
-    }
-
-    // Subscription cache for async fetch
-    fn subscription_cache_path() -> Option<std::path::PathBuf> {
-        Self::get_app_data_dir().map(|p| p.join("subscription_cache.json"))
-    }
-
-    fn save_subscription_cache(sub: &SubscriptionInfo) {
-        if let Some(path) = Self::subscription_cache_path() {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let cache = serde_json::json!({
-                "membership_tier": sub.membership_tier,
-                "remaining_hours": sub.remaining_hours,
-                "total_hours": sub.total_hours,
-                "has_persistent_storage": sub.has_persistent_storage,
-                "storage_size_gb": sub.storage_size_gb,
-            });
-            if let Ok(json) = serde_json::to_string(&cache) {
-                let _ = std::fs::write(path, json);
-            }
-        }
-    }
-
-    fn load_subscription_cache() -> Option<SubscriptionInfo> {
-        let path = Self::subscription_cache_path()?;
-        let content = std::fs::read_to_string(path).ok()?;
-        let cache: serde_json::Value = serde_json::from_str(&content).ok()?;
-
-        Some(SubscriptionInfo {
-            membership_tier: cache.get("membership_tier")?.as_str()?.to_string(),
-            remaining_hours: cache.get("remaining_hours")?.as_f64()? as f32,
-            total_hours: cache.get("total_hours")?.as_f64()? as f32,
-            has_persistent_storage: cache.get("has_persistent_storage")?.as_bool()?,
-            storage_size_gb: cache.get("storage_size_gb").and_then(|v| v.as_u64()).map(|v| v as u32),
-        })
     }
 }

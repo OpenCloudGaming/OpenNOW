@@ -295,7 +295,8 @@ impl VideoCodec {
 
     /// Get all available codecs
     pub fn all() -> &'static [VideoCodec] {
-        &[VideoCodec::H264, VideoCodec::H265, VideoCodec::AV1]
+        // AV1 disabled for now due to color space issues with NVIDIA CUVID decoder
+        &[VideoCodec::H264, VideoCodec::H265]
     }
 }
 
