@@ -405,9 +405,23 @@ impl ApplicationHandler for OpenNowApp {
             // No polling needed here - raw input sends directly to the WebRTC input channel
             // This keeps mouse latency minimal and independent of render rate
 
-            // CRITICAL: Render directly here during streaming!
-            // This bypasses request_redraw() which is tied to monitor refresh rate.
-            // With ControlFlow::Poll + Immediate present mode, this renders as fast as possible.
+            // Frame rate limiting - sync render rate to stream's target FPS
+            // This prevents the render loop from running at 500+ FPS when decode is only 120 FPS
+            let target_fps = app_guard.stats.target_fps.max(60);
+            drop(app_guard); // Release lock before potential sleep
+
+            let frame_duration = std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
+            let elapsed = self.last_frame_time.elapsed();
+            if elapsed < frame_duration {
+                let sleep_time = frame_duration - elapsed;
+                if sleep_time.as_micros() > 500 {
+                    std::thread::sleep(sleep_time - std::time::Duration::from_micros(500));
+                }
+            }
+            self.last_frame_time = std::time::Instant::now();
+
+            // Re-acquire lock for update and render
+            let mut app_guard = self.app.lock();
             app_guard.update();
 
             match renderer.render(&app_guard) {
