@@ -36,6 +36,9 @@ openh264 = "0.6"
 # Audio playback (cross-platform)
 cpal = "0.15"
 
+# Gamepad/Controller support (cross-platform)
+gilrs = "0.11"
+
 # Window & Graphics
 winit = "0.30"
 wgpu = "27"

@@ -4,10 +4,12 @@
 
 mod cloudmatch;
 mod games;
+pub mod error_codes;
 
 #[allow(unused_imports)]
 pub use cloudmatch::*;
 pub use games::*;
+pub use error_codes::SessionError;
 
 use reqwest::Client;
 use parking_lot::RwLock;

@@ -46,6 +46,32 @@ pub struct VideoFrame {
     pub timestamp_us: u64,
     /// Pixel format (YUV420P or NV12)
     pub format: PixelFormat,
+    /// Color range (Limited or Full)
+    pub color_range: ColorRange,
+    /// Color space (matrix coefficients)
+    pub color_space: ColorSpace,
+}
+
+/// Video color range
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ColorRange {
+    /// Limited range (16-235 for Y, 16-240 for UV) - Standard for TV/Video
+    #[default]
+    Limited,
+    /// Full range (0-255) - Standard for PC/JPEG
+    Full,
+}
+
+/// Video color space (matrix coefficients)
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ColorSpace {
+    /// BT.709 (HDTV) - Default
+    #[default]
+    BT709,
+    /// BT.601 (SDTV)
+    BT601,
+    /// BT.2020 (UHDTV)
+    BT2020,
 }
 
 impl VideoFrame {
@@ -65,6 +91,8 @@ impl VideoFrame {
             v_stride: width / 2,
             timestamp_us: 0,
             format: PixelFormat::YUV420P,
+            color_range: ColorRange::Limited,
+            color_space: ColorSpace::BT709,
         }
     }
 

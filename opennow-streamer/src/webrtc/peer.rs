@@ -36,8 +36,8 @@ use super::sdp::is_ice_lite;
 pub enum WebRtcEvent {
     Connected,
     Disconnected,
-    /// Video frame with RTP timestamp (90kHz clock)
-    VideoFrame { payload: Vec<u8>, rtp_timestamp: u32 },
+    /// Video frame with RTP timestamp (90kHz clock) and marker bit
+    VideoFrame { payload: Vec<u8>, rtp_timestamp: u32, marker: bool },
     AudioFrame(Vec<u8>),
     DataChannelOpen(String),
     DataChannelMessage(String, Vec<u8>),
@@ -293,6 +293,7 @@ impl WebRtcPeer {
                                 if let Err(e) = tx_clone.send(WebRtcEvent::VideoFrame {
                                     payload: rtp_packet.payload.to_vec(),
                                     rtp_timestamp: rtp_packet.header.timestamp,
+                                    marker: rtp_packet.header.marker,
                                 }).await {
                                     warn!("Failed to send video frame event: {:?}", e);
                                     break;
@@ -488,6 +489,14 @@ impl WebRtcPeer {
         Ok(())
     }
 
+    /// Explicitly send controller input (aliases send_input/input_channel_v1 for now)
+    /// Used to enforce logical separation
+    pub async fn send_controller_input(&mut self, data: &[u8]) -> Result<()> {
+        // "input_channel_v1 needs to be only controller"
+        // We use the reliable channel (v1) for controller
+        self.send_input(data).await
+    }
+
     /// Send mouse input over partially reliable channel (lower latency)
     /// Falls back to reliable channel if mouse channel not ready
     pub async fn send_mouse_input(&mut self, data: &[u8]) -> Result<()> {
@@ -498,8 +507,12 @@ impl WebRtcPeer {
                 return Ok(());
             }
         }
-        // Fall back to reliable channel
-        self.send_input(data).await
+        // Fall back to reliable channel?
+        // User reports "controller needs to be only path not same as mouse"
+        // Removing fallback to ensure mouse never pollutes controller channel
+        // self.send_input(data).await
+        warn!("Mouse channel not ready, dropping mouse event");
+        Ok(())
     }
 
     /// Check if mouse channel is ready

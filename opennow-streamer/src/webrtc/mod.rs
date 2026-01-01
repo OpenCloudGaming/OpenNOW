@@ -19,7 +19,7 @@ use log::{info, warn, error, debug};
 
 use crate::app::{SessionInfo, Settings, VideoCodec, SharedFrame};
 use crate::media::{StreamStats, VideoDecoder, AudioDecoder, AudioPlayer, RtpDepacketizer, DepacketizerCodec};
-use crate::input::InputHandler;
+use crate::input::{InputHandler, ControllerManager};
 
 /// Active streaming session
 pub struct StreamingSession {
@@ -85,15 +85,14 @@ fn build_nvst_sdp(
     ];
 
     // DRC/DFC settings based on FPS
+    // Always disable DRC to allow full bitrate
+    lines.push("a=vqos.drc.enable:0".to_string());
     if is_high_fps {
-        lines.push("a=vqos.drc.enable:0".to_string());
         lines.push("a=vqos.dfc.enable:1".to_string());
         lines.push("a=vqos.dfc.decodeFpsAdjPercent:85".to_string());
         lines.push("a=vqos.dfc.targetDownCooldownMs:250".to_string());
         lines.push("a=vqos.dfc.dfcAlgoVersion:2".to_string());
         lines.push(format!("a=vqos.dfc.minTargetFps:{}", if is_120_fps { 100 } else { 60 }));
-    } else {
-        lines.push("a=vqos.drc.minRequiredBitrateCheckEnabled:1".to_string());
     }
 
     // Video encoder settings
@@ -257,7 +256,7 @@ pub async fn run_streaming(
     let depacketizer_codec = match codec {
         VideoCodec::H264 => DepacketizerCodec::H264,
         VideoCodec::H265 => DepacketizerCodec::H265,
-        VideoCodec::AV1 => DepacketizerCodec::H264, // AV1 uses different packetization, fallback for now
+        VideoCodec::AV1 => DepacketizerCodec::AV1,
     };
     let mut rtp_depacketizer = RtpDepacketizer::with_codec(depacketizer_codec);
     info!("RTP depacketizer using {:?} mode", depacketizer_codec);
@@ -265,7 +264,7 @@ pub async fn run_streaming(
     let mut audio_decoder = AudioDecoder::new(48000, 2)?;
 
     // Audio player is created in a separate thread due to cpal::Stream not being Send
-    let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<i16>>(32);
+    let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<i16>>(256);
     std::thread::spawn(move || {
         if let Ok(audio_player) = AudioPlayer::new(48000, 2) {
             info!("Audio player thread started");
@@ -304,14 +303,20 @@ pub async fn run_streaming(
 
     // Also set raw input sender for direct mouse events (Windows/macOS)
     #[cfg(any(target_os = "windows", target_os = "macos"))]
-    crate::input::set_raw_input_sender(input_event_tx);
+    crate::input::set_raw_input_sender(input_event_tx.clone());
 
     info!("Input handler connected to streaming loop");
 
+    // Initialize and start ControllerManager
+    let controller_manager = Arc::new(ControllerManager::new());
+    controller_manager.set_event_sender(input_event_tx.clone());
+    controller_manager.start();
+    info!("Controller manager started");
+
     // Channel for input task to send encoded packets to the WebRTC peer
     // This decouples input processing from video decoding completely
-    // Tuple: (encoded_data, is_mouse, latency_us)
-    let (input_packet_tx, mut input_packet_rx) = mpsc::channel::<(Vec<u8>, bool, u64)>(1024);
+    // Tuple: (encoded_data, is_mouse, is_controller, latency_us)
+    let (input_packet_tx, mut input_packet_rx) = mpsc::channel::<(Vec<u8>, bool, bool, u64)>(1024);
 
     // Stats interval timer (must be created OUTSIDE the loop to persist across iterations)
     let mut stats_interval = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -348,7 +353,8 @@ pub async fn run_streaming(
                         InputEvent::MouseMove { timestamp_us, .. } |
                         InputEvent::MouseButtonDown { timestamp_us, .. } |
                         InputEvent::MouseButtonUp { timestamp_us, .. } |
-                        InputEvent::MouseWheel { timestamp_us, .. } => *timestamp_us,
+                        InputEvent::MouseWheel { timestamp_us, .. } |
+                        InputEvent::Gamepad { timestamp_us, .. } => *timestamp_us,
                         InputEvent::Heartbeat => 0,
                     };
 
@@ -359,7 +365,7 @@ pub async fn run_streaming(
                     // Encode the event
                     let encoded = input_encoder.encode(&event);
 
-                    // Determine if this is a mouse event (for channel selection)
+                    // Determine if this is a mouse event
                     let is_mouse = matches!(
                         &event,
                         InputEvent::MouseMove { .. } |
@@ -368,9 +374,15 @@ pub async fn run_streaming(
                         InputEvent::MouseWheel { .. }
                     );
 
+                    // Determine if this is a gamepad/controller event
+                    let is_controller = matches!(
+                        &event,
+                        InputEvent::Gamepad { .. }
+                    );
+
                     // Send to main loop for WebRTC transmission
                     // Use try_send to never block the input thread
-                    if input_packet_tx_clone.try_send((encoded, is_mouse, latency_us)).is_err() {
+                    if input_packet_tx_clone.try_send((encoded, is_mouse, is_controller, latency_us)).is_err() {
                         // Channel full - this is fine, old packets can be dropped for mouse
                     }
                 }
@@ -389,18 +401,26 @@ pub async fn run_streaming(
             // Process encoded input packets from the input task (high priority)
             biased;
 
-            Some((encoded, is_mouse, latency_us)) = input_packet_rx.recv() => {
+            Some((encoded, is_mouse, is_controller, latency_us)) = input_packet_rx.recv() => {
                 // Track input latency for stats
                 if latency_us > 0 {
                     input_latency_sum += latency_us as f64;
                     input_latency_count += 1;
                 }
 
-                if is_mouse {
+                if is_controller {
+                    // Controller input (Input Channel V1)
+                    // "input_channel_v1 needs to be only controller"
+                    let _ = peer.send_controller_input(&encoded).await;
+                } else if is_mouse {
                     // Mouse events - use partially reliable channel (8ms lifetime)
+                    // Attempt to send on mouse channel, drop if not ready (no fallback to V1)
                     let _ = peer.send_mouse_input(&encoded).await;
                 } else {
-                    // Keyboard events - use reliable channel
+                    // Keyboard events
+                    // Currently uses send_input (V1)
+                    // If user requires V1 to be *strictly* controller, we might need to route keyboard elsewhere?
+                    // But usually keyboard shares reliable channel. For now, keep it here.
                     let _ = peer.send_input(&encoded).await;
                 }
             }
@@ -514,7 +534,7 @@ pub async fn run_streaming(
                         warn!("WebRTC disconnected");
                         break;
                     }
-                    WebRtcEvent::VideoFrame { payload, rtp_timestamp: _ } => {
+                    WebRtcEvent::VideoFrame { payload, rtp_timestamp: _, marker } => {
                         frames_received += 1;
                         bytes_received += payload.len() as u64;
                         let packet_receive_time = std::time::Instant::now();
@@ -524,14 +544,40 @@ pub async fn run_streaming(
                             info!("First video RTP packet received: {} bytes", payload.len());
                         }
 
-                        // Depacketize RTP - may return multiple NAL units (e.g., from STAP-A/AP)
-                        let nal_units = rtp_depacketizer.process(&payload);
-                        for nal_unit in nal_units {
-                            // NON-BLOCKING decode - fire and forget!
-                            // The decoder thread will write directly to SharedFrame
-                            // This ensures the main loop never stalls waiting for decode
-                            if let Err(e) = video_decoder.decode_async(&nal_unit, packet_receive_time) {
-                                warn!("Decode async failed: {}", e);
+                        // Accumulate NAL units/OBUs and send complete frames on marker bit
+                        // This is required for proper H.264/H.265/AV1 decoding
+                        if codec == VideoCodec::AV1 {
+                            // AV1: process and accumulate in one step (handles GFN's non-standard fragmentation)
+                            rtp_depacketizer.process_av1_raw(&payload);
+
+                            // On marker bit, we have a complete frame - send accumulated OBUs
+                            if marker {
+                                // Flush any pending OBU (TILE_GROUP/FRAME that was held for possible continuation)
+                                rtp_depacketizer.flush_pending_obu();
+
+                                if let Some(frame_data) = rtp_depacketizer.take_accumulated_frame() {
+                                    if let Err(e) = video_decoder.decode_async(&frame_data, packet_receive_time) {
+                                        warn!("Decode async failed: {}", e);
+                                    }
+                                }
+                            }
+                        } else {
+                            // H.264/H.265: depacketize RTP and accumulate NAL units
+                            let nal_units = rtp_depacketizer.process(&payload);
+
+                            // H.264/H.265: accumulate NAL units until marker bit (end of frame)
+                            // Each frame consists of multiple NAL units that must be sent together
+                            for nal_unit in nal_units {
+                                rtp_depacketizer.accumulate_nal(nal_unit);
+                            }
+
+                            // On marker bit, we have a complete Access Unit - send to decoder
+                            if marker {
+                                if let Some(frame_data) = rtp_depacketizer.take_nal_frame() {
+                                    if let Err(e) = video_decoder.decode_async(&frame_data, packet_receive_time) {
+                                        warn!("Decode async failed: {}", e);
+                                    }
+                                }
                             }
                         }
                     }
@@ -661,6 +707,9 @@ pub async fn run_streaming(
             }
         }
     }
+
+    // Stop controller manager
+    controller_manager.stop();
 
     // Clean up raw input sender
     #[cfg(any(target_os = "windows", target_os = "macos"))]

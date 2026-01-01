@@ -12,6 +12,7 @@ use winit::window::{Window, WindowAttributes, Fullscreen, CursorGrabMode};
 
 #[cfg(target_os = "macos")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use wgpu::util::DeviceExt;
 
 use crate::app::{App, AppState, UiAction, GamesTab, SettingChange, GameInfo};
 use crate::app::session::ActiveSessionInfo;
@@ -21,6 +22,9 @@ use super::image_cache;
 use super::shaders::{VIDEO_SHADER, NV12_SHADER};
 use super::screens::{render_login_screen, render_session_screen, render_settings_modal, render_session_conflict_dialog, render_av1_warning_dialog};
 use std::collections::HashMap;
+
+// Color conversion is now hardcoded in the shader using official GFN client BT.709 values
+// This eliminates potential initialization bugs with uniform buffers
 
 /// Main renderer
 pub struct Renderer {
@@ -2078,6 +2082,18 @@ impl Renderer {
                 });
             });
 
+        // Hover effect - green glow
+        let card_rect = response.response.rect;
+        if ui.rect_contains_pointer(card_rect) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            ui.painter().rect_stroke(
+                card_rect,
+                8.0,
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(118, 185, 0)),
+                egui::StrokeKind::Outside,
+            );
+        }
+
         if response.response.interact(egui::Sense::click()).clicked() {
             actions.push(UiAction::OpenGamePopup(game_for_click));
         }
@@ -2107,63 +2123,167 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(Color32::from_rgba_unmultiplied(0, 0, 0, 200))
-                .corner_radius(6.0)
-                .inner_margin(egui::Margin::same(10))
+                .corner_radius(4.0)
+                .inner_margin(8.0)
                 .show(ui, |ui| {
+                    ui.set_min_width(200.0);
+
+                    // Resolution
+                    let res_text = if stats.resolution.is_empty() {
+                        "Connecting...".to_string()
+                    } else {
+                        stats.resolution.clone()
+                    };
+
+                    ui.label(
+                        RichText::new(res_text)
+                            .font(FontId::monospace(13.0))
+                            .color(Color32::WHITE)
+                    );
+
+                    // Decoded FPS vs Render FPS (shows if renderer is bottlenecked)
+                    let decode_fps = stats.fps;
+                    let render_fps = stats.render_fps;
+                    let target_fps = stats.target_fps as f32;
+
+                    // Decode FPS color
+                    let decode_color = if target_fps > 0.0 {
+                        let ratio = decode_fps / target_fps;
+                        if ratio >= 0.8 { Color32::GREEN }
+                        else if ratio >= 0.5 { Color32::YELLOW }
+                        else { Color32::from_rgb(255, 100, 100) }
+                    } else { Color32::WHITE };
+
+                    // Render FPS color (critical - this is what you actually see)
+                    let render_color = if target_fps > 0.0 {
+                        let ratio = render_fps / target_fps;
+                        if ratio >= 0.8 { Color32::GREEN }
+                        else if ratio >= 0.5 { Color32::YELLOW }
+                        else { Color32::from_rgb(255, 100, 100) }
+                    } else { Color32::WHITE };
+
+                    // Show both FPS values
                     ui.horizontal(|ui| {
-                        // Video stats (left)
-                        ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new(format!("Decode: {:.0}", decode_fps))
+                                .font(FontId::monospace(11.0))
+                                .color(decode_color)
+                        );
+                        ui.label(
+                            RichText::new(format!(" | Render: {:.0}", render_fps))
+                                .font(FontId::monospace(11.0))
+                                .color(render_color)
+                        );
+                        if stats.target_fps > 0 {
                             ui.label(
-                                RichText::new("VIDEO")
-                                    .font(FontId::monospace(10.0))
-                                    .color(Color32::from_rgb(120, 200, 120))
-                            );
-                            ui.label(
-                                RichText::new(&stats.resolution)
+                                RichText::new(format!(" / {} fps", stats.target_fps))
                                     .font(FontId::monospace(11.0))
-                                    .color(Color32::WHITE)
+                                    .color(Color32::GRAY)
                             );
-                            ui.label(
-                                RichText::new(format!("{:.1} fps", stats.fps))
-                                    .font(FontId::monospace(11.0))
-                                    .color(Color32::WHITE)
-                            );
-                            ui.label(
-                                RichText::new(&stats.codec)
-                                    .font(FontId::monospace(11.0))
-                                    .color(Color32::LIGHT_GRAY)
-                            );
-                        });
-
-                        ui.add_space(20.0);
-
-                        // Network stats (right)
-                        ui.vertical(|ui| {
-                            ui.label(
-                                RichText::new("NETWORK")
-                                    .font(FontId::monospace(10.0))
-                                    .color(Color32::from_rgb(120, 120, 200))
-                            );
-                            ui.label(
-                                RichText::new(format!("{:.1} Mbps", stats.bitrate_mbps))
-                                    .font(FontId::monospace(11.0))
-                                    .color(Color32::WHITE)
-                            );
-                            ui.label(
-                                RichText::new(format!("{:.1}ms", stats.latency_ms))
-                                    .font(FontId::monospace(11.0))
-                                    .color(Color32::WHITE)
-                            );
-                            // Show packet loss if relevant
-                            if stats.packet_loss > 0.0 {
-                                ui.label(
-                                    RichText::new(format!("{:.1}% loss", stats.packet_loss))
-                                        .font(FontId::monospace(11.0))
-                                        .color(Color32::from_rgb(255, 100, 100))
-                                );
-                            }
-                        });
+                        }
                     });
+
+                    // Codec and bitrate
+                    if !stats.codec.is_empty() {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} | {:.1} Mbps",
+                                stats.codec,
+                                stats.bitrate_mbps
+                            ))
+                            .font(FontId::monospace(11.0))
+                            .color(Color32::LIGHT_GRAY)
+                        );
+                    }
+
+                    // Latency (decode pipeline)
+                    let latency_color = if stats.latency_ms < 30.0 {
+                        Color32::GREEN
+                    } else if stats.latency_ms < 60.0 {
+                        Color32::YELLOW
+                    } else {
+                        Color32::RED
+                    };
+
+                    ui.label(
+                        RichText::new(format!("Decode: {:.0} ms", stats.latency_ms))
+                            .font(FontId::monospace(11.0))
+                            .color(latency_color)
+                    );
+
+                    // Input latency (event creation to transmission)
+                    if stats.input_latency_ms > 0.0 {
+                        let input_color = if stats.input_latency_ms < 2.0 {
+                            Color32::GREEN
+                        } else if stats.input_latency_ms < 5.0 {
+                            Color32::YELLOW
+                        } else {
+                            Color32::RED
+                        };
+
+                        ui.label(
+                            RichText::new(format!("Input: {:.1} ms", stats.input_latency_ms))
+                                .font(FontId::monospace(11.0))
+                                .color(input_color)
+                        );
+                    }
+
+                    if stats.packet_loss > 0.0 {
+                        let loss_color = if stats.packet_loss < 1.0 {
+                            Color32::YELLOW
+                        } else {
+                            Color32::RED
+                        };
+
+                        ui.label(
+                            RichText::new(format!("Packet Loss: {:.1}%", stats.packet_loss))
+                                .font(FontId::monospace(11.0))
+                                .color(loss_color)
+                        );
+                    }
+
+                    // Decode and render times
+                    if stats.decode_time_ms > 0.0 || stats.render_time_ms > 0.0 {
+                        ui.label(
+                            RichText::new(format!(
+                                "Decode: {:.1} ms | Render: {:.1} ms",
+                                stats.decode_time_ms,
+                                stats.render_time_ms
+                            ))
+                            .font(FontId::monospace(10.0))
+                            .color(Color32::GRAY)
+                        );
+                    }
+
+                    // Frame stats
+                    if stats.frames_received > 0 {
+                        ui.label(
+                            RichText::new(format!(
+                                "Frames: {} rx, {} dec, {} drop",
+                                stats.frames_received,
+                                stats.frames_decoded,
+                                stats.frames_dropped
+                            ))
+                            .font(FontId::monospace(10.0))
+                            .color(Color32::DARK_GRAY)
+                        );
+                    }
+
+                    // GPU and server info
+                    if !stats.gpu_type.is_empty() || !stats.server_region.is_empty() {
+                        let info = format!(
+                            "{}{}{}",
+                            stats.gpu_type,
+                            if !stats.gpu_type.is_empty() && !stats.server_region.is_empty() { " | " } else { "" },
+                            stats.server_region
+                        );
+
+                        ui.label(
+                            RichText::new(info)
+                                .font(FontId::monospace(10.0))
+                                .color(Color32::DARK_GRAY)
+                        );
+                    }
                 });
         });
 }

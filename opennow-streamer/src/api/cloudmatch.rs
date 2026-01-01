@@ -3,13 +3,14 @@
 //! Create and manage GFN streaming sessions.
 
 use anyhow::{Result, Context};
-use log::{info, debug, warn};
+use log::{info, debug, warn, error};
 
 use crate::app::session::*;
 use crate::app::Settings;
 use crate::auth;
 use crate::utils::generate_uuid;
 use super::GfnApiClient;
+use super::error_codes::SessionError;
 
 /// GFN client version
 const GFN_CLIENT_VERSION: &str = "2.0.80.173";
@@ -166,20 +167,34 @@ impl GfnApiClient {
                &response_text[..response_text.len().min(500)]);
 
         if !status.is_success() {
-            return Err(anyhow::anyhow!("CloudMatch request failed: {} - {}",
-                status, &response_text[..response_text.len().min(200)]));
+            // Parse error response for user-friendly message
+            let session_error = SessionError::from_response(status.as_u16(), &response_text);
+            error!("CloudMatch session error: {} - {} (code: {}, unified: {:?})",
+                session_error.title,
+                session_error.description,
+                session_error.gfn_error_code,
+                session_error.unified_error_code);
+
+            return Err(anyhow::anyhow!("{}: {}",
+                session_error.title,
+                session_error.description));
         }
 
         let api_response: CloudMatchResponse = serde_json::from_str(&response_text)
             .context("Failed to parse CloudMatch response")?;
 
         if api_response.request_status.status_code != 1 {
-            let error_desc = api_response.request_status.status_description
-                .unwrap_or_else(|| "Unknown error".to_string());
-            return Err(anyhow::anyhow!("CloudMatch error: {} (code: {}, unified: {})",
-                error_desc,
+            // Parse error for user-friendly message
+            let session_error = SessionError::from_response(200, &response_text);
+            error!("CloudMatch API error: {} - {} (statusCode: {}, unified: {})",
+                session_error.title,
+                session_error.description,
                 api_response.request_status.status_code,
-                api_response.request_status.unified_error_code));
+                api_response.request_status.unified_error_code);
+
+            return Err(anyhow::anyhow!("{}: {}",
+                session_error.title,
+                session_error.description));
         }
 
         let session_data = api_response.session;
