@@ -261,7 +261,12 @@ jobs:
           Write-Host "Extracting FFmpeg..."
           Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg
           $ffmpegDir = (Get-ChildItem -Path ffmpeg -Directory)[0].FullName
-          Write-Host "FFmpeg extracted to: $ffmpegDir"
+          # Rename .dll.a to .lib for MSVC compatibility (MinGW -> MSVC hack)
+          Get-ChildItem "$ffmpegDir\lib\*.dll.a" | Rename-Item -NewName { $_.Name -replace '\.dll\.a','.lib' -replace '^lib','' }
+          
+          # Verify renaming
+          Write-Host "`n=== Renamed Lib directory ==="
+          Get-ChildItem "$ffmpegDir\lib"
 
           # Set environment variables for ffmpeg-next crate
           echo "FFMPEG_DIR=$ffmpegDir" >> $env:GITHUB_ENV
@@ -326,7 +331,8 @@ jobs:
             libclang-dev \
             wget \
             libssl-dev:arm64 \
-            libasound2-dev:arm64
+            libasound2-dev:arm64 \
+            libudev-dev:arm64
 
           # Download pre-built FFmpeg ARM64 from BtbN - use master-latest for stability
           FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-lgpl-shared.tar.xz"
