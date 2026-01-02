@@ -296,7 +296,12 @@ impl GfnSignaling {
         });
 
         if let Some(nvst) = nvst_sdp {
-            answer["nvstSdp"] = json!(nvst);
+            // Try to parse as JSON object (for nvstSdp wrapper), otherwise treat as string
+            if let Ok(val) = serde_json::from_str::<Value>(nvst) {
+                answer["nvstSdp"] = val;
+            } else {
+                answer["nvstSdp"] = json!(nvst);
+            }
         }
 
         let peer_msg = json!({
