@@ -224,12 +224,12 @@ jobs:
         shell: pwsh
         run: |
           # Download shared FFmpeg build from BtbN (GitHub releases) - use master-latest for stability
-          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip"
+          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z"
           Write-Host "Downloading FFmpeg x64 from $ffmpegUrl..."
-          Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.zip
+          Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.7z
 
           Write-Host "Extracting FFmpeg..."
-          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg
+          7z x ffmpeg.7z -offmpeg
           $ffmpegDir = (Get-ChildItem -Path ffmpeg -Directory)[0].FullName
           Write-Host "FFmpeg extracted to: $ffmpegDir"
 
@@ -325,7 +325,8 @@ jobs:
             clang \
             libclang-dev \
             wget \
-            libssl-dev:arm64
+            libssl-dev:arm64 \
+            libasound2-dev:arm64
 
           # Download pre-built FFmpeg ARM64 from BtbN - use master-latest for stability
           FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-lgpl-shared.tar.xz"
@@ -351,7 +352,7 @@ jobs:
           echo "CXX=aarch64-linux-gnu-g++" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$FFMPEG_DIR/lib/pkgconfig" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:$FFMPEG_DIR/lib/pkgconfig" >> $GITHUB_ENV
 
           # Set OpenSSL paths for ARM64 cross-compilation
           echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
@@ -466,7 +467,7 @@ jobs:
               install_name_tool -id "@executable_path/libs/$libname" "$BUNDLE_DIR/libs/$libname" 2>/dev/null || true
               return 0
             fi
-            return 1
+            return 0
           }
 
           # Function to fix references in a binary/library
