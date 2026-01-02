@@ -155,6 +155,10 @@ pub struct App {
     render_frame_count: u64,
     last_render_fps_time: std::time::Instant,
     last_render_frame_count: u64,
+
+
+    /// Number of times we've polled after session became ready (to ensure candidates)
+    session_ready_poll_count: u32,
 }
 
 /// Poll interval for session status (2 seconds)
@@ -248,11 +252,13 @@ impl App {
             active_sessions: Vec::new(),
             show_session_conflict: false,
             show_av1_warning: false,
+
             pending_game_launch: None,
             last_poll_time: std::time::Instant::now(),
             render_frame_count: 0,
             last_render_fps_time: std::time::Instant::now(),
             last_render_frame_count: 0,
+            session_ready_poll_count: 0,
         }
     }
 
@@ -1203,16 +1209,28 @@ impl App {
     /// Poll session state and update UI
     fn poll_session_status(&mut self) {
         // First check cache for state updates (from in-flight or completed requests)
+        // First check cache for state updates (from in-flight or completed requests)
         if let Some(session) = cache::load_session_cache() {
             if session.state == SessionState::Ready {
-                info!("Session ready! GPU: {:?}, Server: {}", session.gpu_type, session.server_ip);
-                self.status_message = format!(
-                    "Connecting to GPU: {}",
-                    session.gpu_type.as_deref().unwrap_or("Unknown")
-                );
-                cache::clear_session_cache();
-                self.start_streaming(session);
-                return;
+                // User requested: "make it pull few times before connecting to it so you can get the candidates"
+                // We delay streaming start until we've polled a few times in Ready state
+                if self.session_ready_poll_count < 3 {
+                    self.status_message = format!("Session ready, finalizing connection ({}/3)...", self.session_ready_poll_count + 1);
+                    // Don't return, allow fall-through to polling logic
+                } else {
+                    info!("Session ready! GPU: {:?}, Server: {}", session.gpu_type, session.server_ip);
+                    
+                    // Update status message
+                    if let Some(gpu) = &session.gpu_type {
+                         self.status_message = format!("Connecting to GPU: {}", gpu);
+                    } else {
+                         self.status_message = format!("Connecting to server: {}", session.server_ip);
+                    }
+
+                    cache::clear_session_cache();
+                    self.start_streaming(session);
+                    return;
+                }
             } else if let SessionState::InQueue { position, eta_secs } = session.state {
                 self.status_message = format!("Queue position: {} (ETA: {}s)", position, eta_secs);
             } else if let SessionState::Error(ref msg) = session.state {
@@ -1232,10 +1250,17 @@ impl App {
         }
 
         if let Some(session) = cache::load_session_cache() {
-            let should_poll = matches!(
+            let mut should_poll = matches!(
                 session.state,
                 SessionState::Requesting | SessionState::Launching | SessionState::InQueue { .. }
             );
+
+            // Also poll if Ready but count < 3
+            if session.state == SessionState::Ready && self.session_ready_poll_count < 3 {
+                should_poll = true;
+                // Increment poll count here, as we are about to poll
+                self.session_ready_poll_count += 1;
+            }
 
             if should_poll {
                 // Update timestamp to rate limit next poll
