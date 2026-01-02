@@ -55,14 +55,23 @@ pub enum SessionState {
     /// Requesting session from CloudMatch
     Requesting,
 
-    /// Session created, seat being set up
+    /// Connecting to server (seatSetupStep = 0)
+    Connecting,
+
+    /// Session created, seat being set up (configuring)
     Launching,
 
-    /// In queue waiting for a seat
+    /// In queue waiting for a seat (seatSetupStep = 1)
     InQueue {
         position: u32,
         eta_secs: u32,
     },
+
+    /// Cleaning up previous session (seatSetupStep = 5)
+    CleaningUp,
+
+    /// Waiting for storage to be ready (seatSetupStep = 6)
+    WaitingForStorage,
 
     /// Session ready for streaming
     Ready,
@@ -323,12 +332,43 @@ impl CloudMatchSession {
         self.connection_info
             .as_ref()
             .and_then(|conns| conns.iter().find(|c| c.usage == 14))
-            .and_then(|conn| conn.ip.clone())
+            .and_then(|conn| {
+                // Try direct IP first
+                conn.ip.clone().or_else(|| {
+                    // If IP is null, extract from resourcePath (Alliance format)
+                    // e.g., "rtsps://161-248-11-132.bpc.geforcenow.nvidiagrid.net:48322"
+                    conn.resource_path.as_ref().and_then(|path| {
+                        Self::extract_host_from_url(path)
+                    })
+                })
+            })
             .or_else(|| {
                 self.session_control_info
                     .as_ref()
                     .and_then(|sci| sci.ip.clone())
             })
+    }
+
+    /// Extract host from URL (handles rtsps://, wss://, etc.)
+    fn extract_host_from_url(url: &str) -> Option<String> {
+        // Remove protocol prefix
+        let after_proto = url
+            .strip_prefix("rtsps://")
+            .or_else(|| url.strip_prefix("rtsp://"))
+            .or_else(|| url.strip_prefix("wss://"))
+            .or_else(|| url.strip_prefix("https://"))?;
+        
+        // Get host (before port or path)
+        let host = after_proto
+            .split(':')
+            .next()
+            .or_else(|| after_proto.split('/').next())?;
+        
+        if host.is_empty() || host.starts_with('.') {
+            None
+        } else {
+            Some(host.to_string())
+        }
     }
 
     /// Extract signaling URL from connection info
@@ -339,22 +379,71 @@ impl CloudMatchSession {
             .and_then(|conn| conn.resource_path.clone())
     }
 
-    /// Extract media connection info (usage=2 or usage=17)
+    /// Extract media connection info (usage=2, usage=17, or fallback to usage=14 for Alliance)
     pub fn media_connection_info(&self) -> Option<MediaConnectionInfo> {
         self.connection_info.as_ref().and_then(|conns| {
+            // Try standard media paths first (usage=2 or usage=17)
             let media_conn = conns.iter()
                 .find(|c| c.usage == 2)
                 .or_else(|| conns.iter().find(|c| c.usage == 17));
 
-            media_conn.and_then(|conn| {
-                conn.ip.as_ref().filter(|_| conn.port > 0).map(|ip| {
-                    MediaConnectionInfo {
-                        ip: ip.clone(),
-                        port: conn.port,
+            // If found, try to get IP/port
+            if let Some(conn) = media_conn {
+                let ip = conn.ip.clone().or_else(|| {
+                    conn.resource_path.as_ref().and_then(|p| Self::extract_host_from_url(p))
+                });
+                let port = if conn.port > 0 { 
+                    conn.port 
+                } else {
+                    conn.resource_path.as_ref().and_then(|p| Self::extract_port_from_url(p)).unwrap_or(0)
+                };
+                
+                if let Some(ip) = ip {
+                    if port > 0 {
+                        return Some(MediaConnectionInfo { ip, port });
                     }
-                })
+                }
+            }
+
+            // For Alliance: fall back to usage=14 with highest port (usually the UDP streaming port)
+            // Alliance sessions have usage=14 for both signaling and media
+            let alliance_conn = conns.iter()
+                .filter(|c| c.usage == 14)
+                .max_by_key(|c| c.port);
+
+            alliance_conn.and_then(|conn| {
+                let ip = conn.ip.clone().or_else(|| {
+                    conn.resource_path.as_ref().and_then(|p| Self::extract_host_from_url(p))
+                });
+                let port = if conn.port > 0 { 
+                    conn.port 
+                } else {
+                    conn.resource_path.as_ref().and_then(|p| Self::extract_port_from_url(p)).unwrap_or(0)
+                };
+                
+                ip.filter(|_| port > 0).map(|ip| MediaConnectionInfo { ip, port })
             })
         })
+    }
+
+    /// Extract port from URL
+    fn extract_port_from_url(url: &str) -> Option<u16> {
+        // Find host:port pattern after ://
+        let after_proto = url
+            .strip_prefix("rtsps://")
+            .or_else(|| url.strip_prefix("rtsp://"))
+            .or_else(|| url.strip_prefix("wss://"))
+            .or_else(|| url.strip_prefix("https://"))?;
+        
+        // Extract port after colon
+        let parts: Vec<&str> = after_proto.split(':').collect();
+        if parts.len() >= 2 {
+            // Port is after the colon, before any path
+            let port_str = parts[1].split('/').next()?;
+            port_str.parse().ok()
+        } else {
+            None
+        }
     }
 
     /// Convert ICE server configuration

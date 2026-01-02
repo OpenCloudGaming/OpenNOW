@@ -380,3 +380,83 @@ pub fn render_av1_warning_dialog(
             });
         });
 }
+
+/// Render Alliance experimental warning dialog
+pub fn render_alliance_warning_dialog(
+    ctx: &egui::Context,
+    provider_name: &str,
+    actions: &mut Vec<UiAction>,
+) {
+    egui::Window::new("Alliance Partner")
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size([420.0, 200.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(10.0);
+
+                // Alliance badge - centered
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(30, 80, 130))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin { left: 14, right: 14, top: 6, bottom: 6 })
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("ALLIANCE")
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(100, 180, 255))
+                                .strong()
+                        );
+                    });
+
+                ui.add_space(12.0);
+
+                ui.label(
+                    egui::RichText::new(format!("Welcome to {} via Alliance!", provider_name))
+                        .size(17.0)
+                        .strong()
+                        .color(egui::Color32::WHITE)
+                );
+
+                ui.add_space(10.0);
+
+                ui.label(
+                    egui::RichText::new("Alliance support is still experimental.")
+                        .size(14.0)
+                        .color(egui::Color32::from_rgb(255, 200, 80))
+                );
+
+                ui.add_space(6.0);
+
+                ui.label(
+                    egui::RichText::new("Please report issues: github.com/zortos293/OpenNOW/issues")
+                        .size(13.0)
+                        .color(egui::Color32::LIGHT_GRAY)
+                );
+
+                ui.add_space(6.0);
+
+                ui.label(
+                    egui::RichText::new("Note: Feedback from Alliance users is especially valuable!")
+                        .size(12.0)
+                        .color(egui::Color32::GRAY)
+                        .italics()
+                );
+
+                ui.add_space(12.0);
+
+                let got_it_btn = egui::Button::new(
+                    egui::RichText::new("Got it!")
+                        .size(14.0)
+                        .strong()
+                )
+                .fill(egui::Color32::from_rgb(70, 130, 70))
+                .min_size(egui::vec2(100.0, 32.0));
+                
+                if ui.add(got_it_btn).clicked() {
+                    actions.push(UiAction::CloseAllianceWarning);
+                }
+            });
+        });
+}

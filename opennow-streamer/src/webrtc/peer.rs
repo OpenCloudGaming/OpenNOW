@@ -533,14 +533,14 @@ impl WebRtcPeer {
     }
 
     /// Add remote ICE candidate
-    pub async fn add_ice_candidate(&self, candidate: &str, sdp_mid: Option<&str>, sdp_mline_index: Option<u16>) -> Result<()> {
+    pub async fn add_ice_candidate(&self, candidate: &str, sdp_mid: Option<&str>, sdp_mline_index: Option<u16>, ufrag: Option<String>) -> Result<()> {
         let pc = self.peer_connection.as_ref().context("No peer connection")?;
 
         let candidate = webrtc::ice_transport::ice_candidate::RTCIceCandidateInit {
             candidate: candidate.to_string(),
             sdp_mid: sdp_mid.map(|s| s.to_string()),
             sdp_mline_index,
-            username_fragment: None,
+            username_fragment: ufrag,
         };
 
         pc.add_ice_candidate(candidate).await?;

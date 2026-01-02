@@ -449,16 +449,25 @@ impl GfnApiClient {
             return SessionState::Streaming;
         }
 
-        // Check seat setup info
+        // Check seat setup info for detailed states
         if let Some(ref seat_info) = session_data.seat_setup_info {
-            if seat_info.queue_position > 0 {
-                return SessionState::InQueue {
-                    position: seat_info.queue_position as u32,
-                    eta_secs: (seat_info.seat_setup_eta / 1000) as u32,
-                };
-            }
-            if seat_info.seat_setup_step > 0 {
-                return SessionState::Launching;
+            match seat_info.seat_setup_step {
+                0 => return SessionState::Connecting,
+                1 => {
+                    // In queue - show position
+                    return SessionState::InQueue {
+                        position: seat_info.queue_position.max(0) as u32,
+                        eta_secs: (seat_info.seat_setup_eta / 1000).max(0) as u32,
+                    };
+                }
+                5 => return SessionState::CleaningUp,
+                6 => return SessionState::WaitingForStorage,
+                _ => {
+                    // Other steps = general launching/configuring
+                    if seat_info.seat_setup_step > 0 {
+                        return SessionState::Launching;
+                    }
+                }
             }
         }
 

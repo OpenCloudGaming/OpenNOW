@@ -188,6 +188,10 @@ pub fn get_cached_providers() -> Vec<LoginProvider> {
 pub fn set_login_provider(provider: LoginProvider) {
     info!("Setting login provider to: {} ({})",
         provider.login_provider_display_name, provider.idp_id);
+    
+    // Save to cache for persistence across restarts
+    crate::app::cache::save_login_provider(&provider);
+    
     let mut selected = SELECTED_PROVIDER.write();
     *selected = Some(provider);
 }

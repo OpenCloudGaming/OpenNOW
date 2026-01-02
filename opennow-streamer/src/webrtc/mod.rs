@@ -451,8 +451,10 @@ pub async fn run_streaming(
 
                         info!("Preferred codec: {}", codec);
 
-                        // Use server_ip from SessionInfo for SDP fixup if available
-                        let public_ip = extract_public_ip(&session_info.server_ip);
+                        // Use media_connection_info IP first, then server_ip
+                        let public_ip = session_info.media_connection_info.as_ref()
+                            .and_then(|mci| extract_public_ip(&mci.ip))
+                            .or_else(|| extract_public_ip(&session_info.server_ip));
                         
                         // Modify SDP with extracted IP
                         let modified_sdp = if let Some(ref ip) = public_ip {
@@ -488,15 +490,23 @@ pub async fn run_streaming(
                             ice_servers.push(s);
                         }
 
-                        // Fallback to default NVIDIA STUN if no servers provided
-                        if ice_servers.is_empty() {
-                            info!("No ICE servers from session, adding default NVIDIA STUN");
-                            ice_servers.push(RTCIceServer {
-                                urls: vec!["stun:stun.gamestream.nvidia.com:19302".to_string()],
-                                ..Default::default()
-                            });
+                        // Always add default STUN servers as fallback (Alliance robustness)
+                        ice_servers.push(RTCIceServer {
+                            urls: vec!["stun:s1.stun.gamestream.nvidia.com:19308".to_string()],
+                            ..Default::default()
+                        });
+                        ice_servers.push(RTCIceServer {
+                            urls: vec![
+                                "stun:stun.l.google.com:19302".to_string(),
+                                "stun:stun1.l.google.com:19302".to_string()
+                            ],
+                            ..Default::default()
+                        });
+
+                        if ice_servers.len() <= 2 {
+                             info!("Using default/fallback ICE servers only");
                         } else {
-                            info!("Using {} ICE servers from session", ice_servers.len());
+                            info!("Using {} ICE servers (session + fallback)", ice_servers.len());
                         }
 
                         // Handle offer and create answer
@@ -510,41 +520,55 @@ pub async fn run_streaming(
                                 // Extract ICE credentials from our answer
                                 let (ufrag, pwd, fingerprint) = extract_ice_credentials(&answer_sdp);
 
-                                // Build nvstSdp
-                                let nvst_sdp = json!({
-                                    "sdp": answer_sdp,
-                                    "type": "answer"
-                                });
+                                // Build rich GFN-specific SDP (nvstSdp)
+                                let nvst_sdp_content = build_nvst_sdp(
+                                    &ufrag, &pwd, &fingerprint,
+                                    width, height, fps, max_bitrate
+                                );
+                                info!("Generated nvstSdp, length: {}", nvst_sdp_content.len());
 
-                                // Send answer
-                                let nvst_sdp_str = nvst_sdp.to_string();
-                                signaling.send_answer(&answer_sdp, Some(&nvst_sdp_str)).await?;
+                                // Use raw nvstSdp string (no wrapper object)
+                                signaling.send_answer(&answer_sdp, Some(&nvst_sdp_content)).await?;
 
-                                // For resume flow (no media_connection_info), we rely on:
-                                // 1. ICE Servers (STUN/TURN) generating candidates.
-                                // 2. Remote candidates via Trickle ICE.
-                                // 3. Correct ICE negotiation.
-                                // We do NOT manually manufacture a candidate from the signaling URL,
-                                // as the official client does not do this.
+                                // For resume flow or Alliance partners (manual candidate needed)
                                 if let Some(ref mci) = session_info.media_connection_info {
                                     info!("Using media port {} from session API", mci.port);
+                                    
+                                    // EXTRACT RAW IP from hostname (needed for valid ICE candidate)
+                                    // Use extract_public_ip which handles "x-x-x-x" format or direct IP
+                                    let raw_ip = extract_public_ip(&mci.ip)
+                                        .or_else(|| {
+                                            // Fallback: try to resolve hostname
+                                            use std::net::ToSocketAddrs;
+                                            format!("{}:{}", mci.ip, mci.port)
+                                                .to_socket_addrs()
+                                                .ok()?
+                                                .next()
+                                                .map(|addr| addr.ip().to_string())
+                                        })
+                                        .unwrap_or_else(|| mci.ip.clone());
+
                                     let candidate = format!(
                                         "candidate:1 1 udp 2130706431 {} {} typ host",
-                                        mci.ip, mci.port
+                                        raw_ip, mci.port
                                     );
                                     info!("Adding manual ICE candidate: {}", candidate);
-                                    if let Err(e) = peer.add_ice_candidate(&candidate, Some("0"), Some(0)).await {
+                                    
+                                    // Extract server ufrag from offer (needed for ice-lite)
+                                    let (server_ufrag, _, _) = extract_ice_credentials(&sdp);
+                                    
+                                    if let Err(e) = peer.add_ice_candidate(&candidate, Some("0"), Some(0), Some(server_ufrag.clone())).await {
                                         warn!("Failed to add manual ICE candidate: {}", e);
                                         // Try other mids just in case
                                         for mid in ["1", "2", "3"] {
-                                            if peer.add_ice_candidate(&candidate, Some(mid), Some(mid.parse().unwrap_or(0))).await.is_ok() {
+                                            if peer.add_ice_candidate(&candidate, Some(mid), Some(mid.parse().unwrap_or(0)), Some(server_ufrag.clone())).await.is_ok() {
                                                 info!("Added ICE candidate with sdpMid={}", mid);
                                                 break;
                                             }
                                         }
                                     }
                                 } else {
-                                    info!("No media_connection_info (Resume) - waiting for ICE negotiation (STUN/TURN/Trickle)");
+                                    info!("No media_connection_info - waiting for ICE negotiation");
                                 }
 
                                 // Update stats with codec info
@@ -564,6 +588,7 @@ pub async fn run_streaming(
                             &candidate.candidate,
                             candidate.sdp_mid.as_deref(),
                             candidate.sdp_mline_index.map(|i| i as u16),
+                            None
                         ).await {
                             warn!("Failed to add ICE candidate: {}", e);
                         }

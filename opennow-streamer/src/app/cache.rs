@@ -104,6 +104,46 @@ pub fn clear_tokens() {
 }
 
 // ============================================================
+// Login Provider Cache (for Alliance persistence)
+// ============================================================
+
+use crate::auth::LoginProvider;
+
+fn provider_cache_path() -> Option<PathBuf> {
+    get_app_data_dir().map(|p| p.join("login_provider.json"))
+}
+
+pub fn save_login_provider(provider: &LoginProvider) {
+    if let Some(path) = provider_cache_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(provider) {
+            if let Err(e) = std::fs::write(&path, &json) {
+                error!("Failed to save login provider: {}", e);
+            } else {
+                info!("Saved login provider: {}", provider.login_provider_display_name);
+            }
+        }
+    }
+}
+
+pub fn load_login_provider() -> Option<LoginProvider> {
+    let path = provider_cache_path()?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let provider: LoginProvider = serde_json::from_str(&content).ok()?;
+    info!("Loaded cached login provider: {}", provider.login_provider_display_name);
+    Some(provider)
+}
+
+pub fn clear_login_provider() {
+    if let Some(path) = provider_cache_path() {
+        let _ = std::fs::remove_file(path);
+        info!("Cleared cached login provider");
+    }
+}
+
+// ============================================================
 // Games Cache
 // ============================================================
 
@@ -221,6 +261,7 @@ pub fn save_subscription_cache(sub: &SubscriptionInfo) {
             "total_hours": sub.total_hours,
             "has_persistent_storage": sub.has_persistent_storage,
             "storage_size_gb": sub.storage_size_gb,
+            "is_unlimited": sub.is_unlimited,
         });
         if let Ok(json) = serde_json::to_string(&cache) {
             let _ = std::fs::write(path, json);
@@ -239,6 +280,7 @@ pub fn load_subscription_cache() -> Option<SubscriptionInfo> {
         total_hours: cache.get("total_hours")?.as_f64()? as f32,
         has_persistent_storage: cache.get("has_persistent_storage")?.as_bool()?,
         storage_size_gb: cache.get("storage_size_gb").and_then(|v| v.as_u64()).map(|v| v as u32),
+        is_unlimited: cache.get("is_unlimited").and_then(|v| v.as_bool()).unwrap_or(false),
     })
 }
 
