@@ -1671,9 +1671,12 @@ impl Renderer {
                     if let Some(sub) = subscription {
                         // Membership tier badge
                         let (tier_bg, tier_fg) = match sub.membership_tier.as_str() {
-                            "ULTIMATE" => (egui::Color32::from_rgb(80, 50, 120), egui::Color32::from_rgb(200, 150, 255)),
-                            "PERFORMANCE" | "PRIORITY" => (egui::Color32::from_rgb(30, 70, 100), egui::Color32::from_rgb(100, 200, 255)),
-                            _ => (egui::Color32::from_rgb(50, 50, 60), egui::Color32::GRAY),
+                            // Ultimate: Gold/Bronze theme
+                            "ULTIMATE" => (egui::Color32::from_rgb(80, 60, 10), egui::Color32::from_rgb(255, 215, 0)),
+                            // Priority/Performance: Brown theme
+                            "PERFORMANCE" | "PRIORITY" => (egui::Color32::from_rgb(70, 40, 20), egui::Color32::from_rgb(205, 175, 149)),
+                            // Free: Gray theme
+                            _ => (egui::Color32::from_rgb(45, 45, 45), egui::Color32::from_rgb(180, 180, 180)),
                         };
 
                         egui::Frame::new()
