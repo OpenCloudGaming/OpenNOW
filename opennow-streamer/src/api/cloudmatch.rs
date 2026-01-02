@@ -538,7 +538,7 @@ impl GfnApiClient {
             .map(|s| {
                 let app_id = s.session_request_data
                     .as_ref()
-                    .map(|d| d.app_id)
+                    .map(|d| d.get_app_id())
                     .unwrap_or(0);
 
                 let server_ip = s.session_control_info
@@ -559,8 +559,12 @@ impl GfnApiClient {
                     .as_ref()
                     .and_then(|ms| ms.first())
                     .map(|m| (
-                        Some(format!("{}x{}", m.width_in_pixels, m.height_in_pixels)),
-                        Some(m.frames_per_second)
+                        Some(format!(
+                            "{}x{}",
+                            m.width_in_pixels.unwrap_or(0),
+                            m.height_in_pixels.unwrap_or(0)
+                        )),
+                        m.frames_per_second
                     ))
                     .unwrap_or((None, None));
 
@@ -721,9 +725,9 @@ impl GfnApiClient {
 
         let get_url = format!("https://{}/v2/session/{}", server_ip, session_id);
 
-        for attempt in 1..=10 {
+        for attempt in 1..=60 {
             if attempt > 1 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
             }
 
             let poll_response = self.client.get(&get_url)
