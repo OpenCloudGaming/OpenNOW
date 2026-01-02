@@ -16,6 +16,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use anyhow::Result;
 use log::{info, warn, error, debug};
+use serde_json::json;
+use webrtc::ice_transport::ice_server::RTCIceServer;
 
 use crate::app::{SessionInfo, Settings, VideoCodec, SharedFrame};
 use crate::media::{StreamStats, VideoDecoder, AudioDecoder, AudioPlayer, RtpDepacketizer, DepacketizerCodec};
@@ -201,11 +203,22 @@ fn extract_ice_credentials(sdp: &str) -> (String, String, String) {
 }
 
 /// Extract public IP from server hostname (e.g., "95-178-87-234.zai..." -> "95.178.87.234")
-fn extract_public_ip(server_ip: &str) -> Option<String> {
-    let re = regex::Regex::new(r"^(\d+-\d+-\d+-\d+)\.").ok()?;
-    re.captures(server_ip)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str().replace('-', "."))
+/// Also handles direct IP strings or IPs embedded in signaling URLs
+fn extract_public_ip(input: &str) -> Option<String> {
+    // Check for standard IP-like patterns with dashes (e.g. 80-250-97-38)
+    let re_dash = regex::Regex::new(r"(\d{1,3})-(\d{1,3})-(\d{1,3})-(\d{1,3})").ok()?;
+    if let Some(captures) = re_dash.captures(input) {
+         let ip = format!("{}.{}.{}.{}", &captures[1], &captures[2], &captures[3], &captures[4]);
+         return Some(ip);
+    }
+
+    // Check for standard IP patterns (e.g. 80.250.97.38)
+    let re_dot = regex::Regex::new(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})").ok()?;
+    if let Some(captures) = re_dot.captures(input) {
+        return Some(captures[0].to_string());
+    }
+
+    None
 }
 
 /// Run the streaming session
@@ -429,22 +442,65 @@ pub async fn run_streaming(
                     SignalingEvent::SdpOffer(sdp) => {
                         info!("Received SDP offer, length: {}", sdp.len());
 
-                        // Extract public IP and modify SDP
-                        let public_ip = extract_public_ip(&server_ip);
+                        // Detect codec to use
+                        let codec = match settings.codec {
+                            VideoCodec::H264 => "H264",
+                            VideoCodec::H265 => "H265",
+                            VideoCodec::AV1 => "AV1",
+                        };
+
+                        info!("Preferred codec: {}", codec);
+
+                        // Use server_ip from SessionInfo for SDP fixup if available
+                        let public_ip = extract_public_ip(&session_info.server_ip);
+                        
+                        // Modify SDP with extracted IP
                         let modified_sdp = if let Some(ref ip) = public_ip {
                             fix_server_ip(&sdp, ip)
                         } else {
                             sdp.clone()
                         };
 
-                        // Prefer codec
-                        let modified_sdp = prefer_codec(&modified_sdp, &codec);
 
-                        // CRITICAL: Create input channel BEFORE handling offer (per GFN protocol)
+
+                        // Prefer codec
+                        let modified_sdp = prefer_codec(&modified_sdp, &settings.codec);
+
+                        // CRITICAL: Create input channel BEFORE SDP negotiation (per GFN protocol)
                         info!("Creating input channel BEFORE SDP negotiation...");
 
+                        // Align with official client: Use ICE servers from SessionInfo (TURN/STUN)
+                        // This corresponds to `iceServerConfiguration` in the CloudMatch response.
+                        let mut ice_servers = Vec::new();
+
+                        // Convert SessionInfo ICE servers to RTCIceServer
+                        for server in &session_info.ice_servers {
+                            let mut s = RTCIceServer {
+                                urls: server.urls.clone(),
+                                ..Default::default()
+                            };
+                            if let Some(user) = &server.username {
+                                s.username = user.clone();
+                            }
+                            if let Some(cred) = &server.credential {
+                                s.credential = cred.clone();
+                            }
+                            ice_servers.push(s);
+                        }
+
+                        // Fallback to default NVIDIA STUN if no servers provided
+                        if ice_servers.is_empty() {
+                            info!("No ICE servers from session, adding default NVIDIA STUN");
+                            ice_servers.push(RTCIceServer {
+                                urls: vec!["stun:stun.gamestream.nvidia.com:19302".to_string()],
+                                ..Default::default()
+                            });
+                        } else {
+                            info!("Using {} ICE servers from session", ice_servers.len());
+                        }
+
                         // Handle offer and create answer
-                        match peer.handle_offer(&modified_sdp, vec![]).await {
+                        match peer.handle_offer(&modified_sdp, ice_servers).await {
                             Ok(answer_sdp) => {
                                 // Create input channel
                                 if let Err(e) = peer.create_input_channel().await {
@@ -455,22 +511,21 @@ pub async fn run_streaming(
                                 let (ufrag, pwd, fingerprint) = extract_ice_credentials(&answer_sdp);
 
                                 // Build nvstSdp
-                                let nvst_sdp = build_nvst_sdp(
-                                    &ufrag,
-                                    &pwd,
-                                    &fingerprint,
-                                    width,
-                                    height,
-                                    fps,
-                                    max_bitrate,
-                                );
+                                let nvst_sdp = json!({
+                                    "sdp": answer_sdp,
+                                    "type": "answer"
+                                });
 
-                                info!("Sending SDP answer with nvstSdp...");
-                                signaling.send_answer(&answer_sdp, Some(&nvst_sdp)).await?;
+                                // Send answer
+                                let nvst_sdp_str = nvst_sdp.to_string();
+                                signaling.send_answer(&answer_sdp, Some(&nvst_sdp_str)).await?;
 
-                                // Add manual ICE candidate ONLY if we have real port from session API
-                                // Otherwise, rely on trickle ICE from server (has real port)
-                                // SDP port 47998 is a DUMMY - never use it!
+                                // For resume flow (no media_connection_info), we rely on:
+                                // 1. ICE Servers (STUN/TURN) generating candidates.
+                                // 2. Remote candidates via Trickle ICE.
+                                // 3. Correct ICE negotiation.
+                                // We do NOT manually manufacture a candidate from the signaling URL,
+                                // as the official client does not do this.
                                 if let Some(ref mci) = session_info.media_connection_info {
                                     info!("Using media port {} from session API", mci.port);
                                     let candidate = format!(
@@ -480,6 +535,7 @@ pub async fn run_streaming(
                                     info!("Adding manual ICE candidate: {}", candidate);
                                     if let Err(e) = peer.add_ice_candidate(&candidate, Some("0"), Some(0)).await {
                                         warn!("Failed to add manual ICE candidate: {}", e);
+                                        // Try other mids just in case
                                         for mid in ["1", "2", "3"] {
                                             if peer.add_ice_candidate(&candidate, Some(mid), Some(mid.parse().unwrap_or(0))).await.is_ok() {
                                                 info!("Added ICE candidate with sdpMid={}", mid);
@@ -488,14 +544,15 @@ pub async fn run_streaming(
                                         }
                                     }
                                 } else {
-                                    info!("No media_connection_info - waiting for trickle ICE from server");
+                                    info!("No media_connection_info (Resume) - waiting for ICE negotiation (STUN/TURN/Trickle)");
                                 }
 
                                 // Update stats with codec info
-                                stats.codec = codec_str.clone();
+                                stats.codec = codec.to_string();
                                 stats.resolution = format!("{}x{}", width, height);
                                 stats.target_fps = fps;
                             }
+
                             Err(e) => {
                                 error!("Failed to handle offer: {}", e);
                             }
