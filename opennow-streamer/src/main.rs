@@ -297,7 +297,11 @@ impl ApplicationHandler for OpenNowApp {
                 let target_fps = if app_guard.state == AppState::Streaming {
                     app_guard.stats.target_fps.max(60) // Use stream's target FPS (min 60)
                 } else {
-                    60 // UI mode: 60fps is enough
+                    // UI mode: Sync to monitor refresh rate (default 60 if detection fails)
+                    renderer.window().current_monitor()
+                        .and_then(|m| m.refresh_rate_millihertz())
+                        .map(|mhz| (mhz as f32 / 1000.0).ceil() as u32)
+                        .unwrap_or(60)
                 };
                 drop(app_guard);
 
