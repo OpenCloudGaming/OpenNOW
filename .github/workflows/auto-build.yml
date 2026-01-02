@@ -262,7 +262,7 @@ jobs:
           Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg
           $ffmpegDir = (Get-ChildItem -Path ffmpeg -Directory)[0].FullName
           # Rename .dll.a to .lib for MSVC compatibility (MinGW -> MSVC hack)
-          Get-ChildItem "$ffmpegDir\lib\*.dll.a" | Rename-Item -NewName { $_.Name -replace '\.dll\.a','.lib' -replace '^lib','' } -Force
+          Get-ChildItem "$ffmpegDir\lib\*.dll.a" | Rename-Item -NewName { $_.Name -replace '\.dll\.a','.lib' -replace '^lib','' } -Force -ErrorAction SilentlyContinue
           
           # Verify renaming
           Write-Host "`n=== Renamed Lib directory ==="
