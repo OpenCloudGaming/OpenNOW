@@ -13,6 +13,7 @@ use crate::app::config::{RESOLUTIONS, FPS_OPTIONS};
 use crate::app::session::ActiveSessionInfo;
 
 /// Render the settings modal with bitrate slider and other options
+/// Render the settings modal with bitrate slider and other options
 pub fn render_settings_modal(
     ctx: &egui::Context,
     settings: &Settings,
@@ -25,62 +26,42 @@ pub fn render_settings_modal(
     egui::Window::new("Settings")
         .collapsible(false)
         .resizable(false)
-        .fixed_size([450.0, 400.0])
+        .fixed_size([500.0, 450.0]) // Increased size for cleaner layout
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.vertical(|ui| {
-                    // === Video Settings ===
-                    ui.label(
-                        egui::RichText::new("Video")
-                            .size(16.0)
-                            .strong()
-                            .color(egui::Color32::from_rgb(118, 185, 0))
-                    );
-                    ui.add_space(8.0);
+                ui.add_space(8.0);
 
-                    // Max Bitrate slider
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Max Bitrate")
-                                .size(14.0)
-                                .color(egui::Color32::LIGHT_GRAY)
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{} Mbps", settings.max_bitrate_mbps))
-                                    .size(14.0)
-                                    .color(egui::Color32::WHITE)
-                            );
+                // === Video Settings Section ===
+                ui.heading(egui::RichText::new("Video").color(egui::Color32::from_rgb(118, 185, 0)));
+                ui.add_space(8.0);
+                
+                egui::Grid::new("video_settings_grid")
+                    .num_columns(2)
+                    .spacing([24.0, 16.0])
+                    .show(ui, |ui| {
+                        // Max Bitrate
+                        ui.label("Max Bitrate")
+                            .on_hover_text("Controls the maximum bandwidth usage for video streaming.\nHigher values improve quality but require a stable, fast internet connection.");
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                let mut bitrate = settings.max_bitrate_mbps as f32;
+                                let slider = egui::Slider::new(&mut bitrate, 10.0..=200.0)
+                                    .show_value(false)
+                                    .step_by(5.0);
+                                if ui.add(slider).changed() {
+                                    actions.push(UiAction::UpdateSetting(SettingChange::MaxBitrate(bitrate as u32)));
+                                }
+                                ui.label(egui::RichText::new(format!("{} Mbps", settings.max_bitrate_mbps)).strong());
+                            });
+                            ui.label(egui::RichText::new("Recommend: 50-75 Mbps for most users").size(10.0).weak());
                         });
-                    });
+                        ui.end_row();
 
-                    let mut bitrate = settings.max_bitrate_mbps as f32;
-                    let slider = egui::Slider::new(&mut bitrate, 10.0..=200.0)
-                        .show_value(false)
-                        .step_by(5.0);
-                    if ui.add(slider).changed() {
-                        actions.push(UiAction::UpdateSetting(SettingChange::MaxBitrate(bitrate as u32)));
-                    }
-
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("Higher bitrate = better quality, requires faster connection")
-                            .size(11.0)
-                            .color(egui::Color32::GRAY)
-                    );
-
-                    ui.add_space(16.0);
-
-                    // Resolution selection
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Resolution")
-                                .size(14.0)
-                                .color(egui::Color32::LIGHT_GRAY)
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            // Find display name for current resolution
+                        // Resolution
+                        ui.label("Resolution")
+                            .on_hover_text("The resolution of the video stream.");
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             let current_display = RESOLUTIONS.iter()
                                 .find(|(res, _)| *res == settings.resolution)
                                 .map(|(_, name)| *name)
@@ -96,18 +77,12 @@ pub fn render_settings_modal(
                                     }
                                 });
                         });
-                    });
+                        ui.end_row();
 
-                    ui.add_space(12.0);
-
-                    // FPS selection
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Frame Rate")
-                                .size(14.0)
-                                .color(egui::Color32::LIGHT_GRAY)
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Frame Rate
+                        ui.label("Frame Rate")
+                             .on_hover_text("Target frame rate for the stream.\nHigher FPS feels smoother but requires more bandwidth and decoder power.");
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             egui::ComboBox::from_id_salt("fps_combo")
                                 .selected_text(format!("{} FPS", settings.fps))
                                 .show_ui(ui, |ui| {
@@ -118,21 +93,15 @@ pub fn render_settings_modal(
                                     }
                                 });
                         });
-                    });
+                        ui.end_row();
 
-                    ui.add_space(12.0);
-
-                    // Codec selection
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Video Codec")
-                                .size(14.0)
-                                .color(egui::Color32::LIGHT_GRAY)
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Video Codec
+                        ui.label("Video Codec")
+                             .on_hover_text("Compression standard used for video.\nAV1 and H.265 (HEVC) offer better quality than H.264 at the same bitrate, but require compatible hardware.");
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             let codec_text = match settings.codec {
                                 crate::app::VideoCodec::H264 => "H.264",
-                                crate::app::VideoCodec::H265 => "H.265",
+                                crate::app::VideoCodec::H265 => "H.265 (HEVC)",
                                 crate::app::VideoCodec::AV1 => "AV1",
                             };
                             egui::ComboBox::from_id_salt("codec_combo")
@@ -141,28 +110,24 @@ pub fn render_settings_modal(
                                     if ui.selectable_label(matches!(settings.codec, crate::app::VideoCodec::H264), "H.264").clicked() {
                                         actions.push(UiAction::UpdateSetting(SettingChange::Codec(crate::app::VideoCodec::H264)));
                                     }
-                                    if ui.selectable_label(matches!(settings.codec, crate::app::VideoCodec::H265), "H.265").clicked() {
+                                    if ui.selectable_label(matches!(settings.codec, crate::app::VideoCodec::H265), "H.265 (HEVC)").clicked() {
                                         actions.push(UiAction::UpdateSetting(SettingChange::Codec(crate::app::VideoCodec::H265)));
                                     }
                                     if crate::media::is_av1_hardware_supported() {
                                         if ui.selectable_label(matches!(settings.codec, crate::app::VideoCodec::AV1), "AV1").clicked() {
                                             actions.push(UiAction::UpdateSetting(SettingChange::Codec(crate::app::VideoCodec::AV1)));
                                         }
+                                    } else {
+                                        ui.label(egui::RichText::new("AV1 unavailable (HW unsupported)").weak());
                                     }
                                 });
                         });
-                    });
+                        ui.end_row();
 
-                    ui.add_space(12.0);
-
-                    // Decoder selection
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Video Decoder")
-                                .size(14.0)
-                                .color(egui::Color32::LIGHT_GRAY)
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Video Decoder
+                        ui.label("Video Decoder")
+                             .on_hover_text("The hardware/software backend used to decode the video stream.\nUsually 'D3D11' or 'Vulkan' on Windows.");
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             egui::ComboBox::from_id_salt("decoder_combo")
                                 .selected_text(settings.decoder_backend.as_str())
                                 .show_ui(ui, |ui| {
@@ -173,71 +138,81 @@ pub fn render_settings_modal(
                                     }
                                 });
                         });
+                        ui.end_row();
                     });
 
-                    ui.add_space(20.0);
-                    ui.separator();
-                    ui.add_space(12.0);
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(8.0);
 
-                    // === Server Selection ===
-                    ui.label(
-                        egui::RichText::new("Server")
-                            .size(16.0)
-                            .strong()
-                            .color(egui::Color32::from_rgb(118, 185, 0))
-                    );
-                    ui.add_space(8.0);
+                // === Server Settings Section ===
+                ui.heading(egui::RichText::new("Server & Network").color(egui::Color32::from_rgb(118, 185, 0)));
+                ui.add_space(8.0);
 
-                    // Auto selection toggle
-                    let mut auto_select = auto_server_selection;
-                    if ui.checkbox(&mut auto_select, "Auto-select best server").changed() {
-                        actions.push(UiAction::SetAutoServerSelection(auto_select));
-                    }
+                egui::Grid::new("server_settings_grid")
+                    .num_columns(2)
+                    .spacing([24.0, 16.0])
+                    .show(ui, |ui| {
+                        // Auto Selection
+                        ui.label("Server Selection")
+                             .on_hover_text("Choose a specific GeForce NOW server or let the client automatically pick the best one.");
+                        
+                        ui.vertical(|ui| {
+                            let mut auto_select = auto_server_selection;
+                            if ui.checkbox(&mut auto_select, "Auto-select best server").on_hover_text("Automatically selects the server with the lowest ping.").changed() {
+                                actions.push(UiAction::SetAutoServerSelection(auto_select));
+                            }
 
-                    if !auto_server_selection && !servers.is_empty() {
-                        ui.add_space(8.0);
+                            if !auto_server_selection && !servers.is_empty() {
+                                ui.add_space(4.0);
+                                let current_server = servers.get(selected_server_index)
+                                    .map(|s| format!("{} ({}ms)", s.name, s.ping_ms.unwrap_or(0)))
+                                    .unwrap_or_else(|| "Select server".to_string());
 
-                        // Server dropdown
-                        let current_server = servers.get(selected_server_index)
-                            .map(|s| format!("{} ({}ms)", s.name, s.ping_ms.unwrap_or(0)))
-                            .unwrap_or_else(|| "Select server".to_string());
+                                egui::ComboBox::from_id_salt("server_combo")
+                                    .selected_text(current_server)
+                                    .width(250.0)
+                                    .show_ui(ui, |ui| {
+                                        for (i, server) in servers.iter().enumerate() {
+                                            let ping_str = server.ping_ms
+                                                .map(|p| format!(" ({}ms)", p))
+                                                .unwrap_or_default();
+                                            let label = format!("{}{}", server.name, ping_str);
+                                            if ui.selectable_label(i == selected_server_index, label).clicked() {
+                                                actions.push(UiAction::SelectServer(i));
+                                            }
+                                        }
+                                    });
+                            }
+                        });
+                        ui.end_row();
 
-                        egui::ComboBox::from_id_salt("server_combo")
-                            .selected_text(current_server)
-                            .width(300.0)
-                            .show_ui(ui, |ui| {
-                                for (i, server) in servers.iter().enumerate() {
-                                    let ping_str = server.ping_ms
-                                        .map(|p| format!(" ({}ms)", p))
-                                        .unwrap_or_default();
-                                    let label = format!("{}{}", server.name, ping_str);
-                                    if ui.selectable_label(i == selected_server_index, label).clicked() {
-                                        actions.push(UiAction::SelectServer(i));
-                                    }
+                        // Network Test
+                        if !auto_server_selection && !servers.is_empty() {
+                            ui.label("Network Test")
+                                 .on_hover_text("Measure latency to available servers.");
+                            ui.horizontal(|ui| {
+                                if ping_testing {
+                                    ui.spinner();
+                                    ui.label("Testing ping...");
+                                } else if ui.button("Test Ping").clicked() {
+                                    actions.push(UiAction::StartPingTest);
                                 }
                             });
-
-                        // Test ping button
-                        ui.add_space(8.0);
-                        if ping_testing {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label("Testing ping...");
-                            });
-                        } else if ui.button("Test Ping").clicked() {
-                            actions.push(UiAction::StartPingTest);
-                        }
-                    }
-
-                    ui.add_space(20.0);
-
-                    // Close button
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close").clicked() {
-                            actions.push(UiAction::ToggleSettingsModal);
+                            ui.end_row();
                         }
                     });
+
+                ui.add_space(24.0);
+                
+                // Close button centered
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                   if ui.button(egui::RichText::new("Close").size(16.0)).clicked() {
+                       actions.push(UiAction::ToggleSettingsModal);
+                   }
                 });
+                
+                ui.add_space(8.0);
             });
         });
 }
