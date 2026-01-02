@@ -89,6 +89,24 @@ pub struct GameInfo {
     pub app_id: Option<i64>,
     #[serde(default)]
     pub is_install_to_play: bool,
+    #[serde(default)]
+    pub play_type: Option<String>,
+    #[serde(default)]
+    pub membership_tier_label: Option<String>,
+    #[serde(default)]
+    pub playability_text: Option<String>,
+    #[serde(default)]
+    pub uuid: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Section of games with a title (e.g., "Trending", "Free to Play")
+#[derive(Debug, Clone, Default)]
+pub struct GameSection {
+    pub id: Option<String>,
+    pub title: String,
+    pub games: Vec<GameInfo>,
 }
 
 /// Subscription information
@@ -104,13 +122,14 @@ pub struct SubscriptionInfo {
 /// Current tab in Games view
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GamesTab {
-    AllGames,
-    MyLibrary,
+    Home,        // Sectioned home view (like official GFN client)
+    AllGames,    // Flat grid view
+    MyLibrary,   // User's library
 }
 
 impl Default for GamesTab {
     fn default() -> Self {
-        GamesTab::AllGames
+        GamesTab::Home  // Default to sectioned home view
     }
 }
 

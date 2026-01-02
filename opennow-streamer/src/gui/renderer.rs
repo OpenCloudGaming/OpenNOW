@@ -1316,6 +1316,15 @@ impl Renderer {
 
         // Get games based on current tab
         let games_list: Vec<_> = match current_tab {
+            GamesTab::Home => {
+                // For Home tab, we show sections but also need flat list for searches
+                let query = app.search_query.to_lowercase();
+                app.games.iter()
+                    .enumerate()
+                    .filter(|(_, g)| query.is_empty() || g.title.to_lowercase().contains(&query))
+                    .map(|(i, g)| (i, g.clone()))
+                    .collect()
+            }
             GamesTab::AllGames => {
                 app.filtered_games().into_iter()
                     .map(|(i, g)| (i, g.clone()))
@@ -1330,6 +1339,9 @@ impl Renderer {
                     .collect()
             }
         };
+
+        // Get game sections for Home tab
+        let game_sections = app.game_sections.clone();
 
         // Clone texture map for rendering (avoid borrow issues)
         let game_textures = self.game_textures.clone();
@@ -1357,6 +1369,7 @@ impl Renderer {
                     self.render_games_screen(
                         ctx,
                         &games_list,
+                        &game_sections,
                         &mut search_query,
                         &status_message,
                         show_settings,
@@ -1474,6 +1487,7 @@ impl Renderer {
         &self,
         ctx: &egui::Context,
         games: &[(usize, crate::app::GameInfo)],
+        game_sections: &[crate::app::GameSection],
         search_query: &mut String,
         _status_message: &str,
         _show_settings: bool,
@@ -1515,8 +1529,29 @@ impl Renderer {
                 ui.add_space(20.0);
 
                 // Tab buttons - solid style like login button
+                let home_selected = current_tab == GamesTab::Home;
                 let all_games_selected = current_tab == GamesTab::AllGames;
                 let library_selected = current_tab == GamesTab::MyLibrary;
+
+                // Home tab button
+                let home_btn = egui::Button::new(
+                    egui::RichText::new("Home")
+                        .size(13.0)
+                        .color(egui::Color32::WHITE)
+                        .strong()
+                )
+                .fill(if home_selected {
+                    egui::Color32::from_rgb(118, 185, 0)
+                } else {
+                    egui::Color32::from_rgb(50, 50, 65)
+                })
+                .corner_radius(6.0);
+
+                if ui.add_sized([70.0, 32.0], home_btn).clicked() && !home_selected {
+                    actions.push(UiAction::SwitchTab(GamesTab::Home));
+                }
+
+                ui.add_space(8.0);
 
                 let all_games_btn = egui::Button::new(
                     egui::RichText::new("All Games")
@@ -1749,69 +1784,128 @@ impl Renderer {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(15.0);
 
-            // Games content
-            let header_text = match current_tab {
-                GamesTab::AllGames => format!("All Games ({} available)", games.len()),
-                GamesTab::MyLibrary => format!("My Library ({} games)", games.len()),
-            };
-
-            ui.horizontal(|ui| {
-                ui.add_space(10.0);
-                ui.label(
-                    egui::RichText::new(header_text)
-                        .size(20.0)
-                        .strong()
-                        .color(egui::Color32::WHITE)
-                );
-            });
-
-            ui.add_space(20.0);
-
-            if games.is_empty() {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(100.0);
-                    let empty_text = match current_tab {
-                        GamesTab::AllGames => "No games found",
-                        GamesTab::MyLibrary => "Your library is empty.\nPurchase games from Steam, Epic, or other stores to see them here.",
-                    };
-                    ui.label(
-                        egui::RichText::new(empty_text)
-                            .size(14.0)
-                            .color(egui::Color32::from_rgb(120, 120, 120))
-                    );
-                });
-            } else {
-                // Games grid - calculate columns based on available width
-                let available_width = ui.available_width();
-                let card_width = 220.0;
-                let spacing = 16.0;
-                let num_columns = ((available_width + spacing) / (card_width + spacing)).floor() as usize;
-                let num_columns = num_columns.max(2).min(6); // Between 2 and 6 columns
-
-                // Collect games to render (avoid borrow issues)
-                let games_to_render: Vec<_> = games.iter().map(|(idx, game)| (*idx, game.clone())).collect();
-
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add_space(10.0);
-                            ui.vertical(|ui| {
-                                egui::Grid::new("games_grid")
-                                    .num_columns(num_columns)
-                                    .spacing([spacing, spacing])
-                                    .show(ui, |ui| {
-                                        for (col, (idx, game)) in games_to_render.iter().enumerate() {
-                                            Self::render_game_card(ui, ctx, *idx, game, _runtime, game_textures, new_textures, actions);
-
-                                            if (col + 1) % num_columns == 0 {
-                                                ui.end_row();
-                                            }
-                                        }
-                                    });
-                            });
+            // Render based on current tab
+            match current_tab {
+                GamesTab::Home => {
+                    // Home tab - horizontal scrolling sections
+                    if game_sections.is_empty() {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(100.0);
+                            ui.label(
+                                egui::RichText::new("Loading sections...")
+                                    .size(14.0)
+                                    .color(egui::Color32::from_rgb(120, 120, 120))
+                            );
                         });
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.add_space(5.0);
+                                
+                                for section in game_sections {
+                                    // Section header
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(10.0);
+                                        ui.label(
+                                            egui::RichText::new(&section.title)
+                                                .size(18.0)
+                                                .strong()
+                                                .color(egui::Color32::WHITE)
+                                        );
+                                    });
+                                    
+                                    ui.add_space(10.0);
+                                    
+                                    // Horizontal scroll of game cards
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(10.0);
+                                        egui::ScrollArea::horizontal()
+                                            .id_salt(&section.title)
+                                            .auto_shrink([false, false])
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    for (idx, game) in section.games.iter().enumerate() {
+                                                        Self::render_game_card(ui, ctx, idx, game, _runtime, game_textures, new_textures, actions);
+                                                        ui.add_space(12.0);
+                                                    }
+                                                });
+                                            });
+                                    });
+                                    
+                                    ui.add_space(20.0);
+                                }
+                            });
+                    }
+                }
+                GamesTab::AllGames | GamesTab::MyLibrary => {
+                    // Grid view for All Games and My Library tabs
+                    let header_text = match current_tab {
+                        GamesTab::AllGames => format!("All Games ({} available)", games.len()),
+                        GamesTab::MyLibrary => format!("My Library ({} games)", games.len()),
+                        _ => String::new(),
+                    };
+
+                    ui.horizontal(|ui| {
+                        ui.add_space(10.0);
+                        ui.label(
+                            egui::RichText::new(header_text)
+                                .size(20.0)
+                                .strong()
+                                .color(egui::Color32::WHITE)
+                        );
                     });
+
+                    ui.add_space(20.0);
+
+                    if games.is_empty() {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(100.0);
+                            let empty_text = match current_tab {
+                                GamesTab::AllGames => "No games found",
+                                GamesTab::MyLibrary => "Your library is empty.\nPurchase games from Steam, Epic, or other stores to see them here.",
+                                _ => "",
+                            };
+                            ui.label(
+                                egui::RichText::new(empty_text)
+                                    .size(14.0)
+                                    .color(egui::Color32::from_rgb(120, 120, 120))
+                            );
+                        });
+                    } else {
+                        // Games grid - calculate columns based on available width
+                        let available_width = ui.available_width();
+                        let card_width = 220.0;
+                        let spacing = 16.0;
+                        let num_columns = ((available_width + spacing) / (card_width + spacing)).floor() as usize;
+                        let num_columns = num_columns.max(2).min(6); // Between 2 and 6 columns
+
+                        // Collect games to render (avoid borrow issues)
+                        let games_to_render: Vec<_> = games.iter().map(|(idx, game)| (*idx, game.clone())).collect();
+
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(10.0);
+                                    ui.vertical(|ui| {
+                                        egui::Grid::new("games_grid")
+                                            .num_columns(num_columns)
+                                            .spacing([spacing, spacing])
+                                            .show(ui, |ui| {
+                                                for (col, (idx, game)) in games_to_render.iter().enumerate() {
+                                                    Self::render_game_card(ui, ctx, *idx, game, _runtime, game_textures, new_textures, actions);
+
+                                                    if (col + 1) % num_columns == 0 {
+                                                        ui.end_row();
+                                                    }
+                                                }
+                                            });
+                                    });
+                                });
+                            });
+                    }
+                }
             }
         });
 
@@ -1847,8 +1941,26 @@ impl Renderer {
         game_textures: &HashMap<String, egui::TextureHandle>,
         actions: &mut Vec<UiAction>,
     ) {
-        let popup_width = 400.0;
-        let popup_height = 350.0;
+        let popup_width = 450.0;
+        let popup_height = 500.0;
+
+        // Modal overlay (darkens background)
+        egui::Area::new(egui::Id::new("modal_overlay"))
+            .fixed_pos([0.0, 0.0])
+            .interactable(true)
+            .order(egui::Order::Background) // Draw behind windows
+            .show(ctx, |ui| {
+                let screen_rect = ctx.input(|i| i.screen_rect());
+                ui.painter().rect_filled(
+                    screen_rect,
+                    0.0,
+                    egui::Color32::from_black_alpha(200),
+                );
+                // Close popup on background click
+                if ui.allocate_rect(screen_rect, egui::Sense::click()).clicked() {
+                    actions.push(UiAction::CloseGamePopup);
+                }
+            });
 
         egui::Window::new("Game Details")
             .collapsible(false)
@@ -1921,7 +2033,79 @@ impl Renderer {
                         });
                     }
 
+                    ui.add_space(8.0);
+                    
+                    // GFN Status (Play Type and Membership)
+                    if let Some(ref play_type) = game.play_type {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Type:")
+                                    .size(12.0)
+                                    .color(egui::Color32::GRAY)
+                            );
+                            let color = if play_type == "INSTALL_TO_PLAY" {
+                                egui::Color32::from_rgb(255, 180, 50) // Orange
+                            } else {
+                                egui::Color32::from_rgb(100, 200, 100) // Green
+                            };
+                            ui.label(
+                                egui::RichText::new(play_type)
+                                    .size(12.0)
+                                    .color(color)
+                                    .strong()
+                            );
+                        });
+                    }
+
+                    if let Some(ref tier) = game.membership_tier_label {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Requires:")
+                                    .size(12.0)
+                                    .color(egui::Color32::GRAY)
+                            );
+                            ui.label(
+                                egui::RichText::new(tier)
+                                    .size(12.0)
+                                    .color(egui::Color32::from_rgb(118, 185, 0)) // Nvidia Green
+                                    .strong()
+                            );
+                        });
+                    }
+
+                    if let Some(ref text) = game.playability_text {
+                         ui.add_space(4.0);
+                         ui.add(egui::Label::new(
+                            egui::RichText::new(text)
+                                .size(11.0)
+                                .color(egui::Color32::LIGHT_GRAY)
+                         ).wrap());
+                    }
+
                     ui.add_space(20.0);
+
+                    // Description
+                    if let Some(ref desc) = game.description {
+                         ui.label(
+                            egui::RichText::new("About this game:")
+                                .size(14.0)
+                                .strong()
+                                .color(egui::Color32::WHITE)
+                        );
+                        ui.add_space(4.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(100.0)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(desc)
+                                        .size(13.0)
+                                        .color(egui::Color32::LIGHT_GRAY)
+                                );
+                            });
+                        ui.add_space(15.0);
+                    } else {
+                         ui.add_space(20.0);
+                    }
 
                     // Buttons
                     ui.horizontal(|ui| {
