@@ -6,7 +6,7 @@ use log::{error, info, warn};
 use std::path::PathBuf;
 
 use crate::auth::AuthTokens;
-use super::{GameInfo, SubscriptionInfo, SessionInfo, SessionState, ActiveSessionInfo};
+use super::{GameInfo, GameSection, SubscriptionInfo, SessionInfo, SessionState, ActiveSessionInfo};
 use crate::app::session::MediaConnectionInfo;
 
 /// Get the application data directory
@@ -157,6 +157,49 @@ pub fn load_library_cache() -> Option<Vec<GameInfo>> {
     let path = library_cache_path()?;
     let content = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&content).ok()
+}
+
+// ============================================================
+// Game Sections Cache (Home tab)
+// ============================================================
+
+/// Serializable section for cache
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedSection {
+    id: Option<String>,
+    title: String,
+    games: Vec<GameInfo>,
+}
+
+fn sections_cache_path() -> Option<PathBuf> {
+    get_app_data_dir().map(|p| p.join("sections_cache.json"))
+}
+
+pub fn save_sections_cache(sections: &[GameSection]) {
+    if let Some(path) = sections_cache_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let cached: Vec<CachedSection> = sections.iter().map(|s| CachedSection {
+            id: s.id.clone(),
+            title: s.title.clone(),
+            games: s.games.clone(),
+        }).collect();
+        if let Ok(json) = serde_json::to_string(&cached) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+pub fn load_sections_cache() -> Option<Vec<GameSection>> {
+    let path = sections_cache_path()?;
+    let content = std::fs::read_to_string(path).ok()?;
+    let cached: Vec<CachedSection> = serde_json::from_str(&content).ok()?;
+    Some(cached.into_iter().map(|c| GameSection {
+        id: c.id,
+        title: c.title,
+        games: c.games,
+    }).collect())
 }
 
 // ============================================================
@@ -420,4 +463,36 @@ pub fn load_ping_results() -> Option<Vec<serde_json::Value>> {
     // Clear the ping file after loading
     let _ = std::fs::remove_file(&path);
     Some(results)
+}
+
+// ============================================================
+// Popup Game Details Cache
+// ============================================================
+
+pub fn save_popup_game_details(game: &GameInfo) {
+    if let Some(path) = get_app_data_dir().map(|p| p.join("popup_game.json")) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string(game) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+pub fn load_popup_game_details() -> Option<GameInfo> {
+    let path = get_app_data_dir()?.join("popup_game.json");
+    let content = std::fs::read_to_string(&path).ok()?;
+    let game: GameInfo = serde_json::from_str(&content).ok()?;
+    
+    // Clear the file after loading to prevent stale data
+    let _ = std::fs::remove_file(&path);
+    
+    Some(game)
+}
+
+pub fn clear_popup_game_details() {
+    if let Some(path) = get_app_data_dir().map(|p| p.join("popup_game.json")) {
+        let _ = std::fs::remove_file(path);
+    }
 }

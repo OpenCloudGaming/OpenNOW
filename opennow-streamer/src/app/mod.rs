@@ -10,7 +10,7 @@ pub mod cache;
 pub use config::{Settings, VideoCodec, AudioCodec, StreamQuality, StatsPosition};
 pub use session::{SessionInfo, SessionState, ActiveSessionInfo};
 pub use types::{
-    SharedFrame, GameInfo, SubscriptionInfo, GamesTab, ServerInfo, ServerStatus,
+    SharedFrame, GameInfo, GameSection, SubscriptionInfo, GamesTab, ServerInfo, ServerStatus,
     UiAction, SettingChange, AppState, parse_resolution,
 };
 
@@ -78,8 +78,11 @@ pub struct App {
     /// Error message (if any)
     pub error_message: Option<String>,
 
-    /// Games list
+    /// Games list (flat, for All Games tab)
     pub games: Vec<GameInfo>,
+
+    /// Game sections (Home tab - Trending, Free to Play, etc.)
+    pub game_sections: Vec<GameSection>,
 
     /// Search query
     pub search_query: String,
@@ -231,6 +234,7 @@ impl App {
             status_message: "Welcome to OpenNOW".to_string(),
             error_message: None,
             games: Vec::new(),
+            game_sections: Vec::new(),
             search_query: String::new(),
             selected_game: None,
             stats_rx: None,
@@ -242,7 +246,7 @@ impl App {
             api_client: GfnApiClient::new(),
             subscription: None,
             library_games: Vec::new(),
-            current_tab: GamesTab::AllGames,
+            current_tab: GamesTab::Home,
             selected_game_popup: None,
             servers: Vec::new(),
             selected_server_index: 0,
@@ -277,6 +281,7 @@ impl App {
             UiAction::LaunchGame(index) => {
                 // Get game from appropriate list based on current tab
                 let game = match self.current_tab {
+                    GamesTab::Home => self.games.get(index).cloned(), // Use flat list for Home too
                     GamesTab::AllGames => self.games.get(index).cloned(),
                     GamesTab::MyLibrary => self.library_games.get(index).cloned(),
                 };
@@ -328,9 +333,47 @@ impl App {
                 if tab == GamesTab::MyLibrary && self.library_games.is_empty() {
                     self.fetch_library();
                 }
+                // Fetch sections if switching to Home and sections are empty
+                if tab == GamesTab::Home && self.game_sections.is_empty() {
+                    self.fetch_sections();
+                }
             }
             UiAction::OpenGamePopup(game) => {
-                self.selected_game_popup = Some(game);
+                self.selected_game_popup = Some(game.clone());
+                
+                // Spawn async task to fetch full details (Play Type, Membership, etc.) only if missing
+                // User reports library games already have this info, so avoid redundant 400-prone fetches
+                let mut needs_fetch = game.play_type.is_none();
+                
+                // If we have a description, we definitely don't need to fetch
+                if game.description.is_some() {
+                    needs_fetch = false;
+                }
+                
+                let token = self.auth_tokens.as_ref().map(|t| t.jwt().to_string());
+                let query_id = game.id.clone();
+                let runtime = self.runtime.clone();
+                
+                if needs_fetch {
+                    if let Some(token) = token {
+                        runtime.spawn(async move {
+                            let mut api_client = GfnApiClient::new();
+                            api_client.set_access_token(token);
+                            
+                            // Fetch details
+                            match api_client.fetch_app_details(&query_id).await {
+                                 Ok(Some(details)) => {
+                                     info!("Fetched details for popup: {}", details.title);
+                                     cache::save_popup_game_details(&details);
+                                 }
+                                 Ok(None) => warn!("No details found for popup game: {}", query_id),
+                                 Err(e) => warn!("Failed to fetch popup details: {}", e),
+                            }
+                        });
+                    }
+                } else {
+                    info!("Using existing details for popup: {}", game.title);
+                }
             }
             UiAction::CloseGamePopup => {
                 self.selected_game_popup = None;
@@ -513,6 +556,7 @@ impl App {
                     self.state = AppState::Games;
                     self.status_message = "Login successful!".to_string();
                     self.fetch_games();
+                    self.fetch_sections(); // Fetch sections for Home tab
                     self.fetch_subscription(); // Also fetch subscription info
                     self.load_servers(); // Load servers (fetches dynamic regions)
                     
@@ -550,6 +594,18 @@ impl App {
                     self.library_games = games;
                     self.is_loading = false;
                     self.status_message = format!("Your Library: {} games", self.library_games.len());
+                }
+            }
+        }
+
+        // Check if sections were fetched and saved to cache (Home tab)
+        if self.state == AppState::Games && self.current_tab == GamesTab::Home && self.game_sections.is_empty() {
+            if let Some(sections) = cache::load_sections_cache() {
+                if !sections.is_empty() {
+                    info!("Loaded {} sections from cache", sections.len());
+                    self.game_sections = sections;
+                    self.is_loading = false;
+                    self.status_message = format!("Loaded {} sections", self.game_sections.len());
                 }
             }
         }
@@ -676,6 +732,33 @@ impl App {
                 }
                 Err(e) => {
                     error!("Failed to fetch library: {}", e);
+                }
+            }
+        });
+    }
+
+    /// Fetch game sections for Home tab (Trending, Free to Play, etc.)
+    pub fn fetch_sections(&mut self) {
+        if self.auth_tokens.is_none() {
+            return;
+        }
+
+        self.is_loading = true;
+        self.status_message = "Loading sections...".to_string();
+
+        let token = self.auth_tokens.as_ref().unwrap().jwt().to_string();
+        let mut api_client = GfnApiClient::new();
+        api_client.set_access_token(token.clone());
+
+        let runtime = self.runtime.clone();
+        runtime.spawn(async move {
+            match api_client.fetch_sectioned_games(None).await {
+                Ok(sections) => {
+                    info!("Fetched {} sections from GraphQL", sections.len());
+                    cache::save_sections_cache(&sections);
+                }
+                Err(e) => {
+                    error!("Failed to fetch sections: {}", e);
                 }
             }
         });
@@ -1302,6 +1385,17 @@ impl App {
             self.error_message = Some(error);
             self.is_loading = false;
             cache::clear_session_error();
+        }
+        
+        // Check for popup game details updates
+        if let Some(detailed_game) = cache::load_popup_game_details() {
+            // Only update if we still have the popup open for the same game
+            if let Some(current_popup) = &self.selected_game_popup {
+                if current_popup.id == detailed_game.id {
+                    info!("Updating popup with detailed info for: {}", detailed_game.title);
+                    self.selected_game_popup = Some(detailed_game);
+                }
+            }
         }
     }
 

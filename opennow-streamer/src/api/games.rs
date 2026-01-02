@@ -3,11 +3,11 @@
 //! Fetch and search GFN game catalog using GraphQL.
 
 use anyhow::{Result, Context};
-use log::{info, debug, warn};
+use log::{info, debug, warn, error};
 use serde::Deserialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::app::GameInfo;
+use crate::app::{GameInfo, GameSection};
 use crate::auth;
 use super::GfnApiClient;
 
@@ -83,10 +83,8 @@ struct Panel {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PanelSection {
-    #[allow(dead_code)]
     #[serde(default)]
     id: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
@@ -107,6 +105,10 @@ enum PanelItem {
 struct AppData {
     id: String,
     title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    long_description: Option<String>,
     #[serde(default)]
     images: Option<AppImages>,
     #[serde(default)]
@@ -160,6 +162,19 @@ struct AppGfnStatus {
     playability_state: Option<String>,
     #[serde(default)]
     play_type: Option<String>,
+    #[serde(default)]
+    minimum_membership_tier_label: Option<String>,
+    #[serde(default)]
+    catalog_sku_strings: Option<CatalogSkuStrings>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+struct CatalogSkuStrings {
+    #[serde(default)]
+    sku_based_playability_text: Option<String>,
+    #[serde(default)]
+    sku_based_tag: Option<String>,
 }
 
 // ============================================
@@ -343,13 +358,18 @@ impl GfnApiClient {
             .unwrap_or(false);
 
         GameInfo {
-            id: if variant_id.is_empty() { app.id } else { variant_id },
+            id: if variant_id.is_empty() { app.id.clone() } else { variant_id },
             title: app.title,
             publisher: None,
             image_url,
             store,
             app_id,
             is_install_to_play,
+            play_type: app.gfn.as_ref().and_then(|g| g.play_type.clone()),
+            membership_tier_label: app.gfn.as_ref().and_then(|g| g.minimum_membership_tier_label.clone()),
+            playability_text: app.gfn.as_ref().and_then(|g| g.catalog_sku_strings.as_ref()).and_then(|s| s.sku_based_playability_text.clone()),
+            uuid: Some(app.id.clone()),
+            description: app.description.or(app.long_description),
         }
     }
 
@@ -385,6 +405,56 @@ impl GfnApiClient {
 
         info!("Fetched {} games from MAIN panel", games.len());
         Ok(games)
+    }
+
+    /// Fetch games organized by section (Home view)
+    /// Returns sections with titles like "Trending", "Free to Play", etc.
+    pub async fn fetch_sectioned_games(&self, vpc_id: Option<&str>) -> Result<Vec<GameSection>> {
+        // Use provided VPC ID or fetch dynamically from serverInfo
+        let vpc = match vpc_id {
+            Some(v) => v.to_string(),
+            None => {
+                let token = self.token().map(|s| s.as_str());
+                super::get_vpc_id(&self.client, token).await
+            }
+        };
+
+        info!("Fetching sectioned games from GraphQL (VPC: {})", vpc);
+
+        let panels = self.fetch_panels(&["MAIN"], &vpc).await?;
+
+        let mut sections: Vec<GameSection> = Vec::new();
+
+        for panel in panels {
+            info!("Panel '{}' has {} sections", panel.name, panel.sections.len());
+            for section in panel.sections {
+                let section_title = section.title.clone().unwrap_or_else(|| "Games".to_string());
+                debug!("Section '{}' has {} items", section_title, section.items.len());
+                
+                let games: Vec<GameInfo> = section.items
+                    .into_iter()
+                    .filter_map(|item| {
+                        if let PanelItem::GameItem { app } = item {
+                            Some(Self::app_to_game_info(app))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                
+                if !games.is_empty() {
+                    info!("Section '{}': {} games", section_title, games.len());
+                    sections.push(GameSection {
+                        id: section.id,
+                        title: section_title,
+                        games,
+                    });
+                }
+            }
+        }
+
+        info!("Fetched {} sections from MAIN panel", sections.len());
+        Ok(sections)
     }
 
     /// Fetch user's library (GraphQL)
@@ -490,6 +560,11 @@ impl GfnApiClient {
                     store,
                     app_id,
                     is_install_to_play: false,
+                    play_type: None,
+                    membership_tier_label: None,
+                    playability_text: None,
+                    uuid: None,
+                    description: None,
                 })
             })
             .collect();
@@ -539,12 +614,13 @@ impl GfnApiClient {
         );
 
         debug!("Fetching app details from: {}", url);
+        info!("Fetching app details for ID: {} (Variables: {})", app_id, variables_str);
 
         let response = self.client
             .get(&url)
             .header("User-Agent", GFN_USER_AGENT)
             .header("Accept", "application/json")
-            .header("Content-Type", "application/graphql") // Although it's GET, GFN native uses this
+            .header("Content-Type", "application/graphql") 
             .header("Authorization", format!("GFNJWT {}", token))
             .header("nv-client-id", LCARS_CLIENT_ID)
             .send()
@@ -552,7 +628,10 @@ impl GfnApiClient {
             .context("App details request failed")?;
 
         if !response.status().is_success() {
-             return Err(anyhow::anyhow!("App details failed: {}", response.status()));
+             let status = response.status();
+             let error_body = response.text().await.unwrap_or_else(|_| "Could not read error body".to_string());
+             error!("App details failed for {}: {} - Body: {}", app_id, status, error_body);
+             return Err(anyhow::anyhow!("App details failed: {} - {}", status, error_body));
         }
 
         let body = response.text().await?;
