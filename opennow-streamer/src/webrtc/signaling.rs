@@ -207,7 +207,7 @@ impl GfnSignaling {
             while let Some(msg_result) = read.next().await {
                 match msg_result {
                     Ok(Message::Text(text)) => {
-                        debug!("Received: {}", &text[..text.len().min(200)]);
+                        info!("Received: {}", &text[..text.len().min(1000)]);
 
                         if let Ok(msg) = serde_json::from_str::<SignalingMessage>(&text) {
                             // Send ACK for messages with ackid
@@ -333,7 +333,7 @@ impl GfnSignaling {
         });
 
         msg_tx.send(Message::Text(peer_msg.to_string())).await?;
-        debug!("Sent ICE candidate");
+        info!("Sent ICE candidate: {}", candidate);
         Ok(())
     }
 

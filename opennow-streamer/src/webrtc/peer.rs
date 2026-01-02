@@ -189,6 +189,7 @@ impl WebRtcPeer {
             Box::pin(async move {
                 if let Some(c) = candidate {
                     let candidate_str = c.to_json().map(|j| j.candidate).unwrap_or_default();
+                    info!("Gathered local ICE candidate: {}", candidate_str);
                     let sdp_mid = c.to_json().ok().and_then(|j| j.sdp_mid);
                     let sdp_mline_index = c.to_json().ok().and_then(|j| j.sdp_mline_index);
                     let _ = tx.send(WebRtcEvent::IceCandidate(

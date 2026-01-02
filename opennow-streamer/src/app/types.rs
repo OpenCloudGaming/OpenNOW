@@ -87,6 +87,8 @@ pub struct GameInfo {
     pub image_url: Option<String>,
     pub store: String,
     pub app_id: Option<i64>,
+    #[serde(default)]
+    pub is_install_to_play: bool,
 }
 
 /// Subscription information

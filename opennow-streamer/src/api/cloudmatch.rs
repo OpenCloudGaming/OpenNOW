@@ -31,6 +31,7 @@ impl GfnApiClient {
         game_title: &str,
         settings: &Settings,
         zone: &str,
+        account_linked: bool,
     ) -> Result<SessionInfo> {
         let token = self.token()
             .context("No access token")?;
@@ -95,7 +96,7 @@ impl GfnApiClient {
                 app_launch_mode: 1,
                 secure_rtsp_supported: false,
                 partner_custom_data: Some("".to_string()),
-                account_linked: true,
+                account_linked,
                 enable_persisting_in_game_settings: true,
                 user_age: 26,
                 requested_streaming_features: Some(StreamingFeatures {

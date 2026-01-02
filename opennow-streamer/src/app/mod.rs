@@ -1071,12 +1071,29 @@ impl App {
             .map(|s| s.id.clone())
             .unwrap_or_else(|| "eu-netherlands-south".to_string());
 
+        let is_install_to_play = game.is_install_to_play;
+
         let mut api_client = GfnApiClient::new();
         api_client.set_access_token(token);
 
         let runtime = self.runtime.clone();
         runtime.spawn(async move {
-            match api_client.create_session(&app_id, &game_title, &settings, &zone).await {
+            // Fetch latest app details to check for playType="INSTALL_TO_PLAY"
+            // This is critical for demos which require account_linked=false
+            let mut account_linked = !is_install_to_play;
+
+            match api_client.fetch_app_details(&app_id).await {
+                Ok(Some(details)) => {
+                    info!("Fetched fresh app details: is_install_to_play={}", details.is_install_to_play);
+                    account_linked = !details.is_install_to_play;
+                }
+                Ok(None) => warn!("App details not found, using cached info: is_install_to_play={}", is_install_to_play),
+                Err(e) => warn!("Failed to fetch app details ({}): {}", app_id, e),
+            }
+            
+            info!("Starting session for '{}' with account_linked: {}", game_title, account_linked);
+
+            match api_client.create_session(&app_id, &game_title, &settings, &zone, account_linked).await {
                 Ok(session) => {
                     info!("Session created: {} (state: {:?})", session.session_id, session.state);
                     cache::save_session_cache(&session);
@@ -1266,6 +1283,7 @@ impl App {
     /// Start streaming once session is ready
     pub fn start_streaming(&mut self, session: SessionInfo) {
         info!("Starting streaming to {}", session.server_ip);
+        info!("Session Info Debug: {:?}", session);
 
         self.session = Some(session.clone());
         self.state = AppState::Streaming;

@@ -17,6 +17,9 @@ const GRAPHQL_URL: &str = "https://games.geforce.com/graphql";
 /// Persisted query hash for panels (MAIN, LIBRARY, etc.)
 const PANELS_QUERY_HASH: &str = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
 
+/// Persisted query hash for app metadata
+const APP_METADATA_QUERY_HASH: &str = "39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7";
+
 /// GFN CEF User-Agent
 const GFN_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
 
@@ -40,6 +43,22 @@ const GFN_CLIENT_VERSION: &str = "2.0.80.173";
 struct GraphQLResponse {
     data: Option<PanelsData>,
     errors: Option<Vec<GraphQLError>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AppMetaDataResponse {
+    data: Option<AppsData>,
+    errors: Option<Vec<GraphQLError>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AppsData {
+    apps: ItemsData,
+}
+
+#[derive(Debug, Deserialize)]
+struct ItemsData {
+    items: Vec<AppData>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,6 +158,8 @@ struct VariantLibraryStatus {
 struct AppGfnStatus {
     #[serde(default)]
     playability_state: Option<String>,
+    #[serde(default)]
+    play_type: Option<String>,
 }
 
 // ============================================
@@ -315,6 +336,12 @@ impl GfnApiClient {
             .and_then(|i| i.game_box_art.as_ref().or(i.tv_banner.as_ref()).or(i.hero_image.as_ref()))
             .map(|url| optimize_image_url(url, 272));
 
+        // Check if playType is INSTALL_TO_PLAY
+        let is_install_to_play = app.gfn.as_ref()
+            .and_then(|g| g.play_type.as_deref())
+            .map(|t| t == "INSTALL_TO_PLAY")
+            .unwrap_or(false);
+
         GameInfo {
             id: if variant_id.is_empty() { app.id } else { variant_id },
             title: app.title,
@@ -322,6 +349,7 @@ impl GfnApiClient {
             image_url,
             store,
             app_id,
+            is_install_to_play,
         }
     }
 
@@ -461,6 +489,7 @@ impl GfnApiClient {
                     image_url,
                     store,
                     app_id,
+                    is_install_to_play: false,
                 })
             })
             .collect();
@@ -468,8 +497,7 @@ impl GfnApiClient {
         info!("Parsed {} games from public list", games.len());
         Ok(games)
     }
-
-    /// Search games by title
+        /// Search games by title
     pub fn search_games<'a>(games: &'a [GameInfo], query: &str) -> Vec<&'a GameInfo> {
         let query_lower = query.to_lowercase();
 
@@ -477,7 +505,71 @@ impl GfnApiClient {
             .filter(|g| g.title.to_lowercase().contains(&query_lower))
             .collect()
     }
+
+    /// Fetch full details for a specific app (including playType)
+    pub async fn fetch_app_details(&self, app_id: &str) -> Result<Option<GameInfo>> {
+        let token = self.token()
+            .context("No access token for app details")?;
+
+        // Get VPC ID
+        let vpc_id = super::get_vpc_id(&self.client, Some(token)).await;
+
+        let variables = serde_json::json!({
+            "vpcId": vpc_id,
+            "locale": DEFAULT_LOCALE,
+            "appIds": [app_id],
+        });
+
+        let extensions = serde_json::json!({
+            "persistedQuery": {
+                "sha256Hash": APP_METADATA_QUERY_HASH
+            }
+        });
+
+        let variables_str = serde_json::to_string(&variables)?;
+        let extensions_str = serde_json::to_string(&extensions)?;
+        let hu_id = generate_hu_id();
+
+        let url = format!(
+            "{}?requestType=appMetaData&extensions={}&huId={}&variables={}",
+            GRAPHQL_URL,
+            urlencoding::encode(&extensions_str),
+            urlencoding::encode(&hu_id),
+            urlencoding::encode(&variables_str)
+        );
+
+        debug!("Fetching app details from: {}", url);
+
+        let response = self.client
+            .get(&url)
+            .header("User-Agent", GFN_USER_AGENT)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/graphql") // Although it's GET, GFN native uses this
+            .header("Authorization", format!("GFNJWT {}", token))
+            .header("nv-client-id", LCARS_CLIENT_ID)
+            .send()
+            .await
+            .context("App details request failed")?;
+
+        if !response.status().is_success() {
+             return Err(anyhow::anyhow!("App details failed: {}", response.status()));
+        }
+
+        let body = response.text().await?;
+        let response_data: AppMetaDataResponse = serde_json::from_str(&body)
+            .context("Failed to parse app details")?;
+
+        if let Some(data) = response_data.data {
+             if let Some(app) = data.apps.items.into_iter().next() {
+                 return Ok(Some(Self::app_to_game_info(app)));
+             }
+        }
+
+        Ok(None)
+    }
 }
+
+
 
 /// Fetch server info to get VPC ID for current provider
 pub async fn fetch_server_info(access_token: Option<&str>) -> Result<ServerInfo> {
