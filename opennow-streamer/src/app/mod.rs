@@ -290,6 +290,7 @@ impl App {
                     SettingChange::Fullscreen(fs) => self.settings.fullscreen = fs,
                     SettingChange::VSync(vsync) => self.settings.vsync = vsync,
                     SettingChange::LowLatency(ll) => self.settings.low_latency_mode = ll,
+                    SettingChange::DecoderBackend(backend) => self.settings.decoder_backend = backend,
                 }
                 self.save_settings();
             }

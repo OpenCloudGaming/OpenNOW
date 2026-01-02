@@ -144,8 +144,32 @@ pub fn render_settings_modal(
                                     if ui.selectable_label(matches!(settings.codec, crate::app::VideoCodec::H265), "H.265").clicked() {
                                         actions.push(UiAction::UpdateSetting(SettingChange::Codec(crate::app::VideoCodec::H265)));
                                     }
-                                    if ui.selectable_label(matches!(settings.codec, crate::app::VideoCodec::AV1), "AV1").clicked() {
-                                        actions.push(UiAction::UpdateSetting(SettingChange::Codec(crate::app::VideoCodec::AV1)));
+                                    if crate::media::is_av1_hardware_supported() {
+                                        if ui.selectable_label(matches!(settings.codec, crate::app::VideoCodec::AV1), "AV1").clicked() {
+                                            actions.push(UiAction::UpdateSetting(SettingChange::Codec(crate::app::VideoCodec::AV1)));
+                                        }
+                                    }
+                                });
+                        });
+                    });
+
+                    ui.add_space(12.0);
+
+                    // Decoder selection
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Video Decoder")
+                                .size(14.0)
+                                .color(egui::Color32::LIGHT_GRAY)
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            egui::ComboBox::from_id_salt("decoder_combo")
+                                .selected_text(settings.decoder_backend.as_str())
+                                .show_ui(ui, |ui| {
+                                    for backend in crate::media::get_supported_decoder_backends() {
+                                        if ui.selectable_label(settings.decoder_backend == backend, backend.as_str()).clicked() {
+                                            actions.push(UiAction::UpdateSetting(SettingChange::DecoderBackend(backend)));
+                                        }
                                     }
                                 });
                         });

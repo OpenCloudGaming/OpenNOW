@@ -250,7 +250,7 @@ pub async fn run_streaming(
 
     // Video decoder - use async mode for non-blocking decode
     // Decoded frames are written directly to SharedFrame by the decoder thread
-    let (mut video_decoder, mut decode_stats_rx) = VideoDecoder::new_async(codec, shared_frame.clone())?;
+    let (mut video_decoder, mut decode_stats_rx) = VideoDecoder::new_async(codec, settings.decoder_backend, shared_frame.clone())?;
 
     // Create RTP depacketizer with correct codec
     let depacketizer_codec = match codec {
