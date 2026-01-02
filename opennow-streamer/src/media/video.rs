@@ -43,7 +43,7 @@ fn detect_gpu_vendor() -> GpuVendor {
     // blocked_on because we are in a sync context (VideoDecoder::new)
     // but wgpu adapter request is async
     pollster::block_on(async {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());  // Needs borrow
         
         // Enumerate all available adapters
         let adapters = instance.enumerate_adapters(wgpu::Backends::all());
@@ -99,7 +99,18 @@ fn detect_gpu_vendor() -> GpuVendor {
         } else {
             // Fallback to default request if enumeration fails
              warn!("Adapter enumeration yielded no results, trying default request");
-             let adapter = instance
+             // request_adapter returns impl Future<Output = Option<Adapter>> in 0.19/0.20, but compiler says Result?
+             // Checking wgpu 0.17+ it returns Option.
+             // Wait, the error says: expected `Result<Adapter, RequestAdapterError>`, found `Option<_>`
+             // NOTE: This implies the user is on wgpu v22+ or v23+ where it might return Result.
+             // Actually, usually request_adapter returns an Option.
+             // Let's re-read the error carefully:
+             // 110: if let Some(adapter) = adapter {
+             //      ^^^ this expression has type `std::result::Result<wgpu::Adapter, wgpu::RequestAdapterError>`
+             // So `adapter` is a `Result`.
+             // `request_adapter` returned a future that resolved to `Result`.
+             
+             let adapter_result = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
                     compatible_surface: None,
@@ -107,7 +118,8 @@ fn detect_gpu_vendor() -> GpuVendor {
                 })
                 .await;
 
-            if let Some(adapter) = adapter {
+            // Handle Result
+            if let Ok(adapter) = adapter_result {
                 let info = adapter.get_info();
                 let name = info.name.to_lowercase();
                 
