@@ -17,7 +17,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 use std::path::Path;
 
 use super::{VideoFrame, PixelFormat, ColorRange, ColorSpace};
-use crate::app::{VideoCodec, SharedFrame};
+use crate::app::{VideoCodec, SharedFrame, config::VideoDecoderBackend};
 
 extern crate ffmpeg_next as ffmpeg;
 
@@ -29,7 +29,7 @@ use ffmpeg::Packet;
 
 /// GPU Vendor for decoder optimization
 #[derive(Debug, PartialEq, Clone, Copy)]
-enum GpuVendor {
+pub enum GpuVendor {
     Nvidia,
     Intel,
     Amd,
@@ -39,7 +39,7 @@ enum GpuVendor {
 }
 
 /// Detect the primary GPU vendor using wgpu, prioritizing discrete GPUs
-fn detect_gpu_vendor() -> GpuVendor {
+pub fn detect_gpu_vendor() -> GpuVendor {
     // blocked_on because we are in a sync context (VideoDecoder::new)
     // but wgpu adapter request is async
     pollster::block_on(async {
@@ -289,6 +289,54 @@ pub fn is_av1_hardware_supported() -> bool {
     })
 }
 
+/// Get list of supported decoder backends for the current system
+pub fn get_supported_decoder_backends() -> Vec<VideoDecoderBackend> {
+    let mut backends = vec![VideoDecoderBackend::Auto];
+
+    // Always check what's actually available
+    #[cfg(target_os = "macos")]
+    {
+        backends.push(VideoDecoderBackend::VideoToolbox);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let gpu = detect_gpu_vendor();
+        let qsv = check_qsv_available();
+        
+        if gpu == GpuVendor::Nvidia {
+            backends.push(VideoDecoderBackend::Cuvid);
+        }
+        
+        if qsv || gpu == GpuVendor::Intel {
+            backends.push(VideoDecoderBackend::Qsv);
+        }
+        
+        // DXVA is generally available on Windows
+        backends.push(VideoDecoderBackend::Dxva);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let gpu = detect_gpu_vendor();
+        let qsv = check_qsv_available();
+        
+        if gpu == GpuVendor::Nvidia {
+            backends.push(VideoDecoderBackend::Cuvid);
+        }
+        
+        if qsv || gpu == GpuVendor::Intel {
+            backends.push(VideoDecoderBackend::Qsv);
+        }
+        
+        // VAAPI is generally available on Linux (AMD/Intel)
+        backends.push(VideoDecoderBackend::Vaapi);
+    }
+    
+    backends.push(VideoDecoderBackend::Software);
+    backends
+}
+
 /// Commands sent to the decoder thread
 enum DecoderCommand {
     /// Decode a packet and return result via channel (blocking mode)
@@ -327,7 +375,7 @@ pub struct VideoDecoder {
 
 impl VideoDecoder {
     /// Create a new video decoder with hardware acceleration
-    pub fn new(codec: VideoCodec) -> Result<Self> {
+    pub fn new(codec: VideoCodec, backend: VideoDecoderBackend) -> Result<Self> {
         // Initialize FFmpeg
         ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {:?}", e))?;
 
@@ -336,7 +384,7 @@ impl VideoDecoder {
             ffmpeg::ffi::av_log_set_level(ffmpeg::ffi::AV_LOG_ERROR as i32);
         }
 
-        info!("Creating FFmpeg video decoder for {:?}", codec);
+        info!("Creating FFmpeg video decoder for {:?} (backend: {:?})", codec, backend);
 
         // Find the decoder
         let decoder_id = match codec {
@@ -350,7 +398,7 @@ impl VideoDecoder {
         let (frame_tx, frame_rx) = mpsc::channel::<Option<VideoFrame>>();
 
         // Create decoder in a separate thread (FFmpeg types are not Send)
-        let hw_accel = Self::spawn_decoder_thread(decoder_id, cmd_rx, frame_tx, None, None)?;
+        let hw_accel = Self::spawn_decoder_thread(decoder_id, cmd_rx, frame_tx, None, None, backend)?;
 
         if hw_accel {
             info!("Using hardware-accelerated decoder");
@@ -370,7 +418,7 @@ impl VideoDecoder {
 
     /// Create a new video decoder configured for non-blocking async mode
     /// Decoded frames are written directly to the SharedFrame
-    pub fn new_async(codec: VideoCodec, shared_frame: Arc<SharedFrame>) -> Result<(Self, tokio_mpsc::Receiver<DecodeStats>)> {
+    pub fn new_async(codec: VideoCodec, backend: VideoDecoderBackend, shared_frame: Arc<SharedFrame>) -> Result<(Self, tokio_mpsc::Receiver<DecodeStats>)> {
         // Initialize FFmpeg
         ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {:?}", e))?;
 
@@ -379,7 +427,7 @@ impl VideoDecoder {
             ffmpeg::ffi::av_log_set_level(ffmpeg::ffi::AV_LOG_ERROR as i32);
         }
 
-        info!("Creating FFmpeg video decoder (async mode) for {:?}", codec);
+        info!("Creating FFmpeg video decoder (async mode) for {:?} (backend: {:?})", codec, backend);
 
         // Find the decoder
         let decoder_id = match codec {
@@ -402,6 +450,7 @@ impl VideoDecoder {
             frame_tx,
             Some(shared_frame.clone()),
             Some(stats_tx),
+            backend
         )?;
 
         if hw_accel {
@@ -429,10 +478,11 @@ impl VideoDecoder {
         frame_tx: mpsc::Sender<Option<VideoFrame>>,
         shared_frame: Option<Arc<SharedFrame>>,
         stats_tx: Option<tokio_mpsc::Sender<DecodeStats>>,
+        backend: VideoDecoderBackend,
     ) -> Result<bool> {
         // Create decoder synchronously to report hw_accel status
         info!("Creating decoder for codec {:?}...", codec_id);
-        let (decoder, hw_accel) = Self::create_decoder(codec_id)?;
+        let (decoder, hw_accel) = Self::create_decoder(codec_id, backend)?;
         info!("Decoder created, hw_accel={}", hw_accel);
 
         // Spawn thread to handle decoding
@@ -541,221 +591,229 @@ impl VideoDecoder {
         Ok(hw_accel)
     }
 
-    /// Create decoder, trying hardware acceleration first
-    fn create_decoder(codec_id: ffmpeg::codec::Id) -> Result<(decoder::Video, bool)> {
+    /// Create decoder, trying hardware acceleration based on preference
+    fn create_decoder(codec_id: ffmpeg::codec::Id, backend: VideoDecoderBackend) -> Result<(decoder::Video, bool)> {
+        info!("create_decoder: {:?} with backend preference {:?}", codec_id, backend);
+
         // On macOS, try VideoToolbox hardware acceleration
         #[cfg(target_os = "macos")]
         {
-            info!("macOS detected - attempting VideoToolbox hardware acceleration");
+            if backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::VideoToolbox {
+                info!("macOS detected - attempting VideoToolbox hardware acceleration");
 
-            // Try to set up VideoToolbox hwaccel using FFmpeg's device API
-            unsafe {
-                use ffmpeg::ffi::*;
-                use std::ptr;
+                // Try to set up VideoToolbox hwaccel using FFmpeg's device API
+                unsafe {
+                    use ffmpeg::ffi::*;
+                    use std::ptr;
 
-                // Find the standard decoder
-                let codec = ffmpeg::codec::decoder::find(codec_id)
-                    .ok_or_else(|| anyhow!("Decoder not found for {:?}", codec_id))?;
+                    // Find the standard decoder
+                    let codec = ffmpeg::codec::decoder::find(codec_id)
+                        .ok_or_else(|| anyhow!("Decoder not found for {:?}", codec_id))?;
 
-                let mut ctx = CodecContext::new_with_codec(codec);
+                    let mut ctx = CodecContext::new_with_codec(codec);
 
-                // Get raw pointer to AVCodecContext
-                let raw_ctx = ctx.as_mut_ptr();
+                    // Get raw pointer to AVCodecContext
+                    let raw_ctx = ctx.as_mut_ptr();
 
-                // Create VideoToolbox hardware device context
-                let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
-                let ret = av_hwdevice_ctx_create(
-                    &mut hw_device_ctx,
-                    AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-                    ptr::null(),
-                    ptr::null_mut(),
-                    0,
-                );
+                    // Create VideoToolbox hardware device context
+                    let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
+                    let ret = av_hwdevice_ctx_create(
+                        &mut hw_device_ctx,
+                        AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                        ptr::null(),
+                        ptr::null_mut(),
+                        0,
+                    );
 
-                if ret >= 0 && !hw_device_ctx.is_null() {
-                    // Attach hardware device context to codec context
-                    (*raw_ctx).hw_device_ctx = av_buffer_ref(hw_device_ctx);
+                    if ret >= 0 && !hw_device_ctx.is_null() {
+                        // Attach hardware device context to codec context
+                        (*raw_ctx).hw_device_ctx = av_buffer_ref(hw_device_ctx);
 
-                    // Enable multi-threading
-                    (*raw_ctx).thread_count = 4;
+                        // Enable multi-threading
+                        (*raw_ctx).thread_count = 4;
 
-                    match ctx.decoder().video() {
-                        Ok(decoder) => {
-                            info!("VideoToolbox hardware decoder created successfully");
-                            // Don't free hw_device_ctx - it's now owned by the codec context
-                            return Ok((decoder, true));
+                        match ctx.decoder().video() {
+                            Ok(decoder) => {
+                                info!("VideoToolbox hardware decoder created successfully");
+                                // Don't free hw_device_ctx - it's now owned by the codec context
+                                return Ok((decoder, true));
+                            }
+                            Err(e) => {
+                                warn!("Failed to open VideoToolbox decoder: {:?}", e);
+                                av_buffer_unref(&mut hw_device_ctx);
+                            }
                         }
-                        Err(e) => {
-                            warn!("Failed to open VideoToolbox decoder: {:?}", e);
-                            av_buffer_unref(&mut hw_device_ctx);
-                        }
+                    } else {
+                        warn!("Failed to create VideoToolbox device context (error {})", ret);
                     }
-                } else {
-                    warn!("Failed to create VideoToolbox device context (error {})", ret);
                 }
+            } else {
+                info!("VideoToolbox disabled by preference: {:?}", backend);
             }
-
-            // Fall back to software decoder on macOS
-            info!("Falling back to software decoder on macOS");
-            let codec = ffmpeg::codec::decoder::find(codec_id)
-                .ok_or_else(|| anyhow!("Decoder not found for {:?}", codec_id))?;
-
-            let mut ctx = CodecContext::new_with_codec(codec);
-            ctx.set_threading(ffmpeg::codec::threading::Config::count(4));
-
-            let decoder = ctx.decoder().video()?;
-            return Ok((decoder, false));
         }
 
-        // Check if Intel QSV runtime is available (cached, only checks once)
-        #[cfg(not(target_os = "macos"))]
-        let qsv_available = check_qsv_available();
-
-        // Detect GPU vendor to prioritize correct decoder
-        #[cfg(not(target_os = "macos"))]
-        let gpu_vendor = detect_gpu_vendor();
-
-        // Try hardware decoders in order of preference
-        // Platform-specific hardware decoders:
-        // - Windows: CUVID (NVIDIA), QSV (Intel), D3D11VA, DXVA2
-        // - Linux: CUVID, VAAPI, QSV
-        #[cfg(not(target_os = "macos"))]
-        let hw_decoder_names: Vec<&str> = match codec_id {
-            ffmpeg::codec::Id::H264 => {
-                #[cfg(target_os = "windows")]
-                {
-                    // Default priority: D3D11 (safe/modern)
-                    let mut decoders = Vec::new();
-                    
-                    // Prioritize based on vendor
-                    match gpu_vendor {
-                        GpuVendor::Nvidia => decoders.push("h264_cuvid"),
-                        GpuVendor::Intel if qsv_available => decoders.push("h264_qsv"),
-                        _ => {}
-                    }
-
-                    // Add standard APIs
-                    decoders.push("h264_d3d11va");
-                    
-                    // Add remaining helpers as fallback
-                    if gpu_vendor != GpuVendor::Nvidia { decoders.push("h264_cuvid"); } // Try CUDA anyway just in case
-                    if gpu_vendor != GpuVendor::Intel && qsv_available { decoders.push("h264_qsv"); }
-                    
-                    decoders.push("h264_dxva2");
-                    decoders
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    let mut decoders = Vec::new();
-                     match gpu_vendor {
-                        GpuVendor::Nvidia => decoders.push("h264_cuvid"),
-                        GpuVendor::Intel if qsv_available => decoders.push("h264_qsv"),
-                        GpuVendor::Amd => decoders.push("h264_vaapi"),
-                        _ => {}
-                    }
-                    
-                    // Fallbacks
-                    if !decoders.contains(&"h264_cuvid") { decoders.push("h264_cuvid"); }
-                    if !decoders.contains(&"h264_vaapi") { decoders.push("h264_vaapi"); }
-                    if !decoders.contains(&"h264_qsv") && qsv_available { decoders.push("h264_qsv"); }
-                    
-                    decoders
-                }
-            }
-            ffmpeg::codec::Id::HEVC => {
-                #[cfg(target_os = "windows")]
-                {
-                    let mut decoders = Vec::new();
-                    match gpu_vendor {
-                        GpuVendor::Nvidia => decoders.push("hevc_cuvid"),
-                        GpuVendor::Intel if qsv_available => decoders.push("hevc_qsv"),
-                        _ => {}
-                    }
-                    decoders.push("hevc_d3d11va");
-                    
-                    if gpu_vendor != GpuVendor::Nvidia { decoders.push("hevc_cuvid"); }
-                    if gpu_vendor != GpuVendor::Intel && qsv_available { decoders.push("hevc_qsv"); }
-                    
-                    decoders.push("hevc_dxva2");
-                    decoders
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    let mut decoders = Vec::new();
-                    match gpu_vendor {
-                        GpuVendor::Nvidia => decoders.push("hevc_cuvid"),
-                        GpuVendor::Intel if qsv_available => decoders.push("hevc_qsv"),
-                        GpuVendor::Amd => decoders.push("hevc_vaapi"),
-                        _ => {}
-                    }
-                    
-                    if !decoders.contains(&"hevc_cuvid") { decoders.push("hevc_cuvid"); }
-                    if !decoders.contains(&"hevc_vaapi") { decoders.push("hevc_vaapi"); }
-                    if !decoders.contains(&"hevc_qsv") && qsv_available { decoders.push("hevc_qsv"); }
-                    
-                    decoders
-                }
-            }
-            ffmpeg::codec::Id::AV1 => {
-                #[cfg(target_os = "windows")]
-                {
-                    let mut decoders = Vec::new();
-                    match gpu_vendor {
-                        GpuVendor::Nvidia => decoders.push("av1_cuvid"),
-                        GpuVendor::Intel if qsv_available => decoders.push("av1_qsv"),
-                        _ => {}
-                    }
-                    // AV1 D3D11 is often "av1_d3d11va" or managed automatically, but FFmpeg naming varies. 
-                    // Usually av1_cuvid / av1_qsv are the explicit ones.
-                    
-                    if gpu_vendor != GpuVendor::Nvidia { decoders.push("av1_cuvid"); }
-                    if gpu_vendor != GpuVendor::Intel && qsv_available { decoders.push("av1_qsv"); }
-                    
-                    decoders
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    let mut decoders = Vec::new();
-                    match gpu_vendor {
-                        GpuVendor::Nvidia => decoders.push("av1_cuvid"),
-                        GpuVendor::Intel if qsv_available => decoders.push("av1_qsv"),
-                        GpuVendor::Amd => decoders.push("av1_vaapi"),
-                        _ => {}
-                    }
-                    
-                     if !decoders.contains(&"av1_cuvid") { decoders.push("av1_cuvid"); }
-                     if !decoders.contains(&"av1_vaapi") { decoders.push("av1_vaapi"); }
-                     if !decoders.contains(&"av1_qsv") && qsv_available { decoders.push("av1_qsv"); }
-                     
-                    decoders
-                }
-            }
-            _ => vec![],
-        };
-
-        // Try hardware decoders (Windows/Linux)
+        // Platform-specific hardware decoders (Windows/Linux)
         #[cfg(not(target_os = "macos"))]
         {
-            info!("Attempting hardware decoders for {:?}: {:?}", codec_id, hw_decoder_names);
-            for hw_name in &hw_decoder_names {
-                if let Some(hw_codec) = ffmpeg::codec::decoder::find_by_name(hw_name) {
-                    info!("Found hardware decoder: {}, attempting to open...", hw_name);
-                    // new_with_codec returns Context directly, not Result
-                    let mut ctx = CodecContext::new_with_codec(hw_codec);
-                    ctx.set_threading(ffmpeg::codec::threading::Config::count(4));
+            let hw_decoder_names: Vec<&str> = if backend == VideoDecoderBackend::Software {
+                info!("Hardware acceleration disabled by preference (Software selected)");
+                vec![]
+            } else if backend != VideoDecoderBackend::Auto {
+                // Explicit backend selection
+                match (backend, codec_id) {
+                    (VideoDecoderBackend::Cuvid, ffmpeg::codec::Id::H264) => vec!["h264_cuvid"],
+                    (VideoDecoderBackend::Cuvid, ffmpeg::codec::Id::HEVC) => vec!["hevc_cuvid"],
+                    (VideoDecoderBackend::Cuvid, ffmpeg::codec::Id::AV1) => vec!["av1_cuvid"],
 
-                    match ctx.decoder().video() {
-                        Ok(dec) => {
-                            info!("Successfully created hardware decoder: {}", hw_name);
-                            return Ok((dec, true));
-                        }
-                        Err(e) => {
-                            warn!("Failed to open hardware decoder {}: {:?}", hw_name, e);
-                        }
+                    (VideoDecoderBackend::Qsv, ffmpeg::codec::Id::H264) => vec!["h264_qsv"],
+                    (VideoDecoderBackend::Qsv, ffmpeg::codec::Id::HEVC) => vec!["hevc_qsv"],
+                    (VideoDecoderBackend::Qsv, ffmpeg::codec::Id::AV1) => vec!["av1_qsv"],
+
+                    (VideoDecoderBackend::Vaapi, ffmpeg::codec::Id::H264) => vec!["h264_vaapi"],
+                    (VideoDecoderBackend::Vaapi, ffmpeg::codec::Id::HEVC) => vec!["hevc_vaapi"],
+                    (VideoDecoderBackend::Vaapi, ffmpeg::codec::Id::AV1) => vec!["av1_vaapi"],
+
+                    (VideoDecoderBackend::Dxva, ffmpeg::codec::Id::H264) => vec!["h264_d3d11va", "h264_dxva2"],
+                    (VideoDecoderBackend::Dxva, ffmpeg::codec::Id::HEVC) => vec!["hevc_d3d11va", "hevc_dxva2"],
+                    (VideoDecoderBackend::Dxva, ffmpeg::codec::Id::AV1) => vec!["av1_d3d11va", "av1_dxva2"],
+
+                    _ => {
+                        warn!("No decoder found for backend {:?} and codec {:?}", backend, codec_id);
+                        vec![]
                     }
-                } else {
-                    debug!("Hardware decoder not found: {}", hw_name);
                 }
+            } else {
+                // Auto detection logic
+                let qsv_available = check_qsv_available();
+                let gpu_vendor = detect_gpu_vendor();
+                
+                match codec_id {
+                    ffmpeg::codec::Id::H264 => {
+                        #[cfg(target_os = "windows")]
+                        {
+                            let mut decoders = Vec::new();
+                            match gpu_vendor {
+                                GpuVendor::Nvidia => decoders.push("h264_cuvid"),
+                                GpuVendor::Intel if qsv_available => decoders.push("h264_qsv"),
+                                _ => {}
+                            }
+                            decoders.push("h264_d3d11va"); // Standard API
+                            // Fallback
+                            if gpu_vendor != GpuVendor::Nvidia { decoders.push("h264_cuvid"); }
+                            if gpu_vendor != GpuVendor::Intel && qsv_available { decoders.push("h264_qsv"); }
+                            decoders.push("h264_dxva2");
+                            decoders
+                        }
+                        #[cfg(target_os = "linux")]
+                        {
+                            let mut decoders = Vec::new();
+                             match gpu_vendor {
+                                GpuVendor::Nvidia => decoders.push("h264_cuvid"),
+                                GpuVendor::Intel if qsv_available => decoders.push("h264_qsv"),
+                                GpuVendor::Amd => decoders.push("h264_vaapi"),
+                                _ => {}
+                            }
+                            if !decoders.contains(&"h264_cuvid") { decoders.push("h264_cuvid"); }
+                            if !decoders.contains(&"h264_vaapi") { decoders.push("h264_vaapi"); }
+                            if !decoders.contains(&"h264_qsv") && qsv_available { decoders.push("h264_qsv"); }
+                            decoders
+                        }
+                        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+                        vec![]
+                    }
+                    ffmpeg::codec::Id::HEVC => {
+                        #[cfg(target_os = "windows")]
+                        {
+                            let mut decoders = Vec::new();
+                            match gpu_vendor {
+                                GpuVendor::Nvidia => decoders.push("hevc_cuvid"),
+                                GpuVendor::Intel if qsv_available => decoders.push("hevc_qsv"),
+                                _ => {}
+                            }
+                            decoders.push("hevc_d3d11va");
+                            if gpu_vendor != GpuVendor::Nvidia { decoders.push("hevc_cuvid"); }
+                            if gpu_vendor != GpuVendor::Intel && qsv_available { decoders.push("hevc_qsv"); }
+                            decoders.push("hevc_dxva2");
+                            decoders
+                        }
+                        #[cfg(target_os = "linux")]
+                        {
+                            let mut decoders = Vec::new();
+                            match gpu_vendor {
+                                GpuVendor::Nvidia => decoders.push("hevc_cuvid"),
+                                GpuVendor::Intel if qsv_available => decoders.push("hevc_qsv"),
+                                GpuVendor::Amd => decoders.push("hevc_vaapi"),
+                                _ => {}
+                            }
+                            if !decoders.contains(&"hevc_cuvid") { decoders.push("hevc_cuvid"); }
+                            if !decoders.contains(&"hevc_vaapi") { decoders.push("hevc_vaapi"); }
+                            if !decoders.contains(&"hevc_qsv") && qsv_available { decoders.push("hevc_qsv"); }
+                            decoders
+                        }
+                        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+                        vec![]
+                    }
+                    ffmpeg::codec::Id::AV1 => {
+                        #[cfg(target_os = "windows")]
+                        {
+                            let mut decoders = Vec::new();
+                            match gpu_vendor {
+                                GpuVendor::Nvidia => decoders.push("av1_cuvid"),
+                                GpuVendor::Intel if qsv_available => decoders.push("av1_qsv"),
+                                _ => {}
+                            }
+                            if gpu_vendor != GpuVendor::Nvidia { decoders.push("av1_cuvid"); }
+                            if gpu_vendor != GpuVendor::Intel && qsv_available { decoders.push("av1_qsv"); }
+                            decoders
+                        }
+                        #[cfg(target_os = "linux")]
+                        {
+                            let mut decoders = Vec::new();
+                            match gpu_vendor {
+                                GpuVendor::Nvidia => decoders.push("av1_cuvid"),
+                                GpuVendor::Intel if qsv_available => decoders.push("av1_qsv"),
+                                GpuVendor::Amd => decoders.push("av1_vaapi"),
+                                _ => {}
+                            }
+                             if !decoders.contains(&"av1_cuvid") { decoders.push("av1_cuvid"); }
+                             if !decoders.contains(&"av1_vaapi") { decoders.push("av1_vaapi"); }
+                             if !decoders.contains(&"av1_qsv") && qsv_available { decoders.push("av1_qsv"); }
+                            decoders
+                        }
+                        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+                        vec![]
+                    }
+                    _ => vec![],
+                }
+            };
+
+            if !hw_decoder_names.is_empty() {
+                info!("Attempting hardware decoders for {:?}: {:?}", codec_id, hw_decoder_names);
+                for hw_name in &hw_decoder_names {
+                    if let Some(hw_codec) = ffmpeg::codec::decoder::find_by_name(hw_name) {
+                        info!("Found hardware decoder: {}, attempting to open...", hw_name);
+                        let mut ctx = CodecContext::new_with_codec(hw_codec);
+                        ctx.set_threading(ffmpeg::codec::threading::Config::count(4));
+
+                        match ctx.decoder().video() {
+                            Ok(dec) => {
+                                info!("Successfully created hardware decoder: {}", hw_name);
+                                return Ok((dec, true));
+                            }
+                            Err(e) => {
+                                warn!("Failed to open hardware decoder {}: {:?}", hw_name, e);
+                            }
+                        }
+                    } else {
+                        debug!("Hardware decoder not found: {}", hw_name);
+                    }
+                }
+                
+                if backend != VideoDecoderBackend::Auto {
+                     warn!("Explicitly selected backend {:?} failed to initialize. Falling back to software.", backend);
+                }
+            } else if backend != VideoDecoderBackend::Software && backend != VideoDecoderBackend::Auto {
+                 warn!("No decoder mapped for explicit backend {:?} with codec {:?}", backend, codec_id);
             }
         }
 

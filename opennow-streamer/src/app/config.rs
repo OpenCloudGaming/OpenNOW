@@ -26,6 +26,9 @@ pub struct Settings {
     /// Maximum bitrate in Mbps (200 = unlimited)
     pub max_bitrate_mbps: u32,
 
+    /// Preferred video decoder backend
+    pub decoder_backend: VideoDecoderBackend,
+
     // === Audio Settings ===
     /// Audio codec
     pub audio_codec: AudioCodec,
@@ -89,6 +92,7 @@ impl Default for Settings {
             fps: 60,
             codec: VideoCodec::H264,
             max_bitrate_mbps: 150,
+            decoder_backend: VideoDecoderBackend::Auto,
 
             // Audio
             audio_codec: AudioCodec::Opus,
@@ -273,6 +277,53 @@ pub enum VideoCodec {
     H265,
     /// AV1 - newest, best quality (requires RTX 40+)
     AV1,
+}
+
+/// Video decoder backend preference
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoDecoderBackend {
+    /// Auto-detect best decoder
+    #[default]
+    Auto,
+    /// NVIDIA CUDA/CUVID
+    Cuvid,
+    /// Intel QuickSync
+    Qsv,
+    /// AMD VA-API
+    Vaapi,
+    /// DirectX 11/12 (Windows)
+    Dxva,
+    /// VideoToolbox (macOS)
+    VideoToolbox,
+    /// Software decoding (CPU)
+    Software,
+}
+
+impl VideoDecoderBackend {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            VideoDecoderBackend::Auto => "Auto",
+            VideoDecoderBackend::Cuvid => "NVIDIA (CUDA)",
+            VideoDecoderBackend::Qsv => "Intel (QuickSync)",
+            VideoDecoderBackend::Vaapi => "AMD (VA-API)",
+            VideoDecoderBackend::Dxva => "DirectX (DXVA)",
+            VideoDecoderBackend::VideoToolbox => "VideoToolbox",
+            VideoDecoderBackend::Software => "Software (CPU)",
+        }
+    }
+
+    pub fn all() -> &'static [VideoDecoderBackend] {
+        &[
+            VideoDecoderBackend::Auto,
+            VideoDecoderBackend::Cuvid,
+            VideoDecoderBackend::Qsv,
+            VideoDecoderBackend::Vaapi,
+            VideoDecoderBackend::Dxva,
+            VideoDecoderBackend::VideoToolbox,
+            VideoDecoderBackend::Software,
+        ]
+    }
 }
 
 impl VideoCodec {

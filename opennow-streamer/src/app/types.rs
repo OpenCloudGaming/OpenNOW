@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use parking_lot::Mutex;
 
 use crate::media::VideoFrame;
-use super::config::VideoCodec;
+use super::config::{VideoCodec, VideoDecoderBackend};
 
 /// Shared frame holder for zero-latency frame delivery
 /// Decoder writes latest frame, renderer reads it - no buffering
@@ -190,6 +190,7 @@ pub enum SettingChange {
     Fullscreen(bool),
     VSync(bool),
     LowLatency(bool),
+    DecoderBackend(VideoDecoderBackend),
 }
 
 /// Application state enum
