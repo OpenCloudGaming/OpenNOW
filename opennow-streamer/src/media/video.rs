@@ -27,6 +27,102 @@ use ffmpeg::software::scaling::{context::Context as ScalerContext, flag::Flags a
 use ffmpeg::util::frame::video::Video as FfmpegFrame;
 use ffmpeg::Packet;
 
+/// GPU Vendor for decoder optimization
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum GpuVendor {
+    Nvidia,
+    Intel,
+    Amd,
+    Apple,
+    Other,
+    Unknown,
+}
+
+/// Detect the primary GPU vendor using wgpu, prioritizing discrete GPUs
+fn detect_gpu_vendor() -> GpuVendor {
+    // blocked_on because we are in a sync context (VideoDecoder::new)
+    // but wgpu adapter request is async
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        
+        // Enumerate all available adapters
+        let adapters = instance.enumerate_adapters(wgpu::Backends::all());
+        
+        let mut best_score = -1;
+        let mut best_vendor = GpuVendor::Unknown;
+        
+        info!("Available GPU adapters:");
+        
+        for adapter in adapters {
+            let info = adapter.get_info();
+            let name = info.name.to_lowercase();
+            let mut score = 0;
+            let mut vendor = GpuVendor::Other;
+            
+            // Identify vendor
+            if name.contains("nvidia") || name.contains("geforce") || name.contains("quadro") {
+                vendor = GpuVendor::Nvidia;
+                score += 100;
+            } else if name.contains("amd") || name.contains("adeon") || name.contains("ryzen") {
+                vendor = GpuVendor::Amd;
+                score += 80;
+            } else if name.contains("intel") || name.contains("uhd") || name.contains("iris") || name.contains("arc") {
+                vendor = GpuVendor::Intel;
+                score += 50;
+            } else if name.contains("apple") || name.contains("m1") || name.contains("m2") || name.contains("m3") {
+                vendor = GpuVendor::Apple;
+                score += 90; // Apple Silicon is high perf
+            }
+            
+            // Prioritize discrete GPUs
+            match info.device_type {
+                wgpu::DeviceType::DiscreteGpu => {
+                    score += 50;
+                }
+                wgpu::DeviceType::IntegratedGpu => {
+                    score += 10;
+                }
+                _ => {}
+            }
+            
+            info!("  - {} ({:?}, Vendor: {:?}, Score: {})", info.name, info.device_type, vendor, score);
+            
+            if score > best_score {
+                best_score = score;
+                best_vendor = vendor;
+            }
+        }
+        
+        if best_vendor != GpuVendor::Unknown {
+            info!("Selected best GPU vendor: {:?}", best_vendor);
+            best_vendor
+        } else {
+            // Fallback to default request if enumeration fails
+             warn!("Adapter enumeration yielded no results, trying default request");
+             let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: None,
+                    force_fallback_adapter: false,
+                })
+                .await;
+
+            if let Some(adapter) = adapter {
+                let info = adapter.get_info();
+                let name = info.name.to_lowercase();
+                
+                 if name.contains("nvidia") { GpuVendor::Nvidia }
+                 else if name.contains("intel") { GpuVendor::Intel }
+                 else if name.contains("amd") { GpuVendor::Amd }
+                 else if name.contains("apple") { GpuVendor::Apple }
+                 else { GpuVendor::Other }
+            } else {
+                GpuVendor::Unknown
+            }
+        }
+    })
+}
+
 /// Check if Intel QSV runtime is available on the system
 /// Returns true if the required DLLs are found
 #[cfg(target_os = "windows")]
@@ -94,6 +190,11 @@ fn is_qsv_runtime_available() -> bool {
 fn is_qsv_runtime_available() -> bool {
     // On Linux, check for libmfx.so or libvpl.so
     use std::process::Command;
+
+    // QSV is only supported on Intel architectures
+    if !cfg!(target_arch = "x86") && !cfg!(target_arch = "x86_64") {
+        return false;
+    }
 
     if let Ok(output) = Command::new("ldconfig").arg("-p").output() {
         let libs = String::from_utf8_lossy(&output.stdout);
@@ -498,6 +599,10 @@ impl VideoDecoder {
         #[cfg(not(target_os = "macos"))]
         let qsv_available = check_qsv_available();
 
+        // Detect GPU vendor to prioritize correct decoder
+        #[cfg(not(target_os = "macos"))]
+        let gpu_vendor = detect_gpu_vendor();
+
         // Try hardware decoders in order of preference
         // Platform-specific hardware decoders:
         // - Windows: CUVID (NVIDIA), QSV (Intel), D3D11VA, DXVA2
@@ -507,58 +612,109 @@ impl VideoDecoder {
             ffmpeg::codec::Id::H264 => {
                 #[cfg(target_os = "windows")]
                 {
-                    let mut decoders = vec!["h264_cuvid"]; // NVIDIA first
-                    if qsv_available {
-                        decoders.push("h264_qsv"); // Intel QSV (only if runtime detected)
+                    // Default priority: D3D11 (safe/modern)
+                    let mut decoders = Vec::new();
+                    
+                    // Prioritize based on vendor
+                    match gpu_vendor {
+                        GpuVendor::Nvidia => decoders.push("h264_cuvid"),
+                        GpuVendor::Intel if qsv_available => decoders.push("h264_qsv"),
+                        _ => {}
                     }
-                    decoders.push("h264_d3d11va"); // Windows D3D11 (AMD/Intel/NVIDIA)
-                    decoders.push("h264_dxva2");   // Windows DXVA2 (older API)
+
+                    // Add standard APIs
+                    decoders.push("h264_d3d11va");
+                    
+                    // Add remaining helpers as fallback
+                    if gpu_vendor != GpuVendor::Nvidia { decoders.push("h264_cuvid"); } // Try CUDA anyway just in case
+                    if gpu_vendor != GpuVendor::Intel && qsv_available { decoders.push("h264_qsv"); }
+                    
+                    decoders.push("h264_dxva2");
                     decoders
                 }
                 #[cfg(target_os = "linux")]
                 {
-                    let mut decoders = vec!["h264_cuvid", "h264_vaapi"];
-                    if qsv_available {
-                        decoders.push("h264_qsv");
+                    let mut decoders = Vec::new();
+                     match gpu_vendor {
+                        GpuVendor::Nvidia => decoders.push("h264_cuvid"),
+                        GpuVendor::Intel if qsv_available => decoders.push("h264_qsv"),
+                        GpuVendor::Amd => decoders.push("h264_vaapi"),
+                        _ => {}
                     }
+                    
+                    // Fallbacks
+                    if !decoders.contains(&"h264_cuvid") { decoders.push("h264_cuvid"); }
+                    if !decoders.contains(&"h264_vaapi") { decoders.push("h264_vaapi"); }
+                    if !decoders.contains(&"h264_qsv") && qsv_available { decoders.push("h264_qsv"); }
+                    
                     decoders
                 }
             }
             ffmpeg::codec::Id::HEVC => {
                 #[cfg(target_os = "windows")]
                 {
-                    let mut decoders = vec!["hevc_cuvid"];
-                    if qsv_available {
-                        decoders.push("hevc_qsv");
+                    let mut decoders = Vec::new();
+                    match gpu_vendor {
+                        GpuVendor::Nvidia => decoders.push("hevc_cuvid"),
+                        GpuVendor::Intel if qsv_available => decoders.push("hevc_qsv"),
+                        _ => {}
                     }
                     decoders.push("hevc_d3d11va");
+                    
+                    if gpu_vendor != GpuVendor::Nvidia { decoders.push("hevc_cuvid"); }
+                    if gpu_vendor != GpuVendor::Intel && qsv_available { decoders.push("hevc_qsv"); }
+                    
                     decoders.push("hevc_dxva2");
                     decoders
                 }
                 #[cfg(target_os = "linux")]
                 {
-                    let mut decoders = vec!["hevc_cuvid", "hevc_vaapi"];
-                    if qsv_available {
-                        decoders.push("hevc_qsv");
+                    let mut decoders = Vec::new();
+                    match gpu_vendor {
+                        GpuVendor::Nvidia => decoders.push("hevc_cuvid"),
+                        GpuVendor::Intel if qsv_available => decoders.push("hevc_qsv"),
+                        GpuVendor::Amd => decoders.push("hevc_vaapi"),
+                        _ => {}
                     }
+                    
+                    if !decoders.contains(&"hevc_cuvid") { decoders.push("hevc_cuvid"); }
+                    if !decoders.contains(&"hevc_vaapi") { decoders.push("hevc_vaapi"); }
+                    if !decoders.contains(&"hevc_qsv") && qsv_available { decoders.push("hevc_qsv"); }
+                    
                     decoders
                 }
             }
             ffmpeg::codec::Id::AV1 => {
                 #[cfg(target_os = "windows")]
                 {
-                    let mut decoders = vec!["av1_cuvid"];
-                    if qsv_available {
-                        decoders.push("av1_qsv");
+                    let mut decoders = Vec::new();
+                    match gpu_vendor {
+                        GpuVendor::Nvidia => decoders.push("av1_cuvid"),
+                        GpuVendor::Intel if qsv_available => decoders.push("av1_qsv"),
+                        _ => {}
                     }
+                    // AV1 D3D11 is often "av1_d3d11va" or managed automatically, but FFmpeg naming varies. 
+                    // Usually av1_cuvid / av1_qsv are the explicit ones.
+                    
+                    if gpu_vendor != GpuVendor::Nvidia { decoders.push("av1_cuvid"); }
+                    if gpu_vendor != GpuVendor::Intel && qsv_available { decoders.push("av1_qsv"); }
+                    
                     decoders
                 }
                 #[cfg(target_os = "linux")]
                 {
-                    let mut decoders = vec!["av1_cuvid", "av1_vaapi"];
-                    if qsv_available {
-                        decoders.push("av1_qsv");
+                    let mut decoders = Vec::new();
+                    match gpu_vendor {
+                        GpuVendor::Nvidia => decoders.push("av1_cuvid"),
+                        GpuVendor::Intel if qsv_available => decoders.push("av1_qsv"),
+                        GpuVendor::Amd => decoders.push("av1_vaapi"),
+                        _ => {}
                     }
+                    
+                     if !decoders.contains(&"av1_cuvid") { decoders.push("av1_cuvid"); }
+                     if !decoders.contains(&"av1_vaapi") { decoders.push("av1_vaapi"); }
+                     if !decoders.contains(&"av1_qsv") && qsv_available { decoders.push("av1_qsv"); }
+                     
                     decoders
                 }
             }
