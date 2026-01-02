@@ -403,16 +403,38 @@ pub struct SessionFromApi {
     #[serde(default)]
     pub connection_info: Option<Vec<ConnectionInfoData>>,
     #[serde(default)]
-    pub monitor_settings: Option<Vec<MonitorSettings>>,
+    pub monitor_settings: Option<Vec<MonitorSettingsFromApi>>,
+}
+
+/// Lenient MonitorSettings for API response
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorSettingsFromApi {
+    #[serde(default)]
+    pub width_in_pixels: Option<u32>,
+    #[serde(default)]
+    pub height_in_pixels: Option<u32>,
+    #[serde(default)]
+    pub frames_per_second: Option<u32>,
 }
 
 /// Session request data from API (contains app_id)
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRequestDataFromApi {
-    /// App ID as i64 (API returns it as number)
+    /// App ID can be string or number
     #[serde(default)]
-    pub app_id: i64,
+    pub app_id: Option<serde_json::Value>,
+}
+
+impl SessionRequestDataFromApi {
+    pub fn get_app_id(&self) -> i64 {
+        match &self.app_id {
+            Some(serde_json::Value::Number(n)) => n.as_i64().unwrap_or(0),
+            Some(serde_json::Value::String(s)) => s.parse::<i64>().unwrap_or(0),
+            _ => 0,
+        }
+    }
 }
 
 /// Simplified active session info for UI

@@ -12,9 +12,9 @@ use winit::window::{Window, WindowAttributes, Fullscreen, CursorGrabMode};
 
 #[cfg(target_os = "macos")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use wgpu::util::DeviceExt;
+// use wgpu::util::DeviceExt;
 
-use crate::app::{App, AppState, UiAction, GamesTab, SettingChange, GameInfo};
+use crate::app::{App, AppState, UiAction, GamesTab, GameInfo};
 use crate::app::session::ActiveSessionInfo;
 use crate::media::{VideoFrame, PixelFormat};
 use super::StatsPanel;
@@ -79,7 +79,7 @@ impl Renderer {
     pub async fn new(event_loop: &ActiveEventLoop) -> Result<Self> {
         // Create window attributes
         let window_attrs = WindowAttributes::default()
-            .with_title("OpenNOW")
+            .with_title("OpenNow")
             .with_inner_size(PhysicalSize::new(1280, 720))
             .with_min_inner_size(PhysicalSize::new(640, 480))
             .with_resizable(true);

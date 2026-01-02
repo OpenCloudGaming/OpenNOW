@@ -38,100 +38,95 @@ pub enum GpuVendor {
     Unknown,
 }
 
+/// Cached GPU vendor
+static GPU_VENDOR: std::sync::OnceLock<GpuVendor> = std::sync::OnceLock::new();
+
 /// Detect the primary GPU vendor using wgpu, prioritizing discrete GPUs
 pub fn detect_gpu_vendor() -> GpuVendor {
-    // blocked_on because we are in a sync context (VideoDecoder::new)
-    // but wgpu adapter request is async
-    pollster::block_on(async {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());  // Needs borrow
-        
-        // Enumerate all available adapters
-        let adapters = instance.enumerate_adapters(wgpu::Backends::all());
-        
-        let mut best_score = -1;
-        let mut best_vendor = GpuVendor::Unknown;
-        
-        info!("Available GPU adapters:");
-        
-        for adapter in adapters {
-            let info = adapter.get_info();
-            let name = info.name.to_lowercase();
-            let mut score = 0;
-            let mut vendor = GpuVendor::Other;
+    *GPU_VENDOR.get_or_init(|| {
+        // blocked_on because we are in a sync context (VideoDecoder::new)
+        // but wgpu adapter request is async
+        pollster::block_on(async {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());  // Needs borrow
             
-            // Identify vendor
-            if name.contains("nvidia") || name.contains("geforce") || name.contains("quadro") {
-                vendor = GpuVendor::Nvidia;
-                score += 100;
-            } else if name.contains("amd") || name.contains("adeon") || name.contains("ryzen") {
-                vendor = GpuVendor::Amd;
-                score += 80;
-            } else if name.contains("intel") || name.contains("uhd") || name.contains("iris") || name.contains("arc") {
-                vendor = GpuVendor::Intel;
-                score += 50;
-            } else if name.contains("apple") || name.contains("m1") || name.contains("m2") || name.contains("m3") {
-                vendor = GpuVendor::Apple;
-                score += 90; // Apple Silicon is high perf
-            }
+            // Enumerate all available adapters
+            let adapters = instance.enumerate_adapters(wgpu::Backends::all());
             
-            // Prioritize discrete GPUs
-            match info.device_type {
-                wgpu::DeviceType::DiscreteGpu => {
-                    score += 50;
-                }
-                wgpu::DeviceType::IntegratedGpu => {
-                    score += 10;
-                }
-                _ => {}
-            }
+            let mut best_score = -1;
+            let mut best_vendor = GpuVendor::Unknown;
             
-            info!("  - {} ({:?}, Vendor: {:?}, Score: {})", info.name, info.device_type, vendor, score);
+            info!("Available GPU adapters:");
             
-            if score > best_score {
-                best_score = score;
-                best_vendor = vendor;
-            }
-        }
-        
-        if best_vendor != GpuVendor::Unknown {
-            info!("Selected best GPU vendor: {:?}", best_vendor);
-            best_vendor
-        } else {
-            // Fallback to default request if enumeration fails
-             warn!("Adapter enumeration yielded no results, trying default request");
-             // request_adapter returns impl Future<Output = Option<Adapter>> in 0.19/0.20, but compiler says Result?
-             // Checking wgpu 0.17+ it returns Option.
-             // Wait, the error says: expected `Result<Adapter, RequestAdapterError>`, found `Option<_>`
-             // NOTE: This implies the user is on wgpu v22+ or v23+ where it might return Result.
-             // Actually, usually request_adapter returns an Option.
-             // Let's re-read the error carefully:
-             // 110: if let Some(adapter) = adapter {
-             //      ^^^ this expression has type `std::result::Result<wgpu::Adapter, wgpu::RequestAdapterError>`
-             // So `adapter` is a `Result`.
-             // `request_adapter` returned a future that resolved to `Result`.
-             
-             let adapter_result = instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: None,
-                    force_fallback_adapter: false,
-                })
-                .await;
-
-            // Handle Result
-            if let Ok(adapter) = adapter_result {
+            for adapter in adapters {
                 let info = adapter.get_info();
                 let name = info.name.to_lowercase();
+                let mut score = 0;
+                let mut vendor = GpuVendor::Other;
                 
-                 if name.contains("nvidia") { GpuVendor::Nvidia }
-                 else if name.contains("intel") { GpuVendor::Intel }
-                 else if name.contains("amd") { GpuVendor::Amd }
-                 else if name.contains("apple") { GpuVendor::Apple }
-                 else { GpuVendor::Other }
-            } else {
-                GpuVendor::Unknown
+                // Identify vendor
+                if name.contains("nvidia") || name.contains("geforce") || name.contains("quadro") {
+                    vendor = GpuVendor::Nvidia;
+                    score += 100;
+                } else if name.contains("amd") || name.contains("adeon") || name.contains("ryzen") {
+                    vendor = GpuVendor::Amd;
+                    score += 80;
+                } else if name.contains("intel") || name.contains("uhd") || name.contains("iris") || name.contains("arc") {
+                    vendor = GpuVendor::Intel;
+                    score += 50;
+                } else if name.contains("apple") || name.contains("m1") || name.contains("m2") || name.contains("m3") {
+                    vendor = GpuVendor::Apple;
+                    score += 90; // Apple Silicon is high perf
+                }
+                
+                // Prioritize discrete GPUs
+                match info.device_type {
+                    wgpu::DeviceType::DiscreteGpu => {
+                        score += 50;
+                    }
+                    wgpu::DeviceType::IntegratedGpu => {
+                        score += 10;
+                    }
+                    _ => {}
+                }
+                
+                info!("  - {} ({:?}, Vendor: {:?}, Score: {})", info.name, info.device_type, vendor, score);
+                
+                if score > best_score {
+                    best_score = score;
+                    best_vendor = vendor;
+                }
             }
-        }
+            
+            if best_vendor != GpuVendor::Unknown {
+                info!("Selected best GPU vendor: {:?}", best_vendor);
+                best_vendor
+            } else {
+                // Fallback to default request if enumeration fails
+                 warn!("Adapter enumeration yielded no results, trying default request");
+                 
+                 let adapter_result = instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::HighPerformance,
+                        compatible_surface: None,
+                        force_fallback_adapter: false,
+                    })
+                    .await;
+
+                // Handle Result
+                if let Ok(adapter) = adapter_result {
+                    let info = adapter.get_info();
+                    let name = info.name.to_lowercase();
+                    
+                     if name.contains("nvidia") { GpuVendor::Nvidia }
+                     else if name.contains("intel") { GpuVendor::Intel }
+                     else if name.contains("amd") { GpuVendor::Amd }
+                     else if name.contains("apple") { GpuVendor::Apple }
+                     else { GpuVendor::Other }
+                } else {
+                    GpuVendor::Unknown
+                }
+            }
+        })
     })
 }
 
@@ -289,52 +284,57 @@ pub fn is_av1_hardware_supported() -> bool {
     })
 }
 
+/// Cached supported decoder backends
+static SUPPORTED_BACKENDS: std::sync::OnceLock<Vec<VideoDecoderBackend>> = std::sync::OnceLock::new();
+
 /// Get list of supported decoder backends for the current system
 pub fn get_supported_decoder_backends() -> Vec<VideoDecoderBackend> {
-    let mut backends = vec![VideoDecoderBackend::Auto];
+    SUPPORTED_BACKENDS.get_or_init(|| {
+        let mut backends = vec![VideoDecoderBackend::Auto];
 
-    // Always check what's actually available
-    #[cfg(target_os = "macos")]
-    {
-        backends.push(VideoDecoderBackend::VideoToolbox);
-    }
+        // Always check what's actually available
+        #[cfg(target_os = "macos")]
+        {
+            backends.push(VideoDecoderBackend::VideoToolbox);
+        }
 
-    #[cfg(target_os = "windows")]
-    {
-        let gpu = detect_gpu_vendor();
-        let qsv = check_qsv_available();
-        
-        if gpu == GpuVendor::Nvidia {
-            backends.push(VideoDecoderBackend::Cuvid);
+        #[cfg(target_os = "windows")]
+        {
+            let gpu = detect_gpu_vendor();
+            let qsv = check_qsv_available();
+            
+            if gpu == GpuVendor::Nvidia {
+                backends.push(VideoDecoderBackend::Cuvid);
+            }
+            
+            if qsv || gpu == GpuVendor::Intel {
+                backends.push(VideoDecoderBackend::Qsv);
+            }
+            
+            // DXVA is generally available on Windows
+            backends.push(VideoDecoderBackend::Dxva);
         }
-        
-        if qsv || gpu == GpuVendor::Intel {
-            backends.push(VideoDecoderBackend::Qsv);
-        }
-        
-        // DXVA is generally available on Windows
-        backends.push(VideoDecoderBackend::Dxva);
-    }
 
-    #[cfg(target_os = "linux")]
-    {
-        let gpu = detect_gpu_vendor();
-        let qsv = check_qsv_available();
-        
-        if gpu == GpuVendor::Nvidia {
-            backends.push(VideoDecoderBackend::Cuvid);
+        #[cfg(target_os = "linux")]
+        {
+            let gpu = detect_gpu_vendor();
+            let qsv = check_qsv_available();
+            
+            if gpu == GpuVendor::Nvidia {
+                backends.push(VideoDecoderBackend::Cuvid);
+            }
+            
+            if qsv || gpu == GpuVendor::Intel {
+                backends.push(VideoDecoderBackend::Qsv);
+            }
+            
+            // VAAPI is generally available on Linux (AMD/Intel)
+            backends.push(VideoDecoderBackend::Vaapi);
         }
         
-        if qsv || gpu == GpuVendor::Intel {
-            backends.push(VideoDecoderBackend::Qsv);
-        }
-        
-        // VAAPI is generally available on Linux (AMD/Intel)
-        backends.push(VideoDecoderBackend::Vaapi);
-    }
-    
-    backends.push(VideoDecoderBackend::Software);
-    backends
+        backends.push(VideoDecoderBackend::Software);
+        backends
+    }).clone()
 }
 
 /// Commands sent to the decoder thread

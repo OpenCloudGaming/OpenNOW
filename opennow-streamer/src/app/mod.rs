@@ -191,6 +191,25 @@ impl App {
             }
         });
 
+        // Start checking active sessions if we have a token
+        if has_token {
+            let rt = runtime.clone();
+            let token = auth_tokens.as_ref().unwrap().jwt().to_string();
+            rt.spawn(async move {
+                let mut api_client = GfnApiClient::new();
+                api_client.set_access_token(token);
+                match api_client.get_active_sessions().await {
+                    Ok(sessions) => {
+                        info!("Checked active sessions at startup: found {}", sessions.len());
+                        cache::save_active_sessions_cache(&sessions);
+                    }
+                    Err(e) => {
+                        warn!("Failed to check active sessions at startup: {}", e);
+                    }
+                }
+            });
+        }
+
         Self {
             state: initial_state,
             runtime,
@@ -490,6 +509,9 @@ impl App {
                     self.fetch_games();
                     self.fetch_subscription(); // Also fetch subscription info
                     self.load_servers(); // Load servers (fetches dynamic regions)
+                    
+                    // Check for active sessions after login
+                    self.check_active_sessions();
                 }
             }
         }
@@ -549,6 +571,14 @@ impl App {
                 self.pending_game_launch = Some(pending);
                 self.show_session_conflict = true;
                 cache::clear_active_sessions_cache();
+            } else if !self.active_sessions.is_empty() {
+                // Auto-resume logic: no pending game, but active sessions exist -> resume the first one
+                if let Some(session) = self.active_sessions.first() {
+                    info!("Auto-resuming active session found: {}", session.session_id);
+                    let session_clone = session.clone();
+                    self.resume_session(session_clone);
+                    cache::clear_active_sessions_cache();
+                }
             }
         }
 
@@ -807,6 +837,32 @@ impl App {
                 self.start_ping_test();
             }
         }
+    }
+
+    /// Check for active sessions explicitly
+    pub fn check_active_sessions(&mut self) {
+        if self.auth_tokens.is_none() {
+            return;
+        }
+
+        let token = self.auth_tokens.as_ref().unwrap().jwt().to_string();
+        let mut api_client = GfnApiClient::new();
+        api_client.set_access_token(token);
+
+        let runtime = self.runtime.clone();
+        runtime.spawn(async move {
+            match api_client.get_active_sessions().await {
+                Ok(sessions) => {
+                    info!("Checked active sessions: found {}", sessions.len());
+                    if !sessions.is_empty() {
+                        cache::save_active_sessions_cache(&sessions);
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to check active sessions: {}", e);
+                }
+            }
+        });
     }
 
     /// Start ping test for all servers
@@ -1266,6 +1322,38 @@ impl App {
                 }
             }
         });
+    }
+
+    /// Terminate current session via API and stop streaming
+    pub fn terminate_current_session(&mut self) {
+        if let Some(session) = &self.session {
+            info!("Ctrl+Shift+Q: Terminating active session: {}", session.session_id);
+            
+            let token = match &self.auth_tokens {
+                Some(t) => t.jwt().to_string(),
+                None => {
+                    self.stop_streaming();
+                    return;
+                }
+            };
+            
+            let session_id = session.session_id.clone();
+            let zone = session.zone.clone();
+            let server_ip = if session.server_ip.is_empty() { None } else { Some(session.server_ip.clone()) };
+            
+            let mut api_client = GfnApiClient::new();
+            api_client.set_access_token(token);
+            
+            let runtime = self.runtime.clone();
+            runtime.spawn(async move {
+                match api_client.stop_session(&session_id, &zone, server_ip.as_deref()).await {
+                    Ok(_) => info!("Session {} terminated successfully", session_id),
+                    Err(e) => warn!("Failed to stop session {}: {}", session_id, e),
+                }
+            });
+        }
+        
+        self.stop_streaming();
     }
 
     /// Stop streaming and return to games
