@@ -292,6 +292,8 @@ struct SubscriptionResponse {
     remaining_time_in_minutes: Option<i32>,
     total_time_in_minutes: Option<i32>,
     #[serde(default)]
+    sub_type: Option<String>,  // TIME_CAPPED or UNLIMITED
+    #[serde(default)]
     addons: Vec<SubscriptionAddon>,
 }
 
@@ -319,13 +321,38 @@ struct AddonAttribute {
 
 /// Fetch subscription info from MES API
 pub async fn fetch_subscription(token: &str, user_id: &str) -> Result<crate::app::SubscriptionInfo, String> {
+    use crate::auth;
+    
     let client = Client::builder()
         .gzip(true)
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-    // Get VPC ID for request
-    let vpc_id = {
+    // For Alliance partners, we need to fetch VPC ID from their serverInfo first
+    // because the cached VPC ID might be stale or from NVIDIA's serverInfo
+    let provider = auth::get_selected_provider();
+    let vpc_id = if provider.is_alliance_partner() {
+        // Fetch VPC ID from Alliance partner's serverInfo
+        info!("Fetching VPC ID for Alliance partner: {}", provider.login_provider_display_name);
+        let regions = fetch_dynamic_regions(&client, Some(token)).await;
+        
+        // The VPC ID gets cached by fetch_dynamic_regions, so try to read it
+        let cached = CACHED_VPC_ID.read();
+        if let Some(vpc) = cached.as_ref() {
+            info!("Using Alliance VPC ID: {}", vpc);
+            vpc.clone()
+        } else {
+            // Fallback: try to extract from first region URL
+            if let Some(first_region) = regions.first() {
+                // Extract VPC-like ID from region name if possible
+                info!("Using Alliance region as VPC hint: {}", first_region.name);
+                first_region.name.clone()
+            } else {
+                return Err("Could not determine Alliance VPC ID".to_string());
+            }
+        }
+    } else {
+        // For NVIDIA, use cached VPC ID or fallback
         let cached = CACHED_VPC_ID.read();
         cached.as_ref().cloned().unwrap_or_else(|| "NP-AMS-08".to_string())
     };
@@ -378,14 +405,15 @@ pub async fn fetch_subscription(token: &str, user_id: &str) -> Result<crate::app
     let mut storage_size_gb: Option<u32> = None;
 
     for addon in &sub.addons {
-        if addon.addon_type.as_deref() == Some("ADDON")
+        // Check for storage addon - API returns type="STORAGE", subType="PERMANENT_STORAGE", status="OK"
+        if addon.addon_type.as_deref() == Some("STORAGE")
             && addon.sub_type.as_deref() == Some("PERMANENT_STORAGE")
-            && addon.status.as_deref() == Some("ACTIVE")
+            && addon.status.as_deref() == Some("OK")
         {
             has_persistent_storage = true;
-            // Try to find storage size from attributes
+            // Try to find storage size from attributes (key is "TOTAL_STORAGE_SIZE_IN_GB")
             for attr in &addon.attributes {
-                if attr.key.as_deref() == Some("storageSizeInGB") {
+                if attr.key.as_deref() == Some("TOTAL_STORAGE_SIZE_IN_GB") {
                     if let Some(val) = attr.text_value.as_ref() {
                         storage_size_gb = val.parse().ok();
                     }
@@ -394,8 +422,11 @@ pub async fn fetch_subscription(token: &str, user_id: &str) -> Result<crate::app
         }
     }
 
-    info!("Subscription: tier={}, hours={:.1}/{:.1}, storage={}",
-        sub.membership_tier, remaining_hours, total_hours, has_persistent_storage);
+    info!("Subscription: tier={}, hours={:.1}/{:.1}, storage={}, subType={:?}",
+        sub.membership_tier, remaining_hours, total_hours, has_persistent_storage, sub.sub_type);
+
+    // Check if this is an unlimited subscription (no hour cap)
+    let is_unlimited = sub.sub_type.as_deref() == Some("UNLIMITED");
 
     Ok(crate::app::SubscriptionInfo {
         membership_tier: sub.membership_tier,
@@ -403,5 +434,6 @@ pub async fn fetch_subscription(token: &str, user_id: &str) -> Result<crate::app
         total_hours,
         has_persistent_storage,
         storage_size_gb,
+        is_unlimited,
     })
 }

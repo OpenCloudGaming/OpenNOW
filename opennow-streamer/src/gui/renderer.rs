@@ -20,7 +20,7 @@ use crate::media::{VideoFrame, PixelFormat};
 use super::StatsPanel;
 use super::image_cache;
 use super::shaders::{VIDEO_SHADER, NV12_SHADER};
-use super::screens::{render_login_screen, render_session_screen, render_settings_modal, render_session_conflict_dialog, render_av1_warning_dialog};
+use super::screens::{render_login_screen, render_session_screen, render_settings_modal, render_session_conflict_dialog, render_av1_warning_dialog, render_alliance_warning_dialog};
 use std::collections::HashMap;
 
 // Color conversion is now hardcoded in the shader using official GFN client BT.709 values
@@ -1387,6 +1387,8 @@ impl Renderer {
                         show_settings_modal,
                         app.show_session_conflict,
                         app.show_av1_warning,
+                        app.show_alliance_warning,
+                        crate::auth::get_selected_provider().login_provider_display_name.as_str(),
                         &app.active_sessions,
                         app.pending_game_launch.as_ref(),
                         &mut actions
@@ -1505,6 +1507,8 @@ impl Renderer {
         show_settings_modal: bool,
         show_session_conflict: bool,
         show_av1_warning: bool,
+        show_alliance_warning: bool,
+        alliance_provider_name: &str,
         active_sessions: &[ActiveSessionInfo],
         pending_game_launch: Option<&GameInfo>,
         actions: &mut Vec<UiAction>
@@ -1685,6 +1689,23 @@ impl Renderer {
                                 );
                             });
 
+                        // Alliance badge (if using an Alliance partner)
+                        if crate::auth::get_selected_provider().is_alliance_partner() {
+                            ui.add_space(8.0);
+                            egui::Frame::new()
+                                .fill(egui::Color32::from_rgb(30, 80, 130))
+                                .corner_radius(4.0)
+                                .inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 4 })
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new("ALLIANCE")
+                                            .size(11.0)
+                                            .color(egui::Color32::from_rgb(100, 180, 255))
+                                            .strong()
+                                    );
+                                });
+                        }
+
                         ui.add_space(20.0);
 
                         // Hours icon and remaining
@@ -1695,25 +1716,35 @@ impl Renderer {
                         );
                         ui.add_space(5.0);
 
-                        let hours_color = if sub.remaining_hours > 5.0 {
-                            egui::Color32::from_rgb(118, 185, 0)
-                        } else if sub.remaining_hours > 1.0 {
-                            egui::Color32::from_rgb(255, 200, 50)
+                        // Show ∞ for unlimited subscriptions, otherwise show hours
+                        if sub.is_unlimited {
+                            ui.label(
+                                egui::RichText::new("∞")
+                                    .size(15.0)
+                                    .color(egui::Color32::from_rgb(118, 185, 0))
+                                    .strong()
+                            );
                         } else {
-                            egui::Color32::from_rgb(255, 80, 80)
-                        };
+                            let hours_color = if sub.remaining_hours > 5.0 {
+                                egui::Color32::from_rgb(118, 185, 0)
+                            } else if sub.remaining_hours > 1.0 {
+                                egui::Color32::from_rgb(255, 200, 50)
+                            } else {
+                                egui::Color32::from_rgb(255, 80, 80)
+                            };
 
-                        ui.label(
-                            egui::RichText::new(format!("{:.1}h", sub.remaining_hours))
-                                .size(13.0)
-                                .color(hours_color)
-                                .strong()
-                        );
-                        ui.label(
-                            egui::RichText::new(format!(" / {:.0}h", sub.total_hours))
-                                .size(12.0)
-                                .color(egui::Color32::GRAY)
-                        );
+                            ui.label(
+                                egui::RichText::new(format!("{:.1}h", sub.remaining_hours))
+                                    .size(13.0)
+                                    .color(hours_color)
+                                    .strong()
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(" / {:.0}h", sub.total_hours))
+                                    .size(12.0)
+                                    .color(egui::Color32::GRAY)
+                            );
+                        }
 
                         ui.add_space(20.0);
 
@@ -1927,6 +1958,11 @@ impl Renderer {
         // AV1 hardware warning dialog
         if show_av1_warning {
             render_av1_warning_dialog(ctx, actions);
+        }
+
+        // Alliance experimental warning dialog
+        if show_alliance_warning {
+            render_alliance_warning_dialog(ctx, alliance_provider_name, actions);
         }
     }
 

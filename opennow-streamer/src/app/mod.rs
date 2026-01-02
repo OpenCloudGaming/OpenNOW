@@ -148,6 +148,9 @@ pub struct App {
     /// Whether showing AV1 unsupported warning dialog
     pub show_av1_warning: bool,
 
+    /// Whether showing Alliance experimental warning dialog
+    pub show_alliance_warning: bool,
+
     /// Pending game launch (waiting for session conflict resolution)
     pub pending_game_launch: Option<GameInfo>,
 
@@ -183,6 +186,11 @@ impl App {
         // Try to load saved tokens
         let auth_tokens = cache::load_tokens();
         let has_token = auth_tokens.as_ref().map(|t| !t.is_expired()).unwrap_or(false);
+
+        // Load cached login provider (for Alliance persistence)
+        if let Some(provider) = cache::load_login_provider() {
+            auth::set_login_provider(provider);
+        }
 
         let initial_state = if has_token {
             AppState::Games
@@ -256,6 +264,7 @@ impl App {
             active_sessions: Vec::new(),
             show_session_conflict: false,
             show_av1_warning: false,
+            show_alliance_warning: false,
 
             pending_game_launch: None,
             last_poll_time: std::time::Instant::now(),
@@ -421,6 +430,9 @@ impl App {
             UiAction::CloseAV1Warning => {
                 self.show_av1_warning = false;
             }
+            UiAction::CloseAllianceWarning => {
+                self.show_alliance_warning = false;
+            }
         }
     }
 
@@ -465,6 +477,13 @@ impl App {
 
         self.is_loading = true;
         self.status_message = "Opening browser for login...".to_string();
+
+        // Clear old caches when switching accounts
+        self.subscription = None;
+        self.games.clear();
+        self.game_sections.clear();
+        self.library_games.clear();
+        cache::clear_games_cache();
 
         let pkce = PkceChallenge::new();
         let auth_url = auth::build_auth_url(&pkce, port);
@@ -562,6 +581,11 @@ impl App {
                     
                     // Check for active sessions after login
                     self.check_active_sessions();
+                    
+                    // Show Alliance experimental warning if using an Alliance partner
+                    if auth::get_selected_provider().is_alliance_partner() {
+                        self.show_alliance_warning = true;
+                    }
                 }
             }
         }
@@ -662,10 +686,15 @@ impl App {
     pub fn logout(&mut self) {
         self.auth_tokens = None;
         self.user_info = None;
+        self.subscription = None;
         auth::clear_login_provider();
+        cache::clear_login_provider();  // Clear persisted provider too
         cache::clear_tokens();
+        cache::clear_games_cache();     // Clear cached games
         self.state = AppState::Login;
         self.games.clear();
+        self.game_sections.clear();
+        self.library_games.clear();
         self.status_message = "Logged out".to_string();
     }
 
@@ -770,6 +799,9 @@ impl App {
             return;
         }
 
+        // Clear current subscription so update loop will reload from cache after fetch completes
+        self.subscription = None;
+
         let token = self.auth_tokens.as_ref().unwrap().jwt().to_string();
         let user_id = self.auth_tokens.as_ref().unwrap().user_id().to_string();
 
@@ -777,11 +809,12 @@ impl App {
         runtime.spawn(async move {
             match crate::api::fetch_subscription(&token, &user_id).await {
                 Ok(sub) => {
-                    info!("Fetched subscription: tier={}, hours={:.1}/{:.1}, storage={}",
+                    info!("Fetched subscription: tier={}, hours={:.1}/{:.1}, storage={}, unlimited={}",
                         sub.membership_tier,
                         sub.remaining_hours,
                         sub.total_hours,
-                        sub.has_persistent_storage
+                        sub.has_persistent_storage,
+                        sub.is_unlimited
                     );
                     cache::save_subscription_cache(&sub);
                 }
@@ -1321,6 +1354,12 @@ impl App {
                 self.is_loading = false;
                 cache::clear_session_cache();
                 return;
+            } else if session.state == SessionState::Connecting {
+                self.status_message = "Connecting to server...".to_string();
+            } else if session.state == SessionState::CleaningUp {
+                self.status_message = "Cleaning up previous session...".to_string();
+            } else if session.state == SessionState::WaitingForStorage {
+                self.status_message = "Waiting for storage to be ready...".to_string();
             } else {
                 self.status_message = "Setting up session...".to_string();
             }
@@ -1335,7 +1374,12 @@ impl App {
         if let Some(session) = cache::load_session_cache() {
             let mut should_poll = matches!(
                 session.state,
-                SessionState::Requesting | SessionState::Launching | SessionState::InQueue { .. }
+                SessionState::Requesting 
+                    | SessionState::Launching 
+                    | SessionState::Connecting
+                    | SessionState::CleaningUp
+                    | SessionState::WaitingForStorage
+                    | SessionState::InQueue { .. }
             );
 
             // Also poll if Ready but count < 3

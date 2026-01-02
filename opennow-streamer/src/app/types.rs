@@ -117,6 +117,7 @@ pub struct SubscriptionInfo {
     pub total_hours: f32,
     pub has_persistent_storage: bool,
     pub storage_size_gb: Option<u32>,
+    pub is_unlimited: bool,  // true if subType is UNLIMITED (no hour cap)
 }
 
 /// Current tab in Games view
@@ -199,6 +200,8 @@ pub enum UiAction {
     CloseSessionConflict,
     /// Close AV1 warning dialog
     CloseAV1Warning,
+    /// Close Alliance experimental warning dialog
+    CloseAllianceWarning,
 }
 
 /// Setting changes
