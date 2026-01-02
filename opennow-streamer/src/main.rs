@@ -192,8 +192,8 @@ impl ApplicationHandler for OpenNowApp {
             } if self.modifiers.state().control_key() && self.modifiers.state().shift_key() => {
                 let mut app = self.app.lock();
                 if app.state == AppState::Streaming {
-                    info!("Ctrl+Shift+Q pressed - stopping stream");
-                    app.stop_streaming();
+                    info!("Ctrl+Shift+Q pressed - terminating session");
+                    app.terminate_current_session();
                 }
             }
             WindowEvent::KeyboardInput {
