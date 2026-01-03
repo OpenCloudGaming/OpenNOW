@@ -118,6 +118,14 @@ pub struct SubscriptionInfo {
     pub has_persistent_storage: bool,
     pub storage_size_gb: Option<u32>,
     pub is_unlimited: bool,  // true if subType is UNLIMITED (no hour cap)
+    pub entitled_resolutions: Vec<EntitledResolution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct EntitledResolution {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
 }
 
 /// Current tab in Games view

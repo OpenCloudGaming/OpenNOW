@@ -409,17 +409,28 @@ impl ApplicationHandler for OpenNowApp {
             // No polling needed here - raw input sends directly to the WebRTC input channel
             // This keeps mouse latency minimal and independent of render rate
 
-            // Frame rate limiting - sync render rate to stream's target FPS
-            // This prevents the render loop from running at 500+ FPS when decode is only 120 FPS
+            // Check if there's a new frame available BEFORE sleeping
+            // This minimizes latency by rendering new frames immediately
+            let has_new_frame = app_guard.shared_frame.as_ref()
+                .map(|sf| sf.has_new_frame())
+                .unwrap_or(false);
+
             let target_fps = app_guard.stats.target_fps.max(60);
             drop(app_guard); // Release lock before potential sleep
 
-            let frame_duration = std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
-            let elapsed = self.last_frame_time.elapsed();
-            if elapsed < frame_duration {
-                let sleep_time = frame_duration - elapsed;
-                if sleep_time.as_micros() > 500 {
-                    std::thread::sleep(sleep_time - std::time::Duration::from_micros(500));
+            // Only sleep if no new frame is available
+            // This ensures frames are rendered as soon as they arrive
+            if !has_new_frame {
+                let frame_duration = std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
+                let elapsed = self.last_frame_time.elapsed();
+                if elapsed < frame_duration {
+                    let sleep_time = frame_duration - elapsed;
+                    // Use shorter sleep (1ms max) to stay responsive to new frames
+                    let max_sleep = std::time::Duration::from_millis(1);
+                    let actual_sleep = sleep_time.min(max_sleep);
+                    if actual_sleep.as_micros() > 200 {
+                        std::thread::sleep(actual_sleep);
+                    }
                 }
             }
             self.last_frame_time = std::time::Instant::now();
