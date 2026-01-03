@@ -226,6 +226,20 @@ impl ApplicationHandler for OpenNowApp {
                 let mut app = self.app.lock();
                 app.toggle_stats();
             }
+            // Ctrl+Shift+F10 to toggle anti-AFK mode
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    physical_key: PhysicalKey::Code(KeyCode::F10),
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            } if self.modifiers.state().control_key() && self.modifiers.state().shift_key() => {
+                let mut app = self.app.lock();
+                if app.state == AppState::Streaming {
+                    app.toggle_anti_afk();
+                }
+            }
             WindowEvent::ModifiersChanged(new_modifiers) => {
                 self.modifiers = new_modifiers;
             }
