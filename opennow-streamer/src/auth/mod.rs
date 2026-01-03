@@ -236,6 +236,18 @@ impl AuthTokens {
         now >= self.expires_at
     }
 
+    /// Check if token should be refreshed (expires within 10 minutes)
+    pub fn should_refresh(&self) -> bool {
+        let now = chrono::Utc::now().timestamp();
+        // Refresh if less than 10 minutes (600 seconds) remaining
+        self.expires_at - now < 600
+    }
+
+    /// Check if we have a refresh token available
+    pub fn can_refresh(&self) -> bool {
+        self.refresh_token.is_some()
+    }
+
     /// Get the JWT token for API calls (id_token if available, else access_token)
     pub fn jwt(&self) -> &str {
         self.id_token.as_deref().unwrap_or(&self.access_token)
