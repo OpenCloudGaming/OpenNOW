@@ -138,3 +138,54 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
 }
 "#;
+
+/// WGSL shader for ExternalTexture (wgpu 28+ zero-copy video)
+/// Uses texture_external which provides hardware-accelerated YUV->RGB conversion
+/// This is the fastest path - no manual color conversion needed
+pub const EXTERNAL_TEXTURE_SHADER: &str = r#"
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) tex_coord: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var positions = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>( 1.0,  1.0),
+    );
+
+    var tex_coords = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(1.0, 0.0),
+    );
+
+    var output: VertexOutput;
+    output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    output.tex_coord = tex_coords[vertex_index];
+    return output;
+}
+
+// External texture - hardware-accelerated YUV->RGB conversion
+@group(0) @binding(0)
+var video_texture: texture_external;
+
+// Sampler for external texture
+@group(0) @binding(1)
+var video_sampler: sampler;
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    // textureSampleBaseClampToEdge automatically converts YUV to RGB
+    // using the color space information from the ExternalTexture descriptor
+    return textureSampleBaseClampToEdge(video_texture, video_sampler, input.tex_coord);
+}
+"#;

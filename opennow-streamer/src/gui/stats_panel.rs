@@ -70,25 +70,31 @@ impl StatsPanel {
                             );
                         }
 
-                        // Latency and packet loss
-                        let latency_color = if stats.latency_ms < 30.0 {
-                            Color32::GREEN
-                        } else if stats.latency_ms < 60.0 {
-                            Color32::YELLOW
+                        // Network RTT (round-trip time)
+                        if stats.rtt_ms > 0.0 {
+                            let rtt_color = if stats.rtt_ms < 30.0 {
+                                Color32::GREEN
+                            } else if stats.rtt_ms < 60.0 {
+                                Color32::YELLOW
+                            } else {
+                                Color32::RED
+                            };
+
+                            ui.label(
+                                RichText::new(format!("RTT: {:.0}ms", stats.rtt_ms))
+                                .font(FontId::monospace(11.0))
+                                .color(rtt_color)
+                            );
                         } else {
-                            Color32::RED
-                        };
+                            ui.label(
+                                RichText::new("RTT: N/A")
+                                .font(FontId::monospace(11.0))
+                                .color(Color32::GRAY)
+                            );
+                        }
 
-                        ui.label(
-                            RichText::new(format!(
-                                "Latency: {:.0} ms",
-                                stats.latency_ms
-                            ))
-                            .font(FontId::monospace(11.0))
-                            .color(latency_color)
-                        );
-
-                        if stats.packet_loss > 0.0 {
+                        // Packet loss
+                        if stats.packet_loss > 0.1 {
                             let loss_color = if stats.packet_loss < 1.0 {
                                 Color32::YELLOW
                             } else {
@@ -97,7 +103,7 @@ impl StatsPanel {
 
                             ui.label(
                                 RichText::new(format!(
-                                    "Packet Loss: {:.1}%",
+                                    "Packet Loss: {:.2}%",
                                     stats.packet_loss
                                 ))
                                 .font(FontId::monospace(11.0))
@@ -105,16 +111,36 @@ impl StatsPanel {
                             );
                         }
 
-                        // Decode and render times
+                        // Decode, render, and input latency
                         if stats.decode_time_ms > 0.0 || stats.render_time_ms > 0.0 {
                             ui.label(
                                 RichText::new(format!(
-                                    "Decode: {:.1} ms • Render: {:.1} ms",
+                                    "Decode: {:.1}ms • Render: {:.1}ms",
                                     stats.decode_time_ms,
                                     stats.render_time_ms
                                 ))
                                 .font(FontId::monospace(10.0))
                                 .color(Color32::GRAY)
+                            );
+                        }
+
+                        // Input latency (client-side only)
+                        if stats.input_latency_ms > 0.0 {
+                            let input_color = if stats.input_latency_ms < 5.0 {
+                                Color32::GREEN
+                            } else if stats.input_latency_ms < 10.0 {
+                                Color32::YELLOW
+                            } else {
+                                Color32::RED
+                            };
+
+                            ui.label(
+                                RichText::new(format!(
+                                    "Input: {:.1}ms",
+                                    stats.input_latency_ms
+                                ))
+                                .font(FontId::monospace(10.0))
+                                .color(input_color)
                             );
                         }
 

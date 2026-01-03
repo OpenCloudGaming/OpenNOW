@@ -449,6 +449,13 @@ impl App {
             UiAction::CloseAllianceWarning => {
                 self.show_alliance_warning = false;
             }
+            UiAction::ResetSettings => {
+                info!("Resetting all settings to defaults");
+                self.settings = Settings::default();
+                if let Err(e) = self.settings.save() {
+                    warn!("Failed to save default settings: {}", e);
+                }
+            }
         }
     }
 
