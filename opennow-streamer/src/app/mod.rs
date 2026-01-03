@@ -171,6 +171,9 @@ pub struct App {
 
     /// Last time anti-AFK sent a key press
     anti_afk_last_send: std::time::Instant,
+
+    /// Whether a token refresh is currently in progress
+    token_refresh_in_progress: bool,
 }
 
 /// Poll interval for session status (2 seconds)
@@ -296,6 +299,7 @@ impl App {
             session_ready_poll_count: 0,
             anti_afk_enabled: false,
             anti_afk_last_send: std::time::Instant::now(),
+            token_refresh_in_progress: false,
         }
     }
 
@@ -603,6 +607,45 @@ impl App {
 
         // Update anti-AFK (sends F13 every 4 minutes when enabled)
         self.update_anti_afk();
+
+        // Proactive token refresh: refresh before expiration to avoid session interruption
+        if !self.token_refresh_in_progress {
+            if let Some(ref tokens) = self.auth_tokens {
+                if tokens.should_refresh() && tokens.can_refresh() {
+                    info!("Token nearing expiry, proactively refreshing...");
+                    self.token_refresh_in_progress = true;
+                    
+                    let refresh_token = tokens.refresh_token.clone().unwrap();
+                    let runtime = self.runtime.clone();
+                    runtime.spawn(async move {
+                        match auth::refresh_token(&refresh_token).await {
+                            Ok(new_tokens) => {
+                                info!("Proactive token refresh successful!");
+                                cache::save_tokens(&new_tokens);
+                            }
+                            Err(e) => {
+                                warn!("Proactive token refresh failed: {}", e);
+                            }
+                        }
+                    });
+                }
+            }
+        }
+        
+        // Check for refreshed tokens from async refresh task
+        if self.token_refresh_in_progress {
+            if let Some(new_tokens) = cache::load_tokens() {
+                if let Some(ref old_tokens) = self.auth_tokens {
+                    // Check if tokens were actually refreshed (new expires_at)
+                    if new_tokens.expires_at > old_tokens.expires_at {
+                        info!("Loaded refreshed tokens");
+                        self.auth_tokens = Some(new_tokens.clone());
+                        self.api_client.set_access_token(new_tokens.jwt().to_string());
+                        self.token_refresh_in_progress = false;
+                    }
+                }
+            }
+        }
 
         // Check for new video frames from shared frame holder
         if let Some(ref shared) = self.shared_frame {
