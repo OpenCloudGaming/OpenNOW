@@ -393,8 +393,10 @@ impl AudioPlayer {
         info!("Using audio config: {}Hz, {} channels, format {:?}",
             actual_rate.0, actual_channels, sample_format);
 
-        // Buffer for ~500ms of audio (larger buffer for jitter tolerance)
-        let buffer_size = (actual_rate.0 as usize) * (actual_channels as usize) / 2;
+        // Buffer for ~20ms of audio (ultra-low latency for gaming)
+        // 48000Hz * 2ch * 0.02s = 1920 samples
+        // Note: If audio crackles, increase to 30-40ms
+        let buffer_size = (actual_rate.0 as usize) * (actual_channels as usize) * 20 / 1000;
         let buffer = Arc::new(Mutex::new(AudioBuffer::new(buffer_size)));
 
         let config = supported_range.with_sample_rate(actual_rate).into();

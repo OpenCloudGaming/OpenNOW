@@ -179,7 +179,13 @@ impl Renderer {
             width: size.width,
             height: size.height,
             present_mode,
-            alpha_mode: surface_caps.alpha_modes[0],
+            alpha_mode: if surface_caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied) {
+                wgpu::CompositeAlphaMode::PostMultiplied
+            } else if surface_caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+                wgpu::CompositeAlphaMode::PreMultiplied
+            } else {
+                surface_caps.alpha_modes[0]
+            },
             view_formats: vec![],
             desired_maximum_frame_latency: 1, // Minimum latency for streaming
         };
@@ -1950,7 +1956,7 @@ impl Renderer {
 
         // Settings modal
         if show_settings_modal {
-            render_settings_modal(ctx, settings, servers, selected_server_index, auto_server_selection, ping_testing, actions);
+            render_settings_modal(ctx, settings, servers, selected_server_index, auto_server_selection, ping_testing, subscription, actions);
         }
 
         // Session conflict dialog

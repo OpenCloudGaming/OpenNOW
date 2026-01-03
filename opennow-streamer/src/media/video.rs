@@ -591,6 +591,41 @@ impl VideoDecoder {
         Ok(hw_accel)
     }
 
+
+
+    /// FFI Callback for format negotiation (VideoToolbox)
+    #[cfg(target_os = "macos")]
+    unsafe extern "C" fn get_videotoolbox_format(
+        _ctx: *mut ffmpeg::ffi::AVCodecContext,
+        mut fmt: *const ffmpeg::ffi::AVPixelFormat,
+    ) -> ffmpeg::ffi::AVPixelFormat {
+        use ffmpeg::ffi::*;
+
+        // Log all available formats for debugging
+        let mut available_formats = Vec::new();
+        let mut check_fmt = fmt;
+        while *check_fmt != AVPixelFormat::AV_PIX_FMT_NONE {
+            available_formats.push(*check_fmt as i32);
+            check_fmt = check_fmt.add(1);
+        }
+        info!("get_format callback: available formats: {:?} (VIDEOTOOLBOX={}, NV12={}, YUV420P={})",
+            available_formats,
+            AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX as i32,
+            AVPixelFormat::AV_PIX_FMT_NV12 as i32,
+            AVPixelFormat::AV_PIX_FMT_YUV420P as i32);
+
+        while *fmt != AVPixelFormat::AV_PIX_FMT_NONE {
+            if *fmt == AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX {
+                info!("get_format: selecting VIDEOTOOLBOX hardware format");
+                return AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX;
+            }
+            fmt = fmt.add(1);
+        }
+
+        info!("get_format: VIDEOTOOLBOX not available, falling back to NV12");
+        AVPixelFormat::AV_PIX_FMT_NV12
+    }
+
     /// Create decoder, trying hardware acceleration based on preference
     fn create_decoder(codec_id: ffmpeg::codec::Id, backend: VideoDecoderBackend) -> Result<(decoder::Video, bool)> {
         info!("create_decoder: {:?} with backend preference {:?}", codec_id, backend);
@@ -601,6 +636,63 @@ impl VideoDecoder {
             if backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::VideoToolbox {
                 info!("macOS detected - attempting VideoToolbox hardware acceleration");
 
+                // First try to find specific VideoToolbox decoders
+                let vt_decoder_name = match codec_id {
+                    ffmpeg::codec::Id::AV1 => Some("av1_videotoolbox"),
+                    ffmpeg::codec::Id::HEVC => Some("hevc_videotoolbox"),
+                    ffmpeg::codec::Id::H264 => Some("h264_videotoolbox"),
+                    _ => None,
+                };
+
+                if let Some(name) = vt_decoder_name {
+                    if let Some(codec) = ffmpeg::codec::decoder::find_by_name(name) {
+                        info!("Found specific VideoToolbox decoder: {}", name);
+                        
+                        // Try to use explicit decoder with hardware context attached
+                        // This helps ensure we get VIDEOTOOLBOX frames even without set_get_format
+                        let res = unsafe {
+                            use ffmpeg::ffi::*;
+                            use std::ptr;
+                            
+                            let mut ctx = CodecContext::new_with_codec(codec);
+                            
+                            // Create HW device context
+                            let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
+                            let ret = av_hwdevice_ctx_create(
+                                &mut hw_device_ctx,
+                                AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                                ptr::null(),
+                                ptr::null_mut(),
+                                0,
+                            );
+                            
+                            if ret >= 0 && !hw_device_ctx.is_null() {
+                                let raw_ctx = ctx.as_mut_ptr();
+                                (*raw_ctx).hw_device_ctx = av_buffer_ref(hw_device_ctx);
+                                av_buffer_unref(&mut hw_device_ctx);
+                                
+                                // FORCE VIDEOTOOLBOX FORMAT via callback and simple hint
+                                (*raw_ctx).get_format = Some(Self::get_videotoolbox_format);
+                                (*raw_ctx).pix_fmt = AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX;
+                            }
+
+                            ctx.set_threading(ffmpeg::codec::threading::Config::count(4));
+                            ctx.decoder().video()
+                        };
+
+                        match res {
+                            Ok(decoder) => {
+                                info!("Specific VideoToolbox decoder ({}) opened successfully", name);
+                                return Ok((decoder, true));
+                            }
+                            Err(e) => {
+                                warn!("Failed to open specific VideoToolbox decoder {}: {:?}", name, e);
+                            }
+                        }
+                    }
+                }
+                
+                // Fallback: Generic decoder with manual hw_device_ctx attachment
                 // Try to set up VideoToolbox hwaccel using FFmpeg's device API
                 unsafe {
                     use ffmpeg::ffi::*;
@@ -628,19 +720,22 @@ impl VideoDecoder {
                     if ret >= 0 && !hw_device_ctx.is_null() {
                         // Attach hardware device context to codec context
                         (*raw_ctx).hw_device_ctx = av_buffer_ref(hw_device_ctx);
+                        av_buffer_unref(&mut hw_device_ctx);
 
-                        // Enable multi-threading
-                        (*raw_ctx).thread_count = 4;
+                        // CRITICAL: Set get_format callback to request VideoToolbox pixel format
+                        // Without this, the decoder will output software frames (YUV420P)
+                        (*raw_ctx).get_format = Some(Self::get_videotoolbox_format);
+
+                        // Enable multi-threading for software fallback paths
+                        (*raw_ctx).thread_count = 0; // 0 = auto (use all cores)
 
                         match ctx.decoder().video() {
                             Ok(decoder) => {
-                                info!("VideoToolbox hardware decoder created successfully");
-                                // Don't free hw_device_ctx - it's now owned by the codec context
+                                info!("VideoToolbox hardware decoder created successfully (generic + hw_device + get_format)");
                                 return Ok((decoder, true));
                             }
                             Err(e) => {
                                 warn!("Failed to open VideoToolbox decoder: {:?}", e);
-                                av_buffer_unref(&mut hw_device_ctx);
                             }
                         }
                     } else {
@@ -855,6 +950,7 @@ impl VideoDecoder {
             return None;
         }
 
+        // Hardware frame detected - need to transfer to system memory
         debug!("Transferring hardware frame (format: {:?}) to system memory", format);
 
         unsafe {
@@ -988,29 +1084,30 @@ impl VideoDecoder {
                     let y_data = frame_to_use.data(0);
                     let uv_data = frame_to_use.data(1);
 
-                    // Copy Y plane with alignment
-                    let mut y_plane = vec![0u8; (aligned_y_stride * h) as usize];
-                    for row in 0..h {
-                        let src_start = (row * y_stride) as usize;
-                        let src_end = src_start + w as usize;
-                        let dst_start = (row * aligned_y_stride) as usize;
-                        if src_end <= y_data.len() {
-                            y_plane[dst_start..dst_start + w as usize]
-                                .copy_from_slice(&y_data[src_start..src_end]);
+                    // Optimized copy - fast path when strides match
+                    let copy_plane_fast = |src: &[u8], src_stride: u32, dst_stride: u32, width: u32, height: u32| -> Vec<u8> {
+                        let total_size = (dst_stride * height) as usize;
+                        if src_stride == dst_stride && src.len() >= total_size {
+                            // Fast path: single memcpy
+                            src[..total_size].to_vec()
+                        } else {
+                            // Slow path: row-by-row
+                            let mut dst = vec![0u8; total_size];
+                            for row in 0..height as usize {
+                                let src_start = row * src_stride as usize;
+                                let src_end = src_start + width as usize;
+                                let dst_start = row * dst_stride as usize;
+                                if src_end <= src.len() {
+                                    dst[dst_start..dst_start + width as usize]
+                                        .copy_from_slice(&src[src_start..src_end]);
+                                }
+                            }
+                            dst
                         }
-                    }
+                    };
 
-                    // Copy UV plane with alignment
-                    let mut uv_plane = vec![0u8; (aligned_uv_stride * uv_height) as usize];
-                    for row in 0..uv_height {
-                        let src_start = (row * uv_stride) as usize;
-                        let src_end = src_start + w as usize;
-                        let dst_start = (row * aligned_uv_stride) as usize;
-                        if src_end <= uv_data.len() {
-                            uv_plane[dst_start..dst_start + w as usize]
-                                .copy_from_slice(&uv_data[src_start..src_end]);
-                        }
-                    }
+                    let y_plane = copy_plane_fast(y_data, y_stride, aligned_y_stride, w, h);
+                    let uv_plane = copy_plane_fast(uv_data, uv_stride, aligned_uv_stride, w, uv_height);
 
                     if *frames_decoded == 1 {
                         info!("NV12 direct GPU path: {}x{} - bypassing CPU scaler", w, h);
@@ -1032,21 +1129,24 @@ impl VideoDecoder {
                     });
                 }
 
-                // For other formats, use scaler to convert to YUV420P
+                // For other formats, use scaler to convert to NV12
+                // NV12 is more efficient for GPU upload and hardware decoders at high bitrates
+                // Use POINT (nearest neighbor) since we're not resizing - just color format conversion
+                // This is much faster than BILINEAR for same-size conversion
                 if scaler.is_none() || *width != w || *height != h {
                     *width = w;
                     *height = h;
 
-                    info!("Creating scaler: {:?} {}x{} -> YUV420P {}x{}", actual_format, w, h, w, h);
+                    info!("Creating scaler: {:?} {}x{} -> NV12 {}x{} (POINT mode)", actual_format, w, h, w, h);
 
                     match ScalerContext::get(
                         actual_format,
                         w,
                         h,
-                        Pixel::YUV420P,
+                        Pixel::NV12,
                         w,
                         h,
-                        ScalerFlags::BILINEAR,
+                        ScalerFlags::POINT,  // Fastest - no interpolation needed for same-size conversion
                     ) {
                         Ok(s) => *scaler = Some(s),
                         Err(e) => {
@@ -1056,14 +1156,12 @@ impl VideoDecoder {
                     }
                 }
 
-                // Convert to YUV420P
+                // Convert to NV12
                 // We must allocate the destination frame first!
-                let mut yuv_frame = FfmpegFrame::new(Pixel::YUV420P, w, h);
-                // get_buffer is not exposed/needed in this safe wrapper, FfmpegFrame::new handles structure
-                // Ideally we should just verify the scaler works.
+                let mut nv12_frame = FfmpegFrame::new(Pixel::NV12, w, h);
 
                 if let Some(ref mut s) = scaler {
-                    if let Err(e) = s.run(frame_to_use, &mut yuv_frame) {
+                    if let Err(e) = s.run(frame_to_use, &mut nv12_frame) {
                         warn!("Scaler run failed: {:?}", e);
                         return None;
                     }
@@ -1071,47 +1169,54 @@ impl VideoDecoder {
                     return None;
                 }
 
-                // Extract YUV planes with alignment
-                let y_stride = yuv_frame.stride(0) as u32;
-                let u_stride = yuv_frame.stride(1) as u32;
-                let v_stride = yuv_frame.stride(2) as u32;
+                // Extract NV12 planes with alignment
+                // NV12: Y plane (full res) + UV plane (half height, interleaved)
+                let y_stride = nv12_frame.stride(0) as u32;
+                let uv_stride = nv12_frame.stride(1) as u32;
 
                 let aligned_y_stride = Self::get_aligned_stride(w);
-                let aligned_u_stride = Self::get_aligned_stride(w / 2);
-                let aligned_v_stride = Self::get_aligned_stride(w / 2);
+                let aligned_uv_stride = Self::get_aligned_stride(w);
 
-                let y_height = h;
                 let uv_height = h / 2;
 
-                let dim_y = w;
-                let dim_uv = w / 2;
+                // Optimized plane copy - use bulk copy when strides match, row-by-row otherwise
+                let copy_plane_optimized = |src: &[u8], src_stride: u32, dst_stride: u32, width: u32, height: u32| -> Vec<u8> {
+                    let total_size = (dst_stride * height) as usize;
 
-                // Helper to copy plane with alignment
-                let copy_plane = |src: &[u8], src_stride: usize, dst_stride: usize, width: usize, height: usize| -> Vec<u8> {
-                    let mut dst = vec![0u8; dst_stride * height];
-                    for row in 0..height {
-                        let src_start = row * src_stride;
-                        let src_end = src_start + width;
-                        let dst_start = row * dst_stride;
-                        let dst_end = dst_start + width;
-                        if src_end <= src.len() {
-                            dst[dst_start..dst_end].copy_from_slice(&src[src_start..src_end]);
+                    // Fast path: if source stride equals destination stride AND covers the data we need,
+                    // we can do a single memcpy
+                    if src_stride == dst_stride && src.len() >= total_size {
+                        src[..total_size].to_vec()
+                    } else {
+                        // Slow path: row-by-row copy with stride conversion
+                        let mut dst = vec![0u8; total_size];
+                        let width = width as usize;
+                        let src_stride = src_stride as usize;
+                        let dst_stride = dst_stride as usize;
+
+                        for row in 0..height as usize {
+                            let src_start = row * src_stride;
+                            let src_end = src_start + width;
+                            let dst_start = row * dst_stride;
+                            if src_end <= src.len() {
+                                dst[dst_start..dst_start + width].copy_from_slice(&src[src_start..src_end]);
+                            }
                         }
+                        dst
                     }
-                    dst
                 };
 
                 Some(VideoFrame {
                     width: w,
                     height: h,
-                    y_plane: copy_plane(yuv_frame.data(0), y_stride as usize, aligned_y_stride as usize, dim_y as usize, y_height as usize),
-                    u_plane: copy_plane(yuv_frame.data(1), u_stride as usize, aligned_u_stride as usize, dim_uv as usize, uv_height as usize),
-                    v_plane: copy_plane(yuv_frame.data(2), v_stride as usize, aligned_v_stride as usize, dim_uv as usize, uv_height as usize),
+                    y_plane: copy_plane_optimized(nv12_frame.data(0), y_stride, aligned_y_stride, w, h),
+                    u_plane: copy_plane_optimized(nv12_frame.data(1), uv_stride, aligned_uv_stride, w, uv_height),
+                    v_plane: Vec::new(),  // NV12 has no separate V plane
                     y_stride: aligned_y_stride,
-                    u_stride: aligned_u_stride,
-                    v_stride: aligned_v_stride,
+                    u_stride: aligned_uv_stride,
+                    v_stride: 0,
                     timestamp_us: 0,
-                    format: PixelFormat::YUV420P,
+                    format: PixelFormat::NV12,
                     color_range,
                     color_space,
                 })
