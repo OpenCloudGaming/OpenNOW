@@ -2,7 +2,12 @@
 //!
 //! Provides hardware-level mouse input using Core Graphics event taps.
 //! Captures mouse deltas directly for responsive input without OS acceleration effects.
-//! Events are coalesced (batched) every 4ms like the official GFN client.
+//! Events are coalesced (batched) every 2ms like the official GFN client.
+//!
+//! Key optimizations matching official GFN client:
+//! - Lock-free event accumulation using atomics
+//! - Periodic flush timer to prevent event stalls
+//! - Local cursor tracking for instant visual feedback
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicPtr, Ordering};
 use std::ffi::c_void;
@@ -12,6 +17,10 @@ use parking_lot::Mutex;
 
 use crate::webrtc::InputEvent;
 use super::{get_timestamp_us, session_elapsed_us, MOUSE_COALESCE_INTERVAL_US};
+
+/// Maximum time between mouse flushes (microseconds)
+/// Even if no movement, flush periodically to prevent stale events
+const MAX_FLUSH_INTERVAL_US: u64 = 8_000; // 8ms = 125Hz minimum
 
 // Core Graphics bindings
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -153,14 +162,18 @@ static LOCAL_CURSOR_Y: AtomicI32 = AtomicI32::new(540);
 static LOCAL_CURSOR_WIDTH: AtomicI32 = AtomicI32::new(1920);
 static LOCAL_CURSOR_HEIGHT: AtomicI32 = AtomicI32::new(1080);
 
-// Event sender
+// Event sender - use Mutex but minimize lock time
 static EVENT_SENDER: Mutex<Option<mpsc::Sender<InputEvent>>> = Mutex::new(None);
 
 // Run loop reference for stopping (use AtomicPtr for thread-safety with raw pointers)
 static RUN_LOOP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static EVENT_TAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
+// Flush timer state
+static FLUSH_TIMER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 /// Flush coalesced mouse events
+/// Uses try_lock to avoid blocking the event tap callback
 #[inline]
 fn flush_coalesced_events() {
     let dx = COALESCE_DX.swap(0, Ordering::AcqRel);
@@ -171,13 +184,33 @@ fn flush_coalesced_events() {
         let now_us = session_elapsed_us();
         COALESCE_LAST_SEND_US.store(now_us, Ordering::Release);
 
-        let guard = EVENT_SENDER.lock();
-        if let Some(ref sender) = *guard {
-            let _ = sender.try_send(InputEvent::MouseMove {
-                dx: dx as i16,
-                dy: dy as i16,
-                timestamp_us,
-            });
+        // Log first few flushes to verify input flow
+        static FLUSH_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+        let count = FLUSH_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+        if count < 10 {
+            info!("Mouse flush #{}: dx={}, dy={}", count, dx, dy);
+        }
+
+        // Use try_lock to avoid blocking - if locked, events stay accumulated for next flush
+        if let Some(guard) = EVENT_SENDER.try_lock() {
+            if let Some(ref sender) = *guard {
+                if sender.try_send(InputEvent::MouseMove {
+                    dx: dx as i16,
+                    dy: dy as i16,
+                    timestamp_us,
+                }).is_err() {
+                    warn!("Mouse event channel full!");
+                }
+            } else if count < 5 {
+                warn!("EVENT_SENDER is None - raw input sender not configured!");
+            }
+        } else {
+            // Lock contention - put deltas back for next flush attempt
+            COALESCE_DX.fetch_add(dx, Ordering::Relaxed);
+            COALESCE_DY.fetch_add(dy, Ordering::Relaxed);
+            if count < 5 {
+                debug!("Lock contention, deferring mouse flush");
+            }
         }
     }
 }
@@ -250,15 +283,18 @@ extern "C" fn event_tap_callback(
                 let delta = CGEventGetIntegerValueField(event, CGEventField::ScrollWheelEventDeltaAxis1) as i16;
                 if delta != 0 {
                     let timestamp_us = get_timestamp_us();
-                    let guard = EVENT_SENDER.lock();
-                    if let Some(ref sender) = *guard {
-                        // macOS scroll is inverted compared to Windows, and uses different scale
-                        // Multiply by 120 to match Windows WHEEL_DELTA
-                        let _ = sender.try_send(InputEvent::MouseWheel {
-                            delta: delta * 120,
-                            timestamp_us,
-                        });
+                    // Use try_lock to avoid blocking the event tap callback
+                    if let Some(guard) = EVENT_SENDER.try_lock() {
+                        if let Some(ref sender) = *guard {
+                            // macOS scroll is inverted compared to Windows, and uses different scale
+                            // Multiply by 120 to match Windows WHEEL_DELTA
+                            let _ = sender.try_send(InputEvent::MouseWheel {
+                                delta: delta * 120,
+                                timestamp_us,
+                            });
+                        }
                     }
+                    // Note: scroll events dropped if lock contention, acceptable for wheel
                 }
             }
             _ => {}
@@ -268,10 +304,41 @@ extern "C" fn event_tap_callback(
     event
 }
 
+/// Start the periodic flush timer thread
+/// This ensures mouse events are sent even when there's no new input (prevents stalls)
+fn start_flush_timer() {
+    if FLUSH_TIMER_ACTIVE.swap(true, Ordering::SeqCst) {
+        return; // Already running
+    }
+
+    std::thread::spawn(|| {
+        info!("Mouse flush timer started ({}us interval)", MAX_FLUSH_INTERVAL_US);
+
+        while FLUSH_TIMER_ACTIVE.load(Ordering::SeqCst) && RAW_INPUT_REGISTERED.load(Ordering::SeqCst) {
+            // Sleep for flush interval
+            std::thread::sleep(std::time::Duration::from_micros(MAX_FLUSH_INTERVAL_US));
+
+            if RAW_INPUT_ACTIVE.load(Ordering::SeqCst) {
+                // Check if we should flush based on time since last send
+                let now_us = session_elapsed_us();
+                let last_us = COALESCE_LAST_SEND_US.load(Ordering::Acquire);
+
+                if now_us.saturating_sub(last_us) >= MOUSE_COALESCE_INTERVAL_US {
+                    flush_coalesced_events();
+                }
+            }
+        }
+
+        FLUSH_TIMER_ACTIVE.store(false, Ordering::SeqCst);
+        debug!("Mouse flush timer stopped");
+    });
+}
+
 /// Start raw input capture
 pub fn start_raw_input() -> Result<(), String> {
     if RAW_INPUT_REGISTERED.load(Ordering::SeqCst) {
         RAW_INPUT_ACTIVE.store(true, Ordering::SeqCst);
+        start_flush_timer(); // Ensure timer is running
         info!("Raw input resumed");
         return Ok(());
     }
@@ -325,6 +392,9 @@ pub fn start_raw_input() -> Result<(), String> {
             RAW_INPUT_ACTIVE.store(true, Ordering::SeqCst);
             info!("Raw input started - capturing mouse events via CGEventTap");
 
+            // Start the periodic flush timer
+            start_flush_timer();
+
             // Run the loop (blocks until stopped)
             CFRunLoopRun();
 
@@ -365,6 +435,7 @@ pub fn resume_raw_input() {
         ACCUMULATED_DX.store(0, Ordering::SeqCst);
         ACCUMULATED_DY.store(0, Ordering::SeqCst);
         RAW_INPUT_ACTIVE.store(true, Ordering::SeqCst);
+        start_flush_timer(); // Ensure timer is running
         debug!("Raw input resumed");
     }
 }
@@ -372,6 +443,9 @@ pub fn resume_raw_input() {
 /// Stop raw input completely
 pub fn stop_raw_input() {
     RAW_INPUT_ACTIVE.store(false, Ordering::SeqCst);
+
+    // Stop the flush timer
+    FLUSH_TIMER_ACTIVE.store(false, Ordering::SeqCst);
 
     // Stop the run loop
     let run_loop = RUN_LOOP.swap(std::ptr::null_mut(), Ordering::AcqRel);

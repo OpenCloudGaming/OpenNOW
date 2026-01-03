@@ -41,7 +41,7 @@ gilrs = "0.11"
 
 # Window & Graphics
 winit = "0.30"
-wgpu = "27"
+wgpu = { version = "28", features = ["wgpu-core", "metal"] }
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 
@@ -88,6 +88,12 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Gdi",
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
+    # D3D11/DXGI for zero-copy video
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Security",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -95,9 +101,15 @@ core-foundation = "0.10"
 core-graphics = "0.24"
 cocoa = "0.26"
 objc = "0.2"
-# Zero-copy video: VideoToolbox -> IOSurface -> Metal texture
-metal = "0.31"
+# Zero-copy video: VideoToolbox -> IOSurface -> Metal texture -> wgpu
+metal = "0.33"
+wgpu-hal = { version = "28", features = ["metal"] }
+foreign-types = "0.5"
 block = "0.1"
+
+[target.'cfg(windows)'.dependencies.wgpu-hal]
+version = "28"
+features = ["dx12"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.12"
@@ -111,3 +123,15 @@ strip = true
 
 [profile.dev]
 opt-level = 1
+
+# Force all dependencies to use wgpu 28 (needed for External Texture support)
+# Using forked egui with wgpu 28 support
+[patch.crates-io]
+wgpu = { git = "https://github.com/gfx-rs/wgpu", tag = "v28.0.0" }
+wgpu-core = { git = "https://github.com/gfx-rs/wgpu", tag = "v28.0.0" }
+wgpu-types = { git = "https://github.com/gfx-rs/wgpu", tag = "v28.0.0" }
+wgpu-hal = { git = "https://github.com/gfx-rs/wgpu", tag = "v28.0.0" }
+naga = { git = "https://github.com/gfx-rs/wgpu", tag = "v28.0.0" }
+egui-wgpu = { git = "https://github.com/zortos293/egui", branch = "wgpu-28" }
+egui-winit = { git = "https://github.com/zortos293/egui", branch = "wgpu-28" }
+egui = { git = "https://github.com/zortos293/egui", branch = "wgpu-28" }

@@ -48,15 +48,15 @@ pub fn detect_gpu_vendor() -> GpuVendor {
         // but wgpu adapter request is async
         pollster::block_on(async {
             let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());  // Needs borrow
-            
-            // Enumerate all available adapters
-            let adapters = instance.enumerate_adapters(wgpu::Backends::all());
-            
+
+            // Enumerate all available adapters (wgpu 28 returns a Future)
+            let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
+
             let mut best_score = -1;
             let mut best_vendor = GpuVendor::Unknown;
-            
+
             info!("Available GPU adapters:");
-            
+
             for adapter in adapters {
                 let info = adapter.get_info();
                 let name = info.name.to_lowercase();
@@ -950,9 +950,6 @@ impl VideoDecoder {
             return None;
         }
 
-        // Hardware frame detected - need to transfer to system memory
-        debug!("Transferring hardware frame (format: {:?}) to system memory", format);
-
         unsafe {
             use ffmpeg::ffi::*;
 
@@ -964,6 +961,7 @@ impl VideoDecoder {
             }
 
             // Transfer data from hardware frame to software frame
+            // This is the main latency source - GPU to CPU copy
             let ret = av_hwframe_transfer_data(sw_frame_ptr, frame.as_ptr(), 0);
             if ret < 0 {
                 warn!("Failed to transfer hardware frame to software (error {})", ret);
@@ -976,7 +974,6 @@ impl VideoDecoder {
             (*sw_frame_ptr).height = frame.height() as i32;
 
             // Wrap in FFmpeg frame type
-            // Note: This creates an owned frame that will be freed when dropped
             Some(FfmpegFrame::wrap(sw_frame_ptr))
         }
     }
@@ -1040,29 +1037,122 @@ impl VideoDecoder {
                 let h = frame.height();
                 let format = frame.format();
 
-                // Check if this is a hardware frame (e.g., VideoToolbox, CUDA, etc.)
-                // Hardware frames need to be transferred to system memory
-                let sw_frame = Self::transfer_hw_frame_if_needed(&frame);
-                let frame_to_use = sw_frame.as_ref().unwrap_or(&frame);
-                let actual_format = frame_to_use.format();
-
-                // Extract color metadata
-                let color_range = match frame_to_use.color_range() {
+                // Extract color metadata from original frame
+                let color_range = match frame.color_range() {
                     ffmpeg::util::color::range::Range::JPEG => ColorRange::Full,
                     ffmpeg::util::color::range::Range::MPEG => ColorRange::Limited,
-                    _ => ColorRange::Limited, // Default to limited if unspecified (safest for video)
+                    _ => ColorRange::Limited,
                 };
 
-                let color_space = match frame_to_use.color_space() {
+                let color_space = match frame.color_space() {
                     ffmpeg::util::color::space::Space::BT709 => ColorSpace::BT709,
                     ffmpeg::util::color::space::Space::BT470BG => ColorSpace::BT601,
                     ffmpeg::util::color::space::Space::SMPTE170M => ColorSpace::BT601,
                     ffmpeg::util::color::space::Space::BT2020NCL => ColorSpace::BT2020,
-                    _ => ColorSpace::BT709, // Default to BT.709 for HD content
+                    _ => ColorSpace::BT709,
                 };
 
+                // ZERO-COPY PATH: For VideoToolbox, extract CVPixelBuffer directly
+                // This skips the expensive GPU->CPU->GPU copy entirely
+                #[cfg(target_os = "macos")]
+                if format == Pixel::VIDEOTOOLBOX {
+                    use crate::media::videotoolbox;
+                    use std::sync::Arc;
+
+                    // Extract CVPixelBuffer from frame.data[3] using raw FFmpeg pointer
+                    // We use unsafe FFI because the safe wrapper does bounds checking
+                    // that doesn't work for hardware frames
+                    let cv_buffer = unsafe {
+                        let raw_frame = frame.as_ptr();
+                        let data_ptr = (*raw_frame).data[3] as *mut u8;
+                        if !data_ptr.is_null() {
+                            videotoolbox::extract_cv_pixel_buffer_from_data(data_ptr)
+                        } else {
+                            None
+                        }
+                    };
+
+                    if let Some(buffer) = cv_buffer {
+                        if *frames_decoded == 1 {
+                            info!("ZERO-COPY: First frame {}x{} via CVPixelBuffer (no CPU transfer!)", w, h);
+                        }
+
+                        *width = w;
+                        *height = h;
+
+                        return Some(VideoFrame {
+                            width: w,
+                            height: h,
+                            y_plane: Vec::new(),
+                            u_plane: Vec::new(),
+                            v_plane: Vec::new(),
+                            y_stride: 0,
+                            u_stride: 0,
+                            v_stride: 0,
+                            timestamp_us: 0,
+                            format: PixelFormat::NV12,
+                            color_range,
+                            color_space,
+                            gpu_frame: Some(Arc::new(buffer)),
+                        });
+                    } else {
+                        warn!("Failed to extract CVPixelBuffer, falling back to CPU transfer");
+                    }
+                }
+
+                // ZERO-COPY PATH: For D3D11VA, extract D3D11 texture directly
+                // This skips the expensive GPU->CPU->GPU copy entirely
+                #[cfg(target_os = "windows")]
+                if format == Pixel::D3D11 || format == Pixel::D3D11VA_VLD {
+                    use crate::media::d3d11;
+                    use std::sync::Arc;
+
+                    // Extract D3D11 texture from frame data
+                    // FFmpeg D3D11VA frame layout:
+                    // - data[0] = ID3D11Texture2D*
+                    // - data[1] = texture array index (as intptr_t)
+                    let d3d11_texture = unsafe {
+                        let raw_frame = frame.as_ptr();
+                        let data0 = (*raw_frame).data[0] as *mut u8;
+                        let data1 = (*raw_frame).data[1] as *mut u8;
+                        d3d11::extract_d3d11_texture_from_frame(data0, data1)
+                    };
+
+                    if let Some(texture) = d3d11_texture {
+                        if *frames_decoded == 1 {
+                            info!("ZERO-COPY: First frame {}x{} via D3D11 texture (no CPU transfer!)", w, h);
+                        }
+
+                        *width = w;
+                        *height = h;
+
+                        return Some(VideoFrame {
+                            width: w,
+                            height: h,
+                            y_plane: Vec::new(),
+                            u_plane: Vec::new(),
+                            v_plane: Vec::new(),
+                            y_stride: 0,
+                            u_stride: 0,
+                            v_stride: 0,
+                            timestamp_us: 0,
+                            format: PixelFormat::NV12,
+                            color_range,
+                            color_space,
+                            gpu_frame: Some(Arc::new(texture)),
+                        });
+                    } else {
+                        warn!("Failed to extract D3D11 texture, falling back to CPU transfer");
+                    }
+                }
+
+                // FALLBACK: Transfer hardware frame to CPU memory
+                let sw_frame = Self::transfer_hw_frame_if_needed(&frame);
+                let frame_to_use = sw_frame.as_ref().unwrap_or(&frame);
+                let actual_format = frame_to_use.format();
+
                 if *frames_decoded == 1 {
-                    info!("First decoded frame: {}x{}, format: {:?} (hw: {:?}), range: {:?}, space: {:?}", 
+                    info!("First decoded frame: {}x{}, format: {:?} (hw: {:?}), range: {:?}, space: {:?}",
                         w, h, actual_format, format, color_range, color_space);
                 }
 
@@ -1126,6 +1216,10 @@ impl VideoDecoder {
                         format: PixelFormat::NV12,
                         color_range,
                         color_space,
+                        #[cfg(target_os = "macos")]
+                        gpu_frame: None,
+                        #[cfg(target_os = "windows")]
+                        gpu_frame: None,
                     });
                 }
 
@@ -1219,6 +1313,10 @@ impl VideoDecoder {
                     format: PixelFormat::NV12,
                     color_range,
                     color_space,
+                    #[cfg(target_os = "macos")]
+                    gpu_frame: None,
+                    #[cfg(target_os = "windows")]
+                    gpu_frame: None,
                 })
             }
             Err(ffmpeg::Error::Other { errno }) if errno == libc::EAGAIN => None,

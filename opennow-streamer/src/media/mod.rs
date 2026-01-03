@@ -9,12 +9,18 @@ mod rtp;
 #[cfg(target_os = "macos")]
 pub mod videotoolbox;
 
+#[cfg(target_os = "windows")]
+pub mod d3d11;
+
 pub use video::{VideoDecoder, DecodeStats, is_av1_hardware_supported, get_supported_decoder_backends};
 pub use rtp::{RtpDepacketizer, DepacketizerCodec};
 pub use audio::*;
 
 #[cfg(target_os = "macos")]
-pub use videotoolbox::{ZeroCopyFrame, ZeroCopyTextureManager, CVPixelBufferWrapper};
+pub use videotoolbox::{ZeroCopyFrame, ZeroCopyTextureManager, CVPixelBufferWrapper, LockedPlanes, CVMetalTexture, MetalVideoRenderer};
+
+#[cfg(target_os = "windows")]
+pub use d3d11::{D3D11TextureWrapper, D3D11ZeroCopyManager, LockedPlanes as D3D11LockedPlanes};
 
 /// Pixel format of decoded video frame
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -50,6 +56,14 @@ pub struct VideoFrame {
     pub color_range: ColorRange,
     /// Color space (matrix coefficients)
     pub color_space: ColorSpace,
+    /// Zero-copy GPU buffer (macOS VideoToolbox only)
+    /// When present, y_plane/u_plane are empty and rendering uses this directly
+    #[cfg(target_os = "macos")]
+    pub gpu_frame: Option<std::sync::Arc<CVPixelBufferWrapper>>,
+    /// Zero-copy GPU texture (Windows D3D11VA only)
+    /// When present, y_plane/u_plane are empty and rendering imports this directly
+    #[cfg(target_os = "windows")]
+    pub gpu_frame: Option<std::sync::Arc<D3D11TextureWrapper>>,
 }
 
 /// Video color range
@@ -93,6 +107,10 @@ impl VideoFrame {
             format: PixelFormat::YUV420P,
             color_range: ColorRange::Limited,
             color_space: ColorSpace::BT709,
+            #[cfg(target_os = "macos")]
+            gpu_frame: None,
+            #[cfg(target_os = "windows")]
+            gpu_frame: None,
         }
     }
 
@@ -202,6 +220,8 @@ pub struct StreamStats {
     pub packet_loss: f32,
     /// Network jitter in ms
     pub jitter_ms: f32,
+    /// Network RTT (round-trip time) in ms from ICE candidate pair
+    pub rtt_ms: f32,
     /// Total frames received
     pub frames_received: u64,
     /// Total frames decoded
@@ -210,6 +230,14 @@ pub struct StreamStats {
     pub frames_dropped: u64,
     /// Total frames rendered
     pub frames_rendered: u64,
+    /// Input events sent per second
+    pub input_rate: f32,
+    /// Frame delivery latency (RTP arrival to decode complete) in ms
+    pub frame_delivery_ms: f32,
+    /// Estimated end-to-end latency in ms (decode_time + estimated network)
+    pub estimated_e2e_ms: f32,
+    /// Audio buffer level in ms
+    pub audio_buffer_ms: f32,
 }
 
 impl StreamStats {

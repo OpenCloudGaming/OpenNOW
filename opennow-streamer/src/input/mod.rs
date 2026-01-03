@@ -171,8 +171,8 @@ use winit::event::{ElementState, MouseButton};
 use crate::webrtc::{InputEvent, InputEncoder};
 
 /// Mouse event coalescing interval in microseconds
-/// Official client uses 4-16ms depending on browser, we use 4ms for lowest latency
-pub const MOUSE_COALESCE_INTERVAL_US: u64 = 4_000; // 4ms = 250Hz effective rate
+/// Official client uses 4-16ms depending on browser, we use 2ms for lowest latency
+pub const MOUSE_COALESCE_INTERVAL_US: u64 = 2_000; // 2ms = 500Hz effective rate
 
 /// Maximum input queue depth before throttling
 /// Official client maintains 4-8 events ahead of consumption

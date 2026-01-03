@@ -1,13 +1,15 @@
 //! Audio Decoder and Player
 //!
 //! Decode Opus audio using FFmpeg and play through cpal.
+//! Optimized for low-latency streaming with jitter buffer.
 
 use anyhow::{Result, Context, anyhow};
-use log::{info, error, debug};
+use log::{info, error, debug, warn};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 extern crate ffmpeg_next as ffmpeg;
 
@@ -15,20 +17,24 @@ use ffmpeg::codec::{decoder, context::Context as CodecContext};
 use ffmpeg::Packet;
 
 /// Audio decoder using FFmpeg for Opus
+/// Non-blocking: decoded samples are sent to a channel
 pub struct AudioDecoder {
     cmd_tx: mpsc::Sender<AudioCommand>,
-    frame_rx: mpsc::Receiver<Vec<i16>>,
+    /// For async decoding - samples come out here
+    sample_rx: Option<tokio::sync::mpsc::Receiver<Vec<i16>>>,
     sample_rate: u32,
     channels: u32,
 }
 
 enum AudioCommand {
-    Decode(Vec<u8>),
+    /// Decode audio and send result to channel
+    DecodeAsync(Vec<u8>),
     Stop,
 }
 
 impl AudioDecoder {
     /// Create a new Opus audio decoder using FFmpeg
+    /// Returns decoder and a receiver for decoded samples (for async operation)
     pub fn new(sample_rate: u32, channels: u32) -> Result<Self> {
         info!("Creating Opus audio decoder: {}Hz, {} channels", sample_rate, channels);
 
@@ -37,7 +43,8 @@ impl AudioDecoder {
 
         // Create channels for thread communication
         let (cmd_tx, cmd_rx) = mpsc::channel::<AudioCommand>();
-        let (frame_tx, frame_rx) = mpsc::channel::<Vec<i16>>();
+        // Async channel for decoded samples - large buffer to prevent blocking
+        let (sample_tx, sample_rx) = tokio::sync::mpsc::channel::<Vec<i16>>(512);
 
         // Spawn decoder thread (FFmpeg types are not Send)
         let sample_rate_clone = sample_rate;
@@ -55,9 +62,6 @@ impl AudioDecoder {
 
             let ctx = CodecContext::new_with_codec(codec);
 
-            // Set parameters for Opus
-            // Note: FFmpeg Opus decoder auto-detects most parameters from the bitstream
-
             let mut decoder = match ctx.decoder().audio() {
                 Ok(d) => d,
                 Err(e) => {
@@ -66,13 +70,16 @@ impl AudioDecoder {
                 }
             };
 
-            info!("Opus audio decoder initialized");
+            info!("Opus audio decoder initialized (async mode)");
 
             while let Ok(cmd) = cmd_rx.recv() {
                 match cmd {
-                    AudioCommand::Decode(data) => {
+                    AudioCommand::DecodeAsync(data) => {
                         let samples = Self::decode_opus_packet(&mut decoder, &data, sample_rate_clone, channels_clone);
-                        let _ = frame_tx.send(samples);
+                        if !samples.is_empty() {
+                            // Non-blocking send - drop samples if channel is full
+                            let _ = sample_tx.try_send(samples);
+                        }
                     }
                     AudioCommand::Stop => break,
                 }
@@ -83,10 +90,15 @@ impl AudioDecoder {
 
         Ok(Self {
             cmd_tx,
-            frame_rx,
+            sample_rx: Some(sample_rx),
             sample_rate,
             channels,
         })
+    }
+
+    /// Take the sample receiver (for passing to audio player thread)
+    pub fn take_sample_receiver(&mut self) -> Option<tokio::sync::mpsc::Receiver<Vec<i16>>> {
+        self.sample_rx.take()
     }
 
     /// Decode an Opus packet from RTP payload
@@ -208,15 +220,10 @@ impl AudioDecoder {
         output
     }
 
-    /// Decode an Opus packet (sends to decoder thread)
-    pub fn decode(&mut self, data: &[u8]) -> Result<Vec<i16>> {
-        self.cmd_tx.send(AudioCommand::Decode(data.to_vec()))
-            .map_err(|_| anyhow!("Audio decoder thread closed"))?;
-
-        match self.frame_rx.recv() {
-            Ok(samples) => Ok(samples),
-            Err(_) => Err(anyhow!("Audio decoder thread closed")),
-        }
+    /// Decode an Opus packet asynchronously (non-blocking, fire-and-forget)
+    /// Decoded samples are sent to the sample_rx channel
+    pub fn decode_async(&self, data: &[u8]) {
+        let _ = self.cmd_tx.send(AudioCommand::DecodeAsync(data.to_vec()));
     }
 
     /// Get sample rate
@@ -236,68 +243,84 @@ impl Drop for AudioDecoder {
     }
 }
 
-/// Audio player using cpal
+/// Audio player using cpal with optimized lock-free-ish ring buffer
 pub struct AudioPlayer {
     sample_rate: u32,
     channels: u32,
-    buffer: Arc<Mutex<AudioBuffer>>,
+    buffer: Arc<AudioRingBuffer>,
     _stream: Option<cpal::Stream>,
 }
 
-struct AudioBuffer {
-    samples: Vec<i16>,
-    read_pos: usize,
-    write_pos: usize,
+/// Lock-free ring buffer for audio samples
+/// Uses atomic indices for read/write positions to minimize lock contention
+pub struct AudioRingBuffer {
+    samples: Mutex<Vec<i16>>,
+    read_pos: AtomicUsize,
+    write_pos: AtomicUsize,
     capacity: usize,
-    total_written: u64,
-    total_read: u64,
 }
 
-impl AudioBuffer {
+impl AudioRingBuffer {
     fn new(capacity: usize) -> Self {
         Self {
-            samples: vec![0i16; capacity],
-            read_pos: 0,
-            write_pos: 0,
+            samples: Mutex::new(vec![0i16; capacity]),
+            read_pos: AtomicUsize::new(0),
+            write_pos: AtomicUsize::new(0),
             capacity,
-            total_written: 0,
-            total_read: 0,
         }
     }
 
     fn available(&self) -> usize {
-        if self.write_pos >= self.read_pos {
-            self.write_pos - self.read_pos
+        let write = self.write_pos.load(Ordering::Acquire);
+        let read = self.read_pos.load(Ordering::Acquire);
+        if write >= read {
+            write - read
         } else {
-            self.capacity - self.read_pos + self.write_pos
+            self.capacity - read + write
         }
     }
 
-    fn write(&mut self, data: &[i16]) {
+    fn free_space(&self) -> usize {
+        self.capacity - 1 - self.available()
+    }
+
+    /// Write samples to buffer (called from decoder thread)
+    fn write(&self, data: &[i16]) {
+        let mut samples = self.samples.lock();
+        let mut write_pos = self.write_pos.load(Ordering::Acquire);
+        let read_pos = self.read_pos.load(Ordering::Acquire);
+
         for &sample in data {
-            let next_pos = (self.write_pos + 1) % self.capacity;
-            // Don't overwrite unread data (drop samples if buffer is full)
-            if next_pos != self.read_pos {
-                self.samples[self.write_pos] = sample;
-                self.write_pos = next_pos;
-                self.total_written += 1;
+            let next_pos = (write_pos + 1) % self.capacity;
+            // Don't overwrite unread data
+            if next_pos != read_pos {
+                samples[write_pos] = sample;
+                write_pos = next_pos;
+            } else {
+                // Buffer full - drop remaining samples
+                break;
             }
         }
+
+        self.write_pos.store(write_pos, Ordering::Release);
     }
 
-    fn read(&mut self, out: &mut [i16]) -> usize {
-        let mut count = 0;
+    /// Read samples from buffer (called from audio callback - must be fast!)
+    fn read(&self, out: &mut [i16]) {
+        let mut samples = self.samples.lock();
+        let write_pos = self.write_pos.load(Ordering::Acquire);
+        let mut read_pos = self.read_pos.load(Ordering::Acquire);
+
         for sample in out.iter_mut() {
-            if self.read_pos == self.write_pos {
+            if read_pos == write_pos {
                 *sample = 0; // Underrun - output silence
             } else {
-                *sample = self.samples[self.read_pos];
-                self.read_pos = (self.read_pos + 1) % self.capacity;
-                count += 1;
-                self.total_read += 1;
+                *sample = samples[read_pos];
+                read_pos = (read_pos + 1) % self.capacity;
             }
         }
-        count
+
+        self.read_pos.store(read_pos, Ordering::Release);
     }
 }
 
@@ -393,28 +416,32 @@ impl AudioPlayer {
         info!("Using audio config: {}Hz, {} channels, format {:?}",
             actual_rate.0, actual_channels, sample_format);
 
-        // Buffer for ~20ms of audio (ultra-low latency for gaming)
-        // 48000Hz * 2ch * 0.02s = 1920 samples
-        // Note: If audio crackles, increase to 30-40ms
-        let buffer_size = (actual_rate.0 as usize) * (actual_channels as usize) * 20 / 1000;
-        let buffer = Arc::new(Mutex::new(AudioBuffer::new(buffer_size)));
+        // Buffer for ~150ms of audio (handles network jitter)
+        // 48000Hz * 2ch * 0.15s = 14400 samples
+        // Larger buffer prevents underruns from network jitter
+        let buffer_size = (actual_rate.0 as usize) * (actual_channels as usize) * 150 / 1000;
+        let buffer = Arc::new(AudioRingBuffer::new(buffer_size));
+
+        info!("Audio buffer size: {} samples (~{}ms)", buffer_size,
+            buffer_size * 1000 / (actual_rate.0 as usize * actual_channels as usize));
 
         let config = supported_range.with_sample_rate(actual_rate).into();
 
         let buffer_clone = buffer.clone();
 
         // Build stream based on sample format
+        // The callback reads from the ring buffer - optimized for low latency
         let stream = match sample_format {
             SampleFormat::F32 => {
+                let buffer_f32 = buffer_clone.clone();
                 device.build_output_stream(
                     &config,
                     move |data: &mut [f32], _| {
-                        let mut buf = buffer_clone.lock();
-                        // Read i16 samples and convert to f32
-                        for sample in data.iter_mut() {
-                            let mut i16_sample = [0i16; 1];
-                            buf.read(&mut i16_sample);
-                            *sample = i16_sample[0] as f32 / 32768.0;
+                        // Read i16 samples in bulk and convert to f32
+                        let mut i16_buf = vec![0i16; data.len()];
+                        buffer_f32.read(&mut i16_buf);
+                        for (out, &sample) in data.iter_mut().zip(i16_buf.iter()) {
+                            *out = sample as f32 / 32768.0;
                         }
                     },
                     |err| {
@@ -424,11 +451,11 @@ impl AudioPlayer {
                 ).context("Failed to create f32 audio stream")?
             }
             SampleFormat::I16 => {
+                let buffer_i16 = buffer_clone.clone();
                 device.build_output_stream(
                     &config,
                     move |data: &mut [i16], _| {
-                        let mut buf = buffer_clone.lock();
-                        buf.read(data);
+                        buffer_i16.read(data);
                     },
                     |err| {
                         error!("Audio stream error: {}", err);
@@ -438,14 +465,14 @@ impl AudioPlayer {
             }
             _ => {
                 // Fallback: try f32 anyway
+                let buffer_fallback = buffer_clone.clone();
                 device.build_output_stream(
                     &config,
                     move |data: &mut [f32], _| {
-                        let mut buf = buffer_clone.lock();
-                        for sample in data.iter_mut() {
-                            let mut i16_sample = [0i16; 1];
-                            buf.read(&mut i16_sample);
-                            *sample = i16_sample[0] as f32 / 32768.0;
+                        let mut i16_buf = vec![0i16; data.len()];
+                        buffer_fallback.read(&mut i16_buf);
+                        for (out, &sample) in data.iter_mut().zip(i16_buf.iter()) {
+                            *out = sample as f32 / 32768.0;
                         }
                     },
                     |err| {
@@ -470,14 +497,12 @@ impl AudioPlayer {
 
     /// Push audio samples to the player
     pub fn push_samples(&self, samples: &[i16]) {
-        let mut buffer = self.buffer.lock();
-        buffer.write(samples);
+        self.buffer.write(samples);
     }
 
-    /// Get buffer status (for debugging)
-    pub fn buffer_status(&self) -> (usize, u64, u64) {
-        let buffer = self.buffer.lock();
-        (buffer.available(), buffer.total_written, buffer.total_read)
+    /// Get buffer fill level
+    pub fn buffer_available(&self) -> usize {
+        self.buffer.available()
     }
 
     /// Get sample rate

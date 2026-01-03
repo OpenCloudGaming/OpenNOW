@@ -551,4 +551,77 @@ impl WebRtcPeer {
     pub fn is_handshake_complete(&self) -> bool {
         self.handshake_complete
     }
+
+    /// Get RTT (round-trip time) from ICE candidate pair stats
+    /// Returns None if no active candidate pair or stats unavailable
+    pub async fn get_rtt_ms(&self) -> Option<f32> {
+        let pc = self.peer_connection.as_ref()?;
+        let stats = pc.get_stats().await;
+
+        // Look for ICE candidate pair stats with RTT
+        for (_, stat) in stats.reports.iter() {
+            if let webrtc::stats::StatsReportType::CandidatePair(pair) = stat {
+                // Only use nominated/active pairs
+                if pair.nominated && pair.current_round_trip_time > 0.0 {
+                    // current_round_trip_time is in seconds, convert to ms
+                    return Some((pair.current_round_trip_time * 1000.0) as f32);
+                }
+            }
+        }
+        None
+    }
+
+    /// Get comprehensive network stats (RTT, jitter, packet loss)
+    pub async fn get_network_stats(&self) -> NetworkStats {
+        let mut stats = NetworkStats::default();
+
+        let Some(pc) = self.peer_connection.as_ref() else {
+            return stats;
+        };
+
+        let report = pc.get_stats().await;
+
+        // Debug: log candidate pair stats once
+        static LOGGED_STATS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let should_log = !LOGGED_STATS.swap(true, std::sync::atomic::Ordering::Relaxed);
+
+        for (id, stat) in report.reports.iter() {
+            match stat {
+                webrtc::stats::StatsReportType::CandidatePair(pair) => {
+                    if should_log {
+                        info!("CandidatePair {}: nominated={}, state={:?}, rtt={}s",
+                              id, pair.nominated, pair.state, pair.current_round_trip_time);
+                    }
+                    // Use any pair with RTT data (not just nominated - ice-lite may behave differently)
+                    if pair.current_round_trip_time > 0.0 && stats.rtt_ms == 0.0 {
+                        stats.rtt_ms = (pair.current_round_trip_time * 1000.0) as f32;
+                    }
+                    if pair.nominated {
+                        stats.bytes_received = pair.bytes_received;
+                        stats.bytes_sent = pair.bytes_sent;
+                        stats.packets_received = pair.packets_received as u64;
+                    }
+                }
+                webrtc::stats::StatsReportType::InboundRTP(inbound) => {
+                    // Video track stats - packets_received available
+                    if inbound.kind == "video" {
+                        stats.video_packets_received = inbound.packets_received;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        stats
+    }
+}
+
+/// Network statistics from WebRTC
+#[derive(Debug, Clone, Default)]
+pub struct NetworkStats {
+    pub rtt_ms: f32,
+    pub packets_received: u64,
+    pub video_packets_received: u64,
+    pub bytes_received: u64,
+    pub bytes_sent: u64,
 }

@@ -316,14 +316,21 @@ pub fn render_settings_modal(
                     });
 
                 ui.add_space(24.0);
-                
-                // Close button centered
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                   if ui.button(egui::RichText::new("Close").size(16.0)).clicked() {
-                       actions.push(UiAction::ToggleSettingsModal);
-                   }
+
+                // Buttons row
+                ui.horizontal(|ui| {
+                    // Reset button on the left
+                    if ui.button(egui::RichText::new("Reset to Defaults").size(14.0).color(egui::Color32::from_rgb(200, 80, 80))).clicked() {
+                        actions.push(UiAction::ResetSettings);
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(egui::RichText::new("Close").size(16.0)).clicked() {
+                            actions.push(UiAction::ToggleSettingsModal);
+                        }
+                    });
                 });
-                
+
                 ui.add_space(8.0);
             });
         });
