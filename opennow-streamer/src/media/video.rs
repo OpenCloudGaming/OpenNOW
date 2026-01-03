@@ -626,9 +626,10 @@ impl VideoDecoder {
         AVPixelFormat::AV_PIX_FMT_NV12
     }
 
-    /// FFI Callback for format negotiation (Windows D3D11VA)
-    /// This callback is called by FFmpeg when it needs to select a pixel format.
-    /// For D3D11VA to work, we MUST initialize hw_frames_ctx here before returning D3D11 format.
+    /// FFI Callback for D3D11VA format negotiation (works on all Windows GPUs)
+    /// This produces D3D11 textures that can be shared with wgpu via DXGI handles
+    ///
+    /// CRITICAL: This callback must set up hw_frames_ctx for D3D11VA to work!
     #[cfg(target_os = "windows")]
     unsafe extern "C" fn get_d3d11va_format(
         ctx: *mut ffmpeg::ffi::AVCodecContext,
@@ -636,91 +637,116 @@ impl VideoDecoder {
     ) -> ffmpeg::ffi::AVPixelFormat {
         use ffmpeg::ffi::*;
 
-        // Check if D3D11 format is available in the list
+        // Check if D3D11 format is available
         let mut has_d3d11 = false;
-        let mut first_sw_format = AVPixelFormat::AV_PIX_FMT_NONE;
         let mut check_fmt = fmt;
         while *check_fmt != AVPixelFormat::AV_PIX_FMT_NONE {
             if *check_fmt == AVPixelFormat::AV_PIX_FMT_D3D11 {
                 has_d3d11 = true;
-            }
-            // Remember first software format as fallback
-            if first_sw_format == AVPixelFormat::AV_PIX_FMT_NONE {
-                match *check_fmt {
-                    AVPixelFormat::AV_PIX_FMT_NV12 |
-                    AVPixelFormat::AV_PIX_FMT_YUV420P |
-                    AVPixelFormat::AV_PIX_FMT_YUVJ420P |
-                    AVPixelFormat::AV_PIX_FMT_YUV420P10LE => {
-                        first_sw_format = *check_fmt;
-                    }
-                    _ => {}
-                }
+                break;
             }
             check_fmt = check_fmt.add(1);
         }
 
         if !has_d3d11 {
-            info!("get_format: D3D11 not in format list, using software format");
-            return if first_sw_format != AVPixelFormat::AV_PIX_FMT_NONE {
-                first_sw_format
-            } else {
-                *fmt // Return first available
-            };
+            warn!("get_format: D3D11 not in available formats list");
+            // Return the first available format
+            return *fmt;
         }
 
-        // We have D3D11 in the list - now we need to set up hw_frames_ctx
-        if ctx.is_null() {
-            warn!("get_format: ctx is null, cannot setup D3D11VA");
-            return first_sw_format;
-        }
-
-        // Check if we have a hw_device_ctx
+        // We need hw_device_ctx to create hw_frames_ctx
         if (*ctx).hw_device_ctx.is_null() {
-            warn!("get_format: hw_device_ctx is null, cannot setup D3D11VA hw_frames_ctx");
-            return first_sw_format;
+            warn!("get_format: hw_device_ctx is null, cannot use D3D11VA");
+            return *fmt;
         }
 
-        // If hw_frames_ctx is already set, just return D3D11
+        // Check if hw_frames_ctx already exists (might be called multiple times)
         if !(*ctx).hw_frames_ctx.is_null() {
             info!("get_format: hw_frames_ctx already set, selecting D3D11");
             return AVPixelFormat::AV_PIX_FMT_D3D11;
         }
 
-        // Allocate hw_frames_ctx from the hw_device_ctx
+        // Allocate hw_frames_ctx from hw_device_ctx
         let hw_frames_ref = av_hwframe_ctx_alloc((*ctx).hw_device_ctx);
         if hw_frames_ref.is_null() {
             warn!("get_format: Failed to allocate hw_frames_ctx");
-            return first_sw_format;
+            return *fmt;
         }
 
-        // Configure the hw_frames_ctx
+        // Configure the frames context
         let frames_ctx = (*hw_frames_ref).data as *mut AVHWFramesContext;
         (*frames_ctx).format = AVPixelFormat::AV_PIX_FMT_D3D11;
-        (*frames_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_NV12; // Software format for CPU transfer
+
+        // Determine sw_format based on codec and bit depth
+        // HEVC Main10 profile needs P010 (10-bit), others use NV12 (8-bit)
+        let sw_format = if (*ctx).codec_id == AVCodecID::AV_CODEC_ID_HEVC && (*ctx).profile == 2 {
+            // Main10 profile
+            info!("get_format: HEVC Main10 detected, using P010 format");
+            AVPixelFormat::AV_PIX_FMT_P010LE
+        } else if (*ctx).pix_fmt == AVPixelFormat::AV_PIX_FMT_YUV420P10LE
+               || (*ctx).pix_fmt == AVPixelFormat::AV_PIX_FMT_YUV420P10BE {
+            info!("get_format: 10-bit content detected, using P010 format");
+            AVPixelFormat::AV_PIX_FMT_P010LE
+        } else {
+            AVPixelFormat::AV_PIX_FMT_NV12
+        };
+
+        (*frames_ctx).sw_format = sw_format;
         (*frames_ctx).width = (*ctx).coded_width;
         (*frames_ctx).height = (*ctx).coded_height;
-        (*frames_ctx).initial_pool_size = 10; // Pool of D3D11 surfaces
+        (*frames_ctx).initial_pool_size = 20; // Larger pool for smoother decoding
 
-        // Initialize the hw_frames_ctx
+        info!("get_format: Configuring D3D11VA hw_frames_ctx: {}x{}, sw_format={:?}, pool_size=20",
+            (*ctx).coded_width, (*ctx).coded_height, sw_format as i32);
+
+        // Initialize the frames context
         let ret = av_hwframe_ctx_init(hw_frames_ref);
         if ret < 0 {
-            warn!("get_format: Failed to init hw_frames_ctx (error {})", ret);
+            // Try again with NV12 if P010 failed
+            if sw_format != AVPixelFormat::AV_PIX_FMT_NV12 {
+                warn!("get_format: P010 failed, trying NV12 fallback");
+                (*frames_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_NV12;
+                let ret2 = av_hwframe_ctx_init(hw_frames_ref);
+                if ret2 >= 0 {
+                    (*ctx).hw_frames_ctx = av_buffer_ref(hw_frames_ref);
+                    av_buffer_unref(&mut (hw_frames_ref as *mut _));
+                    info!("get_format: D3D11VA hw_frames_ctx initialized with NV12 fallback!");
+                    return AVPixelFormat::AV_PIX_FMT_D3D11;
+                }
+            }
+            warn!("get_format: Failed to initialize hw_frames_ctx (error {})", ret);
             av_buffer_unref(&mut (hw_frames_ref as *mut _));
-            return first_sw_format;
+            return *fmt;
         }
 
-        // Attach hw_frames_ctx to codec context
+        // Attach to codec context
         (*ctx).hw_frames_ctx = av_buffer_ref(hw_frames_ref);
         av_buffer_unref(&mut (hw_frames_ref as *mut _));
 
-        if (*ctx).hw_frames_ctx.is_null() {
-            warn!("get_format: Failed to ref hw_frames_ctx");
-            return first_sw_format;
+        info!("get_format: D3D11VA hw_frames_ctx initialized successfully - zero-copy enabled!");
+        AVPixelFormat::AV_PIX_FMT_D3D11
+    }
+
+    /// FFI Callback for CUDA format negotiation (NVIDIA CUVID)
+    #[cfg(target_os = "windows")]
+    unsafe extern "C" fn get_cuda_format(
+        _ctx: *mut ffmpeg::ffi::AVCodecContext,
+        fmt: *const ffmpeg::ffi::AVPixelFormat,
+    ) -> ffmpeg::ffi::AVPixelFormat {
+        use ffmpeg::ffi::*;
+
+        let mut check_fmt = fmt;
+        while *check_fmt != AVPixelFormat::AV_PIX_FMT_NONE {
+            if *check_fmt == AVPixelFormat::AV_PIX_FMT_CUDA {
+                info!("get_format: selecting CUDA hardware format");
+                return AVPixelFormat::AV_PIX_FMT_CUDA;
+            }
+            check_fmt = check_fmt.add(1);
         }
 
-        info!("get_format: D3D11VA hw_frames_ctx initialized ({}x{}), selecting D3D11",
-            (*ctx).coded_width, (*ctx).coded_height);
-        AVPixelFormat::AV_PIX_FMT_D3D11
+        // Fallback to NV12
+        info!("get_format: CUDA not available, falling back to NV12");
+        AVPixelFormat::AV_PIX_FMT_NV12
     }
 
     /// Create decoder, trying hardware acceleration based on preference
@@ -847,201 +873,334 @@ impl VideoDecoder {
         // Platform-specific hardware decoders (Windows/Linux)
         #[cfg(not(target_os = "macos"))]
         {
-            // Windows: Try manual D3D11VA initialization first (generic decoder + HW device)
-            // This is robust against missing specific decoder names like "hevc_d3d11va"
+            // Windows hardware decoder selection
+            // Priority: CUVID (NVIDIA) > QSV (Intel) > D3D11VA (universal but has driver issues)
             #[cfg(target_os = "windows")]
-            if backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::Dxva {
-                unsafe {
-                    use ffmpeg::ffi::*;
-                    use std::ptr;
+            if backend != VideoDecoderBackend::Software {
+                let gpu_vendor = detect_gpu_vendor();
 
-                    // Find the standard decoder (e.g., "h264", "hevc", "av1")
-                    if let Some(codec) = ffmpeg::codec::decoder::find(codec_id) {
-                        info!("Attempting manual D3D11VA setup for generic decoder: {}", codec.name());
-                        
-                        let mut ctx = CodecContext::new_with_codec(codec);
-                        let raw_ctx = ctx.as_mut_ptr();
+                // For NVIDIA GPUs, skip D3D11VA and use CUVID directly
+                // CUVID is more reliable and has lower latency on NVIDIA hardware
+                let try_d3d11va = gpu_vendor != GpuVendor::Nvidia
+                    && (backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::Dxva);
 
-                        // Create D3D11VA hardware device context
-                        let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
-                        let ret = av_hwdevice_ctx_create(
-                            &mut hw_device_ctx,
-                            AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA,
-                            ptr::null(),
-                            ptr::null_mut(),
-                            0,
-                        );
+                // Try D3D11VA for non-NVIDIA GPUs (AMD, Intel)
+                if try_d3d11va {
+                    info!("Attempting D3D11VA hardware acceleration (for AMD/Intel GPU)");
 
-                        if ret >= 0 && !hw_device_ctx.is_null() {
-                            (*raw_ctx).hw_device_ctx = av_buffer_ref(hw_device_ctx);
-                            av_buffer_unref(&mut hw_device_ctx);
-                            
-                            (*raw_ctx).get_format = Some(Self::get_d3d11va_format);
-                            (*raw_ctx).thread_count = 0;
+                    let codec = ffmpeg::codec::decoder::find(codec_id)
+                        .ok_or_else(|| anyhow!("Decoder not found for {:?}", codec_id));
 
-                            match ctx.decoder().video() {
+                    if let Ok(codec) = codec {
+                        let result = unsafe {
+                            use ffmpeg::ffi::*;
+                            use windows::core::Interface;
+                            use windows::Win32::Foundation::HMODULE;
+                            use windows::Win32::Graphics::Direct3D::*;
+                            use windows::Win32::Graphics::Direct3D11::*;
+
+                            // Create D3D11 device with VIDEO_SUPPORT flag
+                            // This is critical for D3D11VA to work properly
+                            let mut device: Option<ID3D11Device> = None;
+                            let mut context: Option<ID3D11DeviceContext> = None;
+                            let mut feature_level = D3D_FEATURE_LEVEL_11_0;
+
+                            let flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+
+                            let hr = D3D11CreateDevice(
+                                None, // Default adapter
+                                D3D_DRIVER_TYPE_HARDWARE,
+                                HMODULE::default(), // No software rasterizer
+                                flags,
+                                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+                                D3D11_SDK_VERSION,
+                                Some(&mut device),
+                                Some(&mut feature_level),
+                                Some(&mut context),
+                            );
+
+                            if hr.is_err() || device.is_none() {
+                                warn!("Failed to create D3D11 device with video support: {:?}", hr);
+                                // Fall through to CUVID/QSV
+                            } else {
+                                let device = device.unwrap();
+                                info!("Created D3D11 device with VIDEO_SUPPORT flag (feature level: {:?})", feature_level);
+
+                                // Enable multithread protection
+                                if let Ok(mt) = device.cast::<ID3D11Multithread>() {
+                                    mt.SetMultithreadProtected(true);
+                                }
+
+                                // Allocate hw_device_ctx and configure with our device
+                                let hw_device_ref = av_hwdevice_ctx_alloc(AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
+                                if !hw_device_ref.is_null() {
+                                    // Get the D3D11VA device context and set our device
+                                    // AVD3D11VADeviceContext structure: first field is ID3D11Device*
+                                    let hw_device_ctx = (*hw_device_ref).data as *mut AVHWDeviceContext;
+                                    let d3d11_device_hwctx = (*hw_device_ctx).hwctx as *mut *mut std::ffi::c_void;
+
+                                    // Set the device pointer (first field of AVD3D11VADeviceContext)
+                                    *d3d11_device_hwctx = std::mem::transmute_copy(&device);
+                                    std::mem::forget(device); // Don't drop, FFmpeg owns it now
+
+                                    // Initialize the device context
+                                    let ret = av_hwdevice_ctx_init(hw_device_ref);
+                                    if ret >= 0 {
+                                        info!("D3D11VA hw_device_ctx initialized with custom video device");
+
+                                        let mut ctx = CodecContext::new_with_codec(codec);
+                                        let raw_ctx = ctx.as_mut_ptr();
+
+                                        (*raw_ctx).hw_device_ctx = av_buffer_ref(hw_device_ref);
+                                        av_buffer_unref(&mut (hw_device_ref as *mut _));
+
+                                        // Set format callback to select D3D11 pixel format
+                                        (*raw_ctx).get_format = Some(Self::get_d3d11va_format);
+
+                                        // Low latency flags for streaming
+                                        (*raw_ctx).flags |= AV_CODEC_FLAG_LOW_DELAY as i32;
+                                        (*raw_ctx).flags2 |= AV_CODEC_FLAG2_FAST as i32;
+                                        (*raw_ctx).thread_count = 1; // Single thread for lowest latency
+
+                                        match ctx.decoder().video() {
+                                            Ok(decoder) => {
+                                                info!("D3D11VA hardware decoder opened successfully - zero-copy GPU decoding active!");
+                                                return Ok((decoder, true));
+                                            }
+                                            Err(e) => {
+                                                warn!("D3D11VA decoder failed to open: {:?}", e);
+                                            }
+                                        }
+                                    } else {
+                                        warn!("Failed to initialize D3D11VA device context (error {})", ret);
+                                        av_buffer_unref(&mut (hw_device_ref as *mut _));
+                                    }
+                                } else {
+                                    warn!("Failed to allocate D3D11VA device context");
+                                }
+                            }
+
+                            // D3D11VA failed, return error to try next backend
+                            Err(ffmpeg::Error::Bug)
+                        };
+
+                        match result {
+                            Ok(decoder) => {
+                                info!("D3D11VA hardware decoder opened successfully - zero-copy GPU decoding active!");
+                                return Ok((decoder, true));
+                            }
+                            Err(e) => {
+                                warn!("D3D11VA decoder failed to open: {:?}, trying other backends...", e);
+                            }
+                        }
+                    }
+                }
+
+                // Try dedicated hardware decoders (CUVID/QSV)
+                // CUVID for NVIDIA, QSV for Intel - these are the most reliable options
+                let qsv_available = check_qsv_available();
+
+                // Build prioritized list of hardware decoders to try
+                let hw_decoders: Vec<&str> = match codec_id {
+                    ffmpeg::codec::Id::H264 => {
+                        let mut list = Vec::new();
+                        // NVIDIA CUVID first (most reliable for NVIDIA)
+                        if gpu_vendor == GpuVendor::Nvidia || backend == VideoDecoderBackend::Cuvid {
+                            list.push("h264_cuvid");
+                        }
+                        // Intel QSV
+                        if (gpu_vendor == GpuVendor::Intel && qsv_available) || backend == VideoDecoderBackend::Qsv {
+                            list.push("h264_qsv");
+                        }
+                        // AMD AMF (if available)
+                        if gpu_vendor == GpuVendor::Amd {
+                            list.push("h264_amf");
+                        }
+                        // Generic fallbacks
+                        if !list.contains(&"h264_cuvid") { list.push("h264_cuvid"); }
+                        if !list.contains(&"h264_qsv") { list.push("h264_qsv"); }
+                        list
+                    }
+                    ffmpeg::codec::Id::HEVC => {
+                        let mut list = Vec::new();
+                        // NVIDIA CUVID first (most reliable for NVIDIA)
+                        if gpu_vendor == GpuVendor::Nvidia || backend == VideoDecoderBackend::Cuvid {
+                            list.push("hevc_cuvid");
+                        }
+                        // Intel QSV
+                        if (gpu_vendor == GpuVendor::Intel && qsv_available) || backend == VideoDecoderBackend::Qsv {
+                            list.push("hevc_qsv");
+                        }
+                        // AMD AMF (if available)
+                        if gpu_vendor == GpuVendor::Amd {
+                            list.push("hevc_amf");
+                        }
+                        // Generic fallbacks
+                        if !list.contains(&"hevc_cuvid") { list.push("hevc_cuvid"); }
+                        if !list.contains(&"hevc_qsv") { list.push("hevc_qsv"); }
+                        list
+                    }
+                    ffmpeg::codec::Id::AV1 => {
+                        let mut list = Vec::new();
+                        // NVIDIA CUVID first (RTX 30+ series)
+                        if gpu_vendor == GpuVendor::Nvidia || backend == VideoDecoderBackend::Cuvid {
+                            list.push("av1_cuvid");
+                        }
+                        // Intel QSV (11th gen+)
+                        if (gpu_vendor == GpuVendor::Intel && qsv_available) || backend == VideoDecoderBackend::Qsv {
+                            list.push("av1_qsv");
+                        }
+                        // Generic fallbacks
+                        if !list.contains(&"av1_cuvid") { list.push("av1_cuvid"); }
+                        if !list.contains(&"av1_qsv") { list.push("av1_qsv"); }
+                        list
+                    }
+                    _ => vec![],
+                };
+
+                info!("Trying hardware decoders for {:?}: {:?} (GPU: {:?})", codec_id, hw_decoders, gpu_vendor);
+
+                // Try each hardware decoder in order
+                for decoder_name in &hw_decoders {
+                    if let Some(hw_codec) = ffmpeg::codec::decoder::find_by_name(decoder_name) {
+                        info!("Found hardware decoder: {}, attempting to open...", decoder_name);
+
+                        // For CUVID decoders, we may need CUDA device context
+                        if decoder_name.contains("cuvid") {
+                            let result = unsafe {
+                                use ffmpeg::ffi::*;
+                                use std::ptr;
+
+                                let mut ctx = CodecContext::new_with_codec(hw_codec);
+                                let raw_ctx = ctx.as_mut_ptr();
+
+                                // Create CUDA device context for CUVID
+                                let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
+                                let ret = av_hwdevice_ctx_create(
+                                    &mut hw_device_ctx,
+                                    AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
+                                    ptr::null(),
+                                    ptr::null_mut(),
+                                    0,
+                                );
+
+                                if ret >= 0 && !hw_device_ctx.is_null() {
+                                    (*raw_ctx).hw_device_ctx = av_buffer_ref(hw_device_ctx);
+                                    av_buffer_unref(&mut hw_device_ctx);
+                                    (*raw_ctx).get_format = Some(Self::get_cuda_format);
+                                }
+
+                                // Set low latency flags for streaming
+                                (*raw_ctx).flags |= AV_CODEC_FLAG_LOW_DELAY as i32;
+                                (*raw_ctx).flags2 |= AV_CODEC_FLAG2_FAST as i32;
+
+                                ctx.decoder().video()
+                            };
+
+                            match result {
                                 Ok(decoder) => {
-                                    info!("D3D11VA hardware decoder created successfully (manual setup)");
+                                    info!("CUVID hardware decoder ({}) opened successfully - GPU decoding active!", decoder_name);
                                     return Ok((decoder, true));
                                 }
                                 Err(e) => {
-                                    warn!("Failed to open D3D11VA manually: {:?}", e);
+                                    warn!("Failed to open CUVID decoder {}: {:?}", decoder_name, e);
                                 }
                             }
                         } else {
-                            warn!("Failed to create D3D11VA device context (error {})", ret);
+                            // For QSV and other decoders, just open directly
+                            let mut ctx = CodecContext::new_with_codec(hw_codec);
+
+                            unsafe {
+                                let raw_ctx = ctx.as_mut_ptr();
+                                // Set low latency flags
+                                (*raw_ctx).flags |= ffmpeg::ffi::AV_CODEC_FLAG_LOW_DELAY as i32;
+                                (*raw_ctx).flags2 |= ffmpeg::ffi::AV_CODEC_FLAG2_FAST as i32;
+                            }
+
+                            match ctx.decoder().video() {
+                                Ok(decoder) => {
+                                    info!("Hardware decoder ({}) opened successfully - GPU decoding active!", decoder_name);
+                                    return Ok((decoder, true));
+                                }
+                                Err(e) => {
+                                    warn!("Failed to open hardware decoder {}: {:?}", decoder_name, e);
+                                }
+                            }
                         }
+                    } else {
+                        debug!("Hardware decoder not found in FFmpeg: {}", decoder_name);
                     }
                 }
+
+                warn!("All hardware decoders failed, will use software decoder");
             }
 
-            let hw_decoder_names: Vec<&str> = if backend == VideoDecoderBackend::Software {
-                info!("Hardware acceleration disabled by preference (Software selected)");
-                vec![]
-            } else if backend != VideoDecoderBackend::Auto {
-                // Explicit backend selection
-                match (backend, codec_id) {
-                    (VideoDecoderBackend::Cuvid, ffmpeg::codec::Id::H264) => vec!["h264_cuvid"],
-                    (VideoDecoderBackend::Cuvid, ffmpeg::codec::Id::HEVC) => vec!["hevc_cuvid"],
-                    (VideoDecoderBackend::Cuvid, ffmpeg::codec::Id::AV1) => vec!["av1_cuvid"],
-
-                    (VideoDecoderBackend::Qsv, ffmpeg::codec::Id::H264) => vec!["h264_qsv"],
-                    (VideoDecoderBackend::Qsv, ffmpeg::codec::Id::HEVC) => vec!["hevc_qsv"],
-                    (VideoDecoderBackend::Qsv, ffmpeg::codec::Id::AV1) => vec!["av1_qsv"],
-
-                    (VideoDecoderBackend::Vaapi, ffmpeg::codec::Id::H264) => vec!["h264_vaapi"],
-                    (VideoDecoderBackend::Vaapi, ffmpeg::codec::Id::HEVC) => vec!["hevc_vaapi"],
-                    (VideoDecoderBackend::Vaapi, ffmpeg::codec::Id::AV1) => vec!["av1_vaapi"],
-
-                    (VideoDecoderBackend::Dxva, ffmpeg::codec::Id::H264) => vec!["h264_d3d11va", "h264_dxva2"],
-                    (VideoDecoderBackend::Dxva, ffmpeg::codec::Id::HEVC) => vec!["hevc_d3d11va", "hevc_dxva2"],
-                    (VideoDecoderBackend::Dxva, ffmpeg::codec::Id::AV1) => vec!["av1_d3d11va", "av1_dxva2"],
-
-                    _ => {
-                        warn!("No decoder found for backend {:?} and codec {:?}", backend, codec_id);
-                        vec![]
-                    }
-                }
-            } else {
-                // Auto detection logic
+            // Linux hardware decoder handling
+            #[cfg(target_os = "linux")]
+            if backend != VideoDecoderBackend::Software {
                 let qsv_available = check_qsv_available();
                 let gpu_vendor = detect_gpu_vendor();
-                
-                match codec_id {
+
+                let hw_decoder_names: Vec<&str> = match codec_id {
                     ffmpeg::codec::Id::H264 => {
-                        #[cfg(target_os = "windows")]
-                        {
-                            let mut decoders = Vec::new();
-                            // Prioritize D3D11VA for zero-copy support
-                            decoders.push("h264_d3d11va"); 
-                            
-                            match gpu_vendor {
-                                GpuVendor::Nvidia => decoders.push("h264_cuvid"),
-                                GpuVendor::Intel if qsv_available => decoders.push("h264_qsv"),
-                                _ => {}
-                            }
-                            // Fallback
-                            decoders.push("h264_dxva2");
-                            decoders
+                        let mut decoders = Vec::new();
+                        match gpu_vendor {
+                            GpuVendor::Nvidia => decoders.push("h264_cuvid"),
+                            GpuVendor::Intel if qsv_available => decoders.push("h264_qsv"),
+                            GpuVendor::Amd => decoders.push("h264_vaapi"),
+                            _ => {}
                         }
-                        #[cfg(target_os = "linux")]
-                        {
-                            let mut decoders = Vec::new();
-                             match gpu_vendor {
-                                GpuVendor::Nvidia => decoders.push("h264_cuvid"),
-                                GpuVendor::Intel if qsv_available => decoders.push("h264_qsv"),
-                                GpuVendor::Amd => decoders.push("h264_vaapi"),
-                                _ => {}
-                            }
-                            if !decoders.contains(&"h264_cuvid") { decoders.push("h264_cuvid"); }
-                            if !decoders.contains(&"h264_vaapi") { decoders.push("h264_vaapi"); }
-                            if !decoders.contains(&"h264_qsv") && qsv_available { decoders.push("h264_qsv"); }
-                            decoders
-                        }
-                        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-                        vec![]
+                        if !decoders.contains(&"h264_cuvid") { decoders.push("h264_cuvid"); }
+                        if !decoders.contains(&"h264_vaapi") { decoders.push("h264_vaapi"); }
+                        if !decoders.contains(&"h264_qsv") && qsv_available { decoders.push("h264_qsv"); }
+                        decoders
                     }
                     ffmpeg::codec::Id::HEVC => {
-                        #[cfg(target_os = "windows")]
-                        {
-                            let mut decoders = Vec::new();
-                            // Prioritize D3D11VA for zero-copy support
-                            decoders.push("hevc_d3d11va"); 
-                            
-                            match gpu_vendor {
-                                GpuVendor::Nvidia => decoders.push("hevc_cuvid"),
-                                GpuVendor::Intel if qsv_available => decoders.push("hevc_qsv"),
-                                _ => {}
-                            }
-                            // Fallback
-                            decoders.push("hevc_dxva2");
-                            decoders
+                        let mut decoders = Vec::new();
+                        match gpu_vendor {
+                            GpuVendor::Nvidia => decoders.push("hevc_cuvid"),
+                            GpuVendor::Intel if qsv_available => decoders.push("hevc_qsv"),
+                            GpuVendor::Amd => decoders.push("hevc_vaapi"),
+                            _ => {}
                         }
-                        #[cfg(target_os = "linux")]
-                        {
-                            let mut decoders = Vec::new();
-                            match gpu_vendor {
-                                GpuVendor::Nvidia => decoders.push("hevc_cuvid"),
-                                GpuVendor::Intel if qsv_available => decoders.push("hevc_qsv"),
-                                GpuVendor::Amd => decoders.push("hevc_vaapi"),
-                                _ => {}
-                            }
-                            if !decoders.contains(&"hevc_cuvid") { decoders.push("hevc_cuvid"); }
-                            if !decoders.contains(&"hevc_vaapi") { decoders.push("hevc_vaapi"); }
-                            if !decoders.contains(&"hevc_qsv") && qsv_available { decoders.push("hevc_qsv"); }
-                            decoders
-                        }
-                        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-                        vec![]
+                        if !decoders.contains(&"hevc_cuvid") { decoders.push("hevc_cuvid"); }
+                        if !decoders.contains(&"hevc_vaapi") { decoders.push("hevc_vaapi"); }
+                        if !decoders.contains(&"hevc_qsv") && qsv_available { decoders.push("hevc_qsv"); }
+                        decoders
                     }
                     ffmpeg::codec::Id::AV1 => {
-                        #[cfg(target_os = "windows")]
-                        {
-                            let mut decoders = Vec::new();
-                            // Prioritize D3D11VA for zero-copy support
-                            decoders.push("av1_d3d11va");
-                            
-                            match gpu_vendor {
-                                GpuVendor::Nvidia => decoders.push("av1_cuvid"),
-                                GpuVendor::Intel if qsv_available => decoders.push("av1_qsv"),
-                                _ => {}
-                            }
-                            // Fallback
-                            decoders.push("av1_dxva2");
-                            decoders
+                        let mut decoders = Vec::new();
+                        match gpu_vendor {
+                            GpuVendor::Nvidia => decoders.push("av1_cuvid"),
+                            GpuVendor::Intel if qsv_available => decoders.push("av1_qsv"),
+                            GpuVendor::Amd => decoders.push("av1_vaapi"),
+                            _ => {}
                         }
-                        #[cfg(target_os = "linux")]
-                        {
-                            let mut decoders = Vec::new();
-                            match gpu_vendor {
-                                GpuVendor::Nvidia => decoders.push("av1_cuvid"),
-                                GpuVendor::Intel if qsv_available => decoders.push("av1_qsv"),
-                                GpuVendor::Amd => decoders.push("av1_vaapi"),
-                                _ => {}
-                            }
-                             if !decoders.contains(&"av1_cuvid") { decoders.push("av1_cuvid"); }
-                             if !decoders.contains(&"av1_vaapi") { decoders.push("av1_vaapi"); }
-                             if !decoders.contains(&"av1_qsv") && qsv_available { decoders.push("av1_qsv"); }
-                            decoders
-                        }
-                        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-                        vec![]
+                        if !decoders.contains(&"av1_cuvid") { decoders.push("av1_cuvid"); }
+                        if !decoders.contains(&"av1_vaapi") { decoders.push("av1_vaapi"); }
+                        if !decoders.contains(&"av1_qsv") && qsv_available { decoders.push("av1_qsv"); }
+                        decoders
                     }
                     _ => vec![],
-                }
-            };
+                };
 
-            if !hw_decoder_names.is_empty() {
-                info!("Attempting hardware decoders for {:?}: {:?}", codec_id, hw_decoder_names);
+                info!("Trying Linux hardware decoders for {:?}: {:?} (GPU: {:?})", codec_id, hw_decoder_names, gpu_vendor);
+
                 for hw_name in &hw_decoder_names {
                     if let Some(hw_codec) = ffmpeg::codec::decoder::find_by_name(hw_name) {
                         info!("Found hardware decoder: {}, attempting to open...", hw_name);
                         let mut ctx = CodecContext::new_with_codec(hw_codec);
-                        ctx.set_threading(ffmpeg::codec::threading::Config::count(4));
+
+                        unsafe {
+                            let raw_ctx = ctx.as_mut_ptr();
+                            // Set low latency flags
+                            (*raw_ctx).flags |= ffmpeg::ffi::AV_CODEC_FLAG_LOW_DELAY as i32;
+                            (*raw_ctx).flags2 |= ffmpeg::ffi::AV_CODEC_FLAG2_FAST as i32;
+                        }
 
                         match ctx.decoder().video() {
                             Ok(dec) => {
-                                info!("Successfully created hardware decoder: {}", hw_name);
+                                info!("Hardware decoder ({}) opened successfully - GPU decoding active!", hw_name);
                                 return Ok((dec, true));
                             }
                             Err(e) => {
@@ -1052,12 +1211,7 @@ impl VideoDecoder {
                         debug!("Hardware decoder not found: {}", hw_name);
                     }
                 }
-                
-                if backend != VideoDecoderBackend::Auto {
-                     warn!("Explicitly selected backend {:?} failed to initialize. Falling back to software.", backend);
-                }
-            } else if backend != VideoDecoderBackend::Software && backend != VideoDecoderBackend::Auto {
-                 warn!("No decoder mapped for explicit backend {:?} with codec {:?}", backend, codec_id);
+                warn!("All Linux hardware decoders failed, will use software decoder");
             }
         }
 
@@ -1316,60 +1470,73 @@ impl VideoDecoder {
                     let uv_stride = frame_to_use.stride(1) as u32;
                     let uv_height = h / 2;
 
-                    // GPU texture upload requires 256-byte aligned rows (wgpu restriction)
-                    let aligned_y_stride = Self::get_aligned_stride(w);
-                    let aligned_uv_stride = Self::get_aligned_stride(w);
-
                     let y_data = frame_to_use.data(0);
                     let uv_data = frame_to_use.data(1);
 
-                    // Optimized copy - fast path when strides match
-                    let copy_plane_fast = |src: &[u8], src_stride: u32, dst_stride: u32, width: u32, height: u32| -> Vec<u8> {
-                        let total_size = (dst_stride * height) as usize;
-                        if src_stride == dst_stride && src.len() >= total_size {
-                            // Fast path: single memcpy
-                            src[..total_size].to_vec()
-                        } else {
-                            // Slow path: row-by-row
-                            let mut dst = vec![0u8; total_size];
-                            for row in 0..height as usize {
-                                let src_start = row * src_stride as usize;
-                                let src_end = src_start + width as usize;
-                                let dst_start = row * dst_stride as usize;
-                                if src_end <= src.len() {
-                                    dst[dst_start..dst_start + width as usize]
-                                        .copy_from_slice(&src[src_start..src_end]);
-                                }
-                            }
-                            dst
+                    // Check if we actually have data
+                    if y_data.is_empty() || uv_data.is_empty() || y_stride == 0 {
+                        warn!("NV12 frame has empty data: y_len={}, uv_len={}, y_stride={}",
+                            y_data.len(), uv_data.len(), y_stride);
+                        // Fall through to scaler path
+                    } else {
+                        // GPU texture upload requires 256-byte aligned rows (wgpu restriction)
+                        let aligned_y_stride = Self::get_aligned_stride(w);
+                        let aligned_uv_stride = Self::get_aligned_stride(w);
+
+                        if *frames_decoded == 1 {
+                            info!("NV12 direct path: {}x{}, y_stride={}, uv_stride={}, y_len={}, uv_len={}",
+                                w, h, y_stride, uv_stride, y_data.len(), uv_data.len());
                         }
-                    };
 
-                    let y_plane = copy_plane_fast(y_data, y_stride, aligned_y_stride, w, h);
-                    let uv_plane = copy_plane_fast(uv_data, uv_stride, aligned_uv_stride, w, uv_height);
+                        // Optimized copy - fast path when strides match
+                        let copy_plane_fast = |src: &[u8], src_stride: u32, dst_stride: u32, copy_width: u32, height: u32| -> Vec<u8> {
+                            let total_size = (dst_stride * height) as usize;
+                            if src_stride == dst_stride && src.len() >= total_size {
+                                // Fast path: single memcpy
+                                src[..total_size].to_vec()
+                            } else {
+                                // Slow path: row-by-row
+                                let mut dst = vec![0u8; total_size];
+                                for row in 0..height as usize {
+                                    let src_start = row * src_stride as usize;
+                                    let src_end = src_start + copy_width as usize;
+                                    let dst_start = row * dst_stride as usize;
+                                    if src_end <= src.len() {
+                                        dst[dst_start..dst_start + copy_width as usize]
+                                            .copy_from_slice(&src[src_start..src_end]);
+                                    }
+                                }
+                                dst
+                            }
+                        };
 
-                    if *frames_decoded == 1 {
-                        info!("NV12 direct GPU path: {}x{} - bypassing CPU scaler", w, h);
+                        let y_plane = copy_plane_fast(y_data, y_stride, aligned_y_stride, w, h);
+                        let uv_plane = copy_plane_fast(uv_data, uv_stride, aligned_uv_stride, w, uv_height);
+
+                        if *frames_decoded == 1 {
+                            info!("NV12 direct GPU path: {}x{} - bypassing CPU scaler (y={} bytes, uv={} bytes)",
+                                w, h, y_plane.len(), uv_plane.len());
+                        }
+
+                        return Some(VideoFrame {
+                            width: w,
+                            height: h,
+                            y_plane,
+                            u_plane: uv_plane,
+                            v_plane: Vec::new(),
+                            y_stride: aligned_y_stride,
+                            u_stride: aligned_uv_stride,
+                            v_stride: 0,
+                            timestamp_us: 0,
+                            format: PixelFormat::NV12,
+                            color_range,
+                            color_space,
+                            #[cfg(target_os = "macos")]
+                            gpu_frame: None,
+                            #[cfg(target_os = "windows")]
+                            gpu_frame: None,
+                        });
                     }
-
-                    return Some(VideoFrame {
-                        width: w,
-                        height: h,
-                        y_plane,
-                        u_plane: uv_plane,
-                        v_plane: Vec::new(),
-                        y_stride: aligned_y_stride,
-                        u_stride: aligned_uv_stride,
-                        v_stride: 0,
-                        timestamp_us: 0,
-                        format: PixelFormat::NV12,
-                        color_range,
-                        color_space,
-                        #[cfg(target_os = "macos")]
-                        gpu_frame: None,
-                        #[cfg(target_os = "windows")]
-                        gpu_frame: None,
-                    });
                 }
 
                 // For other formats, use scaler to convert to NV12
