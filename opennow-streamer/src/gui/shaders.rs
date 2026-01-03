@@ -1,7 +1,7 @@
 //! GPU Shaders for video rendering
 //!
 //! WGSL shaders for YUV to RGB conversion on the GPU.
-//! BT.709 limited range conversion matching NVIDIA's H.265 encoder output.
+//! BT.709 Full range conversion for GFN streams.
 
 /// WGSL shader for YUV420P format (3 separate planes)
 /// Fallback path when NV12 is not available
@@ -55,17 +55,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let u_raw = textureSample(u_texture, video_sampler, input.tex_coord).r;
     let v_raw = textureSample(v_texture, video_sampler, input.tex_coord).r;
 
-    // BT.709 Limited Range (TV range: Y 16-235, UV 16-240)
-    // Despite CUVID reporting "Full", NVIDIA's H.265 encoder typically outputs Limited range
-    // Scale from limited [16/255, 235/255] to full [0, 1]
-    let y = (y_raw - 0.0627) * 1.164;  // (y - 16/255) * (255/219)
-    let u = (u_raw - 0.5) * 1.138;     // (u - 128/255) * (255/224)
-    let v = (v_raw - 0.5) * 1.138;
+    // BT.709 Full Range (PC range: Y 0-255, UV 0-255)
+    // GFN streams report Full range - use direct values with no scaling
+    let y = y_raw;
+    let u = u_raw - 0.5;
+    let v = v_raw - 0.5;
 
-    // BT.709 color matrix
-    let r = y + 1.793 * v;
-    let g = y - 0.213 * u - 0.533 * v;
-    let b = y + 2.112 * u;
+    // BT.709 color matrix (Full range coefficients)
+    let r = y + 1.5748 * v;
+    let g = y - 0.1873 * u - 0.4681 * v;
+    let b = y + 1.8556 * u;
 
     return vec4<f32>(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
 }
@@ -73,7 +72,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
 /// WGSL shader for NV12 format (CUVID on Windows, VideoToolbox on macOS)
 /// Primary GPU path - Y plane (R8) + interleaved UV plane (Rg8)
-/// BT.709 limited range YUV to RGB conversion
+/// BT.709 Full range YUV to RGB conversion (GFN streams use Full range)
 pub const NV12_SHADER: &str = r#"
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -124,16 +123,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let u_raw = uv.r;
     let v_raw = uv.g;
 
-    // BT.709 Limited Range (TV range: Y 16-235, UV 16-240)
-    // Despite CUVID reporting "Full", NVIDIA's H.265 encoder typically outputs Limited range
-    let y = (y_raw - 0.0627) * 1.164;
-    let u = (u_raw - 0.5) * 1.138;
-    let v = (v_raw - 0.5) * 1.138;
+    // BT.709 Full Range (PC range: Y 0-255, UV 0-255)
+    // GFN streams report Full range - use direct values with no scaling
+    let y = y_raw;
+    let u = u_raw - 0.5;
+    let v = v_raw - 0.5;
 
-    // BT.709 color matrix
-    let r = y + 1.793 * v;
-    let g = y - 0.213 * u - 0.533 * v;
-    let b = y + 2.112 * u;
+    // BT.709 color matrix (Full range coefficients)
+    let r = y + 1.5748 * v;
+    let g = y - 0.1873 * u - 0.4681 * v;
+    let b = y + 1.8556 * u;
 
     return vec4<f32>(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
 }
