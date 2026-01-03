@@ -16,7 +16,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use anyhow::Result;
 use log::{info, warn, error, debug};
-use serde_json::json;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 
 use crate::app::{SessionInfo, Settings, VideoCodec, SharedFrame};
@@ -235,7 +234,7 @@ pub async fn run_streaming(
     let fps = settings.fps;
     let max_bitrate = settings.max_bitrate_kbps();
     let codec = settings.codec;
-    let codec_str = codec.as_str().to_string();
+    let _codec_str = codec.as_str().to_string();
 
     // Create signaling client
     let (sig_event_tx, mut sig_event_rx) = mpsc::channel::<SignalingEvent>(64);
