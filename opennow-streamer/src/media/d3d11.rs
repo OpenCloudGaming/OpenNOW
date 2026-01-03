@@ -11,16 +11,16 @@
 //!
 //! This eliminates the expensive GPU->CPU->GPU round-trip that kills latency.
 
-use std::sync::Arc;
 use log::{info, warn, debug};
+use parking_lot::Mutex;
 use anyhow::{Result, anyhow};
 
 use windows::core::Interface;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
-    D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_RESOURCE_MISC_SHARED_NTHANDLE,
+    ID3D11Device, ID3D11Texture2D,
+    D3D11_CPU_ACCESS_READ,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ,
     D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::{
@@ -36,7 +36,7 @@ pub struct D3D11TextureWrapper {
     /// Texture array index (for texture arrays used by some decoders)
     array_index: u32,
     /// Shared NT handle for cross-API sharing (DX11 -> DX12)
-    shared_handle: Option<HANDLE>,
+    shared_handle: Mutex<Option<HANDLE>>,
     /// Texture dimensions
     pub width: u32,
     pub height: u32,
@@ -52,7 +52,7 @@ impl std::fmt::Debug for D3D11TextureWrapper {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("array_index", &self.array_index)
-            .field("has_shared_handle", &self.shared_handle.is_some())
+            .field("has_shared_handle", &self.shared_handle.lock().is_some())
             .finish()
     }
 }
@@ -93,7 +93,7 @@ impl D3D11TextureWrapper {
         Some(Self {
             texture,
             array_index: array_index as u32,
-            shared_handle: None,
+            shared_handle: Mutex::new(None),
             width: desc.Width,
             height: desc.Height,
         })
@@ -101,8 +101,9 @@ impl D3D11TextureWrapper {
 
     /// Get or create a shared NT handle for this texture
     /// This handle can be used to import the texture into DX12
-    pub fn get_shared_handle(&mut self) -> Result<HANDLE> {
-        if let Some(handle) = self.shared_handle {
+    pub fn get_shared_handle(&self) -> Result<HANDLE> {
+        let mut guard = self.shared_handle.lock();
+        if let Some(handle) = *guard {
             return Ok(handle);
         }
 
@@ -112,15 +113,13 @@ impl D3D11TextureWrapper {
                 .map_err(|e| anyhow!("Failed to cast to IDXGIResource1: {:?}", e))?;
 
             // Create shared NT handle
-            let mut handle = HANDLE::default();
-            dxgi_resource.CreateSharedHandle(
+            let handle = dxgi_resource.CreateSharedHandle(
                 None,  // No security attributes
-                DXGI_SHARED_RESOURCE_READ,
+                DXGI_SHARED_RESOURCE_READ.0,
                 None,  // No name
-                &mut handle,
             ).map_err(|e| anyhow!("Failed to create shared handle: {:?}", e))?;
 
-            self.shared_handle = Some(handle);
+            *guard = Some(handle);
             Ok(handle)
         }
     }
@@ -140,14 +139,12 @@ impl D3D11TextureWrapper {
     pub fn lock_and_get_planes(&self) -> Result<LockedPlanes> {
         unsafe {
             // Get the device from the texture itself
-            let mut device: Option<ID3D11Device> = None;
-            self.texture.GetDevice(&mut device);
-            let device = device.ok_or_else(|| anyhow!("Failed to get D3D11 device from texture"))?;
+            let device = self.texture.GetDevice()
+                .map_err(|e| anyhow!("Failed to get D3D11 device from texture: {:?}", e))?;
 
             // Get the device context
-            let mut context: Option<ID3D11DeviceContext> = None;
-            device.GetImmediateContext(&mut context);
-            let context = context.ok_or_else(|| anyhow!("Failed to get device context"))?;
+            let context = device.GetImmediateContext()
+                .map_err(|e| anyhow!("Failed to get device context: {:?}", e))?;
 
             // Create a staging texture for CPU access
             let mut desc = D3D11_TEXTURE2D_DESC::default();
@@ -162,7 +159,7 @@ impl D3D11TextureWrapper {
                 SampleDesc: desc.SampleDesc,
                 Usage: D3D11_USAGE_STAGING,
                 BindFlags: Default::default(),
-                CPUAccessFlags: D3D11_CPU_ACCESS_READ,
+                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
                 MiscFlags: Default::default(),
             };
 
@@ -223,7 +220,7 @@ impl D3D11TextureWrapper {
 impl Drop for D3D11TextureWrapper {
     fn drop(&mut self) {
         // Close the shared handle if we created one
-        if let Some(handle) = self.shared_handle.take() {
+        if let Some(handle) = self.shared_handle.lock().take() {
             unsafe {
                 let _ = windows::Win32::Foundation::CloseHandle(handle);
             }

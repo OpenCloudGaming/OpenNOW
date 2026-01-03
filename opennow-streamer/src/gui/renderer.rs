@@ -21,6 +21,15 @@ use crate::media::{VideoFrame, PixelFormat};
 use crate::media::{ZeroCopyTextureManager, CVMetalTexture, MetalVideoRenderer};
 #[cfg(target_os = "windows")]
 use crate::media::D3D11TextureWrapper;
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::HANDLE;
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Direct3D12::{ID3D12Device, ID3D12Resource};
+#[cfg(target_os = "windows")]
+// unused: use windows::core::Interface;
+#[cfg(target_os = "windows")]
+#[cfg(target_os = "macos")]
+use wgpu_hal::dx12;
 use super::StatsPanel;
 use super::image_cache;
 use super::shaders::{VIDEO_SHADER, NV12_SHADER, EXTERNAL_TEXTURE_SHADER};
@@ -94,6 +103,10 @@ pub struct Renderer {
     current_y_cv_texture: Option<CVMetalTexture>,
     #[cfg(target_os = "macos")]
     current_uv_cv_texture: Option<CVMetalTexture>,
+    #[cfg(target_os = "windows")]
+    current_imported_handle: Option<HANDLE>,
+    #[cfg(target_os = "windows")]
+    current_imported_texture: Option<wgpu::Texture>,
 }
 
 impl Renderer {
@@ -555,6 +568,10 @@ impl Renderer {
             current_y_cv_texture: None,
             #[cfg(target_os = "macos")]
             current_uv_cv_texture: None,
+            #[cfg(target_os = "windows")]
+            current_imported_handle: None,
+            #[cfg(target_os = "windows")]
+            current_imported_texture: None,
         })
     }
 
@@ -1432,7 +1449,177 @@ impl Renderer {
         uv_width: u32,
         uv_height: u32,
     ) {
-        // Lock the D3D11 texture and get plane data
+        // Try zero-copy via Shared Handle first
+        // This eliminates the CPU copy by importing the D3D11 texture directly into DX12
+        if let Ok(handle) = gpu_frame.get_shared_handle() {
+            let mut handle_changed = false;
+            
+            // Check if we need to re-import (handle changed or texture missing)
+            let needs_import = match self.current_imported_handle {
+                Some(current) => current != handle,
+                None => true,
+            };
+
+            if needs_import || self.current_imported_texture.is_none() {
+                // Import the shared handle into DX12
+                // We must use unsafe to access the raw DX12 device via wgpu-hal
+                let imported_texture = unsafe {
+                    match self.device.as_hal::<wgpu_hal::dx12::Api>() {
+                        Some(hal_device) => {
+                            let d3d12_device: &ID3D12Device = hal_device.raw_device();
+                            
+                            // Open the shared handle as a D3D12 resource
+                            let mut resource: Option<ID3D12Resource> = None;
+                            if let Err(e) = d3d12_device.OpenSharedHandle(handle, &mut resource) {
+                                warn!("Failed to OpenSharedHandle: {:?}", e);
+                                return; // Fallback to CPU copy
+                            }
+                            let resource = resource.unwrap();
+                            
+                            // Wrap it in a wgpu::Texture
+                            let size = wgpu::Extent3d {
+                                width: frame.width,
+                                height: frame.height,
+                                depth_or_array_layers: 1,
+                            };
+                            
+                            let format = wgpu::TextureFormat::NV12;
+                            let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+                            
+                            // Create wgpu-hal texture from raw resource
+                            let hal_texture = wgpu_hal::dx12::Device::texture_from_raw(
+                                resource,
+                                format,
+                                wgpu::TextureDimension::D2,
+                                size,
+                                1, // mip_levels
+                                1, // sample_count
+                            );
+                            
+                            // Create wgpu Texture from HAL texture
+                            let descriptor = wgpu::TextureDescriptor {
+                                label: Some("Imported D3D11 Texture"),
+                                size,
+                                mip_level_count: 1,
+                                sample_count: 1,
+                                dimension: wgpu::TextureDimension::D2,
+                                format,
+                                usage,
+                                view_formats: &[],
+                            };
+                            
+                            Some(self.device.create_texture_from_hal::<wgpu_hal::dx12::Api>(
+                                hal_texture,
+                                &descriptor
+                            ))
+                        },
+                        None => {
+                            warn!("Failed to get DX12 HAL device");
+                            None
+                        }
+                    }
+                };
+
+                if let Some(texture) = imported_texture {
+                    self.current_imported_texture = Some(texture);
+                    self.current_imported_handle = Some(handle);
+                    handle_changed = true;
+                    // Log success once per session or on change
+                    debug!("Zero-copy: Imported D3D11 texture handle {:?} -> DX12", handle);
+                } else {
+                    // Import failed - clear cache and fall through to CPU path
+                    self.current_imported_handle = None;
+                    self.current_imported_texture = None;
+                }
+            }
+
+            // If we have a valid imported texture, use it!
+            if let Some(ref texture) = self.current_imported_texture {
+                // If the handle changed OR if we don't have an external texture bind group yet (e.g. resize)
+                // we need to recreate the bind group.
+                // Note: video_size check handles resolution changes
+                let size_changed = self.video_size != (frame.width, frame.height);
+                
+                if handle_changed || size_changed || self.external_texture_bind_group.is_none() {
+                    self.video_size = (frame.width, frame.height);
+                    self.current_format = PixelFormat::NV12;
+
+                    // Create views for Y and UV planes
+                    let y_view = texture.create_view(&wgpu::TextureViewDescriptor {
+                        label: Some("Plane 0 View"),
+                        aspect: wgpu::TextureAspect::Plane0,
+                        ..Default::default()
+                    });
+                    
+                    let uv_view = texture.create_view(&wgpu::TextureViewDescriptor {
+                        label: Some("Plane 1 View"),
+                        aspect: wgpu::TextureAspect::Plane1,
+                        ..Default::default()
+                    });
+
+                    // Create ExternalTexture logic (copied from update_video_external_texture)
+                     // BT.709 Limited Range YCbCr to RGB conversion matrix (4x4 column-major)
+                    let yuv_conversion_matrix: [f32; 16] = [
+                        1.164,  1.164,  1.164, 0.0,
+                        0.0,   -0.213,  2.112, 0.0,
+                        1.793, -0.533,  0.0,   0.0,
+                        -0.874, 0.531, -1.086, 1.0,
+                    ];
+                    
+                    let gamut_conversion_matrix: [f32; 9] = [
+                        1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                    ];
+                    
+                    let linear_transfer = wgpu::ExternalTextureTransferFunction {
+                        a: 1.0, b: 0.0, g: 1.0, k: 1.0,
+                    };
+                    
+                    let identity_transform: [f32; 6] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+
+                    let external_texture = self.device.create_external_texture(
+                        &wgpu::ExternalTextureDescriptor {
+                            label: Some("Zero-Copy External Texture"),
+                            width: frame.width,
+                            height: frame.height,
+                            format: wgpu::ExternalTextureFormat::Nv12,
+                            yuv_conversion_matrix,
+                            gamut_conversion_matrix,
+                            src_transfer_function: linear_transfer.clone(),
+                            dst_transfer_function: linear_transfer,
+                            sample_transform: identity_transform,
+                            load_transform: identity_transform,
+                        },
+                        &[&y_view, &uv_view],
+                    );
+
+                    if let Some(ref layout) = self.external_texture_bind_group_layout {
+                        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("Zero-Copy Bind Group"),
+                            layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::ExternalTexture(&external_texture),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(&self.video_sampler),
+                                },
+                            ],
+                        });
+
+                        self.external_texture_bind_group = Some(bind_group);
+                        self.external_texture = Some(external_texture);
+                        log::info!("Zero-copy pipeline configured for {}x{}", frame.width, frame.height);
+                    }
+                }
+                
+                // Success! We are set up for zero-copy rendering.
+                return;
+            }
+        }
+
+        // Fallback: Lock the D3D11 texture and get plane data (CPU Copy)
         let planes = match gpu_frame.lock_and_get_planes() {
             Ok(p) => p,
             Err(e) => {
@@ -2087,9 +2274,9 @@ impl Renderer {
         let game_textures = self.game_textures.clone();
         let mut new_textures: Vec<(String, egui::TextureHandle)> = Vec::new();
 
-        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+        let full_output = self.egui_ctx.run_ui(raw_input, |ctx| {
             // Custom styling
-            let mut style = (*ctx.style()).clone();
+            let mut style = (*ctx.global_style()).clone();
             style.visuals.window_fill = egui::Color32::from_rgb(20, 20, 30);
             style.visuals.panel_fill = egui::Color32::from_rgb(25, 25, 35);
             style.visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(35, 35, 50);
@@ -2097,7 +2284,7 @@ impl Renderer {
             style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(60, 60, 90);
             style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(80, 180, 80);
             style.visuals.selection.bg_fill = egui::Color32::from_rgb(60, 120, 60);
-            ctx.set_style(style);
+            ctx.set_global_style(style);
 
             match app_state {
                 AppState::Login => {
@@ -2254,7 +2441,7 @@ impl Renderer {
         actions: &mut Vec<UiAction>
     ) {
         // Top bar with tabs, search, and logout - subscription info moved to bottom
-        egui::TopBottomPanel::top("top_bar")
+        egui::Panel::top("top_bar")
             .frame(egui::Frame::new()
                 .fill(egui::Color32::from_rgb(22, 22, 30))
                 .inner_margin(egui::Margin { left: 0, right: 0, top: 10, bottom: 10 }))
@@ -2402,7 +2589,7 @@ impl Renderer {
         });
 
         // Bottom bar with subscription stats
-        egui::TopBottomPanel::bottom("bottom_bar")
+        egui::Panel::bottom("bottom_bar")
             .frame(egui::Frame::new()
                 .fill(egui::Color32::from_rgb(22, 22, 30))
                 .inner_margin(egui::Margin { left: 15, right: 15, top: 8, bottom: 8 }))
@@ -2729,7 +2916,7 @@ impl Renderer {
             .interactable(true)
             .order(egui::Order::Background) // Draw behind windows
             .show(ctx, |ui| {
-                let screen_rect = ctx.input(|i| i.screen_rect());
+                let screen_rect = ctx.input(|i| i.viewport_rect());
                 ui.painter().rect_filled(
                     screen_rect,
                     0.0,

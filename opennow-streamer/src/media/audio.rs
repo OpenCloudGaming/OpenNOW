@@ -4,7 +4,7 @@
 //! Optimized for low-latency streaming with jitter buffer.
 
 use anyhow::{Result, Context, anyhow};
-use log::{info, error, debug, warn};
+use log::{info, error, debug};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
@@ -307,7 +307,7 @@ impl AudioRingBuffer {
 
     /// Read samples from buffer (called from audio callback - must be fast!)
     fn read(&self, out: &mut [i16]) {
-        let mut samples = self.samples.lock();
+        let samples = self.samples.lock();
         let write_pos = self.write_pos.load(Ordering::Acquire);
         let mut read_pos = self.read_pos.load(Ordering::Acquire);
 
