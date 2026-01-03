@@ -199,7 +199,10 @@ fn flush_coalesced_events() {
                     dy: dy as i16,
                     timestamp_us,
                 }).is_err() {
-                    warn!("Mouse event channel full!");
+                    // Channel full - put deltas back for next attempt (conflation)
+                    COALESCE_DX.fetch_add(dx, Ordering::Relaxed);
+                    COALESCE_DY.fetch_add(dy, Ordering::Relaxed);
+                    warn!("Input channel full (backpressure) - coalescing events");
                 }
             } else if count < 5 {
                 warn!("EVENT_SENDER is None - raw input sender not configured!");
