@@ -3,7 +3,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use log::{info, warn, error, debug, trace};
-use gilrs::{Gilrs, Event, EventType, Button, Axis};
+use gilrs::{GilrsBuilder, Event, EventType, Button, Axis};
 
 use crate::webrtc::InputEvent;
 use super::get_timestamp_us;
@@ -82,9 +82,16 @@ impl ControllerManager {
         std::thread::spawn(move || {
             info!("Controller input thread starting...");
 
-            let mut gilrs = match Gilrs::new() {
+            // Initialize gilrs WITHOUT built-in axis filtering
+            // This gives us raw axis values so our radial deadzone works correctly
+            // on all controller types (Xbox, PS5, etc.)
+            let mut gilrs = match GilrsBuilder::new()
+                .with_default_filters(false)  // Disable all default filters
+                .set_axis_to_btn(0.5, 0.4)    // Only used for D-pad on some controllers
+                .build()
+            {
                 Ok(g) => {
-                    info!("gilrs initialized successfully");
+                    info!("gilrs initialized (raw mode - no built-in filtering)");
                     g
                 }
                 Err(e) => {
@@ -169,27 +176,43 @@ impl ControllerManager {
                             if gamepad.is_pressed(Button::North) { button_flags |= XINPUT_Y; }
 
                             // Analog triggers (0-255)
-                            // gilrs uses different axes for different controllers
-                            // Try LeftZ/RightZ first (common), then fall back to trigger buttons
-                            let lt_axis = gamepad.value(Axis::LeftZ);
-                            let rt_axis = gamepad.value(Axis::RightZ);
+                            // gilrs provides trigger values via button_data() for LeftTrigger2/RightTrigger2
+                            // This is the most reliable method across different controller types
 
-                            // Triggers typically range from 0.0 to 1.0 (or -1.0 to 1.0 on some controllers)
-                            // Normalize to 0-255
-                            let left_trigger = if lt_axis.abs() < 0.01 && gamepad.is_pressed(Button::LeftTrigger2) {
-                                255u8  // Fallback: if no axis but button pressed, assume full
-                            } else {
-                                // Handle both 0..1 and -1..1 ranges
-                                let normalized = if lt_axis < 0.0 { (lt_axis + 1.0) / 2.0 } else { lt_axis };
-                                (normalized.clamp(0.0, 1.0) * 255.0) as u8
+                            let get_trigger_value = |button: Button, axis: Axis| -> u8 {
+                                // Method 1: Get analog value from button_data (most reliable)
+                                if let Some(data) = gamepad.button_data(button) {
+                                    let val = data.value();
+                                    if val > 0.01 {
+                                        return (val.clamp(0.0, 1.0) * 255.0) as u8;
+                                    }
+                                }
+
+                                // Method 2: Try axis value (some controllers use Z axes)
+                                let axis_val = gamepad.value(axis);
+                                if axis_val.abs() > 0.01 {
+                                    // Handle both 0..1 and -1..1 ranges
+                                    let normalized = if axis_val < -0.5 {
+                                        (axis_val + 1.0) / 2.0  // XInput style: -1 to 1
+                                    } else {
+                                        axis_val  // Standard: 0 to 1
+                                    };
+                                    let result = (normalized.clamp(0.0, 1.0) * 255.0) as u8;
+                                    if result > 0 {
+                                        return result;
+                                    }
+                                }
+
+                                // Method 3: Digital fallback
+                                if gamepad.is_pressed(button) {
+                                    return 255u8;
+                                }
+
+                                0u8
                             };
 
-                            let right_trigger = if rt_axis.abs() < 0.01 && gamepad.is_pressed(Button::RightTrigger2) {
-                                255u8
-                            } else {
-                                let normalized = if rt_axis < 0.0 { (rt_axis + 1.0) / 2.0 } else { rt_axis };
-                                (normalized.clamp(0.0, 1.0) * 255.0) as u8
-                            };
+                            let left_trigger = get_trigger_value(Button::LeftTrigger2, Axis::LeftZ);
+                            let right_trigger = get_trigger_value(Button::RightTrigger2, Axis::RightZ);
 
                             // Analog sticks (-32768 to 32767)
                             let lx_val = gamepad.value(Axis::LeftStickX);
@@ -197,22 +220,21 @@ impl ControllerManager {
                             let rx_val = gamepad.value(Axis::RightStickX);
                             let ry_val = gamepad.value(Axis::RightStickY);
 
-                            // Apply deadzone
-                            let apply_deadzone = |val: f32| -> f32 {
-                                if val.abs() < STICK_DEADZONE {
-                                    0.0
+                            // Apply RADIAL deadzone (prevents cardinal snapping)
+                            // Treats the stick as a 2D vector and applies deadzone to magnitude
+                            let apply_radial_deadzone = |x: f32, y: f32| -> (f32, f32) {
+                                let magnitude = (x * x + y * y).sqrt();
+                                if magnitude < STICK_DEADZONE {
+                                    (0.0, 0.0)
                                 } else {
-                                    // Scale remaining range to full range
-                                    let sign = val.signum();
-                                    let magnitude = (val.abs() - STICK_DEADZONE) / (1.0 - STICK_DEADZONE);
-                                    sign * magnitude
+                                    // Scale remaining range to full range, preserving angle
+                                    let scale = (magnitude - STICK_DEADZONE) / (1.0 - STICK_DEADZONE) / magnitude;
+                                    (x * scale, y * scale)
                                 }
                             };
 
-                            let lx = apply_deadzone(lx_val);
-                            let ly = apply_deadzone(ly_val);
-                            let rx = apply_deadzone(rx_val);
-                            let ry = apply_deadzone(ry_val);
+                            let (lx, ly) = apply_radial_deadzone(lx_val, ly_val);
+                            let (rx, ry) = apply_radial_deadzone(rx_val, ry_val);
 
                             // Convert to i16 range
                             let left_stick_x = (lx * 32767.0).clamp(-32768.0, 32767.0) as i16;

@@ -1037,13 +1037,13 @@ impl Renderer {
             return;
         }
 
-        // EXTERNAL TEXTURE PATH: Use hardware YUV->RGB conversion when available
-        // This is faster than our shader-based conversion
-        // Only use if we have CPU-accessible frame data (y_plane not empty)
-        if self.external_texture_supported && frame.format == PixelFormat::NV12 && !frame.y_plane.is_empty() {
-            self.update_video_external_texture(frame, uv_width, uv_height);
-            return;
-        }
+        // EXTERNAL TEXTURE PATH: Disabled for now - using NV12 shader path instead
+        // The external texture API on Windows DX12 may have issues with our frame lifecycle
+        // TODO: Re-enable once external texture path is debugged
+        // if self.external_texture_supported && frame.format == PixelFormat::NV12 && !frame.y_plane.is_empty() {
+        //     self.update_video_external_texture(frame, uv_width, uv_height);
+        //     return;
+        // }
 
         // Check if we need to recreate textures (size or format change)
         let format_changed = self.current_format != frame.format;
@@ -1557,13 +1557,16 @@ impl Renderer {
                         ..Default::default()
                     });
 
-                    // Create ExternalTexture logic (copied from update_video_external_texture)
-                     // BT.709 Limited Range YCbCr to RGB conversion matrix (4x4 column-major)
+                    // Create ExternalTexture logic
+                    // BT.709 Full Range YCbCr to RGB conversion matrix (4x4 column-major)
+                    // GFN streams use Full range (PC levels: Y 0-255, UV 0-255)
+                    // Formula: R = Y + 1.5748*V, G = Y - 0.1873*U - 0.4681*V, B = Y + 1.8556*U
+                    // With UV offset of -0.5 baked into the matrix offsets
                     let yuv_conversion_matrix: [f32; 16] = [
-                        1.164,  1.164,  1.164, 0.0,
-                        0.0,   -0.213,  2.112, 0.0,
-                        1.793, -0.533,  0.0,   0.0,
-                        -0.874, 0.531, -1.086, 1.0,
+                        1.0,     1.0,     1.0,    0.0,     // Y coefficients (Full range: no scaling)
+                        0.0,    -0.1873,  1.8556, 0.0,     // U coefficients
+                        1.5748, -0.4681,  0.0,    0.0,     // V coefficients
+                       -0.7874,  0.3277, -0.9278, 1.0,     // Offsets (UV shift baked in)
                     ];
                     
                     let gamut_conversion_matrix: [f32; 9] = [
@@ -1855,18 +1858,15 @@ impl Renderer {
         let uv_view = self.uv_texture.as_ref().unwrap()
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // BT.709 Limited Range YCbCr to RGB conversion matrix (4x4 column-major)
-        // This matrix converts from YCbCr (with Y in [16,235] and CbCr in [16,240])
-        // to RGB [0,1]. The matrix includes the offset and scaling.
-        // Standard BT.709 matrix coefficients:
-        // R = 1.164*(Y-16) + 1.793*(Cr-128)
-        // G = 1.164*(Y-16) - 0.213*(Cb-128) - 0.533*(Cr-128)
-        // B = 1.164*(Y-16) + 2.112*(Cb-128)
+        // BT.709 Full Range YCbCr to RGB conversion matrix (4x4 column-major)
+        // GFN streams use Full range (PC levels: Y 0-255, UV 0-255)
+        // Formula: R = Y + 1.5748*V, G = Y - 0.1873*U - 0.4681*V, B = Y + 1.8556*U
+        // With UV offset of -0.5 baked into the matrix offsets
         let yuv_conversion_matrix: [f32; 16] = [
-            1.164,  1.164,  1.164, 0.0,  // Column 0: Y coefficients
-            0.0,   -0.213,  2.112, 0.0,  // Column 1: Cb coefficients
-            1.793, -0.533,  0.0,   0.0,  // Column 2: Cr coefficients
-            -0.874, 0.531, -1.086, 1.0,  // Column 3: Offset (includes -16/255 and -128/255 adjustments)
+            1.0,     1.0,     1.0,    0.0,     // Column 0: Y coefficients (Full range: no scaling)
+            0.0,    -0.1873,  1.8556, 0.0,     // Column 1: U coefficients
+            1.5748, -0.4681,  0.0,    0.0,     // Column 2: V coefficients
+           -0.7874,  0.3277, -0.9278, 1.0,     // Column 3: Offsets (UV shift baked in)
         ];
 
         // Identity gamut conversion (no color space conversion needed)
