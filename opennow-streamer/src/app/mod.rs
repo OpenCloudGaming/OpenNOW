@@ -165,6 +165,12 @@ pub struct App {
 
     /// Number of times we've polled after session became ready (to ensure candidates)
     session_ready_poll_count: u32,
+
+    /// Anti-AFK mode enabled (Ctrl+Shift+F10 to toggle)
+    pub anti_afk_enabled: bool,
+
+    /// Last time anti-AFK sent a key press
+    anti_afk_last_send: std::time::Instant,
 }
 
 /// Poll interval for session status (2 seconds)
@@ -288,6 +294,41 @@ impl App {
             last_render_fps_time: std::time::Instant::now(),
             last_render_frame_count: 0,
             session_ready_poll_count: 0,
+            anti_afk_enabled: false,
+            anti_afk_last_send: std::time::Instant::now(),
+        }
+    }
+
+    /// Toggle anti-AFK mode
+    pub fn toggle_anti_afk(&mut self) {
+        self.anti_afk_enabled = !self.anti_afk_enabled;
+        if self.anti_afk_enabled {
+            self.anti_afk_last_send = std::time::Instant::now();
+            info!("Anti-AFK mode ENABLED - sending F13 every 4 minutes");
+        } else {
+            info!("Anti-AFK mode DISABLED");
+        }
+    }
+
+    /// Send anti-AFK key press (F13) if enabled and interval elapsed
+    pub fn update_anti_afk(&mut self) {
+        if !self.anti_afk_enabled || self.state != AppState::Streaming {
+            return;
+        }
+
+        // Check if 4 minutes have passed
+        if self.anti_afk_last_send.elapsed() >= std::time::Duration::from_secs(240) {
+            if let Some(ref input_handler) = self.input_handler {
+                // F13 virtual key code is 0x7C (124)
+                const VK_F13: u16 = 0x7C;
+
+                // Send key down then key up
+                input_handler.handle_key(VK_F13, true, 0);  // Key down
+                input_handler.handle_key(VK_F13, false, 0); // Key up
+
+                self.anti_afk_last_send = std::time::Instant::now();
+                log::debug!("Anti-AFK: sent F13 key press");
+            }
         }
     }
 
@@ -559,6 +600,9 @@ impl App {
             self.last_render_frame_count = self.render_frame_count;
             self.last_render_fps_time = now;
         }
+
+        // Update anti-AFK (sends F13 every 4 minutes when enabled)
+        self.update_anti_afk();
 
         // Check for new video frames from shared frame holder
         if let Some(ref shared) = self.shared_frame {
