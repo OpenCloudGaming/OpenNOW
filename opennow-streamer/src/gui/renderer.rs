@@ -847,7 +847,7 @@ impl Renderer {
                     }
 
                     let frame_rate_range = CAFrameRateRange {
-                        minimum: 120.0,  // Minimum 120fps - don't allow lower
+                        minimum: 60.0,   // Allow 60fps minimum for flexibility
                         maximum: 120.0,
                         preferred: 120.0,
                     };
@@ -856,13 +856,13 @@ impl Renderer {
                     let responds: bool = msg_send![layer, respondsToSelector: sel!(setPreferredFrameRateRange:)];
                     if responds {
                         let _: () = msg_send![layer, setPreferredFrameRateRange: frame_rate_range];
-                        info!("macOS: Set preferredFrameRateRange to 120fps fixed (ProMotion)");
+                        info!("macOS: Set preferredFrameRateRange to 60-120fps (ProMotion)");
                     }
 
-                    // Keep displaySync ENABLED for ProMotion - it needs VSync to pace at 120Hz
-                    // Disabling it causes ProMotion to fall back to 60Hz
+                    // Enable displaySync for smooth presentation (no tearing)
+                    // Latency is handled by decoder flags, not here
                     let _: () = msg_send![layer, setDisplaySyncEnabled: true];
-                    info!("macOS: Configured CAMetalLayer for 120Hz ProMotion");
+                    info!("macOS: Enabled displaySync on CAMetalLayer for tear-free rendering");
                 }
             }
         }
@@ -1410,9 +1410,9 @@ impl Renderer {
                                         if copied {
                                             let _: () = msg_send![blit_encoder, endEncoding];
                                             let _: () = msg_send![command_buffer, commit];
-                                            // DON'T wait for completion - let GPU work async
-                                            // waitUntilCompleted blocks and adds latency!
-                                            // The GPU will naturally synchronize when wgpu renders
+                                            // NOTE: Not waiting for completion - GPU synchronization
+                                            // is handled by the fact that we're rendering immediately after
+                                            // and Metal will queue the operations correctly within the same frame
 
                                             // Store CVMetalTextures to keep them alive
                                             self.current_y_cv_texture = Some(y_metal);

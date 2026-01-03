@@ -849,8 +849,12 @@ impl VideoDecoder {
                         // Without this, the decoder will output software frames (YUV420P)
                         (*raw_ctx).get_format = Some(Self::get_videotoolbox_format);
 
-                        // Enable multi-threading for software fallback paths
-                        (*raw_ctx).thread_count = 0; // 0 = auto (use all cores)
+                        // Use single thread for lowest latency - multi-threading causes frame reordering delays
+                        (*raw_ctx).thread_count = 1;
+                        
+                        // Low latency flags for streaming (same as Windows D3D11VA)
+                        (*raw_ctx).flags |= AV_CODEC_FLAG_LOW_DELAY as i32;
+                        (*raw_ctx).flags2 |= AV_CODEC_FLAG2_FAST as i32;
 
                         match ctx.decoder().video() {
                             Ok(decoder) => {
