@@ -8,7 +8,7 @@ mod sdp;
 mod datachannel;
 
 pub use signaling::{GfnSignaling, SignalingEvent, IceCandidate};
-pub use peer::{WebRtcPeer, WebRtcEvent, request_keyframe};
+pub use peer::{WebRtcPeer, WebRtcEvent, NetworkStats, request_keyframe};
 pub use sdp::*;
 pub use datachannel::*;
 
@@ -276,13 +276,18 @@ pub async fn run_streaming(
 
     let mut audio_decoder = AudioDecoder::new(48000, 2)?;
 
-    // Audio player is created in a separate thread due to cpal::Stream not being Send
-    let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<i16>>(256);
+    // Get the sample receiver from the decoder for async operation
+    let audio_sample_rx = audio_decoder.take_sample_receiver();
+
+    // Audio player thread - receives decoded samples and plays them
+    // Uses larger jitter buffer (150ms) to handle network timing variations
     std::thread::spawn(move || {
         if let Ok(audio_player) = AudioPlayer::new(48000, 2) {
-            info!("Audio player thread started");
-            while let Some(samples) = audio_rx.blocking_recv() {
-                audio_player.push_samples(&samples);
+            info!("Audio player thread started (async mode with jitter buffer)");
+            if let Some(mut rx) = audio_sample_rx {
+                while let Some(samples) = rx.blocking_recv() {
+                    audio_player.push_samples(&samples);
+                }
             }
         } else {
             warn!("Failed to create audio player - audio disabled");
@@ -305,6 +310,9 @@ pub async fn run_streaming(
     // Input latency tracking (event creation to transmission)
     let mut input_latency_sum: f64 = 0.0;
     let mut input_latency_count: u64 = 0;
+
+    // Input rate tracking (events per second)
+    let mut input_events_this_period: u64 = 0;
 
     // Input state - use atomic for cross-task communication
     // input_ready_flag and input_protocol_version_shared are created later with the input task
@@ -415,10 +423,20 @@ pub async fn run_streaming(
             biased;
 
             Some((encoded, is_mouse, is_controller, latency_us)) = input_packet_rx.recv() => {
-                // Track input latency for stats
+                // Track input latency and count for stats
+                input_events_this_period += 1;
                 if latency_us > 0 {
                     input_latency_sum += latency_us as f64;
                     input_latency_count += 1;
+                }
+
+                // Log first few mouse events to verify flow
+                static MOUSE_LOG_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                if is_mouse {
+                    let count = MOUSE_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if count < 10 {
+                        info!("Sending mouse #{}: {} bytes, latency {}us", count, encoded.len(), latency_us);
+                    }
                 }
 
                 if is_controller {
@@ -426,8 +444,13 @@ pub async fn run_streaming(
                     // "input_channel_v1 needs to be only controller"
                     let _ = peer.send_controller_input(&encoded).await;
                 } else if is_mouse {
-                    // Mouse events - use partially reliable channel (8ms lifetime)
-                    // Attempt to send on mouse channel, drop if not ready (no fallback to V1)
+                    // Log if mouse channel is ready
+                    static MOUSE_READY_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if !MOUSE_READY_LOGGED.load(std::sync::atomic::Ordering::Relaxed) {
+                        info!("Mouse events will use PARTIALLY RELIABLE channel (lower latency)");
+                        MOUSE_READY_LOGGED.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    // Send mouse on PARTIALLY RELIABLE channel (unordered, low latency)
                     let _ = peer.send_mouse_input(&encoded).await;
                 } else {
                     // Keyboard events
@@ -664,10 +687,8 @@ pub async fn run_streaming(
                         }
                     }
                     WebRtcEvent::AudioFrame(rtp_data) => {
-                        // Decode Opus (stubbed for now)
-                        if let Ok(samples) = audio_decoder.decode(&rtp_data) {
-                            let _ = audio_tx.try_send(samples);
-                        }
+                        // Async decode - non-blocking, samples go directly to audio player
+                        audio_decoder.decode_async(&rtp_data);
                     }
                     WebRtcEvent::DataChannelOpen(label) => {
                         info!("Data channel opened: {}", label);
@@ -773,6 +794,50 @@ pub async fn run_streaming(
                     // Reset for next period
                     input_latency_sum = 0.0;
                     input_latency_count = 0;
+                }
+
+                // Calculate input rate (events per second)
+                stats.input_rate = (input_events_this_period as f64 / elapsed) as f32;
+                input_events_this_period = 0;
+
+                // Calculate frame delivery latency (pipeline latency)
+                if pipeline_latency_count > 0 {
+                    stats.frame_delivery_ms = (pipeline_latency_sum / pipeline_latency_count as f64) as f32;
+                    pipeline_latency_sum = 0.0;
+                    pipeline_latency_count = 0;
+                }
+
+                // Get network stats from WebRTC (RTT from ICE candidate pair)
+                let net_stats = peer.get_network_stats().await;
+                if net_stats.rtt_ms > 0.0 {
+                    stats.rtt_ms = net_stats.rtt_ms;
+                }
+
+                // Estimate end-to-end latency:
+                // E2E = network_rtt/2 (input to server) + server_processing (~16ms at 60fps)
+                //     + network_rtt/2 (video back) + decode_time + render_time
+                // If RTT is 0 (ice-lite), estimate based on typical values
+                let (estimated_network_oneway, rtt_source) = if stats.rtt_ms > 0.0 {
+                    (stats.rtt_ms / 2.0, "measured")
+                } else {
+                    // Estimate ~10ms one-way (20ms RTT) for fiber/good internet connection
+                    // This prevents alarming ~80ms E2E reports on good connections where RTT is unmeasured
+                    (10.0, "estimated")
+                };
+                let server_frame_time = 1000.0 / stats.target_fps.max(1) as f32; // ~16.7ms at 60fps
+                let server_encode_time = 8.0; // Estimated server encode latency ~8ms
+                stats.estimated_e2e_ms = estimated_network_oneway * 2.0 // network round trip
+                    + server_frame_time // server processing (1 frame)
+                    + server_encode_time // server encode
+                    + stats.decode_time_ms
+                    + stats.render_time_ms;
+
+                // Log latency breakdown once
+                static LOGGED_LATENCY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !LOGGED_LATENCY.swap(true, std::sync::atomic::Ordering::Relaxed) && stats.decode_time_ms > 0.0 {
+                    info!("Latency breakdown ({}): network={:.0}ms x2, server_frame={:.0}ms, encode=8ms, decode={:.1}ms, render={:.1}ms = ~{:.0}ms E2E",
+                        rtt_source, estimated_network_oneway, server_frame_time, stats.decode_time_ms, stats.render_time_ms, stats.estimated_e2e_ms);
+                    info!("Note: If actual latency is higher, check server distance or try a closer region");
                 }
 
                 // Log if FPS is significantly below target (more than 20% drop)

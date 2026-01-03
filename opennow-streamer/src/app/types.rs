@@ -210,6 +210,8 @@ pub enum UiAction {
     CloseAV1Warning,
     /// Close Alliance experimental warning dialog
     CloseAllianceWarning,
+    /// Reset all settings to defaults
+    ResetSettings,
 }
 
 /// Setting changes
