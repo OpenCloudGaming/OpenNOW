@@ -318,8 +318,9 @@ pub async fn run_streaming(
     // input_ready_flag and input_protocol_version_shared are created later with the input task
 
     // Input channel - connect InputHandler to the streaming loop
-    // Large buffer (1024) to handle high-frequency mouse events without blocking
-    let (input_event_tx, input_event_rx) = mpsc::channel::<InputEvent>(1024);
+    // Reduced buffer (32) to prevent latency buildup (buffer bloat)
+    // If consumer is slow, we want to conflate events, not buffer them
+    let (input_event_tx, input_event_rx) = mpsc::channel::<InputEvent>(32);
     input_handler.set_event_sender(input_event_tx.clone());
 
     // Also set raw input sender for direct mouse events (Windows/macOS)
