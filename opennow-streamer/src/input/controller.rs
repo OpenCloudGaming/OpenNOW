@@ -255,8 +255,8 @@ impl ControllerManager {
                     }
                 }
 
-                // Poll sleep - 4ms for 250Hz polling rate
-                std::thread::sleep(Duration::from_millis(4));
+                // Poll sleep - 1ms for 1000Hz polling rate (low latency)
+                std::thread::sleep(Duration::from_millis(1));
             }
 
             info!("Controller input thread stopped (processed {} events)", event_count);

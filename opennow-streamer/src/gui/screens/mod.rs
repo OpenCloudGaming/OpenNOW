@@ -21,6 +21,7 @@ pub fn render_settings_modal(
     selected_server_index: usize,
     auto_server_selection: bool,
     ping_testing: bool,
+    subscription: Option<&crate::app::SubscriptionInfo>,
     actions: &mut Vec<UiAction>,
 ) {
     egui::Window::new("Settings")
@@ -70,6 +71,80 @@ pub fn render_settings_modal(
                             egui::ComboBox::from_id_salt("resolution_combo")
                                 .selected_text(current_display)
                                 .show_ui(ui, |ui| {
+                                    // Use entitled resolutions if available
+                                    if let Some(sub) = subscription {
+                                        if !sub.entitled_resolutions.is_empty() {
+                                            // 1. Deduplicate unique resolutions
+                                            let mut unique_resolutions = std::collections::HashSet::new();
+                                            let mut resolutions = Vec::new();
+                                            
+                                            // Sort by width then height descending first
+                                            let mut sorted_res = sub.entitled_resolutions.clone();
+                                            sorted_res.sort_by(|a, b| b.width.cmp(&a.width).then(b.height.cmp(&a.height)));
+
+                                            for res in sorted_res {
+                                                let key = (res.width, res.height);
+                                                if unique_resolutions.contains(&key) {
+                                                    continue;
+                                                }
+                                                unique_resolutions.insert(key);
+                                                resolutions.push(res);
+                                            }
+
+                                            // 2. Group by Aspect Ratio
+                                            let mut groups: std::collections::BTreeMap<String, Vec<crate::app::types::EntitledResolution>> = std::collections::BTreeMap::new();
+                                            
+                                            for res in resolutions {
+                                                let ratio = res.width as f32 / res.height as f32;
+                                                let category = if (ratio - 16.0/9.0).abs() < 0.05 {
+                                                    "16:9 Standard"
+                                                } else if (ratio - 16.0/10.0).abs() < 0.05 {
+                                                    "16:10 Widescreen"
+                                                } else if (ratio - 21.0/9.0).abs() < 0.05 {
+                                                    "21:9 Ultrawide"
+                                                } else if (ratio - 32.0/9.0).abs() < 0.05 {
+                                                    "32:9 Super Ultrawide"
+                                                } else if (ratio - 4.0/3.0).abs() < 0.05 {
+                                                    "4:3 Legacy"
+                                                } else {
+                                                    "Other"
+                                                };
+                                                
+                                                groups.entry(category.to_string()).or_default().push(res);
+                                            }
+
+                                            // Define preferred order of categories
+                                            let order = ["16:9 Standard", "16:10 Widescreen", "21:9 Ultrawide", "32:9 Super Ultrawide", "4:3 Legacy", "Other"];
+
+                                            for category in order.iter() {
+                                                if let Some(res_list) = groups.get(*category) {
+                                                    ui.heading(*category);
+                                                    for res in res_list {
+                                                        let res_str = format!("{}x{}", res.width, res.height);
+                                                        
+                                                        // Friendly name logic
+                                                        let name = match (res.width, res.height) {
+                                                            (1280, 720) => "720p (HD)".to_string(),
+                                                            (1920, 1080) => "1080p (FHD)".to_string(),
+                                                            (2560, 1440) => "1440p (QHD)".to_string(),
+                                                            (3840, 2160) => "4K (UHD)".to_string(),
+                                                            (2560, 1080) => "2560x1080 (Ultrawide)".to_string(),
+                                                            (3440, 1440) => "3440x1440 (Ultrawide)".to_string(),
+                                                            (w, h) => format!("{}x{}", w, h),
+                                                        };
+
+                                                        if ui.selectable_label(settings.resolution == res_str, name).clicked() {
+                                                            actions.push(UiAction::UpdateSetting(SettingChange::Resolution(res_str)));
+                                                        }
+                                                    }
+                                                    ui.separator();
+                                                }
+                                            }
+                                            return;
+                                        }
+                                    }
+
+                                    // Fallback to static list
                                     for (res, name) in RESOLUTIONS {
                                         if ui.selectable_label(settings.resolution == *res, *name).clicked() {
                                             actions.push(UiAction::UpdateSetting(SettingChange::Resolution(res.to_string())));
@@ -81,11 +156,48 @@ pub fn render_settings_modal(
 
                         // Frame Rate
                         ui.label("Frame Rate")
-                             .on_hover_text("Target frame rate for the stream.\nHigher FPS feels smoother but requires more bandwidth and decoder power.");
+                             .on_hover_text("Target frame rate for the stream.\nHigh FPS requires more bandwidth and decoder power.");
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             egui::ComboBox::from_id_salt("fps_combo")
                                 .selected_text(format!("{} FPS", settings.fps))
                                 .show_ui(ui, |ui| {
+                                    // Use entitled FPS for the current resolution if available
+                                    if let Some(sub) = subscription {
+                                        if !sub.entitled_resolutions.is_empty() {
+                                            let (w, h) = crate::app::types::parse_resolution(&settings.resolution);
+                                            
+                                            // Find max FPS for this resolution
+                                            let mut available_fps = Vec::new();
+                                            for res in &sub.entitled_resolutions {
+                                                if res.width == w && res.height == h {
+                                                    available_fps.push(res.fps);
+                                                }
+                                            }
+                                            
+                                            // Also include global max FPS just in case resolution match fails
+                                            // or if we want to allow users to force lower FPS
+                                            if available_fps.is_empty() {
+                                                // Fallback to all entitled FPS
+                                                for res in &sub.entitled_resolutions {
+                                                     available_fps.push(res.fps);
+                                                }
+                                            }
+                                            
+                                            available_fps.sort();
+                                            available_fps.dedup();
+                                            
+                                            if !available_fps.is_empty() {
+                                                for fps in available_fps {
+                                                    if ui.selectable_label(settings.fps == fps, format!("{} FPS", fps)).clicked() {
+                                                        actions.push(UiAction::UpdateSetting(SettingChange::Fps(fps)));
+                                                    }
+                                                }
+                                                return;
+                                            }
+                                        }
+                                    }
+
+                                    // Fallback to static list
                                     for &fps in FPS_OPTIONS {
                                         if ui.selectable_label(settings.fps == fps, format!("{} FPS", fps)).clicked() {
                                             actions.push(UiAction::UpdateSetting(SettingChange::Fps(fps)));

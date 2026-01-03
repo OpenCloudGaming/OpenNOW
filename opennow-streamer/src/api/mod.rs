@@ -295,6 +295,23 @@ struct SubscriptionResponse {
     sub_type: Option<String>,  // TIME_CAPPED or UNLIMITED
     #[serde(default)]
     addons: Vec<SubscriptionAddon>,
+    features: Option<SubscriptionFeatures>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubscriptionFeatures {
+    #[serde(default)]
+    resolutions: Vec<SubscriptionResolution>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubscriptionResolution {
+    height_in_pixels: u32,
+    width_in_pixels: u32,
+    frames_per_second: u32,
+    is_entitled: bool,
 }
 
 fn default_tier() -> String {
@@ -428,6 +445,26 @@ pub async fn fetch_subscription(token: &str, user_id: &str) -> Result<crate::app
     // Check if this is an unlimited subscription (no hour cap)
     let is_unlimited = sub.sub_type.as_deref() == Some("UNLIMITED");
 
+    // Extract entitled resolutions
+    let mut entitled_resolutions = Vec::new();
+    if let Some(features) = sub.features {
+        for res in features.resolutions {
+            // User requested to ignore entitlement check (include all resolutions)
+            entitled_resolutions.push(crate::app::types::EntitledResolution {
+                width: res.width_in_pixels,
+                height: res.height_in_pixels,
+                fps: res.frames_per_second,
+            });
+        }
+    }
+    
+    // Sort to be nice (highest res/fps first)
+    entitled_resolutions.sort_by(|a, b| {
+        b.width.cmp(&a.width)
+            .then(b.height.cmp(&a.height))
+            .then(b.fps.cmp(&a.fps))
+    });
+
     Ok(crate::app::SubscriptionInfo {
         membership_tier: sub.membership_tier,
         remaining_hours,
@@ -435,5 +472,6 @@ pub async fn fetch_subscription(token: &str, user_id: &str) -> Result<crate::app
         has_persistent_storage,
         storage_size_gb,
         is_unlimited,
+        entitled_resolutions,
     })
 }

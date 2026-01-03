@@ -262,6 +262,7 @@ pub fn save_subscription_cache(sub: &SubscriptionInfo) {
             "has_persistent_storage": sub.has_persistent_storage,
             "storage_size_gb": sub.storage_size_gb,
             "is_unlimited": sub.is_unlimited,
+            "entitled_resolutions": sub.entitled_resolutions,
         });
         if let Ok(json) = serde_json::to_string(&cache) {
             let _ = std::fs::write(path, json);
@@ -281,6 +282,9 @@ pub fn load_subscription_cache() -> Option<SubscriptionInfo> {
         has_persistent_storage: cache.get("has_persistent_storage")?.as_bool()?,
         storage_size_gb: cache.get("storage_size_gb").and_then(|v| v.as_u64()).map(|v| v as u32),
         is_unlimited: cache.get("is_unlimited").and_then(|v| v.as_bool()).unwrap_or(false),
+        entitled_resolutions: cache.get("entitled_resolutions")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
     })
 }
 

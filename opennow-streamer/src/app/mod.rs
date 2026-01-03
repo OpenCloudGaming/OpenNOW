@@ -223,6 +223,22 @@ impl App {
                     }
                 }
             });
+
+            // Also fetch subscription info to ensure dynamic resolutions are available
+            let rt = runtime.clone();
+            let token = auth_tokens.as_ref().unwrap().jwt().to_string();
+            let user_id = auth_tokens.as_ref().unwrap().user_id().to_string();
+            rt.spawn(async move {
+                match crate::api::fetch_subscription(&token, &user_id).await {
+                    Ok(sub) => {
+                        info!("Fetched subscription startup: tier={}", sub.membership_tier);
+                        cache::save_subscription_cache(&sub);
+                    }
+                    Err(e) => {
+                        warn!("Failed to fetch subscription at startup: {}", e);
+                    }
+                }
+            });
         }
 
         Self {
