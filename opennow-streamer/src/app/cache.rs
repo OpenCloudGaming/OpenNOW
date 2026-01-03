@@ -71,14 +71,59 @@ pub fn load_tokens() -> Option<AuthTokens> {
     let content = std::fs::read_to_string(&path).ok()?;
     let tokens: AuthTokens = serde_json::from_str(&content).ok()?;
 
-    // Validate token is not expired
+    // If token is expired, try to refresh it
     if tokens.is_expired() {
-        info!("Saved token expired, clearing auth file");
-        let _ = std::fs::remove_file(&path);
-        return None;
+        if tokens.can_refresh() {
+            info!("Token expired, attempting refresh...");
+            // Try synchronous refresh using a blocking tokio runtime
+            match try_refresh_tokens_sync(&tokens) {
+                Some(new_tokens) => {
+                    info!("Token refresh successful!");
+                    return Some(new_tokens);
+                }
+                None => {
+                    warn!("Token refresh failed, clearing auth file");
+                    let _ = std::fs::remove_file(&path);
+                    return None;
+                }
+            }
+        } else {
+            info!("Token expired and no refresh token available, clearing auth file");
+            let _ = std::fs::remove_file(&path);
+            return None;
+        }
     }
 
     Some(tokens)
+}
+
+/// Attempt to refresh tokens synchronously (blocking)
+/// Used when loading tokens at startup
+fn try_refresh_tokens_sync(tokens: &AuthTokens) -> Option<AuthTokens> {
+    let refresh_token = tokens.refresh_token.as_ref()?;
+    
+    // Create a new tokio runtime for this blocking operation
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    
+    let refresh_token_clone = refresh_token.clone();
+    let result = rt.block_on(async {
+        crate::auth::refresh_token(&refresh_token_clone).await
+    });
+    
+    match result {
+        Ok(new_tokens) => {
+            // Save the new tokens
+            save_tokens(&new_tokens);
+            Some(new_tokens)
+        }
+        Err(e) => {
+            warn!("Token refresh failed: {}", e);
+            None
+        }
+    }
 }
 
 pub fn save_tokens(tokens: &AuthTokens) {
