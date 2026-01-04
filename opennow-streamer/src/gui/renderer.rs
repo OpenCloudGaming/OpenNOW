@@ -206,12 +206,12 @@ impl Renderer {
                     compatible_surface: Some(&surface),
                     force_fallback_adapter: false,
                 }).await {
-                    Some(hw_adapter) => {
+                    Ok(hw_adapter) => {
                         info!("  Hardware GPU found: {}", hw_adapter.get_info().name);
                         hw_adapter
                     }
-                    None => {
-                        warn!("  No hardware GPU found, using software renderer");
+                    Err(e) => {
+                        warn!("  Hardware GPU failed: {:?}, using software renderer", e);
                         instance.request_adapter(&wgpu::RequestAdapterOptions {
                             power_preference: wgpu::PowerPreference::LowPower,
                             compatible_surface: Some(&surface),
@@ -279,7 +279,7 @@ impl Renderer {
 
         info!("Requesting device limits: Max Texture Dimension 2D: {}", limits.max_texture_dimension_2d);
 
-        let (device, queue) = adapter
+        let (device, queue): (wgpu::Device, wgpu::Queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("OpenNow Device"),
                 required_features,
