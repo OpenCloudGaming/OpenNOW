@@ -186,11 +186,12 @@ jobs:
             VERSION="0.1.0"
           fi
 
-          # Update opennow-streamer/Cargo.toml
+          # Update opennow-streamer/Cargo.toml - only replace the package version (in first 10 lines)
+          # Using sed's line range to avoid changing dependency versions like wgpu-hal
           if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' "s/^version = \"[^\"]*\"/version = \"$VERSION\"/" opennow-streamer/Cargo.toml
+            sed -i '' "1,10s/^version = \"[^\"]*\"/version = \"$VERSION\"/" opennow-streamer/Cargo.toml
           else
-            sed -i "s/^version = \"[^\"]*\"/version = \"$VERSION\"/" opennow-streamer/Cargo.toml
+            sed -i "1,10s/^version = \"[^\"]*\"/version = \"$VERSION\"/" opennow-streamer/Cargo.toml
           fi
 
           # Verify the version was set correctly
