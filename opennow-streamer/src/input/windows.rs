@@ -478,6 +478,23 @@ pub fn stop_raw_input() {
         }
     }
     drop(guard);
+
+    // Wait for the thread to actually exit (up to 500ms)
+    // This prevents race conditions when starting a new session immediately
+    let start = std::time::Instant::now();
+    while RAW_INPUT_REGISTERED.load(Ordering::SeqCst) {
+        if start.elapsed() > std::time::Duration::from_millis(500) {
+            error!("Raw input thread did not exit in time, forcing reset");
+            RAW_INPUT_REGISTERED.store(false, Ordering::SeqCst);
+            *MESSAGE_WINDOW.lock() = None;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // Clear the event sender to avoid stale channel issues
+    clear_raw_input_sender();
+
     info!("Raw input stopped");
 }
 
@@ -558,6 +575,9 @@ pub fn reset_coalescing() {
     COALESCE_DY.store(0, Ordering::Release);
     COALESCE_LAST_SEND_US.store(0, Ordering::Release);
     COALESCED_EVENT_COUNT.store(0, Ordering::Release);
-    LOCAL_CURSOR_X.store(960, Ordering::Release);
-    LOCAL_CURSOR_Y.store(540, Ordering::Release);
+    // Center cursor based on actual dimensions, not hardcoded values
+    let width = LOCAL_CURSOR_WIDTH.load(Ordering::Acquire);
+    let height = LOCAL_CURSOR_HEIGHT.load(Ordering::Acquire);
+    LOCAL_CURSOR_X.store(width / 2, Ordering::Release);
+    LOCAL_CURSOR_Y.store(height / 2, Ordering::Release);
 }
