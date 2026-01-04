@@ -143,14 +143,23 @@ impl Renderer {
         // Vulkan on Windows has issues with exclusive fullscreen transitions causing DWM composition
         #[cfg(target_os = "windows")]
         let backends = wgpu::Backends::DX12;
-        // ARM Linux (Raspberry Pi, etc): Use Vulkan with software renderer (llvmpipe)
-        // - GL/GLES surface creation fails on Pi 5 Wayland
-        // - V3D hardware Vulkan OOMs even with conservative limits
-        // - llvmpipe software Vulkan works reliably
+        // ARM Linux (Raspberry Pi, etc): Check WGPU_BACKEND env var, default to Vulkan
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         let backends = {
-            info!("ARM64 Linux: Using Vulkan backend (llvmpipe software renderer for stability)");
-            wgpu::Backends::VULKAN
+            match std::env::var("WGPU_BACKEND").ok().as_deref() {
+                Some("gl") | Some("GL") | Some("gles") | Some("GLES") => {
+                    info!("ARM64 Linux: Using GL backend (from WGPU_BACKEND env var)");
+                    wgpu::Backends::GL
+                }
+                Some("vulkan") | Some("VULKAN") => {
+                    info!("ARM64 Linux: Using Vulkan backend (from WGPU_BACKEND env var)");
+                    wgpu::Backends::VULKAN
+                }
+                _ => {
+                    info!("ARM64 Linux: Using Vulkan backend (default - set WGPU_BACKEND=gl to try OpenGL)");
+                    wgpu::Backends::VULKAN
+                }
+            }
         };
         #[cfg(all(not(target_os = "windows"), not(all(target_os = "linux", target_arch = "aarch64"))))]
         let backends = wgpu::Backends::all();
