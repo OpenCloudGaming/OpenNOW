@@ -185,17 +185,29 @@ impl Renderer {
             })?;
 
         // Get adapter
-        // ARM64 Linux: Use LowPower to reduce memory allocation
+        // ARM64 Linux: Try software renderer (llvmpipe) first since V3D Vulkan OOMs
+        // The V3D driver has memory management issues with wgpu
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-        let power_preference = wgpu::PowerPreference::LowPower;
+        let (power_preference, force_fallback) = {
+            // Check if user explicitly wants hardware GPU
+            let force_hw = std::env::var("OPENNOW_FORCE_HARDWARE_GPU").is_ok();
+            if force_hw {
+                info!("ARM64 Linux: Forcing hardware GPU (OPENNOW_FORCE_HARDWARE_GPU set)");
+                (wgpu::PowerPreference::LowPower, false)
+            } else {
+                info!("ARM64 Linux: Using software renderer (llvmpipe) for stability");
+                info!("  Set OPENNOW_FORCE_HARDWARE_GPU=1 to try hardware GPU");
+                (wgpu::PowerPreference::LowPower, true)
+            }
+        };
         #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
-        let power_preference = wgpu::PowerPreference::HighPerformance;
+        let (power_preference, force_fallback) = (wgpu::PowerPreference::HighPerformance, false);
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference,
                 compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
+                force_fallback_adapter: force_fallback,
             })
             .await
             .context("Failed to find GPU adapter")?;
