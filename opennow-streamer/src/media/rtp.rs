@@ -66,6 +66,17 @@ impl RtpDepacketizer {
         self.nal_frame_buffer.clear();
     }
 
+    /// Reset depacketizer state (call after decode errors to resync)
+    /// Preserves cached SEQUENCE_HEADER but clears all fragment state
+    pub fn reset_state(&mut self) {
+        self.buffer.clear();
+        self.in_fragment = false;
+        self.av1_frame_buffer.clear();
+        self.nal_frame_buffer.clear();
+        // Keep av1_sequence_header cached - we need it for recovery
+        debug!("RTP depacketizer state reset");
+    }
+
     /// Process AV1 RTP payload and accumulate directly to frame buffer
     /// This handles GFN's non-standard AV1 RTP which has continuation packets
     /// that don't properly follow RFC 9000 fragmentation rules
