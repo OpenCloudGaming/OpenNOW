@@ -578,13 +578,32 @@ jobs:
 
           echo ""
           echo "=== Phase 3: Copy transitive dependencies (3 passes) ==="
+          BREW_PREFIX=$(brew --prefix)
+          echo "Resolving @rpath against: $BREW_PREFIX/lib"
+
           for pass in 1 2 3; do
             echo "Pass $pass..."
             if ls "$FRAMEWORKS_DIR/"*.dylib 1>/dev/null 2>&1; then
               for bundled_lib in "$FRAMEWORKS_DIR/"*.dylib; do
                 [ -f "$bundled_lib" ] || continue
-                for dep in $(otool -L "$bundled_lib" 2>/dev/null | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}'); do
-                  copy_lib "$dep"
+                # Grep for /opt/homebrew, /usr/local, AND @rpath
+                for dep in $(otool -L "$bundled_lib" 2>/dev/null | grep -E '/opt/homebrew|/usr/local|@rpath' | awk '{print $1}'); do
+                  
+                  # Handle @rpath references
+                  if [[ "$dep" == "@rpath/"* ]]; then
+                     # Extract filename
+                     local filename="${dep#@rpath/}"
+                     # Construct absolute path assuming it's in Homebrew lib
+                     local resolved_path="$BREW_PREFIX/lib/$filename"
+                     
+                     if [ -f "$resolved_path" ]; then
+                         # echo "Resolved $dep to $resolved_path"
+                         copy_lib "$resolved_path"
+                     fi
+                  else
+                     # Absolute path
+                     copy_lib "$dep"
+                  fi
                 done
               done
             else
@@ -640,6 +659,12 @@ jobs:
           else
             echo "All Homebrew dependencies bundled!"
           fi
+
+          echo ""
+          echo "=== Phase 5: Code Signing ==="
+          echo "Signing app bundle..."
+          # Sign with ad-hoc signature (-) to fix invalid signatures caused by install_name_tool
+          codesign --force --deep --sign - "$APP_DIR"
 
           # Zip the app bundle for upload/release
           echo "Zipping .app bundle..."
