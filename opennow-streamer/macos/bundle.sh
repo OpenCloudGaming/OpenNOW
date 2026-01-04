@@ -152,9 +152,9 @@ for pass in 1 2 3; do
         # Handle @rpath references
         if [[ "$dep" == "@rpath/"* ]]; then
            # Extract filename
-           local filename="${dep#@rpath/}"
+           filename="${dep#@rpath/}"
            # Construct absolute path assuming it's in Homebrew lib
-           local resolved_path="$BREW_PREFIX/lib/$filename"
+           resolved_path="$BREW_PREFIX/lib/$filename"
            
            if [ -f "$resolved_path" ]; then
                # echo "Resolved $dep to $resolved_path"
