@@ -78,6 +78,15 @@ pub fn parse_resolution(res: &str) -> (u32, u32) {
     }
 }
 
+/// Game variant (platform/store option)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GameVariant {
+    pub id: String,
+    pub store: String,
+    #[serde(default)]
+    pub supported_controls: Vec<String>,
+}
+
 /// Game information
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GameInfo {
@@ -99,6 +108,12 @@ pub struct GameInfo {
     pub uuid: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// Available platform variants (e.g., Steam, Epic, Xbox)
+    #[serde(default)]
+    pub variants: Vec<GameVariant>,
+    /// Index of the currently selected variant
+    #[serde(default)]
+    pub selected_variant_index: usize,
 }
 
 /// Section of games with a title (e.g., "Trending", "Free to Play")
@@ -192,6 +207,8 @@ pub enum UiAction {
     OpenGamePopup(GameInfo),
     /// Close game detail popup
     CloseGamePopup,
+    /// Select a platform variant for the current game popup
+    SelectVariant(usize),
     /// Select a server/region
     SelectServer(usize),
     /// Enable auto server selection (best ping)
