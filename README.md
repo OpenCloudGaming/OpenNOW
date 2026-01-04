@@ -50,29 +50,22 @@ OpenNOW is a custom GeForce NOW client rewritten entirely in **Native Rust** (mo
 
 ---
 
-## Features
+## Features & Implementation Status
 
-### ✅ Working
-Based on the current v0.2.0 Native Rust codebase:
-- **Authentication**: Secure login flow.
-- **Game Library**: Search and browse your GFN library (Cloudmatch integration).
-- **Streaming**:
-    - Low-latency RTP/WebRTC streaming.
-    - **Hardware Decoding**:
-        - Windows (D3D11/DXGI).
-        - macOS (VideoToolbox).
-        - Linux (FFmpeg/VAAPI where supported).
-- **Input**:
-    - Raw Mouse & Keyboard input.
-    - Gamepad support (via `gilrs`).
-- **Audio**: Low-latency audio playback (`cpal`).
-- **Overlay**: In-stream stats and settings overlay (`egui`).
-
-### 🚧 To-Do / In Progress
-- [ ] **Multi-account support**
-- [ ] **Fix IGPU specific issues** (Intel/AMD integrated graphics quirks)
-- [ ] **Clipboard Paste** support
-- [ ] **Microphone** support
+| Component | Feature | Status | Notes |
+|-----------|---------|:------:|-------|
+| **Core** | Authentication | ✅ | Secure login flow. |
+| **Core** | Game Library | ✅ | Search & browse via Cloudmatch integration. |
+| **Streaming** | RTP/WebRTC | ✅ | Low-latency streaming implementation. |
+| **Streaming** | Hardware Decoding | ✅ | Windows (D3D11), macOS (VideoToolbox), Linux (VAAPI). |
+| **Input** | Mouse/Keyboard | ✅ | Raw input capture. |
+| **Input** | Gamepad | ✅ | Cross-platform support via `gilrs`. |
+| **Input** | Clipboard Paste | 🚧 | Planned. |
+| **Audio** | Playback | ✅ | Low-latency audio via `cpal`. |
+| **Audio** | Microphone | 🚧 | Planned. |
+| **UI** | Overlay | ✅ | In-stream stats & settings (egui). |
+| **Core** | Multi-account | 🚧 | Planned. |
+| **Fixes** | iGPU Support | 🚧 | Fixes for Intel/AMD quirks in progress. |
 
 ---
 
