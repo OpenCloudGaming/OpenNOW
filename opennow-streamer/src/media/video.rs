@@ -34,6 +34,7 @@ pub enum GpuVendor {
     Intel,
     Amd,
     Apple,
+    Broadcom, // Raspberry Pi VideoCore
     Other,
     Unknown,
 }
@@ -76,6 +77,9 @@ pub fn detect_gpu_vendor() -> GpuVendor {
                 } else if name.contains("apple") || name.contains("m1") || name.contains("m2") || name.contains("m3") {
                     vendor = GpuVendor::Apple;
                     score += 90; // Apple Silicon is high perf
+                } else if name.contains("videocore") || name.contains("broadcom") || name.contains("v3d") || name.contains("vc4") {
+                    vendor = GpuVendor::Broadcom;
+                    score += 30; // Raspberry Pi - low power device
                 }
                 
                 // Prioritize discrete GPUs
@@ -121,6 +125,7 @@ pub fn detect_gpu_vendor() -> GpuVendor {
                      else if name.contains("intel") { GpuVendor::Intel }
                      else if name.contains("amd") { GpuVendor::Amd }
                      else if name.contains("apple") { GpuVendor::Apple }
+                     else if name.contains("videocore") || name.contains("broadcom") || name.contains("v3d") { GpuVendor::Broadcom }
                      else { GpuVendor::Other }
                 } else {
                     GpuVendor::Unknown
@@ -1156,6 +1161,12 @@ impl VideoDecoder {
 
                 // Don't try NVIDIA CUVID decoders on non-NVIDIA GPUs (causes libnvcuvid load errors)
                 let is_nvidia = matches!(gpu_vendor, GpuVendor::Nvidia);
+                let is_raspberry_pi = matches!(gpu_vendor, GpuVendor::Broadcom);
+
+                // Raspberry Pi 5 note:
+                // - Only has HEVC hardware decoder (hevc_v4l2m2m)
+                // - H.264 HW decoder exists but is slower than software, so not enabled
+                // - No AV1 hardware decoder
 
                 let hw_decoder_names: Vec<&str> = match codec_id {
                     ffmpeg::codec::Id::H264 => {
@@ -1164,11 +1175,16 @@ impl VideoDecoder {
                             GpuVendor::Nvidia => decoders.push("h264_cuvid"),
                             GpuVendor::Intel if qsv_available => decoders.push("h264_qsv"),
                             GpuVendor::Amd => decoders.push("h264_vaapi"),
+                            // Raspberry Pi 5: H.264 HW decoder is slower than software, skip it
+                            GpuVendor::Broadcom => {
+                                info!("Raspberry Pi detected: H.264 will use software decoder (HW is slower)");
+                            }
                             _ => {}
                         }
-                        // Only add CUVID fallback on NVIDIA or unknown GPUs
+                        // Only add CUVID fallback on NVIDIA GPUs
                         if is_nvidia && !decoders.contains(&"h264_cuvid") { decoders.push("h264_cuvid"); }
-                        if !decoders.contains(&"h264_vaapi") { decoders.push("h264_vaapi"); }
+                        // Don't add VAAPI fallback on Raspberry Pi (not supported)
+                        if !is_raspberry_pi && !decoders.contains(&"h264_vaapi") { decoders.push("h264_vaapi"); }
                         if !decoders.contains(&"h264_qsv") && qsv_available { decoders.push("h264_qsv"); }
                         decoders
                     }
@@ -1178,11 +1194,17 @@ impl VideoDecoder {
                             GpuVendor::Nvidia => decoders.push("hevc_cuvid"),
                             GpuVendor::Intel if qsv_available => decoders.push("hevc_qsv"),
                             GpuVendor::Amd => decoders.push("hevc_vaapi"),
+                            // Raspberry Pi 5: Has dedicated HEVC hardware decoder
+                            GpuVendor::Broadcom => {
+                                info!("Raspberry Pi detected: Using V4L2 HEVC hardware decoder");
+                                decoders.push("hevc_v4l2m2m");
+                            }
                             _ => {}
                         }
                         // Only add CUVID fallback on NVIDIA GPUs
                         if is_nvidia && !decoders.contains(&"hevc_cuvid") { decoders.push("hevc_cuvid"); }
-                        if !decoders.contains(&"hevc_vaapi") { decoders.push("hevc_vaapi"); }
+                        // Don't add VAAPI fallback on Raspberry Pi
+                        if !is_raspberry_pi && !decoders.contains(&"hevc_vaapi") { decoders.push("hevc_vaapi"); }
                         if !decoders.contains(&"hevc_qsv") && qsv_available { decoders.push("hevc_qsv"); }
                         decoders
                     }
@@ -1192,11 +1214,16 @@ impl VideoDecoder {
                             GpuVendor::Nvidia => decoders.push("av1_cuvid"),
                             GpuVendor::Intel if qsv_available => decoders.push("av1_qsv"),
                             GpuVendor::Amd => decoders.push("av1_vaapi"),
+                            // Raspberry Pi 5: No AV1 hardware decoder
+                            GpuVendor::Broadcom => {
+                                info!("Raspberry Pi detected: AV1 will use software decoder (no HW support)");
+                            }
                             _ => {}
                         }
                         // Only add CUVID fallback on NVIDIA GPUs
                         if is_nvidia && !decoders.contains(&"av1_cuvid") { decoders.push("av1_cuvid"); }
-                        if !decoders.contains(&"av1_vaapi") { decoders.push("av1_vaapi"); }
+                        // Don't add VAAPI fallback on Raspberry Pi
+                        if !is_raspberry_pi && !decoders.contains(&"av1_vaapi") { decoders.push("av1_vaapi"); }
                         if !decoders.contains(&"av1_qsv") && qsv_available { decoders.push("av1_qsv"); }
                         decoders
                     }
@@ -1241,10 +1268,22 @@ impl VideoDecoder {
         info!("Found software decoder: {:?}", codec.name());
 
         let mut ctx = CodecContext::new_with_codec(codec);
-        ctx.set_threading(ffmpeg::codec::threading::Config::count(4));
+
+        // Use fewer threads on low-power devices to reduce memory usage
+        let gpu_vendor = detect_gpu_vendor();
+        let thread_count = if matches!(gpu_vendor, GpuVendor::Broadcom) {
+            // Raspberry Pi: Use 2 threads to avoid memory overflow
+            // Pi 5 has 4 cores but limited RAM bandwidth
+            info!("Raspberry Pi detected: Using 2 decoder threads to conserve memory");
+            2
+        } else {
+            // Desktop/laptop: Use 4 threads for better performance
+            4
+        };
+        ctx.set_threading(ffmpeg::codec::threading::Config::count(thread_count));
 
         let decoder = ctx.decoder().video()?;
-        info!("Software decoder opened successfully");
+        info!("Software decoder opened successfully with {} threads", thread_count);
         Ok((decoder, false))
     }
 
