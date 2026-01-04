@@ -195,11 +195,19 @@ impl Renderer {
             info!("EXTERNAL_TEXTURE not supported - using NV12 shader path");
         }
 
+        // Use downlevel defaults for broader compatibility (e.g., Raspberry Pi 5/Vulcan)
+        // device.limits() will automatically be clamped to the adapter's actual limits
+        // but explicit downlevel_defaults avoids requesting limits the driver can't provide.
+        let limits = wgpu::Limits::downlevel_defaults()
+            .using_resolution(adapter.limits());
+
+        info!("Requesting device limits: Max Texture Dimension 2D: {}", limits.max_texture_dimension_2d);
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("OpenNow Device"),
                 required_features,
-                required_limits: wgpu::Limits::default(),
+                required_limits: limits,
                 memory_hints: wgpu::MemoryHints::Performance,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 trace: wgpu::Trace::Off,
