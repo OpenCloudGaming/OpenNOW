@@ -316,10 +316,11 @@ impl ApplicationHandler for OpenNowApp {
                         .and_then(|m| m.refresh_rate_millihertz())
                         .map(|mhz| (mhz as f32 / 1000.0).ceil() as u32)
                         .unwrap_or(60)
+                        .max(30) // Ensure at least 30 FPS to avoid division by zero
                 };
                 drop(app_guard);
 
-                let frame_duration = std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
+                let frame_duration = std::time::Duration::from_secs_f64(1.0 / target_fps.max(1) as f64);
                 let elapsed = self.last_frame_time.elapsed();
                 if elapsed < frame_duration {
                     // Sleep for remaining time (avoid busy loop)
@@ -435,7 +436,7 @@ impl ApplicationHandler for OpenNowApp {
             // Only sleep if no new frame is available
             // This ensures frames are rendered as soon as they arrive
             if !has_new_frame {
-                let frame_duration = std::time::Duration::from_secs_f64(1.0 / target_fps as f64);
+                let frame_duration = std::time::Duration::from_secs_f64(1.0 / target_fps.max(1) as f64);
                 let elapsed = self.last_frame_time.elapsed();
                 if elapsed < frame_duration {
                     let sleep_time = frame_duration - elapsed;
