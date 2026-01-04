@@ -113,9 +113,15 @@ impl Renderer {
     /// Create a new renderer
     pub async fn new(event_loop: &ActiveEventLoop) -> Result<Self> {
         // Create window attributes
+        // ARM64 Linux: Start with smaller window to reduce initial GPU memory usage
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        let initial_size = PhysicalSize::new(800, 600);
+        #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+        let initial_size = PhysicalSize::new(1280, 720);
+
         let window_attrs = WindowAttributes::default()
             .with_title("OpenNow")
-            .with_inner_size(PhysicalSize::new(1280, 720))
+            .with_inner_size(initial_size)
             .with_min_inner_size(PhysicalSize::new(640, 480))
             .with_resizable(true);
 
@@ -200,6 +206,12 @@ impl Renderer {
         let adapter = {
             let force_sw = std::env::var("OPENNOW_FORCE_SOFTWARE_GPU").is_ok();
 
+            // Print V3D troubleshooting info
+            info!("ARM64 Linux: GPU memory tips:");
+            info!("  - Check GPU memory: vcgencmd get_mem gpu");
+            info!("  - Increase GPU memory: Add 'gpu_mem=512' to /boot/firmware/config.txt");
+            info!("  - V3D env vars: MESA_VK_ABORT_ON_DEVICE_LOSS=0 V3D_DEBUG=perf");
+
             if force_sw {
                 info!("ARM64 Linux: Forcing software renderer (OPENNOW_FORCE_SOFTWARE_GPU set)");
                 instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -216,7 +228,14 @@ impl Renderer {
                     force_fallback_adapter: false,
                 }).await {
                     Ok(hw_adapter) => {
-                        info!("  Hardware GPU found: {}", hw_adapter.get_info().name);
+                        let info = hw_adapter.get_info();
+                        info!("  Hardware GPU found: {}", info.name);
+                        // Check if this is V3D and warn about potential OOM
+                        if info.name.to_lowercase().contains("v3d") {
+                            warn!("  V3D GPU detected - may OOM during device creation");
+                            warn!("  If OOM occurs, try: OPENNOW_FORCE_SOFTWARE_GPU=1 ./run.sh");
+                            warn!("  Or increase GPU memory to 512MB in config.txt");
+                        }
                         hw_adapter
                     }
                     Err(e) => {
@@ -265,17 +284,30 @@ impl Renderer {
         // Detect if we're on ARM64 Linux (includes llvmpipe on Pi)
         let is_arm64_linux = cfg!(all(target_os = "linux", target_arch = "aarch64"));
 
+        // V3D: Don't request any optional features to minimize memory
+        if is_v3d_hardware {
+            required_features = wgpu::Features::empty();
+            info!("V3D hardware: Disabling all optional features to save memory");
+        }
+
         // Use appropriate limits based on GPU type
         let limits = if is_v3d_hardware {
-            // V3D hardware: Use WebGL2 defaults (absolute minimum) to avoid OOM
-            info!("V3D hardware GPU detected - using ultra-minimal WebGL2 limits");
+            // V3D hardware: Use conservative limits (Pi 4/5 with 512MB+ GPU memory)
+            info!("V3D hardware GPU detected - using conservative limits for 1080p");
             let mut lim = wgpu::Limits::downlevel_webgl2_defaults();
-            // Override with slightly higher values needed for video rendering
-            lim.max_texture_dimension_2d = 2048; // Need 1920x1080 video
-            lim.max_buffer_size = 16 * 1024 * 1024; // 16MB - minimal
-            lim.max_uniform_buffer_binding_size = 16 * 1024;
-            lim.max_storage_buffer_binding_size = 16 * 1024 * 1024;
-            info!("  Max texture: 2048, Max buffer: 16MB");
+            // Support 1080p video (1920x1080) and some headroom
+            lim.max_texture_dimension_1d = 2048;
+            lim.max_texture_dimension_2d = 2048; // Enough for 1080p
+            lim.max_texture_dimension_3d = 256;
+            lim.max_buffer_size = 32 * 1024 * 1024; // 32MB
+            lim.max_uniform_buffer_binding_size = 64 * 1024;
+            lim.max_storage_buffer_binding_size = 32 * 1024 * 1024;
+            lim.max_vertex_buffers = 8;
+            lim.max_bind_groups = 4;
+            lim.max_bindings_per_bind_group = 16;
+            lim.max_samplers_per_shader_stage = 4;
+            lim.max_sampled_textures_per_shader_stage = 8;
+            info!("  Max texture: 2048, Max buffer: 32MB, Bind groups: 4");
             lim
         } else if is_arm64_linux {
             // llvmpipe or other ARM64: Use downlevel defaults
@@ -288,6 +320,66 @@ impl Renderer {
 
         info!("Requesting device limits: Max Texture Dimension 2D: {}", limits.max_texture_dimension_2d);
 
+        // ARM64 Linux: Try device creation, fallback to software if V3D OOMs
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        let (device, queue, adapter, is_v3d_hardware, required_features, limits): (wgpu::Device, wgpu::Queue, wgpu::Adapter, bool, wgpu::Features, wgpu::Limits) = {
+            let device_result = adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    label: Some("OpenNow Device"),
+                    required_features,
+                    required_limits: limits.clone(),
+                    memory_hints: wgpu::MemoryHints::MemoryUsage,
+                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                    trace: wgpu::Trace::Off,
+                })
+                .await;
+
+            match device_result {
+                Ok((device, queue)) => {
+                    info!("Device created successfully with {}", adapter_info.name);
+                    (device, queue, adapter, is_v3d_hardware, required_features, limits)
+                }
+                Err(e) => {
+                    // V3D device creation failed (likely OOM), fallback to software renderer
+                    warn!("Hardware GPU device creation failed: {:?}", e);
+                    warn!("Falling back to software renderer (llvmpipe)...");
+
+                    crate::utils::console_print("[GPU] Hardware GPU failed, using software renderer");
+
+                    // Get software (llvmpipe) adapter
+                    let sw_adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::LowPower,
+                        compatible_surface: Some(&surface),
+                        force_fallback_adapter: true,
+                    }).await.context("Failed to find software GPU adapter after hardware GPU failed")?;
+
+                    let sw_info = sw_adapter.get_info();
+                    info!("Fallback GPU: {} (Backend: {:?})", sw_info.name, sw_info.backend);
+
+                    // Use downlevel defaults for llvmpipe
+                    let sw_limits = wgpu::Limits::downlevel_defaults().using_resolution(sw_adapter.limits());
+                    let sw_features = wgpu::Features::empty();
+
+                    let (device, queue) = sw_adapter
+                        .request_device(&wgpu::DeviceDescriptor {
+                            label: Some("OpenNow Device (Software Fallback)"),
+                            required_features: sw_features,
+                            required_limits: sw_limits.clone(),
+                            memory_hints: wgpu::MemoryHints::MemoryUsage,
+                            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                            trace: wgpu::Trace::Off,
+                        })
+                        .await
+                        .context("Failed to create software GPU device")?;
+
+                    info!("Software renderer device created successfully");
+                    (device, queue, sw_adapter, false, sw_features, sw_limits)
+                }
+            }
+        };
+
+        // Non-ARM64: Standard device creation
+        #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
         let (device, queue): (wgpu::Device, wgpu::Queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("OpenNow Device"),
@@ -301,6 +393,10 @@ impl Renderer {
             .await
             .context("Failed to create device")?;
 
+        // Update adapter_info after potential ARM64 fallback to software renderer
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        let adapter_info = adapter.get_info();
+
         // Configure surface
         // Use non-sRGB (linear) format for video - H.264/HEVC output is already gamma-corrected
         // Using sRGB format would apply double gamma correction, causing washed-out colors
@@ -313,22 +409,20 @@ impl Renderer {
             .unwrap_or(surface_caps.formats[0]);
 
         // Use Immediate for lowest latency - frame pacing is handled by our render loop
-        // Exception: V3D hardware uses Fifo to reduce memory usage (Immediate needs extra buffers)
-        let present_mode = if is_v3d_hardware {
-            info!("V3D GPU: Using Fifo present mode to conserve memory");
-            wgpu::PresentMode::Fifo
-        } else if surface_caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+        // V3D: Prefer Mailbox for high fps without tearing, fall back to Immediate
+        let present_mode = if surface_caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+            info!("Using Immediate present mode (lowest latency)");
             wgpu::PresentMode::Immediate
         } else if surface_caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            info!("Using Mailbox present mode (triple buffering)");
             wgpu::PresentMode::Mailbox
         } else {
+            info!("Using Fifo present mode (vsync)");
             wgpu::PresentMode::Fifo
         };
-        info!("Using present mode: {:?}", present_mode);
 
-        // V3D hardware: Use minimum frame latency (1) to reduce memory usage
-        // Other devices: Use 2 for smoother frame pacing
-        let frame_latency = if is_v3d_hardware { 1 } else { 2 };
+        // Frame latency: 2 for smoother pacing
+        let frame_latency = 2;
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
