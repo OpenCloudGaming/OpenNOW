@@ -732,24 +732,36 @@ jobs:
 
       # ==================== Upload Artifacts ====================
 
+      - name: Zip Windows x64 artifacts
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          $releaseDir = "opennow-streamer/target/release"
+          $zipName = "OpenNOW-windows-x64.zip"
+          Compress-Archive -Path "$releaseDir\opennow-streamer.exe", "$releaseDir\*.dll" -DestinationPath "$releaseDir\$zipName"
+
       - name: Upload Windows x64 artifacts
         if: matrix.target == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: opennow-streamer-${{ needs.get-version.outputs.version }}-windows-x64
-          path: |
-            opennow-streamer/target/release/opennow-streamer.exe
-            opennow-streamer/target/release/*.dll
+          path: opennow-streamer/target/release/OpenNOW-windows-x64.zip
           retention-days: 30
+
+      - name: Zip Windows ARM64 artifacts
+        if: matrix.target == 'windows-arm64'
+        shell: pwsh
+        run: |
+          $releaseDir = "opennow-streamer/target/aarch64-pc-windows-msvc/release"
+          $zipName = "OpenNOW-windows-arm64.zip"
+          Compress-Archive -Path "$releaseDir\opennow-streamer.exe", "$releaseDir\*.dll" -DestinationPath "$releaseDir\$zipName"
 
       - name: Upload Windows ARM64 artifacts
         if: matrix.target == 'windows-arm64'
         uses: actions/upload-artifact@v4
         with:
           name: opennow-streamer-${{ needs.get-version.outputs.version }}-windows-arm64
-          path: |
-            opennow-streamer/target/aarch64-pc-windows-msvc/release/opennow-streamer.exe
-            opennow-streamer/target/aarch64-pc-windows-msvc/release/*.dll
+          path: opennow-streamer/target/aarch64-pc-windows-msvc/release/OpenNOW-windows-arm64.zip
           retention-days: 30
 
       - name: Upload macOS artifacts
@@ -760,20 +772,34 @@ jobs:
           path: opennow-streamer/target/release/OpenNOW-macos-arm64.zip
           retention-days: 30
 
+      - name: Zip Linux x64 artifacts
+        if: matrix.target == 'linux'
+        shell: bash
+        run: |
+          cd opennow-streamer/target/release
+          zip -r "OpenNOW-linux-x64.zip" opennow-streamer
+
       - name: Upload Linux x64 artifacts
         if: matrix.target == 'linux'
         uses: actions/upload-artifact@v4
         with:
           name: opennow-streamer-${{ needs.get-version.outputs.version }}-linux-x64
-          path: opennow-streamer/target/release/opennow-streamer
+          path: opennow-streamer/target/release/OpenNOW-linux-x64.zip
           retention-days: 30
+
+      - name: Zip Linux ARM64 artifacts
+        if: matrix.target == 'linux-arm64'
+        shell: bash
+        run: |
+          cd opennow-streamer/target/aarch64-unknown-linux-gnu/release
+          zip -r "OpenNOW-linux-arm64.zip" bundle/
 
       - name: Upload Linux ARM64 artifacts
         if: matrix.target == 'linux-arm64'
         uses: actions/upload-artifact@v4
         with:
           name: opennow-streamer-${{ needs.get-version.outputs.version }}-linux-arm64
-          path: opennow-streamer/target/aarch64-unknown-linux-gnu/release/bundle/
+          path: opennow-streamer/target/aarch64-unknown-linux-gnu/release/OpenNOW-linux-arm64.zip
           retention-days: 30
 
       # ==================== Upload to GitHub Release (main branch only) ====================
@@ -823,9 +849,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
-          files: |
-            opennow-streamer/target/release/opennow-streamer.exe
-            opennow-streamer/target/release/*.dll
+          files: opennow-streamer/target/release/OpenNOW-windows-x64.zip
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -835,9 +859,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
-          files: |
-            opennow-streamer/target/aarch64-pc-windows-msvc/release/opennow-streamer.exe
-            opennow-streamer/target/aarch64-pc-windows-msvc/release/*.dll
+          files: opennow-streamer/target/aarch64-pc-windows-msvc/release/OpenNOW-windows-arm64.zip
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -857,7 +879,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
-          files: opennow-streamer/target/release/opennow-streamer
+          files: opennow-streamer/target/release/OpenNOW-linux-x64.zip
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -867,7 +889,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
-          files: opennow-streamer/target/aarch64-unknown-linux-gnu/release/bundle/*
+          files: opennow-streamer/target/aarch64-unknown-linux-gnu/release/OpenNOW-linux-arm64.zip
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
