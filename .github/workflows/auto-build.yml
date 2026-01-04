@@ -255,8 +255,8 @@ jobs:
         shell: pwsh
         run: |
           # Download ARM64 FFmpeg build from BtbN (GitHub releases)
-          # Use FFmpeg 7.1 for compatibility with ffmpeg-next v8.0.0 (master-latest may have unsupported enum variants)
-          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-winarm64-lgpl-shared.zip"
+          # Use FFmpeg 8.0 stable (not master-latest which may have unsupported enum variants)
+          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-winarm64-lgpl-shared-8.0.zip"
           Write-Host "Downloading FFmpeg ARM64 from $ffmpegUrl..."
           Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.zip
 
@@ -337,8 +337,8 @@ jobs:
             libudev-dev:arm64
 
           # Download pre-built FFmpeg ARM64 from BtbN
-          # Use FFmpeg 7.1 for compatibility with ffmpeg-next v8.0.0 (master-latest may have unsupported enum variants)
-          FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linuxarm64-lgpl-shared.tar.xz"
+          # Use FFmpeg 8.0 stable (not master-latest which may have unsupported enum variants)
+          FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-linuxarm64-lgpl-shared-8.0.tar.xz"
           echo "Downloading FFmpeg ARM64 from $FFMPEG_URL..."
           wget -q "$FFMPEG_URL" -O ffmpeg.tar.xz
 
