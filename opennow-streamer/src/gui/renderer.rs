@@ -143,7 +143,14 @@ impl Renderer {
         // Vulkan on Windows has issues with exclusive fullscreen transitions causing DWM composition
         #[cfg(target_os = "windows")]
         let backends = wgpu::Backends::DX12;
-        #[cfg(not(target_os = "windows"))]
+        // ARM Linux (Raspberry Pi, etc): Use GL only, avoid Vulkan
+        // Vulkan on embedded ARM (V3D driver) has high memory overhead causing OOM
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        let backends = {
+            info!("ARM64 Linux detected - using GL backend to avoid Vulkan memory overhead");
+            wgpu::Backends::GL
+        };
+        #[cfg(all(not(target_os = "windows"), not(all(target_os = "linux", target_arch = "aarch64"))))]
         let backends = wgpu::Backends::all();
 
         info!("Using wgpu backend: {:?}", backends);
@@ -195,11 +202,27 @@ impl Renderer {
             info!("EXTERNAL_TEXTURE not supported - using NV12 shader path");
         }
 
+        // Detect Raspberry Pi (V3D/VideoCore) for memory-constrained settings
+        let is_raspberry_pi = adapter_info.name.to_lowercase().contains("v3d")
+            || adapter_info.name.to_lowercase().contains("videocore")
+            || adapter_info.name.to_lowercase().contains("broadcom");
+
         // Use downlevel defaults for broader compatibility (e.g., Raspberry Pi 5/Vulcan)
         // device.limits() will automatically be clamped to the adapter's actual limits
         // but explicit downlevel_defaults avoids requesting limits the driver can't provide.
-        let limits = wgpu::Limits::downlevel_defaults()
+        let mut limits = wgpu::Limits::downlevel_defaults()
             .using_resolution(adapter.limits());
+
+        // Raspberry Pi 5: Use very conservative limits to avoid OOM
+        // The V3D GPU has limited memory and aggressive allocation causes crashes
+        if is_raspberry_pi {
+            info!("Raspberry Pi detected - using memory-conservative limits");
+            // Reduce max texture size to 2048 (sufficient for 1080p video)
+            limits.max_texture_dimension_2d = limits.max_texture_dimension_2d.min(2048);
+            // Reduce buffer sizes
+            limits.max_buffer_size = limits.max_buffer_size.min(128 * 1024 * 1024); // 128MB max
+            limits.max_uniform_buffer_binding_size = limits.max_uniform_buffer_binding_size.min(16 * 1024);
+        }
 
         info!("Requesting device limits: Max Texture Dimension 2D: {}", limits.max_texture_dimension_2d);
 
@@ -228,7 +251,11 @@ impl Renderer {
             .unwrap_or(surface_caps.formats[0]);
 
         // Use Immediate for lowest latency - frame pacing is handled by our render loop
-        let present_mode = if surface_caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+        // Exception: Raspberry Pi uses Fifo to reduce memory usage (Immediate needs extra buffers)
+        let present_mode = if is_raspberry_pi {
+            info!("Raspberry Pi: Using Fifo present mode to conserve memory");
+            wgpu::PresentMode::Fifo
+        } else if surface_caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
             wgpu::PresentMode::Immediate
         } else if surface_caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
             wgpu::PresentMode::Mailbox
@@ -236,6 +263,10 @@ impl Renderer {
             wgpu::PresentMode::Fifo
         };
         info!("Using present mode: {:?}", present_mode);
+
+        // Raspberry Pi: Use minimum frame latency (1) to reduce memory usage
+        // Other devices: Use 2 for smoother frame pacing
+        let frame_latency = if is_raspberry_pi { 1 } else { 2 };
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -251,7 +282,7 @@ impl Renderer {
                 surface_caps.alpha_modes[0]
             },
             view_formats: vec![],
-            desired_maximum_frame_latency: 2, // Relax latency to avoid OOM on weak devices
+            desired_maximum_frame_latency: frame_latency,
         };
 
         surface.configure(&device, &config);
