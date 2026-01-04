@@ -3,7 +3,7 @@
 //! wgpu-based rendering for video frames and UI overlays.
 
 use anyhow::{Result, Context};
-use log::{info, debug, warn};
+use log::{info, debug, warn, error};
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
