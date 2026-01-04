@@ -10,7 +10,7 @@ pub mod cache;
 pub use config::{Settings, VideoCodec, AudioCodec, StreamQuality, StatsPosition};
 pub use session::{SessionInfo, SessionState, ActiveSessionInfo};
 pub use types::{
-    SharedFrame, GameInfo, GameSection, SubscriptionInfo, GamesTab, ServerInfo, ServerStatus,
+    SharedFrame, GameInfo, GameSection, GameVariant, SubscriptionInfo, GamesTab, ServerInfo, ServerStatus,
     UiAction, SettingChange, AppState, parse_resolution,
 };
 
@@ -447,6 +447,21 @@ impl App {
             }
             UiAction::CloseGamePopup => {
                 self.selected_game_popup = None;
+            }
+            UiAction::SelectVariant(index) => {
+                // Update the selected variant for the game popup
+                if let Some(ref mut game) = self.selected_game_popup {
+                    if index < game.variants.len() {
+                        game.selected_variant_index = index;
+                        // Update the game's store and id to match the selected variant
+                        if let Some(variant) = game.variants.get(index) {
+                            game.store = variant.store.clone();
+                            game.id = variant.id.clone();
+                            game.app_id = variant.id.parse::<i64>().ok();
+                            info!("Selected platform variant: {} ({})", variant.store, variant.id);
+                        }
+                    }
+                }
             }
             UiAction::SelectServer(index) => {
                 if index < self.servers.len() {

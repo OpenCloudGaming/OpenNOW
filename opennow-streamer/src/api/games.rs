@@ -7,7 +7,7 @@ use log::{info, debug, warn, error};
 use serde::Deserialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::app::{GameInfo, GameSection};
+use crate::app::{GameInfo, GameSection, GameVariant};
 use crate::auth;
 use super::GfnApiClient;
 
@@ -323,18 +323,30 @@ impl GfnApiClient {
 
     /// Convert AppData to GameInfo
     fn app_to_game_info(app: AppData) -> GameInfo {
-        // Find selected variant (the one marked as selected, or first available)
-        let selected_variant = app.variants.as_ref()
-            .and_then(|vars| vars.iter().find(|v| {
+        // Build variants list from app variants
+        let variants: Vec<GameVariant> = app.variants.as_ref()
+            .map(|vars| vars.iter().map(|v| GameVariant {
+                id: v.id.clone(),
+                store: v.app_store.clone(),
+                supported_controls: v.supported_controls.clone().unwrap_or_default(),
+            }).collect())
+            .unwrap_or_default();
+
+        // Find selected variant index (the one marked as selected, or 0 for first)
+        let selected_variant_index = app.variants.as_ref()
+            .and_then(|vars| vars.iter().position(|v| {
                 v.gfn.as_ref()
                     .and_then(|g| g.library.as_ref())
                     .and_then(|l| l.selected)
                     .unwrap_or(false)
             }))
-            .or_else(|| app.variants.as_ref().and_then(|v| v.first()));
+            .unwrap_or(0);
+
+        // Get the selected variant for current store/id
+        let selected_variant = variants.get(selected_variant_index);
 
         let store = selected_variant
-            .map(|v| v.app_store.clone())
+            .map(|v| v.store.clone())
             .unwrap_or_else(|| "Unknown".to_string());
 
         // Use variant ID for launching (e.g., "102217611")
@@ -370,6 +382,8 @@ impl GfnApiClient {
             playability_text: app.gfn.as_ref().and_then(|g| g.catalog_sku_strings.as_ref()).and_then(|s| s.sku_based_playability_text.clone()),
             uuid: Some(app.id.clone()),
             description: app.description.or(app.long_description),
+            variants,
+            selected_variant_index,
         }
     }
 
@@ -565,6 +579,8 @@ impl GfnApiClient {
                     playability_text: None,
                     uuid: None,
                     description: None,
+                    variants: Vec::new(),
+                    selected_variant_index: 0,
                 })
             })
             .collect();

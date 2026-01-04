@@ -2977,20 +2977,59 @@ impl Renderer {
 
                     ui.add_space(8.0);
 
-                    // Store badge
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Store:")
-                                .size(12.0)
-                                .color(egui::Color32::GRAY)
-                        );
-                        ui.label(
-                            egui::RichText::new(&game.store.to_uppercase())
-                                .size(12.0)
-                                .color(egui::Color32::from_rgb(100, 180, 255))
-                                .strong()
-                        );
-                    });
+                    // Platform selector (if multiple variants) or store badge (single variant)
+                    if game.variants.len() > 1 {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Platform:")
+                                    .size(12.0)
+                                    .color(egui::Color32::GRAY)
+                            );
+
+                            // Show platform buttons
+                            for (idx, variant) in game.variants.iter().enumerate() {
+                                let is_selected = idx == game.selected_variant_index;
+                                let btn_color = if is_selected {
+                                    egui::Color32::from_rgb(100, 180, 255) // Bright blue for selected
+                                } else {
+                                    egui::Color32::from_rgb(60, 60, 80) // Dark for unselected
+                                };
+                                let text_color = if is_selected {
+                                    egui::Color32::WHITE
+                                } else {
+                                    egui::Color32::LIGHT_GRAY
+                                };
+
+                                let btn = egui::Button::new(
+                                    egui::RichText::new(variant.store.to_uppercase())
+                                        .size(11.0)
+                                        .color(text_color)
+                                )
+                                .fill(btn_color)
+                                .corner_radius(4.0)
+                                .min_size(egui::vec2(60.0, 24.0));
+
+                                if ui.add(btn).clicked() && !is_selected {
+                                    actions.push(UiAction::SelectVariant(idx));
+                                }
+                            }
+                        });
+                    } else {
+                        // Single store badge (existing behavior)
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Store:")
+                                    .size(12.0)
+                                    .color(egui::Color32::GRAY)
+                            );
+                            ui.label(
+                                egui::RichText::new(&game.store.to_uppercase())
+                                    .size(12.0)
+                                    .color(egui::Color32::from_rgb(100, 180, 255))
+                                    .strong()
+                            );
+                        });
+                    }
 
                     // Publisher if available
                     if let Some(ref publisher) = game.publisher {
