@@ -208,7 +208,8 @@ impl Renderer {
                 label: Some("OpenNow Device"),
                 required_features,
                 required_limits: limits,
-                memory_hints: wgpu::MemoryHints::Performance,
+                // Use MemoryUsage hint to avoid aggressive memory allocation which causes OOM on RPi5
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 trace: wgpu::Trace::Off,
             })
@@ -250,7 +251,8 @@ impl Renderer {
                 surface_caps.alpha_modes[0]
             },
             view_formats: vec![],
-            desired_maximum_frame_latency: 1, // Minimum latency for streaming
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2, // Relax latency to avoid OOM on weak devices
         };
 
         surface.configure(&device, &config);
