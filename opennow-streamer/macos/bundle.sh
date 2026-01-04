@@ -202,6 +202,21 @@ if ls "$FRAMEWORKS_DIR/"*.dylib 1>/dev/null 2>&1; then
   done
 fi
 
+# Special pass: Rewrite @rpath references (e.g. libwebp -> libsharpyuv)
+echo "Rewriting @rpath references in bundled libs..."
+if ls "$FRAMEWORKS_DIR/"*.dylib 1>/dev/null 2>&1; then
+  for bundled_lib in "$FRAMEWORKS_DIR/"*.dylib; do
+     # Grep for @rpath references
+     for dep in $(otool -L "$bundled_lib" 2>/dev/null | grep "@rpath/" | awk '{print $1}'); do
+        filename="${dep#@rpath/}"
+        if [ -f "$FRAMEWORKS_DIR/$filename" ]; then
+            echo "  Rewriting @rpath ref in $(basename "$bundled_lib"): $dep -> @loader_path/$filename"
+            install_name_tool -change "$dep" "@loader_path/$filename" "$bundled_lib" 2>/dev/null || true
+        fi
+     done
+  done
+fi
+
 echo ""
 echo "=== Final verification ==="
 echo "Binary dependencies:"
