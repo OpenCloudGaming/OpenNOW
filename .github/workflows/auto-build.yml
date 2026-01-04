@@ -528,10 +528,48 @@ jobs:
           }
 
           echo ""
-          echo "=== Phase 1: Copy direct FFmpeg dependencies ==="
+          echo "=== Phase 1: Explicitly copy FFmpeg libraries ==="
+          # FFmpeg libraries might not show up in otool if dlopened or linked with @rpath
+          # So we explicitly find and copy them
+          
+          FFMPEG_PREFIX=$(brew --prefix ffmpeg)
+          echo "FFmpeg prefix: $FFMPEG_PREFIX"
+          
+          # List of core FFmpeg libraries to bundle
+          FFMPEG_LIBS=(
+            "libavcodec"
+            "libavdevice"
+            "libavfilter"
+            "libavformat"
+            "libavutil"
+            "libswresample"
+            "libswscale"
+          )
+
+          for lib_base in "${FFMPEG_LIBS[@]}"; do
+             # Find the actual dylib file (resolving symlinks if needed, but we usually want the versioned one)
+             # Looking for *.dylib in lib folder
+             # We want the main shared library, usually something like libavcodec.60.dylib
+             
+             # Using find to locate the main library file
+             # We avoid symlinks that point to themselves or just the .dylib -> .X.dylib
+             # We want the file that the binary is likely linked against or will try to load
+             
+             echo "Looking for $lib_base in $FFMPEG_PREFIX/lib..."
+             FOUND_LIBS=$(find "$FFMPEG_PREFIX/lib" -name "${lib_base}.*.dylib" -type f )
+             
+             for lib in $FOUND_LIBS; do
+                echo "Found FFmpeg lib: $lib"
+                copy_lib "$lib"
+             done
+          done
+
+
+          echo ""
+          echo "=== Phase 2: Copy direct dependencies detected by otool ==="
           DIRECT_DEPS=$(otool -L "$BINARY" 2>/dev/null | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}' || true)
           if [ -z "$DIRECT_DEPS" ]; then
-            echo "No Homebrew dependencies found in binary (may be statically linked or using system libs)"
+            echo "No Homebrew dependencies found via otool (may be statically linked or using system libs)"
           else
             for lib in $DIRECT_DEPS; do
               copy_lib "$lib"
@@ -539,7 +577,7 @@ jobs:
           fi
 
           echo ""
-          echo "=== Phase 2: Copy transitive dependencies (3 passes) ==="
+          echo "=== Phase 3: Copy transitive dependencies (3 passes) ==="
           for pass in 1 2 3; do
             echo "Pass $pass..."
             if ls "$FRAMEWORKS_DIR/"*.dylib 1>/dev/null 2>&1; then
@@ -556,7 +594,7 @@ jobs:
           done
 
           echo ""
-          echo "=== Phase 3: Fix all library references ==="
+          echo "=== Phase 4: Fix all library references ==="
           # Fix the main binary
           fix_refs "$MACOS_DIR/$APP_NAME"
 
@@ -567,11 +605,33 @@ jobs:
               fix_refs "$bundled_lib"
             done
           fi
+          
+          # Special pass: Fix FFmpeg internal references
+          # e.g. libavformat linking to libavcodec
+          echo "Fixing internal references in bundled libs..."
+          if ls "$FRAMEWORKS_DIR/"*.dylib 1>/dev/null 2>&1; then
+            for bundled_lib in "$FRAMEWORKS_DIR/"*.dylib; do
+               # For each bundled lib, check if it references other bundled libs via absolute path
+               # and rewrite those to @loader_path
+               for dep in $(otool -L "$bundled_lib" 2>/dev/null | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}'); do
+                  local depname=$(basename "$dep")
+                  if [ -f "$FRAMEWORKS_DIR/$depname" ]; then
+                      echo "  Fixing ref in $(basename "$bundled_lib") to $depname"
+                      install_name_tool -change "$dep" "@loader_path/$depname" "$bundled_lib" 2>/dev/null || true
+                  fi
+               done
+            done
+          fi
+
 
           echo ""
           echo "=== Final verification ==="
           echo "Binary dependencies:"
           otool -L "$MACOS_DIR/$APP_NAME"
+
+          echo ""
+          echo "Bundled Frameworks:"
+          ls -1 "$FRAMEWORKS_DIR"
 
           echo ""
           echo "Verifying no remaining Homebrew paths..."
@@ -585,7 +645,6 @@ jobs:
           echo "Zipping .app bundle..."
           cd target/release
           zip -r "OpenNOW-macos-arm64.zip" "$APP_NAME.app"
-
 
       - name: Bundle FFmpeg libs (Linux ARM64)
         if: matrix.target == 'linux-arm64'
