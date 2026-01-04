@@ -138,13 +138,35 @@ fi
 
 echo ""
 echo "=== Phase 3: Copy transitive dependencies (3 passes) ==="
+BREW_PREFIX=$(brew --prefix)
+echo "Resolving @rpath against: $BREW_PREFIX/lib"
+
 for pass in 1 2 3; do
   echo "Pass $pass..."
   if ls "$FRAMEWORKS_DIR/"*.dylib 1>/dev/null 2>&1; then
     for bundled_lib in "$FRAMEWORKS_DIR/"*.dylib; do
       [ -f "$bundled_lib" ] || continue
-      for dep in $(otool -L "$bundled_lib" 2>/dev/null | grep -E '/opt/homebrew|/usr/local' | awk '{print $1}'); do
-        copy_lib "$dep"
+      # Grep for /opt/homebrew, /usr/local, AND @rpath
+      for dep in $(otool -L "$bundled_lib" 2>/dev/null | grep -E '/opt/homebrew|/usr/local|@rpath' | awk '{print $1}'); do
+        
+        # Handle @rpath references
+        if [[ "$dep" == "@rpath/"* ]]; then
+           # Extract filename
+           local filename="${dep#@rpath/}"
+           # Construct absolute path assuming it's in Homebrew lib
+           local resolved_path="$BREW_PREFIX/lib/$filename"
+           
+           if [ -f "$resolved_path" ]; then
+               # echo "Resolved $dep to $resolved_path"
+               copy_lib "$resolved_path"
+           else
+               # Try strict FFmpeg prefix if different? usually brew prefix is enough
+               :
+           fi
+        else
+           # Absolute path
+           copy_lib "$dep"
+        fi
       done
     done
   else
@@ -188,6 +210,19 @@ otool -L "$MACOS_DIR/$APP_NAME"
 echo ""
 echo "Bundled Frameworks:"
 ls -1 "$FRAMEWORKS_DIR"
+
+echo ""
+echo "=== Phase 5: Code Signing ==="
+echo "Signing app bundle..."
+# Sign with ad-hoc signature (-)
+# Use --force to replace any existing signature
+# Use --deep to sign all nested frameworks and plugins
+if codesign --force --deep --sign - "$APP_DIR"; then
+  echo "Code signing successful"
+else
+  echo "Code signing failed"
+  exit 1
+fi
 
 echo ""
 echo "App bundle created: $APP_DIR"
