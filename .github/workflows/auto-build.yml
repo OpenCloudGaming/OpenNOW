@@ -254,8 +254,9 @@ jobs:
         if: matrix.target == 'windows-arm64'
         shell: pwsh
         run: |
-          # Download ARM64 FFmpeg build from BtbN (GitHub releases) - use master-latest for stability
-          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-winarm64-lgpl-shared.zip"
+          # Download ARM64 FFmpeg build from BtbN (GitHub releases)
+          # Use FFmpeg 7.1 for compatibility with ffmpeg-next v8.0.0 (master-latest may have unsupported enum variants)
+          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-winarm64-lgpl-shared.zip"
           Write-Host "Downloading FFmpeg ARM64 from $ffmpegUrl..."
           Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.zip
 
@@ -335,8 +336,9 @@ jobs:
             libasound2-dev:arm64 \
             libudev-dev:arm64
 
-          # Download pre-built FFmpeg ARM64 from BtbN - use master-latest for stability
-          FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-lgpl-shared.tar.xz"
+          # Download pre-built FFmpeg ARM64 from BtbN
+          # Use FFmpeg 7.1 for compatibility with ffmpeg-next v8.0.0 (master-latest may have unsupported enum variants)
+          FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linuxarm64-lgpl-shared.tar.xz"
           echo "Downloading FFmpeg ARM64 from $FFMPEG_URL..."
           wget -q "$FFMPEG_URL" -O ffmpeg.tar.xz
 
