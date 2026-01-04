@@ -143,21 +143,14 @@ impl Renderer {
         // Vulkan on Windows has issues with exclusive fullscreen transitions causing DWM composition
         #[cfg(target_os = "windows")]
         let backends = wgpu::Backends::DX12;
-        // ARM Linux (Raspberry Pi, etc): Prefer GL over Vulkan
-        // Vulkan on V3D causes OOM even with conservative limits
-        // GL/GLES is more memory-efficient on embedded ARM
+        // ARM Linux (Raspberry Pi, etc): Use Vulkan with software renderer (llvmpipe)
+        // - GL/GLES surface creation fails on Pi 5 Wayland
+        // - V3D hardware Vulkan OOMs even with conservative limits
+        // - llvmpipe software Vulkan works reliably
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         let backends = {
-            // Check for WGPU_BACKEND env var override
-            let env_backend = std::env::var("WGPU_BACKEND").ok();
-            if env_backend.is_some() {
-                info!("ARM64 Linux: Using backend from WGPU_BACKEND env var");
-                wgpu::Backends::all()
-            } else {
-                // Default to GL only on ARM64 - Vulkan V3D driver has memory issues
-                info!("ARM64 Linux detected - defaulting to GL backend (set WGPU_BACKEND=vulkan to override)");
-                wgpu::Backends::GL
-            }
+            info!("ARM64 Linux: Using Vulkan backend (llvmpipe software renderer for stability)");
+            wgpu::Backends::VULKAN
         };
         #[cfg(all(not(target_os = "windows"), not(all(target_os = "linux", target_arch = "aarch64"))))]
         let backends = wgpu::Backends::all();
@@ -176,10 +169,8 @@ impl Renderer {
                 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
                 {
                     error!("ARM64 Linux troubleshooting:");
+                    error!("  - Ensure Vulkan drivers are installed: sudo apt install mesa-vulkan-drivers");
                     error!("  - Try: WAYLAND_DISPLAY= ./run.sh  (force X11)");
-                    error!("  - Try: WGPU_BACKEND=vulkan ./run.sh");
-                    error!("  - Ensure libEGL and libGLESv2 are installed");
-                    error!("  - On Raspberry Pi: sudo apt install libegl1-mesa libgles2-mesa");
                 }
                 anyhow::anyhow!("Failed to create surface: {:?}", e)
             })?;
