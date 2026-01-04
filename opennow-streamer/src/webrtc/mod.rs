@@ -769,6 +769,9 @@ pub async fn run_streaming(
 
                 // Request keyframe if decoder is failing
                 if decode_stat.needs_keyframe {
+                    // Reset depacketizer state to clear any corrupted fragment state
+                    // This is critical for recovering from packet loss/corruption
+                    rtp_depacketizer.reset_state();
                     request_keyframe().await;
                 }
             }
