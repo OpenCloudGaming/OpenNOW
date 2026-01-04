@@ -1167,10 +1167,10 @@ impl VideoDecoder {
                 let is_intel = matches!(gpu_vendor, GpuVendor::Intel);
                 let is_raspberry_pi = matches!(gpu_vendor, GpuVendor::Broadcom);
 
-                // Raspberry Pi 5 note:
-                // - Only has HEVC hardware decoder (hevc_v4l2m2m)
-                // - H.264 HW decoder exists but is slower than software, so not enabled
-                // - No AV1 hardware decoder
+                // Raspberry Pi notes:
+                // - Pi 4: bcm2835-codec supports H.264 V4L2 (stateful, works great!)
+                // - Pi 5: Only HEVC V4L2 (stateless, doesn't work with ffmpeg v4l2m2m)
+                // - Neither has AV1 hardware decoder
 
                 let hw_decoder_names: Vec<&str> = match codec_id {
                     ffmpeg::codec::Id::H264 => {
@@ -1179,9 +1179,10 @@ impl VideoDecoder {
                             GpuVendor::Nvidia => decoders.push("h264_cuvid"),
                             GpuVendor::Intel if qsv_available => decoders.push("h264_qsv"),
                             GpuVendor::Amd => decoders.push("h264_vaapi"),
-                            // Raspberry Pi 5: H.264 HW decoder is slower than software, skip it
+                            // Raspberry Pi: Try V4L2 H.264 decoder (works on Pi 4 with bcm2835-codec)
                             GpuVendor::Broadcom => {
-                                info!("Raspberry Pi detected: H.264 will use software decoder (HW is slower)");
+                                info!("Raspberry Pi detected: Trying V4L2 H.264 hardware decoder");
+                                decoders.push("h264_v4l2m2m");
                             }
                             _ => {}
                         }
