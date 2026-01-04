@@ -6,6 +6,10 @@ on:
       - main
       - dev
       - Native
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch:
 
 permissions:
