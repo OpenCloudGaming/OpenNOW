@@ -1159,8 +1159,12 @@ impl VideoDecoder {
                 let qsv_available = check_qsv_available();
                 let gpu_vendor = detect_gpu_vendor();
 
-                // Don't try NVIDIA CUVID decoders on non-NVIDIA GPUs (causes libnvcuvid load errors)
+                // Don't try vendor-specific decoders on wrong GPUs
+                // - CUVID is NVIDIA-only (requires libnvcuvid)
+                // - QSV is Intel-only (requires Intel Media SDK/OneVPL)
+                // - VAAPI works on AMD/Intel but not Raspberry Pi
                 let is_nvidia = matches!(gpu_vendor, GpuVendor::Nvidia);
+                let is_intel = matches!(gpu_vendor, GpuVendor::Intel);
                 let is_raspberry_pi = matches!(gpu_vendor, GpuVendor::Broadcom);
 
                 // Raspberry Pi 5 note:
@@ -1185,7 +1189,8 @@ impl VideoDecoder {
                         if is_nvidia && !decoders.contains(&"h264_cuvid") { decoders.push("h264_cuvid"); }
                         // Don't add VAAPI fallback on Raspberry Pi (not supported)
                         if !is_raspberry_pi && !decoders.contains(&"h264_vaapi") { decoders.push("h264_vaapi"); }
-                        if !decoders.contains(&"h264_qsv") && qsv_available { decoders.push("h264_qsv"); }
+                        // QSV is Intel-only - never add as fallback for other GPUs
+                        if is_intel && qsv_available && !decoders.contains(&"h264_qsv") { decoders.push("h264_qsv"); }
                         decoders
                     }
                     ffmpeg::codec::Id::HEVC => {
@@ -1205,7 +1210,8 @@ impl VideoDecoder {
                         if is_nvidia && !decoders.contains(&"hevc_cuvid") { decoders.push("hevc_cuvid"); }
                         // Don't add VAAPI fallback on Raspberry Pi
                         if !is_raspberry_pi && !decoders.contains(&"hevc_vaapi") { decoders.push("hevc_vaapi"); }
-                        if !decoders.contains(&"hevc_qsv") && qsv_available { decoders.push("hevc_qsv"); }
+                        // QSV is Intel-only
+                        if is_intel && qsv_available && !decoders.contains(&"hevc_qsv") { decoders.push("hevc_qsv"); }
                         decoders
                     }
                     ffmpeg::codec::Id::AV1 => {
@@ -1224,7 +1230,8 @@ impl VideoDecoder {
                         if is_nvidia && !decoders.contains(&"av1_cuvid") { decoders.push("av1_cuvid"); }
                         // Don't add VAAPI fallback on Raspberry Pi
                         if !is_raspberry_pi && !decoders.contains(&"av1_vaapi") { decoders.push("av1_vaapi"); }
-                        if !decoders.contains(&"av1_qsv") && qsv_available { decoders.push("av1_qsv"); }
+                        // QSV is Intel-only
+                        if is_intel && qsv_available && !decoders.contains(&"av1_qsv") { decoders.push("av1_qsv"); }
                         decoders
                     }
                     _ => vec![],
