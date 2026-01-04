@@ -251,7 +251,6 @@ impl Renderer {
                 surface_caps.alpha_modes[0]
             },
             view_formats: vec![],
-            view_formats: vec![],
             desired_maximum_frame_latency: 2, // Relax latency to avoid OOM on weak devices
         };
 
