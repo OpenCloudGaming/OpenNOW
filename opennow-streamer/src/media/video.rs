@@ -1251,6 +1251,41 @@ impl VideoDecoder {
                             (*raw_ctx).flags2 |= ffmpeg::ffi::AV_CODEC_FLAG2_FAST as i32;
                         }
 
+                        // For V4L2 M2M on Raspberry Pi 5, try common device paths
+                        if hw_name.contains("v4l2m2m") && is_raspberry_pi {
+                            // Pi 5 HEVC decoder is typically at /dev/video19
+                            // Try scanning for the rpivid decoder device
+                            let v4l2_devices = ["/dev/video19", "/dev/video10", "/dev/video11", "/dev/video12"];
+
+                            for device_path in v4l2_devices {
+                                if std::path::Path::new(device_path).exists() {
+                                    info!("Trying V4L2 device: {}", device_path);
+                                    // Set device via environment variable (FFmpeg V4L2 M2M respects this)
+                                    std::env::set_var("V4L2M2M_DEVICE", device_path);
+
+                                    match ctx.decoder().video() {
+                                        Ok(dec) => {
+                                            info!("V4L2 hardware decoder opened with device {} - GPU decoding active!", device_path);
+                                            return Ok((dec, true));
+                                        }
+                                        Err(e) => {
+                                            debug!("V4L2 device {} failed: {:?}", device_path, e);
+                                            // Recreate context for next attempt
+                                            ctx = CodecContext::new_with_codec(hw_codec);
+                                            unsafe {
+                                                let raw_ctx = ctx.as_mut_ptr();
+                                                (*raw_ctx).flags |= ffmpeg::ffi::AV_CODEC_FLAG_LOW_DELAY as i32;
+                                                (*raw_ctx).flags2 |= ffmpeg::ffi::AV_CODEC_FLAG2_FAST as i32;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // All V4L2 devices failed, skip to next decoder
+                            warn!("V4L2 M2M: No working device found, falling back...");
+                            continue;
+                        }
+
                         match ctx.decoder().video() {
                             Ok(dec) => {
                                 info!("Hardware decoder ({}) opened successfully - GPU decoding active!", hw_name);
