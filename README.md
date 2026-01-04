@@ -64,8 +64,18 @@ OpenNOW is a custom GeForce NOW client rewritten entirely in **Native Rust** (mo
 | **Audio** | Playback | ✅ | Low-latency audio via `cpal`. |
 | **Audio** | Microphone | 🚧 | Planned. |
 | **UI** | Overlay | ✅ | In-stream stats & settings (egui). |
-| **Core** | Multi-account | 🚧 | Planned. |
+| **Media** | Instant Replay | 🚧 | Coming Soon (NVIDIA-like). |
+| **Media** | Screenshots | 🚧 | Coming Soon. |
 | **Fixes** | iGPU Support | 🚧 | Fixes for Intel/AMD quirks in progress. |
+
+### 🚀 Additional Features (Exclusive)
+These features are not found in the official client:
+
+| Feature | Status | Description |
+|---------|:------:|-------------|
+| **Plugin Support** | 🚧 | Add custom scripts to interact with stream controls/input. |
+| **Theming** | 🚧 | Full UI customization and community themes. |
+| **Multi-account** | 🚧 | Switch between GFN accounts seamlessly. |
 
 ---
 
