@@ -510,11 +510,15 @@ impl VideoDecoder {
                             &mut frames_decoded,
                             &data,
                             codec_id,
+                            false, // No recovery tracking for blocking mode
                         );
                         let _ = frame_tx.send(result);
                     }
                     DecoderCommand::DecodeAsync { data, receive_time } => {
                         packets_received += 1;
+
+                        // Check if we're in recovery mode (waiting for keyframe)
+                        let in_recovery = consecutive_failures >= KEYFRAME_REQUEST_THRESHOLD;
 
                         // Non-blocking mode - write directly to SharedFrame
                         let result = Self::decode_frame(
@@ -525,6 +529,7 @@ impl VideoDecoder {
                             &mut frames_decoded,
                             &data,
                             codec_id,
+                            in_recovery,
                         );
 
                         let decode_time_ms = receive_time.elapsed().as_secs_f32() * 1000.0;
@@ -1004,6 +1009,10 @@ impl VideoDecoder {
                 // CUVID for NVIDIA, QSV for Intel - these are the most reliable options
                 let qsv_available = check_qsv_available();
 
+                // Don't try NVIDIA CUVID decoders on non-NVIDIA GPUs (causes libnvcuvid load errors)
+                let is_nvidia = matches!(gpu_vendor, GpuVendor::Nvidia);
+                let is_intel = matches!(gpu_vendor, GpuVendor::Intel);
+
                 // Build prioritized list of hardware decoders to try
                 let hw_decoders: Vec<&str> = match codec_id {
                     ffmpeg::codec::Id::H264 => {
@@ -1020,9 +1029,9 @@ impl VideoDecoder {
                         if gpu_vendor == GpuVendor::Amd {
                             list.push("h264_amf");
                         }
-                        // Generic fallbacks
-                        if !list.contains(&"h264_cuvid") { list.push("h264_cuvid"); }
-                        if !list.contains(&"h264_qsv") { list.push("h264_qsv"); }
+                        // Generic fallbacks - only add CUVID/QSV for appropriate GPU vendors
+                        if is_nvidia && !list.contains(&"h264_cuvid") { list.push("h264_cuvid"); }
+                        if is_intel && qsv_available && !list.contains(&"h264_qsv") { list.push("h264_qsv"); }
                         list
                     }
                     ffmpeg::codec::Id::HEVC => {
@@ -1039,9 +1048,9 @@ impl VideoDecoder {
                         if gpu_vendor == GpuVendor::Amd {
                             list.push("hevc_amf");
                         }
-                        // Generic fallbacks
-                        if !list.contains(&"hevc_cuvid") { list.push("hevc_cuvid"); }
-                        if !list.contains(&"hevc_qsv") { list.push("hevc_qsv"); }
+                        // Generic fallbacks - only add CUVID/QSV for appropriate GPU vendors
+                        if is_nvidia && !list.contains(&"hevc_cuvid") { list.push("hevc_cuvid"); }
+                        if is_intel && qsv_available && !list.contains(&"hevc_qsv") { list.push("hevc_qsv"); }
                         list
                     }
                     ffmpeg::codec::Id::AV1 => {
@@ -1054,9 +1063,9 @@ impl VideoDecoder {
                         if (gpu_vendor == GpuVendor::Intel && qsv_available) || backend == VideoDecoderBackend::Qsv {
                             list.push("av1_qsv");
                         }
-                        // Generic fallbacks
-                        if !list.contains(&"av1_cuvid") { list.push("av1_cuvid"); }
-                        if !list.contains(&"av1_qsv") { list.push("av1_qsv"); }
+                        // Generic fallbacks - only add CUVID/QSV for appropriate GPU vendors
+                        if is_nvidia && !list.contains(&"av1_cuvid") { list.push("av1_cuvid"); }
+                        if is_intel && qsv_available && !list.contains(&"av1_qsv") { list.push("av1_qsv"); }
                         list
                     }
                     _ => vec![],
@@ -1145,6 +1154,9 @@ impl VideoDecoder {
                 let qsv_available = check_qsv_available();
                 let gpu_vendor = detect_gpu_vendor();
 
+                // Don't try NVIDIA CUVID decoders on non-NVIDIA GPUs (causes libnvcuvid load errors)
+                let is_nvidia = matches!(gpu_vendor, GpuVendor::Nvidia);
+
                 let hw_decoder_names: Vec<&str> = match codec_id {
                     ffmpeg::codec::Id::H264 => {
                         let mut decoders = Vec::new();
@@ -1154,7 +1166,8 @@ impl VideoDecoder {
                             GpuVendor::Amd => decoders.push("h264_vaapi"),
                             _ => {}
                         }
-                        if !decoders.contains(&"h264_cuvid") { decoders.push("h264_cuvid"); }
+                        // Only add CUVID fallback on NVIDIA or unknown GPUs
+                        if is_nvidia && !decoders.contains(&"h264_cuvid") { decoders.push("h264_cuvid"); }
                         if !decoders.contains(&"h264_vaapi") { decoders.push("h264_vaapi"); }
                         if !decoders.contains(&"h264_qsv") && qsv_available { decoders.push("h264_qsv"); }
                         decoders
@@ -1167,7 +1180,8 @@ impl VideoDecoder {
                             GpuVendor::Amd => decoders.push("hevc_vaapi"),
                             _ => {}
                         }
-                        if !decoders.contains(&"hevc_cuvid") { decoders.push("hevc_cuvid"); }
+                        // Only add CUVID fallback on NVIDIA GPUs
+                        if is_nvidia && !decoders.contains(&"hevc_cuvid") { decoders.push("hevc_cuvid"); }
                         if !decoders.contains(&"hevc_vaapi") { decoders.push("hevc_vaapi"); }
                         if !decoders.contains(&"hevc_qsv") && qsv_available { decoders.push("hevc_qsv"); }
                         decoders
@@ -1180,7 +1194,8 @@ impl VideoDecoder {
                             GpuVendor::Amd => decoders.push("av1_vaapi"),
                             _ => {}
                         }
-                        if !decoders.contains(&"av1_cuvid") { decoders.push("av1_cuvid"); }
+                        // Only add CUVID fallback on NVIDIA GPUs
+                        if is_nvidia && !decoders.contains(&"av1_cuvid") { decoders.push("av1_cuvid"); }
                         if !decoders.contains(&"av1_vaapi") { decoders.push("av1_vaapi"); }
                         if !decoders.contains(&"av1_qsv") && qsv_available { decoders.push("av1_qsv"); }
                         decoders
@@ -1291,6 +1306,7 @@ impl VideoDecoder {
     }
 
     /// Decode a single frame (called in decoder thread)
+    /// `in_recovery` suppresses repeated warnings when waiting for keyframe
     fn decode_frame(
         decoder: &mut decoder::Video,
         scaler: &mut Option<ScalerContext>,
@@ -1299,6 +1315,7 @@ impl VideoDecoder {
         frames_decoded: &mut u64,
         data: &[u8],
         codec_id: ffmpeg::codec::Id,
+        in_recovery: bool,
     ) -> Option<VideoFrame> {
         // AV1 uses OBUs directly, no start codes needed
         // H.264/H.265 need Annex B start codes (0x00 0x00 0x00 0x01)
@@ -1330,7 +1347,14 @@ impl VideoDecoder {
             // EAGAIN means we need to receive frames first
             match e {
                 ffmpeg::Error::Other { errno } if errno == libc::EAGAIN => {}
-                _ => warn!("Send packet error: {:?}", e),
+                _ => {
+                    // Suppress repeated warnings during keyframe recovery
+                    if in_recovery {
+                        debug!("Send packet error (waiting for keyframe): {:?}", e);
+                    } else {
+                        warn!("Send packet error: {:?}", e);
+                    }
+                }
             }
         }
 
