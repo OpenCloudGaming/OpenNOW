@@ -143,12 +143,13 @@ impl Renderer {
         // Vulkan on Windows has issues with exclusive fullscreen transitions causing DWM composition
         #[cfg(target_os = "windows")]
         let backends = wgpu::Backends::DX12;
-        // ARM Linux (Raspberry Pi, etc): Use GL only, avoid Vulkan
-        // Vulkan on embedded ARM (V3D driver) has high memory overhead causing OOM
+        // ARM Linux (Raspberry Pi, etc): Allow all backends
+        // Vulkan usually works better than GL for surface creation
+        // Memory-conservative settings will handle OOM during device creation
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         let backends = {
-            info!("ARM64 Linux detected - using GL backend to avoid Vulkan memory overhead");
-            wgpu::Backends::GL
+            info!("ARM64 Linux detected - using all backends with LowPower preference");
+            wgpu::Backends::all()
         };
         #[cfg(all(not(target_os = "windows"), not(all(target_os = "linux", target_arch = "aarch64"))))]
         let backends = wgpu::Backends::all();
@@ -162,12 +163,29 @@ impl Renderer {
 
         // Create surface from Arc<Window>
         let surface = instance.create_surface(window.clone())
-            .context("Failed to create surface")?;
+            .map_err(|e| {
+                error!("Surface creation failed: {:?}", e);
+                #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+                {
+                    error!("ARM64 Linux troubleshooting:");
+                    error!("  - Try: WAYLAND_DISPLAY= ./run.sh  (force X11)");
+                    error!("  - Try: WGPU_BACKEND=vulkan ./run.sh");
+                    error!("  - Ensure libEGL and libGLESv2 are installed");
+                    error!("  - On Raspberry Pi: sudo apt install libegl1-mesa libgles2-mesa");
+                }
+                anyhow::anyhow!("Failed to create surface: {:?}", e)
+            })?;
 
         // Get adapter
+        // ARM64 Linux: Use LowPower to reduce memory allocation
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        let power_preference = wgpu::PowerPreference::LowPower;
+        #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+        let power_preference = wgpu::PowerPreference::HighPerformance;
+
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
+                power_preference,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
@@ -217,11 +235,19 @@ impl Renderer {
         // The V3D GPU has limited memory and aggressive allocation causes crashes
         if is_raspberry_pi {
             info!("Raspberry Pi detected - using memory-conservative limits");
-            // Reduce max texture size to 2048 (sufficient for 1080p video)
-            limits.max_texture_dimension_2d = limits.max_texture_dimension_2d.min(2048);
-            // Reduce buffer sizes
-            limits.max_buffer_size = limits.max_buffer_size.min(128 * 1024 * 1024); // 128MB max
-            limits.max_uniform_buffer_binding_size = limits.max_uniform_buffer_binding_size.min(16 * 1024);
+            // Use absolute minimum limits to avoid OOM
+            limits.max_texture_dimension_2d = 2048; // 2048 for 1080p, reduce to 1024 if still OOM
+            limits.max_texture_dimension_1d = 2048;
+            limits.max_buffer_size = 64 * 1024 * 1024; // 64MB max buffer
+            limits.max_uniform_buffer_binding_size = 16 * 1024; // 16KB uniform
+            limits.max_storage_buffer_binding_size = 64 * 1024 * 1024; // 64MB storage
+            // Reduce bind groups and samplers
+            limits.max_bind_groups = 4;
+            limits.max_samplers_per_shader_stage = 4;
+            limits.max_sampled_textures_per_shader_stage = 8;
+            info!("  Max texture: {}, Max buffer: {}MB",
+                limits.max_texture_dimension_2d,
+                limits.max_buffer_size / (1024 * 1024));
         }
 
         info!("Requesting device limits: Max Texture Dimension 2D: {}", limits.max_texture_dimension_2d);
