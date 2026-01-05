@@ -3094,10 +3094,12 @@ impl Renderer {
 
                         for (display_name, servers) in locations {
                             let count = servers.len();
-                            let avg_queue = {
+                            let avg_queue = if count > 0 {
                                 let sum: i64 = servers.iter().map(|s| s.queue_position as i64).sum();
                                 let avg_i64 = sum / count as i64;
                                 avg_i64.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+                            } else {
+                                0
                             };
                             let avg_eta = {
                                 let eta_sum: i64 = servers.iter().filter_map(|s| s.eta_seconds).sum();
