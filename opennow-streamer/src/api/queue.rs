@@ -8,16 +8,12 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 /// Server mapping data from PrintedWaste
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct ServerMapping {
     pub title: String,
     pub region: String,
-    #[serde(default)]
     pub is4080_server: bool,
-    #[serde(default)]
     pub is5080_server: bool,
-    #[serde(default)]
     pub nuked: bool,
 }
 
