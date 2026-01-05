@@ -589,7 +589,7 @@ impl VideoDecoder {
             let mut consecutive_failures = 0u32;
             let mut packets_received = 0u64;
             const KEYFRAME_REQUEST_THRESHOLD: u32 = 10; // Request keyframe after 10 consecutive failures (was 30)
-            const FRAMES_TO_SKIP: u64 = 3; // Skip first N frames to let decoder settle with reference frames
+            const FRAMES_TO_SKIP: u64 = 50; // Skip first N frames to let decoder settle with reference frames
 
             while let Ok(cmd) = cmd_rx.recv() {
                 match cmd {
