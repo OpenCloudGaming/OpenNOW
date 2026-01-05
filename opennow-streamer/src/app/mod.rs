@@ -11,7 +11,7 @@ pub use config::{Settings, VideoCodec, AudioCodec, StreamQuality, StatsPosition}
 pub use session::{SessionInfo, SessionState, ActiveSessionInfo};
 pub use types::{
     SharedFrame, GameInfo, GameSection, GameVariant, SubscriptionInfo, GamesTab, ServerInfo, ServerStatus,
-    UiAction, SettingChange, AppState, parse_resolution,
+    UiAction, SettingChange, AppState, parse_resolution, QueueSortMode, QueueRegionFilter,
 };
 
 use std::sync::Arc;
@@ -174,6 +174,30 @@ pub struct App {
 
     /// Whether a token refresh is currently in progress
     token_refresh_in_progress: bool,
+
+    /// Queue times data from PrintedWaste API
+    pub queue_servers: Vec<crate::api::QueueServerInfo>,
+
+    /// Whether queue data is loading
+    pub queue_loading: bool,
+
+    /// Last time queue data was fetched
+    queue_last_fetch: std::time::Instant,
+
+    /// Queue sort mode
+    pub queue_sort_mode: QueueSortMode,
+
+    /// Queue region filter
+    pub queue_region_filter: QueueRegionFilter,
+
+    /// Whether to show server selection modal (for free tier)
+    pub show_server_selection: bool,
+
+    /// Selected server for queue (when user picks manually)
+    pub selected_queue_server: Option<String>,
+
+    /// Pending game for server selection (stored when showing modal)
+    pub pending_server_selection_game: Option<GameInfo>,
 }
 
 /// Poll interval for session status (2 seconds)
@@ -300,6 +324,14 @@ impl App {
             anti_afk_enabled: false,
             anti_afk_last_send: std::time::Instant::now(),
             token_refresh_in_progress: false,
+            queue_servers: Vec::new(),
+            queue_loading: false,
+            queue_last_fetch: std::time::Instant::now() - std::time::Duration::from_secs(60), // Force initial fetch
+            queue_sort_mode: QueueSortMode::default(),
+            queue_region_filter: QueueRegionFilter::default(),
+            show_server_selection: false,
+            selected_queue_server: None,
+            pending_server_selection_game: None,
         }
     }
 
@@ -354,6 +386,7 @@ impl App {
                     GamesTab::Home => self.games.get(index).cloned(), // Use flat list for Home too
                     GamesTab::AllGames => self.games.get(index).cloned(),
                     GamesTab::MyLibrary => self.library_games.get(index).cloned(),
+                    GamesTab::QueueTimes => None, // Queue Times tab doesn't launch games
                 };
                 if let Some(game) = game {
                     self.launch_game(&game);
@@ -406,6 +439,10 @@ impl App {
                 // Fetch sections if switching to Home and sections are empty
                 if tab == GamesTab::Home && self.game_sections.is_empty() {
                     self.fetch_sections();
+                }
+                // Fetch queue data if switching to Queue Times
+                if tab == GamesTab::QueueTimes {
+                    self.fetch_queue_times();
                 }
             }
             UiAction::OpenGamePopup(game) => {
@@ -515,6 +552,39 @@ impl App {
                 if let Err(e) = self.settings.save() {
                     warn!("Failed to save default settings: {}", e);
                 }
+            }
+            UiAction::SetQueueSortMode(mode) => {
+                self.queue_sort_mode = mode;
+            }
+            UiAction::SetQueueRegionFilter(filter) => {
+                self.queue_region_filter = filter;
+            }
+            UiAction::ShowServerSelection(game) => {
+                self.show_server_selection = true;
+                self.pending_server_selection_game = Some(game);
+                // Refresh queue data when showing modal
+                self.fetch_queue_times();
+            }
+            UiAction::CloseServerSelection => {
+                self.show_server_selection = false;
+                self.selected_queue_server = None;
+                self.pending_server_selection_game = None;
+            }
+            UiAction::SelectQueueServer(server_id) => {
+                self.selected_queue_server = server_id;
+            }
+            UiAction::LaunchWithServer(game, _server_id) => {
+                // Close modal and launch game
+                self.show_server_selection = false;
+                self.selected_queue_server = None;
+                self.pending_server_selection_game = None;
+                // TODO: Use server_id in session request when API supports it
+                self.launch_game(&game);
+            }
+            UiAction::RefreshQueueTimes => {
+                // Force refresh by resetting last fetch time
+                self.queue_last_fetch = std::time::Instant::now() - std::time::Duration::from_secs(60);
+                self.fetch_queue_times();
             }
         }
     }
@@ -767,12 +837,27 @@ impl App {
             }
         }
 
+        // Check if queue data was fetched and saved to cache (Queue Times tab)
+        if self.state == AppState::Games && self.current_tab == GamesTab::QueueTimes && self.queue_loading {
+            if let Some(servers) = cache::load_queue_cache() {
+                if !servers.is_empty() {
+                    info!("Loaded {} queue servers from cache", servers.len());
+                    self.queue_servers = servers;
+                    self.queue_loading = false;
+                    // Immediately populate ping data from main servers
+                    self.update_queue_server_pings();
+                }
+            }
+        }
+
         // Check for dynamic regions from serverInfo API
         self.check_dynamic_regions();
 
         // Check for ping test results
         if self.ping_testing {
             self.load_ping_results();
+            // Update queue servers with ping data from main servers
+            self.update_queue_server_pings();
         }
 
         // Check for active sessions from async check
@@ -945,6 +1030,32 @@ impl App {
                 }
                 Err(e) => {
                     warn!("Failed to fetch subscription: {}", e);
+                }
+            }
+        });
+    }
+
+    /// Fetch queue times from PrintedWaste API
+    pub fn fetch_queue_times(&mut self) {
+        // Rate limit: only fetch if more than 30 seconds since last fetch
+        const QUEUE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+        if self.queue_last_fetch.elapsed() < QUEUE_CACHE_TTL && !self.queue_servers.is_empty() {
+            return;
+        }
+
+        self.queue_loading = true;
+        self.queue_last_fetch = std::time::Instant::now();
+
+        let runtime = self.runtime.clone();
+        runtime.spawn(async move {
+            let client = reqwest::Client::new();
+            match crate::api::fetch_queue_servers(&client).await {
+                Ok(servers) => {
+                    info!("Fetched queue times for {} servers from PrintedWaste", servers.len());
+                    cache::save_queue_cache(&servers);
+                }
+                Err(e) => {
+                    warn!("Failed to fetch queue times: {}", e);
                 }
             }
         });
@@ -1241,6 +1352,17 @@ impl App {
         if let Some((idx, server)) = best_server {
             self.selected_server_index = idx;
             info!("Auto-selected best server: {} ({}ms)", server.name, server.ping_ms.unwrap_or(0));
+        }
+    }
+
+    /// Update queue server ping values from the main server list
+    fn update_queue_server_pings(&mut self) {
+        // Map ping values from self.servers to queue_servers by matching server_id
+        for queue_server in &mut self.queue_servers {
+            // Try to find a matching server by ID
+            if let Some(main_server) = self.servers.iter().find(|s| s.id == queue_server.server_id) {
+                queue_server.ping_ms = main_server.ping_ms;
+            }
         }
     }
 
