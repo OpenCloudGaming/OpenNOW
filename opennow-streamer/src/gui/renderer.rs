@@ -3675,8 +3675,12 @@ impl Renderer {
         subscription: Option<&crate::app::SubscriptionInfo>,
         actions: &mut Vec<UiAction>,
     ) {
-        // Check if user is free tier (show server selection modal instead of direct launch)
-        let is_free_tier = subscription.map(|s| s.membership_tier == "FREE").unwrap_or(true);
+        // Check if user is free tier (show server selection modal instead of direct launch).
+        // If subscription info is not available, default to treating the user as non-free
+        // to avoid incorrectly restricting paid users when data hasn't loaded yet.
+        let is_free_tier = subscription
+            .map(|s| s.membership_tier == "FREE")
+            .unwrap_or(false);
         let popup_width = 450.0;
         let popup_height = 500.0;
 
