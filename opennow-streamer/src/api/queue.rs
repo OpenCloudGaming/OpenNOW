@@ -177,6 +177,7 @@ pub async fn fetch_queue_servers(client: &Client) -> Result<Vec<QueueServerInfo>
     let queue = queue_result?;
 
     let mut servers: Vec<QueueServerInfo> = Vec::new();
+    let mut servers_missing_queue_data = 0;
 
     for (server_id, server_mapping) in &mapping {
         // Skip nuked servers
@@ -204,7 +205,18 @@ pub async fn fetch_queue_servers(client: &Client) -> Result<Vec<QueueServerInfo>
                 is_5080_server: server_mapping.is5080_server,
                 last_updated: queue_data.last_updated,
             });
+        } else {
+            servers_missing_queue_data += 1;
+            debug!("Server {} ({}) has no queue data", server_id, server_mapping.title);
         }
+    }
+
+    if servers_missing_queue_data > 0 {
+        warn!(
+            "{} servers from mapping are missing queue data (out of {} eligible servers)",
+            servers_missing_queue_data,
+            servers.len() + servers_missing_queue_data
+        );
     }
 
     // Sort by queue position (shortest first)
