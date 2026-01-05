@@ -11,27 +11,24 @@
 //!
 //! This eliminates the expensive GPU->CPU->GPU round-trip that kills latency.
 
-use log::{info, warn, debug};
+use anyhow::{anyhow, Result};
+use log::{debug, info, warn};
 use parking_lot::Mutex;
-use anyhow::{Result, anyhow};
 
 use windows::core::Interface;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11Texture2D,
-    D3D11_CPU_ACCESS_READ,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ,
+    ID3D11Asynchronous, ID3D11Device, ID3D11Query, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_QUERY_DESC, D3D11_QUERY_EVENT,
     D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
-use windows::Win32::Graphics::Dxgi::{
-    IDXGIResource1, DXGI_SHARED_RESOURCE_READ,
-};
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_NV12;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_FORMAT_P010};
+use windows::Win32::Graphics::Dxgi::{IDXGIResource1, DXGI_SHARED_RESOURCE_READ};
 
 /// Wrapper for a D3D11 texture from FFmpeg hardware decoder
 /// Holds the texture alive and provides access for wgpu import
 pub struct D3D11TextureWrapper {
-    /// The D3D11 texture (NV12 format)
+    /// The D3D11 texture (NV12 or P010 format)
     texture: ID3D11Texture2D,
     /// Texture array index (for texture arrays used by some decoders)
     array_index: u32,
@@ -40,6 +37,8 @@ pub struct D3D11TextureWrapper {
     /// Texture dimensions
     pub width: u32,
     pub height: u32,
+    /// Whether this is a 10-bit HDR texture (P010 format)
+    pub is_10bit: bool,
 }
 
 // Safety: D3D11 COM objects are thread-safe (they use internal ref counting)
@@ -52,12 +51,40 @@ impl std::fmt::Debug for D3D11TextureWrapper {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("array_index", &self.array_index)
+            .field("is_10bit", &self.is_10bit)
             .field("has_shared_handle", &self.shared_handle.lock().is_some())
             .finish()
     }
 }
 
 impl D3D11TextureWrapper {
+    /// Create a new wrapper from an existing ID3D11Texture2D
+    ///
+    /// This is used by the native DXVA decoder to wrap its output textures.
+    /// The texture is cloned (AddRef'd) so the original can be safely dropped.
+    pub fn from_texture(texture: ID3D11Texture2D, array_index: u32) -> Self {
+        unsafe {
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            texture.GetDesc(&mut desc);
+
+            let is_10bit = desc.Format == DXGI_FORMAT_P010;
+
+            debug!(
+                "D3D11TextureWrapper::from_texture: {}x{}, array_index={}, format={:?}, is_10bit={}",
+                desc.Width, desc.Height, array_index, desc.Format, is_10bit
+            );
+
+            Self {
+                texture,
+                array_index,
+                shared_handle: Mutex::new(None),
+                width: desc.Width,
+                height: desc.Height,
+                is_10bit,
+            }
+        }
+    }
+
     /// Create a new wrapper from FFmpeg's D3D11VA frame data
     ///
     /// # Safety
@@ -79,14 +106,27 @@ impl D3D11TextureWrapper {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut desc);
 
+        // Detect format - NV12 (8-bit SDR) or P010 (10-bit HDR)
+        let is_10bit = desc.Format == DXGI_FORMAT_P010;
+        let format_name = if is_10bit {
+            "P010 (10-bit HDR)"
+        } else if desc.Format == DXGI_FORMAT_NV12 {
+            "NV12 (8-bit SDR)"
+        } else {
+            "Unknown"
+        };
+
         debug!(
-            "D3D11 texture: {}x{}, format={:?}, array_size={}, bind_flags={:?}",
-            desc.Width, desc.Height, desc.Format, desc.ArraySize, desc.BindFlags
+            "D3D11 texture: {}x{}, format={} ({:?}), array_size={}, bind_flags={:?}",
+            desc.Width, desc.Height, format_name, desc.Format, desc.ArraySize, desc.BindFlags
         );
 
-        // Verify it's NV12 format (expected from hardware decoders)
-        if desc.Format != DXGI_FORMAT_NV12 {
-            warn!("D3D11 texture format is {:?}, expected NV12", desc.Format);
+        // Verify it's NV12 or P010 format (expected from hardware decoders)
+        if desc.Format != DXGI_FORMAT_NV12 && desc.Format != DXGI_FORMAT_P010 {
+            warn!(
+                "D3D11 texture format is {:?}, expected NV12 or P010",
+                desc.Format
+            );
             // Still proceed - might work with other formats
         }
 
@@ -96,6 +136,7 @@ impl D3D11TextureWrapper {
             shared_handle: Mutex::new(None),
             width: desc.Width,
             height: desc.Height,
+            is_10bit,
         })
     }
 
@@ -109,15 +150,19 @@ impl D3D11TextureWrapper {
 
         unsafe {
             // Query IDXGIResource1 interface for shared handle creation
-            let dxgi_resource: IDXGIResource1 = self.texture.cast()
+            let dxgi_resource: IDXGIResource1 = self
+                .texture
+                .cast()
                 .map_err(|e| anyhow!("Failed to cast to IDXGIResource1: {:?}", e))?;
 
             // Create shared NT handle
-            let handle = dxgi_resource.CreateSharedHandle(
-                None,  // No security attributes
-                DXGI_SHARED_RESOURCE_READ.0,
-                None,  // No name
-            ).map_err(|e| anyhow!("Failed to create shared handle: {:?}", e))?;
+            let handle = dxgi_resource
+                .CreateSharedHandle(
+                    None, // No security attributes
+                    DXGI_SHARED_RESOURCE_READ.0,
+                    None, // No name
+                )
+                .map_err(|e| anyhow!("Failed to create shared handle: {:?}", e))?;
 
             *guard = Some(handle);
             Ok(handle)
@@ -134,16 +179,28 @@ impl D3D11TextureWrapper {
         self.array_index
     }
 
+    /// Check if this texture is part of a texture array
+    pub fn is_texture_array(&self) -> bool {
+        unsafe {
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            self.texture.GetDesc(&mut desc);
+            desc.ArraySize > 1
+        }
+    }
+
     /// Lock the texture and copy Y and UV planes to CPU memory
     /// This is the fallback path when zero-copy import fails
     pub fn lock_and_get_planes(&self) -> Result<LockedPlanes> {
         unsafe {
             // Get the device from the texture itself
-            let device = self.texture.GetDevice()
+            let device = self
+                .texture
+                .GetDevice()
                 .map_err(|e| anyhow!("Failed to get D3D11 device from texture: {:?}", e))?;
 
             // Get the device context
-            let context = device.GetImmediateContext()
+            let context = device
+                .GetImmediateContext()
                 .map_err(|e| anyhow!("Failed to get device context: {:?}", e))?;
 
             // Create a staging texture for CPU access
@@ -164,23 +221,56 @@ impl D3D11TextureWrapper {
             };
 
             let mut staging_texture: Option<ID3D11Texture2D> = None;
-            device.CreateTexture2D(&staging_desc, None, Some(&mut staging_texture))
+            device
+                .CreateTexture2D(&staging_desc, None, Some(&mut staging_texture))
                 .map_err(|e| anyhow!("Failed to create staging texture: {:?}", e))?;
             let staging_texture = staging_texture.unwrap();
 
             // Copy from source texture (specific array slice) to staging
             context.CopySubresourceRegion(
                 &staging_texture,
-                0,  // Destination subresource
-                0, 0, 0,  // Destination x, y, z
+                0, // Destination subresource
+                0,
+                0,
+                0, // Destination x, y, z
                 &self.texture,
-                self.array_index,  // Source subresource (array index)
-                None,  // Copy entire resource
+                self.array_index, // Source subresource (array index)
+                None,             // Copy entire resource
             );
+
+            // CRITICAL: Wait for GPU copy to complete before mapping
+            // Flush() only submits commands but doesn't wait - we need a query to sync
+            let query_desc = D3D11_QUERY_DESC {
+                Query: D3D11_QUERY_EVENT,
+                MiscFlags: 0,
+            };
+            let mut query: Option<ID3D11Query> = None;
+            device
+                .CreateQuery(&query_desc, Some(&mut query))
+                .map_err(|e| anyhow!("Failed to create query: {:?}", e))?;
+            let query = query.ok_or_else(|| anyhow!("Query creation returned None"))?;
+
+            // Cast query to ID3D11Asynchronous for End/GetData calls
+            let async_query: ID3D11Asynchronous = query
+                .cast()
+                .map_err(|e| anyhow!("Failed to cast query to ID3D11Asynchronous: {:?}", e))?;
+
+            // Insert the query after the copy command
+            context.End(&async_query);
+
+            // Wait for GPU to complete (poll until done)
+            loop {
+                let result = context.GetData(&async_query, None, 0, 0);
+                if result.is_ok() {
+                    break; // Query signaled - GPU work is done
+                }
+                std::thread::yield_now();
+            }
 
             // Map the staging texture
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            context.Map(&staging_texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+            context
+                .Map(&staging_texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
                 .map_err(|e| anyhow!("Failed to map staging texture: {:?}", e))?;
 
             // NV12 layout: Y plane (full height) followed by UV plane (half height)
@@ -196,10 +286,8 @@ impl D3D11TextureWrapper {
             // Copy UV plane (starts after Y plane)
             let uv_offset = y_size;
             let uv_size = (row_pitch * uv_height) as usize;
-            let uv_data = std::slice::from_raw_parts(
-                (mapped.pData as *const u8).add(uv_offset),
-                uv_size,
-            );
+            let uv_data =
+                std::slice::from_raw_parts((mapped.pData as *const u8).add(uv_offset), uv_size);
             let uv_plane = uv_data.to_vec();
 
             // Unmap

@@ -2,11 +2,11 @@
 //!
 //! Common types used across the application.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::config::{ColorQuality, VideoCodec, VideoDecoderBackend};
 use crate::media::VideoFrame;
-use super::config::{VideoCodec, VideoDecoderBackend};
 
 /// Shared frame holder for zero-latency frame delivery
 /// Decoder writes latest frame, renderer reads it - no buffering
@@ -47,7 +47,7 @@ impl SharedFrame {
 
         if current > last {
             self.last_read_count.store(current, Ordering::Release);
-            self.frame.lock().take()  // Move instead of clone - zero copy
+            self.frame.lock().take() // Move instead of clone - zero copy
         } else {
             None
         }
@@ -132,11 +132,13 @@ pub struct SubscriptionInfo {
     pub total_hours: f32,
     pub has_persistent_storage: bool,
     pub storage_size_gb: Option<u32>,
-    pub is_unlimited: bool,  // true if subType is UNLIMITED (no hour cap)
+    pub is_unlimited: bool, // true if subType is UNLIMITED (no hour cap)
     pub entitled_resolutions: Vec<EntitledResolution>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct EntitledResolution {
     pub width: u32,
     pub height: u32,
@@ -146,14 +148,14 @@ pub struct EntitledResolution {
 /// Current tab in Games view
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GamesTab {
-    Home,        // Sectioned home view (like official GFN client)
-    AllGames,    // Flat grid view
-    MyLibrary,   // User's library
+    Home,      // Sectioned home view (like official GFN client)
+    AllGames,  // Flat grid view
+    MyLibrary, // User's library
 }
 
 impl Default for GamesTab {
     fn default() -> Self {
-        GamesTab::Home  // Default to sectioned home view
+        GamesTab::Home // Default to sectioned home view
     }
 }
 
@@ -242,6 +244,8 @@ pub enum SettingChange {
     VSync(bool),
     LowLatency(bool),
     DecoderBackend(VideoDecoderBackend),
+    ColorQuality(ColorQuality),
+    Hdr(bool),
 }
 
 /// Application state enum

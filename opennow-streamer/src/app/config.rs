@@ -2,9 +2,9 @@
 //!
 //! Persistent settings for the OpenNow Streamer.
 
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use anyhow::Result;
 
 /// Application settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +28,12 @@ pub struct Settings {
 
     /// Preferred video decoder backend
     pub decoder_backend: VideoDecoderBackend,
+
+    /// Color quality setting (combines bit depth and chroma format)
+    pub color_quality: ColorQuality,
+
+    /// HDR mode enabled
+    pub hdr_enabled: bool,
 
     // === Audio Settings ===
     /// Audio codec
@@ -92,7 +98,9 @@ impl Default for Settings {
             fps: 60,
             codec: VideoCodec::H264,
             max_bitrate_mbps: 150,
-            decoder_backend: VideoDecoderBackend::Auto,
+            decoder_backend: VideoDecoderBackend::NativeDxva, // Force native DXVA decoder
+            color_quality: ColorQuality::Bit10Yuv420,
+            hdr_enabled: false,
 
             // Audio
             audio_codec: AudioCodec::Opus,
@@ -292,8 +300,11 @@ pub enum VideoDecoderBackend {
     Qsv,
     /// AMD VA-API
     Vaapi,
-    /// DirectX 11/12 (Windows)
+    /// DirectX 11/12 (Windows) via FFmpeg
     Dxva,
+    /// Native D3D11 Video decoder (Windows) - bypasses FFmpeg
+    /// This is the NVIDIA-style approach with proper RTArray support
+    NativeDxva,
     /// VideoToolbox (macOS)
     VideoToolbox,
     /// Software decoding (CPU)
@@ -307,7 +318,8 @@ impl VideoDecoderBackend {
             VideoDecoderBackend::Cuvid => "NVIDIA (CUDA)",
             VideoDecoderBackend::Qsv => "Intel (QuickSync)",
             VideoDecoderBackend::Vaapi => "AMD (VA-API)",
-            VideoDecoderBackend::Dxva => "DirectX (DXVA)",
+            VideoDecoderBackend::Dxva => "DirectX (DXVA/FFmpeg)",
+            VideoDecoderBackend::NativeDxva => "Native DXVA (NVIDIA-style)",
             VideoDecoderBackend::VideoToolbox => "VideoToolbox",
             VideoDecoderBackend::Software => "Software (CPU)",
         }
@@ -320,6 +332,7 @@ impl VideoDecoderBackend {
             VideoDecoderBackend::Qsv,
             VideoDecoderBackend::Vaapi,
             VideoDecoderBackend::Dxva,
+            VideoDecoderBackend::NativeDxva,
             VideoDecoderBackend::VideoToolbox,
             VideoDecoderBackend::Software,
         ]
@@ -359,6 +372,84 @@ pub enum AudioCodec {
     Opus,
     /// Opus Stereo
     OpusStereo,
+}
+
+/// Color quality options (bit depth + chroma subsampling)
+/// Matches NVIDIA GFN client options
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorQuality {
+    /// 8-bit YUV 4:2:0 - Most compatible, lowest bandwidth
+    Bit8Yuv420,
+    /// 8-bit YUV 4:4:4 - Better color accuracy, higher bandwidth
+    Bit8Yuv444,
+    /// 10-bit YUV 4:2:0 - HDR capable, good balance (default)
+    #[default]
+    Bit10Yuv420,
+    /// 10-bit YUV 4:4:4 - Best quality, highest bandwidth (requires HEVC)
+    Bit10Yuv444,
+}
+
+impl ColorQuality {
+    /// Get bit depth value (0 = 8-bit SDR, 10 = 10-bit HDR capable)
+    pub fn bit_depth(&self) -> i32 {
+        match self {
+            ColorQuality::Bit8Yuv420 | ColorQuality::Bit8Yuv444 => 0, // 0 means 8-bit SDR
+            ColorQuality::Bit10Yuv420 | ColorQuality::Bit10Yuv444 => 10,
+        }
+    }
+
+    /// Get chroma format value (0 = 4:2:0, 2 = 4:4:4)
+    /// Note: 4:2:2 is not commonly used in streaming
+    pub fn chroma_format(&self) -> i32 {
+        match self {
+            ColorQuality::Bit8Yuv420 | ColorQuality::Bit10Yuv420 => 0, // YUV 4:2:0
+            ColorQuality::Bit8Yuv444 | ColorQuality::Bit10Yuv444 => 2, // YUV 4:4:4
+        }
+    }
+
+    /// Check if this mode requires HEVC codec
+    pub fn requires_hevc(&self) -> bool {
+        matches!(
+            self,
+            ColorQuality::Bit10Yuv420 | ColorQuality::Bit10Yuv444 | ColorQuality::Bit8Yuv444
+        )
+    }
+
+    /// Check if this is a 10-bit mode
+    pub fn is_10bit(&self) -> bool {
+        matches!(self, ColorQuality::Bit10Yuv420 | ColorQuality::Bit10Yuv444)
+    }
+
+    /// Get display name for UI
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ColorQuality::Bit8Yuv420 => "8-bit, YUV 4:2:0",
+            ColorQuality::Bit8Yuv444 => "8-bit, YUV 4:4:4",
+            ColorQuality::Bit10Yuv420 => "10-bit, YUV 4:2:0",
+            ColorQuality::Bit10Yuv444 => "10-bit, YUV 4:4:4",
+        }
+    }
+
+    /// Get description for UI
+    pub fn description(&self) -> &'static str {
+        match self {
+            ColorQuality::Bit8Yuv420 => "Most compatible, lower bandwidth",
+            ColorQuality::Bit8Yuv444 => "Better color, needs HEVC",
+            ColorQuality::Bit10Yuv420 => "HDR ready, recommended",
+            ColorQuality::Bit10Yuv444 => "Best quality, needs HEVC",
+        }
+    }
+
+    /// Get all available options
+    pub fn all() -> &'static [ColorQuality] {
+        &[
+            ColorQuality::Bit8Yuv420,
+            ColorQuality::Bit8Yuv444,
+            ColorQuality::Bit10Yuv420,
+            ColorQuality::Bit10Yuv444,
+        ]
+    }
 }
 
 /// Stats panel position
