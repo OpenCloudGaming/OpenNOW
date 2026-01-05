@@ -981,12 +981,13 @@ impl VideoDecoder {
             if backend != VideoDecoderBackend::Software {
                 let gpu_vendor = detect_gpu_vendor();
 
-                // D3D11VA provides zero-copy texture path that's faster than CUVID's GPU→CPU transfer
-                // Especially at 4K where CUVID can take 4+ seconds due to GPU→CPU copy overhead
-                // Only skip D3D11VA for NVIDIA if user explicitly requested CUVID backend
-                let try_d3d11va = backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::Dxva;
+                // For NVIDIA GPUs, skip D3D11VA and use CUVID directly
+                // D3D11VA has compatibility issues with HEVC Main10 at 4K (texture creation fails)
+                // CUVID is more reliable for NVIDIA hardware even if it needs GPU→CPU transfer
+                let try_d3d11va = gpu_vendor != GpuVendor::Nvidia
+                    && (backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::Dxva);
 
-                // Try D3D11VA first for zero-copy texture path (works on NVIDIA, AMD, Intel)
+                // Try D3D11VA for non-NVIDIA GPUs (AMD, Intel) - provides zero-copy texture path
                 if try_d3d11va {
                     info!("Attempting D3D11VA hardware acceleration (GPU: {:?})", gpu_vendor);
 
