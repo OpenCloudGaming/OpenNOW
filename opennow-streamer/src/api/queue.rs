@@ -249,7 +249,7 @@ pub fn format_queue_eta(eta_seconds: Option<i64>) -> String {
 /// Balances ping (important for gameplay) with queue time
 pub fn calculate_server_score(server: &QueueServerInfo) -> f64 {
     // Ping weight: 1.0 per ms
-    // ETA weight: 0.1 per minute (capped at 50 to prevent extremely long queues from dominating)
+    // ETA weight: 0.5 per minute (capped at 100 to prevent extremely long queues from dominating)
     let ping_score = server.ping_ms.unwrap_or(500) as f64; // High penalty for unknown ping
     let eta_minutes = (server.eta_seconds.unwrap_or(0) as f64) / 60.0;
     let eta_score = (eta_minutes * 0.5).min(100.0); // 0.5 per minute, capped at 100
