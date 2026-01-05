@@ -64,8 +64,39 @@ OpenNOW is a custom GeForce NOW client rewritten entirely in **Native Rust** (mo
 | **Audio** | Playback | ✅ | Low-latency audio via `cpal`. |
 | **Audio** | Microphone | 🚧 | Planned. |
 | **UI** | Overlay | ✅ | In-stream stats & settings (egui). |
-| **Core** | Multi-account | 🚧 | Planned. |
+| **Media** | Instant Replay | 🚧 | Coming Soon (NVIDIA-like). |
+| **Media** | Screenshots | 🚧 | Coming Soon. |
 | **Fixes** | iGPU Support | 🚧 | Fixes for Intel/AMD quirks in progress. |
+
+### 🎞️ Supported Codecs & Hardware Acceleration
+
+| Codec | Windows | macOS | Linux | Notes |
+|:---:|:---:|:---:|:---:|---|
+| **H.264** | ✅ DXVA / NVDEC / QSV | ✅ VideoToolbox | ✅ VAAPI | Standard for most streams. |
+| **HEVC (H.265)** | ✅ DXVA / NVDEC / QSV | ✅ VideoToolbox | ✅ VAAPI | High efficiency, lower bandwidth. |
+| **AV1** | ✅ NVDEC / QSV | ✅ VideoToolbox (M3+) | ⚠️ VAAPI | Requires RTX 30/40 series or Intel Arc. Or M3+ series on macOS. |
+| **Opus (Audio)** | ✅ Software | ✅ Software | ✅ Software | High-quality low-latency audio. |
+
+> **Note:** The client utilizes zero-copy rendering where supported to minimize latency.
+
+### 🚀 Additional Features (Exclusive)
+These features are not found in the official client:
+
+| Feature | Status | Description |
+|---------|:------:|-------------|
+| **Plugin Support** | 🚧 | Add custom scripts to interact with stream controls/input. |
+| **Theming** | 🚧 | Full UI customization and community themes. |
+| **Multi-account** | 🚧 | Switch between GFN accounts seamlessly. |
+| **Anti-AFK** | ✅ | Prevent session timeout (Ctrl+Shift+F10). |
+
+### ⌨️ Controls & Shortcuts
+
+| Shortcut | Action | Description |
+|----------|--------|-------------|
+| **F11** | Keybind | Toggle Fullscreen |
+| **F3** | Keybind | Toggle Stats Overlay |
+| **Ctrl+Shift+Q** | Keybind | Force Quit Session |
+| **Ctrl+Shift+F10**| Keybind | **Toggle Anti-AFK** (Status shows in console) |
 
 ---
 
