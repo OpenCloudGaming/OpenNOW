@@ -8,9 +8,9 @@ mod session;
 pub use login::render_login_screen;
 pub use session::render_session_screen;
 
-use crate::app::{UiAction, Settings, GameInfo, ServerInfo, SettingChange};
-use crate::app::config::{RESOLUTIONS, FPS_OPTIONS};
+use crate::app::config::{ColorQuality, FPS_OPTIONS, RESOLUTIONS};
 use crate::app::session::ActiveSessionInfo;
+use crate::app::{GameInfo, ServerInfo, SettingChange, Settings, UiAction};
 
 /// Render the settings modal with bitrate slider and other options
 /// Render the settings modal with bitrate slider and other options
@@ -36,7 +36,7 @@ pub fn render_settings_modal(
                 // === Video Settings Section ===
                 ui.heading(egui::RichText::new("Video").color(egui::Color32::from_rgb(118, 185, 0)));
                 ui.add_space(8.0);
-                
+
                 egui::Grid::new("video_settings_grid")
                     .num_columns(2)
                     .spacing([24.0, 16.0])
@@ -77,7 +77,7 @@ pub fn render_settings_modal(
                                             // 1. Deduplicate unique resolutions
                                             let mut unique_resolutions = std::collections::HashSet::new();
                                             let mut resolutions = Vec::new();
-                                            
+
                                             // Sort by width then height descending first
                                             let mut sorted_res = sub.entitled_resolutions.clone();
                                             sorted_res.sort_by(|a, b| b.width.cmp(&a.width).then(b.height.cmp(&a.height)));
@@ -93,7 +93,7 @@ pub fn render_settings_modal(
 
                                             // 2. Group by Aspect Ratio
                                             let mut groups: std::collections::BTreeMap<String, Vec<crate::app::types::EntitledResolution>> = std::collections::BTreeMap::new();
-                                            
+
                                             for res in resolutions {
                                                 let ratio = res.width as f32 / res.height as f32;
                                                 let category = if (ratio - 16.0/9.0).abs() < 0.05 {
@@ -109,7 +109,7 @@ pub fn render_settings_modal(
                                                 } else {
                                                     "Other"
                                                 };
-                                                
+
                                                 groups.entry(category.to_string()).or_default().push(res);
                                             }
 
@@ -121,7 +121,7 @@ pub fn render_settings_modal(
                                                     ui.heading(*category);
                                                     for res in res_list {
                                                         let res_str = format!("{}x{}", res.width, res.height);
-                                                        
+
                                                         // Friendly name logic
                                                         let name = match (res.width, res.height) {
                                                             (1280, 720) => "720p (HD)".to_string(),
@@ -165,7 +165,7 @@ pub fn render_settings_modal(
                                     if let Some(sub) = subscription {
                                         if !sub.entitled_resolutions.is_empty() {
                                             let (w, h) = crate::app::types::parse_resolution(&settings.resolution);
-                                            
+
                                             // Find max FPS for this resolution
                                             let mut available_fps = Vec::new();
                                             for res in &sub.entitled_resolutions {
@@ -173,7 +173,7 @@ pub fn render_settings_modal(
                                                     available_fps.push(res.fps);
                                                 }
                                             }
-                                            
+
                                             // Also include global max FPS just in case resolution match fails
                                             // or if we want to allow users to force lower FPS
                                             if available_fps.is_empty() {
@@ -182,10 +182,10 @@ pub fn render_settings_modal(
                                                      available_fps.push(res.fps);
                                                 }
                                             }
-                                            
+
                                             available_fps.sort();
                                             available_fps.dedup();
-                                            
+
                                             if !available_fps.is_empty() {
                                                 for fps in available_fps {
                                                     if ui.selectable_label(settings.fps == fps, format!("{} FPS", fps)).clicked() {
@@ -236,19 +236,55 @@ pub fn render_settings_modal(
                         });
                         ui.end_row();
 
-                        // Video Decoder
-                        ui.label("Video Decoder")
-                             .on_hover_text("The hardware/software backend used to decode the video stream.\nUsually 'D3D11' or 'Vulkan' on Windows.");
+                        // Video Decoder - Hidden for now, always use Native DXVA
+                        // TODO: Re-enable when other backends are ready
+                        // ui.label("Video Decoder")
+                        //      .on_hover_text("The hardware/software backend used to decode the video stream.\nUsually 'D3D11' or 'Vulkan' on Windows.");
+                        // ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        //     egui::ComboBox::from_id_salt("decoder_combo")
+                        //         .selected_text(settings.decoder_backend.as_str())
+                        //         .show_ui(ui, |ui| {
+                        //             for backend in crate::media::get_supported_decoder_backends() {
+                        //                 if ui.selectable_label(settings.decoder_backend == backend, backend.as_str()).clicked() {
+                        //                     actions.push(UiAction::UpdateSetting(SettingChange::DecoderBackend(backend)));
+                        //                 }
+                        //             }
+                        //         });
+                        // });
+                        // ui.end_row();
+
+                        // Color Quality
+                        ui.label("Color Quality")
+                             .on_hover_text("Color bit depth and chroma subsampling.\n\n• 4:2:0 - Standard chroma, lower bandwidth\n• 4:4:4 - Full chroma, better for text/UI (requires HEVC)\n• 8-bit - Standard dynamic range\n• 10-bit - HDR capable, smoother gradients");
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            egui::ComboBox::from_id_salt("decoder_combo")
-                                .selected_text(settings.decoder_backend.as_str())
+                            egui::ComboBox::from_id_salt("color_quality_combo")
+                                .selected_text(settings.color_quality.display_name())
                                 .show_ui(ui, |ui| {
-                                    for backend in crate::media::get_supported_decoder_backends() {
-                                        if ui.selectable_label(settings.decoder_backend == backend, backend.as_str()).clicked() {
-                                            actions.push(UiAction::UpdateSetting(SettingChange::DecoderBackend(backend)));
+                                    for &quality in ColorQuality::all() {
+                                        let label = format!("{}", quality.display_name());
+                                        let tooltip = quality.description();
+                                        if ui.selectable_label(settings.color_quality == quality, &label)
+                                            .on_hover_text(tooltip)
+                                            .clicked()
+                                        {
+                                            actions.push(UiAction::UpdateSetting(SettingChange::ColorQuality(quality)));
                                         }
                                     }
                                 });
+                        });
+                        ui.end_row();
+
+                        // HDR Mode
+                        ui.label("HDR Mode")
+                             .on_hover_text("Enable High Dynamic Range for supported displays.\nRequires 10-bit color and HEVC/AV1 codec.\nWill auto-switch settings when enabled.");
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            let mut hdr_enabled = settings.hdr_enabled;
+                            if ui.add(egui::Checkbox::new(&mut hdr_enabled, "Enable HDR")).changed() {
+                                actions.push(UiAction::UpdateSetting(SettingChange::Hdr(hdr_enabled)));
+                            }
+                            if settings.hdr_enabled {
+                                ui.label(egui::RichText::new("(10-bit + HEVC required)").size(10.0).weak());
+                            }
                         });
                         ui.end_row();
                     });
@@ -268,7 +304,7 @@ pub fn render_settings_modal(
                         // Auto Selection
                         ui.label("Server Selection")
                              .on_hover_text("Choose a specific GeForce NOW server or let the client automatically pick the best one.");
-                        
+
                         ui.vertical(|ui| {
                             let mut auto_select = auto_server_selection;
                             if ui.checkbox(&mut auto_select, "Auto-select best server").on_hover_text("Automatically selects the server with the lowest ping.").changed() {
@@ -356,7 +392,7 @@ pub fn render_session_conflict_dialog(
                     egui::RichText::new("You have an active session")
                         .size(18.0)
                         .strong()
-                        .color(egui::Color32::WHITE)
+                        .color(egui::Color32::WHITE),
                 );
 
                 ui.add_space(15.0);
@@ -366,7 +402,7 @@ pub fn render_session_conflict_dialog(
                     ui.label(
                         egui::RichText::new(format!("Session ID: {}", &session.session_id))
                             .size(14.0)
-                            .color(egui::Color32::from_rgb(118, 185, 0))
+                            .color(egui::Color32::from_rgb(118, 185, 0)),
                     );
 
                     ui.add_space(5.0);
@@ -375,7 +411,7 @@ pub fn render_session_conflict_dialog(
                         ui.label(
                             egui::RichText::new(format!("Server: {}", server_ip))
                                 .size(12.0)
-                                .color(egui::Color32::GRAY)
+                                .color(egui::Color32::GRAY),
                         );
                     }
                 }
@@ -384,12 +420,10 @@ pub fn render_session_conflict_dialog(
 
                 ui.horizontal(|ui| {
                     // Resume existing session
-                    let resume_btn = egui::Button::new(
-                        egui::RichText::new("Resume Session")
-                            .size(14.0)
-                    )
-                    .fill(egui::Color32::from_rgb(70, 130, 70))
-                    .min_size(egui::vec2(130.0, 35.0));
+                    let resume_btn =
+                        egui::Button::new(egui::RichText::new("Resume Session").size(14.0))
+                            .fill(egui::Color32::from_rgb(70, 130, 70))
+                            .min_size(egui::vec2(130.0, 35.0));
 
                     if ui.add(resume_btn).clicked() {
                         if let Some(session) = active_sessions.first() {
@@ -402,16 +436,17 @@ pub fn render_session_conflict_dialog(
 
                     // Terminate and start new
                     if let Some(game) = pending_game {
-                        let new_btn = egui::Button::new(
-                            egui::RichText::new("Start New Game")
-                                .size(14.0)
-                        )
-                        .fill(egui::Color32::from_rgb(130, 70, 70))
-                        .min_size(egui::vec2(130.0, 35.0));
+                        let new_btn =
+                            egui::Button::new(egui::RichText::new("Start New Game").size(14.0))
+                                .fill(egui::Color32::from_rgb(130, 70, 70))
+                                .min_size(egui::vec2(130.0, 35.0));
 
                         if ui.add(new_btn).clicked() {
                             if let Some(session) = active_sessions.first() {
-                                actions.push(UiAction::TerminateAndLaunch(session.session_id.clone(), game.clone()));
+                                actions.push(UiAction::TerminateAndLaunch(
+                                    session.session_id.clone(),
+                                    game.clone(),
+                                ));
                             }
                             actions.push(UiAction::CloseSessionConflict);
                         }
@@ -429,10 +464,7 @@ pub fn render_session_conflict_dialog(
 }
 
 /// Render AV1 hardware warning dialog
-pub fn render_av1_warning_dialog(
-    ctx: &egui::Context,
-    actions: &mut Vec<UiAction>,
-) {
+pub fn render_av1_warning_dialog(ctx: &egui::Context, actions: &mut Vec<UiAction>) {
     egui::Window::new("AV1 Not Supported")
         .collapsible(false)
         .resizable(false)
@@ -494,13 +526,18 @@ pub fn render_alliance_warning_dialog(
                 egui::Frame::new()
                     .fill(egui::Color32::from_rgb(30, 80, 130))
                     .corner_radius(6.0)
-                    .inner_margin(egui::Margin { left: 14, right: 14, top: 6, bottom: 6 })
+                    .inner_margin(egui::Margin {
+                        left: 14,
+                        right: 14,
+                        top: 6,
+                        bottom: 6,
+                    })
                     .show(ui, |ui| {
                         ui.label(
                             egui::RichText::new("ALLIANCE")
                                 .size(14.0)
                                 .color(egui::Color32::from_rgb(100, 180, 255))
-                                .strong()
+                                .strong(),
                         );
                     });
 
@@ -510,7 +547,7 @@ pub fn render_alliance_warning_dialog(
                     egui::RichText::new(format!("Welcome to {} via Alliance!", provider_name))
                         .size(17.0)
                         .strong()
-                        .color(egui::Color32::WHITE)
+                        .color(egui::Color32::WHITE),
                 );
 
                 ui.add_space(10.0);
@@ -518,36 +555,37 @@ pub fn render_alliance_warning_dialog(
                 ui.label(
                     egui::RichText::new("Alliance support is still experimental.")
                         .size(14.0)
-                        .color(egui::Color32::from_rgb(255, 200, 80))
+                        .color(egui::Color32::from_rgb(255, 200, 80)),
                 );
 
                 ui.add_space(6.0);
 
                 ui.label(
-                    egui::RichText::new("Please report issues: github.com/zortos293/OpenNOW/issues")
-                        .size(13.0)
-                        .color(egui::Color32::LIGHT_GRAY)
+                    egui::RichText::new(
+                        "Please report issues: github.com/zortos293/OpenNOW/issues",
+                    )
+                    .size(13.0)
+                    .color(egui::Color32::LIGHT_GRAY),
                 );
 
                 ui.add_space(6.0);
 
                 ui.label(
-                    egui::RichText::new("Note: Feedback from Alliance users is especially valuable!")
-                        .size(12.0)
-                        .color(egui::Color32::GRAY)
-                        .italics()
+                    egui::RichText::new(
+                        "Note: Feedback from Alliance users is especially valuable!",
+                    )
+                    .size(12.0)
+                    .color(egui::Color32::GRAY)
+                    .italics(),
                 );
 
                 ui.add_space(12.0);
 
-                let got_it_btn = egui::Button::new(
-                    egui::RichText::new("Got it!")
-                        .size(14.0)
-                        .strong()
-                )
-                .fill(egui::Color32::from_rgb(70, 130, 70))
-                .min_size(egui::vec2(100.0, 32.0));
-                
+                let got_it_btn =
+                    egui::Button::new(egui::RichText::new("Got it!").size(14.0).strong())
+                        .fill(egui::Color32::from_rgb(70, 130, 70))
+                        .min_size(egui::vec2(100.0, 32.0));
+
                 if ui.add(got_it_btn).clicked() {
                     actions.push(UiAction::CloseAllianceWarning);
                 }

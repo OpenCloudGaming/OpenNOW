@@ -2,9 +2,9 @@
 //!
 //! Video decoding, audio decoding, and rendering.
 
-mod video;
 mod audio;
 mod rtp;
+mod video;
 
 #[cfg(target_os = "macos")]
 pub mod videotoolbox;
@@ -12,15 +12,36 @@ pub mod videotoolbox;
 #[cfg(target_os = "windows")]
 pub mod d3d11;
 
-pub use video::{VideoDecoder, DecodeStats, is_av1_hardware_supported, get_supported_decoder_backends};
-pub use rtp::{RtpDepacketizer, DepacketizerCodec};
+#[cfg(target_os = "windows")]
+pub mod dxva_decoder;
+
+#[cfg(target_os = "windows")]
+pub mod hevc_parser;
+
+#[cfg(target_os = "windows")]
+pub mod native_video;
+
 pub use audio::*;
+pub use rtp::{DepacketizerCodec, RtpDepacketizer};
+pub use video::{
+    get_supported_decoder_backends, is_av1_hardware_supported, DecodeStats, UnifiedVideoDecoder,
+    VideoDecoder,
+};
 
 #[cfg(target_os = "macos")]
-pub use videotoolbox::{ZeroCopyFrame, ZeroCopyTextureManager, CVPixelBufferWrapper, LockedPlanes, CVMetalTexture, MetalVideoRenderer};
+pub use videotoolbox::{
+    CVMetalTexture, CVPixelBufferWrapper, LockedPlanes, MetalVideoRenderer, ZeroCopyFrame,
+    ZeroCopyTextureManager,
+};
 
 #[cfg(target_os = "windows")]
 pub use d3d11::{D3D11TextureWrapper, D3D11ZeroCopyManager, LockedPlanes as D3D11LockedPlanes};
+
+#[cfg(target_os = "windows")]
+pub use dxva_decoder::{DxvaCodec, DxvaDecoder, DxvaDecoderConfig};
+
+#[cfg(target_os = "windows")]
+pub use native_video::{NativeDecodeStats, NativeVideoDecoder};
 
 /// Pixel format of decoded video frame
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -31,6 +52,8 @@ pub enum PixelFormat {
     /// NV12 semi-planar (Y plane + interleaved UV plane)
     /// More efficient on macOS VideoToolbox - skip CPU conversion
     NV12,
+    /// P010 10-bit HDR (Y plane + interleaved UV, 10 bits per sample in 16-bit words)
+    P010,
 }
 
 /// Decoded video frame
@@ -56,6 +79,8 @@ pub struct VideoFrame {
     pub color_range: ColorRange,
     /// Color space (matrix coefficients)
     pub color_space: ColorSpace,
+    /// Transfer function (SDR gamma vs HDR PQ/HLG)
+    pub transfer_function: TransferFunction,
     /// Zero-copy GPU buffer (macOS VideoToolbox only)
     /// When present, y_plane/u_plane are empty and rendering uses this directly
     #[cfg(target_os = "macos")]
@@ -88,6 +113,18 @@ pub enum ColorSpace {
     BT2020,
 }
 
+/// Video transfer function (EOTF - Electro-Optical Transfer Function)
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum TransferFunction {
+    /// SDR gamma (~2.4) - BT.709/BT.601/sRGB
+    #[default]
+    SDR,
+    /// HDR PQ (Perceptual Quantizer) - SMPTE ST 2084 / HDR10
+    PQ,
+    /// HDR HLG (Hybrid Log-Gamma) - ARIB STD-B67
+    HLG,
+}
+
 impl VideoFrame {
     /// Create empty frame (YUV420P format)
     pub fn empty(width: u32, height: u32) -> Self {
@@ -107,6 +144,7 @@ impl VideoFrame {
             format: PixelFormat::YUV420P,
             color_range: ColorRange::Limited,
             color_space: ColorSpace::BT709,
+            transfer_function: TransferFunction::SDR,
             #[cfg(target_os = "macos")]
             gpu_frame: None,
             #[cfg(target_os = "windows")]
