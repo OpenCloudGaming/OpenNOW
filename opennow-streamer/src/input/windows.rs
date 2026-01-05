@@ -21,6 +21,8 @@ static RAW_INPUT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ACCUMULATED_DX: AtomicI32 = AtomicI32::new(0);
 static ACCUMULATED_DY: AtomicI32 = AtomicI32::new(0);
 static MESSAGE_WINDOW: Mutex<Option<isize>> = Mutex::new(None);
+// Track if window class was registered (persists for process lifetime)
+static WINDOW_CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 // Coalescing state - accumulates events for 4ms batches (like official GFN client)
 static COALESCE_DX: AtomicI32 = AtomicI32::new(0);
@@ -410,25 +412,39 @@ pub fn start_raw_input() -> Result<(), String> {
             let class_name = to_wide("OpenNOW_RawInput_Streamer");
             let h_instance = GetModuleHandleW(std::ptr::null());
 
-            // Register window class
-            let wc = WNDCLASSEXW {
-                cb_size: std::mem::size_of::<WNDCLASSEXW>() as u32,
-                style: 0,
-                lpfn_wnd_proc: Some(raw_input_wnd_proc),
-                cb_cls_extra: 0,
-                cb_wnd_extra: 0,
-                h_instance,
-                h_icon: std::ptr::null_mut(),
-                h_cursor: std::ptr::null_mut(),
-                hbr_background: std::ptr::null_mut(),
-                lpsz_menu_name: std::ptr::null(),
-                lpsz_class_name: class_name.as_ptr(),
-                h_icon_sm: std::ptr::null_mut(),
-            };
+            // Register window class only once per process lifetime
+            // Windows keeps class registrations until process exit
+            if !WINDOW_CLASS_REGISTERED.load(Ordering::SeqCst) {
+                let wc = WNDCLASSEXW {
+                    cb_size: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                    style: 0,
+                    lpfn_wnd_proc: Some(raw_input_wnd_proc),
+                    cb_cls_extra: 0,
+                    cb_wnd_extra: 0,
+                    h_instance,
+                    h_icon: std::ptr::null_mut(),
+                    h_cursor: std::ptr::null_mut(),
+                    hbr_background: std::ptr::null_mut(),
+                    lpsz_menu_name: std::ptr::null(),
+                    lpsz_class_name: class_name.as_ptr(),
+                    h_icon_sm: std::ptr::null_mut(),
+                };
 
-            if RegisterClassExW(&wc) == 0 {
-                error!("Failed to register raw input window class");
-                return;
+                if RegisterClassExW(&wc) == 0 {
+                    // Check if class already exists (error 1410 = CLASS_ALREADY_EXISTS)
+                    let err = std::io::Error::last_os_error();
+                    if err.raw_os_error() == Some(1410) {
+                        // Class already registered, that's fine
+                        info!("Raw input window class already registered");
+                        WINDOW_CLASS_REGISTERED.store(true, Ordering::SeqCst);
+                    } else {
+                        error!("Failed to register raw input window class: {}", err);
+                        return;
+                    }
+                } else {
+                    WINDOW_CLASS_REGISTERED.store(true, Ordering::SeqCst);
+                    info!("Raw input window class registered");
+                }
             }
 
             // Create message-only window (HWND_MESSAGE = -3)
@@ -448,7 +464,8 @@ pub fn start_raw_input() -> Result<(), String> {
             );
 
             if hwnd == 0 {
-                error!("Failed to create raw input window");
+                let err = std::io::Error::last_os_error();
+                error!("Failed to create raw input window: {}", err);
                 return;
             }
 
@@ -472,7 +489,8 @@ pub fn start_raw_input() -> Result<(), String> {
                 DispatchMessageW(&msg);
             }
 
-            // Cleanup
+            // Cleanup - destroy window but keep class registered
+            DestroyWindow(hwnd);
             RAW_INPUT_REGISTERED.store(false, Ordering::SeqCst);
             RAW_INPUT_ACTIVE.store(false, Ordering::SeqCst);
             *MESSAGE_WINDOW.lock() = None;
