@@ -578,13 +578,21 @@ impl App {
                 self.show_server_selection = false;
                 self.selected_queue_server = None;
                 self.pending_server_selection_game = None;
-                // Log the server selection for debugging
+                // Note: The backend API currently does not support explicit server selection.
+                // The selected server_id is recorded for logging/telemetry only; the server
+                // used for the session will still be chosen automatically by the backend.
                 if let Some(ref id) = server_id {
-                    info!("Launching game '{}' with selected server: {} (server selection not yet implemented in API)", game.title, id);
+                    info!(
+                        "Launching game '{}' (requested server: {}), but explicit server selection is not yet supported by the backend; a server will be auto-selected.",
+                        game.title,
+                        id
+                    );
                 } else {
-                    info!("Launching game '{}' with auto-selected server", game.title);
+                    info!(
+                        "Launching game '{}' with backend auto-selected server (no explicit server requested).",
+                        game.title
+                    );
                 }
-                // TODO: Use server_id in session request when API supports it
                 self.launch_game(&game);
             }
             UiAction::RefreshQueueTimes => {
