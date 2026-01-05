@@ -3290,7 +3290,18 @@ impl Renderer {
                                                         ui.add_space(12.0);
 
                                                         // Queue position in box
-                                                        let position_color = egui::Color32::from_rgb(118, 185, 0);
+                                                        let position_color = if best.queue_position <= 0 {
+                                                            egui::Color32::from_rgb(118, 185, 0)
+                                                        } else if best.queue_position <= 5 {
+                                                            // Low queue: green
+                                                            egui::Color32::from_rgb(118, 185, 0)
+                                                        } else if best.queue_position <= 15 {
+                                                            // Medium queue: orange
+                                                            egui::Color32::from_rgb(255, 165, 0)
+                                                        } else {
+                                                            // High queue: red
+                                                            egui::Color32::from_rgb(230, 80, 80)
+                                                        };
                                                         let pos_text = if best.queue_position <= 0 {
                                                             "0".to_string()
                                                         } else {
