@@ -419,6 +419,14 @@ impl ApplicationHandler for OpenNowApp {
         let mut app_guard = self.app.lock();
         let is_streaming = app_guard.state == AppState::Streaming;
 
+        // Dynamically switch control flow based on streaming state
+        // Poll during streaming for lowest latency, Wait for menus to save CPU
+        if is_streaming {
+            _event_loop.set_control_flow(ControlFlow::Poll);
+        } else {
+            _event_loop.set_control_flow(ControlFlow::Wait);
+        }
+
         if is_streaming {
             // NOTE: Mouse input is handled directly by the raw input thread via set_raw_input_sender()
             // No polling needed here - raw input sends directly to the WebRTC input channel
@@ -489,7 +497,9 @@ fn main() -> Result<()> {
 
     // Create event loop
     let event_loop = EventLoop::new()?;
-    event_loop.set_control_flow(ControlFlow::Poll);
+    // Use Wait by default for low CPU usage in menus
+    // Dynamically switch to Poll during active streaming for lowest latency
+    event_loop.set_control_flow(ControlFlow::Wait);
 
     // Create application handler
     let mut app = OpenNowApp::new(runtime.handle().clone());
