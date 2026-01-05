@@ -2,25 +2,27 @@
 //!
 //! WebRTC peer connection, signaling, and data channels for GFN streaming.
 
-mod signaling;
+mod datachannel;
 mod peer;
 mod sdp;
-mod datachannel;
+mod signaling;
 
-pub use signaling::{GfnSignaling, SignalingEvent, IceCandidate};
-pub use peer::{WebRtcPeer, WebRtcEvent, NetworkStats, request_keyframe};
-pub use sdp::*;
 pub use datachannel::*;
+pub use peer::{request_keyframe, NetworkStats, WebRtcEvent, WebRtcPeer};
+pub use sdp::*;
+pub use signaling::{GfnSignaling, IceCandidate, SignalingEvent};
 
+use anyhow::Result;
+use log::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use anyhow::Result;
-use log::{info, warn, error, debug};
 use webrtc::ice_transport::ice_server::RTCIceServer;
 
-use crate::app::{SessionInfo, Settings, VideoCodec, SharedFrame};
-use crate::media::{StreamStats, VideoDecoder, AudioDecoder, AudioPlayer, RtpDepacketizer, DepacketizerCodec};
-use crate::input::{InputHandler, ControllerManager};
+use crate::app::{SessionInfo, Settings, SharedFrame, VideoCodec};
+use crate::input::{ControllerManager, InputHandler};
+use crate::media::{
+    AudioDecoder, AudioPlayer, DepacketizerCodec, RtpDepacketizer, StreamStats, UnifiedVideoDecoder,
+};
 
 /// Active streaming session
 pub struct StreamingSession {
@@ -93,7 +95,10 @@ fn build_nvst_sdp(
         lines.push("a=vqos.dfc.decodeFpsAdjPercent:85".to_string());
         lines.push("a=vqos.dfc.targetDownCooldownMs:250".to_string());
         lines.push("a=vqos.dfc.dfcAlgoVersion:2".to_string());
-        lines.push(format!("a=vqos.dfc.minTargetFps:{}", if is_120_fps { 100 } else { 60 }));
+        lines.push(format!(
+            "a=vqos.dfc.minTargetFps:{}",
+            if is_120_fps { 100 } else { 60 }
+        ));
     }
 
     // Video encoder settings
@@ -118,8 +123,14 @@ fn build_nvst_sdp(
             "a=video.encoderPreset:6".to_string(),
             "a=vqos.resControl.cpmRtc.badNwSkipFramesCount:600".to_string(),
             "a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:9".to_string(),
-            format!("a=video.fbcDynamicFpsGrabTimeoutMs:{}", if is_120_fps { 6 } else { 18 }),
-            format!("a=vqos.resControl.cpmRtc.serverResolutionUpdateCoolDownCount:{}", if is_120_fps { 6000 } else { 12000 }),
+            format!(
+                "a=video.fbcDynamicFpsGrabTimeoutMs:{}",
+                if is_120_fps { 6 } else { 18 }
+            ),
+            format!(
+                "a=vqos.resControl.cpmRtc.serverResolutionUpdateCoolDownCount:{}",
+                if is_120_fps { 6000 } else { 12000 }
+            ),
         ]);
     }
 
@@ -139,7 +150,10 @@ fn build_nvst_sdp(
         "a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1".to_string(),
         "a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1".to_string(),
         "a=vqos.resControl.cpmRtc.featureMask:3".to_string(),
-        format!("a=packetPacing.numGroups:{}", if is_120_fps { 3 } else { 5 }),
+        format!(
+            "a=packetPacing.numGroups:{}",
+            if is_120_fps { 3 } else { 5 }
+        ),
         "a=packetPacing.maxDelayUs:1000".to_string(),
         "a=packetPacing.minNumPacketsFrame:10".to_string(),
         // NACK settings
@@ -154,11 +168,21 @@ fn build_nvst_sdp(
         format!("a=video.clientViewportWd:{}", width),
         format!("a=video.clientViewportHt:{}", height),
         format!("a=video.maxFPS:{}", fps),
-        // Bitrate
-        format!("a=video.initialBitrateKbps:{}", initial_bitrate_kbps),
-        format!("a=video.initialPeakBitrateKbps:{}", initial_bitrate_kbps),
+        // Bitrate - critical for achieving high bitrates
+        // Initial bitrate should be high to avoid slow ramp-up
+        format!("a=video.initialBitrateKbps:{}", max_bitrate_kbps * 3 / 4), // Start at 75% of max
+        format!("a=video.initialPeakBitrateKbps:{}", max_bitrate_kbps),
         format!("a=vqos.bw.maximumBitrateKbps:{}", max_bitrate_kbps),
         format!("a=vqos.bw.minimumBitrateKbps:{}", min_bitrate_kbps),
+        // Peak bitrate settings - these are critical for allowing bitrate above 100Mbps
+        format!("a=vqos.bw.peakBitrateKbps:{}", max_bitrate_kbps),
+        format!("a=vqos.bw.serverPeakBitrateKbps:{}", max_bitrate_kbps),
+        // Bandwidth estimation settings - disable conservative limiting
+        "a=vqos.bw.enableBandwidthEstimation:1".to_string(),
+        "a=vqos.bw.disableBitrateLimit:1".to_string(),
+        // GRC (Global Rate Control) settings - allow full bitrate
+        format!("a=vqos.grc.maximumBitrateKbps:{}", max_bitrate_kbps),
+        "a=vqos.grc.enable:0".to_string(), // Disable GRC limiting
         // Encoder settings
         "a=video.maxNumReferenceFrames:4".to_string(),
         "a=video.mapRtpTimestampsToFrames:1".to_string(),
@@ -183,17 +207,20 @@ fn build_nvst_sdp(
 
 /// Extract ICE credentials from SDP
 fn extract_ice_credentials(sdp: &str) -> (String, String, String) {
-    let ufrag = sdp.lines()
+    let ufrag = sdp
+        .lines()
         .find(|l| l.starts_with("a=ice-ufrag:"))
         .map(|l| l.trim_start_matches("a=ice-ufrag:").to_string())
         .unwrap_or_default();
 
-    let pwd = sdp.lines()
+    let pwd = sdp
+        .lines()
         .find(|l| l.starts_with("a=ice-pwd:"))
         .map(|l| l.trim_start_matches("a=ice-pwd:").to_string())
         .unwrap_or_default();
 
-    let fingerprint = sdp.lines()
+    let fingerprint = sdp
+        .lines()
         .find(|l| l.starts_with("a=fingerprint:sha-256 "))
         .map(|l| l.trim_start_matches("a=fingerprint:sha-256 ").to_string())
         .unwrap_or_default();
@@ -207,8 +234,11 @@ fn extract_public_ip(input: &str) -> Option<String> {
     // Check for standard IP-like patterns with dashes (e.g. 80-250-97-38)
     let re_dash = regex::Regex::new(r"(\d{1,3})-(\d{1,3})-(\d{1,3})-(\d{1,3})").ok()?;
     if let Some(captures) = re_dash.captures(input) {
-         let ip = format!("{}.{}.{}.{}", &captures[1], &captures[2], &captures[3], &captures[4]);
-         return Some(ip);
+        let ip = format!(
+            "{}.{}.{}.{}",
+            &captures[1], &captures[2], &captures[3], &captures[4]
+        );
+        return Some(ip);
     }
 
     // Check for standard IP patterns (e.g. 80.250.97.38)
@@ -228,7 +258,10 @@ pub async fn run_streaming(
     stats_tx: mpsc::Sender<StreamStats>,
     input_handler: Arc<InputHandler>,
 ) -> Result<()> {
-    info!("Starting streaming to {} with session {}", session_info.server_ip, session_info.session_id);
+    info!(
+        "Starting streaming to {} with session {}",
+        session_info.server_ip, session_info.session_id
+    );
 
     let (width, height) = settings.resolution_tuple();
     let fps = settings.fps;
@@ -238,11 +271,10 @@ pub async fn run_streaming(
 
     // Create signaling client
     let (sig_event_tx, mut sig_event_rx) = mpsc::channel::<SignalingEvent>(64);
-    let server_ip = session_info.signaling_url
+    let server_ip = session_info
+        .signaling_url
         .as_ref()
-        .and_then(|url| {
-            url.split("://").nth(1).and_then(|s| s.split('/').next())
-        })
+        .and_then(|url| url.split("://").nth(1).and_then(|s| s.split('/').next()))
         .unwrap_or(&session_info.server_ip)
         .to_string();
 
@@ -262,7 +294,9 @@ pub async fn run_streaming(
 
     // Video decoder - use async mode for non-blocking decode
     // Decoded frames are written directly to SharedFrame by the decoder thread
-    let (mut video_decoder, mut decode_stats_rx) = VideoDecoder::new_async(codec, settings.decoder_backend, shared_frame.clone())?;
+    // Uses UnifiedVideoDecoder to support both FFmpeg and native DXVA backends
+    let (mut video_decoder, mut decode_stats_rx) =
+        UnifiedVideoDecoder::new_async(codec, settings.decoder_backend, shared_frame.clone())?;
 
     // Create RTP depacketizer with correct codec
     let depacketizer_codec = match codec {
@@ -364,18 +398,19 @@ pub async fn run_streaming(
                     }
 
                     // Update encoder protocol version if changed
-                    let version = input_protocol_version_clone.load(std::sync::atomic::Ordering::Relaxed);
+                    let version =
+                        input_protocol_version_clone.load(std::sync::atomic::Ordering::Relaxed);
                     input_encoder.set_protocol_version(version);
 
                     // Extract event timestamp for latency calculation
                     let event_timestamp_us = match &event {
-                        InputEvent::KeyDown { timestamp_us, .. } |
-                        InputEvent::KeyUp { timestamp_us, .. } |
-                        InputEvent::MouseMove { timestamp_us, .. } |
-                        InputEvent::MouseButtonDown { timestamp_us, .. } |
-                        InputEvent::MouseButtonUp { timestamp_us, .. } |
-                        InputEvent::MouseWheel { timestamp_us, .. } |
-                        InputEvent::Gamepad { timestamp_us, .. } => *timestamp_us,
+                        InputEvent::KeyDown { timestamp_us, .. }
+                        | InputEvent::KeyUp { timestamp_us, .. }
+                        | InputEvent::MouseMove { timestamp_us, .. }
+                        | InputEvent::MouseButtonDown { timestamp_us, .. }
+                        | InputEvent::MouseButtonUp { timestamp_us, .. }
+                        | InputEvent::MouseWheel { timestamp_us, .. }
+                        | InputEvent::Gamepad { timestamp_us, .. } => *timestamp_us,
                         InputEvent::Heartbeat => 0,
                     };
 
@@ -389,21 +424,21 @@ pub async fn run_streaming(
                     // Determine if this is a mouse event
                     let is_mouse = matches!(
                         &event,
-                        InputEvent::MouseMove { .. } |
-                        InputEvent::MouseButtonDown { .. } |
-                        InputEvent::MouseButtonUp { .. } |
-                        InputEvent::MouseWheel { .. }
+                        InputEvent::MouseMove { .. }
+                            | InputEvent::MouseButtonDown { .. }
+                            | InputEvent::MouseButtonUp { .. }
+                            | InputEvent::MouseWheel { .. }
                     );
 
                     // Determine if this is a gamepad/controller event
-                    let is_controller = matches!(
-                        &event,
-                        InputEvent::Gamepad { .. }
-                    );
+                    let is_controller = matches!(&event, InputEvent::Gamepad { .. });
 
                     // Send to main loop for WebRTC transmission
                     // Use try_send to never block the input thread
-                    if input_packet_tx_clone.try_send((encoded, is_mouse, is_controller, latency_us)).is_err() {
+                    if input_packet_tx_clone
+                        .try_send((encoded, is_mouse, is_controller, latency_us))
+                        .is_err()
+                    {
                         // Channel full - this is fine, old packets can be dropped for mouse
                     }
                 }
@@ -478,7 +513,7 @@ pub async fn run_streaming(
                         let public_ip = session_info.media_connection_info.as_ref()
                             .and_then(|mci| extract_public_ip(&mci.ip))
                             .or_else(|| extract_public_ip(&session_info.server_ip));
-                        
+
                         // Modify SDP with extracted IP
                         let modified_sdp = if let Some(ref ip) = public_ip {
                             fix_server_ip(&sdp, ip)
@@ -556,7 +591,7 @@ pub async fn run_streaming(
                                 // For resume flow or Alliance partners (manual candidate needed)
                                 if let Some(ref mci) = session_info.media_connection_info {
                                     info!("Using media port {} from session API", mci.port);
-                                    
+
                                     // EXTRACT RAW IP from hostname (needed for valid ICE candidate)
                                     // Use extract_public_ip which handles "x-x-x-x" format or direct IP
                                     let raw_ip = extract_public_ip(&mci.ip)
@@ -576,10 +611,10 @@ pub async fn run_streaming(
                                         raw_ip, mci.port
                                     );
                                     info!("Adding manual ICE candidate: {}", candidate);
-                                    
+
                                     // Extract server ufrag from offer (needed for ice-lite)
                                     let (server_ufrag, _, _) = extract_ice_credentials(&sdp);
-                                    
+
                                     if let Err(e) = peer.add_ice_candidate(&candidate, Some("0"), Some(0), Some(server_ufrag.clone())).await {
                                         warn!("Failed to add manual ICE candidate: {}", e);
                                         // Try other mids just in case
