@@ -74,7 +74,7 @@ OpenNOW is a custom GeForce NOW client rewritten entirely in **Native Rust** (mo
 |:---:|:---:|:---:|:---:|---|
 | **H.264** | ✅ DXVA / NVDEC / QSV | ✅ VideoToolbox | ✅ VAAPI | Standard for most streams. |
 | **HEVC (H.265)** | ✅ DXVA / NVDEC / QSV | ✅ VideoToolbox | ✅ VAAPI | High efficiency, lower bandwidth. |
-| **AV1** | ✅ NVDEC / QSV | ✅ VideoToolbox (M3+) | ⚠️ VAAPI | Requires RTX 30/40 series or Intel Arc. |
+| **AV1** | ✅ NVDEC / QSV | ✅ VideoToolbox (M3+) | ⚠️ VAAPI | Requires RTX 30/40 series or Intel Arc. Or M3+ series on macOS. |
 | **Opus (Audio)** | ✅ Software | ✅ Software | ✅ Software | High-quality low-latency audio. |
 
 > **Note:** The client utilizes zero-copy rendering where supported to minimize latency.
@@ -88,6 +88,7 @@ These features are not found in the official client:
 | **Theming** | 🚧 | Full UI customization and community themes. |
 | **Multi-account** | 🚧 | Switch between GFN accounts seamlessly. |
 | **Anti-AFK** | ✅ | Prevent session timeout (Ctrl+Shift+F10). |
+| **Queue Monitor** | 🚧 | printedwaste integration by [@Kief5555](https://github.com/Kief5555) (View server queues). |
 
 ### ⌨️ Controls & Shortcuts
 
