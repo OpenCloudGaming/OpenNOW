@@ -2747,7 +2747,6 @@ impl Renderer {
                 ui.add_space(8.0);
 
                 // Queue Times tab button (hidden by default, for free tier users)
-                // TODO: Show this conditionally based on subscription tier
                 let queue_times_btn = egui::Button::new(
                     egui::RichText::new("🕐 Queue Times")
                         .size(13.0)
