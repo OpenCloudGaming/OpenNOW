@@ -3268,7 +3268,13 @@ impl Renderer {
                                                     ui.add_space(8.0);
 
                                                     // GPU badge
-                                                    let gpu_text = if best.is_5080_server { "5080" } else { "4080" };
+                                                    let gpu_text = if best.is_5080_server {
+                                                        "5080"
+                                                    } else if best.is_4080_server {
+                                                        "4080"
+                                                    } else {
+                                                        "Unknown"
+                                                    };
                                                     egui::Frame::new()
                                                         .fill(egui::Color32::from_rgb(118, 185, 0).gamma_multiply(0.3))
                                                         .corner_radius(4.0)
