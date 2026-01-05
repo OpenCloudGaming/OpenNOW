@@ -301,6 +301,36 @@ impl ApplicationHandler for OpenNowApp {
                     app.toggle_anti_afk();
                 }
             }
+            // F8 to toggle mouse lock during streaming (for windowed mode)
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::F8),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                let mut app = self.app.lock();
+                if app.state == AppState::Streaming {
+                    // Toggle cursor capture state
+                    app.cursor_captured = !app.cursor_captured;
+
+                    if app.cursor_captured {
+                        renderer.lock_cursor();
+                        // Resume raw input when locking
+                        #[cfg(any(target_os = "windows", target_os = "macos"))]
+                        input::resume_raw_input();
+                        info!("F8: Mouse locked");
+                    } else {
+                        renderer.unlock_cursor();
+                        // Pause raw input when unlocking
+                        #[cfg(any(target_os = "windows", target_os = "macos"))]
+                        input::pause_raw_input();
+                        info!("F8: Mouse unlocked");
+                    }
+                }
+            }
             WindowEvent::ModifiersChanged(new_modifiers) => {
                 self.modifiers = new_modifiers;
             }
@@ -344,13 +374,25 @@ impl ApplicationHandler for OpenNowApp {
                 }
             }
             WindowEvent::Focused(focused) => {
-                // Release all keys when focus is lost to prevent sticky keys
-                if !focused {
-                    let app = self.app.lock();
-                    if app.state == AppState::Streaming {
+                let mut app = self.app.lock();
+                if app.state == AppState::Streaming {
+                    if !focused {
+                        // Lost focus - release all keys to prevent sticky keys
                         if let Some(ref input_handler) = app.input_handler {
                             log::info!("Window lost focus - releasing all keys");
                             input_handler.release_all_keys();
+                        }
+                        // Pause raw input while unfocused
+                        #[cfg(any(target_os = "windows", target_os = "macos"))]
+                        input::pause_raw_input();
+                    } else {
+                        // Regained focus - re-lock cursor if it was captured
+                        if app.cursor_captured {
+                            log::info!("Window regained focus - re-locking cursor");
+                            renderer.lock_cursor();
+                            // Resume raw input
+                            #[cfg(any(target_os = "windows", target_os = "macos"))]
+                            input::resume_raw_input();
                         }
                     }
                 }
