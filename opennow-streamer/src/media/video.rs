@@ -235,6 +235,94 @@ fn check_qsv_available() -> bool {
     })
 }
 
+/// Cached Intel GPU name for QSV capability detection
+static INTEL_GPU_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Get the Intel GPU name from wgpu adapter info
+fn get_intel_gpu_name() -> String {
+    INTEL_GPU_NAME.get_or_init(|| {
+        pollster::block_on(async {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+            let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
+            
+            for adapter in adapters {
+                let info = adapter.get_info();
+                let name = info.name.to_lowercase();
+                if name.contains("intel") {
+                    return info.name.clone();
+                }
+            }
+            String::new()
+        })
+    }).clone()
+}
+
+/// Check if the Intel GPU supports QSV decoding for the given codec
+/// Older Intel GPUs have limited QSV codec support:
+/// - Gen 7 (Ivy Bridge/HD 4000, 2012): Only H.264
+/// - Gen 8 (Haswell, 2013): H.264 + limited HEVC
+/// - Gen 9 (Skylake, 2015+): H.264 + HEVC
+/// - Gen 11+ (Ice Lake, 2019+): H.264 + HEVC + some AV1
+/// - Gen 12+ (Alder Lake, 2021+): Full AV1 support
+fn is_qsv_supported_for_codec(codec_id: ffmpeg::codec::Id) -> bool {
+    // First check if QSV runtime is even available
+    if !check_qsv_available() {
+        return false;
+    }
+    
+    let gpu_name = get_intel_gpu_name();
+    let gpu_lower = gpu_name.to_lowercase();
+    
+    // Detect older Intel GPU generations that have limited QSV support
+    let is_gen7_or_older = gpu_lower.contains("hd graphics 4000") 
+        || gpu_lower.contains("hd 4000")
+        || gpu_lower.contains("hd graphics 2500")
+        || gpu_lower.contains("hd 2500")
+        || gpu_lower.contains("ivy bridge")
+        || gpu_lower.contains("sandy bridge")
+        || gpu_lower.contains("hd graphics 3000")
+        || gpu_lower.contains("hd 3000");
+    
+    let is_gen8 = gpu_lower.contains("hd graphics 4600")
+        || gpu_lower.contains("hd 4600")
+        || gpu_lower.contains("hd graphics 4400")
+        || gpu_lower.contains("iris graphics 5100")
+        || gpu_lower.contains("iris pro")
+        || gpu_lower.contains("haswell");
+    
+    match codec_id {
+        ffmpeg::codec::Id::H264 => {
+            // H.264 supported on all Intel QSV generations
+            true
+        }
+        ffmpeg::codec::Id::HEVC => {
+            // HEVC not supported on Gen 7 (Ivy Bridge) and older
+            if is_gen7_or_older {
+                info!("Intel GPU '{}' (Gen 7 or older) does not support HEVC QSV - using software decoder", gpu_name);
+                return false;
+            }
+            // Gen 8 has limited HEVC support (decode only, 8-bit only)
+            true
+        }
+        ffmpeg::codec::Id::AV1 => {
+            // AV1 requires very new Intel GPUs (Gen 12+ / Alder Lake)
+            // For safety, disable on anything that looks old
+            if is_gen7_or_older || is_gen8 {
+                info!("Intel GPU '{}' does not support AV1 QSV - using software decoder", gpu_name);
+                return false;
+            }
+            // Check for older known GPU names that don't support AV1
+            if gpu_lower.contains("skylake") || gpu_lower.contains("kaby") 
+                || gpu_lower.contains("coffee") || gpu_lower.contains("uhd 6") {
+                info!("Intel GPU '{}' (pre-Gen 12) does not support AV1 QSV - using software decoder", gpu_name);
+                return false;
+            }
+            true
+        }
+        _ => true, // Unknown codecs - try QSV
+    }
+}
+
 /// Cached AV1 hardware support check
 static AV1_HW_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
@@ -893,14 +981,14 @@ impl VideoDecoder {
             if backend != VideoDecoderBackend::Software {
                 let gpu_vendor = detect_gpu_vendor();
 
-                // For NVIDIA GPUs, skip D3D11VA and use CUVID directly
-                // CUVID is more reliable and has lower latency on NVIDIA hardware
-                let try_d3d11va = gpu_vendor != GpuVendor::Nvidia
-                    && (backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::Dxva);
+                // D3D11VA provides zero-copy texture path that's faster than CUVID's GPU→CPU transfer
+                // Especially at 4K where CUVID can take 4+ seconds due to GPU→CPU copy overhead
+                // Only skip D3D11VA for NVIDIA if user explicitly requested CUVID backend
+                let try_d3d11va = backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::Dxva;
 
-                // Try D3D11VA for non-NVIDIA GPUs (AMD, Intel)
+                // Try D3D11VA first for zero-copy texture path (works on NVIDIA, AMD, Intel)
                 if try_d3d11va {
-                    info!("Attempting D3D11VA hardware acceleration (for AMD/Intel GPU)");
+                    info!("Attempting D3D11VA hardware acceleration (GPU: {:?})", gpu_vendor);
 
                     let codec = ffmpeg::codec::decoder::find(codec_id)
                         .ok_or_else(|| anyhow!("Decoder not found for {:?}", codec_id));
@@ -1026,8 +1114,8 @@ impl VideoDecoder {
                         if gpu_vendor == GpuVendor::Nvidia || backend == VideoDecoderBackend::Cuvid {
                             list.push("h264_cuvid");
                         }
-                        // Intel QSV
-                        if (gpu_vendor == GpuVendor::Intel && qsv_available) || backend == VideoDecoderBackend::Qsv {
+                        // Intel QSV (with codec-specific capability check for older GPUs)
+                        if (gpu_vendor == GpuVendor::Intel && is_qsv_supported_for_codec(codec_id)) || backend == VideoDecoderBackend::Qsv {
                             list.push("h264_qsv");
                         }
                         // AMD AMF (if available)
@@ -1036,7 +1124,7 @@ impl VideoDecoder {
                         }
                         // Generic fallbacks - only add CUVID/QSV for appropriate GPU vendors
                         if is_nvidia && !list.contains(&"h264_cuvid") { list.push("h264_cuvid"); }
-                        if is_intel && qsv_available && !list.contains(&"h264_qsv") { list.push("h264_qsv"); }
+                        if is_intel && is_qsv_supported_for_codec(codec_id) && !list.contains(&"h264_qsv") { list.push("h264_qsv"); }
                         list
                     }
                     ffmpeg::codec::Id::HEVC => {
@@ -1045,8 +1133,8 @@ impl VideoDecoder {
                         if gpu_vendor == GpuVendor::Nvidia || backend == VideoDecoderBackend::Cuvid {
                             list.push("hevc_cuvid");
                         }
-                        // Intel QSV
-                        if (gpu_vendor == GpuVendor::Intel && qsv_available) || backend == VideoDecoderBackend::Qsv {
+                        // Intel QSV (with codec-specific capability check - HD 4000 doesn't support HEVC)
+                        if (gpu_vendor == GpuVendor::Intel && is_qsv_supported_for_codec(codec_id)) || backend == VideoDecoderBackend::Qsv {
                             list.push("hevc_qsv");
                         }
                         // AMD AMF (if available)
@@ -1055,7 +1143,7 @@ impl VideoDecoder {
                         }
                         // Generic fallbacks - only add CUVID/QSV for appropriate GPU vendors
                         if is_nvidia && !list.contains(&"hevc_cuvid") { list.push("hevc_cuvid"); }
-                        if is_intel && qsv_available && !list.contains(&"hevc_qsv") { list.push("hevc_qsv"); }
+                        if is_intel && is_qsv_supported_for_codec(codec_id) && !list.contains(&"hevc_qsv") { list.push("hevc_qsv"); }
                         list
                     }
                     ffmpeg::codec::Id::AV1 => {
@@ -1064,13 +1152,13 @@ impl VideoDecoder {
                         if gpu_vendor == GpuVendor::Nvidia || backend == VideoDecoderBackend::Cuvid {
                             list.push("av1_cuvid");
                         }
-                        // Intel QSV (11th gen+)
-                        if (gpu_vendor == GpuVendor::Intel && qsv_available) || backend == VideoDecoderBackend::Qsv {
+                        // Intel QSV (requires Gen 12+ for AV1 - older GPUs fallback to software)
+                        if (gpu_vendor == GpuVendor::Intel && is_qsv_supported_for_codec(codec_id)) || backend == VideoDecoderBackend::Qsv {
                             list.push("av1_qsv");
                         }
                         // Generic fallbacks - only add CUVID/QSV for appropriate GPU vendors
                         if is_nvidia && !list.contains(&"av1_cuvid") { list.push("av1_cuvid"); }
-                        if is_intel && qsv_available && !list.contains(&"av1_qsv") { list.push("av1_qsv"); }
+                        if is_intel && is_qsv_supported_for_codec(codec_id) && !list.contains(&"av1_qsv") { list.push("av1_qsv"); }
                         list
                     }
                     _ => vec![],

@@ -262,14 +262,16 @@ pub struct AudioPlayer {
     resampler: Arc<Mutex<AudioResampler>>,
 }
 
-/// Simple linear resampler for audio rate conversion
+/// High-quality audio resampler using Catmull-Rom spline interpolation
+/// This provides much better quality than linear interpolation, especially for 2x upsampling
 struct AudioResampler {
     input_rate: u32,
     output_rate: u32,
     /// Fractional sample position for interpolation
     phase: f64,
-    /// Last sample for interpolation (per channel)
-    last_samples: Vec<i16>,
+    /// History buffer for 4-point interpolation (per channel)
+    /// Stores [s_minus1, s0, s1, s2] for each channel
+    history: Vec<[i16; 4]>,
 }
 
 /// Lock-free ring buffer for audio samples
@@ -351,12 +353,15 @@ impl AudioResampler {
             input_rate,
             output_rate,
             phase: 0.0,
-            last_samples: vec![0i16; channels as usize],
+            // Initialize history with zeros for each channel
+            history: vec![[0i16; 4]; channels as usize],
         }
     }
 
-    /// Resample audio from input_rate to output_rate using linear interpolation
-    /// Returns resampled samples
+    /// Resample audio using Catmull-Rom spline interpolation (4-point)
+    /// This provides much better quality than linear interpolation
+    /// The Catmull-Rom spline passes through all control points and provides
+    /// smooth C1 continuous curves, ideal for audio resampling
     fn resample(&mut self, input: &[i16], channels: u32) -> Vec<i16> {
         if self.input_rate == self.output_rate {
             return input.to_vec();
@@ -369,46 +374,80 @@ impl AudioResampler {
 
         let channels = channels as usize;
 
+        // Ensure history is properly sized
+        if self.history.len() != channels {
+            self.history = vec![[0i16; 4]; channels];
+        }
+
         for _ in 0..output_frames {
             let input_idx = self.phase as usize;
             let frac = self.phase - input_idx as f64;
 
             for ch in 0..channels {
-                let sample_idx = input_idx * channels + ch;
-                let next_idx = (input_idx + 1) * channels + ch;
-
-                let s0 = if sample_idx < input.len() {
-                    input[sample_idx]
-                } else {
-                    self.last_samples.get(ch).copied().unwrap_or(0)
+                // Get 4 samples for Catmull-Rom interpolation: s[-1], s[0], s[1], s[2]
+                let get_sample = |frame_idx: isize| -> i16 {
+                    if frame_idx < 0 {
+                        // Use history for samples before current buffer
+                        let hist_idx = (4 + frame_idx) as usize;
+                        self.history[ch][hist_idx.min(3)]
+                    } else if (frame_idx as usize) < input_frames {
+                        input[frame_idx as usize * channels + ch]
+                    } else {
+                        // Clamp to last sample
+                        if input_frames > 0 {
+                            input[(input_frames - 1) * channels + ch]
+                        } else {
+                            self.history[ch][3] // Use last known sample
+                        }
+                    }
                 };
 
-                let s1 = if next_idx < input.len() {
-                    input[next_idx]
-                } else if sample_idx < input.len() {
-                    input[sample_idx]
-                } else {
-                    s0
-                };
+                let s0 = get_sample(input_idx as isize - 1) as f64;
+                let s1 = get_sample(input_idx as isize) as f64;
+                let s2 = get_sample(input_idx as isize + 1) as f64;
+                let s3 = get_sample(input_idx as isize + 2) as f64;
 
-                // Linear interpolation
-                let interpolated = s0 as f64 + (s1 as f64 - s0 as f64) * frac;
+                // Catmull-Rom spline interpolation formula
+                // This provides C1 continuity (smooth first derivative)
+                let t = frac;
+                let t2 = t * t;
+                let t3 = t2 * t;
+
+                let interpolated = 0.5 * (
+                    (2.0 * s1) +
+                    (-s0 + s2) * t +
+                    (2.0 * s0 - 5.0 * s1 + 4.0 * s2 - s3) * t2 +
+                    (-s0 + 3.0 * s1 - 3.0 * s2 + s3) * t3
+                );
+
                 output.push(interpolated.clamp(-32768.0, 32767.0) as i16);
             }
 
             self.phase += ratio;
         }
 
-        // Keep fractional phase, reset integer part
-        self.phase = self.phase.fract();
-
-        // Store last samples for next buffer's interpolation
-        if input.len() >= channels {
+        // Update history with last 4 samples from this buffer for next call
+        if input_frames >= 4 {
             for ch in 0..channels {
-                let idx = input.len() - channels + ch;
-                self.last_samples[ch] = input[idx];
+                for i in 0..4 {
+                    self.history[ch][i] = input[(input_frames - 4 + i) * channels + ch];
+                }
+            }
+        } else if input_frames > 0 {
+            // Shift history and add new samples
+            for ch in 0..channels {
+                let shift = 4 - input_frames;
+                for i in 0..shift {
+                    self.history[ch][i] = self.history[ch][i + input_frames];
+                }
+                for i in 0..input_frames {
+                    self.history[ch][shift + i] = input[i * channels + ch];
+                }
             }
         }
+
+        // Keep fractional phase, reset integer part
+        self.phase = self.phase.fract();
 
         output
     }
@@ -418,6 +457,10 @@ impl AudioResampler {
         if self.output_rate != output_rate {
             self.output_rate = output_rate;
             self.phase = 0.0;
+            // Reset history on rate change
+            for hist in &mut self.history {
+                *hist = [0i16; 4];
+            }
             info!("Resampler updated: {}Hz -> {}Hz", self.input_rate, output_rate);
         }
     }
