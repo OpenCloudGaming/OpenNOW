@@ -573,11 +573,17 @@ impl App {
             UiAction::SelectQueueServer(server_id) => {
                 self.selected_queue_server = server_id;
             }
-            UiAction::LaunchWithServer(game, _server_id) => {
+            UiAction::LaunchWithServer(game, server_id) => {
                 // Close modal and launch game
                 self.show_server_selection = false;
                 self.selected_queue_server = None;
                 self.pending_server_selection_game = None;
+                // Log the server selection for debugging
+                if let Some(ref id) = server_id {
+                    info!("Launching game '{}' with selected server: {} (server selection not yet implemented in API)", game.title, id);
+                } else {
+                    info!("Launching game '{}' with auto-selected server", game.title);
+                }
                 // TODO: Use server_id in session request when API supports it
                 self.launch_game(&game);
             }
@@ -1315,6 +1321,9 @@ impl App {
             }
 
             self.ping_testing = false;
+
+            // Update queue servers with final ping data
+            self.update_queue_server_pings();
 
             // Sort servers by ping (online first, then by ping)
             self.servers.sort_by(|a, b| {

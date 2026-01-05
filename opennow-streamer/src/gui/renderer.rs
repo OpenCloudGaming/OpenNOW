@@ -3069,13 +3069,21 @@ impl Renderer {
                         has_4080: bool,
                     }
 
+                    // Apply region filter to servers
+                    let filtered_servers: Vec<&crate::api::QueueServerInfo> = queue_servers.iter()
+                        .filter(|s| match queue_region_filter {
+                            crate::app::QueueRegionFilter::All => true,
+                            crate::app::QueueRegionFilter::Region(ref region) => &s.region == region,
+                        })
+                        .collect();
+
                     // Group servers by region, then by location (display_name)
                     let mut regions: std::collections::HashMap<String, std::collections::HashMap<String, Vec<&crate::api::QueueServerInfo>>> = std::collections::HashMap::new();
 
-                    for server in queue_servers.iter() {
+                    for server in filtered_servers.iter() {
                         let region_entry = regions.entry(server.region.clone()).or_insert_with(std::collections::HashMap::new);
                         let location_entry = region_entry.entry(server.display_name.clone()).or_insert_with(Vec::new);
-                        location_entry.push(server);
+                        location_entry.push(*server);
                     }
 
                     // Build aggregated location info for each region
@@ -3111,8 +3119,41 @@ impl Renderer {
                             });
                         }
 
-                        // Sort locations alphabetically for stable display (prevents flashing)
-                        location_list.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+                        // Sort locations based on the selected sort mode
+                        // All sorts use display_name as a tiebreaker for stable ordering
+                        match queue_sort_mode {
+                            crate::app::QueueSortMode::BestValue => {
+                                // Sort by a combined score (lower is better)
+                                location_list.sort_by(|a, b| {
+                                    let score_a = a.best_ping_ms.unwrap_or(500) as f64
+                                        + (a.avg_eta_seconds.unwrap_or(0) as f64 / 60.0 * 0.5).min(100.0);
+                                    let score_b = b.best_ping_ms.unwrap_or(500) as f64
+                                        + (b.avg_eta_seconds.unwrap_or(0) as f64 / 60.0 * 0.5).min(100.0);
+                                    score_a.partial_cmp(&score_b)
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                        .then_with(|| a.display_name.cmp(&b.display_name))
+                                });
+                            }
+                            crate::app::QueueSortMode::QueueTime => {
+                                location_list.sort_by(|a, b| {
+                                    let eta_a = a.avg_eta_seconds.unwrap_or(i64::MAX);
+                                    let eta_b = b.avg_eta_seconds.unwrap_or(i64::MAX);
+                                    eta_a.cmp(&eta_b)
+                                        .then_with(|| a.display_name.cmp(&b.display_name))
+                                });
+                            }
+                            crate::app::QueueSortMode::Ping => {
+                                location_list.sort_by(|a, b| {
+                                    let ping_a = a.best_ping_ms.unwrap_or(u32::MAX);
+                                    let ping_b = b.best_ping_ms.unwrap_or(u32::MAX);
+                                    ping_a.cmp(&ping_b)
+                                        .then_with(|| a.display_name.cmp(&b.display_name))
+                                });
+                            }
+                            crate::app::QueueSortMode::Alphabetical => {
+                                location_list.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+                            }
+                        }
                         region_locations.insert(region.clone(), location_list);
                     }
 
