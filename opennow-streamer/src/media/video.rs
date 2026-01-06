@@ -445,22 +445,8 @@ pub fn get_supported_decoder_backends() -> Vec<VideoDecoderBackend> {
 
             #[cfg(target_os = "windows")]
             {
-                let gpu = detect_gpu_vendor();
-                let qsv = check_qsv_available();
-
-                if gpu == GpuVendor::Nvidia {
-                    backends.push(VideoDecoderBackend::Cuvid);
-                }
-
-                if qsv || gpu == GpuVendor::Intel {
-                    backends.push(VideoDecoderBackend::Qsv);
-                }
-
-                // DXVA is generally available on Windows
-                backends.push(VideoDecoderBackend::Dxva);
-
-                // Native DXVA (NVIDIA-style) - bypasses FFmpeg, no MAX_SLICES limitation
-                // Best for NVIDIA GPUs where FFmpeg's D3D11VA has issues
+                // Native D3D11VA decoder - direct hardware decoding without FFmpeg
+                // Works on all Windows GPUs (NVIDIA, AMD, Intel)
                 backends.push(VideoDecoderBackend::NativeDxva);
             }
 
@@ -1795,6 +1781,7 @@ impl VideoDecoder {
                 | Pixel::DXVA2_VLD
                 | Pixel::D3D11VA_VLD
                 | Pixel::VULKAN
+                | Pixel::VAAPI
         )
     }
 
@@ -2043,6 +2030,75 @@ impl VideoDecoder {
                     }
                 }
 
+                // ZERO-COPY PATH: For VAAPI, extract VA surface directly
+                // This skips the expensive GPU->CPU->GPU copy entirely
+                #[cfg(target_os = "linux")]
+                if format == Pixel::VAAPI {
+                    use crate::media::vaapi;
+                    use std::sync::Arc;
+
+                    // Extract VAAPI surface from frame data
+                    // FFmpeg VAAPI frame layout:
+                    // - data[3] = VASurfaceID (as pointer-sized value)
+                    // - hw_frames_ctx->device_ctx->hwctx = VADisplay
+                    let vaapi_surface = unsafe {
+                        let raw_frame = frame.as_ptr();
+                        let data3 = (*raw_frame).data[3] as *mut u8;
+
+                        // Get VADisplay from hw_frames_ctx
+                        let hw_frames_ctx = (*raw_frame).hw_frames_ctx;
+                        let va_display = if !hw_frames_ctx.is_null() {
+                            let frames_ctx =
+                                (*hw_frames_ctx).data as *mut ffmpeg::ffi::AVHWFramesContext;
+                            if !frames_ctx.is_null() {
+                                let device_ctx = (*frames_ctx).device_ctx;
+                                if !device_ctx.is_null() {
+                                    (*device_ctx).hwctx as *mut std::ffi::c_void
+                                } else {
+                                    std::ptr::null_mut()
+                                }
+                            } else {
+                                std::ptr::null_mut()
+                            }
+                        } else {
+                            std::ptr::null_mut()
+                        };
+
+                        vaapi::extract_vaapi_surface_from_frame(data3, va_display, w, h)
+                    };
+
+                    if let Some(surface) = vaapi_surface {
+                        if *frames_decoded == 1 {
+                            info!(
+                                "ZERO-COPY: First frame {}x{} via VAAPI surface (no CPU transfer!)",
+                                w, h
+                            );
+                        }
+
+                        *width = w;
+                        *height = h;
+
+                        return Some(VideoFrame {
+                            width: w,
+                            height: h,
+                            y_plane: Vec::new(),
+                            u_plane: Vec::new(),
+                            v_plane: Vec::new(),
+                            y_stride: 0,
+                            u_stride: 0,
+                            v_stride: 0,
+                            timestamp_us: 0,
+                            format: PixelFormat::NV12,
+                            color_range,
+                            color_space,
+                            transfer_function,
+                            gpu_frame: Some(Arc::new(surface)),
+                        });
+                    } else {
+                        warn!("Failed to extract VAAPI surface, falling back to CPU transfer");
+                    }
+                }
+
                 // FALLBACK: Transfer hardware frame to CPU memory
                 let sw_frame = Self::transfer_hw_frame_if_needed(&frame);
                 let frame_to_use = sw_frame.as_ref().unwrap_or(&frame);
@@ -2139,6 +2195,8 @@ impl VideoDecoder {
                             #[cfg(target_os = "macos")]
                             gpu_frame: None,
                             #[cfg(target_os = "windows")]
+                            gpu_frame: None,
+                            #[cfg(target_os = "linux")]
                             gpu_frame: None,
                         });
                     }
@@ -2259,6 +2317,8 @@ impl VideoDecoder {
                     #[cfg(target_os = "macos")]
                     gpu_frame: None,
                     #[cfg(target_os = "windows")]
+                    gpu_frame: None,
+                    #[cfg(target_os = "linux")]
                     gpu_frame: None,
                 })
             }
