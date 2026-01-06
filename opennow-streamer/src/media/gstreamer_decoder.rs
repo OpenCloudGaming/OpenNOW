@@ -15,7 +15,8 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app::{AppSink, AppSrc};
 use gstreamer_video as gst_video;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use super::{

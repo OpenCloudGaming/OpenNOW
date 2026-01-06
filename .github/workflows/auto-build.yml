@@ -170,13 +170,13 @@ jobs:
             target: macos
             arch: arm64
             rust_target: aarch64-apple-darwin
-          # Legacy macOS build for Intel Macs (2015 and older)
-          # Uses CPU-copy fallback instead of zero-copy Metal rendering
-          - platform: macos-13-large
-            target: macos-intel
-            arch: x86_64
-            rust_target: x86_64-apple-darwin
-            features: legacy-macos
+          # NOTE: Legacy macOS Intel build temporarily disabled - macOS-13 runners retired
+          # TODO: Re-enable when macos-15-intel runners are available or use cross-compilation
+          # - platform: macos-13-large
+          #   target: macos-intel
+          #   arch: x86_64
+          #   rust_target: x86_64-apple-darwin
+          #   features: legacy-macos
           - platform: windows-latest
             target: windows
             arch: x86_64
@@ -421,14 +421,15 @@ jobs:
           cargo build --release --verbose
           echo "macOS ARM64 build complete"
 
-      - name: Build native client (macOS Intel - Legacy)
-        if: matrix.target == 'macos-intel'
-        shell: bash
-        working-directory: opennow-streamer
-        run: |
-          echo "Building for macOS Intel x64 (Legacy mode for 2015 and older Macs)..."
-          cargo build --release --features legacy-macos --verbose
-          echo "macOS Intel build complete"
+      # NOTE: Legacy macOS Intel build temporarily disabled - macOS-13 runners retired
+      # - name: Build native client (macOS Intel - Legacy)
+      #   if: matrix.target == 'macos-intel'
+      #   shell: bash
+      #   working-directory: opennow-streamer
+      #   run: |
+      #     echo "Building for macOS Intel x64 (Legacy mode for 2015 and older Macs)..."
+      #     cargo build --release --features legacy-macos --verbose
+      #     echo "macOS Intel build complete"
 
       - name: Build native client (Linux x64)
         if: matrix.target == 'linux'
@@ -803,13 +804,14 @@ jobs:
           path: opennow-streamer/target/release/OpenNOW-macos-arm64.zip
           retention-days: 30
 
-      - name: Upload macOS Intel (Legacy) artifacts
-        if: matrix.target == 'macos-intel'
-        uses: actions/upload-artifact@v4
-        with:
-          name: opennow-streamer-${{ needs.get-version.outputs.version }}-macos-intel
-          path: opennow-streamer/target/release/OpenNOW-macos-x86_64.zip
-          retention-days: 30
+      # NOTE: Legacy macOS Intel build temporarily disabled - macOS-13 runners retired
+      # - name: Upload macOS Intel (Legacy) artifacts
+      #   if: matrix.target == 'macos-intel'
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: opennow-streamer-${{ needs.get-version.outputs.version }}-macos-intel
+      #     path: opennow-streamer/target/release/OpenNOW-macos-x86_64.zip
+      #     retention-days: 30
 
       - name: Zip Linux x64 artifacts
         if: matrix.target == 'linux'
@@ -861,8 +863,7 @@ jobs:
             ### Downloads
             - **Windows x64**: Portable executable with bundled FFmpeg DLLs
             - **Windows ARM64**: Portable executable with bundled FFmpeg DLLs (Surface Pro X, etc.)
-            - **macOS ARM64**: Apple Silicon native binary with bundled FFmpeg dylibs
-            - **macOS Intel (Legacy)**: Native Intel x64 binary for older Macs (2015 and earlier) with bundled FFmpeg dylibs
+            - **macOS ARM64**: Apple Silicon native binary with bundled FFmpeg dylibs (Intel Macs can use Rosetta 2)
             - **Linux x64**: Portable binary (requires system FFmpeg - see below)
             - **Linux ARM64**: Portable bundle with FFmpeg libs (run via `./run.sh`)
 
@@ -914,15 +915,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload macOS Intel (Legacy) to release
-        if: matrix.target == 'macos-intel' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ needs.get-version.outputs.version }}
-          files: opennow-streamer/target/release/OpenNOW-macos-x86_64.zip
-          fail_on_unmatched_files: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # NOTE: Legacy macOS Intel build temporarily disabled - macOS-13 runners retired
+      # - name: Upload macOS Intel (Legacy) to release
+      #   if: matrix.target == 'macos-intel' && github.ref == 'refs/heads/main'
+      #   uses: softprops/action-gh-release@v1
+      #   with:
+      #     tag_name: ${{ needs.get-version.outputs.version }}
+      #     files: opennow-streamer/target/release/OpenNOW-macos-x86_64.zip
+      #     fail_on_unmatched_files: false
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Linux x64 to release
         if: matrix.target == 'linux' && github.ref == 'refs/heads/main'
