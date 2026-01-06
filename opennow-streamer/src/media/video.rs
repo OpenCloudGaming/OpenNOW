@@ -1069,6 +1069,83 @@ impl VideoDecoder {
         AVPixelFormat::AV_PIX_FMT_CUDA
     }
 
+    /// FFI Callback for VAAPI format negotiation (Linux AMD/Intel)
+    /// CRITICAL: This must set up hw_frames_ctx for proper frame buffer management
+    #[cfg(target_os = "linux")]
+    unsafe extern "C" fn get_vaapi_format(
+        ctx: *mut ffmpeg::ffi::AVCodecContext,
+        fmt: *const ffmpeg::ffi::AVPixelFormat,
+    ) -> ffmpeg::ffi::AVPixelFormat {
+        use ffmpeg::ffi::*;
+
+        // Check if VAAPI format is available
+        let mut has_vaapi = false;
+        let mut check_fmt = fmt;
+        while *check_fmt != AVPixelFormat::AV_PIX_FMT_NONE {
+            if *check_fmt == AVPixelFormat::AV_PIX_FMT_VAAPI {
+                has_vaapi = true;
+                break;
+            }
+            check_fmt = check_fmt.add(1);
+        }
+
+        if !has_vaapi {
+            info!("get_vaapi_format: VAAPI not in available formats, falling back to NV12");
+            return AVPixelFormat::AV_PIX_FMT_NV12;
+        }
+
+        // We need hw_device_ctx to create hw_frames_ctx
+        if (*ctx).hw_device_ctx.is_null() {
+            warn!("get_vaapi_format: hw_device_ctx is null, cannot use VAAPI");
+            return AVPixelFormat::AV_PIX_FMT_NV12;
+        }
+
+        // Check if hw_frames_ctx already exists
+        if !(*ctx).hw_frames_ctx.is_null() {
+            info!("get_vaapi_format: hw_frames_ctx already set, selecting VAAPI");
+            return AVPixelFormat::AV_PIX_FMT_VAAPI;
+        }
+
+        // Allocate hw_frames_ctx from hw_device_ctx
+        let hw_frames_ref = av_hwframe_ctx_alloc((*ctx).hw_device_ctx);
+        if hw_frames_ref.is_null() {
+            warn!("get_vaapi_format: Failed to allocate hw_frames_ctx");
+            return AVPixelFormat::AV_PIX_FMT_NV12;
+        }
+
+        // Configure the frames context
+        let frames_ctx = (*hw_frames_ref).data as *mut AVHWFramesContext;
+        (*frames_ctx).format = AVPixelFormat::AV_PIX_FMT_VAAPI;
+        (*frames_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_NV12; // VAAPI typically uses NV12
+        (*frames_ctx).width = (*ctx).coded_width;
+        (*frames_ctx).height = (*ctx).coded_height;
+        (*frames_ctx).initial_pool_size = 20; // Pool for frame reordering
+
+        info!(
+            "get_vaapi_format: Configuring VAAPI hw_frames_ctx: {}x{}, sw_format=NV12, pool_size=20",
+            (*ctx).coded_width,
+            (*ctx).coded_height
+        );
+
+        // Initialize the frames context
+        let ret = av_hwframe_ctx_init(hw_frames_ref);
+        if ret < 0 {
+            warn!(
+                "get_vaapi_format: Failed to initialize hw_frames_ctx (error {})",
+                ret
+            );
+            av_buffer_unref(&mut (hw_frames_ref as *mut _));
+            return AVPixelFormat::AV_PIX_FMT_NV12;
+        }
+
+        // Attach to codec context
+        (*ctx).hw_frames_ctx = av_buffer_ref(hw_frames_ref);
+        av_buffer_unref(&mut (hw_frames_ref as *mut _));
+
+        info!("get_vaapi_format: VAAPI hw_frames_ctx initialized successfully!");
+        AVPixelFormat::AV_PIX_FMT_VAAPI
+    }
+
     /// Create decoder, trying hardware acceleration based on preference
     fn create_decoder(
         codec_id: ffmpeg::codec::Id,
@@ -1672,6 +1749,59 @@ impl VideoDecoder {
                 for hw_name in &hw_decoder_names {
                     if let Some(hw_codec) = ffmpeg::codec::decoder::find_by_name(hw_name) {
                         info!("Found hardware decoder: {}, attempting to open...", hw_name);
+
+                        // VAAPI decoders require hw_device_ctx to be set up
+                        if hw_name.contains("vaapi") {
+                            unsafe {
+                                use ffmpeg::ffi::*;
+                                use std::ptr;
+
+                                let mut ctx = CodecContext::new_with_codec(hw_codec);
+                                let raw_ctx = ctx.as_mut_ptr();
+
+                                // Create VAAPI hardware device context
+                                let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
+                                let ret = av_hwdevice_ctx_create(
+                                    &mut hw_device_ctx,
+                                    AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+                                    ptr::null(), // Use default device (/dev/dri/renderD128)
+                                    ptr::null_mut(),
+                                    0,
+                                );
+
+                                if ret >= 0 && !hw_device_ctx.is_null() {
+                                    info!("VAAPI hw_device_ctx created successfully");
+
+                                    (*raw_ctx).hw_device_ctx = av_buffer_ref(hw_device_ctx);
+                                    av_buffer_unref(&mut hw_device_ctx);
+
+                                    // Set get_format callback to select VAAPI pixel format
+                                    (*raw_ctx).get_format = Some(Self::get_vaapi_format);
+
+                                    // Low latency flags for streaming
+                                    (*raw_ctx).flags |= AV_CODEC_FLAG_LOW_DELAY as i32;
+                                    (*raw_ctx).flags2 |= AV_CODEC_FLAG2_FAST as i32;
+                                    (*raw_ctx).thread_count = 1; // Single thread for HW decode
+
+                                    match ctx.decoder().video() {
+                                        Ok(dec) => {
+                                            info!("VAAPI hardware decoder ({}) opened successfully - GPU decoding active!", hw_name);
+                                            return Ok((dec, true));
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "Failed to open VAAPI decoder {}: {:?}",
+                                                hw_name, e
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    warn!("Failed to create VAAPI hw_device_ctx (error {})", ret);
+                                }
+                            }
+                            continue;
+                        }
+
                         let mut ctx = CodecContext::new_with_codec(hw_codec);
 
                         unsafe {
