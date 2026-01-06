@@ -115,6 +115,9 @@ features = ["dx12"]
 evdev = "0.12"
 libloading = "0.8"
 # Note: libc is already a top-level dependency
+# Vulkan for Vulkan Video decoding (GFN-style cross-GPU hardware decode)
+ash = "0.38"
+ash-window = "0.13"
 
 # X11 is optional - only needed for XInput2 fallback when evdev isn't available
 # To enable: cargo build --features x11-input
