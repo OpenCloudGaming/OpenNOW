@@ -137,6 +137,9 @@ pub struct App {
     /// Whether ping test is running
     pub ping_testing: bool,
 
+    /// Whether queue server ping test is running
+    pub queue_ping_testing: bool,
+
     /// Whether settings modal is visible
     pub show_settings_modal: bool,
 
@@ -315,6 +318,7 @@ impl App {
             selected_server_index: 0,
             auto_server_selection: auto_server, // Load from settings
             ping_testing: false,
+            queue_ping_testing: false,
             show_settings_modal: false,
             active_sessions: Vec::new(),
             show_session_conflict: false,
@@ -909,8 +913,8 @@ impl App {
                     info!("Loaded {} queue servers from cache", servers.len());
                     self.queue_servers = servers;
                     self.queue_loading = false;
-                    // Immediately populate ping data from main servers
-                    self.update_queue_server_pings();
+                    // Start ping test for queue servers
+                    self.start_queue_ping_test();
                 }
             }
         }
@@ -921,8 +925,11 @@ impl App {
         // Check for ping test results
         if self.ping_testing {
             self.load_ping_results();
-            // Update queue servers with ping data from main servers
-            self.update_queue_server_pings();
+        }
+
+        // Check for queue ping test results
+        if self.queue_ping_testing {
+            self.load_queue_ping_results();
         }
 
         // Check for active sessions from async check
@@ -1335,48 +1342,54 @@ impl App {
         let runtime = self.runtime.clone();
 
         runtime.spawn(async move {
-            let mut results: Vec<(String, Option<u32>, ServerStatus)> = Vec::new();
+            use futures_util::future::join_all;
 
-            for (server_id, url_opt) in server_data {
-                // Extract hostname from URL or construct from server_id
-                let hostname = if let Some(url) = url_opt {
-                    url.trim_start_matches("https://")
-                        .trim_start_matches("http://")
-                        .split('/')
-                        .next()
-                        .unwrap_or(&format!("{}.cloudmatchbeta.nvidiagrid.net", server_id))
-                        .to_string()
-                } else {
-                    format!("{}.cloudmatchbeta.nvidiagrid.net", server_id)
-                };
+            // Create ping futures for all servers (run in parallel)
+            let ping_futures: Vec<_> = server_data
+                .into_iter()
+                .map(|(server_id, url_opt)| async move {
+                    // Extract hostname from URL or construct from server_id
+                    let hostname = if let Some(url) = url_opt {
+                        url.trim_start_matches("https://")
+                            .trim_start_matches("http://")
+                            .split('/')
+                            .next()
+                            .unwrap_or(&format!("{}.cloudmatchbeta.nvidiagrid.net", server_id))
+                            .to_string()
+                    } else {
+                        format!("{}.cloudmatchbeta.nvidiagrid.net", server_id)
+                    };
 
-                // TCP ping to port 443
-                let ping_result = Self::tcp_ping(&hostname, 443).await;
+                    // TCP ping with timeout (faster and more reliable than ICMP on Windows)
+                    let ping_result = Self::tcp_ping(&hostname).await;
 
-                let (ping_ms, status) = match ping_result {
-                    Some(ms) => (Some(ms), ServerStatus::Online),
-                    None => (None, ServerStatus::Offline),
-                };
+                    let (ping_ms, status) = match ping_result {
+                        Some(ms) => (Some(ms), ServerStatus::Online),
+                        None => (None, ServerStatus::Offline),
+                    };
 
-                results.push((server_id, ping_ms, status));
-            }
+                    (server_id, ping_ms, status)
+                })
+                .collect();
+
+            // Run all pings concurrently
+            let results: Vec<(String, Option<u32>, ServerStatus)> = join_all(ping_futures).await;
 
             // Save results to cache
             cache::save_ping_results(&results);
         });
     }
 
-    /// TCP ping to measure latency
-    async fn tcp_ping(hostname: &str, port: u16) -> Option<u32> {
+    /// Fast TCP ping - measures connection time to server (TLS handshake)
+    async fn tcp_ping(hostname: &str) -> Option<u32> {
         use std::time::Instant;
         use tokio::net::TcpStream;
         use tokio::time::{timeout, Duration};
 
-        // Resolve hostname first
-        let addr = format!("{}:{}", hostname, port);
-
+        let addr = format!("{}:443", hostname);
         let start = Instant::now();
-        let result = timeout(Duration::from_secs(3), TcpStream::connect(&addr)).await;
+        // Short timeout for fast failure
+        let result = timeout(Duration::from_millis(1500), TcpStream::connect(&addr)).await;
 
         match result {
             Ok(Ok(_stream)) => {
@@ -1407,9 +1420,6 @@ impl App {
             }
 
             self.ping_testing = false;
-
-            // Update queue servers with final ping data
-            self.update_queue_server_pings();
 
             // Sort servers by ping (online first, then by ping)
             self.servers.sort_by(|a, b| match (&a.status, &b.status) {
@@ -1453,15 +1463,65 @@ impl App {
         }
     }
 
-    /// Update queue server ping values from the main server list
-    fn update_queue_server_pings(&mut self) {
-        // Map ping values from self.servers to queue_servers by matching server_id
-        for queue_server in &mut self.queue_servers {
-            // Try to find a matching server by ID
-            if let Some(main_server) = self.servers.iter().find(|s| s.id == queue_server.server_id)
-            {
-                queue_server.ping_ms = main_server.ping_ms;
+    /// Start ping test for queue servers (uses VPC IDs like NP-AMS-07)
+    pub fn start_queue_ping_test(&mut self) {
+        if self.queue_ping_testing || self.queue_servers.is_empty() {
+            return;
+        }
+
+        self.queue_ping_testing = true;
+        info!(
+            "Starting queue ping test for {} servers",
+            self.queue_servers.len()
+        );
+
+        // Collect server IDs for pinging
+        let server_ids: Vec<String> = self
+            .queue_servers
+            .iter()
+            .map(|s| s.server_id.clone())
+            .collect();
+        let runtime = self.runtime.clone();
+
+        runtime.spawn(async move {
+            use futures_util::future::join_all;
+
+            // Create ping futures for all queue servers (run in parallel)
+            let ping_futures: Vec<_> = server_ids
+                .into_iter()
+                .map(|server_id| async move {
+                    // Construct hostname from VPC ID (e.g., NP-AMS-07 -> np-ams-07.cloudmatchbeta.nvidiagrid.net)
+                    let hostname =
+                        format!("{}.cloudmatchbeta.nvidiagrid.net", server_id.to_lowercase());
+
+                    let ping_result = Self::tcp_ping(&hostname).await;
+                    (server_id, ping_result)
+                })
+                .collect();
+
+            // Run all pings concurrently
+            let results: Vec<(String, Option<u32>)> = join_all(ping_futures).await;
+
+            // Save results to cache
+            cache::save_queue_ping_results(&results);
+        });
+    }
+
+    /// Load queue ping results from cache
+    fn load_queue_ping_results(&mut self) {
+        if let Some(results) = cache::load_queue_ping_results() {
+            for (server_id, ping_ms) in results {
+                if let Some(server) = self
+                    .queue_servers
+                    .iter_mut()
+                    .find(|s| s.server_id == server_id)
+                {
+                    server.ping_ms = ping_ms;
+                }
             }
+
+            self.queue_ping_testing = false;
+            info!("Queue ping test completed");
         }
     }
 
