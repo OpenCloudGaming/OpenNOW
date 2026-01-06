@@ -11,12 +11,12 @@
 
 #![cfg(target_os = "macos")]
 
-use std::ffi::c_void;
-use std::sync::Arc;
-use log::{info, debug, warn};
+use foreign_types::ForeignType;
+use log::{debug, info, warn};
 use objc::runtime::{Object, YES};
 use objc::{class, msg_send, sel, sel_impl};
-use foreign_types::ForeignType;
+use std::ffi::c_void;
+use std::sync::Arc;
 
 // Core Video FFI
 #[link(name = "CoreVideo", kind = "framework")]
@@ -56,16 +56,16 @@ extern "C" {
     fn CVMetalTextureCacheCreateTextureFromImage(
         allocator: *const c_void,
         texture_cache: *mut c_void,
-        source_image: *mut c_void,  // CVPixelBufferRef
+        source_image: *mut c_void, // CVPixelBufferRef
         texture_attributes: *const c_void,
-        pixel_format: u64,  // MTLPixelFormat
+        pixel_format: u64, // MTLPixelFormat
         width: usize,
         height: usize,
         plane_index: usize,
         texture_out: *mut *mut c_void,
     ) -> i32;
 
-    fn CVMetalTextureGetTexture(texture: *mut c_void) -> *mut Object;  // Returns MTLTexture
+    fn CVMetalTextureGetTexture(texture: *mut c_void) -> *mut Object; // Returns MTLTexture
     fn CVMetalTextureCacheFlush(texture_cache: *mut c_void, options: u64);
 }
 
@@ -73,8 +73,8 @@ extern "C" {
 const K_CV_RETURN_SUCCESS: i32 = 0;
 
 // MTLPixelFormat values
-const MTL_PIXEL_FORMAT_R8_UNORM: u64 = 10;      // For Y plane
-const MTL_PIXEL_FORMAT_RG8_UNORM: u64 = 30;     // For UV plane (interleaved)
+const MTL_PIXEL_FORMAT_R8_UNORM: u64 = 10; // For Y plane
+const MTL_PIXEL_FORMAT_RG8_UNORM: u64 = 30; // For UV plane (interleaved)
 
 // Lock flags
 const K_CV_PIXEL_BUFFER_LOCK_READ_ONLY: u64 = 0x00000001;
@@ -185,7 +185,8 @@ impl CVPixelBufferWrapper {
     pub fn lock_and_get_planes(&self) -> Option<LockedPlanes> {
         unsafe {
             // Lock for read-only access (faster)
-            let result = CVPixelBufferLockBaseAddress(self.buffer, K_CV_PIXEL_BUFFER_LOCK_READ_ONLY);
+            let result =
+                CVPixelBufferLockBaseAddress(self.buffer, K_CV_PIXEL_BUFFER_LOCK_READ_ONLY);
             if result != 0 {
                 warn!("Failed to lock CVPixelBuffer: {}", result);
                 return None;
@@ -193,7 +194,10 @@ impl CVPixelBufferWrapper {
 
             let plane_count = CVPixelBufferGetPlaneCount(self.buffer);
             if plane_count < 2 {
-                warn!("CVPixelBuffer has {} planes, expected 2 for NV12", plane_count);
+                warn!(
+                    "CVPixelBuffer has {} planes, expected 2 for NV12",
+                    plane_count
+                );
                 CVPixelBufferUnlockBaseAddress(self.buffer, K_CV_PIXEL_BUFFER_LOCK_READ_ONLY);
                 return None;
             }
@@ -274,7 +278,9 @@ impl Clone for CVPixelBufferWrapper {
 /// # Safety
 /// The AVFrame must be a VideoToolbox hardware frame (format = AV_PIX_FMT_VIDEOTOOLBOX)
 /// The frame_data_3 parameter should be frame.data[3] from the AVFrame
-pub unsafe fn extract_cv_pixel_buffer_from_data(frame_data_3: *mut u8) -> Option<CVPixelBufferWrapper> {
+pub unsafe fn extract_cv_pixel_buffer_from_data(
+    frame_data_3: *mut u8,
+) -> Option<CVPixelBufferWrapper> {
     // For VideoToolbox frames, data[3] contains the CVPixelBufferRef
     // This is FFmpeg's convention for VideoToolbox hardware frames
     let cv_buffer = frame_data_3 as *mut c_void;
@@ -354,8 +360,8 @@ impl Drop for IOSurfaceWrapper {
 /// Metal texture pair created from IOSurface (Y and UV planes)
 /// These textures share memory with the CVPixelBuffer - true zero-copy!
 pub struct MetalTexturesFromIOSurface {
-    pub y_texture: *mut Object,   // MTLTexture for Y plane
-    pub uv_texture: *mut Object,  // MTLTexture for UV plane (interleaved)
+    pub y_texture: *mut Object,  // MTLTexture for Y plane
+    pub uv_texture: *mut Object, // MTLTexture for UV plane (interleaved)
     pub width: u32,
     pub height: u32,
     // Keep the CVPixelBuffer alive while textures are in use
@@ -399,23 +405,26 @@ impl MetalTexturesFromIOSurface {
             let y_texture = Self::create_texture_from_iosurface(
                 metal_device,
                 io_surface,
-                0,  // plane 0 = Y
+                0, // plane 0 = Y
                 width,
                 height,
-                8,  // MTLPixelFormatR8Unorm
+                8, // MTLPixelFormatR8Unorm
             )?;
 
             // Create UV texture (plane 1) - RG8Unorm format (interleaved UV)
             let uv_texture = Self::create_texture_from_iosurface(
                 metal_device,
                 io_surface,
-                1,  // plane 1 = UV
+                1, // plane 1 = UV
                 width / 2,
                 height / 2,
                 30, // MTLPixelFormatRG8Unorm
             )?;
 
-            info!("Created Metal textures from IOSurface: {}x{} (zero-copy)", width, height);
+            info!(
+                "Created Metal textures from IOSurface: {}x{} (zero-copy)",
+                width, height
+            );
 
             Some(Self {
                 y_texture,
@@ -451,13 +460,17 @@ impl MetalTexturesFromIOSurface {
         let _: () = msg_send![descriptor, setUsage: 1u64]; // MTLTextureUsageShaderRead
 
         // Create texture from IOSurface
-        let texture: *mut Object = msg_send![device, newTextureWithDescriptor:descriptor iosurface:io_surface plane:plane];
+        let texture: *mut Object =
+            msg_send![device, newTextureWithDescriptor:descriptor iosurface:io_surface plane:plane];
 
         // Release descriptor
         let _: () = msg_send![descriptor, release];
 
         if texture.is_null() {
-            warn!("Failed to create Metal texture from IOSurface plane {}", plane);
+            warn!(
+                "Failed to create Metal texture from IOSurface plane {}",
+                plane
+            );
             return None;
         }
 
@@ -470,7 +483,7 @@ impl MetalTexturesFromIOSurface {
 pub struct ZeroCopyTextureManager {
     metal_device: *mut Object,
     texture_cache: *mut c_void,
-    command_queue: *mut Object,  // Cached command queue for GPU blits
+    command_queue: *mut Object, // Cached command queue for GPU blits
 }
 
 unsafe impl Send for ZeroCopyTextureManager {}
@@ -478,7 +491,18 @@ unsafe impl Sync for ZeroCopyTextureManager {}
 
 impl ZeroCopyTextureManager {
     /// Create a new texture manager with CVMetalTextureCache
+    /// Returns None on legacy Macs (when legacy-macos feature is enabled)
     pub fn new() -> Option<Self> {
+        // Legacy macOS mode: disable zero-copy to use CPU fallback
+        // This is needed for older Intel Macs (2015 and earlier) that have
+        // limited Metal support (Metal 1.0/1.1 instead of Metal 1.2+)
+        #[cfg(feature = "legacy-macos")]
+        {
+            info!("Legacy macOS mode: Zero-copy rendering disabled, using CPU fallback");
+            return None;
+        }
+
+        #[cfg(not(feature = "legacy-macos"))]
         unsafe {
             // Get system default Metal device
             let metal_device = MTLCreateSystemDefaultDevice();
@@ -490,10 +514,10 @@ impl ZeroCopyTextureManager {
             // Create CVMetalTextureCache
             let mut texture_cache: *mut c_void = std::ptr::null_mut();
             let result = CVMetalTextureCacheCreate(
-                std::ptr::null(),  // default allocator
-                std::ptr::null(),  // no cache attributes
+                std::ptr::null(), // default allocator
+                std::ptr::null(), // no cache attributes
                 metal_device,
-                std::ptr::null(),  // no texture attributes
+                std::ptr::null(), // no texture attributes
                 &mut texture_cache,
             );
 
@@ -513,7 +537,11 @@ impl ZeroCopyTextureManager {
             }
 
             info!("ZeroCopyTextureManager: Created with CVMetalTextureCache and command queue (TRUE zero-copy)");
-            Some(Self { metal_device, texture_cache, command_queue })
+            Some(Self {
+                metal_device,
+                texture_cache,
+                command_queue,
+            })
         }
     }
 
@@ -537,7 +565,7 @@ impl ZeroCopyTextureManager {
                 MTL_PIXEL_FORMAT_R8_UNORM,
                 width,
                 height,
-                0,  // plane 0 = Y
+                0, // plane 0 = Y
                 &mut y_cv_texture,
             );
 
@@ -556,7 +584,7 @@ impl ZeroCopyTextureManager {
                 MTL_PIXEL_FORMAT_RG8_UNORM,
                 width / 2,
                 height / 2,
-                1,  // plane 1 = UV
+                1, // plane 1 = UV
                 &mut uv_cv_texture,
             );
 
@@ -568,8 +596,18 @@ impl ZeroCopyTextureManager {
             }
 
             Some((
-                CVMetalTexture::new(y_cv_texture, width as u32, height as u32, MTL_PIXEL_FORMAT_R8_UNORM),
-                CVMetalTexture::new(uv_cv_texture, (width / 2) as u32, (height / 2) as u32, MTL_PIXEL_FORMAT_RG8_UNORM),
+                CVMetalTexture::new(
+                    y_cv_texture,
+                    width as u32,
+                    height as u32,
+                    MTL_PIXEL_FORMAT_R8_UNORM,
+                ),
+                CVMetalTexture::new(
+                    uv_cv_texture,
+                    (width / 2) as u32,
+                    (height / 2) as u32,
+                    MTL_PIXEL_FORMAT_RG8_UNORM,
+                ),
             ))
         }
     }
@@ -626,7 +664,7 @@ pub struct CVMetalTexture {
     cv_texture: *mut c_void,
     width: u32,
     height: u32,
-    format: u64,  // MTLPixelFormat
+    format: u64, // MTLPixelFormat
 }
 
 unsafe impl Send for CVMetalTexture {}
@@ -634,7 +672,12 @@ unsafe impl Sync for CVMetalTexture {}
 
 impl CVMetalTexture {
     fn new(cv_texture: *mut c_void, width: u32, height: u32, format: u64) -> Self {
-        Self { cv_texture, width, height, format }
+        Self {
+            cv_texture,
+            width,
+            height,
+            format,
+        }
     }
 
     /// Get the underlying MTLTexture pointer - this shares GPU memory with CVPixelBuffer!
@@ -653,15 +696,21 @@ impl CVMetalTexture {
         }
     }
 
-    pub fn width(&self) -> u32 { self.width }
-    pub fn height(&self) -> u32 { self.height }
-    pub fn pixel_format(&self) -> u64 { self.format }
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+    pub fn pixel_format(&self) -> u64 {
+        self.format
+    }
 
     /// Convert MTLPixelFormat to wgpu TextureFormat
     pub fn wgpu_format(&self) -> wgpu::TextureFormat {
         match self.format {
-            10 => wgpu::TextureFormat::R8Unorm,   // MTLPixelFormatR8Unorm (Y plane)
-            30 => wgpu::TextureFormat::Rg8Unorm,  // MTLPixelFormatRG8Unorm (UV plane)
+            10 => wgpu::TextureFormat::R8Unorm, // MTLPixelFormatR8Unorm (Y plane)
+            30 => wgpu::TextureFormat::Rg8Unorm, // MTLPixelFormatRG8Unorm (UV plane)
             _ => wgpu::TextureFormat::R8Unorm,
         }
     }
@@ -670,7 +719,9 @@ impl CVMetalTexture {
 impl Drop for CVMetalTexture {
     fn drop(&mut self) {
         if !self.cv_texture.is_null() {
-            unsafe { CFRelease(self.cv_texture); }
+            unsafe {
+                CFRelease(self.cv_texture);
+            }
         }
     }
 }
@@ -713,7 +764,8 @@ impl MetalVideoRenderer {
             let _: () = msg_send![sampler_descriptor, setSAddressMode: 0u64]; // ClampToEdge
             let _: () = msg_send![sampler_descriptor, setTAddressMode: 0u64]; // ClampToEdge
 
-            let sampler_state: *mut Object = msg_send![device, newSamplerStateWithDescriptor: sampler_descriptor];
+            let sampler_state: *mut Object =
+                msg_send![device, newSamplerStateWithDescriptor: sampler_descriptor];
             let _: () = msg_send![sampler_descriptor, release];
 
             if sampler_state.is_null() {
@@ -836,7 +888,8 @@ impl MetalVideoRenderer {
 
         // Set color attachment format (BGRA8Unorm for Metal drawable)
         let color_attachments: *mut Object = msg_send![pipeline_desc, colorAttachments];
-        let attachment0: *mut Object = msg_send![color_attachments, objectAtIndexedSubscript: 0usize];
+        let attachment0: *mut Object =
+            msg_send![color_attachments, objectAtIndexedSubscript: 0usize];
         let _: () = msg_send![attachment0, setPixelFormat: 80u64]; // MTLPixelFormatBGRA8Unorm
 
         // Create pipeline state
@@ -868,7 +921,7 @@ impl MetalVideoRenderer {
         &self,
         y_texture: &CVMetalTexture,
         uv_texture: &CVMetalTexture,
-        drawable: *mut Object,  // CAMetalDrawable
+        drawable: *mut Object, // CAMetalDrawable
     ) -> bool {
         unsafe {
             let y_mtl = y_texture.metal_texture_ptr();
@@ -891,15 +944,18 @@ impl MetalVideoRenderer {
             }
 
             // Create render pass descriptor
-            let pass_desc: *mut Object = msg_send![class!(MTLRenderPassDescriptor), renderPassDescriptor];
+            let pass_desc: *mut Object =
+                msg_send![class!(MTLRenderPassDescriptor), renderPassDescriptor];
             let color_attachments: *mut Object = msg_send![pass_desc, colorAttachments];
-            let attachment0: *mut Object = msg_send![color_attachments, objectAtIndexedSubscript: 0usize];
+            let attachment0: *mut Object =
+                msg_send![color_attachments, objectAtIndexedSubscript: 0usize];
             let _: () = msg_send![attachment0, setTexture: target_texture];
             let _: () = msg_send![attachment0, setLoadAction: 2u64]; // Clear
             let _: () = msg_send![attachment0, setStoreAction: 1u64]; // Store
 
             // Create render encoder
-            let encoder: *mut Object = msg_send![command_buffer, renderCommandEncoderWithDescriptor: pass_desc];
+            let encoder: *mut Object =
+                msg_send![command_buffer, renderCommandEncoderWithDescriptor: pass_desc];
             if encoder.is_null() {
                 return false;
             }
@@ -910,10 +966,12 @@ impl MetalVideoRenderer {
             // Set textures (Y = 0, UV = 1)
             let _: () = msg_send![encoder, setFragmentTexture: y_mtl atIndex: 0usize];
             let _: () = msg_send![encoder, setFragmentTexture: uv_mtl atIndex: 1usize];
-            let _: () = msg_send![encoder, setFragmentSamplerState: self.sampler_state atIndex: 0usize];
+            let _: () =
+                msg_send![encoder, setFragmentSamplerState: self.sampler_state atIndex: 0usize];
 
             // Draw full-screen triangle
-            let _: () = msg_send![encoder, drawPrimitives: 3u64 vertexStart: 0usize vertexCount: 3usize]; // Triangle
+            let _: () =
+                msg_send![encoder, drawPrimitives: 3u64 vertexStart: 0usize vertexCount: 3usize]; // Triangle
 
             // End encoding
             let _: () = msg_send![encoder, endEncoding];

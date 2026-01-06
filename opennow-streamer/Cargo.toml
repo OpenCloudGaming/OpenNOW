@@ -136,6 +136,10 @@ optional = true
 [features]
 default = []
 x11-input = ["x11"]
+# Legacy macOS support for Intel Macs (2015 and older)
+# Disables zero-copy Metal rendering and uses CPU-copy fallback
+# Build with: cargo build --release --features legacy-macos
+legacy-macos = []
 
 [target.'cfg(target_os = "linux")'.dependencies.wgpu-hal]
 version = "28"
