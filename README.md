@@ -44,8 +44,8 @@ OpenNOW is a custom GeForce NOW client rewritten entirely in **Native Rust** (mo
 | **Windows** | ARM64 | ❓ Untested | Should work but not verified. |
 | **macOS** | ARM64 / x64 | ✅ Working | VideoToolbox zero-copy hardware decoding. |
 | **Linux** | x64 | ✅ Working | Vulkan Video decoding (Intel Arc, NVIDIA RTX, AMD RDNA2+). |
-| **Raspberry Pi 4** | ARM64 | ✅ Working | GStreamer V4L2 H.264 decoding. |
-| **Raspberry Pi 5** | ARM64 | ✅ Working | GStreamer V4L2 H.264/HEVC decoding. |
+| **Raspberry Pi 4** | ARM64 | ❓ Untested| GStreamer V4L2 H.264 decoding. |
+| **Raspberry Pi 5** | ARM64 | ❓ Untested | GStreamer V4L2 H.264/HEVC decoding. |
 | **Android** | ARM64 | 📅 Planned | No ETA. |
 | **Apple TV** | ARM64 | 📅 Planned | No ETA. |
 
@@ -73,8 +73,8 @@ OpenNOW is a custom GeForce NOW client rewritten entirely in **Native Rust** (mo
 
 | Codec | Windows | macOS | Linux (Desktop) | Raspberry Pi |
 |:---:|:---:|:---:|:---:|:---:|
-| **H.264** | ✅ D3D11VA | ✅ VideoToolbox | ✅ Vulkan Video | ✅ GStreamer V4L2 |
-| **HEVC (H.265)** | ✅ D3D11VA | ✅ VideoToolbox | ✅ Vulkan Video | ✅ GStreamer V4L2 (Pi 5) |
+| **H.264** | ✅ D3D11VA | ✅ VideoToolbox | ✅ Vulkan Video | ❓ GStreamer V4L2 |
+| **HEVC (H.265)** | ✅ D3D11VA | ✅ VideoToolbox | ✅ Vulkan Video | ❓ GStreamer V4L2 (Pi 5) |
 | **AV1** | 🚧 Planned | ✅ VideoToolbox (M3+) | 🚧 Planned | ❌ No HW support |
 | **Opus (Audio)** | ✅ Software | ✅ Software | ✅ Software | ✅ Software |
 
