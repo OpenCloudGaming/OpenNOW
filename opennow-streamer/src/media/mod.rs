@@ -30,6 +30,9 @@ pub mod v4l2;
 #[cfg(target_os = "linux")]
 pub mod vulkan_video;
 
+#[cfg(target_os = "linux")]
+pub mod gstreamer_decoder;
+
 pub use audio::*;
 pub use rtp::{DepacketizerCodec, RtpDepacketizer};
 pub use video::{
@@ -66,6 +69,11 @@ pub use v4l2::{
 pub use vulkan_video::{
     get_supported_vulkan_codecs, is_vulkan_video_available, VulkanVideoCodec, VulkanVideoConfig,
     VulkanVideoDecoder, VulkanVideoFrame,
+};
+
+#[cfg(target_os = "linux")]
+pub use gstreamer_decoder::{
+    is_gstreamer_v4l2_available, GStreamerDecoder, GstCodec, GstDecoderConfig,
 };
 
 /// Pixel format of decoded video frame

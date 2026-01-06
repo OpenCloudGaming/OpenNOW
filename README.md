@@ -43,10 +43,9 @@ OpenNOW is a custom GeForce NOW client rewritten entirely in **Native Rust** (mo
 | **Windows** | x64 | ✅ Working | D3D11VA zero-copy decoding. NVIDIA, AMD, and Intel GPUs supported. |
 | **Windows** | ARM64 | ❓ Untested | Should work but not verified. |
 | **macOS** | ARM64 / x64 | ✅ Working | VideoToolbox zero-copy hardware decoding. |
-| **Linux** | x64 | ✅ Working | VAAPI zero-copy for AMD/Intel. NVDEC for NVIDIA. |
-| **Linux** | ARM64 | ✅ Working | Full support including Raspberry Pi. |
-| **Raspberry Pi 4** | ARM64 | ✅ Working | V4L2 H.264 hardware decoding via bcm2835-codec. |
-| **Raspberry Pi 5** | ARM64 | ✅ Working | V4L2 H.264/HEVC hardware decoding via rpivid. |
+| **Linux** | x64 | ✅ Working | Vulkan Video decoding (Intel Arc, NVIDIA RTX, AMD RDNA2+). |
+| **Raspberry Pi 4** | ARM64 | ✅ Working | GStreamer V4L2 H.264 decoding. |
+| **Raspberry Pi 5** | ARM64 | ✅ Working | GStreamer V4L2 H.264/HEVC decoding. |
 | **Android** | ARM64 | 📅 Planned | No ETA. |
 | **Apple TV** | ARM64 | 📅 Planned | No ETA. |
 
@@ -72,24 +71,28 @@ OpenNOW is a custom GeForce NOW client rewritten entirely in **Native Rust** (mo
 
 ### Supported Codecs & Hardware Acceleration
 
-| Codec | Windows | macOS | Linux (Desktop) | Linux (Raspberry Pi) |
+| Codec | Windows | macOS | Linux (Desktop) | Raspberry Pi |
 |:---:|:---:|:---:|:---:|:---:|
-| **H.264** | ✅ D3D11VA / NVDEC / QSV | ✅ VideoToolbox | ✅ VAAPI / NVDEC | ✅ V4L2 (Pi 4/5) |
-| **HEVC (H.265)** | ✅ D3D11VA / NVDEC / QSV | ✅ VideoToolbox | ✅ VAAPI / NVDEC | ✅ V4L2 (Pi 5 only) |
-| **AV1** | ✅ NVDEC / QSV | ✅ VideoToolbox (M3+) | ⚠️ VAAPI | ❌ No HW support |
+| **H.264** | ✅ D3D11VA | ✅ VideoToolbox | ✅ Vulkan Video | ✅ GStreamer V4L2 |
+| **HEVC (H.265)** | ✅ D3D11VA | ✅ VideoToolbox | ✅ Vulkan Video | ✅ GStreamer V4L2 (Pi 5) |
+| **AV1** | 🚧 Planned | ✅ VideoToolbox (M3+) | 🚧 Planned | ❌ No HW support |
 | **Opus (Audio)** | ✅ Software | ✅ Software | ✅ Software | ✅ Software |
 
 > **Note:** Zero-copy rendering eliminates GPU→CPU→GPU transfers for minimal latency.
+
+> **Linux Desktop:** Requires Vulkan Video support (Intel Arc, NVIDIA RTX, AMD RDNA2+).
+
+> **Raspberry Pi:** Uses GStreamer with V4L2 hardware decoders (no FFmpeg dependency).
 
 ### GPU Support Matrix
 
 | GPU Vendor | Windows | macOS | Linux |
 |------------|---------|-------|-------|
-| **NVIDIA** | D3D11VA (zero-copy) / NVDEC | N/A | NVDEC / nvidia-vaapi-driver |
-| **AMD** | D3D11VA (zero-copy) | N/A | VAAPI (mesa/radeonsi) |
-| **Intel** | D3D11VA / QSV | N/A | VAAPI (iHD/i965) / QSV |
+| **NVIDIA** | D3D11VA (zero-copy) | N/A | Vulkan Video (RTX series) |
+| **AMD** | D3D11VA (zero-copy) | N/A | Vulkan Video (RDNA2+) |
+| **Intel** | D3D11VA (zero-copy) | N/A | Vulkan Video (Arc, 11th gen+) |
 | **Apple Silicon** | N/A | VideoToolbox (zero-copy) | N/A |
-| **Broadcom (Pi)** | N/A | N/A | V4L2 M2M (bcm2835/rpivid) |
+| **Broadcom (Pi)** | N/A | N/A | GStreamer V4L2 |
 
 ### Additional Features (Exclusive)
 These features are not found in the official client:
@@ -155,6 +158,15 @@ cargo run
 
 ## Linux Setup
 
+### Requirements
+
+**Vulkan Video** is required for hardware decoding on Linux. This is supported on:
+- **Intel Arc** GPUs and 11th gen+ integrated graphics
+- **NVIDIA RTX** series (with latest drivers)
+- **AMD RDNA2+** GPUs (RX 6000 series and newer, with Mesa 24.0+)
+
+> **Note:** Support for older GPUs via VAAPI fallback is in development.
+
 ### Desktop Linux (AMD/Intel/NVIDIA)
 
 1. **Install dependencies:**
@@ -163,30 +175,38 @@ cargo run
    # Ubuntu/Debian
    sudo apt install build-essential pkg-config \
      libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
-     libx11-dev libxext-dev libxi-dev libva-dev
+     libx11-dev libxext-dev libxi-dev vulkan-tools
 
    # Fedora
    sudo dnf install @development-tools pkg-config \
-     ffmpeg-devel libX11-devel libXext-devel libXi-devel libva-devel
+     ffmpeg-devel libX11-devel libXext-devel libXi-devel vulkan-tools
 
    # Arch
-   sudo pacman -S base-devel pkg-config ffmpeg libx11 libxext libxi libva
+   sudo pacman -S base-devel pkg-config ffmpeg libx11 libxext libxi vulkan-tools
    ```
 
-2. **Install GPU-specific drivers:**
+2. **Verify Vulkan Video support:**
 
    ```bash
-   # AMD (mesa VAAPI)
-   sudo apt install mesa-va-drivers
-
-   # Intel
-   sudo apt install intel-media-va-driver  # or i965-va-driver for older GPUs
-
-   # NVIDIA (for VAAPI via nvidia-vaapi-driver)
-   # See: https://github.com/elFarto/nvidia-vaapi-driver
+   # Check if your GPU supports Vulkan Video extensions
+   vulkaninfo | grep -i "video"
+   # Should show VK_KHR_video_queue, VK_KHR_video_decode_queue, etc.
    ```
 
-3. **Add user to input group (for raw mouse input):**
+3. **Install GPU-specific Vulkan drivers:**
+
+   ```bash
+   # AMD (Mesa RADV - requires Mesa 24.0+ for Vulkan Video)
+   sudo apt install mesa-vulkan-drivers
+
+   # Intel (Mesa ANV)
+   sudo apt install mesa-vulkan-drivers
+
+   # NVIDIA (proprietary driver 525+)
+   # Install via your distro's package manager or NVIDIA's installer
+   ```
+
+4. **Add user to input group (for raw mouse input):**
 
    ```bash
    sudo usermod -aG input $USER
@@ -199,30 +219,32 @@ cargo run
 
    ```bash
    sudo apt update && sudo apt upgrade
-   sudo rpi-update  # Optional: latest firmware
    ```
 
 2. **Install dependencies:**
 
    ```bash
    sudo apt install build-essential pkg-config \
-     libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+     libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
      libx11-dev libxext-dev libxi-dev
    ```
 
-3. **Add user to input group:**
+3. **Add user to input and video groups:**
 
    ```bash
-   sudo usermod -aG input $USER
+   sudo usermod -aG input,video $USER
    # Log out and back in
    ```
 
-4. **GPU Memory (Pi 4):**
+4. **Verify V4L2 decoder:**
 
-   For best performance, allocate at least 256MB to the GPU:
    ```bash
-   sudo raspi-config
-   # Performance Options → GPU Memory → 256
+   # Check V4L2 devices
+   ls -la /dev/video*
+   
+   # Test GStreamer pipeline (H.264)
+   gst-inspect-1.0 v4l2h264dec
    ```
 
 5. **Recommended codec:**
@@ -248,23 +270,32 @@ sudo usermod -aG input $USER
 # Then log out and back in
 ```
 
-### Linux: No hardware decoding
-Check VAAPI is working:
+### Linux: "No suitable Vulkan device with video decode support found"
+Your GPU doesn't support Vulkan Video extensions. Currently supported:
+- **Intel Arc** and 11th gen+ integrated graphics
+- **NVIDIA RTX** series (driver 525+)
+- **AMD RDNA2+** (RX 6000+, Mesa 24.0+)
+
+Check your Vulkan Video support:
 ```bash
-vainfo
-# Should show supported profiles
+vulkaninfo | grep -i "video_decode"
+# Should show VK_KHR_video_decode_h264 and/or VK_KHR_video_decode_h265
 ```
 
-### Raspberry Pi: Decoder issues
-Verify V4L2 devices exist:
+### Raspberry Pi: GStreamer decoder issues
+
+Verify V4L2 decoder is available:
 ```bash
+gst-inspect-1.0 v4l2h264dec
+# Should show element details
+
+# Check video devices
 ls -la /dev/video*
-# Should show video10, video11, etc.
 ```
 
-Check codec support:
+If V4L2 decoder is not found, install GStreamer plugins:
 ```bash
-v4l2-ctl --list-formats-out -d /dev/video10
+sudo apt install gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
 ```
 
 ---

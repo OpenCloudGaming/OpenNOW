@@ -1,6 +1,10 @@
 //! Video Decoder
 //!
-//! Hardware-accelerated H.264/H.265/AV1 decoding using FFmpeg.
+//! Hardware-accelerated H.264/H.265/AV1 decoding.
+//!
+//! Platform-specific backends:
+//! - Windows/macOS: FFmpeg with D3D11VA/VideoToolbox
+//! - Linux: Native Vulkan Video or GStreamer (no FFmpeg)
 //!
 //! This module provides both blocking and non-blocking decode modes:
 //! - Blocking: `decode()` - waits for result (legacy, causes latency)
@@ -19,12 +23,19 @@ use std::path::Path;
 use super::{ColorRange, ColorSpace, PixelFormat, TransferFunction, VideoFrame};
 use crate::app::{config::VideoDecoderBackend, SharedFrame, VideoCodec};
 
+// FFmpeg imports - only for Windows and macOS
+#[cfg(not(target_os = "linux"))]
 extern crate ffmpeg_next as ffmpeg;
 
+#[cfg(not(target_os = "linux"))]
 use ffmpeg::codec::{context::Context as CodecContext, decoder};
+#[cfg(not(target_os = "linux"))]
 use ffmpeg::format::Pixel;
+#[cfg(not(target_os = "linux"))]
 use ffmpeg::software::scaling::{context::Context as ScalerContext, flag::Flags as ScalerFlags};
+#[cfg(not(target_os = "linux"))]
 use ffmpeg::util::frame::video::Video as FfmpegFrame;
+#[cfg(not(target_os = "linux"))]
 use ffmpeg::Packet;
 
 /// GPU Vendor for decoder optimization
@@ -585,107 +596,211 @@ impl VideoDecoder {
             info!("NativeDxva: Falling back to CUVID (native decoder integration pending)");
         }
 
-        // On Linux, use Vulkan Video decoder exclusively (no FFmpeg)
-        // This is the GFN-style cross-GPU hardware decode approach
+        // On Linux, use native decoders (no FFmpeg):
+        // 1. Try Vulkan Video first (modern GPUs: Intel Arc, NVIDIA RTX, AMD RDNA2+)
+        // 2. Fall back to GStreamer V4L2 (Raspberry Pi and embedded devices)
         #[cfg(target_os = "linux")]
         {
-            info!(
-                "Using Vulkan Video decoder for {:?} (GFN-style native GPU decode, no FFmpeg)",
-                codec
-            );
+            // Try Vulkan Video first
+            if super::vulkan_video::is_vulkan_video_available() {
+                info!(
+                    "Trying Vulkan Video decoder for {:?} (GFN-style native GPU decode)",
+                    codec
+                );
 
-            // Map codec to Vulkan Video codec
-            let vulkan_codec = match codec {
-                VideoCodec::H264 => super::vulkan_video::VulkanVideoCodec::H264,
-                VideoCodec::H265 => super::vulkan_video::VulkanVideoCodec::H265,
-                VideoCodec::AV1 => {
-                    // AV1 Vulkan Video support is emerging, try it anyway
-                    warn!("AV1 Vulkan Video support is experimental");
-                    super::vulkan_video::VulkanVideoCodec::H264 // Fallback to H264 for now
-                }
-            };
+                // Map codec to Vulkan Video codec
+                let vulkan_codec = match codec {
+                    VideoCodec::H264 => super::vulkan_video::VulkanVideoCodec::H264,
+                    VideoCodec::H265 => super::vulkan_video::VulkanVideoCodec::H265,
+                    VideoCodec::AV1 => {
+                        warn!("AV1 Vulkan Video support is experimental");
+                        super::vulkan_video::VulkanVideoCodec::H264
+                    }
+                };
 
-            let config = super::vulkan_video::VulkanVideoConfig {
-                codec: vulkan_codec,
-                width: 1920, // Will be updated on first frame
-                height: 1080,
-                is_10bit: false,
-                num_decode_surfaces: 20,
-            };
+                let config = super::vulkan_video::VulkanVideoConfig {
+                    codec: vulkan_codec,
+                    width: 1920,
+                    height: 1080,
+                    is_10bit: false,
+                    num_decode_surfaces: 20,
+                };
 
-            let vulkan_decoder = super::vulkan_video::VulkanVideoDecoder::new(config)
-                .map_err(|e| anyhow!("Failed to create Vulkan Video decoder: {}", e))?;
+                match super::vulkan_video::VulkanVideoDecoder::new(config) {
+                    Ok(vulkan_decoder) => {
+                        info!("Vulkan Video decoder created successfully!");
 
-            info!("Vulkan Video decoder created successfully - native GPU decoding active!");
+                        let (cmd_tx, cmd_rx) = mpsc::channel::<DecoderCommand>();
+                        let (frame_tx, frame_rx) = mpsc::channel::<Option<VideoFrame>>();
+                        let (stats_tx, stats_rx) = tokio_mpsc::channel::<DecodeStats>(64);
 
-            // Create channels for the Vulkan decoder thread
-            let (cmd_tx, cmd_rx) = mpsc::channel::<DecoderCommand>();
-            let (frame_tx, frame_rx) = mpsc::channel::<Option<VideoFrame>>();
-            let (stats_tx, stats_rx) = tokio_mpsc::channel::<DecodeStats>(64);
+                        let shared_frame_clone = shared_frame.clone();
 
-            let shared_frame_clone = shared_frame.clone();
+                        thread::spawn(move || {
+                            info!("Vulkan Video decoder thread started");
+                            let mut decoder = vulkan_decoder;
+                            let mut frames_decoded = 0u64;
+                            let mut consecutive_failures = 0u32;
+                            const KEYFRAME_REQUEST_THRESHOLD: u32 = 10;
+                            const FRAMES_TO_SKIP: u64 = 5;
 
-            // Spawn Vulkan decoder thread
-            thread::spawn(move || {
-                info!("Vulkan Video decoder thread started");
-                let mut decoder = vulkan_decoder;
-                let mut frames_decoded = 0u64;
-                let mut consecutive_failures = 0u32;
-                const KEYFRAME_REQUEST_THRESHOLD: u32 = 10;
-                const FRAMES_TO_SKIP: u64 = 5;
+                            while let Ok(cmd) = cmd_rx.recv() {
+                                match cmd {
+                                    DecoderCommand::Decode(data) => {
+                                        let result = decoder.decode(&data);
+                                        let _ = frame_tx.send(result.ok().flatten());
+                                    }
+                                    DecoderCommand::DecodeAsync { data, receive_time } => {
+                                        let result = decoder.decode(&data);
+                                        let decode_time_ms =
+                                            receive_time.elapsed().as_secs_f32() * 1000.0;
 
-                while let Ok(cmd) = cmd_rx.recv() {
-                    match cmd {
-                        DecoderCommand::Decode(data) => {
-                            let result = decoder.decode(&data);
-                            let _ = frame_tx.send(result.ok().flatten());
-                        }
-                        DecoderCommand::DecodeAsync { data, receive_time } => {
-                            let result = decoder.decode(&data);
-                            let decode_time_ms = receive_time.elapsed().as_secs_f32() * 1000.0;
+                                        let frame_produced = matches!(&result, Ok(Some(_)));
 
-                            let frame_produced = match &result {
-                                Ok(Some(_)) => true,
-                                _ => false,
-                            };
+                                        let needs_keyframe = if frame_produced {
+                                            consecutive_failures = 0;
+                                            false
+                                        } else {
+                                            consecutive_failures += 1;
+                                            consecutive_failures == KEYFRAME_REQUEST_THRESHOLD
+                                        };
 
-                            let needs_keyframe = if frame_produced {
-                                consecutive_failures = 0;
-                                false
-                            } else {
-                                consecutive_failures += 1;
-                                consecutive_failures == KEYFRAME_REQUEST_THRESHOLD
-                            };
+                                        if let Ok(Some(frame)) = result {
+                                            frames_decoded += 1;
+                                            if frames_decoded > FRAMES_TO_SKIP {
+                                                shared_frame_clone.write(frame);
+                                            }
+                                        }
 
-                            if let Ok(Some(frame)) = result {
-                                frames_decoded += 1;
-                                if frames_decoded > FRAMES_TO_SKIP {
-                                    shared_frame_clone.write(frame);
+                                        let _ = stats_tx.try_send(DecodeStats {
+                                            decode_time_ms,
+                                            frame_produced,
+                                            needs_keyframe,
+                                        });
+                                    }
+                                    DecoderCommand::Stop => break,
                                 }
                             }
+                            info!("Vulkan Video decoder thread stopped");
+                        });
 
-                            let _ = stats_tx.try_send(DecodeStats {
-                                decode_time_ms,
-                                frame_produced,
-                                needs_keyframe,
-                            });
-                        }
-                        DecoderCommand::Stop => break,
+                        let decoder = Self {
+                            cmd_tx,
+                            frame_rx,
+                            stats_rx: None,
+                            hw_accel: true,
+                            frames_decoded: 0,
+                            shared_frame: Some(shared_frame),
+                        };
+
+                        return Ok((decoder, stats_rx));
+                    }
+                    Err(e) => {
+                        warn!("Vulkan Video decoder failed: {}, trying GStreamer...", e);
                     }
                 }
-                info!("Vulkan Video decoder thread stopped");
-            });
+            } else {
+                info!("Vulkan Video not available, trying GStreamer...");
+            }
 
-            let decoder = Self {
-                cmd_tx,
-                frame_rx,
-                stats_rx: None,
-                hw_accel: true,
-                frames_decoded: 0,
-                shared_frame: Some(shared_frame),
-            };
+            // Fall back to GStreamer V4L2 (Raspberry Pi and embedded)
+            if super::gstreamer_decoder::is_gstreamer_v4l2_available() {
+                info!(
+                    "Using GStreamer V4L2 decoder for {:?} (Raspberry Pi / embedded)",
+                    codec
+                );
 
-            return Ok((decoder, stats_rx));
+                let gst_codec = match codec {
+                    VideoCodec::H264 => super::gstreamer_decoder::GstCodec::H264,
+                    VideoCodec::H265 => super::gstreamer_decoder::GstCodec::H265,
+                    VideoCodec::AV1 => {
+                        return Err(anyhow!("AV1 is not supported on GStreamer V4L2"));
+                    }
+                };
+
+                let config = super::gstreamer_decoder::GstDecoderConfig {
+                    codec: gst_codec,
+                    width: 1920,
+                    height: 1080,
+                };
+
+                let gst_decoder = super::gstreamer_decoder::GStreamerDecoder::new(config)
+                    .map_err(|e| anyhow!("Failed to create GStreamer decoder: {}", e))?;
+
+                info!("GStreamer V4L2 decoder created successfully!");
+
+                let (cmd_tx, cmd_rx) = mpsc::channel::<DecoderCommand>();
+                let (frame_tx, frame_rx) = mpsc::channel::<Option<VideoFrame>>();
+                let (stats_tx, stats_rx) = tokio_mpsc::channel::<DecodeStats>(64);
+
+                let shared_frame_clone = shared_frame.clone();
+
+                thread::spawn(move || {
+                    info!("GStreamer decoder thread started");
+                    let mut decoder = gst_decoder;
+                    let mut frames_decoded = 0u64;
+                    let mut consecutive_failures = 0u32;
+                    const KEYFRAME_REQUEST_THRESHOLD: u32 = 10;
+                    const FRAMES_TO_SKIP: u64 = 5;
+
+                    while let Ok(cmd) = cmd_rx.recv() {
+                        match cmd {
+                            DecoderCommand::Decode(data) => {
+                                let result = decoder.decode(&data);
+                                let _ = frame_tx.send(result.ok().flatten());
+                            }
+                            DecoderCommand::DecodeAsync { data, receive_time } => {
+                                let result = decoder.decode(&data);
+                                let decode_time_ms = receive_time.elapsed().as_secs_f32() * 1000.0;
+
+                                let frame_produced = matches!(&result, Ok(Some(_)));
+
+                                let needs_keyframe = if frame_produced {
+                                    consecutive_failures = 0;
+                                    false
+                                } else {
+                                    consecutive_failures += 1;
+                                    consecutive_failures == KEYFRAME_REQUEST_THRESHOLD
+                                };
+
+                                if let Ok(Some(frame)) = result {
+                                    frames_decoded += 1;
+                                    if frames_decoded > FRAMES_TO_SKIP {
+                                        shared_frame_clone.write(frame);
+                                    }
+                                }
+
+                                let _ = stats_tx.try_send(DecodeStats {
+                                    decode_time_ms,
+                                    frame_produced,
+                                    needs_keyframe,
+                                });
+                            }
+                            DecoderCommand::Stop => break,
+                        }
+                    }
+                    info!("GStreamer decoder thread stopped");
+                });
+
+                let decoder = Self {
+                    cmd_tx,
+                    frame_rx,
+                    stats_rx: None,
+                    hw_accel: true,
+                    frames_decoded: 0,
+                    shared_frame: Some(shared_frame),
+                };
+
+                return Ok((decoder, stats_rx));
+            }
+
+            // No decoder available
+            return Err(anyhow!(
+                "No video decoder available on Linux. Requires either:\n\
+                 - Vulkan Video support (Intel Arc, NVIDIA RTX, AMD RDNA2+)\n\
+                 - GStreamer with V4L2 (Raspberry Pi)\n\
+                 Run 'vulkaninfo | grep video' to check Vulkan Video support."
+            ));
         }
 
         // FFmpeg path (Windows/macOS only)
