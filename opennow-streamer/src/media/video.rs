@@ -1146,6 +1146,83 @@ impl VideoDecoder {
         AVPixelFormat::AV_PIX_FMT_VAAPI
     }
 
+    /// FFI Callback for Vulkan Video format negotiation (cross-GPU)
+    /// CRITICAL: This must set up hw_frames_ctx for proper frame buffer management
+    #[cfg(target_os = "linux")]
+    unsafe extern "C" fn get_vulkan_format(
+        ctx: *mut ffmpeg::ffi::AVCodecContext,
+        fmt: *const ffmpeg::ffi::AVPixelFormat,
+    ) -> ffmpeg::ffi::AVPixelFormat {
+        use ffmpeg::ffi::*;
+
+        // Check if Vulkan format is available
+        let mut has_vulkan = false;
+        let mut check_fmt = fmt;
+        while *check_fmt != AVPixelFormat::AV_PIX_FMT_NONE {
+            if *check_fmt == AVPixelFormat::AV_PIX_FMT_VULKAN {
+                has_vulkan = true;
+                break;
+            }
+            check_fmt = check_fmt.add(1);
+        }
+
+        if !has_vulkan {
+            info!("get_vulkan_format: Vulkan not in available formats, falling back to NV12");
+            return AVPixelFormat::AV_PIX_FMT_NV12;
+        }
+
+        // We need hw_device_ctx to create hw_frames_ctx
+        if (*ctx).hw_device_ctx.is_null() {
+            warn!("get_vulkan_format: hw_device_ctx is null, cannot use Vulkan");
+            return AVPixelFormat::AV_PIX_FMT_NV12;
+        }
+
+        // Check if hw_frames_ctx already exists
+        if !(*ctx).hw_frames_ctx.is_null() {
+            info!("get_vulkan_format: hw_frames_ctx already set, selecting Vulkan");
+            return AVPixelFormat::AV_PIX_FMT_VULKAN;
+        }
+
+        // Allocate hw_frames_ctx from hw_device_ctx
+        let hw_frames_ref = av_hwframe_ctx_alloc((*ctx).hw_device_ctx);
+        if hw_frames_ref.is_null() {
+            warn!("get_vulkan_format: Failed to allocate hw_frames_ctx");
+            return AVPixelFormat::AV_PIX_FMT_NV12;
+        }
+
+        // Configure the frames context
+        let frames_ctx = (*hw_frames_ref).data as *mut AVHWFramesContext;
+        (*frames_ctx).format = AVPixelFormat::AV_PIX_FMT_VULKAN;
+        (*frames_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_NV12; // Vulkan typically uses NV12
+        (*frames_ctx).width = (*ctx).coded_width;
+        (*frames_ctx).height = (*ctx).coded_height;
+        (*frames_ctx).initial_pool_size = 20; // Pool for frame reordering
+
+        info!(
+            "get_vulkan_format: Configuring Vulkan hw_frames_ctx: {}x{}, sw_format=NV12, pool_size=20",
+            (*ctx).coded_width,
+            (*ctx).coded_height
+        );
+
+        // Initialize the frames context
+        let ret = av_hwframe_ctx_init(hw_frames_ref);
+        if ret < 0 {
+            warn!(
+                "get_vulkan_format: Failed to initialize hw_frames_ctx (error {})",
+                ret
+            );
+            av_buffer_unref(&mut (hw_frames_ref as *mut _));
+            return AVPixelFormat::AV_PIX_FMT_NV12;
+        }
+
+        // Attach to codec context
+        (*ctx).hw_frames_ctx = av_buffer_ref(hw_frames_ref);
+        av_buffer_unref(&mut (hw_frames_ref as *mut _));
+
+        info!("get_vulkan_format: Vulkan hw_frames_ctx initialized successfully!");
+        AVPixelFormat::AV_PIX_FMT_VULKAN
+    }
+
     /// Create decoder, trying hardware acceleration based on preference
     fn create_decoder(
         codec_id: ffmpeg::codec::Id,
@@ -1660,6 +1737,10 @@ impl VideoDecoder {
                 let hw_decoder_names: Vec<&str> = match codec_id {
                     ffmpeg::codec::Id::H264 => {
                         let mut decoders = Vec::new();
+                        // Vulkan Video first - cross-GPU native API (like D3D11 on Windows)
+                        if !is_raspberry_pi {
+                            decoders.push("h264_vulkan");
+                        }
                         match gpu_vendor {
                             GpuVendor::Nvidia => decoders.push("h264_cuvid"),
                             GpuVendor::Intel if qsv_available => decoders.push("h264_qsv"),
@@ -1687,6 +1768,10 @@ impl VideoDecoder {
                     }
                     ffmpeg::codec::Id::HEVC => {
                         let mut decoders = Vec::new();
+                        // Vulkan Video first - cross-GPU native API
+                        if !is_raspberry_pi {
+                            decoders.push("hevc_vulkan");
+                        }
                         match gpu_vendor {
                             GpuVendor::Nvidia => decoders.push("hevc_cuvid"),
                             GpuVendor::Intel if qsv_available => decoders.push("hevc_qsv"),
@@ -1714,6 +1799,10 @@ impl VideoDecoder {
                     }
                     ffmpeg::codec::Id::AV1 => {
                         let mut decoders = Vec::new();
+                        // Vulkan Video first - cross-GPU native API
+                        if !is_raspberry_pi {
+                            decoders.push("av1_vulkan");
+                        }
                         match gpu_vendor {
                             GpuVendor::Nvidia => decoders.push("av1_cuvid"),
                             GpuVendor::Intel if qsv_available => decoders.push("av1_qsv"),
@@ -1754,6 +1843,55 @@ impl VideoDecoder {
                     }
                     let hw_codec = hw_codec.unwrap();
                     info!("Found hardware decoder: {}, attempting to open...", hw_name);
+
+                    // Vulkan Video decoders - cross-GPU native API (like D3D11 on Windows)
+                    if hw_name.contains("vulkan") {
+                        unsafe {
+                            use ffmpeg::ffi::*;
+                            use std::ptr;
+
+                            let mut ctx = CodecContext::new_with_codec(hw_codec);
+                            let raw_ctx = ctx.as_mut_ptr();
+
+                            // Create Vulkan hardware device context
+                            let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
+                            let ret = av_hwdevice_ctx_create(
+                                &mut hw_device_ctx,
+                                AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN,
+                                ptr::null(), // Use default Vulkan device
+                                ptr::null_mut(),
+                                0,
+                            );
+
+                            if ret >= 0 && !hw_device_ctx.is_null() {
+                                info!("Vulkan Video hw_device_ctx created successfully");
+
+                                (*raw_ctx).hw_device_ctx = av_buffer_ref(hw_device_ctx);
+                                av_buffer_unref(&mut hw_device_ctx);
+
+                                // Set get_format callback to select Vulkan pixel format
+                                (*raw_ctx).get_format = Some(Self::get_vulkan_format);
+
+                                // Low latency flags for streaming
+                                (*raw_ctx).flags |= AV_CODEC_FLAG_LOW_DELAY as i32;
+                                (*raw_ctx).flags2 |= AV_CODEC_FLAG2_FAST as i32;
+                                (*raw_ctx).thread_count = 1; // Single thread for HW decode
+
+                                match ctx.decoder().video() {
+                                    Ok(dec) => {
+                                        info!("Vulkan Video decoder ({}) opened successfully - cross-GPU HW decoding active!", hw_name);
+                                        return Ok((dec, true));
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to open Vulkan decoder {}: {:?}", hw_name, e);
+                                    }
+                                }
+                            } else {
+                                warn!("Failed to create Vulkan hw_device_ctx (error {}) - Vulkan Video may not be supported", ret);
+                            }
+                        }
+                        continue;
+                    }
 
                     // VAAPI decoders require hw_device_ctx to be set up
                     if hw_name.contains("vaapi") {
@@ -1976,9 +2114,9 @@ impl VideoDecoder {
             return true;
         }
 
-        // VAAPI check - the format code is 28 in FFmpeg
-        // We check by name since Pixel::VAAPI may not exist in all ffmpeg-next builds
-        format!("{:?}", format).contains("VAAPI")
+        // VAAPI/Vulkan check by name since these may not exist in all ffmpeg-next builds
+        let format_name = format!("{:?}", format);
+        format_name.contains("VAAPI") || format_name.contains("VULKAN")
     }
 
     /// Transfer hardware frame to system memory if needed
