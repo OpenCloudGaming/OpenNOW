@@ -7,9 +7,9 @@ on:
       - dev
       - Native
     paths-ignore:
-      - '**.md'
-      - 'LICENSE'
-      - '.gitignore'
+      - "**.md"
+      - "LICENSE"
+      - ".gitignore"
   workflow_dispatch:
 
 permissions:
@@ -170,6 +170,13 @@ jobs:
             target: macos
             arch: arm64
             rust_target: aarch64-apple-darwin
+          # Legacy macOS build for Intel Macs (2015 and older)
+          # Uses CPU-copy fallback instead of zero-copy Metal rendering
+          - platform: macos-13
+            target: macos-intel
+            arch: x86_64
+            rust_target: x86_64-apple-darwin
+            features: legacy-macos
           - platform: windows-latest
             target: windows
             arch: x86_64
@@ -226,7 +233,7 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: 'opennow-streamer -> target'
+          workspaces: "opennow-streamer -> target"
           key: ${{ matrix.target }}
 
       # ==================== FFmpeg Installation ====================
@@ -276,7 +283,7 @@ jobs:
           $ffmpegDir = (Get-ChildItem -Path ffmpeg -Directory)[0].FullName
           # Rename .dll.a to .lib for MSVC compatibility (MinGW -> MSVC hack)
           Get-ChildItem "$ffmpegDir\lib\*.dll.a" | Rename-Item -NewName { $_.Name -replace '\.dll\.a','.lib' -replace '^lib','' } -Force -ErrorAction SilentlyContinue
-          
+
           # Verify renaming
           Write-Host "`n=== Renamed Lib directory ==="
           Get-ChildItem "$ffmpegDir\lib"
@@ -317,8 +324,10 @@ jobs:
             libgl1-mesa-dev \
             libudev-dev \
             clang \
-            libclang-dev
-          echo "FFmpeg development libraries installed"
+            libclang-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev
+          echo "FFmpeg and GStreamer development libraries installed"
 
       - name: Install FFmpeg (Linux ARM64)
         if: matrix.target == 'linux-arm64'
@@ -345,7 +354,9 @@ jobs:
             wget \
             libssl-dev:arm64 \
             libasound2-dev:arm64 \
-            libudev-dev:arm64
+            libudev-dev:arm64 \
+            libgstreamer1.0-dev:arm64 \
+            libgstreamer-plugins-base1.0-dev:arm64
 
           # Download pre-built FFmpeg ARM64 from BtbN
           # Use FFmpeg 8.0 stable (not master-latest which may have unsupported enum variants)
@@ -408,6 +419,15 @@ jobs:
           cargo build --release --verbose
           echo "macOS ARM64 build complete"
 
+      - name: Build native client (macOS Intel - Legacy)
+        if: matrix.target == 'macos-intel'
+        shell: bash
+        working-directory: opennow-streamer
+        run: |
+          echo "Building for macOS Intel x64 (Legacy mode for 2015 and older Macs)..."
+          cargo build --release --features legacy-macos --verbose
+          echo "macOS Intel build complete"
+
       - name: Build native client (Linux x64)
         if: matrix.target == 'linux'
         shell: bash
@@ -431,10 +451,10 @@ jobs:
         shell: pwsh
         run: |
           $targetDir = "opennow-streamer/target/release"
-          
+
           Write-Host "Copying FFmpeg DLLs to $targetDir..."
           Copy-Item "$env:FFMPEG_BIN_DIR\*.dll" -Destination $targetDir -Verbose
-          
+
           Write-Host "`n=== Bundled FFmpeg DLLs ==="
           Get-ChildItem $targetDir -Filter "*.dll" | ForEach-Object { Write-Host "  - $($_.Name)" }
 
@@ -451,10 +471,12 @@ jobs:
           Get-ChildItem $targetDir -Filter "*.dll" | ForEach-Object { Write-Host "  - $($_.Name)" }
 
       - name: Bundle macOS App
-        if: matrix.target == 'macos'
+        if: matrix.target == 'macos' || matrix.target == 'macos-intel'
         shell: bash
         env:
           VERSION: ${{ needs.get-version.outputs.version_number }}
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -e
           cd opennow-streamer
@@ -542,10 +564,10 @@ jobs:
           echo "=== Phase 1: Explicitly copy FFmpeg libraries ==="
           # FFmpeg libraries might not show up in otool if dlopened or linked with @rpath
           # So we explicitly find and copy them
-          
+
           FFMPEG_PREFIX=$(brew --prefix ffmpeg)
           echo "FFmpeg prefix: $FFMPEG_PREFIX"
-          
+
           # List of core FFmpeg libraries to bundle
           FFMPEG_LIBS=(
             "libavcodec"
@@ -561,14 +583,14 @@ jobs:
              # Find the actual dylib file (resolving symlinks if needed, but we usually want the versioned one)
              # Looking for *.dylib in lib folder
              # We want the main shared library, usually something like libavcodec.60.dylib
-             
+
              # Using find to locate the main library file
              # We avoid symlinks that point to themselves or just the .dylib -> .X.dylib
              # We want the file that the binary is likely linked against or will try to load
-             
+
              echo "Looking for $lib_base in $FFMPEG_PREFIX/lib..."
              FOUND_LIBS=$(find "$FFMPEG_PREFIX/lib" -name "${lib_base}.*.dylib" -type f )
-             
+
              for lib in $FOUND_LIBS; do
                 echo "Found FFmpeg lib: $lib"
                 copy_lib "$lib"
@@ -599,14 +621,14 @@ jobs:
                 [ -f "$bundled_lib" ] || continue
                 # Grep for /opt/homebrew, /usr/local, AND @rpath
                 for dep in $(otool -L "$bundled_lib" 2>/dev/null | grep -E '/opt/homebrew|/usr/local|@rpath' | awk '{print $1}'); do
-                  
+
                   # Handle @rpath references
                   if [[ "$dep" == "@rpath/"* ]]; then
                      # Extract filename
                      filename="${dep#@rpath/}"
                      # Construct absolute path assuming it's in Homebrew lib
                      resolved_path="$BREW_PREFIX/lib/$filename"
-                     
+
                      if [ -f "$resolved_path" ]; then
                          # echo "Resolved $dep to $resolved_path"
                          copy_lib "$resolved_path"
@@ -635,7 +657,7 @@ jobs:
               fix_refs "$bundled_lib"
             done
           fi
-          
+
           # Special pass: Fix FFmpeg internal references
           # e.g. libavformat linking to libavcodec
           echo "Fixing internal references in bundled libs..."
@@ -695,7 +717,10 @@ jobs:
           # Zip the app bundle for upload/release
           echo "Zipping .app bundle..."
           cd target/release
-          zip -r "OpenNOW-macos-arm64.zip" "$APP_NAME.app"
+          # Use architecture from matrix (arm64 or x86_64)
+          ZIP_NAME="OpenNOW-macos-${ARCH}.zip"
+          zip -r "$ZIP_NAME" "$APP_NAME.app"
+          echo "Created: $ZIP_NAME"
 
       - name: Bundle FFmpeg libs (Linux ARM64)
         if: matrix.target == 'linux-arm64'
@@ -768,12 +793,20 @@ jobs:
           path: opennow-streamer/target/aarch64-pc-windows-msvc/release/OpenNOW-windows-arm64.zip
           retention-days: 30
 
-      - name: Upload macOS artifacts
+      - name: Upload macOS ARM64 artifacts
         if: matrix.target == 'macos'
         uses: actions/upload-artifact@v4
         with:
-          name: opennow-streamer-${{ needs.get-version.outputs.version }}-macos
+          name: opennow-streamer-${{ needs.get-version.outputs.version }}-macos-arm64
           path: opennow-streamer/target/release/OpenNOW-macos-arm64.zip
+          retention-days: 30
+
+      - name: Upload macOS Intel (Legacy) artifacts
+        if: matrix.target == 'macos-intel'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-streamer-${{ needs.get-version.outputs.version }}-macos-intel
+          path: opennow-streamer/target/release/OpenNOW-macos-x86_64.zip
           retention-days: 30
 
       - name: Zip Linux x64 artifacts
@@ -813,7 +846,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
-          name: 'OpenNOW ${{ needs.get-version.outputs.version }}'
+          name: "OpenNOW ${{ needs.get-version.outputs.version }}"
           body: |
             ## OpenNOW ${{ needs.get-version.outputs.version }}
 
@@ -826,7 +859,8 @@ jobs:
             ### Downloads
             - **Windows x64**: Portable executable with bundled FFmpeg DLLs
             - **Windows ARM64**: Portable executable with bundled FFmpeg DLLs (Surface Pro X, etc.)
-            - **macOS ARM64**: Apple Silicon native binary with bundled FFmpeg dylibs (Intel Macs can use Rosetta 2)
+            - **macOS ARM64**: Apple Silicon native binary with bundled FFmpeg dylibs
+            - **macOS Intel (Legacy)**: Native Intel x64 binary for older Macs (2015 and earlier) with bundled FFmpeg dylibs
             - **Linux x64**: Portable binary (requires system FFmpeg - see below)
             - **Linux ARM64**: Portable bundle with FFmpeg libs (run via `./run.sh`)
 
@@ -834,10 +868,10 @@ jobs:
             ```bash
             # Ubuntu/Debian
             sudo apt install ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
-            
+
             # Fedora/RHEL
             sudo dnf install ffmpeg-free ffmpeg-free-devel
-            
+
             # Arch
             sudo pacman -S ffmpeg
             ```
@@ -868,12 +902,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload macOS to release
+      - name: Upload macOS ARM64 to release
         if: matrix.target == 'macos' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.get-version.outputs.version }}
           files: opennow-streamer/target/release/OpenNOW-macos-arm64.zip
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload macOS Intel (Legacy) to release
+        if: matrix.target == 'macos-intel' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.get-version.outputs.version }}
+          files: opennow-streamer/target/release/OpenNOW-macos-x86_64.zip
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
