@@ -214,7 +214,6 @@ pub fn render_settings_modal(
                             let codec_text = match settings.codec {
                                 crate::app::VideoCodec::H264 => "H.264",
                                 crate::app::VideoCodec::H265 => "H.265 (HEVC)",
-                                crate::app::VideoCodec::AV1 => "AV1",
                             };
                             egui::ComboBox::from_id_salt("codec_combo")
                                 .selected_text(codec_text)
@@ -224,13 +223,6 @@ pub fn render_settings_modal(
                                     }
                                     if ui.selectable_label(matches!(settings.codec, crate::app::VideoCodec::H265), "H.265 (HEVC)").clicked() {
                                         actions.push(UiAction::UpdateSetting(SettingChange::Codec(crate::app::VideoCodec::H265)));
-                                    }
-                                    if crate::media::is_av1_hardware_supported() {
-                                        if ui.selectable_label(matches!(settings.codec, crate::app::VideoCodec::AV1), "AV1").clicked() {
-                                            actions.push(UiAction::UpdateSetting(SettingChange::Codec(crate::app::VideoCodec::AV1)));
-                                        }
-                                    } else {
-                                        ui.label(egui::RichText::new("AV1 unavailable (HW unsupported)").weak());
                                     }
                                 });
                         });

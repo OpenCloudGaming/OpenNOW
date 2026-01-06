@@ -283,8 +283,6 @@ pub enum VideoCodec {
     H264,
     /// H.265/HEVC - better compression
     H265,
-    /// AV1 - newest, best quality (requires RTX 40+)
-    AV1,
 }
 
 /// Video decoder backend preference
@@ -349,7 +347,6 @@ impl VideoCodec {
         match self {
             VideoCodec::H264 => "H264",
             VideoCodec::H265 => "H265",
-            VideoCodec::AV1 => "AV1",
         }
     }
 
@@ -358,13 +355,12 @@ impl VideoCodec {
         match self {
             VideoCodec::H264 => "H.264 (Wide compatibility)",
             VideoCodec::H265 => "H.265/HEVC (Better quality)",
-            VideoCodec::AV1 => "AV1 (Best quality, RTX 40+)",
         }
     }
 
     /// Get all available codecs
     pub fn all() -> &'static [VideoCodec] {
-        &[VideoCodec::H264, VideoCodec::H265, VideoCodec::AV1]
+        &[VideoCodec::H264, VideoCodec::H265]
     }
 }
 

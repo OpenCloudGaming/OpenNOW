@@ -384,11 +384,6 @@ impl App {
                     SettingChange::Resolution(res) => self.settings.resolution = res,
                     SettingChange::Fps(fps) => self.settings.fps = fps,
                     SettingChange::Codec(codec) => {
-                        // Check if AV1 is supported before enabling it
-                        if codec == VideoCodec::AV1 && !crate::media::is_av1_hardware_supported() {
-                            self.show_av1_warning = true;
-                        }
-                        // Still set the codec - user can use software decode if they want
                         self.settings.codec = codec;
                     }
                     SettingChange::MaxBitrate(bitrate) => self.settings.max_bitrate_mbps = bitrate,

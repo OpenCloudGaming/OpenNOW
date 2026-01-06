@@ -23,7 +23,6 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 pub enum DxvaCodec {
     H264,
     HEVC,
-    AV1,
 }
 
 /// DXVA2 decoder profile GUIDs
@@ -39,10 +38,6 @@ mod profiles {
         GUID::from_u128(0x5b11d51b_2f4c_4452_bcc3_09f2a1160cc0);
     pub const D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10: GUID =
         GUID::from_u128(0x107af0e0_ef1a_4d19_aba8_67a163073d13);
-
-    // AV1 profiles
-    pub const D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0: GUID =
-        GUID::from_u128(0xb8be4ccb_cf53_46ba_8d59_d6b8a6da5d2a);
 }
 
 /// Decoder configuration
@@ -277,7 +272,6 @@ impl DxvaDecoder {
                     profiles::D3D11_DECODER_PROFILE_HEVC_VLD_MAIN
                 }
             }
-            DxvaCodec::AV1 => profiles::D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0,
         };
 
         Ok((format, profile))

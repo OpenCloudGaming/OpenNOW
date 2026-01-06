@@ -35,10 +35,7 @@ pub mod gstreamer_decoder;
 
 pub use audio::*;
 pub use rtp::{DepacketizerCodec, RtpDepacketizer};
-pub use video::{
-    get_supported_decoder_backends, is_av1_hardware_supported, DecodeStats, UnifiedVideoDecoder,
-    VideoDecoder,
-};
+pub use video::{get_supported_decoder_backends, DecodeStats, UnifiedVideoDecoder, VideoDecoder};
 
 #[cfg(target_os = "macos")]
 pub use videotoolbox::{

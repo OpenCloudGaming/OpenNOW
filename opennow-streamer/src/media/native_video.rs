@@ -72,10 +72,6 @@ impl NativeVideoDecoder {
                 warn!("Native DXVA H.264 not yet implemented, using HEVC parser");
                 return Err(anyhow!("H.264 not yet supported in native DXVA decoder"));
             }
-            VideoCodec::AV1 => {
-                warn!("Native DXVA AV1 not yet implemented");
-                return Err(anyhow!("AV1 not yet supported in native DXVA decoder"));
-            }
         };
 
         // Create channels for communication
