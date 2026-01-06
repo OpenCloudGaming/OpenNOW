@@ -1771,7 +1771,9 @@ impl VideoDecoder {
 
     /// Check if a pixel format is a hardware format
     fn is_hw_pixel_format(format: Pixel) -> bool {
-        matches!(
+        // Check common hardware formats
+        // Note: Some formats may not be available depending on FFmpeg build configuration
+        if matches!(
             format,
             Pixel::VIDEOTOOLBOX
                 | Pixel::CUDA
@@ -1781,8 +1783,13 @@ impl VideoDecoder {
                 | Pixel::DXVA2_VLD
                 | Pixel::D3D11VA_VLD
                 | Pixel::VULKAN
-                | Pixel::VAAPI
-        )
+        ) {
+            return true;
+        }
+
+        // VAAPI check - the format code is 28 in FFmpeg
+        // We check by name since Pixel::VAAPI may not exist in all ffmpeg-next builds
+        format!("{:?}", format).contains("VAAPI")
     }
 
     /// Transfer hardware frame to system memory if needed
@@ -2033,7 +2040,7 @@ impl VideoDecoder {
                 // ZERO-COPY PATH: For VAAPI, extract VA surface directly
                 // This skips the expensive GPU->CPU->GPU copy entirely
                 #[cfg(target_os = "linux")]
-                if format == Pixel::VAAPI {
+                if format!("{:?}", format).contains("VAAPI") {
                     use crate::media::vaapi;
                     use std::sync::Arc;
 
