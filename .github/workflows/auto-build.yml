@@ -172,7 +172,7 @@ jobs:
             rust_target: aarch64-apple-darwin
           # Legacy macOS build for Intel Macs (2015 and older)
           # Uses CPU-copy fallback instead of zero-copy Metal rendering
-          - platform: macos-13
+          - platform: macos-13-large
             target: macos-intel
             arch: x86_64
             rust_target: x86_64-apple-darwin
@@ -325,6 +325,7 @@ jobs:
             libudev-dev \
             clang \
             libclang-dev \
+            libunwind-dev \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev
           echo "FFmpeg and GStreamer development libraries installed"
@@ -355,6 +356,7 @@ jobs:
             libssl-dev:arm64 \
             libasound2-dev:arm64 \
             libudev-dev:arm64 \
+            libunwind-dev:arm64 \
             libgstreamer1.0-dev:arm64 \
             libgstreamer-plugins-base1.0-dev:arm64
 
