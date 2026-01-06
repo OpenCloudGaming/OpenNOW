@@ -189,7 +189,7 @@ fn find_mouse_device() -> Option<String> {
 
 /// evdev input thread - direct device access for lowest latency
 fn start_evdev_input(device_path: &str) -> Result<(), String> {
-    let device = Device::open(device_path)
+    let mut device = Device::open(device_path)
         .map_err(|e| format!("Failed to open evdev device {}: {}", device_path, e))?;
 
     let device_name = device.name().unwrap_or("Unknown").to_string();
