@@ -17,9 +17,10 @@
 //! This eliminates the expensive GPU->CPU->GPU round-trip.
 
 use anyhow::{anyhow, Result};
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use parking_lot::Mutex;
 use std::os::unix::io::RawFd;
+use std::sync::OnceLock;
 
 /// VA surface format (matches VA-API definitions)
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -78,6 +79,23 @@ impl std::fmt::Debug for VAAPISurfaceWrapper {
 const DRM_FORMAT_NV12: u32 = 0x3231564E; // NV12
 const DRM_FORMAT_P010: u32 = 0x30313050; // P010
 
+// Cached libva library handle
+static LIBVA: OnceLock<Result<libloading::Library, String>> = OnceLock::new();
+
+/// Get or load the libva library (cached)
+fn get_libva() -> Result<&'static libloading::Library> {
+    let result = LIBVA.get_or_init(|| unsafe {
+        libloading::Library::new("libva.so.2")
+            .or_else(|_| libloading::Library::new("libva.so"))
+            .map_err(|e| format!("Failed to load libva: {}", e))
+    });
+
+    match result {
+        Ok(lib) => Ok(lib),
+        Err(e) => Err(anyhow!("{}", e)),
+    }
+}
+
 // VA-API FFI bindings (minimal set for surface export)
 // Full bindings would come from libva-sys crate
 mod ffi {
@@ -86,12 +104,44 @@ mod ffi {
     pub type VADisplay = *mut c_void;
     pub type VASurfaceID = u32;
     pub type VAStatus = i32;
+    pub type VABufferID = u32;
+    pub type VAImageID = u32;
 
     pub const VA_STATUS_SUCCESS: VAStatus = 0;
 
     // VA surface export flags
     pub const VA_EXPORT_SURFACE_READ_ONLY: u32 = 0x0001;
     pub const VA_EXPORT_SURFACE_SEPARATE_LAYERS: u32 = 0x0004;
+
+    // VAImage structure for vaDeriveImage
+    #[repr(C)]
+    pub struct VAImage {
+        pub image_id: VAImageID,
+        pub format: VAImageFormat,
+        pub buf: VABufferID,
+        pub width: u16,
+        pub height: u16,
+        pub data_size: u32,
+        pub num_planes: u32,
+        pub pitches: [u32; 3],
+        pub offsets: [u32; 3],
+        pub num_palette_entries: i32,
+        pub entry_bytes: i32,
+        pub component_order: [i8; 4],
+    }
+
+    #[repr(C)]
+    pub struct VAImageFormat {
+        pub fourcc: u32,
+        pub byte_order: u32,
+        pub bits_per_pixel: u32,
+        pub depth: u32,
+        pub red_mask: u32,
+        pub green_mask: u32,
+        pub blue_mask: u32,
+        pub alpha_mask: u32,
+        pub va_reserved: [u32; 4],
+    }
 
     // VADRMPRIMESurfaceDescriptor structure
     #[repr(C)]
@@ -121,7 +171,7 @@ mod ffi {
         pub pitch: [u32; 4],
     }
 
-    // We'll use dlopen for VA-API functions since static linking is complex
+    // VA-API function types
     pub type VaExportSurfaceHandle = unsafe extern "C" fn(
         dpy: VADisplay,
         surface: VASurfaceID,
@@ -131,6 +181,19 @@ mod ffi {
     ) -> VAStatus;
 
     pub type VaSyncSurface = unsafe extern "C" fn(dpy: VADisplay, surface: VASurfaceID) -> VAStatus;
+
+    pub type VaDeriveImage =
+        unsafe extern "C" fn(dpy: VADisplay, surface: VASurfaceID, image: *mut VAImage) -> VAStatus;
+
+    pub type VaMapBuffer = unsafe extern "C" fn(
+        dpy: VADisplay,
+        buf_id: VABufferID,
+        pbuf: *mut *mut c_void,
+    ) -> VAStatus;
+
+    pub type VaUnmapBuffer = unsafe extern "C" fn(dpy: VADisplay, buf_id: VABufferID) -> VAStatus;
+
+    pub type VaDestroyImage = unsafe extern "C" fn(dpy: VADisplay, image: VAImageID) -> VAStatus;
 
     // Memory type for DRM PRIME export
     pub const VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2: u32 = 0x40000000;
@@ -182,15 +245,8 @@ impl VAAPISurfaceWrapper {
         }
 
         unsafe {
-            // Load libva dynamically
-            let libva = match libloading::Library::new("libva.so.2") {
-                Ok(lib) => lib,
-                Err(_) => {
-                    // Try alternative names
-                    libloading::Library::new("libva.so")
-                        .map_err(|e| anyhow!("Failed to load libva: {}", e))?
-                }
-            };
+            // Get cached libva
+            let libva = get_libva()?;
 
             // Get function pointers
             let va_sync_surface: libloading::Symbol<ffi::VaSyncSurface> = libva
@@ -256,12 +312,12 @@ impl VAAPISurfaceWrapper {
 
     /// Lock the surface and copy Y and UV planes to CPU memory
     /// This is the fallback path when zero-copy import fails
+    ///
+    /// Uses vaDeriveImage + vaMapBuffer for proper stride handling
     pub fn lock_and_get_planes(&self) -> Result<LockedPlanes> {
         unsafe {
-            // Load libva
-            let libva = libloading::Library::new("libva.so.2")
-                .or_else(|_| libloading::Library::new("libva.so"))
-                .map_err(|e| anyhow!("Failed to load libva: {}", e))?;
+            // Get cached libva
+            let libva = get_libva()?;
 
             // Sync surface first
             let va_sync_surface: libloading::Symbol<ffi::VaSyncSurface> = libva
@@ -273,18 +329,86 @@ impl VAAPISurfaceWrapper {
                 return Err(anyhow!("vaSyncSurface failed: {}", status));
             }
 
-            // For CPU fallback, we need to use vaMapBuffer/vaDeriveImage
-            // This is more complex and involves creating a VAImage
-            // For now, we'll use the simpler approach of exporting and mmap'ing the DMA-BUF
+            // Try vaDeriveImage for proper stride handling
+            let va_derive_image: Result<libloading::Symbol<ffi::VaDeriveImage>, _> =
+                libva.get(b"vaDeriveImage\0");
+            let va_map_buffer: Result<libloading::Symbol<ffi::VaMapBuffer>, _> =
+                libva.get(b"vaMapBuffer\0");
+            let va_unmap_buffer: Result<libloading::Symbol<ffi::VaUnmapBuffer>, _> =
+                libva.get(b"vaUnmapBuffer\0");
+            let va_destroy_image: Result<libloading::Symbol<ffi::VaDestroyImage>, _> =
+                libva.get(b"vaDestroyImage\0");
 
+            if let (Ok(derive), Ok(map), Ok(unmap), Ok(destroy)) = (
+                va_derive_image,
+                va_map_buffer,
+                va_unmap_buffer,
+                va_destroy_image,
+            ) {
+                // Use vaDeriveImage path - proper stride handling
+                let mut image: ffi::VAImage = std::mem::zeroed();
+                let status = derive(self.va_display, self.surface_id, &mut image);
+
+                if status == ffi::VA_STATUS_SUCCESS {
+                    let mut buf_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+                    let status = map(self.va_display, image.buf, &mut buf_ptr);
+
+                    if status == ffi::VA_STATUS_SUCCESS && !buf_ptr.is_null() {
+                        // Extract planes with proper stride
+                        let y_stride = image.pitches[0] as usize;
+                        let uv_stride = image.pitches[1] as usize;
+                        let y_offset = image.offsets[0] as usize;
+                        let uv_offset = image.offsets[1] as usize;
+                        let height = self.height as usize;
+                        let width = self.width as usize;
+                        let uv_height = height / 2;
+
+                        // Copy Y plane (row by row if stride != width)
+                        let mut y_plane = Vec::with_capacity(width * height);
+                        let src = buf_ptr as *const u8;
+                        for row in 0..height {
+                            let row_start = y_offset + row * y_stride;
+                            let row_data = std::slice::from_raw_parts(src.add(row_start), width);
+                            y_plane.extend_from_slice(row_data);
+                        }
+
+                        // Copy UV plane (row by row if stride != width)
+                        let mut uv_plane = Vec::with_capacity(width * uv_height);
+                        for row in 0..uv_height {
+                            let row_start = uv_offset + row * uv_stride;
+                            let row_data = std::slice::from_raw_parts(src.add(row_start), width);
+                            uv_plane.extend_from_slice(row_data);
+                        }
+
+                        // Cleanup
+                        unmap(self.va_display, image.buf);
+                        destroy(self.va_display, image.image_id);
+
+                        return Ok(LockedPlanes {
+                            y_plane,
+                            uv_plane,
+                            y_stride: width as u32,
+                            uv_stride: width as u32,
+                            width: self.width,
+                            height: self.height,
+                        });
+                    }
+
+                    // Cleanup on failure
+                    destroy(self.va_display, image.image_id);
+                }
+            }
+
+            // Fallback: DMA-BUF mmap (may not handle stride correctly for all drivers)
+            warn!("vaDeriveImage failed, falling back to DMA-BUF mmap");
             let fd = self.export_dmabuf()?;
 
-            // Calculate sizes based on NV12 format
+            // Assume linear layout with no padding (works for most cases)
+            // Real stride info should come from the DRM PRIME descriptor
             let y_size = (self.width * self.height) as usize;
-            let uv_size = y_size / 2; // UV is half height
+            let uv_size = y_size / 2;
             let total_size = y_size + uv_size;
 
-            // mmap the DMA-BUF
             let ptr = libc::mmap(
                 std::ptr::null_mut(),
                 total_size,
@@ -298,12 +422,10 @@ impl VAAPISurfaceWrapper {
                 return Err(anyhow!("mmap failed: {}", std::io::Error::last_os_error()));
             }
 
-            // Copy the data
             let data = std::slice::from_raw_parts(ptr as *const u8, total_size);
             let y_plane = data[..y_size].to_vec();
             let uv_plane = data[y_size..].to_vec();
 
-            // Unmap
             libc::munmap(ptr, total_size);
 
             Ok(LockedPlanes {
