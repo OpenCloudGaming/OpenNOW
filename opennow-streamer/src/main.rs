@@ -4,23 +4,23 @@
 
 #![recursion_limit = "256"]
 
-mod app;
 mod api;
+mod app;
 mod auth;
 mod gui;
 mod input;
 mod media;
-mod webrtc;
 mod utils;
+mod webrtc;
 
 use anyhow::Result;
 use log::info;
-use std::sync::Arc;
 use parking_lot::Mutex;
+use std::sync::Arc;
 use winit::application::ApplicationHandler;
-use winit::event_loop::{ControlFlow, EventLoop, ActiveEventLoop};
-use winit::event::{WindowEvent, KeyEvent, ElementState, DeviceEvent, DeviceId, Modifiers};
-use winit::keyboard::{Key, NamedKey, PhysicalKey, KeyCode};
+use winit::event::{DeviceEvent, DeviceId, ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
 use winit::window::WindowId;
 
@@ -39,8 +39,6 @@ struct OpenNowApp {
     modifiers: Modifiers,
     /// Track if we were streaming (for cursor lock state changes)
     was_streaming: bool,
-    /// Last frame time for frame rate limiting
-    last_frame_time: std::time::Instant,
 }
 
 /// Convert winit KeyCode to Windows Virtual Key code
@@ -48,33 +46,68 @@ fn keycode_to_vk(key: PhysicalKey) -> u16 {
     match key {
         PhysicalKey::Code(code) => match code {
             // Letters
-            KeyCode::KeyA => 0x41, KeyCode::KeyB => 0x42, KeyCode::KeyC => 0x43,
-            KeyCode::KeyD => 0x44, KeyCode::KeyE => 0x45, KeyCode::KeyF => 0x46,
-            KeyCode::KeyG => 0x47, KeyCode::KeyH => 0x48, KeyCode::KeyI => 0x49,
-            KeyCode::KeyJ => 0x4A, KeyCode::KeyK => 0x4B, KeyCode::KeyL => 0x4C,
-            KeyCode::KeyM => 0x4D, KeyCode::KeyN => 0x4E, KeyCode::KeyO => 0x4F,
-            KeyCode::KeyP => 0x50, KeyCode::KeyQ => 0x51, KeyCode::KeyR => 0x52,
-            KeyCode::KeyS => 0x53, KeyCode::KeyT => 0x54, KeyCode::KeyU => 0x55,
-            KeyCode::KeyV => 0x56, KeyCode::KeyW => 0x57, KeyCode::KeyX => 0x58,
-            KeyCode::KeyY => 0x59, KeyCode::KeyZ => 0x5A,
+            KeyCode::KeyA => 0x41,
+            KeyCode::KeyB => 0x42,
+            KeyCode::KeyC => 0x43,
+            KeyCode::KeyD => 0x44,
+            KeyCode::KeyE => 0x45,
+            KeyCode::KeyF => 0x46,
+            KeyCode::KeyG => 0x47,
+            KeyCode::KeyH => 0x48,
+            KeyCode::KeyI => 0x49,
+            KeyCode::KeyJ => 0x4A,
+            KeyCode::KeyK => 0x4B,
+            KeyCode::KeyL => 0x4C,
+            KeyCode::KeyM => 0x4D,
+            KeyCode::KeyN => 0x4E,
+            KeyCode::KeyO => 0x4F,
+            KeyCode::KeyP => 0x50,
+            KeyCode::KeyQ => 0x51,
+            KeyCode::KeyR => 0x52,
+            KeyCode::KeyS => 0x53,
+            KeyCode::KeyT => 0x54,
+            KeyCode::KeyU => 0x55,
+            KeyCode::KeyV => 0x56,
+            KeyCode::KeyW => 0x57,
+            KeyCode::KeyX => 0x58,
+            KeyCode::KeyY => 0x59,
+            KeyCode::KeyZ => 0x5A,
             // Numbers
-            KeyCode::Digit1 => 0x31, KeyCode::Digit2 => 0x32, KeyCode::Digit3 => 0x33,
-            KeyCode::Digit4 => 0x34, KeyCode::Digit5 => 0x35, KeyCode::Digit6 => 0x36,
-            KeyCode::Digit7 => 0x37, KeyCode::Digit8 => 0x38, KeyCode::Digit9 => 0x39,
+            KeyCode::Digit1 => 0x31,
+            KeyCode::Digit2 => 0x32,
+            KeyCode::Digit3 => 0x33,
+            KeyCode::Digit4 => 0x34,
+            KeyCode::Digit5 => 0x35,
+            KeyCode::Digit6 => 0x36,
+            KeyCode::Digit7 => 0x37,
+            KeyCode::Digit8 => 0x38,
+            KeyCode::Digit9 => 0x39,
             KeyCode::Digit0 => 0x30,
             // Function keys
-            KeyCode::F1 => 0x70, KeyCode::F2 => 0x71, KeyCode::F3 => 0x72,
-            KeyCode::F4 => 0x73, KeyCode::F5 => 0x74, KeyCode::F6 => 0x75,
-            KeyCode::F7 => 0x76, KeyCode::F8 => 0x77, KeyCode::F9 => 0x78,
-            KeyCode::F10 => 0x79, KeyCode::F11 => 0x7A, KeyCode::F12 => 0x7B,
+            KeyCode::F1 => 0x70,
+            KeyCode::F2 => 0x71,
+            KeyCode::F3 => 0x72,
+            KeyCode::F4 => 0x73,
+            KeyCode::F5 => 0x74,
+            KeyCode::F6 => 0x75,
+            KeyCode::F7 => 0x76,
+            KeyCode::F8 => 0x77,
+            KeyCode::F9 => 0x78,
+            KeyCode::F10 => 0x79,
+            KeyCode::F11 => 0x7A,
+            KeyCode::F12 => 0x7B,
             // Special keys
             KeyCode::Escape => 0x1B,
             KeyCode::Tab => 0x09,
             KeyCode::CapsLock => 0x14,
-            KeyCode::ShiftLeft => 0xA0, KeyCode::ShiftRight => 0xA1,
-            KeyCode::ControlLeft => 0xA2, KeyCode::ControlRight => 0xA3,
-            KeyCode::AltLeft => 0xA4, KeyCode::AltRight => 0xA5,
-            KeyCode::SuperLeft => 0x5B, KeyCode::SuperRight => 0x5C,
+            KeyCode::ShiftLeft => 0xA0,
+            KeyCode::ShiftRight => 0xA1,
+            KeyCode::ControlLeft => 0xA2,
+            KeyCode::ControlRight => 0xA3,
+            KeyCode::AltLeft => 0xA4,
+            KeyCode::AltRight => 0xA5,
+            KeyCode::SuperLeft => 0x5B,
+            KeyCode::SuperRight => 0x5C,
             KeyCode::Space => 0x20,
             KeyCode::Enter => 0x0D,
             KeyCode::Backspace => 0x08,
@@ -90,9 +123,15 @@ fn keycode_to_vk(key: PhysicalKey) -> u16 {
             KeyCode::ArrowLeft => 0x25,
             KeyCode::ArrowRight => 0x27,
             // Numpad
-            KeyCode::Numpad0 => 0x60, KeyCode::Numpad1 => 0x61, KeyCode::Numpad2 => 0x62,
-            KeyCode::Numpad3 => 0x63, KeyCode::Numpad4 => 0x64, KeyCode::Numpad5 => 0x65,
-            KeyCode::Numpad6 => 0x66, KeyCode::Numpad7 => 0x67, KeyCode::Numpad8 => 0x68,
+            KeyCode::Numpad0 => 0x60,
+            KeyCode::Numpad1 => 0x61,
+            KeyCode::Numpad2 => 0x62,
+            KeyCode::Numpad3 => 0x63,
+            KeyCode::Numpad4 => 0x64,
+            KeyCode::Numpad5 => 0x65,
+            KeyCode::Numpad6 => 0x66,
+            KeyCode::Numpad7 => 0x67,
+            KeyCode::Numpad8 => 0x68,
             KeyCode::Numpad9 => 0x69,
             KeyCode::NumpadAdd => 0x6B,
             KeyCode::NumpadSubtract => 0x6D,
@@ -131,7 +170,6 @@ impl OpenNowApp {
             renderer: None,
             modifiers: Modifiers::default(),
             was_streaming: false,
-            last_frame_time: std::time::Instant::now(),
         }
     }
 
@@ -139,10 +177,18 @@ impl OpenNowApp {
     fn get_modifier_flags(&self) -> u16 {
         let state = self.modifiers.state();
         let mut flags = 0u16;
-        if state.shift_key() { flags |= 0x01; }  // GFN_MOD_SHIFT
-        if state.control_key() { flags |= 0x02; } // GFN_MOD_CTRL
-        if state.alt_key() { flags |= 0x04; }     // GFN_MOD_ALT
-        if state.super_key() { flags |= 0x08; }   // GFN_MOD_META
+        if state.shift_key() {
+            flags |= 0x01;
+        } // GFN_MOD_SHIFT
+        if state.control_key() {
+            flags |= 0x02;
+        } // GFN_MOD_CTRL
+        if state.alt_key() {
+            flags |= 0x04;
+        } // GFN_MOD_ALT
+        if state.super_key() {
+            flags |= 0x08;
+        } // GFN_MOD_META
         flags
     }
 }
@@ -165,13 +211,24 @@ impl ApplicationHandler for OpenNowApp {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
 
         // Let egui handle events first
-        let _ = renderer.handle_event(&event);
+        let response = renderer.handle_event(&event);
+
+        // Request redraw if egui wants to repaint (for UI interactions)
+        // VSync (Fifo present mode) handles frame pacing when not streaming
+        if response.repaint {
+            renderer.window().request_redraw();
+        }
 
         match event {
             WindowEvent::CloseRequested => {
@@ -183,11 +240,12 @@ impl ApplicationHandler for OpenNowApp {
             }
             // Ctrl+Shift+Q to stop streaming (instead of ESC to avoid accidental stops)
             WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    physical_key: PhysicalKey::Code(KeyCode::KeyQ),
-                    state: ElementState::Pressed,
-                    ..
-                },
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::KeyQ),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } if self.modifiers.state().control_key() && self.modifiers.state().shift_key() => {
                 let mut app = self.app.lock();
@@ -197,11 +255,12 @@ impl ApplicationHandler for OpenNowApp {
                 }
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    logical_key: Key::Named(NamedKey::F11),
-                    state: ElementState::Pressed,
-                    ..
-                },
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::F11),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => {
                 renderer.toggle_fullscreen();
@@ -216,11 +275,12 @@ impl ApplicationHandler for OpenNowApp {
                 }
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    logical_key: Key::Named(NamedKey::F3),
-                    state: ElementState::Pressed,
-                    ..
-                },
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::F3),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => {
                 let mut app = self.app.lock();
@@ -228,11 +288,12 @@ impl ApplicationHandler for OpenNowApp {
             }
             // Ctrl+Shift+F10 to toggle anti-AFK mode
             WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    physical_key: PhysicalKey::Code(KeyCode::F10),
-                    state: ElementState::Pressed,
-                    ..
-                },
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::F10),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } if self.modifiers.state().control_key() && self.modifiers.state().shift_key() => {
                 let mut app = self.app.lock();
@@ -240,13 +301,40 @@ impl ApplicationHandler for OpenNowApp {
                     app.toggle_anti_afk();
                 }
             }
+            // F8 to toggle mouse lock during streaming (for windowed mode)
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::F8),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                let mut app = self.app.lock();
+                if app.state == AppState::Streaming {
+                    // Toggle cursor capture state
+                    app.cursor_captured = !app.cursor_captured;
+
+                    if app.cursor_captured {
+                        renderer.lock_cursor();
+                        // Resume raw input when locking
+                        #[cfg(any(target_os = "windows", target_os = "macos"))]
+                        input::resume_raw_input();
+                        info!("F8: Mouse locked");
+                    } else {
+                        renderer.unlock_cursor();
+                        // Pause raw input when unlocking
+                        #[cfg(any(target_os = "windows", target_os = "macos"))]
+                        input::pause_raw_input();
+                        info!("F8: Mouse unlocked");
+                    }
+                }
+            }
             WindowEvent::ModifiersChanged(new_modifiers) => {
                 self.modifiers = new_modifiers;
             }
-            WindowEvent::KeyboardInput {
-                event,
-                ..
-            } => {
+            WindowEvent::KeyboardInput { event, .. } => {
                 // Forward keyboard input to InputHandler when streaming
                 let app = self.app.lock();
                 if app.state == AppState::Streaming && app.cursor_captured {
@@ -263,16 +351,20 @@ impl ApplicationHandler for OpenNowApp {
                         // Don't include modifier flags when the key itself is a modifier
                         let is_modifier_key = matches!(
                             event.physical_key,
-                            PhysicalKey::Code(KeyCode::ShiftLeft) |
-                            PhysicalKey::Code(KeyCode::ShiftRight) |
-                            PhysicalKey::Code(KeyCode::ControlLeft) |
-                            PhysicalKey::Code(KeyCode::ControlRight) |
-                            PhysicalKey::Code(KeyCode::AltLeft) |
-                            PhysicalKey::Code(KeyCode::AltRight) |
-                            PhysicalKey::Code(KeyCode::SuperLeft) |
-                            PhysicalKey::Code(KeyCode::SuperRight)
+                            PhysicalKey::Code(KeyCode::ShiftLeft)
+                                | PhysicalKey::Code(KeyCode::ShiftRight)
+                                | PhysicalKey::Code(KeyCode::ControlLeft)
+                                | PhysicalKey::Code(KeyCode::ControlRight)
+                                | PhysicalKey::Code(KeyCode::AltLeft)
+                                | PhysicalKey::Code(KeyCode::AltRight)
+                                | PhysicalKey::Code(KeyCode::SuperLeft)
+                                | PhysicalKey::Code(KeyCode::SuperRight)
                         );
-                        let modifiers = if is_modifier_key { 0 } else { self.get_modifier_flags() };
+                        let modifiers = if is_modifier_key {
+                            0
+                        } else {
+                            self.get_modifier_flags()
+                        };
 
                         // Only send if we have a valid VK code
                         if vk_code != 0 {
@@ -282,13 +374,25 @@ impl ApplicationHandler for OpenNowApp {
                 }
             }
             WindowEvent::Focused(focused) => {
-                // Release all keys when focus is lost to prevent sticky keys
-                if !focused {
-                    let app = self.app.lock();
-                    if app.state == AppState::Streaming {
+                let mut app = self.app.lock();
+                if app.state == AppState::Streaming {
+                    if !focused {
+                        // Lost focus - release all keys to prevent sticky keys
                         if let Some(ref input_handler) = app.input_handler {
                             log::info!("Window lost focus - releasing all keys");
                             input_handler.release_all_keys();
+                        }
+                        // Pause raw input while unfocused
+                        #[cfg(any(target_os = "windows", target_os = "macos"))]
+                        input::pause_raw_input();
+                    } else {
+                        // Regained focus - re-lock cursor if it was captured
+                        if app.cursor_captured {
+                            log::info!("Window regained focus - re-locking cursor");
+                            renderer.lock_cursor();
+                            // Resume raw input
+                            #[cfg(any(target_os = "windows", target_os = "macos"))]
+                            input::resume_raw_input();
                         }
                     }
                 }
@@ -306,39 +410,14 @@ impl ApplicationHandler for OpenNowApp {
                 }
             }
             WindowEvent::RedrawRequested => {
-                // Frame rate limiting - sync to stream target FPS when streaming
                 let mut app_guard = self.app.lock();
-                let target_fps = if app_guard.state == AppState::Streaming {
-                    app_guard.stats.target_fps.max(60) // Use stream's target FPS (min 60)
-                } else {
-                    // UI mode: Sync to monitor refresh rate (default 60 if detection fails)
-                    renderer.window().current_monitor()
-                        .and_then(|m| m.refresh_rate_millihertz())
-                        .map(|mhz| (mhz as f32 / 1000.0).ceil() as u32)
-                        .unwrap_or(60)
-                        .max(30) // Ensure at least 30 FPS to avoid division by zero
-                };
-                drop(app_guard);
-
-                let frame_duration = std::time::Duration::from_secs_f64(1.0 / target_fps.max(1) as f64);
-                let elapsed = self.last_frame_time.elapsed();
-                if elapsed < frame_duration {
-                    // Sleep for remaining time (avoid busy loop)
-                    let sleep_time = frame_duration - elapsed;
-                    if sleep_time.as_micros() > 500 {
-                        std::thread::sleep(sleep_time - std::time::Duration::from_micros(500));
-                    }
-                }
-                self.last_frame_time = std::time::Instant::now();
-
-                let mut app_guard = self.app.lock();
-                app_guard.update();
+                let is_streaming = app_guard.state == AppState::Streaming;
 
                 // Check for streaming state change to lock/unlock cursor and start/stop raw input
-                let is_streaming = app_guard.state == AppState::Streaming;
                 if is_streaming && !self.was_streaming {
-                    // Just started streaming - lock cursor and start raw input
+                    // Just started streaming - lock cursor, start raw input, disable vsync
                     renderer.lock_cursor();
+                    renderer.set_vsync(false); // Immediate mode for lowest latency
                     self.was_streaming = true;
 
                     // Start Raw Input for unaccelerated mouse movement (Windows/macOS)
@@ -346,12 +425,16 @@ impl ApplicationHandler for OpenNowApp {
                     {
                         match input::start_raw_input() {
                             Ok(()) => info!("Raw input enabled - mouse acceleration disabled"),
-                            Err(e) => log::warn!("Failed to start raw input: {} - using winit fallback", e),
+                            Err(e) => log::warn!(
+                                "Failed to start raw input: {} - using winit fallback",
+                                e
+                            ),
                         }
                     }
                 } else if !is_streaming && self.was_streaming {
-                    // Just stopped streaming - unlock cursor and stop raw input
+                    // Just stopped streaming - unlock cursor, stop raw input, enable vsync
                     renderer.unlock_cursor();
+                    renderer.set_vsync(true); // VSync for low CPU usage in UI
                     self.was_streaming = false;
 
                     // Stop raw input
@@ -360,6 +443,8 @@ impl ApplicationHandler for OpenNowApp {
                         input::stop_raw_input();
                     }
                 }
+
+                app_guard.update();
 
                 match renderer.render(&app_guard) {
                     Ok(actions) => {
@@ -374,7 +459,11 @@ impl ApplicationHandler for OpenNowApp {
                 }
 
                 drop(app_guard);
-                renderer.window().request_redraw();
+
+                // Don't request redraw here - let about_to_wait handle frame pacing
+                // This ensures render rate matches decode rate (e.g., 120fps)
+                // Previously this caused double the frame rate (240+ fps) because
+                // both RedrawRequested and about_to_wait were requesting redraws
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let app = self.app.lock();
@@ -396,7 +485,12 @@ impl ApplicationHandler for OpenNowApp {
         }
     }
 
-    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _device_id: DeviceId, event: DeviceEvent) {
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
         // Only use winit's MouseMotion as fallback when raw input is not active
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         if input::is_raw_input_active() {
@@ -414,70 +508,42 @@ impl ApplicationHandler for OpenNowApp {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        let Some(ref mut renderer) = self.renderer else { return };
+        let Some(ref renderer) = self.renderer else {
+            return;
+        };
 
-        let mut app_guard = self.app.lock();
+        let app_guard = self.app.lock();
         let is_streaming = app_guard.state == AppState::Streaming;
+        // Check if there's a new frame from the decoder before requesting redraw
+        // This prevents rendering faster than decode rate, saving GPU cycles
+        let has_new_frame = app_guard
+            .shared_frame
+            .as_ref()
+            .map(|sf| sf.has_new_frame())
+            .unwrap_or(false);
+        drop(app_guard);
 
+        // Dynamically switch control flow based on streaming state
+        // Poll during streaming for lowest latency, Wait for menus to save CPU
         if is_streaming {
-            // NOTE: Mouse input is handled directly by the raw input thread via set_raw_input_sender()
-            // No polling needed here - raw input sends directly to the WebRTC input channel
-            // This keeps mouse latency minimal and independent of render rate
-
-            // Check if there's a new frame available BEFORE sleeping
-            // This minimizes latency by rendering new frames immediately
-            let has_new_frame = app_guard.shared_frame.as_ref()
-                .map(|sf| sf.has_new_frame())
-                .unwrap_or(false);
-
-            let target_fps = app_guard.stats.target_fps.max(60);
-            drop(app_guard); // Release lock before potential sleep
-
-            // Only sleep if no new frame is available
-            // This ensures frames are rendered as soon as they arrive
-            if !has_new_frame {
-                let frame_duration = std::time::Duration::from_secs_f64(1.0 / target_fps.max(1) as f64);
-                let elapsed = self.last_frame_time.elapsed();
-                if elapsed < frame_duration {
-                    let sleep_time = frame_duration - elapsed;
-                    // Use shorter sleep (1ms max) to stay responsive to new frames
-                    let max_sleep = std::time::Duration::from_millis(1);
-                    let actual_sleep = sleep_time.min(max_sleep);
-                    if actual_sleep.as_micros() > 200 {
-                        std::thread::sleep(actual_sleep);
-                    }
-                }
-            }
-            self.last_frame_time = std::time::Instant::now();
-
-            // Re-acquire lock for update and render
-            let mut app_guard = self.app.lock();
-            app_guard.update();
-
-            match renderer.render(&app_guard) {
-                Ok(actions) => {
-                    for action in actions {
-                        app_guard.handle_action(action);
-                    }
-                }
-                Err(e) => {
-                    // Surface errors are normal during resize, just log at debug
-                    log::debug!("Render error: {}", e);
-                }
+            _event_loop.set_control_flow(ControlFlow::Poll);
+            // Only request redraw when decoder has produced a new frame
+            // This synchronizes render rate to decode rate, avoiding wasted GPU cycles
+            if has_new_frame {
+                renderer.window().request_redraw();
             }
         } else {
-            // Non-streaming: use normal request_redraw for UI updates
-            drop(app_guard);
-            renderer.window().request_redraw();
+            _event_loop.set_control_flow(ControlFlow::Wait);
+            // When not streaming, rely entirely on event-driven redraws
+            // ControlFlow::Wait will block until an event arrives
+            // This reduces CPU usage from 100% to <5% when idle
         }
     }
 }
 
 fn main() -> Result<()> {
     // Initialize logging
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info")
-    ).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     info!("OpenNow Streamer v{}", env!("CARGO_PKG_VERSION"));
     info!("Platform: {}", std::env::consts::OS);
@@ -489,7 +555,9 @@ fn main() -> Result<()> {
 
     // Create event loop
     let event_loop = EventLoop::new()?;
-    event_loop.set_control_flow(ControlFlow::Poll);
+    // Use Wait by default for low CPU usage in menus
+    // Dynamically switch to Poll during active streaming for lowest latency
+    event_loop.set_control_flow(ControlFlow::Wait);
 
     // Create application handler
     let mut app = OpenNowApp::new(runtime.handle().clone());
