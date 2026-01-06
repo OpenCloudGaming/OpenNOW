@@ -3042,6 +3042,15 @@ impl Renderer {
         let ping_testing = app.ping_testing;
         let show_settings_modal = app.show_settings_modal;
 
+        // Queue times state
+        let mut queue_servers = app.queue_servers.clone();
+        let queue_loading = app.queue_loading;
+        let queue_sort_mode = app.queue_sort_mode;
+        let queue_region_filter = app.queue_region_filter.clone();
+        let show_server_selection = app.show_server_selection;
+        let selected_queue_server = app.selected_queue_server.clone();
+        let pending_server_selection_game = app.pending_server_selection_game.clone();
+
         // Get games based on current tab
         let games_list: Vec<_> = match current_tab {
             GamesTab::Home => {
@@ -3067,6 +3076,10 @@ impl Renderer {
                     .filter(|(_, g)| query.is_empty() || g.title.to_lowercase().contains(&query))
                     .map(|(i, g)| (i, g.clone()))
                     .collect()
+            }
+            GamesTab::QueueTimes => {
+                // Queue Times tab doesn't show games, return empty list
+                Vec::new()
             }
         };
 
@@ -3130,6 +3143,13 @@ impl Renderer {
                             .as_str(),
                         &app.active_sessions,
                         app.pending_game_launch.as_ref(),
+                        &mut queue_servers,
+                        queue_loading,
+                        queue_sort_mode,
+                        &queue_region_filter,
+                        show_server_selection,
+                        &selected_queue_server,
+                        pending_server_selection_game.as_ref(),
                         &mut actions,
                     );
                 }
@@ -3263,6 +3283,13 @@ impl Renderer {
         alliance_provider_name: &str,
         active_sessions: &[ActiveSessionInfo],
         pending_game_launch: Option<&GameInfo>,
+        queue_servers: &mut Vec<crate::api::QueueServerInfo>,
+        queue_loading: bool,
+        queue_sort_mode: crate::app::QueueSortMode,
+        queue_region_filter: &crate::app::QueueRegionFilter,
+        show_server_selection: bool,
+        selected_queue_server: &Option<String>,
+        pending_server_selection_game: Option<&GameInfo>,
         actions: &mut Vec<UiAction>,
     ) {
         // Top bar with tabs, search, and logout - subscription info moved to bottom
@@ -3295,6 +3322,7 @@ impl Renderer {
                     let home_selected = current_tab == GamesTab::Home;
                     let all_games_selected = current_tab == GamesTab::AllGames;
                     let library_selected = current_tab == GamesTab::MyLibrary;
+                    let queue_times_selected = current_tab == GamesTab::QueueTimes;
 
                     // Home tab button
                     let home_btn = egui::Button::new(
@@ -3350,6 +3378,31 @@ impl Renderer {
 
                     if ui.add_sized([90.0, 32.0], library_btn).clicked() && !library_selected {
                         actions.push(UiAction::SwitchTab(GamesTab::MyLibrary));
+                    }
+
+                    ui.add_space(8.0);
+
+                    // Queue Times tab button (for free tier users)
+                    let queue_times_btn = egui::Button::new(
+                        egui::RichText::new("🕐 Queue Times")
+                            .size(13.0)
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(if queue_times_selected {
+                        egui::Color32::from_rgb(118, 185, 0)
+                    } else {
+                        egui::Color32::from_rgb(50, 50, 65)
+                    })
+                    .corner_radius(6.0);
+
+                    if ui
+                        .add_sized([120.0, 32.0], queue_times_btn)
+                        .on_hover_text("View queue times for servers")
+                        .clicked()
+                        && !queue_times_selected
+                    {
+                        actions.push(UiAction::SwitchTab(GamesTab::QueueTimes));
                     }
 
                     ui.add_space(20.0);
@@ -3672,6 +3725,572 @@ impl Renderer {
                             });
                     }
                 }
+                GamesTab::QueueTimes => {
+                    // Check if we have any ping data (to know if ping test is still running)
+                    let has_ping_data = queue_servers.iter().any(|s| s.ping_ms.is_some());
+
+                    // Get recommended server (only if we have ping data)
+                    let recommended_server = if has_ping_data {
+                        crate::api::get_auto_selected_server(queue_servers)
+                    } else {
+                        None
+                    };
+
+                    // Aggregated location data (grouped by display_name within a region)
+                    #[derive(Debug, Clone)]
+                    struct LocationInfo {
+                        display_name: String,
+                        avg_queue_position: i32,
+                        avg_eta_seconds: Option<i64>,
+                        best_ping_ms: Option<u32>,
+                        server_count: usize,
+                        has_5080: bool,
+                        has_4080: bool,
+                    }
+
+                    // Apply region filter to servers
+                    let filtered_servers: Vec<&crate::api::QueueServerInfo> = queue_servers.iter()
+                        .filter(|s| match queue_region_filter {
+                            crate::app::QueueRegionFilter::All => true,
+                            crate::app::QueueRegionFilter::Region(ref region) => &s.region == region,
+                        })
+                        .collect();
+
+                    // Group servers by region, then by location (display_name)
+                    let mut regions: std::collections::HashMap<String, std::collections::HashMap<String, Vec<&crate::api::QueueServerInfo>>> = std::collections::HashMap::new();
+
+                    for server in filtered_servers.iter() {
+                        let region_entry = regions.entry(server.region.clone()).or_insert_with(std::collections::HashMap::new);
+                        let location_entry = region_entry.entry(server.display_name.clone()).or_insert_with(Vec::new);
+                        location_entry.push(*server);
+                    }
+
+                    // Build aggregated location info for each region
+                    let mut region_locations: std::collections::HashMap<String, Vec<LocationInfo>> = std::collections::HashMap::new();
+
+                    for (region, locations) in &regions {
+                        let mut location_list: Vec<LocationInfo> = Vec::new();
+
+                        for (display_name, servers) in locations {
+                            let count = servers.len();
+                            let avg_queue = if count > 0 {
+                                let sum: i64 = servers.iter().map(|s| s.queue_position as i64).sum();
+                                let avg_i64 = sum / count as i64;
+                                avg_i64.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+                            } else {
+                                0
+                            };
+                            let avg_eta = {
+                                let eta_sum: i64 = servers.iter().filter_map(|s| s.eta_seconds).sum();
+                                let eta_count = servers.iter().filter(|s| s.eta_seconds.is_some()).count();
+                                if eta_count > 0 { Some(eta_sum / eta_count as i64) } else { None }
+                            };
+                            let best_ping = servers.iter().filter_map(|s| s.ping_ms).min();
+                            let has_5080 = servers.iter().any(|s| s.is_5080_server);
+                            let has_4080 = servers.iter().any(|s| s.is_4080_server);
+
+                            location_list.push(LocationInfo {
+                                display_name: display_name.clone(),
+                                avg_queue_position: avg_queue,
+                                avg_eta_seconds: avg_eta,
+                                best_ping_ms: best_ping,
+                                server_count: count,
+                                has_5080,
+                                has_4080,
+                            });
+                        }
+
+                        // Sort locations based on the selected sort mode
+                        // All sorts use display_name as a tiebreaker for stable ordering
+                        match queue_sort_mode {
+                            crate::app::QueueSortMode::BestValue => {
+                                // Sort by a combined score (lower is better)
+                                location_list.sort_by(|a, b| {
+                                    let score_a = a.best_ping_ms.unwrap_or(500) as f64
+                                        + (a.avg_eta_seconds.unwrap_or(0) as f64 / 60.0 * 0.5).min(100.0);
+                                    let score_b = b.best_ping_ms.unwrap_or(500) as f64
+                                        + (b.avg_eta_seconds.unwrap_or(0) as f64 / 60.0 * 0.5).min(100.0);
+                                    score_a.partial_cmp(&score_b)
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                        .then_with(|| a.display_name.cmp(&b.display_name))
+                                });
+                            }
+                            crate::app::QueueSortMode::QueueTime => {
+                                location_list.sort_by(|a, b| {
+                                    let eta_a = a.avg_eta_seconds.unwrap_or(i64::MAX);
+                                    let eta_b = b.avg_eta_seconds.unwrap_or(i64::MAX);
+                                    eta_a.cmp(&eta_b)
+                                        .then_with(|| a.display_name.cmp(&b.display_name))
+                                });
+                            }
+                            crate::app::QueueSortMode::Ping => {
+                                location_list.sort_by(|a, b| {
+                                    let ping_a = a.best_ping_ms.unwrap_or(u32::MAX);
+                                    let ping_b = b.best_ping_ms.unwrap_or(u32::MAX);
+                                    ping_a.cmp(&ping_b)
+                                        .then_with(|| a.display_name.cmp(&b.display_name))
+                                });
+                            }
+                            crate::app::QueueSortMode::Alphabetical => {
+                                location_list.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+                            }
+                        }
+                        region_locations.insert(region.clone(), location_list);
+                    }
+
+                    // Sort regions by priority
+                    let mut region_keys: Vec<_> = regions.keys().cloned().collect();
+                    region_keys.sort_by(|a, b| {
+                        let order = |r: &str| match r {
+                            "US" => 0, "EU" => 1, "CA" => 2, "JP" => 3, "KR" => 4, "THAI" => 5, "MY" => 6,
+                            "SG" => 7, "TW" => 8, "AU" => 9, "LATAM" => 10, "TR" => 11, "SA" => 12,
+                            _ => 100
+                        };
+                        order(a).cmp(&order(b)).then(a.cmp(b))
+                    });
+
+                    // Header with title and controls
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+
+                        // Title
+                        ui.label(
+                            egui::RichText::new("Queue Times")
+                                .size(22.0)
+                                .strong()
+                                .color(egui::Color32::WHITE)
+                        );
+
+                        ui.add_space(12.0);
+
+                        // Region count badge
+                        if queue_loading {
+                            ui.spinner();
+                        } else {
+                            egui::Frame::new()
+                                .fill(egui::Color32::from_rgb(40, 40, 55))
+                                .corner_radius(12.0)
+                                .inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 4 })
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{} regions", region_keys.len()))
+                                            .size(12.0)
+                                            .color(egui::Color32::from_rgb(150, 150, 150))
+                                    );
+                                });
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(16.0);
+
+                            // Refresh button
+                            let refresh_btn = egui::Button::new(
+                                egui::RichText::new("↻ Refresh")
+                                    .size(12.0)
+                                    .color(egui::Color32::WHITE)
+                            )
+                            .fill(egui::Color32::from_rgb(50, 50, 65))
+                            .corner_radius(6.0);
+
+                            if ui.add(refresh_btn).clicked() {
+                                actions.push(UiAction::RefreshQueueTimes);
+                            }
+                        });
+                    });
+
+                    ui.add_space(16.0);
+
+                    if queue_servers.is_empty() && !queue_loading {
+                        // Empty state
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(100.0);
+                            ui.label(
+                                egui::RichText::new("📊")
+                                    .size(48.0)
+                            );
+                            ui.add_space(16.0);
+                            ui.label(
+                                egui::RichText::new("No Queue Data Available")
+                                    .size(18.0)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(180, 180, 180))
+                            );
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new("Click Refresh to load queue times")
+                                    .size(14.0)
+                                    .color(egui::Color32::from_rgb(120, 120, 120))
+                            );
+                        });
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.add_space(8.0);
+
+                                // Recommended server card
+                                ui.horizontal(|ui| {
+                                    ui.add_space(16.0);
+
+                                    if !has_ping_data {
+                                        // Ping test still running - show loading state
+                                        egui::Frame::new()
+                                            .fill(egui::Color32::from_rgb(35, 35, 50))
+                                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 80, 100)))
+                                            .corner_radius(12.0)
+                                            .inner_margin(egui::Margin::same(16))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width() - 32.0);
+                                                ui.horizontal(|ui| {
+                                                    ui.spinner();
+                                                    ui.add_space(12.0);
+                                                    ui.vertical(|ui| {
+                                                        ui.label(
+                                                            egui::RichText::new("⭐ RECOMMENDED")
+                                                                .size(11.0)
+                                                                .strong()
+                                                                .color(egui::Color32::from_rgb(100, 100, 120))
+                                                        );
+                                                        ui.add_space(4.0);
+                                                        ui.label(
+                                                            egui::RichText::new("Waiting for ping test to finish...")
+                                                                .size(14.0)
+                                                                .color(egui::Color32::from_rgb(140, 140, 160))
+                                                        );
+                                                    });
+                                                });
+                                            });
+                                    } else if let Some(best) = recommended_server {
+                                        egui::Frame::new()
+                                            .fill(egui::Color32::from_rgb(25, 45, 25))
+                                            .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(118, 185, 0)))
+                                            .corner_radius(12.0)
+                                            .inner_margin(egui::Margin::same(16))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width() - 32.0);
+                                                ui.horizontal(|ui| {
+                                                    // Star icon and recommended label
+                                                    ui.label(
+                                                        egui::RichText::new("⭐ RECOMMENDED")
+                                                            .size(11.0)
+                                                            .strong()
+                                                            .color(egui::Color32::from_rgb(118, 185, 0))
+                                                    );
+
+                                                    ui.add_space(12.0);
+
+                                                    // Server info
+                                                    ui.label(
+                                                        egui::RichText::new(&best.display_name)
+                                                            .size(16.0)
+                                                            .strong()
+                                                            .color(egui::Color32::WHITE)
+                                                    );
+
+                                                    ui.add_space(8.0);
+
+                                                    // GPU badge
+                                                    let gpu_text = if best.is_5080_server {
+                                                        "5080"
+                                                    } else if best.is_4080_server {
+                                                        "4080"
+                                                    } else {
+                                                        "Unknown"
+                                                    };
+                                                    egui::Frame::new()
+                                                        .fill(egui::Color32::from_rgb(118, 185, 0).gamma_multiply(0.3))
+                                                        .corner_radius(4.0)
+                                                        .inner_margin(egui::Margin { left: 6, right: 6, top: 2, bottom: 2 })
+                                                        .show(ui, |ui| {
+                                                            ui.label(
+                                                                egui::RichText::new(gpu_text)
+                                                                    .size(10.0)
+                                                                    .strong()
+                                                                    .color(egui::Color32::from_rgb(118, 185, 0))
+                                                            );
+                                                        });
+
+                                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                        // Wait time
+                                                        let eta_text = crate::api::format_queue_eta(best.eta_seconds);
+                                                        ui.label(
+                                                            egui::RichText::new(format!("~{}", eta_text))
+                                                                .size(14.0)
+                                                                .color(egui::Color32::from_rgb(118, 185, 0))
+                                                        );
+
+                                                        ui.add_space(12.0);
+
+                                                        // Queue position in box
+                                                        let position_color = if best.queue_position <= 0 {
+                                                            egui::Color32::from_rgb(118, 185, 0)
+                                                        } else if best.queue_position <= 5 {
+                                                            // Low queue: green
+                                                            egui::Color32::from_rgb(118, 185, 0)
+                                                        } else if best.queue_position <= 15 {
+                                                            // Medium queue: orange
+                                                            egui::Color32::from_rgb(255, 165, 0)
+                                                        } else {
+                                                            // High queue: red
+                                                            egui::Color32::from_rgb(230, 80, 80)
+                                                        };
+                                                        let pos_text = if best.queue_position <= 0 {
+                                                            "0".to_string()
+                                                        } else {
+                                                            format!("{}", best.queue_position)
+                                                        };
+                                                        egui::Frame::new()
+                                                            .fill(position_color.gamma_multiply(0.2))
+                                                            .corner_radius(4.0)
+                                                            .inner_margin(egui::Margin { left: 8, right: 8, top: 3, bottom: 3 })
+                                                            .show(ui, |ui| {
+                                                                ui.label(
+                                                                    egui::RichText::new(pos_text)
+                                                                        .size(13.0)
+                                                                        .strong()
+                                                                        .color(position_color)
+                                                                );
+                                                            });
+
+                                                        ui.add_space(12.0);
+
+                                                        // Ping
+                                                        if let Some(ping) = best.ping_ms {
+                                                            ui.label(
+                                                                egui::RichText::new(format!("{}ms", ping))
+                                                                    .size(13.0)
+                                                                    .color(egui::Color32::from_rgb(140, 180, 140))
+                                                            );
+                                                        }
+                                                    });
+                                                });
+                                            });
+                                    }
+                                });
+
+                                ui.add_space(20.0);
+
+                                // Region sections with locations (using CollapsingHeader)
+                                for region in &region_keys {
+                                    if let Some(locations) = region_locations.get(region) {
+                                        let (flag, region_name) = match region.as_str() {
+                                            "US" => ("🇺🇸", "United States"),
+                                            "EU" => ("🇪🇺", "Europe"),
+                                            "CA" => ("🇨🇦", "Canada"),
+                                            "JP" => ("🇯🇵", "Japan"),
+                                            "THAI" => ("🇹🇭", "Thailand"),
+                                            "MY" => ("🇲🇾", "Malaysia"),
+                                            "KR" => ("🇰🇷", "South Korea"),
+                                            "SG" => ("🇸🇬", "Singapore"),
+                                            "TW" => ("🇹🇼", "Taiwan"),
+                                            "AU" => ("🇦🇺", "Australia"),
+                                            "LATAM" => ("🌎", "Latin America"),
+                                            "TR" => ("🇹🇷", "Turkey"),
+                                            "SA" => ("🇸🇦", "Saudi Arabia"),
+                                            "AF" => ("🌍", "Africa"),
+                                            "RU" => ("🇷🇺", "Russia"),
+                                            _ => ("🌐", region.as_str()),
+                                        };
+
+                                        // Region container with padding
+                                        ui.add_space(4.0);
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(16.0);
+                                            ui.vertical(|ui| {
+                                                ui.set_width(ui.available_width() - 32.0);
+
+                                                // Use CollapsingHeader for expandable regions
+                                                let header_text = format!("{} {} ({} locations)", flag, region_name, locations.len());
+                                                egui::CollapsingHeader::new(
+                                                    egui::RichText::new(header_text)
+                                                        .size(15.0)
+                                                        .strong()
+                                                        .color(egui::Color32::WHITE)
+                                                )
+                                                .default_open(true)
+                                                .show(ui, |ui| {
+                                                    // Location rows within this region
+                                                    for location in locations {
+                                                        ui.horizontal(|ui| {
+                                                            ui.add_space(20.0); // Indent under region
+
+                                                            egui::Frame::new()
+                                                                .fill(egui::Color32::from_rgb(28, 28, 38))
+                                                                .corner_radius(6.0)
+                                                                .inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 8 })
+                                                                .show(ui, |ui| {
+                                                                    ui.set_width(ui.available_width() - 36.0);
+                                                                    ui.horizontal(|ui| {
+                                                                        // Location name
+                                                                        ui.allocate_ui_with_layout(
+                                                                            egui::vec2(110.0, 20.0),
+                                                                            egui::Layout::left_to_right(egui::Align::Center),
+                                                                            |ui| {
+                                                                                ui.label(
+                                                                                    egui::RichText::new(&location.display_name)
+                                                                                        .size(13.0)
+                                                                                        .color(egui::Color32::WHITE)
+                                                                                );
+                                                                            }
+                                                                        );
+
+                                                                        // Server count if > 1
+                                                                        if location.server_count > 1 {
+                                                                            egui::Frame::new()
+                                                                                .fill(egui::Color32::from_rgb(45, 45, 60))
+                                                                                .corner_radius(4.0)
+                                                                                .inner_margin(egui::Margin { left: 5, right: 5, top: 2, bottom: 2 })
+                                                                                .show(ui, |ui| {
+                                                                                    ui.label(
+                                                                                        egui::RichText::new(format!("x{}", location.server_count))
+                                                                                            .size(9.0)
+                                                                                            .color(egui::Color32::from_rgb(120, 120, 140))
+                                                                                    );
+                                                                                });
+                                                                            ui.add_space(4.0);
+                                                                        }
+
+                                                                        // GPU badges
+                                                                        if location.has_5080 {
+                                                                            let gpu_color = egui::Color32::from_rgb(118, 185, 0);
+                                                                            egui::Frame::new()
+                                                                                .fill(gpu_color.gamma_multiply(0.2))
+                                                                                .corner_radius(4.0)
+                                                                                .inner_margin(egui::Margin { left: 5, right: 5, top: 2, bottom: 2 })
+                                                                                .show(ui, |ui| {
+                                                                                    ui.label(
+                                                                                        egui::RichText::new("5080")
+                                                                                            .size(9.0)
+                                                                                            .strong()
+                                                                                            .color(gpu_color)
+                                                                                    );
+                                                                                });
+                                                                            ui.add_space(4.0);
+                                                                        }
+                                                                        if location.has_4080 {
+                                                                            let gpu_color = egui::Color32::from_rgb(100, 160, 220);
+                                                                            egui::Frame::new()
+                                                                                .fill(gpu_color.gamma_multiply(0.2))
+                                                                                .corner_radius(4.0)
+                                                                                .inner_margin(egui::Margin { left: 5, right: 5, top: 2, bottom: 2 })
+                                                                                .show(ui, |ui| {
+                                                                                    ui.label(
+                                                                                        egui::RichText::new("4080")
+                                                                                            .size(9.0)
+                                                                                            .strong()
+                                                                                            .color(gpu_color)
+                                                                                    );
+                                                                                });
+                                                                        }
+
+                                                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                                            // ETA
+                                                                            let eta_text = crate::api::format_queue_eta(location.avg_eta_seconds);
+                                                                            let eta_color = if location.avg_eta_seconds.unwrap_or(0) <= 0 {
+                                                                                egui::Color32::from_rgb(118, 185, 0)
+                                                                            } else if location.avg_eta_seconds.unwrap_or(0) < 300 {
+                                                                                egui::Color32::from_rgb(255, 200, 50)
+                                                                            } else {
+                                                                                egui::Color32::from_rgb(150, 150, 150)
+                                                                            };
+
+                                                                            ui.label(
+                                                                                egui::RichText::new(format!("~{}", eta_text))
+                                                                                    .size(12.0)
+                                                                                    .color(eta_color)
+                                                                            );
+
+                                                                            ui.add_space(12.0);
+
+                                                                            // Queue position
+                                                                            let position_color = if location.avg_queue_position <= 0 {
+                                                                                egui::Color32::from_rgb(118, 185, 0)
+                                                                            } else if location.avg_queue_position < 20 {
+                                                                                egui::Color32::from_rgb(255, 200, 50)
+                                                                            } else if location.avg_queue_position < 100 {
+                                                                                egui::Color32::from_rgb(255, 150, 80)
+                                                                            } else {
+                                                                                egui::Color32::from_rgb(255, 100, 100)
+                                                                            };
+
+                                                                            egui::Frame::new()
+                                                                                .fill(position_color.gamma_multiply(0.2))
+                                                                                .corner_radius(4.0)
+                                                                                .inner_margin(egui::Margin { left: 8, right: 8, top: 3, bottom: 3 })
+                                                                                .show(ui, |ui| {
+                                                                                    ui.label(
+                                                                                        egui::RichText::new(format!("{}", location.avg_queue_position))
+                                                                                            .size(12.0)
+                                                                                            .strong()
+                                                                                            .color(position_color)
+                                                                                    );
+                                                                                });
+
+                                                                            ui.add_space(12.0);
+
+                                                                            // Ping
+                                                                            if let Some(ping) = location.best_ping_ms {
+                                                                                let ping_color = if ping < 50 {
+                                                                                    egui::Color32::from_rgb(118, 185, 0)
+                                                                                } else if ping < 100 {
+                                                                                    egui::Color32::from_rgb(255, 200, 50)
+                                                                                } else {
+                                                                                    egui::Color32::from_rgb(255, 150, 80)
+                                                                                };
+                                                                                ui.label(
+                                                                                    egui::RichText::new(format!("{}ms", ping))
+                                                                                        .size(12.0)
+                                                                                        .color(ping_color)
+                                                                                );
+                                                                            } else if !has_ping_data {
+                                                                                ui.spinner();
+                                                                            } else {
+                                                                                ui.label(
+                                                                                    egui::RichText::new("-")
+                                                                                        .size(12.0)
+                                                                                        .color(egui::Color32::from_rgb(80, 80, 100))
+                                                                                );
+                                                                            }
+                                                                        });
+                                                                    });
+                                                                });
+                                                        });
+                                                        ui.add_space(4.0);
+                                                    }
+                                                });
+                                            });
+                                        });
+                                    }
+                                }
+
+                                // Attribution footer
+                                ui.add_space(16.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("Powered by")
+                                                .size(11.0)
+                                                .color(egui::Color32::from_rgb(80, 80, 80))
+                                        );
+                                        ui.add_space(4.0);
+                                        if ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new("PrintedWaste")
+                                                    .size(11.0)
+                                                    .color(egui::Color32::from_rgb(118, 185, 0))
+                                                    .underline()
+                                            ).sense(egui::Sense::click())
+                                        ).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                            if let Err(e) = open::that("https://printedwaste.com/gfn/") {
+                                                warn!("Failed to open PrintedWaste link: {}", e);
+                                            }
+                                        }
+                                    });
+                                });
+                                ui.add_space(20.0);
+                            });
+                    }
+                }
                 GamesTab::AllGames | GamesTab::MyLibrary => {
                     // Grid view for All Games and My Library tabs
                     let header_text = match current_tab {
@@ -3745,7 +4364,21 @@ impl Renderer {
 
         // Game detail popup
         if let Some(game) = selected_game_popup {
-            Self::render_game_popup(ctx, game, game_textures, actions);
+            Self::render_game_popup(ctx, game, game_textures, subscription, actions);
+        }
+
+        // Server selection modal (for free tier users)
+        if show_server_selection {
+            if let Some(game) = pending_server_selection_game {
+                Self::render_server_selection_modal(
+                    ctx,
+                    game,
+                    queue_servers,
+                    queue_loading,
+                    selected_queue_server,
+                    actions,
+                );
+            }
         }
 
         // Settings modal
@@ -3787,8 +4420,15 @@ impl Renderer {
         ctx: &egui::Context,
         game: &crate::app::GameInfo,
         game_textures: &HashMap<String, egui::TextureHandle>,
+        subscription: Option<&crate::app::SubscriptionInfo>,
         actions: &mut Vec<UiAction>,
     ) {
+        // Check if user is free tier (show server selection modal instead of direct launch).
+        // If subscription info is not available, default to treating the user as non-free
+        // to avoid incorrectly restricting paid users when data hasn't loaded yet.
+        let is_free_tier = subscription
+            .map(|s| s.membership_tier == "FREE")
+            .unwrap_or(false);
         let popup_width = 450.0;
         let popup_height = 500.0;
 
@@ -4013,7 +4653,7 @@ impl Renderer {
 
                     // Buttons
                     ui.horizontal(|ui| {
-                        // Play button
+                        // Play button (for free tier, show server selection first)
                         let play_btn = egui::Button::new(
                             egui::RichText::new("  Play Now  ").size(16.0).strong(),
                         )
@@ -4021,8 +4661,15 @@ impl Renderer {
                         .min_size(egui::vec2(120.0, 40.0));
 
                         if ui.add(play_btn).clicked() {
-                            actions.push(UiAction::LaunchGameDirect(game.clone()));
-                            actions.push(UiAction::CloseGamePopup);
+                            if is_free_tier {
+                                // Free tier: show server selection modal
+                                actions.push(UiAction::ShowServerSelection(game.clone()));
+                                actions.push(UiAction::CloseGamePopup);
+                            } else {
+                                // Paid tier: launch directly
+                                actions.push(UiAction::LaunchGameDirect(game.clone()));
+                                actions.push(UiAction::CloseGamePopup);
+                            }
                         }
 
                         ui.add_space(20.0);
@@ -4035,6 +4682,461 @@ impl Renderer {
 
                         if ui.add(close_btn).clicked() {
                             actions.push(UiAction::CloseGamePopup);
+                        }
+                    });
+                });
+            });
+    }
+
+    /// Render the server selection modal (for free tier users choosing a server before launching)
+    fn render_server_selection_modal(
+        ctx: &egui::Context,
+        game: &crate::app::GameInfo,
+        queue_servers: &[crate::api::QueueServerInfo],
+        queue_loading: bool,
+        selected_server: &Option<String>,
+        actions: &mut Vec<UiAction>,
+    ) {
+        // Modal overlay
+        egui::Area::new(egui::Id::new("server_selection_overlay"))
+            .fixed_pos([0.0, 0.0])
+            .interactable(true)
+            .order(egui::Order::Background)
+            .show(ctx, |ui| {
+                let screen_rect = ctx.input(|i| i.viewport_rect());
+                ui.painter()
+                    .rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(200));
+                if ui
+                    .allocate_rect(screen_rect, egui::Sense::click())
+                    .clicked()
+                {
+                    actions.push(UiAction::CloseServerSelection);
+                }
+            });
+
+        // Check if we have ping data
+        let has_ping_data = queue_servers.iter().any(|s| s.ping_ms.is_some());
+
+        // Get recommended server (best score across all servers)
+        let recommended = if has_ping_data {
+            crate::api::get_auto_selected_server(queue_servers)
+        } else {
+            None
+        };
+
+        // Group servers by region (already simple: "US", "EU", etc. from queue API) and find best server per region
+        let mut region_best: std::collections::HashMap<String, &crate::api::QueueServerInfo> =
+            std::collections::HashMap::new();
+
+        for server in queue_servers {
+            let entry = region_best.entry(server.region.clone()).or_insert(server);
+            // Replace if this server has better score
+            let current_score = crate::api::calculate_server_score(entry);
+            let new_score = crate::api::calculate_server_score(server);
+            if new_score < current_score {
+                *entry = server;
+            }
+        }
+
+        // Sort regions by priority
+        let mut region_keys: Vec<_> = region_best.keys().cloned().collect();
+        region_keys.sort_by(|a, b| {
+            let order = |r: &str| match r {
+                "US" => 0,
+                "EU" => 1,
+                "CA" => 2,
+                "JP" => 3,
+                "KR" => 4,
+                "THAI" => 5,
+                "MY" => 6,
+                "SG" => 7,
+                "TW" => 8,
+                "AU" => 9,
+                "LATAM" => 10,
+                "TR" => 11,
+                "SA" => 12,
+                _ => 100,
+            };
+            order(a).cmp(&order(b)).then(a.cmp(b))
+        });
+
+        egui::Window::new("Choose Server")
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size([520.0, 480.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    // Game title
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Launching:")
+                                .size(14.0)
+                                .color(egui::Color32::GRAY),
+                        );
+                        ui.label(
+                            egui::RichText::new(&game.title)
+                                .size(14.0)
+                                .strong()
+                                .color(egui::Color32::WHITE),
+                        );
+                    });
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Auto/Recommended option
+                    let auto_selected = selected_server.is_none();
+                    let auto_frame_fill = if auto_selected {
+                        egui::Color32::from_rgb(30, 50, 30)
+                    } else {
+                        egui::Color32::from_rgb(35, 35, 50)
+                    };
+                    let auto_stroke = if auto_selected {
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(118, 185, 0))
+                    } else {
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 80))
+                    };
+
+                    let auto_response = egui::Frame::new()
+                        .fill(auto_frame_fill)
+                        .stroke(auto_stroke)
+                        .corner_radius(8.0)
+                        .inner_margin(egui::Margin::same(12))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("⭐").size(18.0));
+                                ui.add_space(8.0);
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Auto (Recommended)")
+                                            .size(15.0)
+                                            .strong()
+                                            .color(egui::Color32::WHITE),
+                                    );
+                                    if !has_ping_data {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.add_space(8.0);
+                                            ui.label(
+                                                egui::RichText::new("Testing ping to servers...")
+                                                    .size(12.0)
+                                                    .color(egui::Color32::from_rgb(140, 140, 160)),
+                                            );
+                                        });
+                                    } else if let Some(best) = recommended {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{} • {}ms • ~{}",
+                                                best.display_name,
+                                                best.ping_ms.unwrap_or(0),
+                                                crate::api::format_queue_eta(best.eta_seconds)
+                                            ))
+                                            .size(12.0)
+                                            .color(egui::Color32::from_rgb(118, 185, 0)),
+                                        );
+                                    }
+                                });
+                            });
+                        })
+                        .response;
+
+                    if auto_response.interact(egui::Sense::click()).clicked() {
+                        actions.push(UiAction::SelectQueueServer(None));
+                    }
+
+                    ui.add_space(12.0);
+
+                    // Region list
+                    ui.label(
+                        egui::RichText::new("Or choose a region:")
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(120, 120, 120)),
+                    );
+
+                    ui.add_space(8.0);
+
+                    if queue_loading && queue_servers.is_empty() {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new("Loading servers...")
+                                    .size(13.0)
+                                    .color(egui::Color32::GRAY),
+                            );
+                        });
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .max_height(220.0)
+                            .show(ui, |ui| {
+                                // Show regions in sorted order
+                                for region in &region_keys {
+                                    if let Some(best_server) = region_best.get(region) {
+                                        let (flag, region_name) = match region.as_str() {
+                                            "US" => ("🇺🇸", "United States"),
+                                            "EU" => ("🇪🇺", "Europe"),
+                                            "CA" => ("🇨🇦", "Canada"),
+                                            "JP" => ("🇯🇵", "Japan"),
+                                            "THAI" => ("🇹🇭", "Thailand"),
+                                            "MY" => ("🇲🇾", "Malaysia"),
+                                            "KR" => ("🇰🇷", "South Korea"),
+                                            "SG" => ("🇸🇬", "Singapore"),
+                                            "TW" => ("🇹🇼", "Taiwan"),
+                                            "AU" => ("🇦🇺", "Australia"),
+                                            "LATAM" => ("🌎", "Latin America"),
+                                            "TR" => ("🇹🇷", "Turkey"),
+                                            "SA" => ("🇸🇦", "Saudi Arabia"),
+                                            "AF" => ("🌍", "Africa"),
+                                            "RU" => ("🇷🇺", "Russia"),
+                                            _ => ("🌐", region.as_str()),
+                                        };
+
+                                        let is_selected = selected_server.as_ref()
+                                            == Some(&best_server.server_id);
+                                        let frame_fill = if is_selected {
+                                            egui::Color32::from_rgb(40, 50, 70)
+                                        } else {
+                                            egui::Color32::from_rgb(30, 30, 42)
+                                        };
+                                        let frame_stroke = if is_selected {
+                                            egui::Stroke::new(
+                                                1.5,
+                                                egui::Color32::from_rgb(100, 160, 220),
+                                            )
+                                        } else {
+                                            egui::Stroke::NONE
+                                        };
+
+                                        let server_response = egui::Frame::new()
+                                            .fill(frame_fill)
+                                            .stroke(frame_stroke)
+                                            .corner_radius(6.0)
+                                            .inner_margin(egui::Margin::symmetric(12, 10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.horizontal(|ui| {
+                                                    // Flag and region name
+                                                    ui.label(egui::RichText::new(flag).size(18.0));
+                                                    ui.add_space(8.0);
+                                                    ui.allocate_ui_with_layout(
+                                                        egui::vec2(130.0, 20.0),
+                                                        egui::Layout::left_to_right(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            ui.label(
+                                                                egui::RichText::new(region_name)
+                                                                    .size(14.0)
+                                                                    .strong()
+                                                                    .color(egui::Color32::WHITE),
+                                                            );
+                                                        },
+                                                    );
+
+                                                    // Best server location in this region
+                                                    ui.label(
+                                                        egui::RichText::new(
+                                                            &best_server.display_name,
+                                                        )
+                                                        .size(11.0)
+                                                        .color(egui::Color32::from_rgb(
+                                                            120, 120, 140,
+                                                        )),
+                                                    );
+
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            // ETA
+                                                            let eta_text =
+                                                                crate::api::format_queue_eta(
+                                                                    best_server.eta_seconds,
+                                                                );
+                                                            let eta_color = if best_server
+                                                                .eta_seconds
+                                                                .unwrap_or(0)
+                                                                <= 0
+                                                            {
+                                                                egui::Color32::from_rgb(118, 185, 0)
+                                                            } else if best_server
+                                                                .eta_seconds
+                                                                .unwrap_or(0)
+                                                                < 300
+                                                            {
+                                                                egui::Color32::from_rgb(
+                                                                    255, 200, 50,
+                                                                )
+                                                            } else {
+                                                                egui::Color32::from_rgb(
+                                                                    150, 150, 150,
+                                                                )
+                                                            };
+                                                            ui.label(
+                                                                egui::RichText::new(format!(
+                                                                    "~{}",
+                                                                    eta_text
+                                                                ))
+                                                                .size(11.0)
+                                                                .color(eta_color),
+                                                            );
+
+                                                            ui.add_space(10.0);
+
+                                                            // Queue position in box
+                                                            let queue_color = if best_server
+                                                                .queue_position
+                                                                <= 0
+                                                            {
+                                                                egui::Color32::from_rgb(118, 185, 0)
+                                                            } else if best_server.queue_position
+                                                                < 20
+                                                            {
+                                                                egui::Color32::from_rgb(
+                                                                    255, 200, 50,
+                                                                )
+                                                            } else if best_server.queue_position
+                                                                < 100
+                                                            {
+                                                                egui::Color32::from_rgb(
+                                                                    255, 150, 80,
+                                                                )
+                                                            } else {
+                                                                egui::Color32::from_rgb(
+                                                                    255, 100, 100,
+                                                                )
+                                                            };
+                                                            egui::Frame::new()
+                                                                .fill(
+                                                                    queue_color.gamma_multiply(0.2),
+                                                                )
+                                                                .corner_radius(3.0)
+                                                                .inner_margin(
+                                                                    egui::Margin::symmetric(6, 2),
+                                                                )
+                                                                .show(ui, |ui| {
+                                                                    ui.label(
+                                                                        egui::RichText::new(
+                                                                            format!(
+                                                                                "{}",
+                                                                                best_server
+                                                                                    .queue_position
+                                                                            ),
+                                                                        )
+                                                                        .size(11.0)
+                                                                        .strong()
+                                                                        .color(queue_color),
+                                                                    );
+                                                                });
+
+                                                            ui.add_space(10.0);
+
+                                                            // Ping
+                                                            if let Some(ping) = best_server.ping_ms
+                                                            {
+                                                                let ping_color = if ping < 50 {
+                                                                    egui::Color32::from_rgb(
+                                                                        118, 185, 0,
+                                                                    )
+                                                                } else if ping < 100 {
+                                                                    egui::Color32::from_rgb(
+                                                                        255, 200, 50,
+                                                                    )
+                                                                } else {
+                                                                    egui::Color32::from_rgb(
+                                                                        255, 150, 80,
+                                                                    )
+                                                                };
+                                                                ui.label(
+                                                                    egui::RichText::new(format!(
+                                                                        "{}ms",
+                                                                        ping
+                                                                    ))
+                                                                    .size(11.0)
+                                                                    .color(ping_color),
+                                                                );
+                                                            } else {
+                                                                ui.spinner();
+                                                            }
+                                                        },
+                                                    );
+                                                });
+                                            })
+                                            .response;
+
+                                        if server_response.interact(egui::Sense::click()).clicked()
+                                        {
+                                            actions.push(UiAction::SelectQueueServer(Some(
+                                                best_server.server_id.clone(),
+                                            )));
+                                        }
+
+                                        ui.add_space(4.0);
+                                    }
+                                }
+                            });
+                    }
+
+                    ui.add_space(16.0);
+
+                    // Buttons
+                    ui.horizontal(|ui| {
+                        // Launch button
+                        let launch_btn = egui::Button::new(
+                            egui::RichText::new("  Launch Game  ").size(15.0).strong(),
+                        )
+                        .fill(egui::Color32::from_rgb(70, 180, 70))
+                        .min_size(egui::vec2(140.0, 38.0));
+
+                        if ui.add(launch_btn).clicked() {
+                            actions.push(UiAction::LaunchWithServer(
+                                game.clone(),
+                                selected_server.clone(),
+                            ));
+                        }
+
+                        ui.add_space(12.0);
+
+                        // Cancel button
+                        let cancel_btn =
+                            egui::Button::new(egui::RichText::new("  Cancel  ").size(14.0))
+                                .fill(egui::Color32::from_rgb(60, 60, 80))
+                                .min_size(egui::vec2(90.0, 38.0));
+
+                        if ui.add(cancel_btn).clicked() {
+                            actions.push(UiAction::CloseServerSelection);
+                        }
+                    });
+
+                    // Attribution footer
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Powered by")
+                                .size(10.0)
+                                .color(egui::Color32::from_rgb(80, 80, 80)),
+                        );
+                        ui.add_space(4.0);
+                        if ui
+                            .add(
+                                egui::Label::new(
+                                    egui::RichText::new("PrintedWaste")
+                                        .size(10.0)
+                                        .color(egui::Color32::from_rgb(118, 185, 0))
+                                        .underline(),
+                                )
+                                .sense(egui::Sense::click()),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            if let Err(e) = open::that("https://printedwaste.com/gfn/") {
+                                warn!("Failed to open PrintedWaste link: {}", e);
+                            }
                         }
                     });
                 });

@@ -587,3 +587,72 @@ pub fn clear_popup_game_details() {
         let _ = std::fs::remove_file(path);
     }
 }
+
+// ============================================================
+// Queue Times Cache (from PrintedWaste API)
+// ============================================================
+
+use crate::api::QueueServerInfo;
+
+fn queue_cache_path() -> Option<PathBuf> {
+    get_app_data_dir().map(|p| p.join("queue_cache.json"))
+}
+
+pub fn save_queue_cache(servers: &[QueueServerInfo]) {
+    if let Some(path) = queue_cache_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let cache: Vec<serde_json::Value> = servers
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "server_id": s.server_id,
+                    "display_name": s.display_name,
+                    "region": s.region,
+                    "ping_ms": s.ping_ms,
+                    "queue_position": s.queue_position,
+                    "eta_seconds": s.eta_seconds,
+                    "is_4080_server": s.is_4080_server,
+                    "is_5080_server": s.is_5080_server,
+                    "last_updated": s.last_updated,
+                })
+            })
+            .collect();
+
+        if let Ok(json) = serde_json::to_string(&cache) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+pub fn load_queue_cache() -> Option<Vec<QueueServerInfo>> {
+    let path = queue_cache_path()?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let cache: Vec<serde_json::Value> = serde_json::from_str(&content).ok()?;
+
+    Some(
+        cache
+            .into_iter()
+            .filter_map(|v| {
+                Some(QueueServerInfo {
+                    server_id: v.get("server_id")?.as_str()?.to_string(),
+                    display_name: v.get("display_name")?.as_str()?.to_string(),
+                    region: v.get("region")?.as_str()?.to_string(),
+                    ping_ms: v.get("ping_ms").and_then(|v| v.as_u64()).map(|v| v as u32),
+                    queue_position: v.get("queue_position")?.as_i64()? as i32,
+                    eta_seconds: v.get("eta_seconds").and_then(|v| v.as_i64()),
+                    is_4080_server: v.get("is_4080_server").and_then(|v| v.as_bool()).unwrap_or(false),
+                    is_5080_server: v.get("is_5080_server").and_then(|v| v.as_bool()).unwrap_or(false),
+                    last_updated: v.get("last_updated").and_then(|v| v.as_i64()).unwrap_or(0),
+                })
+            })
+            .collect(),
+    )
+}
+
+pub fn clear_queue_cache() {
+    if let Some(path) = queue_cache_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}

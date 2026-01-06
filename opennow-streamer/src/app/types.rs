@@ -148,15 +148,45 @@ pub struct EntitledResolution {
 /// Current tab in Games view
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GamesTab {
-    Home,      // Sectioned home view (like official GFN client)
-    AllGames,  // Flat grid view
-    MyLibrary, // User's library
+    Home,       // Sectioned home view (like official GFN client)
+    AllGames,   // Flat grid view
+    MyLibrary,  // User's library
+    QueueTimes, // Queue times for games (hidden, for free tier users)
 }
 
 impl Default for GamesTab {
     fn default() -> Self {
         GamesTab::Home // Default to sectioned home view
     }
+}
+
+/// Sort mode for queue times display
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueueSortMode {
+    #[default]
+    BestValue, // Balanced score of ping + queue time (recommended)
+    QueueTime,    // Shortest queue first
+    Ping,         // Lowest ping first
+    Alphabetical, // A-Z by server name
+}
+
+impl QueueSortMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            QueueSortMode::BestValue => "Best Value",
+            QueueSortMode::QueueTime => "Shortest Queue",
+            QueueSortMode::Ping => "Lowest Ping",
+            QueueSortMode::Alphabetical => "A-Z",
+        }
+    }
+}
+
+/// Filter mode for queue times display
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum QueueRegionFilter {
+    #[default]
+    All,
+    Region(String), // Filter by specific region
 }
 
 /// Server/Region information
@@ -231,6 +261,20 @@ pub enum UiAction {
     CloseAllianceWarning,
     /// Reset all settings to defaults
     ResetSettings,
+    /// Set queue sort mode
+    SetQueueSortMode(QueueSortMode),
+    /// Set queue region filter
+    SetQueueRegionFilter(QueueRegionFilter),
+    /// Show server selection modal (for free tier users)
+    ShowServerSelection(GameInfo),
+    /// Close server selection modal
+    CloseServerSelection,
+    /// Select a queue server for launching
+    SelectQueueServer(Option<String>),
+    /// Launch game with selected queue server
+    LaunchWithServer(GameInfo, Option<String>),
+    /// Refresh queue times
+    RefreshQueueTimes,
 }
 
 /// Setting changes
