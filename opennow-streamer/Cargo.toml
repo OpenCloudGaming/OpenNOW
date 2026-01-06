@@ -25,9 +25,12 @@ futures-util = "0.3"
 native-tls = "0.2"
 tokio-native-tls = "0.3"
 
-# Video decoding - FFmpeg with hardware acceleration
+# Video decoding - FFmpeg with hardware acceleration (Windows/macOS only)
+# Linux uses native Vulkan Video or GStreamer
+[target.'cfg(not(target_os = "linux"))'.dependencies]
 ffmpeg-next = "8"
-# Keep OpenH264 as fallback
+
+# Keep OpenH264 as fallback (all platforms)
 openh264 = "0.6"
 
 # Audio decoding (stub for now - will add opus decoding later)
@@ -118,6 +121,10 @@ libloading = "0.8"
 # Vulkan for Vulkan Video decoding (GFN-style cross-GPU hardware decode)
 ash = "0.38"
 ash-window = "0.13"
+# GStreamer for V4L2 hardware decoding (Raspberry Pi and embedded)
+gstreamer = "0.23"
+gstreamer-video = "0.23"
+gstreamer-app = "0.23"
 
 # X11 is optional - only needed for XInput2 fallback when evdev isn't available
 # To enable: cargo build --features x11-input
