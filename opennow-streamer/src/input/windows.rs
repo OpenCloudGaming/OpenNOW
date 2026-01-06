@@ -5,15 +5,15 @@
 //! Events are coalesced (batched) every 4ms like the official GFN client
 //! to prevent server-side buffering while maintaining responsiveness.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use log::{debug, error, info};
+use parking_lot::Mutex;
 use std::ffi::c_void;
 use std::mem::size_of;
-use log::{info, error, debug};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use tokio::sync::mpsc;
-use parking_lot::Mutex;
 
-use crate::webrtc::InputEvent;
 use super::{get_timestamp_us, session_elapsed_us, MOUSE_COALESCE_INTERVAL_US};
+use crate::webrtc::InputEvent;
 
 // Static state
 static RAW_INPUT_REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -21,6 +21,8 @@ static RAW_INPUT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ACCUMULATED_DX: AtomicI32 = AtomicI32::new(0);
 static ACCUMULATED_DY: AtomicI32 = AtomicI32::new(0);
 static MESSAGE_WINDOW: Mutex<Option<isize>> = Mutex::new(None);
+// Track if window class was registered (persists for process lifetime)
+static WINDOW_CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 // Coalescing state - accumulates events for 4ms batches (like official GFN client)
 static COALESCE_DX: AtomicI32 = AtomicI32::new(0);
@@ -153,10 +155,29 @@ struct RECT {
 #[link(name = "user32")]
 extern "system" {
     fn RegisterRawInputDevices(devices: *const RAWINPUTDEVICE, num_devices: u32, size: u32) -> i32;
-    fn GetRawInputData(raw_input: *mut c_void, command: u32, data: *mut c_void, size: *mut u32, header_size: u32) -> u32;
+    fn GetRawInputData(
+        raw_input: *mut c_void,
+        command: u32,
+        data: *mut c_void,
+        size: *mut u32,
+        header_size: u32,
+    ) -> u32;
     fn DefWindowProcW(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT;
     fn RegisterClassExW(wc: *const WNDCLASSEXW) -> ATOM;
-    fn CreateWindowExW(ex_style: u32, class_name: *const u16, window_name: *const u16, style: u32, x: i32, y: i32, width: i32, height: i32, parent: HWND, menu: *mut c_void, instance: HINSTANCE, param: *mut c_void) -> HWND;
+    fn CreateWindowExW(
+        ex_style: u32,
+        class_name: *const u16,
+        window_name: *const u16,
+        style: u32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        parent: HWND,
+        menu: *mut c_void,
+        instance: HINSTANCE,
+        param: *mut c_void,
+    ) -> HWND;
     fn DestroyWindow(hwnd: HWND) -> i32;
     fn GetMessageW(msg: *mut MSG, hwnd: HWND, filter_min: u32, filter_max: u32) -> i32;
     fn TranslateMessage(msg: *const MSG) -> i32;
@@ -182,7 +203,12 @@ fn update_center() -> bool {
         if hwnd == 0 {
             return false;
         }
-        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         if GetClientRect(hwnd, &mut rect) == 0 {
             return false;
         }
@@ -220,9 +246,7 @@ fn register_raw_mouse(hwnd: HWND) -> bool {
         hwnd_target: hwnd,
     };
 
-    unsafe {
-        RegisterRawInputDevices(&device, 1, size_of::<RAWINPUTDEVICE>() as u32) != 0
-    }
+    unsafe { RegisterRawInputDevices(&device, 1, size_of::<RAWINPUTDEVICE>() as u32) != 0 }
 }
 
 /// Unregister raw mouse input
@@ -234,9 +258,7 @@ fn unregister_raw_mouse() -> bool {
         hwnd_target: 0,
     };
 
-    unsafe {
-        RegisterRawInputDevices(&device, 1, size_of::<RAWINPUTDEVICE>() as u32) != 0
-    }
+    unsafe { RegisterRawInputDevices(&device, 1, size_of::<RAWINPUTDEVICE>() as u32) != 0 }
 }
 
 /// Process a WM_INPUT message and extract mouse delta
@@ -357,11 +379,32 @@ pub fn start_raw_input() -> Result<(), String> {
     // No cursor recentering - cursor is hidden during streaming
     // Recentering causes jitter and feedback loops
 
+    // If already registered AND active, just return success
     if RAW_INPUT_REGISTERED.load(Ordering::SeqCst) {
+        if RAW_INPUT_ACTIVE.load(Ordering::SeqCst) {
+            info!("Raw input already active");
+            return Ok(());
+        }
+        // Re-activating existing registration
+        // Reset accumulated state before reactivating to ensure clean state
+        ACCUMULATED_DX.store(0, Ordering::SeqCst);
+        ACCUMULATED_DY.store(0, Ordering::SeqCst);
+        COALESCE_DX.store(0, Ordering::SeqCst);
+        COALESCE_DY.store(0, Ordering::SeqCst);
+        COALESCE_LAST_SEND_US.store(0, Ordering::SeqCst);
+
         RAW_INPUT_ACTIVE.store(true, Ordering::SeqCst);
-        info!("Raw input resumed");
+        info!("Raw input resumed with clean state");
         return Ok(());
     }
+
+    // Reset all state before starting fresh
+    ACCUMULATED_DX.store(0, Ordering::SeqCst);
+    ACCUMULATED_DY.store(0, Ordering::SeqCst);
+    COALESCE_DX.store(0, Ordering::SeqCst);
+    COALESCE_DY.store(0, Ordering::SeqCst);
+    COALESCE_LAST_SEND_US.store(0, Ordering::SeqCst);
+    COALESCED_EVENT_COUNT.store(0, Ordering::SeqCst);
 
     // Spawn a thread to handle the message loop
     std::thread::spawn(|| {
@@ -369,25 +412,39 @@ pub fn start_raw_input() -> Result<(), String> {
             let class_name = to_wide("OpenNOW_RawInput_Streamer");
             let h_instance = GetModuleHandleW(std::ptr::null());
 
-            // Register window class
-            let wc = WNDCLASSEXW {
-                cb_size: std::mem::size_of::<WNDCLASSEXW>() as u32,
-                style: 0,
-                lpfn_wnd_proc: Some(raw_input_wnd_proc),
-                cb_cls_extra: 0,
-                cb_wnd_extra: 0,
-                h_instance,
-                h_icon: std::ptr::null_mut(),
-                h_cursor: std::ptr::null_mut(),
-                hbr_background: std::ptr::null_mut(),
-                lpsz_menu_name: std::ptr::null(),
-                lpsz_class_name: class_name.as_ptr(),
-                h_icon_sm: std::ptr::null_mut(),
-            };
+            // Register window class only once per process lifetime
+            // Windows keeps class registrations until process exit
+            if !WINDOW_CLASS_REGISTERED.load(Ordering::SeqCst) {
+                let wc = WNDCLASSEXW {
+                    cb_size: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                    style: 0,
+                    lpfn_wnd_proc: Some(raw_input_wnd_proc),
+                    cb_cls_extra: 0,
+                    cb_wnd_extra: 0,
+                    h_instance,
+                    h_icon: std::ptr::null_mut(),
+                    h_cursor: std::ptr::null_mut(),
+                    hbr_background: std::ptr::null_mut(),
+                    lpsz_menu_name: std::ptr::null(),
+                    lpsz_class_name: class_name.as_ptr(),
+                    h_icon_sm: std::ptr::null_mut(),
+                };
 
-            if RegisterClassExW(&wc) == 0 {
-                error!("Failed to register raw input window class");
-                return;
+                if RegisterClassExW(&wc) == 0 {
+                    // Check if class already exists (error 1410 = CLASS_ALREADY_EXISTS)
+                    let err = std::io::Error::last_os_error();
+                    if err.raw_os_error() == Some(1410) {
+                        // Class already registered, that's fine
+                        info!("Raw input window class already registered");
+                        WINDOW_CLASS_REGISTERED.store(true, Ordering::SeqCst);
+                    } else {
+                        error!("Failed to register raw input window class: {}", err);
+                        return;
+                    }
+                } else {
+                    WINDOW_CLASS_REGISTERED.store(true, Ordering::SeqCst);
+                    info!("Raw input window class registered");
+                }
             }
 
             // Create message-only window (HWND_MESSAGE = -3)
@@ -396,7 +453,10 @@ pub fn start_raw_input() -> Result<(), String> {
                 class_name.as_ptr(),
                 std::ptr::null(),
                 0,
-                0, 0, 0, 0,
+                0,
+                0,
+                0,
+                0,
                 -3isize, // HWND_MESSAGE
                 std::ptr::null_mut(),
                 h_instance,
@@ -404,7 +464,8 @@ pub fn start_raw_input() -> Result<(), String> {
             );
 
             if hwnd == 0 {
-                error!("Failed to create raw input window");
+                let err = std::io::Error::last_os_error();
+                error!("Failed to create raw input window: {}", err);
                 return;
             }
 
@@ -428,7 +489,8 @@ pub fn start_raw_input() -> Result<(), String> {
                 DispatchMessageW(&msg);
             }
 
-            // Cleanup
+            // Cleanup - destroy window but keep class registered
+            DestroyWindow(hwnd);
             RAW_INPUT_REGISTERED.store(false, Ordering::SeqCst);
             RAW_INPUT_ACTIVE.store(false, Ordering::SeqCst);
             *MESSAGE_WINDOW.lock() = None;
@@ -468,7 +530,26 @@ pub fn resume_raw_input() {
 
 /// Stop raw input completely
 pub fn stop_raw_input() {
+    // First, deactivate to stop processing new events immediately
     RAW_INPUT_ACTIVE.store(false, Ordering::SeqCst);
+
+    // Clear the event sender FIRST to prevent any in-flight events from being sent
+    // to a potentially stale channel
+    clear_raw_input_sender();
+
+    // Reset all accumulated state to prevent stale deltas in next session
+    ACCUMULATED_DX.store(0, Ordering::SeqCst);
+    ACCUMULATED_DY.store(0, Ordering::SeqCst);
+    COALESCE_DX.store(0, Ordering::SeqCst);
+    COALESCE_DY.store(0, Ordering::SeqCst);
+    COALESCE_LAST_SEND_US.store(0, Ordering::SeqCst);
+
+    // Reset local cursor to center for next session
+    let width = LOCAL_CURSOR_WIDTH.load(Ordering::Acquire);
+    let height = LOCAL_CURSOR_HEIGHT.load(Ordering::Acquire);
+    LOCAL_CURSOR_X.store(width / 2, Ordering::SeqCst);
+    LOCAL_CURSOR_Y.store(height / 2, Ordering::SeqCst);
+
     unregister_raw_mouse();
 
     let guard = MESSAGE_WINDOW.lock();
@@ -479,11 +560,11 @@ pub fn stop_raw_input() {
     }
     drop(guard);
 
-    // Wait for the thread to actually exit (up to 500ms)
+    // Wait for the thread to actually exit (up to 1000ms with better synchronization)
     // This prevents race conditions when starting a new session immediately
     let start = std::time::Instant::now();
     while RAW_INPUT_REGISTERED.load(Ordering::SeqCst) {
-        if start.elapsed() > std::time::Duration::from_millis(500) {
+        if start.elapsed() > std::time::Duration::from_millis(1000) {
             error!("Raw input thread did not exit in time, forcing reset");
             RAW_INPUT_REGISTERED.store(false, Ordering::SeqCst);
             *MESSAGE_WINDOW.lock() = None;
@@ -492,10 +573,11 @@ pub fn stop_raw_input() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    // Clear the event sender to avoid stale channel issues
-    clear_raw_input_sender();
+    // Additional safety: ensure we're fully stopped before returning
+    // Sleep briefly to let any pending window messages drain
+    std::thread::sleep(std::time::Duration::from_millis(50));
 
-    info!("Raw input stopped");
+    info!("Raw input stopped and fully cleaned up");
 }
 
 /// Get accumulated mouse deltas and reset

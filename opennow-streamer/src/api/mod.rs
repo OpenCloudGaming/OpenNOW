@@ -5,11 +5,13 @@
 mod cloudmatch;
 mod games;
 pub mod error_codes;
+pub mod queue;
 
 #[allow(unused_imports)]
 pub use cloudmatch::*;
 pub use games::*;
 pub use error_codes::SessionError;
+pub use queue::{QueueServerInfo, fetch_queue_servers, format_queue_eta, calculate_server_score, get_auto_selected_server, get_unique_regions, sort_servers};
 
 use reqwest::Client;
 use parking_lot::RwLock;

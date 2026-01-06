@@ -2,39 +2,44 @@
 //!
 //! wgpu-based rendering for video frames and UI overlays.
 
-use anyhow::{Result, Context};
-use log::{info, debug, warn, error};
+use anyhow::{Context, Result};
+use log::{debug, error, info, warn};
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowAttributes, Fullscreen, CursorGrabMode};
+use winit::window::{CursorGrabMode, Fullscreen, Window, WindowAttributes};
 
 #[cfg(target_os = "macos")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 // use wgpu::util::DeviceExt;
 
-use crate::app::{App, AppState, UiAction, GamesTab, GameInfo};
+use super::image_cache;
+use super::screens::{
+    render_alliance_warning_dialog, render_av1_warning_dialog, render_login_screen,
+    render_session_conflict_dialog, render_session_screen, render_settings_modal,
+};
+use super::shaders::{EXTERNAL_TEXTURE_SHADER, NV12_SHADER, VIDEO_SHADER};
+use super::StatsPanel;
 use crate::app::session::ActiveSessionInfo;
-use crate::media::{VideoFrame, PixelFormat};
-#[cfg(target_os = "macos")]
-use crate::media::{ZeroCopyTextureManager, CVMetalTexture, MetalVideoRenderer};
+use crate::app::{App, AppState, GameInfo, GamesTab, UiAction};
 #[cfg(target_os = "windows")]
 use crate::media::D3D11TextureWrapper;
-#[cfg(target_os = "windows")]
-use windows::Win32::Foundation::HANDLE;
-#[cfg(target_os = "windows")]
-use windows::Win32::Graphics::Direct3D12::{ID3D12Device, ID3D12Resource};
+#[cfg(target_os = "linux")]
+use crate::media::VAAPISurfaceWrapper;
+#[cfg(target_os = "macos")]
+use crate::media::{CVMetalTexture, MetalVideoRenderer, ZeroCopyTextureManager};
+use crate::media::{ColorSpace, PixelFormat, TransferFunction, VideoFrame};
+use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 // unused: use windows::core::Interface;
 #[cfg(target_os = "windows")]
 #[cfg(target_os = "macos")]
 use wgpu_hal::dx12;
-use super::StatsPanel;
-use super::image_cache;
-use super::shaders::{VIDEO_SHADER, NV12_SHADER, EXTERNAL_TEXTURE_SHADER};
-use super::screens::{render_login_screen, render_session_screen, render_settings_modal, render_session_conflict_dialog, render_av1_warning_dialog, render_alliance_warning_dialog};
-use std::collections::HashMap;
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::HANDLE;
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Direct3D12::{ID3D12Device, ID3D12Resource};
 
 // Color conversion is now hardcoded in the shader using official GFN client BT.709 values
 // This eliminates potential initialization bugs with uniform buffers
@@ -90,6 +95,9 @@ pub struct Renderer {
     // Tracks consecutive Outdated errors to avoid panic-fixing with wrong resolution
     consecutive_surface_errors: u32,
 
+    // Supported present modes (for fallback when Immediate isn't available)
+    supported_present_modes: Vec<wgpu::PresentMode>,
+
     // Game art texture cache (URL -> TextureHandle)
     game_textures: HashMap<String, egui::TextureHandle>,
 
@@ -127,8 +135,9 @@ impl Renderer {
 
         // Create window and wrap in Arc for surface creation
         let window = Arc::new(
-            event_loop.create_window(window_attrs)
-                .context("Failed to create window")?
+            event_loop
+                .create_window(window_attrs)
+                .context("Failed to create window")?,
         );
 
         let size = window.inner_size();
@@ -167,7 +176,10 @@ impl Renderer {
                 }
             }
         };
-        #[cfg(all(not(target_os = "windows"), not(all(target_os = "linux", target_arch = "aarch64"))))]
+        #[cfg(all(
+            not(target_os = "windows"),
+            not(all(target_os = "linux", target_arch = "aarch64"))
+        ))]
         let backends = wgpu::Backends::all();
 
         info!("Using wgpu backend: {:?}", backends);
@@ -178,17 +190,18 @@ impl Renderer {
         });
 
         // Create surface from Arc<Window>
-        let surface = instance.create_surface(window.clone())
-            .map_err(|e| {
-                error!("Surface creation failed: {:?}", e);
-                #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-                {
-                    error!("ARM64 Linux troubleshooting:");
-                    error!("  - Ensure Vulkan drivers are installed: sudo apt install mesa-vulkan-drivers");
-                    error!("  - Try: WAYLAND_DISPLAY= ./run.sh  (force X11)");
-                }
-                anyhow::anyhow!("Failed to create surface: {:?}", e)
-            })?;
+        let surface = instance.create_surface(window.clone()).map_err(|e| {
+            error!("Surface creation failed: {:?}", e);
+            #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+            {
+                error!("ARM64 Linux troubleshooting:");
+                error!(
+                    "  - Ensure Vulkan drivers are installed: sudo apt install mesa-vulkan-drivers"
+                );
+                error!("  - Try: WAYLAND_DISPLAY= ./run.sh  (force X11)");
+            }
+            anyhow::anyhow!("Failed to create surface: {:?}", e)
+        })?;
 
         // Get adapter
         #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
@@ -214,19 +227,25 @@ impl Renderer {
 
             if force_sw {
                 info!("ARM64 Linux: Forcing software renderer (OPENNOW_FORCE_SOFTWARE_GPU set)");
-                instance.request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::LowPower,
-                    compatible_surface: Some(&surface),
-                    force_fallback_adapter: true,
-                }).await.context("Failed to find software GPU adapter")?
+                instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::LowPower,
+                        compatible_surface: Some(&surface),
+                        force_fallback_adapter: true,
+                    })
+                    .await
+                    .context("Failed to find software GPU adapter")?
             } else {
                 // Try hardware GPU first
                 info!("ARM64 Linux: Trying hardware GPU...");
-                match instance.request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::LowPower,
-                    compatible_surface: Some(&surface),
-                    force_fallback_adapter: false,
-                }).await {
+                match instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::LowPower,
+                        compatible_surface: Some(&surface),
+                        force_fallback_adapter: false,
+                    })
+                    .await
+                {
                     Ok(hw_adapter) => {
                         let info = hw_adapter.get_info();
                         info!("  Hardware GPU found: {}", info.name);
@@ -240,28 +259,29 @@ impl Renderer {
                     }
                     Err(e) => {
                         warn!("  Hardware GPU failed: {:?}, using software renderer", e);
-                        instance.request_adapter(&wgpu::RequestAdapterOptions {
-                            power_preference: wgpu::PowerPreference::LowPower,
-                            compatible_surface: Some(&surface),
-                            force_fallback_adapter: true,
-                        }).await.context("Failed to find any GPU adapter")?
+                        instance
+                            .request_adapter(&wgpu::RequestAdapterOptions {
+                                power_preference: wgpu::PowerPreference::LowPower,
+                                compatible_surface: Some(&surface),
+                                force_fallback_adapter: true,
+                            })
+                            .await
+                            .context("Failed to find any GPU adapter")?
                     }
                 }
             }
         };
 
         let adapter_info = adapter.get_info();
-        info!("GPU: {} (Backend: {:?}, Driver: {})", 
-            adapter_info.name, 
-            adapter_info.backend,
-            adapter_info.driver_info
+        info!(
+            "GPU: {} (Backend: {:?}, Driver: {})",
+            adapter_info.name, adapter_info.backend, adapter_info.driver_info
         );
-        
+
         // Print to console directly for visibility (bypasses log filter)
         crate::utils::console_print(&format!(
             "[GPU] {} using {:?} backend",
-            adapter_info.name,
-            adapter_info.backend
+            adapter_info.name, adapter_info.backend
         ));
 
         // Create device and queue
@@ -270,7 +290,8 @@ impl Renderer {
         let adapter_features = adapter.features();
 
         // Check if EXTERNAL_TEXTURE is supported (hardware YUV->RGB conversion)
-        let external_texture_supported = adapter_features.contains(wgpu::Features::EXTERNAL_TEXTURE);
+        let external_texture_supported =
+            adapter_features.contains(wgpu::Features::EXTERNAL_TEXTURE);
         if external_texture_supported {
             required_features |= wgpu::Features::EXTERNAL_TEXTURE;
             info!("EXTERNAL_TEXTURE feature supported - enabling true zero-copy video");
@@ -289,6 +310,12 @@ impl Renderer {
             required_features = wgpu::Features::empty();
             info!("V3D hardware: Disabling all optional features to save memory");
         }
+
+        // Check if we're in legacy macOS mode (for 2015 and older Intel Macs)
+        #[cfg(all(target_os = "macos", feature = "legacy-macos"))]
+        let is_legacy_macos = true;
+        #[cfg(not(all(target_os = "macos", feature = "legacy-macos")))]
+        let is_legacy_macos = false;
 
         // Use appropriate limits based on GPU type
         let limits = if is_v3d_hardware {
@@ -309,6 +336,24 @@ impl Renderer {
             lim.max_sampled_textures_per_shader_stage = 8;
             info!("  Max texture: 2048, Max buffer: 32MB, Bind groups: 4");
             lim
+        } else if is_legacy_macos {
+            // Legacy macOS (2015 and older Intel Macs with Metal 1.0/1.1)
+            // Use conservative limits that work on Intel Iris Graphics
+            info!("Legacy macOS mode: Using conservative limits for Intel Iris Graphics");
+            let mut lim = wgpu::Limits::downlevel_defaults();
+            // Intel Iris Graphics (2015) supports up to 4096x4096 textures
+            lim.max_texture_dimension_1d = 4096;
+            lim.max_texture_dimension_2d = 4096;
+            lim.max_texture_dimension_3d = 256;
+            // Conservative buffer sizes for older GPUs
+            lim.max_buffer_size = 256 * 1024 * 1024; // 256MB
+            lim.max_uniform_buffer_binding_size = 64 * 1024;
+            lim.max_storage_buffer_binding_size = 128 * 1024 * 1024;
+            // Reduce bind groups to be safe on older Metal
+            lim.max_bind_groups = 4;
+            lim.max_bindings_per_bind_group = 16;
+            info!("  Max texture: 4096, Max buffer: 256MB, Bind groups: 4");
+            lim
         } else if is_arm64_linux {
             // llvmpipe or other ARM64: Use downlevel defaults
             info!("ARM64 Linux: Using downlevel defaults");
@@ -318,11 +363,21 @@ impl Renderer {
             wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
         };
 
-        info!("Requesting device limits: Max Texture Dimension 2D: {}", limits.max_texture_dimension_2d);
+        info!(
+            "Requesting device limits: Max Texture Dimension 2D: {}",
+            limits.max_texture_dimension_2d
+        );
 
         // ARM64 Linux: Try device creation, fallback to software if V3D OOMs
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-        let (device, queue, adapter, is_v3d_hardware, required_features, limits): (wgpu::Device, wgpu::Queue, wgpu::Adapter, bool, wgpu::Features, wgpu::Limits) = {
+        let (device, queue, adapter, is_v3d_hardware, required_features, limits): (
+            wgpu::Device,
+            wgpu::Queue,
+            wgpu::Adapter,
+            bool,
+            wgpu::Features,
+            wgpu::Limits,
+        ) = {
             let device_result = adapter
                 .request_device(&wgpu::DeviceDescriptor {
                     label: Some("OpenNow Device"),
@@ -337,27 +392,43 @@ impl Renderer {
             match device_result {
                 Ok((device, queue)) => {
                     info!("Device created successfully with {}", adapter_info.name);
-                    (device, queue, adapter, is_v3d_hardware, required_features, limits)
+                    (
+                        device,
+                        queue,
+                        adapter,
+                        is_v3d_hardware,
+                        required_features,
+                        limits,
+                    )
                 }
                 Err(e) => {
                     // V3D device creation failed (likely OOM), fallback to software renderer
                     warn!("Hardware GPU device creation failed: {:?}", e);
                     warn!("Falling back to software renderer (llvmpipe)...");
 
-                    crate::utils::console_print("[GPU] Hardware GPU failed, using software renderer");
+                    crate::utils::console_print(
+                        "[GPU] Hardware GPU failed, using software renderer",
+                    );
 
                     // Get software (llvmpipe) adapter
-                    let sw_adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
-                        power_preference: wgpu::PowerPreference::LowPower,
-                        compatible_surface: Some(&surface),
-                        force_fallback_adapter: true,
-                    }).await.context("Failed to find software GPU adapter after hardware GPU failed")?;
+                    let sw_adapter = instance
+                        .request_adapter(&wgpu::RequestAdapterOptions {
+                            power_preference: wgpu::PowerPreference::LowPower,
+                            compatible_surface: Some(&surface),
+                            force_fallback_adapter: true,
+                        })
+                        .await
+                        .context("Failed to find software GPU adapter after hardware GPU failed")?;
 
                     let sw_info = sw_adapter.get_info();
-                    info!("Fallback GPU: {} (Backend: {:?})", sw_info.name, sw_info.backend);
+                    info!(
+                        "Fallback GPU: {} (Backend: {:?})",
+                        sw_info.name, sw_info.backend
+                    );
 
                     // Use downlevel defaults for llvmpipe
-                    let sw_limits = wgpu::Limits::downlevel_defaults().using_resolution(sw_adapter.limits());
+                    let sw_limits =
+                        wgpu::Limits::downlevel_defaults().using_resolution(sw_adapter.limits());
                     let sw_features = wgpu::Features::empty();
 
                     let (device, queue) = sw_adapter
@@ -404,22 +475,14 @@ impl Renderer {
         let surface_format = surface_caps
             .formats
             .iter()
-            .find(|f| !f.is_srgb())  // Prefer linear format for video
+            .find(|f| !f.is_srgb()) // Prefer linear format for video
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
-        // Use Immediate for lowest latency - frame pacing is handled by our render loop
-        // V3D: Prefer Mailbox for high fps without tearing, fall back to Immediate
-        let present_mode = if surface_caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
-            info!("Using Immediate present mode (lowest latency)");
-            wgpu::PresentMode::Immediate
-        } else if surface_caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
-            info!("Using Mailbox present mode (triple buffering)");
-            wgpu::PresentMode::Mailbox
-        } else {
-            info!("Using Fifo present mode (vsync)");
-            wgpu::PresentMode::Fifo
-        };
+        // Start with Fifo (VSync) for low CPU usage in menus
+        // Switches to Immediate when streaming for lowest latency
+        let present_mode = wgpu::PresentMode::Fifo;
+        info!("Using Fifo present mode (vsync) - low CPU usage for UI");
 
         // Frame latency: 2 for smoother pacing
         let frame_latency = 2;
@@ -430,9 +493,15 @@ impl Renderer {
             width: size.width,
             height: size.height,
             present_mode,
-            alpha_mode: if surface_caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied) {
+            alpha_mode: if surface_caps
+                .alpha_modes
+                .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
+            {
                 wgpu::CompositeAlphaMode::PostMultiplied
-            } else if surface_caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+            } else if surface_caps
+                .alpha_modes
+                .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+            {
                 wgpu::CompositeAlphaMode::PreMultiplied
             } else {
                 surface_caps.alpha_modes[0]
@@ -470,57 +539,59 @@ impl Renderer {
         });
 
         // Bind group layout for YUV planar textures (GPU color conversion)
-        let video_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Video YUV Bind Group Layout"),
-            entries: &[
-                // Y texture (full resolution)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+        let video_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Video YUV Bind Group Layout"),
+                entries: &[
+                    // Y texture (full resolution)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                // U texture (half resolution)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    // U texture (half resolution)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                // V texture (half resolution)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    // V texture (half resolution)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                // Sampler
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+                    // Sampler
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
 
-        let video_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Video Pipeline Layout"),
-            bind_group_layouts: &[&video_bind_group_layout],
-            immediate_size: 0,
-        });
+        let video_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Video Pipeline Layout"),
+                bind_group_layouts: &[&video_bind_group_layout],
+                immediate_size: 0,
+            });
 
         let video_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Video Pipeline"),
@@ -573,40 +644,41 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(NV12_SHADER.into()),
         });
 
-        let nv12_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("NV12 Bind Group Layout"),
-            entries: &[
-                // Y texture (full resolution, R8)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+        let nv12_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("NV12 Bind Group Layout"),
+                entries: &[
+                    // Y texture (full resolution, R8)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                // UV texture (half resolution, Rg8 interleaved)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    // UV texture (half resolution, Rg8 interleaved)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                // Sampler
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+                    // Sampler
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
 
         let nv12_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("NV12 Pipeline Layout"),
@@ -649,77 +721,85 @@ impl Renderer {
         });
 
         // Create External Texture pipeline (true zero-copy hardware YUV->RGB)
-        let (external_texture_pipeline, external_texture_bind_group_layout) = if external_texture_supported {
-            let external_texture_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("External Texture Shader"),
-                source: wgpu::ShaderSource::Wgsl(EXTERNAL_TEXTURE_SHADER.into()),
-            });
+        let (external_texture_pipeline, external_texture_bind_group_layout) =
+            if external_texture_supported {
+                let external_texture_shader =
+                    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("External Texture Shader"),
+                        source: wgpu::ShaderSource::Wgsl(EXTERNAL_TEXTURE_SHADER.into()),
+                    });
 
-            let external_texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("External Texture Bind Group Layout"),
-                entries: &[
-                    // External texture (hardware YUV->RGB conversion)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::ExternalTexture,
-                        count: None,
-                    },
-                    // Sampler for external texture
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
+                let external_texture_bind_group_layout =
+                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("External Texture Bind Group Layout"),
+                        entries: &[
+                            // External texture (hardware YUV->RGB conversion)
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::FRAGMENT,
+                                ty: wgpu::BindingType::ExternalTexture,
+                                count: None,
+                            },
+                            // Sampler for external texture
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::FRAGMENT,
+                                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                                count: None,
+                            },
+                        ],
+                    });
 
-            let external_texture_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("External Texture Pipeline Layout"),
-                bind_group_layouts: &[&external_texture_bind_group_layout],
-                immediate_size: 0,
-            });
+                let external_texture_pipeline_layout =
+                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("External Texture Pipeline Layout"),
+                        bind_group_layouts: &[&external_texture_bind_group_layout],
+                        immediate_size: 0,
+                    });
 
-            let external_texture_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("External Texture Pipeline"),
-                layout: Some(&external_texture_pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &external_texture_shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &external_texture_shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: surface_format,
-                        blend: Some(wgpu::BlendState::REPLACE),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: None,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    unclipped_depth: false,
-                    conservative: false,
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
+                let external_texture_pipeline =
+                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some("External Texture Pipeline"),
+                        layout: Some(&external_texture_pipeline_layout),
+                        vertex: wgpu::VertexState {
+                            module: &external_texture_shader,
+                            entry_point: Some("vs_main"),
+                            buffers: &[],
+                            compilation_options: Default::default(),
+                        },
+                        fragment: Some(wgpu::FragmentState {
+                            module: &external_texture_shader,
+                            entry_point: Some("fs_main"),
+                            targets: &[Some(wgpu::ColorTargetState {
+                                format: surface_format,
+                                blend: Some(wgpu::BlendState::REPLACE),
+                                write_mask: wgpu::ColorWrites::ALL,
+                            })],
+                            compilation_options: Default::default(),
+                        }),
+                        primitive: wgpu::PrimitiveState {
+                            topology: wgpu::PrimitiveTopology::TriangleList,
+                            strip_index_format: None,
+                            front_face: wgpu::FrontFace::Ccw,
+                            cull_mode: None,
+                            polygon_mode: wgpu::PolygonMode::Fill,
+                            unclipped_depth: false,
+                            conservative: false,
+                        },
+                        depth_stencil: None,
+                        multisample: wgpu::MultisampleState::default(),
+                        multiview_mask: None,
+                        cache: None,
+                    });
 
-            info!("External Texture pipeline created - true zero-copy video rendering enabled");
-            (Some(external_texture_pipeline), Some(external_texture_bind_group_layout))
-        } else {
-            (None, None)
-        };
+                info!("External Texture pipeline created - true zero-copy video rendering enabled");
+                (
+                    Some(external_texture_pipeline),
+                    Some(external_texture_bind_group_layout),
+                )
+            } else {
+                (None, None)
+            };
 
         // Create stats panel
         let stats_panel = StatsPanel::new();
@@ -755,6 +835,7 @@ impl Renderer {
             stats_panel,
             fullscreen: false,
             consecutive_surface_errors: 0,
+            supported_present_modes: surface_caps.present_modes.clone(),
             game_textures: HashMap::new(),
             #[cfg(target_os = "macos")]
             zero_copy_manager: ZeroCopyTextureManager::new(),
@@ -776,10 +857,9 @@ impl Renderer {
         &self.window
     }
 
-    /// Handle window event
-    pub fn handle_event(&mut self, event: &WindowEvent) -> bool {
-        let response = self.egui_state.on_window_event(&self.window, event);
-        response.consumed
+    /// Handle window event - returns (consumed, repaint)
+    pub fn handle_event(&mut self, event: &WindowEvent) -> egui_winit::EventResponse {
+        self.egui_state.on_window_event(&self.window, event)
     }
 
     /// Resize the renderer
@@ -801,7 +881,11 @@ impl Renderer {
                 let height_ratio = new_size.height as f32 / monitor_size.height as f32;
 
                 // Reject if not within 95-105% of monitor resolution
-                if width_ratio < 0.95 || width_ratio > 1.05 || height_ratio < 0.95 || height_ratio > 1.05 {
+                if width_ratio < 0.95
+                    || width_ratio > 1.05
+                    || height_ratio < 0.95
+                    || height_ratio > 1.05
+                {
                     debug!(
                         "Ignoring resize to {}x{} while in fullscreen (monitor: {}x{}, ratio: {:.2}x{:.2})",
                         new_size.width, new_size.height,
@@ -837,6 +921,35 @@ impl Renderer {
         Self::disable_macos_vsync(&self.window);
     }
 
+    /// Set VSync mode - use Fifo (vsync) for UI, Immediate/Mailbox for streaming
+    /// This lets the GPU handle frame pacing, reducing CPU usage to near zero when idle
+    pub fn set_vsync(&mut self, enabled: bool) {
+        let new_mode = if enabled {
+            wgpu::PresentMode::Fifo // VSync on - GPU waits for display refresh
+        } else {
+            // VSync off - prefer Immediate for lowest latency, fall back to Mailbox
+            if self
+                .supported_present_modes
+                .contains(&wgpu::PresentMode::Immediate)
+            {
+                wgpu::PresentMode::Immediate
+            } else if self
+                .supported_present_modes
+                .contains(&wgpu::PresentMode::Mailbox)
+            {
+                wgpu::PresentMode::Mailbox // Good low-latency alternative
+            } else {
+                wgpu::PresentMode::Fifo // Fallback to VSync if nothing else available
+            }
+        };
+
+        if self.config.present_mode != new_mode {
+            self.config.present_mode = new_mode;
+            self.surface.configure(&self.device, &self.config);
+            info!("Present mode changed to {:?}", new_mode);
+        }
+    }
+
     /// Recover from swapchain errors (Outdated/Lost)
     /// Returns true if recovery was successful
     fn recover_swapchain(&mut self) -> bool {
@@ -852,9 +965,7 @@ impl Renderer {
         self.configure_surface();
         info!(
             "Swapchain recovered: {}x{} @ {:?}",
-            self.size.width,
-            self.size.height,
-            self.config.present_mode
+            self.size.width, self.size.height, self.config.present_mode
         );
         true
     }
@@ -875,7 +986,8 @@ impl Renderer {
             #[cfg(target_os = "macos")]
             {
                 info!("Entering borderless fullscreen with 120Hz display mode");
-                self.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                self.window
+                    .set_fullscreen(Some(Fullscreen::Borderless(None)));
                 Self::disable_macos_vsync(&self.window);
                 return;
             }
@@ -891,7 +1003,10 @@ impl Renderer {
                     let mut best_refresh_rate: u32 = 0;
 
                     info!("Searching for video modes on monitor: {:?}", monitor.name());
-                    info!("Current window size: {}x{}", current_size.width, current_size.height);
+                    info!(
+                        "Current window size: {}x{}",
+                        current_size.width, current_size.height
+                    );
 
                     let mut mode_count = 0;
                     let mut high_refresh_modes = Vec::new();
@@ -900,18 +1015,26 @@ impl Renderer {
                         let refresh_rate = mode.refresh_rate_millihertz() / 1000;
 
                         if refresh_rate >= 100 {
-                            high_refresh_modes.push(format!("{}x{}@{}Hz", mode_size.width, mode_size.height, refresh_rate));
+                            high_refresh_modes.push(format!(
+                                "{}x{}@{}Hz",
+                                mode_size.width, mode_size.height, refresh_rate
+                            ));
                         }
                         mode_count += 1;
 
-                        if mode_size.width >= current_size.width && mode_size.height >= current_size.height {
+                        if mode_size.width >= current_size.width
+                            && mode_size.height >= current_size.height
+                        {
                             if refresh_rate > best_refresh_rate {
                                 best_refresh_rate = refresh_rate;
                                 best_mode = Some(mode);
                             }
                         }
                     }
-                    info!("Total video modes: {} (high refresh >=100Hz: {:?})", mode_count, high_refresh_modes);
+                    info!(
+                        "Total video modes: {} (high refresh >=100Hz: {:?})",
+                        mode_count, high_refresh_modes
+                    );
 
                     if let Some(mode) = best_mode {
                         let refresh_hz = mode.refresh_rate_millihertz() / 1000;
@@ -921,7 +1044,8 @@ impl Renderer {
                             mode.size().height,
                             refresh_hz
                         );
-                        self.window.set_fullscreen(Some(Fullscreen::Exclusive(mode)));
+                        self.window
+                            .set_fullscreen(Some(Fullscreen::Exclusive(mode)));
                         return;
                     } else {
                         info!("No suitable exclusive fullscreen mode found");
@@ -931,7 +1055,8 @@ impl Renderer {
                 }
 
                 info!("Entering borderless fullscreen");
-                self.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                self.window
+                    .set_fullscreen(Some(Fullscreen::Borderless(None)));
             }
         } else {
             info!("Exiting fullscreen");
@@ -954,10 +1079,15 @@ impl Renderer {
                 let mode_size = mode.size();
                 let refresh_rate = mode.refresh_rate_millihertz() / 1000;
 
-                if mode_size.width >= current_size.width && mode_size.height >= current_size.height {
+                if mode_size.width >= current_size.width && mode_size.height >= current_size.height
+                {
                     let diff = (refresh_rate as i32 - target_fps as i32).abs();
                     // Prefer modes >= target FPS
-                    let adjusted_diff = if refresh_rate >= target_fps { diff } else { diff + 1000 };
+                    let adjusted_diff = if refresh_rate >= target_fps {
+                        diff
+                    } else {
+                        diff + 1000
+                    };
 
                     if adjusted_diff < best_refresh_diff {
                         best_refresh_diff = adjusted_diff;
@@ -976,7 +1106,8 @@ impl Renderer {
                     refresh_hz
                 );
                 self.fullscreen = true;
-                self.window.set_fullscreen(Some(Fullscreen::Exclusive(mode)));
+                self.window
+                    .set_fullscreen(Some(Fullscreen::Exclusive(mode)));
 
                 #[cfg(target_os = "macos")]
                 Self::disable_macos_vsync(&self.window);
@@ -987,7 +1118,8 @@ impl Renderer {
 
         // Fallback
         self.fullscreen = true;
-        self.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+        self.window
+            .set_fullscreen(Some(Fullscreen::Borderless(None)));
 
         #[cfg(target_os = "macos")]
         Self::disable_macos_vsync(&self.window);
@@ -1002,15 +1134,13 @@ impl Renderer {
 
         // Get NSView from raw window handle
         let ns_view = match window.window_handle() {
-            Ok(handle) => {
-                match handle.as_raw() {
-                    RawWindowHandle::AppKit(appkit) => appkit.ns_view.as_ptr() as id,
-                    _ => {
-                        warn!("macOS: Unexpected window handle type");
-                        return;
-                    }
+            Ok(handle) => match handle.as_raw() {
+                RawWindowHandle::AppKit(appkit) => appkit.ns_view.as_ptr() as id,
+                _ => {
+                    warn!("macOS: Unexpected window handle type");
+                    return;
                 }
-            }
+            },
             Err(e) => {
                 warn!("macOS: Could not get window handle: {:?}", e);
                 return;
@@ -1043,13 +1173,14 @@ impl Renderer {
                     }
 
                     let frame_rate_range = CAFrameRateRange {
-                        minimum: 60.0,   // Allow 60fps minimum for flexibility
+                        minimum: 60.0, // Allow 60fps minimum for flexibility
                         maximum: 120.0,
                         preferred: 120.0,
                     };
 
                     // Check if the layer responds to setPreferredFrameRateRange: (macOS 12+)
-                    let responds: bool = msg_send![layer, respondsToSelector: sel!(setPreferredFrameRateRange:)];
+                    let responds: bool =
+                        msg_send![layer, respondsToSelector: sel!(setPreferredFrameRateRange:)];
                     if responds {
                         let _: () = msg_send![layer, setPreferredFrameRateRange: frame_rate_range];
                         info!("macOS: Set preferredFrameRateRange to 60-120fps (ProMotion)");
@@ -1080,7 +1211,11 @@ impl Renderer {
             fn CGDisplayModeGetWidth(mode: *const c_void) -> usize;
             fn CGDisplayModeGetHeight(mode: *const c_void) -> usize;
             fn CGDisplayModeGetRefreshRate(mode: *const c_void) -> f64;
-            fn CGDisplaySetDisplayMode(display: u32, mode: *const c_void, options: *const c_void) -> i32;
+            fn CGDisplaySetDisplayMode(
+                display: u32,
+                mode: *const c_void,
+                options: *const c_void,
+            ) -> i32;
             fn CGDisplayPixelsWide(display: u32) -> usize;
             fn CGDisplayPixelsHigh(display: u32) -> usize;
             fn CFRelease(cf: *const c_void);
@@ -1091,8 +1226,10 @@ impl Renderer {
             let current_width = CGDisplayPixelsWide(display_id);
             let current_height = CGDisplayPixelsHigh(display_id);
 
-            info!("macOS: Searching for 120Hz mode on display {} (current: {}x{})",
-                display_id, current_width, current_height);
+            info!(
+                "macOS: Searching for 120Hz mode on display {} (current: {}x{})",
+                display_id, current_width, current_height
+            );
 
             let modes = CGDisplayCopyAllDisplayModes(display_id, std::ptr::null());
             if modes.is_null() {
@@ -1125,7 +1262,10 @@ impl Renderer {
             if !best_mode.is_null() && best_refresh >= 119.0 {
                 let width = CGDisplayModeGetWidth(best_mode);
                 let height = CGDisplayModeGetHeight(best_mode);
-                info!("macOS: Setting display mode to {}x{} @ {:.1}Hz", width, height, best_refresh);
+                info!(
+                    "macOS: Setting display mode to {}x{} @ {:.1}Hz",
+                    width, height, best_refresh
+                );
 
                 let result = CGDisplaySetDisplayMode(display_id, best_mode, std::ptr::null());
                 if result == 0 {
@@ -1134,7 +1274,10 @@ impl Renderer {
                     warn!("macOS: Failed to set display mode, error: {}", result);
                 }
             } else if best_refresh > 0.0 {
-                info!("macOS: No 120Hz mode found, best is {:.1}Hz - display may not support it", best_refresh);
+                info!(
+                    "macOS: No 120Hz mode found, best is {:.1}Hz - display may not support it",
+                    best_refresh
+                );
             } else {
                 warn!("macOS: No matching display modes found");
             }
@@ -1148,7 +1291,7 @@ impl Renderer {
     #[cfg(target_os = "macos")]
     fn enable_macos_high_performance() {
         use cocoa::base::{id, nil};
-        use objc::{msg_send, sel, sel_impl, class};
+        use objc::{class, msg_send, sel, sel_impl};
 
         unsafe {
             // Get NSProcessInfo
@@ -1167,7 +1310,8 @@ impl Renderer {
             let reason: id = msg_send![class!(NSString), stringWithUTF8String: b"Streaming requires consistent frame timing\0".as_ptr()];
 
             // Begin activity - this returns an object we should retain
-            let activity: id = msg_send![process_info, beginActivityWithOptions:options reason:reason];
+            let activity: id =
+                msg_send![process_info, beginActivityWithOptions:options reason:reason];
             if activity != nil {
                 // Retain the activity object to keep it alive for the app lifetime
                 let _: id = msg_send![activity, retain];
@@ -1230,6 +1374,14 @@ impl Renderer {
         #[cfg(target_os = "windows")]
         if let Some(ref gpu_frame) = frame.gpu_frame {
             self.update_video_d3d11(frame, gpu_frame, uv_width, uv_height);
+            return;
+        }
+
+        // ZERO-COPY PATH: VAAPI DMA-BUF import (Linux)
+        // Imports the DMA-BUF from VAAPI decoder into Vulkan via VK_EXT_external_memory_dma_buf
+        #[cfg(target_os = "linux")]
+        if let Some(ref gpu_frame) = frame.gpu_frame {
+            self.update_video_vaapi(frame, gpu_frame, uv_width, uv_height);
             return;
         }
 
@@ -1386,6 +1538,59 @@ impl Renderer {
                     info!("YUV420P textures created: {}x{} (UV: {}x{}) - GPU color conversion enabled",
                         frame.width, frame.height, uv_width, uv_height);
                 }
+                PixelFormat::P010 => {
+                    // P010: 10-bit HDR with interleaved UV (similar to NV12 but 16-bit)
+                    // For now, we treat it like NV12 - proper HDR support needs 16-bit textures
+                    // TODO: Use Rg16Unorm for proper 10-bit support
+                    let uv_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("UV Texture (P010/HDR)"),
+                        size: wgpu::Extent3d {
+                            width: uv_width,
+                            height: uv_height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rg8Unorm, // TODO: Rg16Unorm for true 10-bit
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    });
+
+                    let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let uv_view = uv_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+                    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("P010/HDR Bind Group"),
+                        layout: &self.nv12_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&y_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(&uv_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::Sampler(&self.video_sampler),
+                            },
+                        ],
+                    });
+
+                    self.y_texture = Some(y_texture);
+                    self.uv_texture = Some(uv_texture);
+                    self.nv12_bind_group = Some(bind_group);
+                    self.u_texture = None;
+                    self.v_texture = None;
+                    self.video_bind_group = None;
+
+                    info!(
+                        "P010/HDR textures created: {}x{} (UV: {}x{}) - HDR mode (10-bit)",
+                        frame.width, frame.height, uv_width, uv_height
+                    );
+                }
             }
         }
 
@@ -1483,6 +1688,31 @@ impl Renderer {
                     );
                 }
             }
+            PixelFormat::P010 => {
+                // P010: Similar to NV12 but with 10-bit data in 16-bit words
+                // For now, treat like NV12 (data truncated to 8-bit)
+                if let Some(ref texture) = self.uv_texture {
+                    self.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &frame.u_plane,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(frame.u_stride),
+                            rows_per_image: Some(uv_height),
+                        },
+                        wgpu::Extent3d {
+                            width: uv_width,
+                            height: uv_height,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+            }
         }
     }
 
@@ -1497,15 +1727,16 @@ impl Renderer {
         uv_width: u32,
         uv_height: u32,
     ) {
-        use objc::{msg_send, sel, sel_impl};
         use objc::runtime::Object;
+        use objc::{msg_send, sel, sel_impl};
 
         // Use CVMetalTextureCache for true zero-copy (no CPU involvement)
         if self.zero_copy_enabled {
             if let Some(ref manager) = self.zero_copy_manager {
                 // Create Metal textures directly from CVPixelBuffer - TRUE ZERO-COPY!
                 // These textures share GPU memory with the decoded video frame
-                if let Some((y_metal, uv_metal)) = manager.create_textures_from_cv_buffer(gpu_frame) {
+                if let Some((y_metal, uv_metal)) = manager.create_textures_from_cv_buffer(gpu_frame)
+                {
                     // Check if we need to recreate wgpu textures (size changed)
                     let size_changed = self.video_size != (frame.width, frame.height);
 
@@ -1525,7 +1756,9 @@ impl Renderer {
                             sample_count: 1,
                             dimension: wgpu::TextureDimension::D2,
                             format: wgpu::TextureFormat::R8Unorm,
-                            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                                | wgpu::TextureUsages::COPY_DST
+                                | wgpu::TextureUsages::RENDER_ATTACHMENT,
                             view_formats: &[],
                         });
 
@@ -1540,38 +1773,49 @@ impl Renderer {
                             sample_count: 1,
                             dimension: wgpu::TextureDimension::D2,
                             format: wgpu::TextureFormat::Rg8Unorm,
-                            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                                | wgpu::TextureUsages::COPY_DST
+                                | wgpu::TextureUsages::RENDER_ATTACHMENT,
                             view_formats: &[],
                         });
 
                         let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor::default());
-                        let uv_view = uv_texture.create_view(&wgpu::TextureViewDescriptor::default());
+                        let uv_view =
+                            uv_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-                        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("NV12 Bind Group (Zero-Copy)"),
-                            layout: &self.nv12_bind_group_layout,
-                            entries: &[
-                                wgpu::BindGroupEntry {
-                                    binding: 0,
-                                    resource: wgpu::BindingResource::TextureView(&y_view),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 1,
-                                    resource: wgpu::BindingResource::TextureView(&uv_view),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 2,
-                                    resource: wgpu::BindingResource::Sampler(&self.video_sampler),
-                                },
-                            ],
-                        });
+                        let bind_group =
+                            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("NV12 Bind Group (Zero-Copy)"),
+                                layout: &self.nv12_bind_group_layout,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::TextureView(&y_view),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::TextureView(&uv_view),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 2,
+                                        resource: wgpu::BindingResource::Sampler(
+                                            &self.video_sampler,
+                                        ),
+                                    },
+                                ],
+                            });
 
                         self.y_texture = Some(y_texture);
                         self.uv_texture = Some(uv_texture);
                         self.nv12_bind_group = Some(bind_group);
 
-                        log::info!("Zero-copy video textures created: {}x{} (UV: {}x{})",
-                            frame.width, frame.height, uv_width, uv_height);
+                        log::info!(
+                            "Zero-copy video textures created: {}x{} (UV: {}x{})",
+                            frame.width,
+                            frame.height,
+                            uv_width,
+                            uv_height
+                        );
                     }
 
                     // GPU-to-GPU blit: Copy from CVMetalTexture to wgpu texture using Metal blit encoder
@@ -1581,10 +1825,12 @@ impl Renderer {
                         let command_queue = manager.command_queue();
 
                         if !command_queue.is_null() {
-                            let command_buffer: *mut Object = msg_send![command_queue, commandBuffer];
+                            let command_buffer: *mut Object =
+                                msg_send![command_queue, commandBuffer];
 
                             if !command_buffer.is_null() {
-                                let blit_encoder: *mut Object = msg_send![command_buffer, blitCommandEncoder];
+                                let blit_encoder: *mut Object =
+                                    msg_send![command_buffer, blitCommandEncoder];
 
                                 if !blit_encoder.is_null() {
                                     // Get source Metal textures from CVMetalTexture
@@ -1593,14 +1839,20 @@ impl Renderer {
 
                                     // Get destination Metal textures from wgpu
                                     // wgpu on Metal stores the underlying MTLTexture
-                                    if let (Some(ref y_dst_wgpu), Some(ref uv_dst_wgpu)) = (&self.y_texture, &self.uv_texture) {
+                                    if let (Some(ref y_dst_wgpu), Some(ref uv_dst_wgpu)) =
+                                        (&self.y_texture, &self.uv_texture)
+                                    {
                                         // Use wgpu's hal API to get underlying Metal textures
                                         let copied = self.blit_metal_textures(
                                             blit_encoder,
-                                            y_src, uv_src,
-                                            y_dst_wgpu, uv_dst_wgpu,
-                                            frame.width, frame.height,
-                                            uv_width, uv_height,
+                                            y_src,
+                                            uv_src,
+                                            y_dst_wgpu,
+                                            uv_dst_wgpu,
+                                            frame.width,
+                                            frame.height,
+                                            uv_width,
+                                            uv_height,
                                         );
 
                                         if copied {
@@ -1624,14 +1876,142 @@ impl Renderer {
                             }
                         }
                     }
-
                 }
             }
         }
 
-        // No CPU fallback - GPU blit is required for smooth playback
-        log::warn!("GPU blit failed - frame dropped (zero_copy_enabled={}, manager={})",
-            self.zero_copy_enabled, self.zero_copy_manager.is_some());
+        // CPU fallback: Lock CVPixelBuffer and upload plane data to textures
+        // This is slower than zero-copy but works on legacy Macs (2015 and earlier)
+        // that don't support the Metal features required for zero-copy rendering
+        if let Some(locked) = gpu_frame.lock_and_get_planes() {
+            log::debug!("Using CPU fallback for video frame (legacy mode or zero-copy failed)");
+
+            // Ensure textures exist
+            let size_changed = self.video_size != (frame.width, frame.height);
+            if size_changed || self.y_texture.is_none() {
+                self.current_format = frame.format;
+                self.video_size = (frame.width, frame.height);
+
+                let y_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Y Texture (CPU Fallback)"),
+                    size: wgpu::Extent3d {
+                        width: frame.width,
+                        height: frame.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::R8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+
+                let uv_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("UV Texture (CPU Fallback)"),
+                    size: wgpu::Extent3d {
+                        width: uv_width,
+                        height: uv_height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rg8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+
+                let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let uv_view = uv_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("NV12 Bind Group (CPU Fallback)"),
+                    layout: &self.nv12_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&y_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&uv_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(&self.video_sampler),
+                        },
+                    ],
+                });
+
+                self.y_texture = Some(y_texture);
+                self.uv_texture = Some(uv_texture);
+                self.nv12_bind_group = Some(bind_group);
+
+                log::info!(
+                    "CPU fallback textures created: {}x{} (UV: {}x{})",
+                    frame.width,
+                    frame.height,
+                    uv_width,
+                    uv_height
+                );
+            }
+
+            // Upload Y plane data
+            if let Some(ref y_texture) = self.y_texture {
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: y_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    locked.y_data,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(locked.y_stride),
+                        rows_per_image: Some(locked.y_height),
+                    },
+                    wgpu::Extent3d {
+                        width: frame.width,
+                        height: frame.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+
+            // Upload UV plane data
+            if let Some(ref uv_texture) = self.uv_texture {
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: uv_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    locked.uv_data,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(locked.uv_stride),
+                        rows_per_image: Some(locked.uv_height),
+                    },
+                    wgpu::Extent3d {
+                        width: uv_width,
+                        height: uv_height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+
+            return; // CPU fallback succeeded
+        }
+
+        // If we get here, both zero-copy and CPU fallback failed
+        log::warn!(
+            "Both GPU blit and CPU fallback failed - frame dropped (zero_copy_enabled={}, manager={})",
+            self.zero_copy_enabled,
+            self.zero_copy_manager.is_some()
+        );
     }
 
     /// Update video textures from D3D11 hardware-decoded frame (Windows)
@@ -1645,178 +2025,260 @@ impl Renderer {
         uv_width: u32,
         uv_height: u32,
     ) {
-        // Try zero-copy via Shared Handle first
-        // This eliminates the CPU copy by importing the D3D11 texture directly into DX12
-        if let Ok(handle) = gpu_frame.get_shared_handle() {
-            let mut handle_changed = false;
-            
-            // Check if we need to re-import (handle changed or texture missing)
-            let needs_import = match self.current_imported_handle {
-                Some(current) => current != handle,
-                None => true,
-            };
+        // Skip zero-copy for texture arrays (array_index > 0 means it's part of an array)
+        // The zero-copy path doesn't properly handle texture array slices yet
+        // The CPU path correctly uses CopySubresourceRegion with the array_index
+        let is_texture_array = gpu_frame.array_index() > 0 || gpu_frame.is_texture_array();
 
-            if needs_import || self.current_imported_texture.is_none() {
-                // Import the shared handle into DX12
-                // We must use unsafe to access the raw DX12 device via wgpu-hal
-                let imported_texture = unsafe {
-                    match self.device.as_hal::<wgpu_hal::dx12::Api>() {
-                        Some(hal_device) => {
-                            let d3d12_device: &ID3D12Device = hal_device.raw_device();
-                            
-                            // Open the shared handle as a D3D12 resource
-                            let mut resource: Option<ID3D12Resource> = None;
-                            if let Err(e) = d3d12_device.OpenSharedHandle(handle, &mut resource) {
-                                warn!("Failed to OpenSharedHandle: {:?}", e);
-                                return; // Fallback to CPU copy
-                            }
-                            let resource = resource.unwrap();
-                            
-                            // Wrap it in a wgpu::Texture
-                            let size = wgpu::Extent3d {
-                                width: frame.width,
-                                height: frame.height,
-                                depth_or_array_layers: 1,
-                            };
-                            
-                            let format = wgpu::TextureFormat::NV12;
-                            let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
-                            
-                            // Create wgpu-hal texture from raw resource
-                            let hal_texture = wgpu_hal::dx12::Device::texture_from_raw(
-                                resource,
-                                format,
-                                wgpu::TextureDimension::D2,
-                                size,
-                                1, // mip_levels
-                                1, // sample_count
-                            );
-                            
-                            // Create wgpu Texture from HAL texture
-                            let descriptor = wgpu::TextureDescriptor {
-                                label: Some("Imported D3D11 Texture"),
-                                size,
-                                mip_level_count: 1,
-                                sample_count: 1,
-                                dimension: wgpu::TextureDimension::D2,
-                                format,
-                                usage,
-                                view_formats: &[],
-                            };
-                            
-                            Some(self.device.create_texture_from_hal::<wgpu_hal::dx12::Api>(
-                                hal_texture,
-                                &descriptor
-                            ))
-                        },
-                        None => {
-                            warn!("Failed to get DX12 HAL device");
-                            None
-                        }
-                    }
+        if is_texture_array {
+            log::debug!(
+                "D3D11: Using CPU path for texture array (array_index={})",
+                gpu_frame.array_index()
+            );
+        }
+
+        // Try zero-copy via Shared Handle first (only for non-array textures)
+        // This eliminates the CPU copy by importing the D3D11 texture directly into DX12
+        if !is_texture_array {
+            if let Ok(handle) = gpu_frame.get_shared_handle() {
+                let mut handle_changed = false;
+
+                // Check if we need to re-import (handle changed or texture missing)
+                let needs_import = match self.current_imported_handle {
+                    Some(current) => current != handle,
+                    None => true,
                 };
 
-                if let Some(texture) = imported_texture {
-                    self.current_imported_texture = Some(texture);
-                    self.current_imported_handle = Some(handle);
-                    handle_changed = true;
-                    // Log success once per session or on change
-                    debug!("Zero-copy: Imported D3D11 texture handle {:?} -> DX12", handle);
-                } else {
-                    // Import failed - clear cache and fall through to CPU path
-                    self.current_imported_handle = None;
-                    self.current_imported_texture = None;
-                }
-            }
+                if needs_import || self.current_imported_texture.is_none() {
+                    // Import the shared handle into DX12
+                    // We must use unsafe to access the raw DX12 device via wgpu-hal
+                    let imported_texture = unsafe {
+                        match self.device.as_hal::<wgpu_hal::dx12::Api>() {
+                            Some(hal_device) => {
+                                let d3d12_device: &ID3D12Device = hal_device.raw_device();
 
-            // If we have a valid imported texture, use it!
-            if let Some(ref texture) = self.current_imported_texture {
-                // If the handle changed OR if we don't have an external texture bind group yet (e.g. resize)
-                // we need to recreate the bind group.
-                // Note: video_size check handles resolution changes
-                let size_changed = self.video_size != (frame.width, frame.height);
-                
-                if handle_changed || size_changed || self.external_texture_bind_group.is_none() {
-                    self.video_size = (frame.width, frame.height);
-                    self.current_format = PixelFormat::NV12;
+                                // Open the shared handle as a D3D12 resource
+                                let mut resource: Option<ID3D12Resource> = None;
+                                if let Err(e) = d3d12_device.OpenSharedHandle(handle, &mut resource)
+                                {
+                                    warn!("Failed to OpenSharedHandle: {:?}", e);
+                                    return; // Fallback to CPU copy
+                                }
+                                let resource = resource.unwrap();
 
-                    // Create views for Y and UV planes
-                    let y_view = texture.create_view(&wgpu::TextureViewDescriptor {
-                        label: Some("Plane 0 View"),
-                        aspect: wgpu::TextureAspect::Plane0,
-                        ..Default::default()
-                    });
-                    
-                    let uv_view = texture.create_view(&wgpu::TextureViewDescriptor {
-                        label: Some("Plane 1 View"),
-                        aspect: wgpu::TextureAspect::Plane1,
-                        ..Default::default()
-                    });
+                                // Wrap it in a wgpu::Texture
+                                let size = wgpu::Extent3d {
+                                    width: frame.width,
+                                    height: frame.height,
+                                    depth_or_array_layers: 1,
+                                };
 
-                    // Create ExternalTexture logic
-                    // BT.709 Full Range YCbCr to RGB conversion matrix (4x4 column-major)
-                    // GFN streams use Full range (PC levels: Y 0-255, UV 0-255)
-                    // Formula: R = Y + 1.5748*V, G = Y - 0.1873*U - 0.4681*V, B = Y + 1.8556*U
-                    // With UV offset of -0.5 baked into the matrix offsets
-                    let yuv_conversion_matrix: [f32; 16] = [
-                        1.0,     1.0,     1.0,    0.0,     // Y coefficients (Full range: no scaling)
-                        0.0,    -0.1873,  1.8556, 0.0,     // U coefficients
-                        1.5748, -0.4681,  0.0,    0.0,     // V coefficients
-                       -0.7874,  0.3277, -0.9278, 1.0,     // Offsets (UV shift baked in)
-                    ];
-                    
-                    let gamut_conversion_matrix: [f32; 9] = [
-                        1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
-                    ];
-                    
-                    let linear_transfer = wgpu::ExternalTextureTransferFunction {
-                        a: 1.0, b: 0.0, g: 1.0, k: 1.0,
+                                let format = wgpu::TextureFormat::NV12;
+                                let usage = wgpu::TextureUsages::TEXTURE_BINDING
+                                    | wgpu::TextureUsages::COPY_DST;
+
+                                // Create wgpu-hal texture from raw resource
+                                let hal_texture = wgpu_hal::dx12::Device::texture_from_raw(
+                                    resource,
+                                    format,
+                                    wgpu::TextureDimension::D2,
+                                    size,
+                                    1, // mip_levels
+                                    1, // sample_count
+                                );
+
+                                // Create wgpu Texture from HAL texture
+                                let descriptor = wgpu::TextureDescriptor {
+                                    label: Some("Imported D3D11 Texture"),
+                                    size,
+                                    mip_level_count: 1,
+                                    sample_count: 1,
+                                    dimension: wgpu::TextureDimension::D2,
+                                    format,
+                                    usage,
+                                    view_formats: &[],
+                                };
+
+                                Some(self.device.create_texture_from_hal::<wgpu_hal::dx12::Api>(
+                                    hal_texture,
+                                    &descriptor,
+                                ))
+                            }
+                            None => {
+                                warn!("Failed to get DX12 HAL device");
+                                None
+                            }
+                        }
                     };
-                    
-                    let identity_transform: [f32; 6] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
 
-                    let external_texture = self.device.create_external_texture(
-                        &wgpu::ExternalTextureDescriptor {
-                            label: Some("Zero-Copy External Texture"),
-                            width: frame.width,
-                            height: frame.height,
-                            format: wgpu::ExternalTextureFormat::Nv12,
-                            yuv_conversion_matrix,
-                            gamut_conversion_matrix,
-                            src_transfer_function: linear_transfer.clone(),
-                            dst_transfer_function: linear_transfer,
-                            sample_transform: identity_transform,
-                            load_transform: identity_transform,
-                        },
-                        &[&y_view, &uv_view],
-                    );
-
-                    if let Some(ref layout) = self.external_texture_bind_group_layout {
-                        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("Zero-Copy Bind Group"),
-                            layout,
-                            entries: &[
-                                wgpu::BindGroupEntry {
-                                    binding: 0,
-                                    resource: wgpu::BindingResource::ExternalTexture(&external_texture),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 1,
-                                    resource: wgpu::BindingResource::Sampler(&self.video_sampler),
-                                },
-                            ],
-                        });
-
-                        self.external_texture_bind_group = Some(bind_group);
-                        self.external_texture = Some(external_texture);
-                        log::info!("Zero-copy pipeline configured for {}x{}", frame.width, frame.height);
+                    if let Some(texture) = imported_texture {
+                        self.current_imported_texture = Some(texture);
+                        self.current_imported_handle = Some(handle);
+                        handle_changed = true;
+                        // Log success once per session or on change
+                        debug!(
+                            "Zero-copy: Imported D3D11 texture handle {:?} -> DX12",
+                            handle
+                        );
+                    } else {
+                        // Import failed - clear cache and fall through to CPU path
+                        self.current_imported_handle = None;
+                        self.current_imported_texture = None;
                     }
                 }
-                
-                // Success! We are set up for zero-copy rendering.
-                return;
+
+                // If we have a valid imported texture, use it!
+                if let Some(ref texture) = self.current_imported_texture {
+                    // If the handle changed OR if we don't have an external texture bind group yet (e.g. resize)
+                    // we need to recreate the bind group.
+                    // Note: video_size check handles resolution changes
+                    let size_changed = self.video_size != (frame.width, frame.height);
+
+                    if handle_changed || size_changed || self.external_texture_bind_group.is_none()
+                    {
+                        self.video_size = (frame.width, frame.height);
+                        self.current_format = PixelFormat::NV12;
+
+                        // Create views for Y and UV planes
+                        let y_view = texture.create_view(&wgpu::TextureViewDescriptor {
+                            label: Some("Plane 0 View"),
+                            aspect: wgpu::TextureAspect::Plane0,
+                            ..Default::default()
+                        });
+
+                        let uv_view = texture.create_view(&wgpu::TextureViewDescriptor {
+                            label: Some("Plane 1 View"),
+                            aspect: wgpu::TextureAspect::Plane1,
+                            ..Default::default()
+                        });
+
+                        // Create ExternalTexture with color space aware conversion
+                        // Select YUV to RGB conversion matrix based on color space
+                        let yuv_conversion_matrix: [f32; 16] = match frame.color_space {
+                            ColorSpace::BT709 => [
+                                1.0, 1.0, 1.0, 0.0, 0.0, -0.1873, 1.8556, 0.0, 1.5748, -0.4681,
+                                0.0, 0.0, -0.7874, 0.3277, -0.9278, 1.0,
+                            ],
+                            ColorSpace::BT601 => [
+                                1.0, 1.0, 1.0, 0.0, 0.0, -0.344, 1.772, 0.0, 1.402, -0.714, 0.0,
+                                0.0, -0.701, 0.529, -0.886, 1.0,
+                            ],
+                            ColorSpace::BT2020 => [
+                                1.0, 1.0, 1.0, 0.0, 0.0, -0.1646, 1.8814, 0.0, 1.4746, -0.5714,
+                                0.0, 0.0, -0.7373, 0.3680, -0.9407, 1.0,
+                            ],
+                        };
+
+                        let gamut_conversion_matrix: [f32; 9] = match frame.color_space {
+                            ColorSpace::BT2020 => [
+                                1.6605, -0.5876, -0.0728, -0.1246, 1.1329, -0.0083, -0.0182,
+                                -0.1006, 1.1187,
+                            ],
+                            _ => [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                        };
+
+                        // HDR transfer function handling (same as CPU path)
+                        // Based on NVIDIA GFN client TrueHDR analysis
+                        let (src_transfer, dst_transfer) = match frame.transfer_function {
+                            TransferFunction::PQ => {
+                                // PQ (SMPTE ST 2084) HDR content
+                                // Use moderate gamma to decode PQ and compress dynamic range
+                                let pq_decode = wgpu::ExternalTextureTransferFunction {
+                                    a: 1.0,
+                                    b: 0.0,
+                                    g: 1.8, // Moderate gamma for PQ decode
+                                    k: 0.0,
+                                };
+                                let sdr_encode = wgpu::ExternalTextureTransferFunction {
+                                    a: 1.0,
+                                    b: 0.0,
+                                    g: 0.55, // Re-encode to SDR gamma
+                                    k: 0.0,
+                                };
+                                (pq_decode, sdr_encode)
+                            }
+                            TransferFunction::HLG => {
+                                // HLG is backwards-compatible with SDR displays
+                                let hlg_decode = wgpu::ExternalTextureTransferFunction {
+                                    a: 1.0,
+                                    b: 0.0,
+                                    g: 1.2,
+                                    k: 0.0,
+                                };
+                                let sdr_encode = wgpu::ExternalTextureTransferFunction {
+                                    a: 1.0,
+                                    b: 0.0,
+                                    g: 0.85,
+                                    k: 0.0,
+                                };
+                                (hlg_decode, sdr_encode)
+                            }
+                            TransferFunction::SDR => {
+                                // SDR: identity transfer
+                                let identity = wgpu::ExternalTextureTransferFunction {
+                                    a: 1.0,
+                                    b: 0.0,
+                                    g: 1.0,
+                                    k: 1.0,
+                                };
+                                (identity.clone(), identity)
+                            }
+                        };
+
+                        let identity_transform: [f32; 6] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+
+                        let external_texture = self.device.create_external_texture(
+                            &wgpu::ExternalTextureDescriptor {
+                                label: Some("Zero-Copy External Texture"),
+                                width: frame.width,
+                                height: frame.height,
+                                format: wgpu::ExternalTextureFormat::Nv12,
+                                yuv_conversion_matrix,
+                                gamut_conversion_matrix,
+                                src_transfer_function: src_transfer,
+                                dst_transfer_function: dst_transfer,
+                                sample_transform: identity_transform,
+                                load_transform: identity_transform,
+                            },
+                            &[&y_view, &uv_view],
+                        );
+
+                        if let Some(ref layout) = self.external_texture_bind_group_layout {
+                            let bind_group =
+                                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some("Zero-Copy Bind Group"),
+                                    layout,
+                                    entries: &[
+                                        wgpu::BindGroupEntry {
+                                            binding: 0,
+                                            resource: wgpu::BindingResource::ExternalTexture(
+                                                &external_texture,
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 1,
+                                            resource: wgpu::BindingResource::Sampler(
+                                                &self.video_sampler,
+                                            ),
+                                        },
+                                    ],
+                                });
+
+                            self.external_texture_bind_group = Some(bind_group);
+                            self.external_texture = Some(external_texture);
+                            log::info!(
+                                "Zero-copy pipeline configured for {}x{}",
+                                frame.width,
+                                frame.height
+                            );
+                        }
+                    }
+
+                    // Success! We are set up for zero-copy rendering.
+                    return;
+                }
             }
-        }
+        } // end if !is_texture_array
 
         // Fallback: Lock the D3D11 texture and get plane data (CPU Copy)
         let planes = match gpu_frame.lock_and_get_planes() {
@@ -1896,8 +2358,13 @@ impl Renderer {
             self.v_texture = None;
             self.video_bind_group = None;
 
-            log::info!("D3D11 video textures created: {}x{} (UV: {}x{})",
-                frame.width, frame.height, uv_width, uv_height);
+            log::info!(
+                "D3D11 video textures created: {}x{} (UV: {}x{})",
+                frame.width,
+                frame.height,
+                uv_width,
+                uv_height
+            );
         }
 
         // Upload Y plane from D3D11 staging texture
@@ -1947,15 +2414,174 @@ impl Renderer {
         }
     }
 
-    /// Update video using ExternalTexture for hardware YUV->RGB conversion
-    /// This uses wgpu's ExternalTexture API which provides hardware-accelerated
-    /// color space conversion on supported platforms (DX12, Metal, Vulkan)
-    fn update_video_external_texture(
+    /// Update video from VAAPI surface via DMA-BUF (Linux)
+    ///
+    /// This provides zero-copy rendering by importing the DMA-BUF from VAAPI
+    /// directly into Vulkan via VK_EXT_external_memory_dma_buf.
+    ///
+    /// Flow:
+    /// 1. VAAPI decoder outputs VASurface in GPU VRAM
+    /// 2. We export VASurface as DMA-BUF fd via vaExportSurfaceHandle
+    /// 3. Import DMA-BUF into Vulkan via VK_EXT_external_memory_dma_buf
+    /// 4. Bind to wgpu texture for rendering
+    ///
+    /// Fallback: If DMA-BUF import fails, we mmap and copy to CPU (still faster
+    /// than FFmpeg's sw_transfer since we avoid the intermediate copy).
+    #[cfg(target_os = "linux")]
+    fn update_video_vaapi(
         &mut self,
         frame: &VideoFrame,
+        gpu_frame: &std::sync::Arc<VAAPISurfaceWrapper>,
         uv_width: u32,
         uv_height: u32,
     ) {
+        // TODO: Implement true zero-copy via VK_EXT_external_memory_dma_buf
+        // This requires:
+        // 1. Check for VK_EXT_external_memory_dma_buf extension
+        // 2. Export DMA-BUF fd from VAAPI surface
+        // 3. Create VkImage with VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+        // 4. Import into wgpu via hal layer
+        //
+        // For now, use the fallback path: mmap the DMA-BUF and upload to GPU
+        // This is still faster than FFmpeg's sw_transfer because:
+        // - We skip FFmpeg's intermediate buffer allocation
+        // - We read directly from the GPU-accessible DMA-BUF
+        // - The DMA-BUF may be in CPU-cached memory for faster reads
+
+        // Try to get plane data from the VAAPI surface
+        let planes = match gpu_frame.lock_and_get_planes() {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("Failed to lock VAAPI surface: {:?}", e);
+                return;
+            }
+        };
+
+        // Check if we need to recreate textures (size change)
+        let size_changed = self.video_size != (frame.width, frame.height);
+
+        if size_changed {
+            self.video_size = (frame.width, frame.height);
+            self.current_format = PixelFormat::NV12;
+
+            // Create Y texture (full resolution, R8)
+            let y_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Y Texture (VAAPI)"),
+                size: wgpu::Extent3d {
+                    width: frame.width,
+                    height: frame.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+
+            // Create UV texture for NV12 (Rg8 interleaved)
+            let uv_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("UV Texture (VAAPI)"),
+                size: wgpu::Extent3d {
+                    width: uv_width,
+                    height: uv_height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rg8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+
+            let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let uv_view = uv_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("NV12 Bind Group (VAAPI)"),
+                layout: &self.nv12_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&y_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&uv_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.video_sampler),
+                    },
+                ],
+            });
+
+            self.y_texture = Some(y_texture);
+            self.uv_texture = Some(uv_texture);
+            self.nv12_bind_group = Some(bind_group);
+
+            log::info!(
+                "VAAPI video textures created: {}x{} (UV: {}x{})",
+                frame.width,
+                frame.height,
+                uv_width,
+                uv_height
+            );
+        }
+
+        // Upload Y plane from VAAPI DMA-BUF
+        if let Some(ref texture) = self.y_texture {
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &planes.y_plane,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(planes.y_stride),
+                    rows_per_image: Some(planes.height),
+                },
+                wgpu::Extent3d {
+                    width: frame.width,
+                    height: frame.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+
+        // Upload UV plane from VAAPI DMA-BUF
+        if let Some(ref texture) = self.uv_texture {
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &planes.uv_plane,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(planes.uv_stride),
+                    rows_per_image: Some(uv_height),
+                },
+                wgpu::Extent3d {
+                    width: uv_width,
+                    height: uv_height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+
+    /// Update video using ExternalTexture for hardware YUV->RGB conversion
+    /// This uses wgpu's ExternalTexture API which provides hardware-accelerated
+    /// color space conversion on supported platforms (DX12, Metal, Vulkan)
+    fn update_video_external_texture(&mut self, frame: &VideoFrame, uv_width: u32, uv_height: u32) {
         // Check if we need to recreate textures (size change)
         let size_changed = self.video_size != (frame.width, frame.height);
 
@@ -1998,8 +2624,11 @@ impl Renderer {
             self.y_texture = Some(y_texture);
             self.uv_texture = Some(uv_texture);
 
-            log::info!("External Texture video created: {}x{} (hardware YUV->RGB)",
-                frame.width, frame.height);
+            log::info!(
+                "External Texture video created: {}x{} (hardware YUV->RGB)",
+                frame.width,
+                frame.height
+            );
         }
 
         // Upload Y plane
@@ -2049,35 +2678,124 @@ impl Renderer {
         }
 
         // Create texture views for ExternalTexture
-        let y_view = self.y_texture.as_ref().unwrap()
+        let y_view = self
+            .y_texture
+            .as_ref()
+            .unwrap()
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let uv_view = self.uv_texture.as_ref().unwrap()
+        let uv_view = self
+            .uv_texture
+            .as_ref()
+            .unwrap()
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // BT.709 Full Range YCbCr to RGB conversion matrix (4x4 column-major)
-        // GFN streams use Full range (PC levels: Y 0-255, UV 0-255)
-        // Formula: R = Y + 1.5748*V, G = Y - 0.1873*U - 0.4681*V, B = Y + 1.8556*U
+        // Select YUV to RGB conversion matrix based on color space
+        // All matrices are for Full Range (PC levels: Y 0-255, UV 0-255)
         // With UV offset of -0.5 baked into the matrix offsets
-        let yuv_conversion_matrix: [f32; 16] = [
-            1.0,     1.0,     1.0,    0.0,     // Column 0: Y coefficients (Full range: no scaling)
-            0.0,    -0.1873,  1.8556, 0.0,     // Column 1: U coefficients
-            1.5748, -0.4681,  0.0,    0.0,     // Column 2: V coefficients
-           -0.7874,  0.3277, -0.9278, 1.0,     // Column 3: Offsets (UV shift baked in)
-        ];
+        let yuv_conversion_matrix: [f32; 16] = match frame.color_space {
+            ColorSpace::BT709 => [
+                // BT.709 Full Range: R = Y + 1.5748*V, G = Y - 0.1873*U - 0.4681*V, B = Y + 1.8556*U
+                1.0, 1.0, 1.0, 0.0, // Column 0: Y coefficients
+                0.0, -0.1873, 1.8556, 0.0, // Column 1: U coefficients
+                1.5748, -0.4681, 0.0, 0.0, // Column 2: V coefficients
+                -0.7874, 0.3277, -0.9278, 1.0, // Column 3: Offsets
+            ],
+            ColorSpace::BT601 => [
+                // BT.601 Full Range: R = Y + 1.402*V, G = Y - 0.344*U - 0.714*V, B = Y + 1.772*U
+                1.0, 1.0, 1.0, 0.0, // Column 0: Y coefficients
+                0.0, -0.344, 1.772, 0.0, // Column 1: U coefficients
+                1.402, -0.714, 0.0, 0.0, // Column 2: V coefficients
+                -0.701, 0.529, -0.886, 1.0, // Column 3: Offsets
+            ],
+            ColorSpace::BT2020 => [
+                // BT.2020 Full Range (NCL): R = Y + 1.4746*V, G = Y - 0.1646*U - 0.5714*V, B = Y + 1.8814*U
+                1.0, 1.0, 1.0, 0.0, // Column 0: Y coefficients
+                0.0, -0.1646, 1.8814, 0.0, // Column 1: U coefficients
+                1.4746, -0.5714, 0.0, 0.0, // Column 2: V coefficients
+                -0.7373, 0.3680, -0.9407, 1.0, // Column 3: Offsets
+            ],
+        };
 
-        // Identity gamut conversion (no color space conversion needed)
-        let gamut_conversion_matrix: [f32; 9] = [
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0,
-        ];
+        // For HDR (BT.2020), convert gamut from BT.2020 to sRGB/BT.709 primaries
+        let gamut_conversion_matrix: [f32; 9] = match frame.color_space {
+            ColorSpace::BT2020 => [
+                // BT.2020 to BT.709 gamut conversion (row-major for wgpu)
+                1.6605, -0.5876, -0.0728, -0.1246, 1.1329, -0.0083, -0.0182, -0.1006, 1.1187,
+            ],
+            _ => [
+                // Identity (no gamut conversion for BT.709/BT.601)
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        };
 
-        // Linear transfer function (video is already gamma-corrected)
-        let linear_transfer = wgpu::ExternalTextureTransferFunction {
-            a: 1.0,
-            b: 0.0,
-            g: 1.0,
-            k: 1.0,
+        // Select transfer function based on HDR mode
+        // For SDR: identity (video is already gamma-corrected in BT.709)
+        // For HDR PQ: apply tone mapping to convert to SDR display range
+        //
+        // Based on NVIDIA GFN client analysis, they use proper TrueHDR processing
+        // with parameters like TrueHdrMiddleGrey, TrueHdrContrast, TrueHdrSaturation
+        //
+        // The wgpu ExternalTextureTransferFunction formula is:
+        //   For E < k: L = a * E
+        //   For E >= k: L = a * pow((E + b) / (1 + b), g)
+        //
+        // For PQ to SDR conversion, we need to:
+        // 1. Decode PQ to linear light (linearize)
+        // 2. Tone map from HDR range (0-10000 nits) to SDR range (0-100 nits)
+        // 3. Re-encode to sRGB gamma
+        let (src_transfer, dst_transfer) = match frame.transfer_function {
+            TransferFunction::PQ => {
+                // PQ (SMPTE ST 2084) HDR content
+                // The PQ EOTF is complex, but we can approximate with gamma
+                // PQ encoded values map roughly: 0.5 PQ ≈ 100 nits (SDR reference white)
+                //
+                // Simplified approach: Use a moderate gamma to decode PQ
+                // and compress the dynamic range while preserving detail
+                // A gamma of ~1.8 gives good results for tone mapping PQ to SDR
+                let pq_decode = wgpu::ExternalTextureTransferFunction {
+                    a: 1.0, // Scale factor
+                    b: 0.0, // Offset
+                    g: 1.8, // Moderate gamma for PQ decode (was 2.4, too aggressive)
+                    k: 0.0, // Threshold
+                };
+                // Re-encode to SDR sRGB gamma
+                // sRGB uses gamma 2.2, but 0.45 (1/2.2) for encoding
+                let sdr_encode = wgpu::ExternalTextureTransferFunction {
+                    a: 1.0,
+                    b: 0.0,
+                    g: 0.55, // Slightly stronger than 1/2.2 to brighten shadows
+                    k: 0.0,
+                };
+                (pq_decode, sdr_encode)
+            }
+            TransferFunction::HLG => {
+                // HLG (Hybrid Log-Gamma) is designed to be backwards-compatible
+                // with SDR displays, so less aggressive tone mapping is needed
+                let hlg_decode = wgpu::ExternalTextureTransferFunction {
+                    a: 1.0,
+                    b: 0.0,
+                    g: 1.2, // Mild gamma adjustment for HLG
+                    k: 0.0,
+                };
+                // HLG is mostly compatible with gamma 2.4 displays
+                let sdr_encode = wgpu::ExternalTextureTransferFunction {
+                    a: 1.0,
+                    b: 0.0,
+                    g: 0.85, // Slight adjustment for SDR display
+                    k: 0.0,
+                };
+                (hlg_decode, sdr_encode)
+            }
+            TransferFunction::SDR => {
+                // SDR: identity transfer (video is pre-gamma-corrected in BT.709)
+                let identity = wgpu::ExternalTextureTransferFunction {
+                    a: 1.0,
+                    b: 0.0,
+                    g: 1.0, // Linear passthrough
+                    k: 1.0, // k=1 makes everything use the linear path (a*E)
+                };
+                (identity.clone(), identity)
+            }
         };
 
         // Identity transforms for texture coordinates
@@ -2092,8 +2810,8 @@ impl Renderer {
                 format: wgpu::ExternalTextureFormat::Nv12,
                 yuv_conversion_matrix,
                 gamut_conversion_matrix,
-                src_transfer_function: linear_transfer.clone(),
-                dst_transfer_function: linear_transfer,
+                src_transfer_function: src_transfer,
+                dst_transfer_function: dst_transfer,
                 sample_transform: identity_transform,
                 load_transform: identity_transform,
             },
@@ -2142,10 +2860,18 @@ impl Renderer {
         // Define MTLOrigin and MTLSize structs for Metal API
         #[repr(C)]
         #[derive(Copy, Clone)]
-        struct MTLOrigin { x: u64, y: u64, z: u64 }
+        struct MTLOrigin {
+            x: u64,
+            y: u64,
+            z: u64,
+        }
         #[repr(C)]
         #[derive(Copy, Clone)]
-        struct MTLSize { width: u64, height: u64, depth: u64 }
+        struct MTLSize {
+            width: u64,
+            height: u64,
+            depth: u64,
+        }
 
         let origin = MTLOrigin { x: 0, y: 0, z: 0 };
 
@@ -2172,9 +2898,12 @@ impl Renderer {
         }; // uv_hal dropped here
 
         if let (Some(y_dst), Some(uv_dst)) = (y_dst, uv_dst) {
-
             // Blit Y texture (GPU-to-GPU copy)
-            let y_size = MTLSize { width: y_width as u64, height: y_height as u64, depth: 1 };
+            let y_size = MTLSize {
+                width: y_width as u64,
+                height: y_height as u64,
+                depth: 1,
+            };
             let _: () = msg_send![blit_encoder,
                 copyFromTexture: y_src
                 sourceSlice: 0u64
@@ -2188,7 +2917,11 @@ impl Renderer {
             ];
 
             // Blit UV texture (GPU-to-GPU copy)
-            let uv_size = MTLSize { width: uv_width as u64, height: uv_height as u64, depth: 1 };
+            let uv_size = MTLSize {
+                width: uv_width as u64,
+                height: uv_height as u64,
+                depth: 1,
+            };
             let uv_origin = MTLOrigin { x: 0, y: 0, z: 0 };
             let _: () = msg_send![blit_encoder,
                 copyFromTexture: uv_src
@@ -2202,7 +2935,13 @@ impl Renderer {
                 destinationOrigin: uv_origin
             ];
 
-            log::trace!("GPU blit: Y {}x{}, UV {}x{}", y_width, y_height, uv_width, uv_height);
+            log::trace!(
+                "GPU blit: Y {}x{}, UV {}x{}",
+                y_width,
+                y_height,
+                uv_width,
+                uv_height
+            );
             return true;
         }
 
@@ -2216,9 +2955,10 @@ impl Renderer {
     fn render_video(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
         // Priority 1: Use External Texture pipeline if available (hardware YUV->RGB conversion)
         // This is the true zero-copy path with automatic color space conversion
-        if let (Some(ref pipeline), Some(ref bind_group)) =
-            (&self.external_texture_pipeline, &self.external_texture_bind_group)
-        {
+        if let (Some(ref pipeline), Some(ref bind_group)) = (
+            &self.external_texture_pipeline,
+            &self.external_texture_bind_group,
+        ) {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Video Pass (External Texture)"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2252,6 +2992,14 @@ impl Renderer {
             PixelFormat::YUV420P => {
                 if let Some(ref bg) = self.video_bind_group {
                     (&self.video_pipeline, bg)
+                } else {
+                    return; // No bind group ready
+                }
+            }
+            PixelFormat::P010 => {
+                // P010 uses the same pipeline as NV12 (just different bit depth)
+                if let Some(ref bg) = self.nv12_bind_group {
+                    (&self.nv12_pipeline, bg)
                 } else {
                     return; // No bind group ready
                 }
@@ -2293,29 +3041,32 @@ impl Renderer {
             }
             Err(wgpu::SurfaceError::Outdated) | Err(wgpu::SurfaceError::Lost) => {
                 self.consecutive_surface_errors += 1;
-                
+
                 // Check if window size differs from our config (resize pending)
                 let current_window_size = self.window.inner_size();
-                let config_matches_window = 
-                    current_window_size.width == self.config.width &&
-                    current_window_size.height == self.config.height;
-                
+                let config_matches_window = current_window_size.width == self.config.width
+                    && current_window_size.height == self.config.height;
+
                 if !config_matches_window {
                     // Window size changed - resize event should handle this
                     // Call resize directly to sync up
                     debug!(
                         "Swapchain outdated: window {}x{} != config {}x{} - resizing",
-                        current_window_size.width, current_window_size.height,
-                        self.config.width, self.config.height
+                        current_window_size.width,
+                        current_window_size.height,
+                        self.config.width,
+                        self.config.height
                     );
                     self.resize(current_window_size);
-                    
+
                     // Retry after resize
                     match self.surface.get_current_texture() {
                         Ok(texture) => {
                             self.consecutive_surface_errors = 0;
-                            info!("Swapchain recovered after resize to {}x{}", 
-                                current_window_size.width, current_window_size.height);
+                            info!(
+                                "Swapchain recovered after resize to {}x{}",
+                                current_window_size.width, current_window_size.height
+                            );
                             texture
                         }
                         Err(e) => {
@@ -2364,11 +3115,15 @@ impl Renderer {
             }
         };
 
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
 
         // Update video texture if we have a frame
         if let Some(ref frame) = app.current_frame {
@@ -2437,29 +3192,44 @@ impl Renderer {
         let ping_testing = app.ping_testing;
         let show_settings_modal = app.show_settings_modal;
 
+        // Queue times state
+        let mut queue_servers = app.queue_servers.clone();
+        let queue_loading = app.queue_loading;
+        let queue_sort_mode = app.queue_sort_mode;
+        let queue_region_filter = app.queue_region_filter.clone();
+        let show_server_selection = app.show_server_selection;
+        let selected_queue_server = app.selected_queue_server.clone();
+        let pending_server_selection_game = app.pending_server_selection_game.clone();
+
         // Get games based on current tab
         let games_list: Vec<_> = match current_tab {
             GamesTab::Home => {
                 // For Home tab, we show sections but also need flat list for searches
                 let query = app.search_query.to_lowercase();
-                app.games.iter()
+                app.games
+                    .iter()
                     .enumerate()
                     .filter(|(_, g)| query.is_empty() || g.title.to_lowercase().contains(&query))
                     .map(|(i, g)| (i, g.clone()))
                     .collect()
             }
-            GamesTab::AllGames => {
-                app.filtered_games().into_iter()
-                    .map(|(i, g)| (i, g.clone()))
-                    .collect()
-            }
+            GamesTab::AllGames => app
+                .filtered_games()
+                .into_iter()
+                .map(|(i, g)| (i, g.clone()))
+                .collect(),
             GamesTab::MyLibrary => {
                 let query = app.search_query.to_lowercase();
-                app.library_games.iter()
+                app.library_games
+                    .iter()
                     .enumerate()
                     .filter(|(_, g)| query.is_empty() || g.title.to_lowercase().contains(&query))
                     .map(|(i, g)| (i, g.clone()))
                     .collect()
+            }
+            GamesTab::QueueTimes => {
+                // Queue Times tab doesn't show games, return empty list
+                Vec::new()
             }
         };
 
@@ -2484,7 +3254,14 @@ impl Renderer {
 
             match app_state {
                 AppState::Login => {
-                    render_login_screen(ctx, &login_providers, selected_provider_index, &status_message, is_loading, &mut actions);
+                    render_login_screen(
+                        ctx,
+                        &login_providers,
+                        selected_provider_index,
+                        &status_message,
+                        is_loading,
+                        &mut actions,
+                    );
                 }
                 AppState::Games => {
                     // Update image cache for async loading
@@ -2511,14 +3288,29 @@ impl Renderer {
                         app.show_session_conflict,
                         app.show_av1_warning,
                         app.show_alliance_warning,
-                        crate::auth::get_selected_provider().login_provider_display_name.as_str(),
+                        crate::auth::get_selected_provider()
+                            .login_provider_display_name
+                            .as_str(),
                         &app.active_sessions,
                         app.pending_game_launch.as_ref(),
-                        &mut actions
+                        &mut queue_servers,
+                        queue_loading,
+                        queue_sort_mode,
+                        &queue_region_filter,
+                        show_server_selection,
+                        &selected_queue_server,
+                        pending_server_selection_game.as_ref(),
+                        &mut actions,
                     );
                 }
                 AppState::Session => {
-                    render_session_screen(ctx, &selected_game, &status_message, &error_message, &mut actions);
+                    render_session_screen(
+                        ctx,
+                        &selected_game,
+                        &status_message,
+                        &error_message,
+                        &mut actions,
+                    );
                 }
                 AppState::Streaming => {
                     // Render stats overlay
@@ -2532,9 +3324,11 @@ impl Renderer {
                         .interactable(false)
                         .show(ctx, |ui| {
                             ui.label(
-                                egui::RichText::new("Ctrl+Shift+Q to stop • F3 stats • F11 fullscreen")
-                                    .color(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 100))
-                                    .size(12.0)
+                                egui::RichText::new(
+                                    "Ctrl+Shift+Q to stop • F3 stats • F11 fullscreen",
+                                )
+                                .color(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 100))
+                                .size(12.0),
                             );
                         });
                 }
@@ -2551,13 +3345,17 @@ impl Renderer {
             self.game_textures.insert(url, texture);
         }
 
-        self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
+        self.egui_state
+            .handle_platform_output(&self.window, full_output.platform_output);
 
-        let clipped_primitives = self.egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+        let clipped_primitives = self
+            .egui_ctx
+            .tessellate(full_output.shapes, full_output.pixels_per_point);
 
         // Update egui textures
         for (id, image_delta) in &full_output.textures_delta.set {
-            self.egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
+            self.egui_renderer
+                .update_texture(&self.device, &self.queue, *id, image_delta);
         }
 
         // Render egui
@@ -2592,7 +3390,8 @@ impl Renderer {
 
             // forget_lifetime is safe here as render_pass is dropped before encoder.finish()
             let mut render_pass = render_pass.forget_lifetime();
-            self.egui_renderer.render(&mut render_pass, &clipped_primitives, &screen_descriptor);
+            self.egui_renderer
+                .render(&mut render_pass, &clipped_primitives, &screen_descriptor);
         }
 
         // Free egui textures
@@ -2634,184 +3433,249 @@ impl Renderer {
         alliance_provider_name: &str,
         active_sessions: &[ActiveSessionInfo],
         pending_game_launch: Option<&GameInfo>,
-        actions: &mut Vec<UiAction>
+        queue_servers: &mut Vec<crate::api::QueueServerInfo>,
+        queue_loading: bool,
+        queue_sort_mode: crate::app::QueueSortMode,
+        queue_region_filter: &crate::app::QueueRegionFilter,
+        show_server_selection: bool,
+        selected_queue_server: &Option<String>,
+        pending_server_selection_game: Option<&GameInfo>,
+        actions: &mut Vec<UiAction>,
     ) {
         // Top bar with tabs, search, and logout - subscription info moved to bottom
         egui::Panel::top("top_bar")
-            .frame(egui::Frame::new()
-                .fill(egui::Color32::from_rgb(22, 22, 30))
-                .inner_margin(egui::Margin { left: 0, right: 0, top: 10, bottom: 10 }))
-            .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.add_space(15.0);
-
-                // Logo
-                ui.label(
-                    egui::RichText::new("OpenNOW")
-                        .size(24.0)
-                        .color(egui::Color32::from_rgb(118, 185, 0))
-                        .strong()
-                );
-
-                ui.add_space(20.0);
-
-                // Tab buttons - solid style like login button
-                let home_selected = current_tab == GamesTab::Home;
-                let all_games_selected = current_tab == GamesTab::AllGames;
-                let library_selected = current_tab == GamesTab::MyLibrary;
-
-                // Home tab button
-                let home_btn = egui::Button::new(
-                    egui::RichText::new("Home")
-                        .size(13.0)
-                        .color(egui::Color32::WHITE)
-                        .strong()
-                )
-                .fill(if home_selected {
-                    egui::Color32::from_rgb(118, 185, 0)
-                } else {
-                    egui::Color32::from_rgb(50, 50, 65)
-                })
-                .corner_radius(6.0);
-
-                if ui.add_sized([70.0, 32.0], home_btn).clicked() && !home_selected {
-                    actions.push(UiAction::SwitchTab(GamesTab::Home));
-                }
-
-                ui.add_space(8.0);
-
-                let all_games_btn = egui::Button::new(
-                    egui::RichText::new("All Games")
-                        .size(13.0)
-                        .color(egui::Color32::WHITE)
-                        .strong()
-                )
-                .fill(if all_games_selected {
-                    egui::Color32::from_rgb(118, 185, 0)
-                } else {
-                    egui::Color32::from_rgb(50, 50, 65)
-                })
-                .corner_radius(6.0);
-
-                if ui.add_sized([90.0, 32.0], all_games_btn).clicked() && !all_games_selected {
-                    actions.push(UiAction::SwitchTab(GamesTab::AllGames));
-                }
-
-                ui.add_space(8.0);
-
-                let library_btn = egui::Button::new(
-                    egui::RichText::new("My Library")
-                        .size(13.0)
-                        .color(egui::Color32::WHITE)
-                        .strong()
-                )
-                .fill(if library_selected {
-                    egui::Color32::from_rgb(118, 185, 0)
-                } else {
-                    egui::Color32::from_rgb(50, 50, 65)
-                })
-                .corner_radius(6.0);
-
-                if ui.add_sized([90.0, 32.0], library_btn).clicked() && !library_selected {
-                    actions.push(UiAction::SwitchTab(GamesTab::MyLibrary));
-                }
-
-                ui.add_space(20.0);
-
-                // Search box in the middle
+            .frame(
                 egui::Frame::new()
-                    .fill(egui::Color32::from_rgb(35, 35, 45))
-                    .corner_radius(6.0)
-                    .inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 6 })
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 75)))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("🔍")
-                                    .size(12.0)
-                                    .color(egui::Color32::from_rgb(120, 120, 140))
-                            );
-                            ui.add_space(6.0);
-                            let search = egui::TextEdit::singleline(search_query)
-                                .hint_text("Search games...")
-                                .desired_width(200.0)
-                                .frame(false)
-                                .text_color(egui::Color32::WHITE);
-                            ui.add(search);
-                        });
-                    });
-
-                // Right side content
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    .fill(egui::Color32::from_rgb(22, 22, 30))
+                    .inner_margin(egui::Margin {
+                        left: 0,
+                        right: 0,
+                        top: 10,
+                        bottom: 10,
+                    }),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
                     ui.add_space(15.0);
 
-                    // Logout button - solid style
-                    let logout_btn = egui::Button::new(
-                        egui::RichText::new("Logout")
+                    // Logo
+                    ui.label(
+                        egui::RichText::new("OpenNOW")
+                            .size(24.0)
+                            .color(egui::Color32::from_rgb(118, 185, 0))
+                            .strong(),
+                    );
+
+                    ui.add_space(20.0);
+
+                    // Tab buttons - solid style like login button
+                    let home_selected = current_tab == GamesTab::Home;
+                    let all_games_selected = current_tab == GamesTab::AllGames;
+                    let library_selected = current_tab == GamesTab::MyLibrary;
+                    let queue_times_selected = current_tab == GamesTab::QueueTimes;
+
+                    // Home tab button
+                    let home_btn = egui::Button::new(
+                        egui::RichText::new("Home")
                             .size(13.0)
                             .color(egui::Color32::WHITE)
+                            .strong(),
                     )
-                    .fill(egui::Color32::from_rgb(50, 50, 65))
-                    .corner_radius(6.0);
-
-                    if ui.add_sized([80.0, 32.0], logout_btn).clicked() {
-                        actions.push(UiAction::Logout);
-                    }
-
-                    ui.add_space(10.0);
-
-                    // Settings button - between hours and logout
-                    let settings_btn = egui::Button::new(
-                        egui::RichText::new("⚙")
-                            .size(16.0)
-                            .color(if show_settings_modal {
-                                egui::Color32::from_rgb(118, 185, 0)
-                            } else {
-                                egui::Color32::WHITE
-                            })
-                    )
-                    .fill(if show_settings_modal {
-                        egui::Color32::from_rgb(50, 70, 50)
+                    .fill(if home_selected {
+                        egui::Color32::from_rgb(118, 185, 0)
                     } else {
                         egui::Color32::from_rgb(50, 50, 65)
                     })
                     .corner_radius(6.0);
 
-                    if ui.add_sized([36.0, 32.0], settings_btn).clicked() {
-                        actions.push(UiAction::ToggleSettingsModal);
+                    if ui.add_sized([70.0, 32.0], home_btn).clicked() && !home_selected {
+                        actions.push(UiAction::SwitchTab(GamesTab::Home));
                     }
+
+                    ui.add_space(8.0);
+
+                    let all_games_btn = egui::Button::new(
+                        egui::RichText::new("All Games")
+                            .size(13.0)
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(if all_games_selected {
+                        egui::Color32::from_rgb(118, 185, 0)
+                    } else {
+                        egui::Color32::from_rgb(50, 50, 65)
+                    })
+                    .corner_radius(6.0);
+
+                    if ui.add_sized([90.0, 32.0], all_games_btn).clicked() && !all_games_selected {
+                        actions.push(UiAction::SwitchTab(GamesTab::AllGames));
+                    }
+
+                    ui.add_space(8.0);
+
+                    let library_btn = egui::Button::new(
+                        egui::RichText::new("My Library")
+                            .size(13.0)
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(if library_selected {
+                        egui::Color32::from_rgb(118, 185, 0)
+                    } else {
+                        egui::Color32::from_rgb(50, 50, 65)
+                    })
+                    .corner_radius(6.0);
+
+                    if ui.add_sized([90.0, 32.0], library_btn).clicked() && !library_selected {
+                        actions.push(UiAction::SwitchTab(GamesTab::MyLibrary));
+                    }
+
+                    ui.add_space(8.0);
+
+                    // Queue Times tab button (for free tier users)
+                    let queue_times_btn = egui::Button::new(
+                        egui::RichText::new("🕐 Queue Times")
+                            .size(13.0)
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(if queue_times_selected {
+                        egui::Color32::from_rgb(118, 185, 0)
+                    } else {
+                        egui::Color32::from_rgb(50, 50, 65)
+                    })
+                    .corner_radius(6.0);
+
+                    if ui
+                        .add_sized([120.0, 32.0], queue_times_btn)
+                        .on_hover_text("View queue times for servers")
+                        .clicked()
+                        && !queue_times_selected
+                    {
+                        actions.push(UiAction::SwitchTab(GamesTab::QueueTimes));
+                    }
+
+                    ui.add_space(20.0);
+
+                    // Search box in the middle
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgb(35, 35, 45))
+                        .corner_radius(6.0)
+                        .inner_margin(egui::Margin {
+                            left: 10,
+                            right: 10,
+                            top: 6,
+                            bottom: 6,
+                        })
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 75)))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("🔍")
+                                        .size(12.0)
+                                        .color(egui::Color32::from_rgb(120, 120, 140)),
+                                );
+                                ui.add_space(6.0);
+                                let search = egui::TextEdit::singleline(search_query)
+                                    .hint_text("Search games...")
+                                    .desired_width(200.0)
+                                    .frame(false)
+                                    .text_color(egui::Color32::WHITE);
+                                ui.add(search);
+                            });
+                        });
+
+                    // Right side content
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(15.0);
+
+                        // Logout button - solid style
+                        let logout_btn = egui::Button::new(
+                            egui::RichText::new("Logout")
+                                .size(13.0)
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(egui::Color32::from_rgb(50, 50, 65))
+                        .corner_radius(6.0);
+
+                        if ui.add_sized([80.0, 32.0], logout_btn).clicked() {
+                            actions.push(UiAction::Logout);
+                        }
+
+                        ui.add_space(10.0);
+
+                        // Settings button - between hours and logout
+                        let settings_btn =
+                            egui::Button::new(egui::RichText::new("⚙").size(16.0).color(
+                                if show_settings_modal {
+                                    egui::Color32::from_rgb(118, 185, 0)
+                                } else {
+                                    egui::Color32::WHITE
+                                },
+                            ))
+                            .fill(if show_settings_modal {
+                                egui::Color32::from_rgb(50, 70, 50)
+                            } else {
+                                egui::Color32::from_rgb(50, 50, 65)
+                            })
+                            .corner_radius(6.0);
+
+                        if ui.add_sized([36.0, 32.0], settings_btn).clicked() {
+                            actions.push(UiAction::ToggleSettingsModal);
+                        }
+                    });
                 });
             });
-        });
 
         // Bottom bar with subscription stats
         egui::Panel::bottom("bottom_bar")
-            .frame(egui::Frame::new()
-                .fill(egui::Color32::from_rgb(22, 22, 30))
-                .inner_margin(egui::Margin { left: 15, right: 15, top: 8, bottom: 8 }))
+            .frame(
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(22, 22, 30))
+                    .inner_margin(egui::Margin {
+                        left: 15,
+                        right: 15,
+                        top: 8,
+                        bottom: 8,
+                    }),
+            )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if let Some(sub) = subscription {
                         // Membership tier badge
                         let (tier_bg, tier_fg) = match sub.membership_tier.as_str() {
                             // Ultimate: Gold/Bronze theme
-                            "ULTIMATE" => (egui::Color32::from_rgb(80, 60, 10), egui::Color32::from_rgb(255, 215, 0)),
+                            "ULTIMATE" => (
+                                egui::Color32::from_rgb(80, 60, 10),
+                                egui::Color32::from_rgb(255, 215, 0),
+                            ),
                             // Priority/Performance: Brown theme
-                            "PERFORMANCE" | "PRIORITY" => (egui::Color32::from_rgb(70, 40, 20), egui::Color32::from_rgb(205, 175, 149)),
+                            "PERFORMANCE" | "PRIORITY" => (
+                                egui::Color32::from_rgb(70, 40, 20),
+                                egui::Color32::from_rgb(205, 175, 149),
+                            ),
                             // Free: Gray theme
-                            _ => (egui::Color32::from_rgb(45, 45, 45), egui::Color32::from_rgb(180, 180, 180)),
+                            _ => (
+                                egui::Color32::from_rgb(45, 45, 45),
+                                egui::Color32::from_rgb(180, 180, 180),
+                            ),
                         };
 
                         egui::Frame::new()
                             .fill(tier_bg)
                             .corner_radius(4.0)
-                            .inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 4 })
+                            .inner_margin(egui::Margin {
+                                left: 8,
+                                right: 8,
+                                top: 4,
+                                bottom: 4,
+                            })
                             .show(ui, |ui| {
                                 ui.label(
                                     egui::RichText::new(&sub.membership_tier)
                                         .size(11.0)
                                         .color(tier_fg)
-                                        .strong()
+                                        .strong(),
                                 );
                             });
 
@@ -2821,13 +3685,18 @@ impl Renderer {
                             egui::Frame::new()
                                 .fill(egui::Color32::from_rgb(30, 80, 130))
                                 .corner_radius(4.0)
-                                .inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 4 })
+                                .inner_margin(egui::Margin {
+                                    left: 8,
+                                    right: 8,
+                                    top: 4,
+                                    bottom: 4,
+                                })
                                 .show(ui, |ui| {
                                     ui.label(
                                         egui::RichText::new("ALLIANCE")
                                             .size(11.0)
                                             .color(egui::Color32::from_rgb(100, 180, 255))
-                                            .strong()
+                                            .strong(),
                                     );
                                 });
                         }
@@ -2838,7 +3707,7 @@ impl Renderer {
                         ui.label(
                             egui::RichText::new("⏱")
                                 .size(14.0)
-                                .color(egui::Color32::GRAY)
+                                .color(egui::Color32::GRAY),
                         );
                         ui.add_space(5.0);
 
@@ -2848,7 +3717,7 @@ impl Renderer {
                                 egui::RichText::new("∞")
                                     .size(15.0)
                                     .color(egui::Color32::from_rgb(118, 185, 0))
-                                    .strong()
+                                    .strong(),
                             );
                         } else {
                             let hours_color = if sub.remaining_hours > 5.0 {
@@ -2863,12 +3732,12 @@ impl Renderer {
                                 egui::RichText::new(format!("{:.1}h", sub.remaining_hours))
                                     .size(13.0)
                                     .color(hours_color)
-                                    .strong()
+                                    .strong(),
                             );
                             ui.label(
                                 egui::RichText::new(format!(" / {:.0}h", sub.total_hours))
                                     .size(12.0)
-                                    .color(egui::Color32::GRAY)
+                                    .color(egui::Color32::GRAY),
                             );
                         }
 
@@ -2880,13 +3749,13 @@ impl Renderer {
                                 ui.label(
                                     egui::RichText::new("💾")
                                         .size(14.0)
-                                        .color(egui::Color32::GRAY)
+                                        .color(egui::Color32::GRAY),
                                 );
                                 ui.add_space(5.0);
                                 ui.label(
                                     egui::RichText::new(format!("{} GB", storage_gb))
                                         .size(13.0)
-                                        .color(egui::Color32::from_rgb(100, 180, 255))
+                                        .color(egui::Color32::from_rgb(100, 180, 255)),
                                 );
                             }
                         }
@@ -2894,7 +3763,7 @@ impl Renderer {
                         ui.label(
                             egui::RichText::new("Loading subscription info...")
                                 .size(12.0)
-                                .color(egui::Color32::GRAY)
+                                .color(egui::Color32::GRAY),
                         );
                     }
 
@@ -2902,35 +3771,46 @@ impl Renderer {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Show selected server
                         if auto_server_selection {
-                            let best_server = servers.iter()
-                                .filter(|s| s.status == crate::app::ServerStatus::Online && s.ping_ms.is_some())
+                            let best_server = servers
+                                .iter()
+                                .filter(|s| {
+                                    s.status == crate::app::ServerStatus::Online
+                                        && s.ping_ms.is_some()
+                                })
                                 .min_by_key(|s| s.ping_ms.unwrap_or(9999));
 
                             if let Some(server) = best_server {
                                 ui.label(
-                                    egui::RichText::new(format!("🌐 Auto: {} ({}ms)", server.name, server.ping_ms.unwrap_or(0)))
-                                        .size(12.0)
-                                        .color(egui::Color32::from_rgb(118, 185, 0))
+                                    egui::RichText::new(format!(
+                                        "🌐 Auto: {} ({}ms)",
+                                        server.name,
+                                        server.ping_ms.unwrap_or(0)
+                                    ))
+                                    .size(12.0)
+                                    .color(egui::Color32::from_rgb(118, 185, 0)),
                                 );
                             } else if ping_testing {
                                 ui.label(
                                     egui::RichText::new("🌐 Testing servers...")
                                         .size(12.0)
-                                        .color(egui::Color32::GRAY)
+                                        .color(egui::Color32::GRAY),
                                 );
                             } else {
                                 ui.label(
                                     egui::RichText::new("🌐 Auto (waiting for ping)")
                                         .size(12.0)
-                                        .color(egui::Color32::GRAY)
+                                        .color(egui::Color32::GRAY),
                                 );
                             }
                         } else if let Some(server) = servers.get(selected_server_index) {
-                            let ping_text = server.ping_ms.map(|p| format!(" ({}ms)", p)).unwrap_or_default();
+                            let ping_text = server
+                                .ping_ms
+                                .map(|p| format!(" ({}ms)", p))
+                                .unwrap_or_default();
                             ui.label(
                                 egui::RichText::new(format!("🌐 {}{}", server.name, ping_text))
                                     .size(12.0)
-                                    .color(egui::Color32::from_rgb(100, 180, 255))
+                                    .color(egui::Color32::from_rgb(100, 180, 255)),
                             );
                         }
                     });
@@ -2959,7 +3839,7 @@ impl Renderer {
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 ui.add_space(5.0);
-                                
+
                                 for section in game_sections {
                                     // Section header
                                     ui.horizontal(|ui| {
@@ -2971,9 +3851,9 @@ impl Renderer {
                                                 .color(egui::Color32::WHITE)
                                         );
                                     });
-                                    
+
                                     ui.add_space(10.0);
-                                    
+
                                     // Horizontal scroll of game cards
                                     ui.horizontal(|ui| {
                                         ui.add_space(10.0);
@@ -2989,9 +3869,575 @@ impl Renderer {
                                                 });
                                             });
                                     });
-                                    
+
                                     ui.add_space(20.0);
                                 }
+                            });
+                    }
+                }
+                GamesTab::QueueTimes => {
+                    // Check if we have any ping data (to know if ping test is still running)
+                    let has_ping_data = queue_servers.iter().any(|s| s.ping_ms.is_some());
+
+                    // Get recommended server (only if we have ping data)
+                    let recommended_server = if has_ping_data {
+                        crate::api::get_auto_selected_server(queue_servers)
+                    } else {
+                        None
+                    };
+
+                    // Aggregated location data (grouped by display_name within a region)
+                    #[derive(Debug, Clone)]
+                    struct LocationInfo {
+                        display_name: String,
+                        avg_queue_position: i32,
+                        avg_eta_seconds: Option<i64>,
+                        best_ping_ms: Option<u32>,
+                        server_count: usize,
+                        has_5080: bool,
+                        has_4080: bool,
+                    }
+
+                    // Apply region filter to servers
+                    let filtered_servers: Vec<&crate::api::QueueServerInfo> = queue_servers.iter()
+                        .filter(|s| match queue_region_filter {
+                            crate::app::QueueRegionFilter::All => true,
+                            crate::app::QueueRegionFilter::Region(ref region) => &s.region == region,
+                        })
+                        .collect();
+
+                    // Group servers by region, then by location (display_name)
+                    let mut regions: std::collections::HashMap<String, std::collections::HashMap<String, Vec<&crate::api::QueueServerInfo>>> = std::collections::HashMap::new();
+
+                    for server in filtered_servers.iter() {
+                        let region_entry = regions.entry(server.region.clone()).or_insert_with(std::collections::HashMap::new);
+                        let location_entry = region_entry.entry(server.display_name.clone()).or_insert_with(Vec::new);
+                        location_entry.push(*server);
+                    }
+
+                    // Build aggregated location info for each region
+                    let mut region_locations: std::collections::HashMap<String, Vec<LocationInfo>> = std::collections::HashMap::new();
+
+                    for (region, locations) in &regions {
+                        let mut location_list: Vec<LocationInfo> = Vec::new();
+
+                        for (display_name, servers) in locations {
+                            let count = servers.len();
+                            let avg_queue = if count > 0 {
+                                let sum: i64 = servers.iter().map(|s| s.queue_position as i64).sum();
+                                let avg_i64 = sum / count as i64;
+                                avg_i64.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+                            } else {
+                                0
+                            };
+                            let avg_eta = {
+                                let eta_sum: i64 = servers.iter().filter_map(|s| s.eta_seconds).sum();
+                                let eta_count = servers.iter().filter(|s| s.eta_seconds.is_some()).count();
+                                if eta_count > 0 { Some(eta_sum / eta_count as i64) } else { None }
+                            };
+                            let best_ping = servers.iter().filter_map(|s| s.ping_ms).min();
+                            let has_5080 = servers.iter().any(|s| s.is_5080_server);
+                            let has_4080 = servers.iter().any(|s| s.is_4080_server);
+
+                            location_list.push(LocationInfo {
+                                display_name: display_name.clone(),
+                                avg_queue_position: avg_queue,
+                                avg_eta_seconds: avg_eta,
+                                best_ping_ms: best_ping,
+                                server_count: count,
+                                has_5080,
+                                has_4080,
+                            });
+                        }
+
+                        // Sort locations based on the selected sort mode
+                        // All sorts use display_name as a tiebreaker for stable ordering
+                        match queue_sort_mode {
+                            crate::app::QueueSortMode::BestValue => {
+                                // Sort by a combined score (lower is better)
+                                location_list.sort_by(|a, b| {
+                                    let score_a = a.best_ping_ms.unwrap_or(500) as f64
+                                        + (a.avg_eta_seconds.unwrap_or(0) as f64 / 60.0 * 0.5).min(100.0);
+                                    let score_b = b.best_ping_ms.unwrap_or(500) as f64
+                                        + (b.avg_eta_seconds.unwrap_or(0) as f64 / 60.0 * 0.5).min(100.0);
+                                    score_a.partial_cmp(&score_b)
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                        .then_with(|| a.display_name.cmp(&b.display_name))
+                                });
+                            }
+                            crate::app::QueueSortMode::QueueTime => {
+                                location_list.sort_by(|a, b| {
+                                    let eta_a = a.avg_eta_seconds.unwrap_or(i64::MAX);
+                                    let eta_b = b.avg_eta_seconds.unwrap_or(i64::MAX);
+                                    eta_a.cmp(&eta_b)
+                                        .then_with(|| a.display_name.cmp(&b.display_name))
+                                });
+                            }
+                            crate::app::QueueSortMode::Ping => {
+                                location_list.sort_by(|a, b| {
+                                    let ping_a = a.best_ping_ms.unwrap_or(u32::MAX);
+                                    let ping_b = b.best_ping_ms.unwrap_or(u32::MAX);
+                                    ping_a.cmp(&ping_b)
+                                        .then_with(|| a.display_name.cmp(&b.display_name))
+                                });
+                            }
+                            crate::app::QueueSortMode::Alphabetical => {
+                                location_list.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+                            }
+                        }
+                        region_locations.insert(region.clone(), location_list);
+                    }
+
+                    // Sort regions by priority
+                    let mut region_keys: Vec<_> = regions.keys().cloned().collect();
+                    region_keys.sort_by(|a, b| {
+                        let order = |r: &str| match r {
+                            "US" => 0, "EU" => 1, "CA" => 2, "JP" => 3, "KR" => 4, "THAI" => 5, "MY" => 6,
+                            "SG" => 7, "TW" => 8, "AU" => 9, "LATAM" => 10, "TR" => 11, "SA" => 12,
+                            _ => 100
+                        };
+                        order(a).cmp(&order(b)).then(a.cmp(b))
+                    });
+
+                    // Header with title and controls
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+
+                        // Title
+                        ui.label(
+                            egui::RichText::new("Queue Times")
+                                .size(22.0)
+                                .strong()
+                                .color(egui::Color32::WHITE)
+                        );
+
+                        ui.add_space(12.0);
+
+                        // Region count badge
+                        if queue_loading {
+                            ui.spinner();
+                        } else {
+                            egui::Frame::new()
+                                .fill(egui::Color32::from_rgb(40, 40, 55))
+                                .corner_radius(12.0)
+                                .inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 4 })
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{} regions", region_keys.len()))
+                                            .size(12.0)
+                                            .color(egui::Color32::from_rgb(150, 150, 150))
+                                    );
+                                });
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(16.0);
+
+                            // Refresh button
+                            let refresh_btn = egui::Button::new(
+                                egui::RichText::new("↻ Refresh")
+                                    .size(12.0)
+                                    .color(egui::Color32::WHITE)
+                            )
+                            .fill(egui::Color32::from_rgb(50, 50, 65))
+                            .corner_radius(6.0);
+
+                            if ui.add(refresh_btn).clicked() {
+                                actions.push(UiAction::RefreshQueueTimes);
+                            }
+                        });
+                    });
+
+                    ui.add_space(16.0);
+
+                    if queue_servers.is_empty() && !queue_loading {
+                        // Empty state
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(100.0);
+                            ui.label(
+                                egui::RichText::new("📊")
+                                    .size(48.0)
+                            );
+                            ui.add_space(16.0);
+                            ui.label(
+                                egui::RichText::new("No Queue Data Available")
+                                    .size(18.0)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(180, 180, 180))
+                            );
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new("Click Refresh to load queue times")
+                                    .size(14.0)
+                                    .color(egui::Color32::from_rgb(120, 120, 120))
+                            );
+                        });
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.add_space(8.0);
+
+                                // Recommended server card
+                                ui.horizontal(|ui| {
+                                    ui.add_space(16.0);
+
+                                    if !has_ping_data {
+                                        // Ping test still running - show loading state
+                                        egui::Frame::new()
+                                            .fill(egui::Color32::from_rgb(35, 35, 50))
+                                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 80, 100)))
+                                            .corner_radius(12.0)
+                                            .inner_margin(egui::Margin::same(16))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width() - 32.0);
+                                                ui.horizontal(|ui| {
+                                                    ui.spinner();
+                                                    ui.add_space(12.0);
+                                                    ui.vertical(|ui| {
+                                                        ui.label(
+                                                            egui::RichText::new("⭐ RECOMMENDED")
+                                                                .size(11.0)
+                                                                .strong()
+                                                                .color(egui::Color32::from_rgb(100, 100, 120))
+                                                        );
+                                                        ui.add_space(4.0);
+                                                        ui.label(
+                                                            egui::RichText::new("Waiting for ping test to finish...")
+                                                                .size(14.0)
+                                                                .color(egui::Color32::from_rgb(140, 140, 160))
+                                                        );
+                                                    });
+                                                });
+                                            });
+                                    } else if let Some(best) = recommended_server {
+                                        egui::Frame::new()
+                                            .fill(egui::Color32::from_rgb(25, 45, 25))
+                                            .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(118, 185, 0)))
+                                            .corner_radius(12.0)
+                                            .inner_margin(egui::Margin::same(16))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width() - 32.0);
+                                                ui.horizontal(|ui| {
+                                                    // Star icon and recommended label
+                                                    ui.label(
+                                                        egui::RichText::new("⭐ RECOMMENDED")
+                                                            .size(11.0)
+                                                            .strong()
+                                                            .color(egui::Color32::from_rgb(118, 185, 0))
+                                                    );
+
+                                                    ui.add_space(12.0);
+
+                                                    // Server info
+                                                    ui.label(
+                                                        egui::RichText::new(&best.display_name)
+                                                            .size(16.0)
+                                                            .strong()
+                                                            .color(egui::Color32::WHITE)
+                                                    );
+
+                                                    ui.add_space(8.0);
+
+                                                    // GPU badge
+                                                    let gpu_text = if best.is_5080_server {
+                                                        "5080"
+                                                    } else if best.is_4080_server {
+                                                        "4080"
+                                                    } else {
+                                                        "Unknown"
+                                                    };
+                                                    egui::Frame::new()
+                                                        .fill(egui::Color32::from_rgb(118, 185, 0).gamma_multiply(0.3))
+                                                        .corner_radius(4.0)
+                                                        .inner_margin(egui::Margin { left: 6, right: 6, top: 2, bottom: 2 })
+                                                        .show(ui, |ui| {
+                                                            ui.label(
+                                                                egui::RichText::new(gpu_text)
+                                                                    .size(10.0)
+                                                                    .strong()
+                                                                    .color(egui::Color32::from_rgb(118, 185, 0))
+                                                            );
+                                                        });
+
+                                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                        // Wait time
+                                                        let eta_text = crate::api::format_queue_eta(best.eta_seconds);
+                                                        ui.label(
+                                                            egui::RichText::new(format!("~{}", eta_text))
+                                                                .size(14.0)
+                                                                .color(egui::Color32::from_rgb(118, 185, 0))
+                                                        );
+
+                                                        ui.add_space(12.0);
+
+                                                        // Queue position in box
+                                                        let position_color = if best.queue_position <= 0 {
+                                                            egui::Color32::from_rgb(118, 185, 0)
+                                                        } else if best.queue_position <= 5 {
+                                                            // Low queue: green
+                                                            egui::Color32::from_rgb(118, 185, 0)
+                                                        } else if best.queue_position <= 15 {
+                                                            // Medium queue: orange
+                                                            egui::Color32::from_rgb(255, 165, 0)
+                                                        } else {
+                                                            // High queue: red
+                                                            egui::Color32::from_rgb(230, 80, 80)
+                                                        };
+                                                        let pos_text = if best.queue_position <= 0 {
+                                                            "0".to_string()
+                                                        } else {
+                                                            format!("{}", best.queue_position)
+                                                        };
+                                                        egui::Frame::new()
+                                                            .fill(position_color.gamma_multiply(0.2))
+                                                            .corner_radius(4.0)
+                                                            .inner_margin(egui::Margin { left: 8, right: 8, top: 3, bottom: 3 })
+                                                            .show(ui, |ui| {
+                                                                ui.label(
+                                                                    egui::RichText::new(pos_text)
+                                                                        .size(13.0)
+                                                                        .strong()
+                                                                        .color(position_color)
+                                                                );
+                                                            });
+
+                                                        ui.add_space(12.0);
+
+                                                        // Ping
+                                                        if let Some(ping) = best.ping_ms {
+                                                            ui.label(
+                                                                egui::RichText::new(format!("{}ms", ping))
+                                                                    .size(13.0)
+                                                                    .color(egui::Color32::from_rgb(140, 180, 140))
+                                                            );
+                                                        }
+                                                    });
+                                                });
+                                            });
+                                    }
+                                });
+
+                                ui.add_space(20.0);
+
+                                // Region sections with locations (using CollapsingHeader)
+                                for region in &region_keys {
+                                    if let Some(locations) = region_locations.get(region) {
+                                        let (flag, region_name) = match region.as_str() {
+                                            "US" => ("🇺🇸", "United States"),
+                                            "EU" => ("🇪🇺", "Europe"),
+                                            "CA" => ("🇨🇦", "Canada"),
+                                            "JP" => ("🇯🇵", "Japan"),
+                                            "THAI" => ("🇹🇭", "Thailand"),
+                                            "MY" => ("🇲🇾", "Malaysia"),
+                                            "KR" => ("🇰🇷", "South Korea"),
+                                            "SG" => ("🇸🇬", "Singapore"),
+                                            "TW" => ("🇹🇼", "Taiwan"),
+                                            "AU" => ("🇦🇺", "Australia"),
+                                            "LATAM" => ("🌎", "Latin America"),
+                                            "TR" => ("🇹🇷", "Turkey"),
+                                            "SA" => ("🇸🇦", "Saudi Arabia"),
+                                            "AF" => ("🌍", "Africa"),
+                                            "RU" => ("🇷🇺", "Russia"),
+                                            _ => ("🌐", region.as_str()),
+                                        };
+
+                                        // Region container with padding
+                                        ui.add_space(4.0);
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(16.0);
+                                            ui.vertical(|ui| {
+                                                ui.set_width(ui.available_width() - 32.0);
+
+                                                // Use CollapsingHeader for expandable regions
+                                                let header_text = format!("{} {} ({} locations)", flag, region_name, locations.len());
+                                                egui::CollapsingHeader::new(
+                                                    egui::RichText::new(header_text)
+                                                        .size(15.0)
+                                                        .strong()
+                                                        .color(egui::Color32::WHITE)
+                                                )
+                                                .default_open(true)
+                                                .show(ui, |ui| {
+                                                    // Location rows within this region
+                                                    for location in locations {
+                                                        ui.horizontal(|ui| {
+                                                            ui.add_space(20.0); // Indent under region
+
+                                                            egui::Frame::new()
+                                                                .fill(egui::Color32::from_rgb(28, 28, 38))
+                                                                .corner_radius(6.0)
+                                                                .inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 8 })
+                                                                .show(ui, |ui| {
+                                                                    ui.set_width(ui.available_width() - 36.0);
+                                                                    ui.horizontal(|ui| {
+                                                                        // Location name
+                                                                        ui.allocate_ui_with_layout(
+                                                                            egui::vec2(110.0, 20.0),
+                                                                            egui::Layout::left_to_right(egui::Align::Center),
+                                                                            |ui| {
+                                                                                ui.label(
+                                                                                    egui::RichText::new(&location.display_name)
+                                                                                        .size(13.0)
+                                                                                        .color(egui::Color32::WHITE)
+                                                                                );
+                                                                            }
+                                                                        );
+
+                                                                        // Server count if > 1
+                                                                        if location.server_count > 1 {
+                                                                            egui::Frame::new()
+                                                                                .fill(egui::Color32::from_rgb(45, 45, 60))
+                                                                                .corner_radius(4.0)
+                                                                                .inner_margin(egui::Margin { left: 5, right: 5, top: 2, bottom: 2 })
+                                                                                .show(ui, |ui| {
+                                                                                    ui.label(
+                                                                                        egui::RichText::new(format!("x{}", location.server_count))
+                                                                                            .size(9.0)
+                                                                                            .color(egui::Color32::from_rgb(120, 120, 140))
+                                                                                    );
+                                                                                });
+                                                                            ui.add_space(4.0);
+                                                                        }
+
+                                                                        // GPU badges
+                                                                        if location.has_5080 {
+                                                                            let gpu_color = egui::Color32::from_rgb(118, 185, 0);
+                                                                            egui::Frame::new()
+                                                                                .fill(gpu_color.gamma_multiply(0.2))
+                                                                                .corner_radius(4.0)
+                                                                                .inner_margin(egui::Margin { left: 5, right: 5, top: 2, bottom: 2 })
+                                                                                .show(ui, |ui| {
+                                                                                    ui.label(
+                                                                                        egui::RichText::new("5080")
+                                                                                            .size(9.0)
+                                                                                            .strong()
+                                                                                            .color(gpu_color)
+                                                                                    );
+                                                                                });
+                                                                            ui.add_space(4.0);
+                                                                        }
+                                                                        if location.has_4080 {
+                                                                            let gpu_color = egui::Color32::from_rgb(100, 160, 220);
+                                                                            egui::Frame::new()
+                                                                                .fill(gpu_color.gamma_multiply(0.2))
+                                                                                .corner_radius(4.0)
+                                                                                .inner_margin(egui::Margin { left: 5, right: 5, top: 2, bottom: 2 })
+                                                                                .show(ui, |ui| {
+                                                                                    ui.label(
+                                                                                        egui::RichText::new("4080")
+                                                                                            .size(9.0)
+                                                                                            .strong()
+                                                                                            .color(gpu_color)
+                                                                                    );
+                                                                                });
+                                                                        }
+
+                                                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                                            // ETA
+                                                                            let eta_text = crate::api::format_queue_eta(location.avg_eta_seconds);
+                                                                            let eta_color = if location.avg_eta_seconds.unwrap_or(0) <= 0 {
+                                                                                egui::Color32::from_rgb(118, 185, 0)
+                                                                            } else if location.avg_eta_seconds.unwrap_or(0) < 300 {
+                                                                                egui::Color32::from_rgb(255, 200, 50)
+                                                                            } else {
+                                                                                egui::Color32::from_rgb(150, 150, 150)
+                                                                            };
+
+                                                                            ui.label(
+                                                                                egui::RichText::new(format!("~{}", eta_text))
+                                                                                    .size(12.0)
+                                                                                    .color(eta_color)
+                                                                            );
+
+                                                                            ui.add_space(12.0);
+
+                                                                            // Queue position
+                                                                            let position_color = if location.avg_queue_position <= 0 {
+                                                                                egui::Color32::from_rgb(118, 185, 0)
+                                                                            } else if location.avg_queue_position < 20 {
+                                                                                egui::Color32::from_rgb(255, 200, 50)
+                                                                            } else if location.avg_queue_position < 100 {
+                                                                                egui::Color32::from_rgb(255, 150, 80)
+                                                                            } else {
+                                                                                egui::Color32::from_rgb(255, 100, 100)
+                                                                            };
+
+                                                                            egui::Frame::new()
+                                                                                .fill(position_color.gamma_multiply(0.2))
+                                                                                .corner_radius(4.0)
+                                                                                .inner_margin(egui::Margin { left: 8, right: 8, top: 3, bottom: 3 })
+                                                                                .show(ui, |ui| {
+                                                                                    ui.label(
+                                                                                        egui::RichText::new(format!("{}", location.avg_queue_position))
+                                                                                            .size(12.0)
+                                                                                            .strong()
+                                                                                            .color(position_color)
+                                                                                    );
+                                                                                });
+
+                                                                            ui.add_space(12.0);
+
+                                                                            // Ping
+                                                                            if let Some(ping) = location.best_ping_ms {
+                                                                                let ping_color = if ping < 50 {
+                                                                                    egui::Color32::from_rgb(118, 185, 0)
+                                                                                } else if ping < 100 {
+                                                                                    egui::Color32::from_rgb(255, 200, 50)
+                                                                                } else {
+                                                                                    egui::Color32::from_rgb(255, 150, 80)
+                                                                                };
+                                                                                ui.label(
+                                                                                    egui::RichText::new(format!("{}ms", ping))
+                                                                                        .size(12.0)
+                                                                                        .color(ping_color)
+                                                                                );
+                                                                            } else if !has_ping_data {
+                                                                                ui.spinner();
+                                                                            } else {
+                                                                                ui.label(
+                                                                                    egui::RichText::new("-")
+                                                                                        .size(12.0)
+                                                                                        .color(egui::Color32::from_rgb(80, 80, 100))
+                                                                                );
+                                                                            }
+                                                                        });
+                                                                    });
+                                                                });
+                                                        });
+                                                        ui.add_space(4.0);
+                                                    }
+                                                });
+                                            });
+                                        });
+                                    }
+                                }
+
+                                // Attribution footer
+                                ui.add_space(16.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("Powered by")
+                                                .size(11.0)
+                                                .color(egui::Color32::from_rgb(80, 80, 80))
+                                        );
+                                        ui.add_space(4.0);
+                                        if ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new("PrintedWaste")
+                                                    .size(11.0)
+                                                    .color(egui::Color32::from_rgb(118, 185, 0))
+                                                    .underline()
+                                            ).sense(egui::Sense::click())
+                                        ).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                            if let Err(e) = open::that("https://printedwaste.com/gfn/") {
+                                                warn!("Failed to open PrintedWaste link: {}", e);
+                                            }
+                                        }
+                                    });
+                                });
+                                ui.add_space(20.0);
                             });
                     }
                 }
@@ -3068,12 +4514,35 @@ impl Renderer {
 
         // Game detail popup
         if let Some(game) = selected_game_popup {
-            Self::render_game_popup(ctx, game, game_textures, actions);
+            Self::render_game_popup(ctx, game, game_textures, subscription, actions);
+        }
+
+        // Server selection modal (for free tier users)
+        if show_server_selection {
+            if let Some(game) = pending_server_selection_game {
+                Self::render_server_selection_modal(
+                    ctx,
+                    game,
+                    queue_servers,
+                    queue_loading,
+                    selected_queue_server,
+                    actions,
+                );
+            }
         }
 
         // Settings modal
         if show_settings_modal {
-            render_settings_modal(ctx, settings, servers, selected_server_index, auto_server_selection, ping_testing, subscription, actions);
+            render_settings_modal(
+                ctx,
+                settings,
+                servers,
+                selected_server_index,
+                auto_server_selection,
+                ping_testing,
+                subscription,
+                actions,
+            );
         }
 
         // Session conflict dialog
@@ -3101,8 +4570,15 @@ impl Renderer {
         ctx: &egui::Context,
         game: &crate::app::GameInfo,
         game_textures: &HashMap<String, egui::TextureHandle>,
+        subscription: Option<&crate::app::SubscriptionInfo>,
         actions: &mut Vec<UiAction>,
     ) {
+        // Check if user is free tier (show server selection modal instead of direct launch).
+        // If subscription info is not available, default to treating the user as non-free
+        // to avoid incorrectly restricting paid users when data hasn't loaded yet.
+        let is_free_tier = subscription
+            .map(|s| s.membership_tier == "FREE")
+            .unwrap_or(false);
         let popup_width = 450.0;
         let popup_height = 500.0;
 
@@ -3113,13 +4589,13 @@ impl Renderer {
             .order(egui::Order::Background) // Draw behind windows
             .show(ctx, |ui| {
                 let screen_rect = ctx.input(|i| i.viewport_rect());
-                ui.painter().rect_filled(
-                    screen_rect,
-                    0.0,
-                    egui::Color32::from_black_alpha(200),
-                );
+                ui.painter()
+                    .rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(200));
                 // Close popup on background click
-                if ui.allocate_rect(screen_rect, egui::Sense::click()).clicked() {
+                if ui
+                    .allocate_rect(screen_rect, egui::Sense::click())
+                    .clicked()
+                {
                     actions.push(UiAction::CloseGamePopup);
                 }
             });
@@ -3135,13 +4611,27 @@ impl Renderer {
                     if let Some(ref image_url) = game.image_url {
                         if let Some(texture) = game_textures.get(image_url) {
                             let image_size = egui::vec2(popup_width - 40.0, 150.0);
-                            ui.add(egui::Image::new(texture).fit_to_exact_size(image_size).corner_radius(8.0));
+                            ui.add(
+                                egui::Image::new(texture)
+                                    .fit_to_exact_size(image_size)
+                                    .corner_radius(8.0),
+                            );
                         } else {
                             // Placeholder
                             let placeholder_size = egui::vec2(popup_width - 40.0, 150.0);
                             let (_, rect) = ui.allocate_space(placeholder_size);
-                            ui.painter().rect_filled(rect, 8.0, egui::Color32::from_rgb(50, 50, 70));
-                            let initial = game.title.chars().next().unwrap_or('?').to_uppercase().to_string();
+                            ui.painter().rect_filled(
+                                rect,
+                                8.0,
+                                egui::Color32::from_rgb(50, 50, 70),
+                            );
+                            let initial = game
+                                .title
+                                .chars()
+                                .next()
+                                .unwrap_or('?')
+                                .to_uppercase()
+                                .to_string();
                             ui.painter().text(
                                 rect.center(),
                                 egui::Align2::CENTER_CENTER,
@@ -3159,7 +4649,7 @@ impl Renderer {
                         egui::RichText::new(&game.title)
                             .size(20.0)
                             .strong()
-                            .color(egui::Color32::WHITE)
+                            .color(egui::Color32::WHITE),
                     );
 
                     ui.add_space(8.0);
@@ -3170,7 +4660,7 @@ impl Renderer {
                             ui.label(
                                 egui::RichText::new("Platform:")
                                     .size(12.0)
-                                    .color(egui::Color32::GRAY)
+                                    .color(egui::Color32::GRAY),
                             );
 
                             // Show platform buttons
@@ -3190,7 +4680,7 @@ impl Renderer {
                                 let btn = egui::Button::new(
                                     egui::RichText::new(variant.store.to_uppercase())
                                         .size(11.0)
-                                        .color(text_color)
+                                        .color(text_color),
                                 )
                                 .fill(btn_color)
                                 .corner_radius(4.0)
@@ -3207,13 +4697,13 @@ impl Renderer {
                             ui.label(
                                 egui::RichText::new("Store:")
                                     .size(12.0)
-                                    .color(egui::Color32::GRAY)
+                                    .color(egui::Color32::GRAY),
                             );
                             ui.label(
                                 egui::RichText::new(&game.store.to_uppercase())
                                     .size(12.0)
                                     .color(egui::Color32::from_rgb(100, 180, 255))
-                                    .strong()
+                                    .strong(),
                             );
                         });
                     }
@@ -3224,25 +4714,25 @@ impl Renderer {
                             ui.label(
                                 egui::RichText::new("Publisher:")
                                     .size(12.0)
-                                    .color(egui::Color32::GRAY)
+                                    .color(egui::Color32::GRAY),
                             );
                             ui.label(
                                 egui::RichText::new(publisher)
                                     .size(12.0)
-                                    .color(egui::Color32::LIGHT_GRAY)
+                                    .color(egui::Color32::LIGHT_GRAY),
                             );
                         });
                     }
 
                     ui.add_space(8.0);
-                    
+
                     // GFN Status (Play Type and Membership)
                     if let Some(ref play_type) = game.play_type {
                         ui.horizontal(|ui| {
                             ui.label(
                                 egui::RichText::new("Type:")
                                     .size(12.0)
-                                    .color(egui::Color32::GRAY)
+                                    .color(egui::Color32::GRAY),
                             );
                             let color = if play_type == "INSTALL_TO_PLAY" {
                                 egui::Color32::from_rgb(255, 180, 50) // Orange
@@ -3253,7 +4743,7 @@ impl Renderer {
                                 egui::RichText::new(play_type)
                                     .size(12.0)
                                     .color(color)
-                                    .strong()
+                                    .strong(),
                             );
                         });
                     }
@@ -3263,35 +4753,38 @@ impl Renderer {
                             ui.label(
                                 egui::RichText::new("Requires:")
                                     .size(12.0)
-                                    .color(egui::Color32::GRAY)
+                                    .color(egui::Color32::GRAY),
                             );
                             ui.label(
                                 egui::RichText::new(tier)
                                     .size(12.0)
                                     .color(egui::Color32::from_rgb(118, 185, 0)) // Nvidia Green
-                                    .strong()
+                                    .strong(),
                             );
                         });
                     }
 
                     if let Some(ref text) = game.playability_text {
-                         ui.add_space(4.0);
-                         ui.add(egui::Label::new(
-                            egui::RichText::new(text)
-                                .size(11.0)
-                                .color(egui::Color32::LIGHT_GRAY)
-                         ).wrap());
+                        ui.add_space(4.0);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(text)
+                                    .size(11.0)
+                                    .color(egui::Color32::LIGHT_GRAY),
+                            )
+                            .wrap(),
+                        );
                     }
 
                     ui.add_space(20.0);
 
                     // Description
                     if let Some(ref desc) = game.description {
-                         ui.label(
+                        ui.label(
                             egui::RichText::new("About this game:")
                                 .size(14.0)
                                 .strong()
-                                .color(egui::Color32::WHITE)
+                                .color(egui::Color32::WHITE),
                         );
                         ui.add_space(4.0);
                         egui::ScrollArea::vertical()
@@ -3300,42 +4793,500 @@ impl Renderer {
                                 ui.label(
                                     egui::RichText::new(desc)
                                         .size(13.0)
-                                        .color(egui::Color32::LIGHT_GRAY)
+                                        .color(egui::Color32::LIGHT_GRAY),
                                 );
                             });
                         ui.add_space(15.0);
                     } else {
-                         ui.add_space(20.0);
+                        ui.add_space(20.0);
                     }
 
                     // Buttons
                     ui.horizontal(|ui| {
-                        // Play button
+                        // Play button (for free tier, show server selection first)
                         let play_btn = egui::Button::new(
-                            egui::RichText::new("  Play Now  ")
-                                .size(16.0)
-                                .strong()
+                            egui::RichText::new("  Play Now  ").size(16.0).strong(),
                         )
                         .fill(egui::Color32::from_rgb(70, 180, 70))
                         .min_size(egui::vec2(120.0, 40.0));
 
                         if ui.add(play_btn).clicked() {
-                            actions.push(UiAction::LaunchGameDirect(game.clone()));
-                            actions.push(UiAction::CloseGamePopup);
+                            if is_free_tier {
+                                // Free tier: show server selection modal
+                                actions.push(UiAction::ShowServerSelection(game.clone()));
+                                actions.push(UiAction::CloseGamePopup);
+                            } else {
+                                // Paid tier: launch directly
+                                actions.push(UiAction::LaunchGameDirect(game.clone()));
+                                actions.push(UiAction::CloseGamePopup);
+                            }
                         }
 
                         ui.add_space(20.0);
 
                         // Close button
-                        let close_btn = egui::Button::new(
-                            egui::RichText::new("  Close  ")
-                                .size(14.0)
-                        )
-                        .fill(egui::Color32::from_rgb(60, 60, 80))
-                        .min_size(egui::vec2(80.0, 40.0));
+                        let close_btn =
+                            egui::Button::new(egui::RichText::new("  Close  ").size(14.0))
+                                .fill(egui::Color32::from_rgb(60, 60, 80))
+                                .min_size(egui::vec2(80.0, 40.0));
 
                         if ui.add(close_btn).clicked() {
                             actions.push(UiAction::CloseGamePopup);
+                        }
+                    });
+                });
+            });
+    }
+
+    /// Render the server selection modal (for free tier users choosing a server before launching)
+    fn render_server_selection_modal(
+        ctx: &egui::Context,
+        game: &crate::app::GameInfo,
+        queue_servers: &[crate::api::QueueServerInfo],
+        queue_loading: bool,
+        selected_server: &Option<String>,
+        actions: &mut Vec<UiAction>,
+    ) {
+        // Modal overlay
+        egui::Area::new(egui::Id::new("server_selection_overlay"))
+            .fixed_pos([0.0, 0.0])
+            .interactable(true)
+            .order(egui::Order::Background)
+            .show(ctx, |ui| {
+                let screen_rect = ctx.input(|i| i.viewport_rect());
+                ui.painter()
+                    .rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(200));
+                if ui
+                    .allocate_rect(screen_rect, egui::Sense::click())
+                    .clicked()
+                {
+                    actions.push(UiAction::CloseServerSelection);
+                }
+            });
+
+        // Check if we have ping data
+        let has_ping_data = queue_servers.iter().any(|s| s.ping_ms.is_some());
+
+        // Get recommended server (best score across all servers)
+        let recommended = if has_ping_data {
+            crate::api::get_auto_selected_server(queue_servers)
+        } else {
+            None
+        };
+
+        // Group servers by region (already simple: "US", "EU", etc. from queue API) and find best server per region
+        let mut region_best: std::collections::HashMap<String, &crate::api::QueueServerInfo> =
+            std::collections::HashMap::new();
+
+        for server in queue_servers {
+            let entry = region_best.entry(server.region.clone()).or_insert(server);
+            // Replace if this server has better score
+            let current_score = crate::api::calculate_server_score(entry);
+            let new_score = crate::api::calculate_server_score(server);
+            if new_score < current_score {
+                *entry = server;
+            }
+        }
+
+        // Sort regions by priority
+        let mut region_keys: Vec<_> = region_best.keys().cloned().collect();
+        region_keys.sort_by(|a, b| {
+            let order = |r: &str| match r {
+                "US" => 0,
+                "EU" => 1,
+                "CA" => 2,
+                "JP" => 3,
+                "KR" => 4,
+                "THAI" => 5,
+                "MY" => 6,
+                "SG" => 7,
+                "TW" => 8,
+                "AU" => 9,
+                "LATAM" => 10,
+                "TR" => 11,
+                "SA" => 12,
+                _ => 100,
+            };
+            order(a).cmp(&order(b)).then(a.cmp(b))
+        });
+
+        egui::Window::new("Choose Server")
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size([520.0, 480.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    // Game title
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Launching:")
+                                .size(14.0)
+                                .color(egui::Color32::GRAY),
+                        );
+                        ui.label(
+                            egui::RichText::new(&game.title)
+                                .size(14.0)
+                                .strong()
+                                .color(egui::Color32::WHITE),
+                        );
+                    });
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Auto/Recommended option
+                    let auto_selected = selected_server.is_none();
+                    let auto_frame_fill = if auto_selected {
+                        egui::Color32::from_rgb(30, 50, 30)
+                    } else {
+                        egui::Color32::from_rgb(35, 35, 50)
+                    };
+                    let auto_stroke = if auto_selected {
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(118, 185, 0))
+                    } else {
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 80))
+                    };
+
+                    let auto_response = egui::Frame::new()
+                        .fill(auto_frame_fill)
+                        .stroke(auto_stroke)
+                        .corner_radius(8.0)
+                        .inner_margin(egui::Margin::same(12))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("⭐").size(18.0));
+                                ui.add_space(8.0);
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Auto (Recommended)")
+                                            .size(15.0)
+                                            .strong()
+                                            .color(egui::Color32::WHITE),
+                                    );
+                                    if !has_ping_data {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.add_space(8.0);
+                                            ui.label(
+                                                egui::RichText::new("Testing ping to servers...")
+                                                    .size(12.0)
+                                                    .color(egui::Color32::from_rgb(140, 140, 160)),
+                                            );
+                                        });
+                                    } else if let Some(best) = recommended {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{} • {}ms • ~{}",
+                                                best.display_name,
+                                                best.ping_ms.unwrap_or(0),
+                                                crate::api::format_queue_eta(best.eta_seconds)
+                                            ))
+                                            .size(12.0)
+                                            .color(egui::Color32::from_rgb(118, 185, 0)),
+                                        );
+                                    }
+                                });
+                            });
+                        })
+                        .response;
+
+                    if auto_response.interact(egui::Sense::click()).clicked() {
+                        actions.push(UiAction::SelectQueueServer(None));
+                    }
+
+                    ui.add_space(12.0);
+
+                    // Region list
+                    ui.label(
+                        egui::RichText::new("Or choose a region:")
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(120, 120, 120)),
+                    );
+
+                    ui.add_space(8.0);
+
+                    if queue_loading && queue_servers.is_empty() {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new("Loading servers...")
+                                    .size(13.0)
+                                    .color(egui::Color32::GRAY),
+                            );
+                        });
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .max_height(220.0)
+                            .show(ui, |ui| {
+                                // Show regions in sorted order
+                                for region in &region_keys {
+                                    if let Some(best_server) = region_best.get(region) {
+                                        let (flag, region_name) = match region.as_str() {
+                                            "US" => ("🇺🇸", "United States"),
+                                            "EU" => ("🇪🇺", "Europe"),
+                                            "CA" => ("🇨🇦", "Canada"),
+                                            "JP" => ("🇯🇵", "Japan"),
+                                            "THAI" => ("🇹🇭", "Thailand"),
+                                            "MY" => ("🇲🇾", "Malaysia"),
+                                            "KR" => ("🇰🇷", "South Korea"),
+                                            "SG" => ("🇸🇬", "Singapore"),
+                                            "TW" => ("🇹🇼", "Taiwan"),
+                                            "AU" => ("🇦🇺", "Australia"),
+                                            "LATAM" => ("🌎", "Latin America"),
+                                            "TR" => ("🇹🇷", "Turkey"),
+                                            "SA" => ("🇸🇦", "Saudi Arabia"),
+                                            "AF" => ("🌍", "Africa"),
+                                            "RU" => ("🇷🇺", "Russia"),
+                                            _ => ("🌐", region.as_str()),
+                                        };
+
+                                        let is_selected = selected_server.as_ref()
+                                            == Some(&best_server.server_id);
+                                        let frame_fill = if is_selected {
+                                            egui::Color32::from_rgb(40, 50, 70)
+                                        } else {
+                                            egui::Color32::from_rgb(30, 30, 42)
+                                        };
+                                        let frame_stroke = if is_selected {
+                                            egui::Stroke::new(
+                                                1.5,
+                                                egui::Color32::from_rgb(100, 160, 220),
+                                            )
+                                        } else {
+                                            egui::Stroke::NONE
+                                        };
+
+                                        let server_response = egui::Frame::new()
+                                            .fill(frame_fill)
+                                            .stroke(frame_stroke)
+                                            .corner_radius(6.0)
+                                            .inner_margin(egui::Margin::symmetric(12, 10))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.horizontal(|ui| {
+                                                    // Flag and region name
+                                                    ui.label(egui::RichText::new(flag).size(18.0));
+                                                    ui.add_space(8.0);
+                                                    ui.allocate_ui_with_layout(
+                                                        egui::vec2(130.0, 20.0),
+                                                        egui::Layout::left_to_right(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            ui.label(
+                                                                egui::RichText::new(region_name)
+                                                                    .size(14.0)
+                                                                    .strong()
+                                                                    .color(egui::Color32::WHITE),
+                                                            );
+                                                        },
+                                                    );
+
+                                                    // Best server location in this region
+                                                    ui.label(
+                                                        egui::RichText::new(
+                                                            &best_server.display_name,
+                                                        )
+                                                        .size(11.0)
+                                                        .color(egui::Color32::from_rgb(
+                                                            120, 120, 140,
+                                                        )),
+                                                    );
+
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            // ETA
+                                                            let eta_text =
+                                                                crate::api::format_queue_eta(
+                                                                    best_server.eta_seconds,
+                                                                );
+                                                            let eta_color = if best_server
+                                                                .eta_seconds
+                                                                .unwrap_or(0)
+                                                                <= 0
+                                                            {
+                                                                egui::Color32::from_rgb(118, 185, 0)
+                                                            } else if best_server
+                                                                .eta_seconds
+                                                                .unwrap_or(0)
+                                                                < 300
+                                                            {
+                                                                egui::Color32::from_rgb(
+                                                                    255, 200, 50,
+                                                                )
+                                                            } else {
+                                                                egui::Color32::from_rgb(
+                                                                    150, 150, 150,
+                                                                )
+                                                            };
+                                                            ui.label(
+                                                                egui::RichText::new(format!(
+                                                                    "~{}",
+                                                                    eta_text
+                                                                ))
+                                                                .size(11.0)
+                                                                .color(eta_color),
+                                                            );
+
+                                                            ui.add_space(10.0);
+
+                                                            // Queue position in box
+                                                            let queue_color = if best_server
+                                                                .queue_position
+                                                                <= 0
+                                                            {
+                                                                egui::Color32::from_rgb(118, 185, 0)
+                                                            } else if best_server.queue_position
+                                                                < 20
+                                                            {
+                                                                egui::Color32::from_rgb(
+                                                                    255, 200, 50,
+                                                                )
+                                                            } else if best_server.queue_position
+                                                                < 100
+                                                            {
+                                                                egui::Color32::from_rgb(
+                                                                    255, 150, 80,
+                                                                )
+                                                            } else {
+                                                                egui::Color32::from_rgb(
+                                                                    255, 100, 100,
+                                                                )
+                                                            };
+                                                            egui::Frame::new()
+                                                                .fill(
+                                                                    queue_color.gamma_multiply(0.2),
+                                                                )
+                                                                .corner_radius(3.0)
+                                                                .inner_margin(
+                                                                    egui::Margin::symmetric(6, 2),
+                                                                )
+                                                                .show(ui, |ui| {
+                                                                    ui.label(
+                                                                        egui::RichText::new(
+                                                                            format!(
+                                                                                "{}",
+                                                                                best_server
+                                                                                    .queue_position
+                                                                            ),
+                                                                        )
+                                                                        .size(11.0)
+                                                                        .strong()
+                                                                        .color(queue_color),
+                                                                    );
+                                                                });
+
+                                                            ui.add_space(10.0);
+
+                                                            // Ping
+                                                            if let Some(ping) = best_server.ping_ms
+                                                            {
+                                                                let ping_color = if ping < 50 {
+                                                                    egui::Color32::from_rgb(
+                                                                        118, 185, 0,
+                                                                    )
+                                                                } else if ping < 100 {
+                                                                    egui::Color32::from_rgb(
+                                                                        255, 200, 50,
+                                                                    )
+                                                                } else {
+                                                                    egui::Color32::from_rgb(
+                                                                        255, 150, 80,
+                                                                    )
+                                                                };
+                                                                ui.label(
+                                                                    egui::RichText::new(format!(
+                                                                        "{}ms",
+                                                                        ping
+                                                                    ))
+                                                                    .size(11.0)
+                                                                    .color(ping_color),
+                                                                );
+                                                            } else {
+                                                                ui.spinner();
+                                                            }
+                                                        },
+                                                    );
+                                                });
+                                            })
+                                            .response;
+
+                                        if server_response.interact(egui::Sense::click()).clicked()
+                                        {
+                                            actions.push(UiAction::SelectQueueServer(Some(
+                                                best_server.server_id.clone(),
+                                            )));
+                                        }
+
+                                        ui.add_space(4.0);
+                                    }
+                                }
+                            });
+                    }
+
+                    ui.add_space(16.0);
+
+                    // Buttons
+                    ui.horizontal(|ui| {
+                        // Launch button
+                        let launch_btn = egui::Button::new(
+                            egui::RichText::new("  Launch Game  ").size(15.0).strong(),
+                        )
+                        .fill(egui::Color32::from_rgb(70, 180, 70))
+                        .min_size(egui::vec2(140.0, 38.0));
+
+                        if ui.add(launch_btn).clicked() {
+                            actions.push(UiAction::LaunchWithServer(
+                                game.clone(),
+                                selected_server.clone(),
+                            ));
+                        }
+
+                        ui.add_space(12.0);
+
+                        // Cancel button
+                        let cancel_btn =
+                            egui::Button::new(egui::RichText::new("  Cancel  ").size(14.0))
+                                .fill(egui::Color32::from_rgb(60, 60, 80))
+                                .min_size(egui::vec2(90.0, 38.0));
+
+                        if ui.add(cancel_btn).clicked() {
+                            actions.push(UiAction::CloseServerSelection);
+                        }
+                    });
+
+                    // Attribution footer
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Powered by")
+                                .size(10.0)
+                                .color(egui::Color32::from_rgb(80, 80, 80)),
+                        );
+                        ui.add_space(4.0);
+                        if ui
+                            .add(
+                                egui::Label::new(
+                                    egui::RichText::new("PrintedWaste")
+                                        .size(10.0)
+                                        .color(egui::Color32::from_rgb(118, 185, 0))
+                                        .underline(),
+                                )
+                                .sense(egui::Sense::click()),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            if let Err(e) = open::that("https://printedwaste.com/gfn/") {
+                                warn!("Failed to open PrintedWaste link: {}", e);
+                            }
                         }
                     });
                 });
@@ -3373,12 +5324,20 @@ impl Renderer {
                         if let Some(texture) = game_textures.get(image_url) {
                             // Display the image with rounded top corners
                             let size = egui::vec2(card_width, image_height);
-                            ui.add(egui::Image::new(texture)
-                                .fit_to_exact_size(size)
-                                .corner_radius(egui::CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }));
+                            ui.add(
+                                egui::Image::new(texture)
+                                    .fit_to_exact_size(size)
+                                    .corner_radius(egui::CornerRadius {
+                                        nw: 8,
+                                        ne: 8,
+                                        sw: 0,
+                                        se: 0,
+                                    }),
+                            );
                         } else {
                             // Check if image data is available in cache
-                            if let Some((pixels, width, height)) = image_cache::get_image(image_url) {
+                            if let Some((pixels, width, height)) = image_cache::get_image(image_url)
+                            {
                                 // Create egui texture from pixels
                                 let color_image = egui::ColorImage::from_rgba_unmultiplied(
                                     [width as usize, height as usize],
@@ -3393,18 +5352,31 @@ impl Renderer {
 
                                 // Display immediately
                                 let size = egui::vec2(card_width, image_height);
-                                ui.add(egui::Image::new(&texture)
-                                    .fit_to_exact_size(size)
-                                    .corner_radius(egui::CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }));
+                                ui.add(
+                                    egui::Image::new(&texture)
+                                        .fit_to_exact_size(size)
+                                        .corner_radius(egui::CornerRadius {
+                                            nw: 8,
+                                            ne: 8,
+                                            sw: 0,
+                                            se: 0,
+                                        }),
+                                );
                             } else {
                                 // Request loading
                                 image_cache::request_image(image_url, runtime);
 
                                 // Show placeholder
-                                let placeholder_rect = ui.allocate_space(egui::vec2(card_width, image_height));
+                                let placeholder_rect =
+                                    ui.allocate_space(egui::vec2(card_width, image_height));
                                 ui.painter().rect_filled(
                                     placeholder_rect.1,
-                                    egui::CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 },
+                                    egui::CornerRadius {
+                                        nw: 8,
+                                        ne: 8,
+                                        sw: 0,
+                                        se: 0,
+                                    },
                                     egui::Color32::from_rgb(40, 40, 55),
                                 );
                                 // Loading spinner effect
@@ -3419,14 +5391,26 @@ impl Renderer {
                         }
                     } else {
                         // No image URL - show placeholder with game initial
-                        let placeholder_rect = ui.allocate_space(egui::vec2(card_width, image_height));
+                        let placeholder_rect =
+                            ui.allocate_space(egui::vec2(card_width, image_height));
                         ui.painter().rect_filled(
                             placeholder_rect.1,
-                            egui::CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 },
+                            egui::CornerRadius {
+                                nw: 8,
+                                ne: 8,
+                                sw: 0,
+                                se: 0,
+                            },
                             egui::Color32::from_rgb(45, 45, 65),
                         );
                         // Show first letter of game title
-                        let initial = game.title.chars().next().unwrap_or('?').to_uppercase().to_string();
+                        let initial = game
+                            .title
+                            .chars()
+                            .next()
+                            .unwrap_or('?')
+                            .to_uppercase()
+                            .to_string();
                         ui.painter().text(
                             placeholder_rect.1.center(),
                             egui::Align2::CENTER_CENTER,
@@ -3452,14 +5436,14 @@ impl Renderer {
                                 egui::RichText::new(title)
                                     .size(13.0)
                                     .strong()
-                                    .color(egui::Color32::WHITE)
+                                    .color(egui::Color32::WHITE),
                             );
 
                             // Store badge
                             ui.label(
                                 egui::RichText::new(game.store.to_uppercase())
                                     .size(10.0)
-                                    .color(egui::Color32::from_rgb(100, 180, 255))
+                                    .color(egui::Color32::from_rgb(100, 180, 255)),
                             );
                         });
                     });
@@ -3492,7 +5476,11 @@ impl Renderer {
 // Below is the standalone render_stats_panel function
 
 /// Render stats panel (standalone function)
-fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, position: crate::app::StatsPosition) {
+fn render_stats_panel(
+    ctx: &egui::Context,
+    stats: &crate::media::StreamStats,
+    position: crate::app::StatsPosition,
+) {
     use egui::{Align2, Color32, FontId, RichText};
 
     let (anchor, offset) = match position {
@@ -3523,7 +5511,7 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
                     ui.label(
                         RichText::new(res_text)
                             .font(FontId::monospace(13.0))
-                            .color(Color32::WHITE)
+                            .color(Color32::WHITE),
                     );
 
                     // Decoded FPS vs Render FPS (shows if renderer is bottlenecked)
@@ -3534,36 +5522,48 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
                     // Decode FPS color
                     let decode_color = if target_fps > 0.0 {
                         let ratio = decode_fps / target_fps;
-                        if ratio >= 0.8 { Color32::GREEN }
-                        else if ratio >= 0.5 { Color32::YELLOW }
-                        else { Color32::from_rgb(255, 100, 100) }
-                    } else { Color32::WHITE };
+                        if ratio >= 0.8 {
+                            Color32::GREEN
+                        } else if ratio >= 0.5 {
+                            Color32::YELLOW
+                        } else {
+                            Color32::from_rgb(255, 100, 100)
+                        }
+                    } else {
+                        Color32::WHITE
+                    };
 
                     // Render FPS color (critical - this is what you actually see)
                     let render_color = if target_fps > 0.0 {
                         let ratio = render_fps / target_fps;
-                        if ratio >= 0.8 { Color32::GREEN }
-                        else if ratio >= 0.5 { Color32::YELLOW }
-                        else { Color32::from_rgb(255, 100, 100) }
-                    } else { Color32::WHITE };
+                        if ratio >= 0.8 {
+                            Color32::GREEN
+                        } else if ratio >= 0.5 {
+                            Color32::YELLOW
+                        } else {
+                            Color32::from_rgb(255, 100, 100)
+                        }
+                    } else {
+                        Color32::WHITE
+                    };
 
                     // Show both FPS values
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(format!("Decode: {:.0}", decode_fps))
                                 .font(FontId::monospace(11.0))
-                                .color(decode_color)
+                                .color(decode_color),
                         );
                         ui.label(
                             RichText::new(format!(" | Render: {:.0}", render_fps))
                                 .font(FontId::monospace(11.0))
-                                .color(render_color)
+                                .color(render_color),
                         );
                         if stats.target_fps > 0 {
                             ui.label(
                                 RichText::new(format!(" / {} fps", stats.target_fps))
                                     .font(FontId::monospace(11.0))
-                                    .color(Color32::GRAY)
+                                    .color(Color32::GRAY),
                             );
                         }
                     });
@@ -3573,11 +5573,10 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
                         ui.label(
                             RichText::new(format!(
                                 "{} | {:.1} Mbps",
-                                stats.codec,
-                                stats.bitrate_mbps
+                                stats.codec, stats.bitrate_mbps
                             ))
                             .font(FontId::monospace(11.0))
-                            .color(Color32::LIGHT_GRAY)
+                            .color(Color32::LIGHT_GRAY),
                         );
                     }
 
@@ -3593,7 +5592,7 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
                     ui.label(
                         RichText::new(format!("Decode: {:.0} ms", stats.latency_ms))
                             .font(FontId::monospace(11.0))
-                            .color(latency_color)
+                            .color(latency_color),
                     );
 
                     // Network RTT (round-trip time from ICE)
@@ -3609,13 +5608,13 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
                         ui.label(
                             RichText::new(format!("RTT: {:.0} ms", stats.rtt_ms))
                                 .font(FontId::monospace(11.0))
-                                .color(rtt_color)
+                                .color(rtt_color),
                         );
                     } else {
                         ui.label(
                             RichText::new("RTT: N/A")
                                 .font(FontId::monospace(11.0))
-                                .color(Color32::GRAY)
+                                .color(Color32::GRAY),
                         );
                     }
 
@@ -3632,7 +5631,7 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
                         ui.label(
                             RichText::new(format!("E2E: ~{:.0} ms", stats.estimated_e2e_ms))
                                 .font(FontId::monospace(11.0))
-                                .color(e2e_color)
+                                .color(e2e_color),
                         );
                     }
 
@@ -3651,7 +5650,7 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
                         ui.label(
                             RichText::new(format!("Input: {} ({})", rate_str, latency_str))
                                 .font(FontId::monospace(10.0))
-                                .color(Color32::GRAY)
+                                .color(Color32::GRAY),
                         );
                     }
 
@@ -3665,9 +5664,12 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
                             Color32::RED
                         };
                         ui.label(
-                            RichText::new(format!("Frame delivery: {:.1} ms", stats.frame_delivery_ms))
-                                .font(FontId::monospace(10.0))
-                                .color(delivery_color)
+                            RichText::new(format!(
+                                "Frame delivery: {:.1} ms",
+                                stats.frame_delivery_ms
+                            ))
+                            .font(FontId::monospace(10.0))
+                            .color(delivery_color),
                         );
                     }
 
@@ -3681,7 +5683,7 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
                         ui.label(
                             RichText::new(format!("Packet Loss: {:.1}%", stats.packet_loss))
                                 .font(FontId::monospace(11.0))
-                                .color(loss_color)
+                                .color(loss_color),
                         );
                     }
 
@@ -3690,11 +5692,10 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
                         ui.label(
                             RichText::new(format!(
                                 "Decode: {:.1} ms | Render: {:.1} ms",
-                                stats.decode_time_ms,
-                                stats.render_time_ms
+                                stats.decode_time_ms, stats.render_time_ms
                             ))
                             .font(FontId::monospace(10.0))
-                            .color(Color32::GRAY)
+                            .color(Color32::GRAY),
                         );
                     }
 
@@ -3703,12 +5704,10 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
                         ui.label(
                             RichText::new(format!(
                                 "Frames: {} rx, {} dec, {} drop",
-                                stats.frames_received,
-                                stats.frames_decoded,
-                                stats.frames_dropped
+                                stats.frames_received, stats.frames_decoded, stats.frames_dropped
                             ))
                             .font(FontId::monospace(10.0))
-                            .color(Color32::DARK_GRAY)
+                            .color(Color32::DARK_GRAY),
                         );
                     }
 
@@ -3717,14 +5716,18 @@ fn render_stats_panel(ctx: &egui::Context, stats: &crate::media::StreamStats, po
                         let info = format!(
                             "{}{}{}",
                             stats.gpu_type,
-                            if !stats.gpu_type.is_empty() && !stats.server_region.is_empty() { " | " } else { "" },
+                            if !stats.gpu_type.is_empty() && !stats.server_region.is_empty() {
+                                " | "
+                            } else {
+                                ""
+                            },
                             stats.server_region
                         );
 
                         ui.label(
                             RichText::new(info)
                                 .font(FontId::monospace(10.0))
-                                .color(Color32::DARK_GRAY)
+                                .color(Color32::DARK_GRAY),
                         );
                     }
                 });

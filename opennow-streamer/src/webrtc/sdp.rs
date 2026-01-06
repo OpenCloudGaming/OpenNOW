@@ -3,7 +3,7 @@
 //! Parse and modify SDP for codec preferences and ICE fixes.
 
 use crate::app::VideoCodec;
-use log::{info, debug, warn};
+use log::{debug, info, warn};
 use std::collections::HashMap;
 
 /// Fix 0.0.0.0 in SDP with actual server IP
@@ -31,7 +31,6 @@ pub fn prefer_codec(sdp: &str, codec: &VideoCodec) -> String {
     let codec_name = match codec {
         VideoCodec::H264 => "H264",
         VideoCodec::H265 => "H265",
-        VideoCodec::AV1 => "AV1",
     };
 
     info!("Forcing codec: {}", codec_name);
@@ -63,23 +62,37 @@ pub fn prefer_codec(sdp: &str, codec: &VideoCodec) -> String {
                     let pt = parts[0].to_string();
                     let raw_codec = parts[1].split('/').next().unwrap_or("");
                     let normalized_codec = normalize_codec_name(raw_codec);
-                    debug!("Found codec {} (normalized: {}) with payload type {}", raw_codec, normalized_codec, pt);
+                    debug!(
+                        "Found codec {} (normalized: {}) with payload type {}",
+                        raw_codec, normalized_codec, pt
+                    );
                     codec_payloads.entry(normalized_codec).or_default().push(pt);
                 }
             }
         }
     }
 
-    info!("Available video codecs in SDP: {:?}", codec_payloads.keys().collect::<Vec<_>>());
+    info!(
+        "Available video codecs in SDP: {:?}",
+        codec_payloads.keys().collect::<Vec<_>>()
+    );
 
     // Get preferred codec payload types
     let preferred = codec_payloads.get(codec_name).cloned().unwrap_or_default();
     if preferred.is_empty() {
-        info!("Codec {} not found in SDP - keeping original SDP unchanged", codec_name);
+        info!(
+            "Codec {} not found in SDP - keeping original SDP unchanged",
+            codec_name
+        );
         return sdp.to_string();
     }
 
-    info!("Found {} payload type(s) for {}: {:?}", preferred.len(), codec_name, preferred);
+    info!(
+        "Found {} payload type(s) for {}: {:?}",
+        preferred.len(),
+        codec_name,
+        preferred
+    );
 
     // Use HashSet<String> for easier comparison
     let preferred_set: std::collections::HashSet<String> = preferred.iter().cloned().collect();
@@ -107,7 +120,10 @@ pub fn prefer_codec(sdp: &str, codec: &VideoCodec) -> String {
                     continue;
                 } else {
                     // No matching payload types - keep original m=video line
-                    warn!("No matching payload types for {} in m=video line, keeping original", codec_name);
+                    warn!(
+                        "No matching payload types for {} in m=video line, keeping original",
+                        codec_name
+                    );
                     result.push(line.to_string());
                     continue;
                 }
@@ -118,7 +134,8 @@ pub fn prefer_codec(sdp: &str, codec: &VideoCodec) -> String {
 
         if in_video {
             // Filter rtpmap, fmtp, rtcp-fb lines - only keep lines for preferred codec
-            if let Some(rest) = line.strip_prefix("a=rtpmap:")
+            if let Some(rest) = line
+                .strip_prefix("a=rtpmap:")
                 .or_else(|| line.strip_prefix("a=fmtp:"))
                 .or_else(|| line.strip_prefix("a=rtcp-fb:"))
             {
@@ -134,7 +151,11 @@ pub fn prefer_codec(sdp: &str, codec: &VideoCodec) -> String {
     }
 
     let filtered_sdp = result.join(line_ending);
-    info!("SDP filtered: {} -> {} bytes", sdp.len(), filtered_sdp.len());
+    info!(
+        "SDP filtered: {} -> {} bytes",
+        sdp.len(),
+        filtered_sdp.len()
+    );
     filtered_sdp
 }
 
@@ -197,8 +218,10 @@ pub fn fix_dtls_setup_for_ice_lite(answer_sdp: &str) -> String {
     // Log for debugging
     let passive_count = answer_sdp.matches("a=setup:passive").count();
     let active_count = fixed.matches("a=setup:active").count();
-    info!("DTLS setup fix: replaced {} passive entries, now have {} active entries",
-          passive_count, active_count);
+    info!(
+        "DTLS setup fix: replaced {} passive entries, now have {} active entries",
+        passive_count, active_count
+    );
 
     fixed
 }

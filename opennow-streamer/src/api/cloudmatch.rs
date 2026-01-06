@@ -2,15 +2,15 @@
 //!
 //! Create and manage GFN streaming sessions.
 
-use anyhow::{Result, Context};
-use log::{info, debug, warn, error};
+use anyhow::{Context, Result};
+use log::{debug, error, info, warn};
 
+use super::error_codes::SessionError;
+use super::GfnApiClient;
 use crate::app::session::*;
 use crate::app::Settings;
 use crate::auth;
 use crate::utils::generate_uuid;
-use super::GfnApiClient;
-use super::error_codes::SessionError;
 
 /// GFN client version
 const GFN_CLIENT_VERSION: &str = "2.0.80.173";
@@ -33,8 +33,7 @@ impl GfnApiClient {
         zone: &str,
         account_linked: bool,
     ) -> Result<SessionInfo> {
-        let token = self.token()
-            .context("No access token")?;
+        let token = self.token().context("No access token")?;
 
         let device_id = generate_uuid();
         let client_id = generate_uuid();
@@ -43,9 +42,7 @@ impl GfnApiClient {
         let (width, height) = settings.resolution_tuple();
 
         // Get timezone offset in milliseconds
-        let timezone_offset_ms = chrono::Local::now()
-            .offset()
-            .local_minus_utc() as i64 * 1000;
+        let timezone_offset_ms = chrono::Local::now().offset().local_minus_utc() as i64 * 1000;
 
         // Build browser-compatible request
         let request = CloudMatchRequest {
@@ -65,30 +62,64 @@ impl GfnApiClient {
                     width_in_pixels: width,
                     height_in_pixels: height,
                     frames_per_second: settings.fps,
-                    sdr_hdr_mode: 0,
+                    sdr_hdr_mode: if settings.hdr_enabled { 1 } else { 0 },
                     display_data: DisplayData {
-                        desired_content_max_luminance: 0,
+                        // HDR luminance values (typical HDR display capabilities)
+                        desired_content_max_luminance: if settings.hdr_enabled { 1000 } else { 0 },
                         desired_content_min_luminance: 0,
-                        desired_content_max_frame_average_luminance: 0,
+                        desired_content_max_frame_average_luminance: if settings.hdr_enabled {
+                            500
+                        } else {
+                            0
+                        },
                     },
                     dpi: 100,
                 }],
                 use_ops: true,
                 audio_mode: 2, // 5.1 surround
                 meta_data: vec![
-                    MetaDataEntry { key: "SubSessionId".to_string(), value: sub_session_id },
-                    MetaDataEntry { key: "wssignaling".to_string(), value: "1".to_string() },
-                    MetaDataEntry { key: "GSStreamerType".to_string(), value: "WebRTC".to_string() },
-                    MetaDataEntry { key: "networkType".to_string(), value: "Unknown".to_string() },
-                    MetaDataEntry { key: "ClientImeSupport".to_string(), value: "0".to_string() },
+                    MetaDataEntry {
+                        key: "SubSessionId".to_string(),
+                        value: sub_session_id,
+                    },
+                    MetaDataEntry {
+                        key: "wssignaling".to_string(),
+                        value: "1".to_string(),
+                    },
+                    MetaDataEntry {
+                        key: "GSStreamerType".to_string(),
+                        value: "WebRTC".to_string(),
+                    },
+                    MetaDataEntry {
+                        key: "networkType".to_string(),
+                        value: "Unknown".to_string(),
+                    },
+                    MetaDataEntry {
+                        key: "ClientImeSupport".to_string(),
+                        value: "0".to_string(),
+                    },
                     MetaDataEntry {
                         key: "clientPhysicalResolution".to_string(),
-                        value: format!("{{\"horizontalPixels\":{},\"verticalPixels\":{}}}", width, height)
+                        value: format!(
+                            "{{\"horizontalPixels\":{},\"verticalPixels\":{}}}",
+                            width, height
+                        ),
                     },
-                    MetaDataEntry { key: "surroundAudioInfo".to_string(), value: "2".to_string() },
+                    MetaDataEntry {
+                        key: "surroundAudioInfo".to_string(),
+                        value: "2".to_string(),
+                    },
                 ],
-                sdr_hdr_mode: 0,
-                client_display_hdr_capabilities: None,
+                sdr_hdr_mode: if settings.hdr_enabled { 1 } else { 0 },
+                client_display_hdr_capabilities: if settings.hdr_enabled {
+                    Some(HdrCapabilities {
+                        version: 1,
+                        hdr_edr_supported_flags_in_uint32: 1, // HDR10 support flag
+                        static_metadata_descriptor_id: 0,
+                    })
+                } else {
+                    None
+                },
                 surround_audio_info: 0,
                 remote_controllers_bitmap: 0,
                 client_timezone_offset: timezone_offset_ms,
@@ -101,16 +132,16 @@ impl GfnApiClient {
                 user_age: 26,
                 requested_streaming_features: Some(StreamingFeatures {
                     reflex: settings.fps >= 120, // Enable Reflex for high refresh rate
-                    bit_depth: 0,
+                    bit_depth: settings.color_quality.bit_depth(),
                     cloud_gsync: false,
                     enabled_l4s: false,
                     mouse_movement_flags: 0,
-                    true_hdr: false,
+                    true_hdr: settings.hdr_enabled,
                     supported_hid_devices: 0,
                     profile: 0,
                     fallback_to_logical_resolution: false,
                     hid_devices: None,
-                    chroma_format: 0,
+                    chroma_format: settings.color_quality.chroma_format(),
                     prefilter_mode: 0,
                     prefilter_sharpness: 0,
                     prefilter_noise_reduction: 0,
@@ -126,7 +157,10 @@ impl GfnApiClient {
         // Build session URL
         let url = if is_alliance_partner {
             let base = streaming_base_url.trim_end_matches('/');
-            format!("{}/v2/session?keyboardLayout=en-US&languageCode=en_US", base)
+            format!(
+                "{}/v2/session?keyboardLayout=en-US&languageCode=en_US",
+                base
+            )
         } else {
             format!(
                 "{}/v2/session?keyboardLayout=en-US&languageCode=en_US",
@@ -137,7 +171,9 @@ impl GfnApiClient {
         info!("Creating session at: {}", url);
         debug!("App ID: {}, Title: {}", app_id, game_title);
 
-        let response = self.client.post(&url)
+        let response = self
+            .client
+            .post(&url)
             .header("User-Agent", GFN_USER_AGENT)
             .header("Authorization", format!("GFNJWT {}", token))
             .header("Content-Type", "application/json")
@@ -160,46 +196,58 @@ impl GfnApiClient {
             .context("Session request failed")?;
 
         let status = response.status();
-        let response_text = response.text().await
-            .context("Failed to read response")?;
+        let response_text = response.text().await.context("Failed to read response")?;
 
-        debug!("CloudMatch response ({} bytes): {}",
-               response_text.len(),
-               &response_text[..response_text.len().min(500)]);
+        debug!(
+            "CloudMatch response ({} bytes): {}",
+            response_text.len(),
+            &response_text[..response_text.len().min(500)]
+        );
 
         if !status.is_success() {
             // Parse error response for user-friendly message
             let session_error = SessionError::from_response(status.as_u16(), &response_text);
-            error!("CloudMatch session error: {} - {} (code: {}, unified: {:?})",
+            error!(
+                "CloudMatch session error: {} - {} (code: {}, unified: {:?})",
                 session_error.title,
                 session_error.description,
                 session_error.gfn_error_code,
-                session_error.unified_error_code);
+                session_error.unified_error_code
+            );
 
-            return Err(anyhow::anyhow!("{}: {}",
+            return Err(anyhow::anyhow!(
+                "{}: {}",
                 session_error.title,
-                session_error.description));
+                session_error.description
+            ));
         }
 
-        let api_response: CloudMatchResponse = serde_json::from_str(&response_text)
-            .context("Failed to parse CloudMatch response")?;
+        let api_response: CloudMatchResponse =
+            serde_json::from_str(&response_text).context("Failed to parse CloudMatch response")?;
 
         if api_response.request_status.status_code != 1 {
             // Parse error for user-friendly message
             let session_error = SessionError::from_response(200, &response_text);
-            error!("CloudMatch API error: {} - {} (statusCode: {}, unified: {})",
+            error!(
+                "CloudMatch API error: {} - {} (statusCode: {}, unified: {})",
                 session_error.title,
                 session_error.description,
                 api_response.request_status.status_code,
-                api_response.request_status.unified_error_code);
+                api_response.request_status.unified_error_code
+            );
 
-            return Err(anyhow::anyhow!("{}: {}",
+            return Err(anyhow::anyhow!(
+                "{}: {}",
                 session_error.title,
-                session_error.description));
+                session_error.description
+            ));
         }
 
         let session_data = api_response.session;
-        info!("Session allocated: {} (status: {})", session_data.session_id, session_data.status);
+        info!(
+            "Session allocated: {} (status: {})",
+            session_data.session_id, session_data.status
+        );
 
         // Determine session state
         let state = Self::parse_session_state(&session_data);
@@ -209,25 +257,30 @@ impl GfnApiClient {
         let signaling_path = session_data.signaling_url();
 
         // Build full signaling URL
-        let signaling_url = signaling_path.map(|path| {
-            if path.starts_with("wss://") || path.starts_with("rtsps://") {
-                // Already a full URL
-                Self::build_signaling_url(&path, &server_ip)
-            } else if path.starts_with('/') {
-                // Path like /nvst/
-                format!("wss://{}:443{}", server_ip, path)
-            } else {
-                format!("wss://{}:443/nvst/", server_ip)
-            }
-        }).or_else(|| {
-            if !server_ip.is_empty() {
-                Some(format!("wss://{}:443/nvst/", server_ip))
-            } else {
-                None
-            }
-        });
+        let signaling_url = signaling_path
+            .map(|path| {
+                if path.starts_with("wss://") || path.starts_with("rtsps://") {
+                    // Already a full URL
+                    Self::build_signaling_url(&path, &server_ip)
+                } else if path.starts_with('/') {
+                    // Path like /nvst/
+                    format!("wss://{}:443{}", server_ip, path)
+                } else {
+                    format!("wss://{}:443/nvst/", server_ip)
+                }
+            })
+            .or_else(|| {
+                if !server_ip.is_empty() {
+                    Some(format!("wss://{}:443/nvst/", server_ip))
+                } else {
+                    None
+                }
+            });
 
-        info!("Stream server: {}, signaling: {:?}", server_ip, signaling_url);
+        info!(
+            "Stream server: {}, signaling: {:?}",
+            server_ip, signaling_url
+        );
 
         // Extract ICE servers and media info before moving other fields
         let ice_servers = session_data.ice_servers();
@@ -236,8 +289,10 @@ impl GfnApiClient {
         // Debug: log connection info
         if let Some(ref conns) = session_data.connection_info {
             for conn in conns {
-                info!("ConnectionInfo: ip={:?} port={} usage={} protocol={}",
-                    conn.ip, conn.port, conn.usage, conn.protocol);
+                info!(
+                    "ConnectionInfo: ip={:?} port={} usage={} protocol={}",
+                    conn.ip, conn.port, conn.usage, conn.protocol
+                );
             }
         } else {
             info!("No connection_info in session response");
@@ -288,8 +343,7 @@ impl GfnApiClient {
         zone: &str,
         server_ip: Option<&str>,
     ) -> Result<SessionInfo> {
-        let token = self.token()
-            .context("No access token")?;
+        let token = self.token().context("No access token")?;
 
         let device_id = generate_uuid();
         let client_id = generate_uuid();
@@ -311,7 +365,9 @@ impl GfnApiClient {
 
         debug!("Polling session at: {}", url);
 
-        let response = self.client.get(&url)
+        let response = self
+            .client
+            .get(&url)
             .header("User-Agent", GFN_USER_AGENT)
             .header("Authorization", format!("GFNJWT {}", token))
             .header("Content-Type", "application/json")
@@ -333,14 +389,18 @@ impl GfnApiClient {
             return Err(anyhow::anyhow!("Poll failed: {} - {}", status, body));
         }
 
-        let response_text = response.text().await
+        let response_text = response
+            .text()
+            .await
             .context("Failed to read poll response")?;
 
-        let poll_response: CloudMatchResponse = serde_json::from_str(&response_text)
-            .context("Failed to parse poll response")?;
+        let poll_response: CloudMatchResponse =
+            serde_json::from_str(&response_text).context("Failed to parse poll response")?;
 
         if poll_response.request_status.status_code != 1 {
-            let error = poll_response.request_status.status_description
+            let error = poll_response
+                .request_status
+                .status_description
                 .unwrap_or_else(|| "Unknown error".to_string());
             return Err(anyhow::anyhow!("Session poll error: {}", error));
         }
@@ -352,15 +412,15 @@ impl GfnApiClient {
         let signaling_path = session_data.signaling_url();
 
         // Build full signaling URL
-        let signaling_url = signaling_path.map(|path| {
-            Self::build_signaling_url(&path, &server_ip)
-        }).or_else(|| {
-            if !server_ip.is_empty() {
-                Some(format!("wss://{}:443/nvst/", server_ip))
-            } else {
-                None
-            }
-        });
+        let signaling_url = signaling_path
+            .map(|path| Self::build_signaling_url(&path, &server_ip))
+            .or_else(|| {
+                if !server_ip.is_empty() {
+                    Some(format!("wss://{}:443/nvst/", server_ip))
+                } else {
+                    None
+                }
+            });
 
         // Extract ICE servers and media info before moving other fields
         let ice_servers = session_data.ice_servers();
@@ -369,8 +429,10 @@ impl GfnApiClient {
         // Debug: log connection info in poll response
         if let Some(ref conns) = session_data.connection_info {
             for conn in conns {
-                info!("Poll ConnectionInfo: ip={:?} port={} usage={} protocol={}",
-                    conn.ip, conn.port, conn.usage, conn.protocol);
+                info!(
+                    "Poll ConnectionInfo: ip={:?} port={} usage={} protocol={}",
+                    conn.ip, conn.port, conn.usage, conn.protocol
+                );
             }
         }
         if media_connection_info.is_some() {
@@ -396,8 +458,7 @@ impl GfnApiClient {
         zone: &str,
         server_ip: Option<&str>,
     ) -> Result<()> {
-        let token = self.token()
-            .context("No access token")?;
+        let token = self.token().context("No access token")?;
 
         let device_id = generate_uuid();
 
@@ -418,7 +479,9 @@ impl GfnApiClient {
 
         info!("Stopping session at: {}", url);
 
-        let response = self.client.delete(&url)
+        let response = self
+            .client
+            .delete(&url)
             .header("User-Agent", GFN_USER_AGENT)
             .header("Authorization", format!("GFNJWT {}", token))
             .header("Content-Type", "application/json")
@@ -480,8 +543,7 @@ impl GfnApiClient {
         if session_data.status <= 0 || session_data.error_code != 0 {
             return SessionState::Error(format!(
                 "Error code: {} (status: {})",
-                session_data.error_code,
-                session_data.status
+                session_data.error_code, session_data.status
             ));
         }
 
@@ -491,8 +553,7 @@ impl GfnApiClient {
     /// Get active sessions
     /// Returns list of sessions with status 2 (Ready) or 3 (Streaming)
     pub async fn get_active_sessions(&self) -> Result<Vec<ActiveSessionInfo>> {
-        let token = self.token()
-            .context("No access token")?;
+        let token = self.token().context("No access token")?;
 
         let device_id = generate_uuid();
         let client_id = generate_uuid();
@@ -503,7 +564,9 @@ impl GfnApiClient {
 
         info!("Checking for active sessions at: {}", session_url);
 
-        let response = self.client.get(&session_url)
+        let response = self
+            .client
+            .get(&session_url)
             .header("User-Agent", GFN_USER_AGENT)
             .header("Authorization", format!("GFNJWT {}", token))
             .header("Content-Type", "application/json")
@@ -519,63 +582,76 @@ impl GfnApiClient {
             .context("Failed to get sessions")?;
 
         let status = response.status();
-        let response_text = response.text().await
-            .context("Failed to read response")?;
+        let response_text = response.text().await.context("Failed to read response")?;
 
         if !status.is_success() {
-            warn!("Get sessions failed: {} - {}", status, &response_text[..response_text.len().min(200)]);
+            warn!(
+                "Get sessions failed: {} - {}",
+                status,
+                &response_text[..response_text.len().min(200)]
+            );
             return Ok(vec![]);
         }
 
         debug!("Active sessions response: {} bytes", response_text.len());
 
-        let sessions_response: GetSessionsResponse = serde_json::from_str(&response_text)
-            .context("Failed to parse sessions response")?;
+        let sessions_response: GetSessionsResponse =
+            serde_json::from_str(&response_text).context("Failed to parse sessions response")?;
 
         if sessions_response.request_status.status_code != 1 {
-            warn!("Get sessions API error: {:?}", sessions_response.request_status.status_description);
+            warn!(
+                "Get sessions API error: {:?}",
+                sessions_response.request_status.status_description
+            );
             return Ok(vec![]);
         }
 
-        info!("Found {} session(s) from API", sessions_response.sessions.len());
+        info!(
+            "Found {} session(s) from API",
+            sessions_response.sessions.len()
+        );
 
-        let active_sessions: Vec<ActiveSessionInfo> = sessions_response.sessions
+        let active_sessions: Vec<ActiveSessionInfo> = sessions_response
+            .sessions
             .into_iter()
             .filter(|s| {
                 debug!("Session {} has status {}", s.session_id, s.status);
                 s.status == 2 || s.status == 3
             })
             .map(|s| {
-                let app_id = s.session_request_data
+                let app_id = s
+                    .session_request_data
                     .as_ref()
                     .map(|d| d.get_app_id())
                     .unwrap_or(0);
 
-                let server_ip = s.session_control_info
-                    .as_ref()
-                    .and_then(|c| c.ip.clone());
+                let server_ip = s.session_control_info.as_ref().and_then(|c| c.ip.clone());
 
-                let signaling_url = s.connection_info
+                let signaling_url = s
+                    .connection_info
                     .as_ref()
                     .and_then(|conns| conns.iter().find(|c| c.usage == 14))
-                    .and_then(|conn| {
-                        conn.ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
-                    })
+                    .and_then(|conn| conn.ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip)))
                     .or_else(|| {
-                        server_ip.as_ref().map(|ip| format!("wss://{}:443/nvst/", ip))
+                        server_ip
+                            .as_ref()
+                            .map(|ip| format!("wss://{}:443/nvst/", ip))
                     });
 
-                let (resolution, fps) = s.monitor_settings
+                let (resolution, fps) = s
+                    .monitor_settings
                     .as_ref()
                     .and_then(|ms| ms.first())
-                    .map(|m| (
-                        Some(format!(
-                            "{}x{}",
-                            m.width_in_pixels.unwrap_or(0),
-                            m.height_in_pixels.unwrap_or(0)
-                        )),
-                        m.frames_per_second
-                    ))
+                    .map(|m| {
+                        (
+                            Some(format!(
+                                "{}x{}",
+                                m.width_in_pixels.unwrap_or(0),
+                                m.height_in_pixels.unwrap_or(0)
+                            )),
+                            m.frames_per_second,
+                        )
+                    })
                     .unwrap_or((None, None));
 
                 ActiveSessionInfo {
@@ -604,8 +680,7 @@ impl GfnApiClient {
         app_id: &str,
         settings: &Settings,
     ) -> Result<SessionInfo> {
-        let token = self.token()
-            .context("No access token")?;
+        let token = self.token().context("No access token")?;
 
         let device_id = generate_uuid();
         let client_id = generate_uuid();
@@ -613,9 +688,7 @@ impl GfnApiClient {
 
         let (width, height) = settings.resolution_tuple();
 
-        let timezone_offset_ms = chrono::Local::now()
-            .offset()
-            .local_minus_utc() as i64 * 1000;
+        let timezone_offset_ms = chrono::Local::now().offset().local_minus_utc() as i64 * 1000;
 
         let claim_url = format!(
             "https://{}/v2/session/{}?keyboardLayout=en-US&languageCode=en_US",
@@ -624,13 +697,38 @@ impl GfnApiClient {
 
         info!("Claiming session: {} at {}", session_id, claim_url);
 
+        // Build HDR capabilities JSON if enabled
+        // Based on NVIDIA GFN client analysis:
+        // - hdrEdrSupportedFlagsInUint32: 1 = HDR10 supported
+        // - staticMetadataDescriptorId: 0 = Type 1 (Static Metadata)
+        let hdr_capabilities = if settings.hdr_enabled {
+            serde_json::json!({
+                "version": 1,
+                "hdrEdrSupportedFlagsInUint32": 3,  // 1=HDR10, 2=EDR, 3=both
+                "staticMetadataDescriptorId": 0,
+                "displayData": {
+                    "maxLuminance": 1000,
+                    "minLuminance": 0.01,
+                    "maxFrameAverageLuminance": 500
+                }
+            })
+        } else {
+            serde_json::Value::Null
+        };
+
+        // HDR colorspace values from NVIDIA GFN client:
+        // SDR colorSpace = 2 (BT.709)
+        // HDR colorSpace = 4 (BT.2020)
+        let sdr_color_space = 2; // BT.709 / YCBCR_LIMITED_BT709
+        let hdr_color_space = 4; // BT.2020 / YCBCR_LIMITED_BT2020
+
         let resume_payload = serde_json::json!({
             "action": 2,
             "data": "RESUME",
             "sessionRequestData": {
                 "audioMode": 2,
                 "remoteControllersBitmap": 0,
-                "sdrHdrMode": 0,
+                "sdrHdrMode": if settings.hdr_enabled { 1 } else { 0 },
                 "networkTestSessionId": null,
                 "availableSupportedControllers": [],
                 "clientVersion": "30.0",
@@ -656,11 +754,11 @@ impl GfnApiClient {
                     "widthInPixels": width,
                     "heightInPixels": height,
                     "framesPerSecond": settings.fps,
-                    "sdrHdrMode": 0,
+                    "sdrHdrMode": if settings.hdr_enabled { 1 } else { 0 },
                     "displayData": {
-                        "desiredContentMaxLuminance": 0,
+                        "desiredContentMaxLuminance": if settings.hdr_enabled { 1000 } else { 0 },
                         "desiredContentMinLuminance": 0,
-                        "desiredContentMaxFrameAverageLuminance": 0
+                        "desiredContentMaxFrameAverageLuminance": if settings.hdr_enabled { 500 } else { 0 }
                     },
                     "dpi": 100
                 }],
@@ -668,7 +766,7 @@ impl GfnApiClient {
                 "sdkVersion": "1.0",
                 "enhancedStreamMode": 1,
                 "useOps": true,
-                "clientDisplayHdrCapabilities": null,
+                "clientDisplayHdrCapabilities": hdr_capabilities,
                 "accountLinked": true,
                 "partnerCustomData": "",
                 "enablePersistingInGameSettings": true,
@@ -676,26 +774,30 @@ impl GfnApiClient {
                 "userAge": 26,
                 "requestedStreamingFeatures": {
                     "reflex": settings.fps >= 120,
-                    "bitDepth": 0,
+                    "bitDepth": if settings.hdr_enabled { 10 } else { settings.color_quality.bit_depth() },
                     "cloudGsync": false,
                     "enabledL4S": false,
                     "mouseMovementFlags": 0,
-                    "trueHdr": false,
+                    "trueHdr": settings.hdr_enabled,
                     "supportedHidDevices": 0,
                     "profile": 0,
                     "fallbackToLogicalResolution": false,
                     "hidDevices": null,
-                    "chromaFormat": 0,
+                    "chromaFormat": settings.color_quality.chroma_format(),
                     "prefilterMode": 0,
                     "prefilterSharpness": 0,
                     "prefilterNoiseReduction": 0,
-                    "hudStreamingMode": 0
+                    "hudStreamingMode": 0,
+                    "sdrColorSpace": sdr_color_space,
+                    "hdrColorSpace": if settings.hdr_enabled { hdr_color_space } else { 0 }
                 }
             },
             "metaData": []
         });
 
-        let response = self.client.put(&claim_url)
+        let response = self
+            .client
+            .put(&claim_url)
             .header("User-Agent", GFN_USER_AGENT)
             .header("Authorization", format!("GFNJWT {}", token))
             .header("Content-Type", "application/json")
@@ -714,19 +816,26 @@ impl GfnApiClient {
             .context("Claim session request failed")?;
 
         let status = response.status();
-        let response_text = response.text().await
+        let response_text = response
+            .text()
+            .await
             .context("Failed to read claim response")?;
 
         if !status.is_success() {
-            return Err(anyhow::anyhow!("Claim session failed: {} - {}",
-                status, &response_text[..response_text.len().min(200)]));
+            return Err(anyhow::anyhow!(
+                "Claim session failed: {} - {}",
+                status,
+                &response_text[..response_text.len().min(200)]
+            ));
         }
 
-        let api_response: CloudMatchResponse = serde_json::from_str(&response_text)
-            .context("Failed to parse claim response")?;
+        let api_response: CloudMatchResponse =
+            serde_json::from_str(&response_text).context("Failed to parse claim response")?;
 
         if api_response.request_status.status_code != 1 {
-            let error = api_response.request_status.status_description
+            let error = api_response
+                .request_status
+                .status_description
                 .unwrap_or_else(|| "Unknown error".to_string());
             return Err(anyhow::anyhow!("Claim session error: {}", error));
         }
@@ -740,7 +849,9 @@ impl GfnApiClient {
                 tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
             }
 
-            let poll_response = self.client.get(&get_url)
+            let poll_response = self
+                .client
+                .get(&get_url)
                 .header("User-Agent", GFN_USER_AGENT)
                 .header("Authorization", format!("GFNJWT {}", token))
                 .header("Content-Type", "application/json")
@@ -759,7 +870,9 @@ impl GfnApiClient {
                 continue;
             }
 
-            let poll_text = poll_response.text().await
+            let poll_text = poll_response
+                .text()
+                .await
                 .context("Failed to read poll response")?;
 
             let poll_api_response: CloudMatchResponse = match serde_json::from_str(&poll_text) {
@@ -768,20 +881,23 @@ impl GfnApiClient {
             };
 
             let session_data = poll_api_response.session;
-            debug!("Claim poll attempt {}: status {}", attempt, session_data.status);
+            debug!(
+                "Claim poll attempt {}: status {}",
+                attempt, session_data.status
+            );
 
             if session_data.status == 2 || session_data.status == 3 {
                 info!("Session ready after claim! Status: {}", session_data.status);
 
                 let state = Self::parse_session_state(&session_data);
-                let server_ip_final = session_data.streaming_server_ip().unwrap_or_else(|| server_ip.to_string());
+                let server_ip_final = session_data
+                    .streaming_server_ip()
+                    .unwrap_or_else(|| server_ip.to_string());
                 let signaling_path = session_data.signaling_url();
 
-                let signaling_url = signaling_path.map(|path| {
-                    Self::build_signaling_url(&path, &server_ip_final)
-                }).or_else(|| {
-                    Some(format!("wss://{}:443/nvst/", server_ip_final))
-                });
+                let signaling_url = signaling_path
+                    .map(|path| Self::build_signaling_url(&path, &server_ip_final))
+                    .or_else(|| Some(format!("wss://{}:443/nvst/", server_ip_final)));
 
                 let ice_servers = session_data.ice_servers();
                 let media_connection_info = session_data.media_connection_info();
@@ -803,6 +919,8 @@ impl GfnApiClient {
             }
         }
 
-        Err(anyhow::anyhow!("Session did not become ready after claiming"))
+        Err(anyhow::anyhow!(
+            "Session did not become ready after claiming"
+        ))
     }
 }
