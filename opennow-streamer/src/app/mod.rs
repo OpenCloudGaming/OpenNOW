@@ -2,26 +2,27 @@
 //!
 //! Central state machine for the OpenNow Streamer.
 
+pub mod cache;
 pub mod config;
 pub mod session;
 pub mod types;
-pub mod cache;
 
-pub use config::{Settings, VideoCodec, AudioCodec, StreamQuality, StatsPosition};
-pub use session::{SessionInfo, SessionState, ActiveSessionInfo};
+pub use config::{AudioCodec, ColorQuality, Settings, StatsPosition, StreamQuality, VideoCodec};
+pub use session::{ActiveSessionInfo, SessionInfo, SessionState};
 pub use types::{
-    SharedFrame, GameInfo, GameSection, GameVariant, SubscriptionInfo, GamesTab, ServerInfo, ServerStatus,
-    UiAction, SettingChange, AppState, parse_resolution,
+    parse_resolution, AppState, GameInfo, GameSection, GameVariant, GamesTab, QueueRegionFilter,
+    QueueSortMode, ServerInfo, ServerStatus, SettingChange, SharedFrame, SubscriptionInfo,
+    UiAction,
 };
 
-use std::sync::Arc;
+use log::{error, info, warn};
 use parking_lot::RwLock;
+use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
-use log::{info, error, warn};
 
-use crate::auth::{self, LoginProvider, AuthTokens, UserInfo, PkceChallenge};
-use crate::api::{self, GfnApiClient, DynamicServerRegion};
+use crate::api::{self, DynamicServerRegion, GfnApiClient};
+use crate::auth::{self, AuthTokens, LoginProvider, PkceChallenge, UserInfo};
 
 use crate::input::InputHandler;
 
@@ -136,6 +137,9 @@ pub struct App {
     /// Whether ping test is running
     pub ping_testing: bool,
 
+    /// Whether queue server ping test is running
+    pub queue_ping_testing: bool,
+
     /// Whether settings modal is visible
     pub show_settings_modal: bool,
 
@@ -162,7 +166,6 @@ pub struct App {
     last_render_fps_time: std::time::Instant,
     last_render_frame_count: u64,
 
-
     /// Number of times we've polled after session became ready (to ensure candidates)
     session_ready_poll_count: u32,
 
@@ -174,6 +177,30 @@ pub struct App {
 
     /// Whether a token refresh is currently in progress
     token_refresh_in_progress: bool,
+
+    /// Queue times data from PrintedWaste API
+    pub queue_servers: Vec<crate::api::QueueServerInfo>,
+
+    /// Whether queue data is loading
+    pub queue_loading: bool,
+
+    /// Last time queue data was fetched
+    queue_last_fetch: std::time::Instant,
+
+    /// Queue sort mode
+    pub queue_sort_mode: QueueSortMode,
+
+    /// Queue region filter
+    pub queue_region_filter: QueueRegionFilter,
+
+    /// Whether to show server selection modal (for free tier)
+    pub show_server_selection: bool,
+
+    /// Selected server for queue (when user picks manually)
+    pub selected_queue_server: Option<String>,
+
+    /// Pending game for server selection (stored when showing modal)
+    pub pending_server_selection_game: Option<GameInfo>,
 }
 
 /// Poll interval for session status (2 seconds)
@@ -194,7 +221,10 @@ impl App {
 
         // Try to load saved tokens
         let auth_tokens = cache::load_tokens();
-        let has_token = auth_tokens.as_ref().map(|t| !t.is_expired()).unwrap_or(false);
+        let has_token = auth_tokens
+            .as_ref()
+            .map(|t| !t.is_expired())
+            .unwrap_or(false);
 
         // Load cached login provider (for Alliance persistence)
         if let Some(provider) = cache::load_login_provider() {
@@ -224,7 +254,10 @@ impl App {
                 api_client.set_access_token(token);
                 match api_client.get_active_sessions().await {
                     Ok(sessions) => {
-                        info!("Checked active sessions at startup: found {}", sessions.len());
+                        info!(
+                            "Checked active sessions at startup: found {}",
+                            sessions.len()
+                        );
                         cache::save_active_sessions_cache(&sessions);
                     }
                     Err(e) => {
@@ -285,6 +318,7 @@ impl App {
             selected_server_index: 0,
             auto_server_selection: auto_server, // Load from settings
             ping_testing: false,
+            queue_ping_testing: false,
             show_settings_modal: false,
             active_sessions: Vec::new(),
             show_session_conflict: false,
@@ -300,6 +334,14 @@ impl App {
             anti_afk_enabled: false,
             anti_afk_last_send: std::time::Instant::now(),
             token_refresh_in_progress: false,
+            queue_servers: Vec::new(),
+            queue_loading: false,
+            queue_last_fetch: std::time::Instant::now() - std::time::Duration::from_secs(60), // Force initial fetch
+            queue_sort_mode: QueueSortMode::default(),
+            queue_region_filter: QueueRegionFilter::default(),
+            show_server_selection: false,
+            selected_queue_server: None,
+            pending_server_selection_game: None,
         }
     }
 
@@ -327,7 +369,7 @@ impl App {
                 const VK_F13: u16 = 0x7C;
 
                 // Send key down then key up
-                input_handler.handle_key(VK_F13, true, 0);  // Key down
+                input_handler.handle_key(VK_F13, true, 0); // Key down
                 input_handler.handle_key(VK_F13, false, 0); // Key up
 
                 self.anti_afk_last_send = std::time::Instant::now();
@@ -354,6 +396,7 @@ impl App {
                     GamesTab::Home => self.games.get(index).cloned(), // Use flat list for Home too
                     GamesTab::AllGames => self.games.get(index).cloned(),
                     GamesTab::MyLibrary => self.library_games.get(index).cloned(),
+                    GamesTab::QueueTimes => None, // Queue Times tab doesn't launch games
                 };
                 if let Some(game) = game {
                     self.launch_game(&game);
@@ -379,18 +422,37 @@ impl App {
                     SettingChange::Resolution(res) => self.settings.resolution = res,
                     SettingChange::Fps(fps) => self.settings.fps = fps,
                     SettingChange::Codec(codec) => {
-                        // Check if AV1 is supported before enabling it
-                        if codec == VideoCodec::AV1 && !crate::media::is_av1_hardware_supported() {
-                            self.show_av1_warning = true;
-                        }
-                        // Still set the codec - user can use software decode if they want
                         self.settings.codec = codec;
                     }
                     SettingChange::MaxBitrate(bitrate) => self.settings.max_bitrate_mbps = bitrate,
                     SettingChange::Fullscreen(fs) => self.settings.fullscreen = fs,
                     SettingChange::VSync(vsync) => self.settings.vsync = vsync,
                     SettingChange::LowLatency(ll) => self.settings.low_latency_mode = ll,
-                    SettingChange::DecoderBackend(backend) => self.settings.decoder_backend = backend,
+                    SettingChange::DecoderBackend(backend) => {
+                        self.settings.decoder_backend = backend
+                    }
+                    SettingChange::ColorQuality(quality) => {
+                        self.settings.color_quality = quality;
+                        // Auto-switch codec based on color quality requirements
+                        if quality.requires_hevc() && self.settings.codec == VideoCodec::H264 {
+                            // 10-bit or 4:4:4 requires HEVC or AV1
+                            self.settings.codec = VideoCodec::H265;
+                        }
+                    }
+                    SettingChange::Hdr(enabled) => {
+                        self.settings.hdr_enabled = enabled;
+                        // HDR requires 10-bit and HEVC/AV1
+                        if enabled {
+                            // Switch to 10-bit if currently 8-bit
+                            if !self.settings.color_quality.is_10bit() {
+                                self.settings.color_quality = ColorQuality::Bit10Yuv420;
+                            }
+                            // Switch to HEVC if currently H.264
+                            if self.settings.codec == VideoCodec::H264 {
+                                self.settings.codec = VideoCodec::H265;
+                            }
+                        }
+                    }
                 }
                 self.save_settings();
             }
@@ -407,37 +469,41 @@ impl App {
                 if tab == GamesTab::Home && self.game_sections.is_empty() {
                     self.fetch_sections();
                 }
+                // Fetch queue data if switching to Queue Times
+                if tab == GamesTab::QueueTimes {
+                    self.fetch_queue_times();
+                }
             }
             UiAction::OpenGamePopup(game) => {
                 self.selected_game_popup = Some(game.clone());
-                
+
                 // Spawn async task to fetch full details (Play Type, Membership, etc.) only if missing
                 // User reports library games already have this info, so avoid redundant 400-prone fetches
                 let mut needs_fetch = game.play_type.is_none();
-                
+
                 // If we have a description, we definitely don't need to fetch
                 if game.description.is_some() {
                     needs_fetch = false;
                 }
-                
+
                 let token = self.auth_tokens.as_ref().map(|t| t.jwt().to_string());
                 let query_id = game.id.clone();
                 let runtime = self.runtime.clone();
-                
+
                 if needs_fetch {
                     if let Some(token) = token {
                         runtime.spawn(async move {
                             let mut api_client = GfnApiClient::new();
                             api_client.set_access_token(token);
-                            
+
                             // Fetch details
                             match api_client.fetch_app_details(&query_id).await {
-                                 Ok(Some(details)) => {
-                                     info!("Fetched details for popup: {}", details.title);
-                                     cache::save_popup_game_details(&details);
-                                 }
-                                 Ok(None) => warn!("No details found for popup game: {}", query_id),
-                                 Err(e) => warn!("Failed to fetch popup details: {}", e),
+                                Ok(Some(details)) => {
+                                    info!("Fetched details for popup: {}", details.title);
+                                    cache::save_popup_game_details(&details);
+                                }
+                                Ok(None) => warn!("No details found for popup game: {}", query_id),
+                                Err(e) => warn!("Failed to fetch popup details: {}", e),
                             }
                         });
                     }
@@ -458,7 +524,10 @@ impl App {
                             game.store = variant.store.clone();
                             game.id = variant.id.clone();
                             game.app_id = variant.id.parse::<i64>().ok();
-                            info!("Selected platform variant: {} ({})", variant.store, variant.id);
+                            info!(
+                                "Selected platform variant: {} ({})",
+                                variant.store, variant.id
+                            );
                         }
                     }
                 }
@@ -467,7 +536,7 @@ impl App {
                 if index < self.servers.len() {
                     self.selected_server_index = index;
                     self.auto_server_selection = false; // Disable auto when manually selecting
-                    // Save selected server and auto mode to settings
+                                                        // Save selected server and auto mode to settings
                     self.settings.selected_server = Some(self.servers[index].id.clone());
                     self.settings.auto_server_selection = false;
                     self.save_settings();
@@ -516,6 +585,54 @@ impl App {
                     warn!("Failed to save default settings: {}", e);
                 }
             }
+            UiAction::SetQueueSortMode(mode) => {
+                self.queue_sort_mode = mode;
+            }
+            UiAction::SetQueueRegionFilter(filter) => {
+                self.queue_region_filter = filter;
+            }
+            UiAction::ShowServerSelection(game) => {
+                self.show_server_selection = true;
+                self.pending_server_selection_game = Some(game);
+                // Refresh queue data when showing modal
+                self.fetch_queue_times();
+            }
+            UiAction::CloseServerSelection => {
+                self.show_server_selection = false;
+                self.selected_queue_server = None;
+                self.pending_server_selection_game = None;
+            }
+            UiAction::SelectQueueServer(server_id) => {
+                self.selected_queue_server = server_id;
+            }
+            UiAction::LaunchWithServer(game, server_id) => {
+                // Close modal and launch game
+                self.show_server_selection = false;
+                self.selected_queue_server = None;
+                self.pending_server_selection_game = None;
+                // Note: The backend API currently does not support explicit server selection.
+                // The selected server_id is recorded for logging/telemetry only; the server
+                // used for the session will still be chosen automatically by the backend.
+                if let Some(ref id) = server_id {
+                    info!(
+                        "Launching game '{}' (requested server: {}), but explicit server selection is not yet supported by the backend; a server will be auto-selected.",
+                        game.title,
+                        id
+                    );
+                } else {
+                    info!(
+                        "Launching game '{}' with backend auto-selected server (no explicit server requested).",
+                        game.title
+                    );
+                }
+                self.launch_game(&game);
+            }
+            UiAction::RefreshQueueTimes => {
+                // Force refresh by resetting last fetch time
+                self.queue_last_fetch =
+                    std::time::Instant::now() - std::time::Duration::from_secs(60);
+                self.fetch_queue_times();
+            }
         }
     }
 
@@ -525,9 +642,7 @@ impl App {
         self.games
             .iter()
             .enumerate()
-            .filter(|(_, game)| {
-                query.is_empty() || game.title.to_lowercase().contains(&query)
-            })
+            .filter(|(_, game)| query.is_empty() || game.title.to_lowercase().contains(&query))
             .collect()
     }
 
@@ -543,7 +658,10 @@ impl App {
             self.selected_provider_index = index;
             let provider = self.login_providers[index].clone();
             auth::set_login_provider(provider.clone());
-            info!("Selected provider: {}", provider.login_provider_display_name);
+            info!(
+                "Selected provider: {}",
+                provider.login_provider_display_name
+            );
         }
     }
 
@@ -608,8 +726,8 @@ impl App {
 
     /// Update application state (called each frame)
     pub fn update(&mut self) {
-        // Track render FPS
-        self.render_frame_count += 1;
+        // Track render FPS - we'll increment frame count only when we get a new video frame
+        // This ensures render FPS matches decode FPS, not the UI repaint rate
         let now = std::time::Instant::now();
         let elapsed = now.duration_since(self.last_render_fps_time).as_secs_f64();
         if elapsed >= 1.0 {
@@ -629,7 +747,7 @@ impl App {
                 if tokens.should_refresh() && tokens.can_refresh() {
                     info!("Token nearing expiry, proactively refreshing...");
                     self.token_refresh_in_progress = true;
-                    
+
                     let refresh_token = tokens.refresh_token.clone().unwrap();
                     let runtime = self.runtime.clone();
                     runtime.spawn(async move {
@@ -646,7 +764,7 @@ impl App {
                 }
             }
         }
-        
+
         // Check for refreshed tokens from async refresh task
         if self.token_refresh_in_progress {
             if let Some(new_tokens) = cache::load_tokens() {
@@ -655,7 +773,8 @@ impl App {
                     if new_tokens.expires_at > old_tokens.expires_at {
                         info!("Loaded refreshed tokens");
                         self.auth_tokens = Some(new_tokens.clone());
-                        self.api_client.set_access_token(new_tokens.jwt().to_string());
+                        self.api_client
+                            .set_access_token(new_tokens.jwt().to_string());
                         self.token_refresh_in_progress = false;
                     }
                 }
@@ -667,9 +786,16 @@ impl App {
             if let Some(frame) = shared.read() {
                 // Only log the first frame (when current_frame is None)
                 if self.current_frame.is_none() {
-                    log::info!("First video frame received: {}x{}", frame.width, frame.height);
+                    log::info!(
+                        "First video frame received: {}x{}",
+                        frame.width,
+                        frame.height
+                    );
                 }
                 self.current_frame = Some(frame);
+                // Increment render frame count only when we get a new video frame
+                // This ensures render FPS matches decode FPS
+                self.render_frame_count += 1;
             }
         }
 
@@ -703,10 +829,10 @@ impl App {
                     self.fetch_sections(); // Fetch sections for Home tab
                     self.fetch_subscription(); // Also fetch subscription info
                     self.load_servers(); // Load servers (fetches dynamic regions)
-                    
+
                     // Check for active sessions after login
                     self.check_active_sessions();
-                    
+
                     // Show Alliance experimental warning if using an Alliance partner
                     if auth::get_selected_provider().is_alliance_partner() {
                         self.show_alliance_warning = true;
@@ -727,7 +853,10 @@ impl App {
                         self.is_loading = false;
                         self.status_message = format!("Loaded {} games", self.games.len());
                     } else {
-                        info!("Cache has {} games but no images - forcing refresh", games.len());
+                        info!(
+                            "Cache has {} games but no images - forcing refresh",
+                            games.len()
+                        );
                         cache::clear_games_cache();
                         self.fetch_games();
                     }
@@ -736,19 +865,26 @@ impl App {
         }
 
         // Check if library was fetched and saved to cache
-        if self.state == AppState::Games && self.current_tab == GamesTab::MyLibrary && self.library_games.is_empty() {
+        if self.state == AppState::Games
+            && self.current_tab == GamesTab::MyLibrary
+            && self.library_games.is_empty()
+        {
             if let Some(games) = cache::load_library_cache() {
                 if !games.is_empty() {
                     info!("Loaded {} games from library cache", games.len());
                     self.library_games = games;
                     self.is_loading = false;
-                    self.status_message = format!("Your Library: {} games", self.library_games.len());
+                    self.status_message =
+                        format!("Your Library: {} games", self.library_games.len());
                 }
             }
         }
 
         // Check if sections were fetched and saved to cache (Home tab)
-        if self.state == AppState::Games && self.current_tab == GamesTab::Home && self.game_sections.is_empty() {
+        if self.state == AppState::Games
+            && self.current_tab == GamesTab::Home
+            && self.game_sections.is_empty()
+        {
             if let Some(sections) = cache::load_sections_cache() {
                 if !sections.is_empty() {
                     info!("Loaded {} sections from cache", sections.len());
@@ -767,12 +903,33 @@ impl App {
             }
         }
 
+        // Check if queue data was fetched and saved to cache (Queue Times tab)
+        if self.state == AppState::Games
+            && self.current_tab == GamesTab::QueueTimes
+            && self.queue_loading
+        {
+            if let Some(servers) = cache::load_queue_cache() {
+                if !servers.is_empty() {
+                    info!("Loaded {} queue servers from cache", servers.len());
+                    self.queue_servers = servers;
+                    self.queue_loading = false;
+                    // Start ping test for queue servers
+                    self.start_queue_ping_test();
+                }
+            }
+        }
+
         // Check for dynamic regions from serverInfo API
         self.check_dynamic_regions();
 
         // Check for ping test results
         if self.ping_testing {
             self.load_ping_results();
+        }
+
+        // Check for queue ping test results
+        if self.queue_ping_testing {
+            self.load_queue_ping_results();
         }
 
         // Check for active sessions from async check
@@ -813,9 +970,9 @@ impl App {
         self.user_info = None;
         self.subscription = None;
         auth::clear_login_provider();
-        cache::clear_login_provider();  // Clear persisted provider too
+        cache::clear_login_provider(); // Clear persisted provider too
         cache::clear_tokens();
-        cache::clear_games_cache();     // Clear cached games
+        cache::clear_games_cache(); // Clear cached games
         self.state = AppState::Login;
         self.games.clear();
         self.game_sections.clear();
@@ -842,7 +999,10 @@ impl App {
             // This is the same approach as the official GFN client
             match api_client.fetch_main_games(None).await {
                 Ok(games) => {
-                    info!("Fetched {} games from GraphQL MAIN panel (with images)", games.len());
+                    info!(
+                        "Fetched {} games from GraphQL MAIN panel (with images)",
+                        games.len()
+                    );
                     cache::save_games_cache(&games);
                 }
                 Err(e) => {
@@ -950,6 +1110,35 @@ impl App {
         });
     }
 
+    /// Fetch queue times from PrintedWaste API
+    pub fn fetch_queue_times(&mut self) {
+        // Rate limit: only fetch if more than 30 seconds since last fetch
+        const QUEUE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+        if self.queue_last_fetch.elapsed() < QUEUE_CACHE_TTL && !self.queue_servers.is_empty() {
+            return;
+        }
+
+        self.queue_loading = true;
+        self.queue_last_fetch = std::time::Instant::now();
+
+        let runtime = self.runtime.clone();
+        runtime.spawn(async move {
+            let client = reqwest::Client::new();
+            match crate::api::fetch_queue_servers(&client).await {
+                Ok(servers) => {
+                    info!(
+                        "Fetched queue times for {} servers from PrintedWaste",
+                        servers.len()
+                    );
+                    cache::save_queue_cache(&servers);
+                }
+                Err(e) => {
+                    warn!("Failed to fetch queue times: {}", e);
+                }
+            }
+        });
+    }
+
     /// Load available servers/regions (tries dynamic fetch first, falls back to hardcoded)
     pub fn load_servers(&mut self) {
         info!("Loading servers...");
@@ -1040,7 +1229,8 @@ impl App {
                     .map(|r| {
                         // Extract server ID from URL hostname
                         // e.g., "https://eu-netherlands-south.cloudmatchbeta.nvidiagrid.net" -> "eu-netherlands-south"
-                        let hostname = r.url
+                        let hostname = r
+                            .url
                             .trim_start_matches("https://")
                             .trim_start_matches("http://")
                             .split('.')
@@ -1048,13 +1238,29 @@ impl App {
                             .unwrap_or(&r.name);
 
                         // Determine region from name or hostname
-                        let region = if hostname.starts_with("eu-") || r.name.contains("Europe") || r.name.contains("UK") || r.name.contains("France") || r.name.contains("Germany") {
+                        let region = if hostname.starts_with("eu-")
+                            || r.name.contains("Europe")
+                            || r.name.contains("UK")
+                            || r.name.contains("France")
+                            || r.name.contains("Germany")
+                        {
                             "Europe"
-                        } else if hostname.starts_with("us-") || r.name.contains("US") || r.name.contains("California") || r.name.contains("Texas") {
+                        } else if hostname.starts_with("us-")
+                            || r.name.contains("US")
+                            || r.name.contains("California")
+                            || r.name.contains("Texas")
+                        {
                             "North America"
-                        } else if hostname.starts_with("ca-") || r.name.contains("Canada") || r.name.contains("Quebec") {
+                        } else if hostname.starts_with("ca-")
+                            || r.name.contains("Canada")
+                            || r.name.contains("Quebec")
+                        {
                             "Canada"
-                        } else if hostname.starts_with("ap-") || r.name.contains("Japan") || r.name.contains("Korea") || r.name.contains("Singapore") {
+                        } else if hostname.starts_with("ap-")
+                            || r.name.contains("Japan")
+                            || r.name.contains("Korea")
+                            || r.name.contains("Singapore")
+                        {
                             "Asia-Pacific"
                         } else {
                             "Other"
@@ -1128,55 +1334,62 @@ impl App {
         }
 
         // Collect server info with URLs for pinging
-        let server_data: Vec<(String, Option<String>)> = self.servers
+        let server_data: Vec<(String, Option<String>)> = self
+            .servers
             .iter()
             .map(|s| (s.id.clone(), s.url.clone()))
             .collect();
         let runtime = self.runtime.clone();
 
         runtime.spawn(async move {
-            let mut results: Vec<(String, Option<u32>, ServerStatus)> = Vec::new();
+            use futures_util::future::join_all;
 
-            for (server_id, url_opt) in server_data {
-                // Extract hostname from URL or construct from server_id
-                let hostname = if let Some(url) = url_opt {
-                    url.trim_start_matches("https://")
-                        .trim_start_matches("http://")
-                        .split('/')
-                        .next()
-                        .unwrap_or(&format!("{}.cloudmatchbeta.nvidiagrid.net", server_id))
-                        .to_string()
-                } else {
-                    format!("{}.cloudmatchbeta.nvidiagrid.net", server_id)
-                };
+            // Create ping futures for all servers (run in parallel)
+            let ping_futures: Vec<_> = server_data
+                .into_iter()
+                .map(|(server_id, url_opt)| async move {
+                    // Extract hostname from URL or construct from server_id
+                    let hostname = if let Some(url) = url_opt {
+                        url.trim_start_matches("https://")
+                            .trim_start_matches("http://")
+                            .split('/')
+                            .next()
+                            .unwrap_or(&format!("{}.cloudmatchbeta.nvidiagrid.net", server_id))
+                            .to_string()
+                    } else {
+                        format!("{}.cloudmatchbeta.nvidiagrid.net", server_id)
+                    };
 
-                // TCP ping to port 443
-                let ping_result = Self::tcp_ping(&hostname, 443).await;
+                    // TCP ping with timeout (faster and more reliable than ICMP on Windows)
+                    let ping_result = Self::tcp_ping(&hostname).await;
 
-                let (ping_ms, status) = match ping_result {
-                    Some(ms) => (Some(ms), ServerStatus::Online),
-                    None => (None, ServerStatus::Offline),
-                };
+                    let (ping_ms, status) = match ping_result {
+                        Some(ms) => (Some(ms), ServerStatus::Online),
+                        None => (None, ServerStatus::Offline),
+                    };
 
-                results.push((server_id, ping_ms, status));
-            }
+                    (server_id, ping_ms, status)
+                })
+                .collect();
+
+            // Run all pings concurrently
+            let results: Vec<(String, Option<u32>, ServerStatus)> = join_all(ping_futures).await;
 
             // Save results to cache
             cache::save_ping_results(&results);
         });
     }
 
-    /// TCP ping to measure latency
-    async fn tcp_ping(hostname: &str, port: u16) -> Option<u32> {
+    /// Fast TCP ping - measures connection time to server (TLS handshake)
+    async fn tcp_ping(hostname: &str) -> Option<u32> {
         use std::time::Instant;
         use tokio::net::TcpStream;
         use tokio::time::{timeout, Duration};
 
-        // Resolve hostname first
-        let addr = format!("{}:{}", hostname, port);
-
+        let addr = format!("{}:443", hostname);
         let start = Instant::now();
-        let result = timeout(Duration::from_secs(3), TcpStream::connect(&addr)).await;
+        // Short timeout for fast failure
+        let result = timeout(Duration::from_millis(1500), TcpStream::connect(&addr)).await;
 
         match result {
             Ok(Ok(_stream)) => {
@@ -1193,7 +1406,10 @@ impl App {
             for result in results {
                 if let Some(id) = result.get("id").and_then(|v| v.as_str()) {
                     if let Some(server) = self.servers.iter_mut().find(|s| s.id == id) {
-                        server.ping_ms = result.get("ping_ms").and_then(|v| v.as_u64()).map(|v| v as u32);
+                        server.ping_ms = result
+                            .get("ping_ms")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32);
                         server.status = match result.get("status").and_then(|v| v.as_str()) {
                             Some("Online") => ServerStatus::Online,
                             Some("Offline") => ServerStatus::Offline,
@@ -1206,15 +1422,13 @@ impl App {
             self.ping_testing = false;
 
             // Sort servers by ping (online first, then by ping)
-            self.servers.sort_by(|a, b| {
-                match (&a.status, &b.status) {
-                    (ServerStatus::Online, ServerStatus::Online) => {
-                        a.ping_ms.unwrap_or(9999).cmp(&b.ping_ms.unwrap_or(9999))
-                    }
-                    (ServerStatus::Online, _) => std::cmp::Ordering::Less,
-                    (_, ServerStatus::Online) => std::cmp::Ordering::Greater,
-                    _ => std::cmp::Ordering::Equal,
+            self.servers.sort_by(|a, b| match (&a.status, &b.status) {
+                (ServerStatus::Online, ServerStatus::Online) => {
+                    a.ping_ms.unwrap_or(9999).cmp(&b.ping_ms.unwrap_or(9999))
                 }
+                (ServerStatus::Online, _) => std::cmp::Ordering::Less,
+                (_, ServerStatus::Online) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
             });
 
             // Update selected index after sort
@@ -1232,7 +1446,8 @@ impl App {
     /// Select the best server based on ping (lowest ping online server)
     fn select_best_server(&mut self) {
         // Find the server with the lowest ping that is online
-        let best_server = self.servers
+        let best_server = self
+            .servers
             .iter()
             .enumerate()
             .filter(|(_, s)| s.status == ServerStatus::Online && s.ping_ms.is_some())
@@ -1240,7 +1455,73 @@ impl App {
 
         if let Some((idx, server)) = best_server {
             self.selected_server_index = idx;
-            info!("Auto-selected best server: {} ({}ms)", server.name, server.ping_ms.unwrap_or(0));
+            info!(
+                "Auto-selected best server: {} ({}ms)",
+                server.name,
+                server.ping_ms.unwrap_or(0)
+            );
+        }
+    }
+
+    /// Start ping test for queue servers (uses VPC IDs like NP-AMS-07)
+    pub fn start_queue_ping_test(&mut self) {
+        if self.queue_ping_testing || self.queue_servers.is_empty() {
+            return;
+        }
+
+        self.queue_ping_testing = true;
+        info!(
+            "Starting queue ping test for {} servers",
+            self.queue_servers.len()
+        );
+
+        // Collect server IDs for pinging
+        let server_ids: Vec<String> = self
+            .queue_servers
+            .iter()
+            .map(|s| s.server_id.clone())
+            .collect();
+        let runtime = self.runtime.clone();
+
+        runtime.spawn(async move {
+            use futures_util::future::join_all;
+
+            // Create ping futures for all queue servers (run in parallel)
+            let ping_futures: Vec<_> = server_ids
+                .into_iter()
+                .map(|server_id| async move {
+                    // Construct hostname from VPC ID (e.g., NP-AMS-07 -> np-ams-07.cloudmatchbeta.nvidiagrid.net)
+                    let hostname =
+                        format!("{}.cloudmatchbeta.nvidiagrid.net", server_id.to_lowercase());
+
+                    let ping_result = Self::tcp_ping(&hostname).await;
+                    (server_id, ping_result)
+                })
+                .collect();
+
+            // Run all pings concurrently
+            let results: Vec<(String, Option<u32>)> = join_all(ping_futures).await;
+
+            // Save results to cache
+            cache::save_queue_ping_results(&results);
+        });
+    }
+
+    /// Load queue ping results from cache
+    fn load_queue_ping_results(&mut self) {
+        if let Some(results) = cache::load_queue_ping_results() {
+            for (server_id, ping_ms) in results {
+                if let Some(server) = self
+                    .queue_servers
+                    .iter_mut()
+                    .find(|s| s.server_id == server_id)
+                {
+                    server.ping_ms = ping_ms;
+                }
+            }
+
+            self.queue_ping_testing = false;
+            info!("Queue ping test completed");
         }
     }
 
@@ -1278,7 +1559,10 @@ impl App {
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to check active sessions: {}, proceeding with launch", e);
+                    warn!(
+                        "Failed to check active sessions: {}, proceeding with launch",
+                        e
+                    );
                     cache::clear_active_sessions_cache();
                     cache::save_pending_game_cache(&game_clone);
                     cache::save_launch_proceed_flag();
@@ -1314,7 +1598,9 @@ impl App {
         let game_title = game.title.clone();
         let settings = self.settings.clone();
 
-        let zone = self.servers.get(self.selected_server_index)
+        let zone = self
+            .servers
+            .get(self.selected_server_index)
             .map(|s| s.id.clone())
             .unwrap_or_else(|| "eu-netherlands-south".to_string());
 
@@ -1331,18 +1617,33 @@ impl App {
 
             match api_client.fetch_app_details(&app_id).await {
                 Ok(Some(details)) => {
-                    info!("Fetched fresh app details: is_install_to_play={}", details.is_install_to_play);
+                    info!(
+                        "Fetched fresh app details: is_install_to_play={}",
+                        details.is_install_to_play
+                    );
                     account_linked = !details.is_install_to_play;
                 }
-                Ok(None) => warn!("App details not found, using cached info: is_install_to_play={}", is_install_to_play),
+                Ok(None) => warn!(
+                    "App details not found, using cached info: is_install_to_play={}",
+                    is_install_to_play
+                ),
                 Err(e) => warn!("Failed to fetch app details ({}): {}", app_id, e),
             }
-            
-            info!("Starting session for '{}' with account_linked: {}", game_title, account_linked);
 
-            match api_client.create_session(&app_id, &game_title, &settings, &zone, account_linked).await {
+            info!(
+                "Starting session for '{}' with account_linked: {}",
+                game_title, account_linked
+            );
+
+            match api_client
+                .create_session(&app_id, &game_title, &settings, &zone, account_linked)
+                .await
+            {
                 Ok(session) => {
-                    info!("Session created: {} (state: {:?})", session.session_id, session.state);
+                    info!(
+                        "Session created: {} (state: {:?})",
+                        session.session_id, session.state
+                    );
                     cache::save_session_cache(&session);
                 }
                 Err(e) => {
@@ -1391,14 +1692,15 @@ impl App {
 
         let runtime = self.runtime.clone();
         runtime.spawn(async move {
-            match api_client.claim_session(
-                &session_info.session_id,
-                &server_ip,
-                &app_id,
-                &settings,
-            ).await {
+            match api_client
+                .claim_session(&session_info.session_id, &server_ip, &app_id, &settings)
+                .await
+            {
                 Ok(session) => {
-                    info!("Session claimed: {} (state: {:?})", session.session_id, session.state);
+                    info!(
+                        "Session claimed: {} (state: {:?})",
+                        session.session_id, session.state
+                    );
                     cache::save_session_cache(&session);
                 }
                 Err(e) => {
@@ -1411,7 +1713,10 @@ impl App {
 
     /// Terminate existing session and start new game
     fn terminate_and_launch(&mut self, session_id: String, game: GameInfo) {
-        info!("Terminating session {} and launching {}", session_id, game.title);
+        info!(
+            "Terminating session {} and launching {}",
+            session_id, game.title
+        );
 
         self.show_session_conflict = false;
         self.pending_game_launch = None;
@@ -1456,16 +1761,23 @@ impl App {
                 // User requested: "make it pull few times before connecting to it so you can get the candidates"
                 // We delay streaming start until we've polled a few times in Ready state
                 if self.session_ready_poll_count < 3 {
-                    self.status_message = format!("Session ready, finalizing connection ({}/3)...", self.session_ready_poll_count + 1);
+                    self.status_message = format!(
+                        "Session ready, finalizing connection ({}/3)...",
+                        self.session_ready_poll_count + 1
+                    );
                     // Don't return, allow fall-through to polling logic
                 } else {
-                    info!("Session ready! GPU: {:?}, Server: {}", session.gpu_type, session.server_ip);
-                    
+                    info!(
+                        "Session ready! GPU: {:?}, Server: {}",
+                        session.gpu_type, session.server_ip
+                    );
+
                     // Update status message
                     if let Some(gpu) = &session.gpu_type {
-                         self.status_message = format!("Connecting to GPU: {}", gpu);
+                        self.status_message = format!("Connecting to GPU: {}", gpu);
                     } else {
-                         self.status_message = format!("Connecting to server: {}", session.server_ip);
+                        self.status_message =
+                            format!("Connecting to server: {}", session.server_ip);
                     }
 
                     cache::clear_session_cache();
@@ -1499,8 +1811,8 @@ impl App {
         if let Some(session) = cache::load_session_cache() {
             let mut should_poll = matches!(
                 session.state,
-                SessionState::Requesting 
-                    | SessionState::Launching 
+                SessionState::Requesting
+                    | SessionState::Launching
                     | SessionState::Connecting
                     | SessionState::CleaningUp
                     | SessionState::WaitingForStorage
@@ -1536,7 +1848,10 @@ impl App {
 
                 let runtime = self.runtime.clone();
                 runtime.spawn(async move {
-                    match api_client.poll_session(&session_id, &zone, server_ip.as_deref()).await {
+                    match api_client
+                        .poll_session(&session_id, &zone, server_ip.as_deref())
+                        .await
+                    {
                         Ok(updated_session) => {
                             info!("Session poll: state={:?}", updated_session.state);
                             cache::save_session_cache(&updated_session);
@@ -1555,13 +1870,16 @@ impl App {
             self.is_loading = false;
             cache::clear_session_error();
         }
-        
+
         // Check for popup game details updates
         if let Some(detailed_game) = cache::load_popup_game_details() {
             // Only update if we still have the popup open for the same game
             if let Some(current_popup) = &self.selected_game_popup {
                 if current_popup.id == detailed_game.id {
-                    info!("Updating popup with detailed info for: {}", detailed_game.title);
+                    info!(
+                        "Updating popup with detailed info for: {}",
+                        detailed_game.title
+                    );
                     self.selected_game_popup = Some(detailed_game);
                 }
             }
@@ -1578,6 +1896,9 @@ impl App {
         self.cursor_captured = true;
         self.is_loading = false;
 
+        // Reset session ready poll count for this new session
+        self.session_ready_poll_count = 0;
+
         // Initialize session timing for proper input timestamps
         // This must be called BEFORE any input events are sent
         crate::input::init_session_timing();
@@ -1588,7 +1909,14 @@ impl App {
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         crate::input::set_local_cursor_dimensions(width, height);
 
-        info!("Input system initialized: session timing + local cursor {}x{}", width, height);
+        // Reset coalescing state to ensure clean input state for new session
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        crate::input::reset_coalescing();
+
+        info!(
+            "Input system initialized: session timing + local cursor {}x{}",
+            width, height
+        );
 
         // Create shared frame holder for zero-latency frame delivery
         // No buffering - decoder writes latest frame, renderer reads it immediately
@@ -1597,11 +1925,14 @@ impl App {
 
         // Stats channel (small buffer is fine for stats)
         let (stats_tx, stats_rx) = mpsc::channel(8);
-        info!("Using zero-latency shared frame delivery for {}fps", self.settings.fps);
+        info!(
+            "Using zero-latency shared frame delivery for {}fps",
+            self.settings.fps
+        );
 
         self.stats_rx = Some(stats_rx);
 
-        // Create input handler
+        // Create input handler with clean state
         let input_handler = Arc::new(InputHandler::new());
         self.input_handler = Some(input_handler.clone());
 
@@ -1619,7 +1950,9 @@ impl App {
                 shared_frame,
                 stats_tx,
                 input_handler,
-            ).await {
+            )
+            .await
+            {
                 Ok(()) => {
                     info!("Streaming ended normally");
                 }
@@ -1633,8 +1966,11 @@ impl App {
     /// Terminate current session via API and stop streaming
     pub fn terminate_current_session(&mut self) {
         if let Some(session) = &self.session {
-            info!("Ctrl+Shift+Q: Terminating active session: {}", session.session_id);
-            
+            info!(
+                "Ctrl+Shift+Q: Terminating active session: {}",
+                session.session_id
+            );
+
             let token = match &self.auth_tokens {
                 Some(t) => t.jwt().to_string(),
                 None => {
@@ -1642,23 +1978,30 @@ impl App {
                     return;
                 }
             };
-            
+
             let session_id = session.session_id.clone();
             let zone = session.zone.clone();
-            let server_ip = if session.server_ip.is_empty() { None } else { Some(session.server_ip.clone()) };
-            
+            let server_ip = if session.server_ip.is_empty() {
+                None
+            } else {
+                Some(session.server_ip.clone())
+            };
+
             let mut api_client = GfnApiClient::new();
             api_client.set_access_token(token);
-            
+
             let runtime = self.runtime.clone();
             runtime.spawn(async move {
-                match api_client.stop_session(&session_id, &zone, server_ip.as_deref()).await {
+                match api_client
+                    .stop_session(&session_id, &zone, server_ip.as_deref())
+                    .await
+                {
                     Ok(_) => info!("Session {} terminated successfully", session_id),
                     Err(e) => warn!("Failed to stop session {}: {}", session_id, e),
                 }
             });
         }
-        
+
         self.stop_streaming();
     }
 
@@ -1676,10 +2019,14 @@ impl App {
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         crate::input::reset_coalescing();
 
+        // Clear raw input sender to prevent stale events from being processed
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        crate::input::clear_raw_input_sender();
+
         self.cursor_captured = false;
         self.state = AppState::Games;
         self.streaming_session = None;
-        self.session = None;  // Clear session info
+        self.session = None; // Clear session info
         self.input_handler = None;
         self.current_frame = None;
         self.shared_frame = None;
@@ -1687,6 +2034,9 @@ impl App {
         self.selected_game = None;
         self.is_loading = false;
         self.error_message = None;
+
+        // Reset session ready poll count for next session
+        self.session_ready_poll_count = 0;
 
         self.status_message = "Stream ended".to_string();
     }
@@ -1705,14 +2055,16 @@ impl App {
 
     /// Get current user display name
     pub fn user_display_name(&self) -> &str {
-        self.user_info.as_ref()
+        self.user_info
+            .as_ref()
             .map(|u| u.display_name.as_str())
             .unwrap_or("User")
     }
 
     /// Get current membership tier
     pub fn membership_tier(&self) -> &str {
-        self.user_info.as_ref()
+        self.user_info
+            .as_ref()
             .map(|u| u.membership_tier.as_str())
             .unwrap_or("FREE")
     }

@@ -7,61 +7,51 @@
 //! - Local cursor rendering (instant visual feedback independent of network)
 //! - Queue depth management (prevents server-side buffering)
 
-#[cfg(target_os = "windows")]
-mod windows;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-// TODO: Implement linux.rs when Linux platform support is added
-// For now, stubs are provided below for Linux
+#[cfg(target_os = "windows")]
+mod windows;
 
-mod protocol;
 pub mod controller;
+mod protocol;
 
-pub use protocol::*;
 pub use controller::ControllerManager;
+pub use protocol::*;
 
 // Re-export raw input functions for Windows
 #[cfg(target_os = "windows")]
 pub use windows::{
-    start_raw_input,
-    stop_raw_input,
-    pause_raw_input,
-    resume_raw_input,
-    get_raw_mouse_delta,
-    is_raw_input_active,
+    clear_raw_input_sender, flush_pending_mouse_events, get_coalesced_event_count,
+    get_local_cursor_normalized, get_local_cursor_position, get_raw_mouse_delta,
+    is_raw_input_active, pause_raw_input, reset_coalescing, resume_raw_input,
+    set_local_cursor_dimensions, set_raw_input_sender, start_raw_input, stop_raw_input,
     update_raw_input_center,
-    set_raw_input_sender,
-    clear_raw_input_sender,
-    set_local_cursor_dimensions,
-    get_local_cursor_position,
-    get_local_cursor_normalized,
-    flush_pending_mouse_events,
-    get_coalesced_event_count,
-    reset_coalescing,
 };
 
 // Re-export raw input functions for macOS
 #[cfg(target_os = "macos")]
 pub use macos::{
-    start_raw_input,
-    stop_raw_input,
-    pause_raw_input,
-    resume_raw_input,
-    get_raw_mouse_delta,
-    is_raw_input_active,
+    clear_raw_input_sender, flush_pending_mouse_events, get_coalesced_event_count,
+    get_local_cursor_normalized, get_local_cursor_position, get_raw_mouse_delta,
+    is_raw_input_active, pause_raw_input, reset_coalescing, resume_raw_input,
+    set_local_cursor_dimensions, set_raw_input_sender, start_raw_input, stop_raw_input,
     update_raw_input_center,
-    set_raw_input_sender,
-    clear_raw_input_sender,
-    set_local_cursor_dimensions,
-    get_local_cursor_position,
-    get_local_cursor_normalized,
-    flush_pending_mouse_events,
-    get_coalesced_event_count,
-    reset_coalescing,
 };
 
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+// Re-export raw input functions for Linux
+#[cfg(target_os = "linux")]
+pub use linux::{
+    clear_raw_input_sender, flush_pending_mouse_events, get_coalesced_event_count,
+    get_local_cursor_normalized, get_local_cursor_position, get_raw_mouse_delta,
+    is_raw_input_active, pause_raw_input, reset_coalescing, resume_raw_input,
+    set_local_cursor_dimensions, set_raw_input_sender, start_raw_input, stop_raw_input,
+    update_raw_input_center,
+};
+
 use parking_lot::RwLock;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Session timing state - resettable for each streaming session
 /// GFN server expects timestamps relative to session start for proper input timing
@@ -89,7 +79,10 @@ static SESSION_TIMING: RwLock<Option<SessionTiming>> = RwLock::new(None);
 /// This MUST be called before each new streaming session to reset timestamps
 pub fn init_session_timing() {
     let timing = SessionTiming::new();
-    log::info!("Session timing initialized at {} us (new session)", timing.unix_us);
+    log::info!(
+        "Session timing initialized at {} us (new session)",
+        timing.unix_us
+    );
     *SESSION_TIMING.write() = Some(timing);
 }
 
@@ -128,47 +121,13 @@ pub fn session_elapsed_us() -> u64 {
     }
 }
 
-// Stubs for Linux (Windows and macOS have native implementations)
-#[cfg(target_os = "linux")]
-pub fn start_raw_input() -> Result<(), String> {
-    Err("Raw input not yet implemented for Linux".to_string())
-}
-#[cfg(target_os = "linux")]
-pub fn stop_raw_input() {}
-#[cfg(target_os = "linux")]
-pub fn pause_raw_input() {}
-#[cfg(target_os = "linux")]
-pub fn resume_raw_input() {}
-#[cfg(target_os = "linux")]
-pub fn get_raw_mouse_delta() -> (i32, i32) { (0, 0) }
-#[cfg(target_os = "linux")]
-pub fn is_raw_input_active() -> bool { false }
-#[cfg(target_os = "linux")]
-pub fn update_raw_input_center() {}
-#[cfg(target_os = "linux")]
-pub fn set_raw_input_sender(_sender: tokio::sync::mpsc::Sender<crate::webrtc::InputEvent>) {}
-#[cfg(target_os = "linux")]
-pub fn clear_raw_input_sender() {}
-#[cfg(target_os = "linux")]
-pub fn set_local_cursor_dimensions(_width: u32, _height: u32) {}
-#[cfg(target_os = "linux")]
-pub fn get_local_cursor_position() -> (i32, i32) { (0, 0) }
-#[cfg(target_os = "linux")]
-pub fn get_local_cursor_normalized() -> (f32, f32) { (0.5, 0.5) }
-#[cfg(target_os = "linux")]
-pub fn flush_pending_mouse_events() {}
-#[cfg(target_os = "linux")]
-pub fn get_coalesced_event_count() -> u64 { 0 }
-#[cfg(target_os = "linux")]
-pub fn reset_coalescing() {}
-
+use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use winit::event::{ElementState, MouseButton};
 
-use crate::webrtc::{InputEvent, InputEncoder};
+use crate::webrtc::{InputEncoder, InputEvent};
 
 /// Mouse event coalescing interval in microseconds
 /// Official client uses 4-16ms depending on browser, we use 2ms for lowest latency
@@ -451,7 +410,11 @@ impl InputHandler {
         // Flush accumulated mouse movement BEFORE button event
         // This ensures proper event ordering (move -> click, not click -> move)
         if let Some((dx, dy, timestamp_us)) = self.mouse_coalescer.flush() {
-            self.send_event(InputEvent::MouseMove { dx, dy, timestamp_us });
+            self.send_event(InputEvent::MouseMove {
+                dx,
+                dy,
+                timestamp_us,
+            });
         }
 
         // GFN uses 1-based button indices: 1=Left, 2=Middle, 3=Right
@@ -466,8 +429,14 @@ impl InputHandler {
 
         let timestamp_us = get_timestamp_us();
         let event = match state {
-            ElementState::Pressed => InputEvent::MouseButtonDown { button: btn, timestamp_us },
-            ElementState::Released => InputEvent::MouseButtonUp { button: btn, timestamp_us },
+            ElementState::Pressed => InputEvent::MouseButtonDown {
+                button: btn,
+                timestamp_us,
+            },
+            ElementState::Released => InputEvent::MouseButtonUp {
+                button: btn,
+                timestamp_us,
+            },
         };
 
         self.send_event(event);
@@ -524,8 +493,14 @@ impl InputHandler {
         }
 
         // Use coalescer for batching - sends every 4ms instead of every event
-        if let Some((cdx, cdy, timestamp_us)) = self.mouse_coalescer.accumulate(dx as i32, dy as i32) {
-            self.send_event(InputEvent::MouseMove { dx: cdx, dy: cdy, timestamp_us });
+        if let Some((cdx, cdy, timestamp_us)) =
+            self.mouse_coalescer.accumulate(dx as i32, dy as i32)
+        {
+            self.send_event(InputEvent::MouseMove {
+                dx: cdx,
+                dy: cdy,
+                timestamp_us,
+            });
         }
     }
 
@@ -540,14 +515,22 @@ impl InputHandler {
         self.local_cursor.apply_delta(dx as i32, dy as i32);
 
         // Send immediately without coalescing
-        self.send_event(InputEvent::MouseMove { dx, dy, timestamp_us: get_timestamp_us() });
+        self.send_event(InputEvent::MouseMove {
+            dx,
+            dy,
+            timestamp_us: get_timestamp_us(),
+        });
     }
 
     /// Flush any pending coalesced mouse events
     /// Call this periodically (e.g., every frame) to ensure events don't get stuck
     pub fn flush_mouse_events(&self) {
         if let Some((dx, dy, timestamp_us)) = self.mouse_coalescer.flush() {
-            self.send_event(InputEvent::MouseMove { dx, dy, timestamp_us });
+            self.send_event(InputEvent::MouseMove {
+                dx,
+                dy,
+                timestamp_us,
+            });
         }
     }
 
@@ -621,7 +604,10 @@ impl InputHandler {
 
     /// Handle mouse wheel
     pub fn handle_wheel(&self, delta: i16) {
-        self.send_event(InputEvent::MouseWheel { delta, timestamp_us: get_timestamp_us() });
+        self.send_event(InputEvent::MouseWheel {
+            delta,
+            timestamp_us: get_timestamp_us(),
+        });
     }
 
     /// Set cursor capture state
