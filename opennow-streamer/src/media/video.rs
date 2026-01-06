@@ -1747,125 +1747,184 @@ impl VideoDecoder {
                 );
 
                 for hw_name in &hw_decoder_names {
-                    if let Some(hw_codec) = ffmpeg::codec::decoder::find_by_name(hw_name) {
-                        info!("Found hardware decoder: {}, attempting to open...", hw_name);
+                    let hw_codec = ffmpeg::codec::decoder::find_by_name(hw_name);
+                    if hw_codec.is_none() {
+                        warn!("Hardware decoder '{}' not found in FFmpeg build (FFmpeg may not have VAAPI/V4L2 support compiled in)", hw_name);
+                        continue;
+                    }
+                    let hw_codec = hw_codec.unwrap();
+                    info!("Found hardware decoder: {}, attempting to open...", hw_name);
 
-                        // VAAPI decoders require hw_device_ctx to be set up
-                        if hw_name.contains("vaapi") {
-                            unsafe {
-                                use ffmpeg::ffi::*;
-                                use std::ptr;
-
-                                let mut ctx = CodecContext::new_with_codec(hw_codec);
-                                let raw_ctx = ctx.as_mut_ptr();
-
-                                // Create VAAPI hardware device context
-                                let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
-                                let ret = av_hwdevice_ctx_create(
-                                    &mut hw_device_ctx,
-                                    AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
-                                    ptr::null(), // Use default device (/dev/dri/renderD128)
-                                    ptr::null_mut(),
-                                    0,
-                                );
-
-                                if ret >= 0 && !hw_device_ctx.is_null() {
-                                    info!("VAAPI hw_device_ctx created successfully");
-
-                                    (*raw_ctx).hw_device_ctx = av_buffer_ref(hw_device_ctx);
-                                    av_buffer_unref(&mut hw_device_ctx);
-
-                                    // Set get_format callback to select VAAPI pixel format
-                                    (*raw_ctx).get_format = Some(Self::get_vaapi_format);
-
-                                    // Low latency flags for streaming
-                                    (*raw_ctx).flags |= AV_CODEC_FLAG_LOW_DELAY as i32;
-                                    (*raw_ctx).flags2 |= AV_CODEC_FLAG2_FAST as i32;
-                                    (*raw_ctx).thread_count = 1; // Single thread for HW decode
-
-                                    match ctx.decoder().video() {
-                                        Ok(dec) => {
-                                            info!("VAAPI hardware decoder ({}) opened successfully - GPU decoding active!", hw_name);
-                                            return Ok((dec, true));
-                                        }
-                                        Err(e) => {
-                                            warn!(
-                                                "Failed to open VAAPI decoder {}: {:?}",
-                                                hw_name, e
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    warn!("Failed to create VAAPI hw_device_ctx (error {})", ret);
-                                }
-                            }
-                            continue;
-                        }
-
-                        let mut ctx = CodecContext::new_with_codec(hw_codec);
-
+                    // VAAPI decoders require hw_device_ctx to be set up
+                    if hw_name.contains("vaapi") {
                         unsafe {
+                            use ffmpeg::ffi::*;
+                            use std::ptr;
+
+                            let mut ctx = CodecContext::new_with_codec(hw_codec);
                             let raw_ctx = ctx.as_mut_ptr();
-                            // Set low latency flags
-                            (*raw_ctx).flags |= ffmpeg::ffi::AV_CODEC_FLAG_LOW_DELAY as i32;
-                            (*raw_ctx).flags2 |= ffmpeg::ffi::AV_CODEC_FLAG2_FAST as i32;
+
+                            // Create VAAPI hardware device context
+                            let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
+                            let ret = av_hwdevice_ctx_create(
+                                &mut hw_device_ctx,
+                                AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+                                ptr::null(), // Use default device (/dev/dri/renderD128)
+                                ptr::null_mut(),
+                                0,
+                            );
+
+                            if ret >= 0 && !hw_device_ctx.is_null() {
+                                info!("VAAPI hw_device_ctx created successfully");
+
+                                (*raw_ctx).hw_device_ctx = av_buffer_ref(hw_device_ctx);
+                                av_buffer_unref(&mut hw_device_ctx);
+
+                                // Set get_format callback to select VAAPI pixel format
+                                (*raw_ctx).get_format = Some(Self::get_vaapi_format);
+
+                                // Low latency flags for streaming
+                                (*raw_ctx).flags |= AV_CODEC_FLAG_LOW_DELAY as i32;
+                                (*raw_ctx).flags2 |= AV_CODEC_FLAG2_FAST as i32;
+                                (*raw_ctx).thread_count = 1; // Single thread for HW decode
+
+                                match ctx.decoder().video() {
+                                    Ok(dec) => {
+                                        info!("VAAPI hardware decoder ({}) opened successfully - GPU decoding active!", hw_name);
+                                        return Ok((dec, true));
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to open VAAPI decoder {}: {:?}", hw_name, e);
+                                    }
+                                }
+                            } else {
+                                warn!("Failed to create VAAPI hw_device_ctx (error {})", ret);
+                            }
                         }
+                        continue;
+                    }
 
-                        // For V4L2 M2M on Raspberry Pi 5, try common device paths
-                        if hw_name.contains("v4l2m2m") && is_raspberry_pi {
-                            // Pi 5 HEVC decoder is typically at /dev/video19
-                            // Try scanning for the rpivid decoder device
-                            let v4l2_devices = [
-                                "/dev/video19",
-                                "/dev/video10",
-                                "/dev/video11",
-                                "/dev/video12",
-                            ];
+                    let mut ctx = CodecContext::new_with_codec(hw_codec);
 
-                            for device_path in v4l2_devices {
-                                if std::path::Path::new(device_path).exists() {
-                                    info!("Trying V4L2 device: {}", device_path);
-                                    // Set device via environment variable (FFmpeg V4L2 M2M respects this)
-                                    std::env::set_var("V4L2M2M_DEVICE", device_path);
+                    unsafe {
+                        let raw_ctx = ctx.as_mut_ptr();
+                        // Set low latency flags
+                        (*raw_ctx).flags |= ffmpeg::ffi::AV_CODEC_FLAG_LOW_DELAY as i32;
+                        (*raw_ctx).flags2 |= ffmpeg::ffi::AV_CODEC_FLAG2_FAST as i32;
+                    }
 
-                                    match ctx.decoder().video() {
-                                        Ok(dec) => {
-                                            info!("V4L2 hardware decoder opened with device {} - GPU decoding active!", device_path);
-                                            return Ok((dec, true));
-                                        }
-                                        Err(e) => {
-                                            debug!("V4L2 device {} failed: {:?}", device_path, e);
-                                            // Recreate context for next attempt
-                                            ctx = CodecContext::new_with_codec(hw_codec);
-                                            unsafe {
-                                                let raw_ctx = ctx.as_mut_ptr();
-                                                (*raw_ctx).flags |=
-                                                    ffmpeg::ffi::AV_CODEC_FLAG_LOW_DELAY as i32;
-                                                (*raw_ctx).flags2 |=
-                                                    ffmpeg::ffi::AV_CODEC_FLAG2_FAST as i32;
-                                            }
+                    // For V4L2 M2M on Raspberry Pi 5, try common device paths
+                    if hw_name.contains("v4l2m2m") && is_raspberry_pi {
+                        // Pi 5 HEVC decoder is typically at /dev/video19
+                        // Try scanning for the rpivid decoder device
+                        let v4l2_devices = [
+                            "/dev/video19",
+                            "/dev/video10",
+                            "/dev/video11",
+                            "/dev/video12",
+                        ];
+
+                        for device_path in v4l2_devices {
+                            if std::path::Path::new(device_path).exists() {
+                                info!("Trying V4L2 device: {}", device_path);
+                                // Set device via environment variable (FFmpeg V4L2 M2M respects this)
+                                std::env::set_var("V4L2M2M_DEVICE", device_path);
+
+                                match ctx.decoder().video() {
+                                    Ok(dec) => {
+                                        info!("V4L2 hardware decoder opened with device {} - GPU decoding active!", device_path);
+                                        return Ok((dec, true));
+                                    }
+                                    Err(e) => {
+                                        debug!("V4L2 device {} failed: {:?}", device_path, e);
+                                        // Recreate context for next attempt
+                                        ctx = CodecContext::new_with_codec(hw_codec);
+                                        unsafe {
+                                            let raw_ctx = ctx.as_mut_ptr();
+                                            (*raw_ctx).flags |=
+                                                ffmpeg::ffi::AV_CODEC_FLAG_LOW_DELAY as i32;
+                                            (*raw_ctx).flags2 |=
+                                                ffmpeg::ffi::AV_CODEC_FLAG2_FAST as i32;
                                         }
                                     }
                                 }
                             }
-                            // All V4L2 devices failed, skip to next decoder
-                            warn!("V4L2 M2M: No working device found, falling back...");
-                            continue;
                         }
+                        // All V4L2 devices failed, skip to next decoder
+                        warn!("V4L2 M2M: No working device found, falling back...");
+                        continue;
+                    }
 
-                        match ctx.decoder().video() {
-                            Ok(dec) => {
-                                info!("Hardware decoder ({}) opened successfully - GPU decoding active!", hw_name);
-                                return Ok((dec, true));
-                            }
-                            Err(e) => {
-                                warn!("Failed to open hardware decoder {}: {:?}", hw_name, e);
-                            }
+                    match ctx.decoder().video() {
+                        Ok(dec) => {
+                            info!(
+                                "Hardware decoder ({}) opened successfully - GPU decoding active!",
+                                hw_name
+                            );
+                            return Ok((dec, true));
                         }
-                    } else {
-                        debug!("Hardware decoder not found: {}", hw_name);
+                        Err(e) => {
+                            warn!("Failed to open hardware decoder {}: {:?}", hw_name, e);
+                        }
                     }
                 }
+
+                // Fallback: Try generic decoder with VAAPI hw_device_ctx attached
+                // This works even when h264_vaapi decoder isn't available
+                info!("Trying generic decoder with VAAPI hardware acceleration...");
+                unsafe {
+                    use ffmpeg::ffi::*;
+                    use std::ptr;
+
+                    let codec = ffmpeg::codec::decoder::find(codec_id);
+                    if let Some(codec) = codec {
+                        let mut ctx = CodecContext::new_with_codec(codec);
+                        let raw_ctx = ctx.as_mut_ptr();
+
+                        // Create VAAPI hardware device context
+                        let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
+                        let ret = av_hwdevice_ctx_create(
+                            &mut hw_device_ctx,
+                            AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+                            ptr::null(), // Use default device (/dev/dri/renderD128)
+                            ptr::null_mut(),
+                            0,
+                        );
+
+                        if ret >= 0 && !hw_device_ctx.is_null() {
+                            info!("VAAPI hw_device_ctx created for generic decoder");
+
+                            (*raw_ctx).hw_device_ctx = av_buffer_ref(hw_device_ctx);
+                            av_buffer_unref(&mut hw_device_ctx);
+
+                            // Set get_format callback to select VAAPI pixel format
+                            (*raw_ctx).get_format = Some(Self::get_vaapi_format);
+
+                            // Low latency flags for streaming
+                            (*raw_ctx).flags |= AV_CODEC_FLAG_LOW_DELAY as i32;
+                            (*raw_ctx).flags2 |= AV_CODEC_FLAG2_FAST as i32;
+                            (*raw_ctx).thread_count = 1;
+
+                            match ctx.decoder().video() {
+                                Ok(dec) => {
+                                    info!(
+                                        "Generic decoder with VAAPI hwaccel opened successfully!"
+                                    );
+                                    return Ok((dec, true));
+                                }
+                                Err(e) => {
+                                    warn!("Failed to open generic decoder with VAAPI: {:?}", e);
+                                }
+                            }
+                        } else {
+                            warn!(
+                                "Failed to create VAAPI hw_device_ctx for generic decoder (error {})",
+                                ret
+                            );
+                        }
+                    }
+                }
+
                 warn!("All Linux hardware decoders failed, will use software decoder");
             }
         }
