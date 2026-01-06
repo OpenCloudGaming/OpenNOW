@@ -30,9 +30,6 @@ pub mod v4l2;
 #[cfg(target_os = "linux")]
 pub mod vulkan_video;
 
-#[cfg(target_os = "linux")]
-pub mod vaapi_decoder;
-
 pub use audio::*;
 pub use rtp::{DepacketizerCodec, RtpDepacketizer};
 pub use video::{
@@ -70,9 +67,6 @@ pub use vulkan_video::{
     get_supported_vulkan_codecs, is_vulkan_video_available, VulkanVideoCodec, VulkanVideoConfig,
     VulkanVideoDecoder, VulkanVideoFrame,
 };
-
-#[cfg(target_os = "linux")]
-pub use vaapi_decoder::{is_vaapi_native_available, VaapiCodec, VaapiDecoder, VaapiDecoderConfig};
 
 /// Pixel format of decoded video frame
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
