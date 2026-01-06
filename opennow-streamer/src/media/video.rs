@@ -583,62 +583,170 @@ impl VideoDecoder {
             info!("NativeDxva: Falling back to CUVID (native decoder integration pending)");
         }
 
-        // Initialize FFmpeg
-        ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {:?}", e))?;
+        // On Linux, use Vulkan Video decoder exclusively (no FFmpeg)
+        // This is the GFN-style cross-GPU hardware decode approach
+        #[cfg(target_os = "linux")]
+        {
+            info!(
+                "Using Vulkan Video decoder for {:?} (GFN-style native GPU decode, no FFmpeg)",
+                codec
+            );
 
-        // Suppress FFmpeg's "no frame" info messages (EAGAIN is normal for H.264)
-        unsafe {
-            ffmpeg::ffi::av_log_set_level(ffmpeg::ffi::AV_LOG_ERROR as i32);
+            // Map codec to Vulkan Video codec
+            let vulkan_codec = match codec {
+                VideoCodec::H264 => super::vulkan_video::VulkanVideoCodec::H264,
+                VideoCodec::H265 => super::vulkan_video::VulkanVideoCodec::H265,
+                VideoCodec::AV1 => {
+                    // AV1 Vulkan Video support is emerging, try it anyway
+                    warn!("AV1 Vulkan Video support is experimental");
+                    super::vulkan_video::VulkanVideoCodec::H264 // Fallback to H264 for now
+                }
+            };
+
+            let config = super::vulkan_video::VulkanVideoConfig {
+                codec: vulkan_codec,
+                width: 1920, // Will be updated on first frame
+                height: 1080,
+                is_10bit: false,
+                num_decode_surfaces: 20,
+            };
+
+            let vulkan_decoder = super::vulkan_video::VulkanVideoDecoder::new(config)
+                .map_err(|e| anyhow!("Failed to create Vulkan Video decoder: {}", e))?;
+
+            info!("Vulkan Video decoder created successfully - native GPU decoding active!");
+
+            // Create channels for the Vulkan decoder thread
+            let (cmd_tx, cmd_rx) = mpsc::channel::<DecoderCommand>();
+            let (frame_tx, frame_rx) = mpsc::channel::<Option<VideoFrame>>();
+            let (stats_tx, stats_rx) = tokio_mpsc::channel::<DecodeStats>(64);
+
+            let shared_frame_clone = shared_frame.clone();
+
+            // Spawn Vulkan decoder thread
+            thread::spawn(move || {
+                info!("Vulkan Video decoder thread started");
+                let mut decoder = vulkan_decoder;
+                let mut frames_decoded = 0u64;
+                let mut consecutive_failures = 0u32;
+                const KEYFRAME_REQUEST_THRESHOLD: u32 = 10;
+                const FRAMES_TO_SKIP: u64 = 5;
+
+                while let Ok(cmd) = cmd_rx.recv() {
+                    match cmd {
+                        DecoderCommand::Decode(data) => {
+                            let result = decoder.decode(&data);
+                            let _ = frame_tx.send(result.ok().flatten());
+                        }
+                        DecoderCommand::DecodeAsync { data, receive_time } => {
+                            let result = decoder.decode(&data);
+                            let decode_time_ms = receive_time.elapsed().as_secs_f32() * 1000.0;
+
+                            let frame_produced = match &result {
+                                Ok(Some(_)) => true,
+                                _ => false,
+                            };
+
+                            let needs_keyframe = if frame_produced {
+                                consecutive_failures = 0;
+                                false
+                            } else {
+                                consecutive_failures += 1;
+                                consecutive_failures == KEYFRAME_REQUEST_THRESHOLD
+                            };
+
+                            if let Ok(Some(frame)) = result {
+                                frames_decoded += 1;
+                                if frames_decoded > FRAMES_TO_SKIP {
+                                    shared_frame_clone.write(frame);
+                                }
+                            }
+
+                            let _ = stats_tx.try_send(DecodeStats {
+                                decode_time_ms,
+                                frame_produced,
+                                needs_keyframe,
+                            });
+                        }
+                        DecoderCommand::Stop => break,
+                    }
+                }
+                info!("Vulkan Video decoder thread stopped");
+            });
+
+            let decoder = Self {
+                cmd_tx,
+                frame_rx,
+                stats_rx: None,
+                hw_accel: true,
+                frames_decoded: 0,
+                shared_frame: Some(shared_frame),
+            };
+
+            return Ok((decoder, stats_rx));
         }
 
-        info!(
-            "Creating FFmpeg video decoder (async mode) for {:?} (backend: {:?})",
-            codec, backend
-        );
+        // FFmpeg path (Windows/macOS only)
+        #[cfg(not(target_os = "linux"))]
+        {
+            // Initialize FFmpeg
+            ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {:?}", e))?;
 
-        // Find the decoder
-        let decoder_id = match codec {
-            VideoCodec::H264 => ffmpeg::codec::Id::H264,
-            VideoCodec::H265 => ffmpeg::codec::Id::HEVC,
-            VideoCodec::AV1 => ffmpeg::codec::Id::AV1,
-        };
+            // Suppress FFmpeg's "no frame" info messages (EAGAIN is normal for H.264)
+            unsafe {
+                ffmpeg::ffi::av_log_set_level(ffmpeg::ffi::AV_LOG_ERROR as i32);
+            }
 
-        // Create channels for communication with decoder thread
-        let (cmd_tx, cmd_rx) = mpsc::channel::<DecoderCommand>();
-        let (frame_tx, frame_rx) = mpsc::channel::<Option<VideoFrame>>();
+            info!(
+                "Creating FFmpeg video decoder (async mode) for {:?} (backend: {:?})",
+                codec, backend
+            );
 
-        // Stats channel for async mode (non-blocking stats updates)
-        let (stats_tx, stats_rx) = tokio_mpsc::channel::<DecodeStats>(64);
+            // Find the decoder
+            let decoder_id = match codec {
+                VideoCodec::H264 => ffmpeg::codec::Id::H264,
+                VideoCodec::H265 => ffmpeg::codec::Id::HEVC,
+                VideoCodec::AV1 => ffmpeg::codec::Id::AV1,
+            };
 
-        // Create decoder in a separate thread with SharedFrame
-        let hw_accel = Self::spawn_decoder_thread(
-            decoder_id,
-            cmd_rx,
-            frame_tx,
-            Some(shared_frame.clone()),
-            Some(stats_tx),
-            backend,
-        )?;
+            // Create channels for communication with decoder thread
+            let (cmd_tx, cmd_rx) = mpsc::channel::<DecoderCommand>();
+            let (frame_tx, frame_rx) = mpsc::channel::<Option<VideoFrame>>();
 
-        if hw_accel {
-            info!("Using hardware-accelerated decoder (async mode)");
-        } else {
-            info!("Using software decoder (async mode)");
-        }
+            // Stats channel for async mode (non-blocking stats updates)
+            let (stats_tx, stats_rx) = tokio_mpsc::channel::<DecodeStats>(64);
 
-        let decoder = Self {
-            cmd_tx,
-            frame_rx,
-            stats_rx: None, // Stats come via the returned receiver
-            hw_accel,
-            frames_decoded: 0,
-            shared_frame: Some(shared_frame),
-        };
+            // Create decoder in a separate thread with SharedFrame
+            let hw_accel = Self::spawn_decoder_thread(
+                decoder_id,
+                cmd_rx,
+                frame_tx,
+                Some(shared_frame.clone()),
+                Some(stats_tx),
+                backend,
+            )?;
 
-        Ok((decoder, stats_rx))
+            if hw_accel {
+                info!("Using hardware-accelerated decoder (async mode)");
+            } else {
+                info!("Using software decoder (async mode)");
+            }
+
+            let decoder = Self {
+                cmd_tx,
+                frame_rx,
+                stats_rx: None, // Stats come via the returned receiver
+                hw_accel,
+                frames_decoded: 0,
+                shared_frame: Some(shared_frame),
+            };
+
+            Ok((decoder, stats_rx))
+        } // end #[cfg(not(target_os = "linux"))]
     }
 
-    /// Spawn a dedicated decoder thread
+    /// Spawn a dedicated decoder thread (FFmpeg-based, not used on Linux)
+    #[cfg(not(target_os = "linux"))]
     fn spawn_decoder_thread(
         codec_id: ffmpeg::codec::Id,
         cmd_rx: mpsc::Receiver<DecoderCommand>,
@@ -1076,161 +1184,11 @@ impl VideoDecoder {
         AVPixelFormat::AV_PIX_FMT_CUDA
     }
 
-    /// FFI Callback for VAAPI format negotiation (Linux AMD/Intel)
-    /// CRITICAL: This must set up hw_frames_ctx for proper frame buffer management
-    #[cfg(target_os = "linux")]
-    unsafe extern "C" fn get_vaapi_format(
-        ctx: *mut ffmpeg::ffi::AVCodecContext,
-        fmt: *const ffmpeg::ffi::AVPixelFormat,
-    ) -> ffmpeg::ffi::AVPixelFormat {
-        use ffmpeg::ffi::*;
-
-        // Check if VAAPI format is available
-        let mut has_vaapi = false;
-        let mut check_fmt = fmt;
-        while *check_fmt != AVPixelFormat::AV_PIX_FMT_NONE {
-            if *check_fmt == AVPixelFormat::AV_PIX_FMT_VAAPI {
-                has_vaapi = true;
-                break;
-            }
-            check_fmt = check_fmt.add(1);
-        }
-
-        if !has_vaapi {
-            info!("get_vaapi_format: VAAPI not in available formats, falling back to NV12");
-            return AVPixelFormat::AV_PIX_FMT_NV12;
-        }
-
-        // We need hw_device_ctx to create hw_frames_ctx
-        if (*ctx).hw_device_ctx.is_null() {
-            warn!("get_vaapi_format: hw_device_ctx is null, cannot use VAAPI");
-            return AVPixelFormat::AV_PIX_FMT_NV12;
-        }
-
-        // Check if hw_frames_ctx already exists
-        if !(*ctx).hw_frames_ctx.is_null() {
-            info!("get_vaapi_format: hw_frames_ctx already set, selecting VAAPI");
-            return AVPixelFormat::AV_PIX_FMT_VAAPI;
-        }
-
-        // Allocate hw_frames_ctx from hw_device_ctx
-        let hw_frames_ref = av_hwframe_ctx_alloc((*ctx).hw_device_ctx);
-        if hw_frames_ref.is_null() {
-            warn!("get_vaapi_format: Failed to allocate hw_frames_ctx");
-            return AVPixelFormat::AV_PIX_FMT_NV12;
-        }
-
-        // Configure the frames context
-        let frames_ctx = (*hw_frames_ref).data as *mut AVHWFramesContext;
-        (*frames_ctx).format = AVPixelFormat::AV_PIX_FMT_VAAPI;
-        (*frames_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_NV12; // VAAPI typically uses NV12
-        (*frames_ctx).width = (*ctx).coded_width;
-        (*frames_ctx).height = (*ctx).coded_height;
-        (*frames_ctx).initial_pool_size = 20; // Pool for frame reordering
-
-        info!(
-            "get_vaapi_format: Configuring VAAPI hw_frames_ctx: {}x{}, sw_format=NV12, pool_size=20",
-            (*ctx).coded_width,
-            (*ctx).coded_height
-        );
-
-        // Initialize the frames context
-        let ret = av_hwframe_ctx_init(hw_frames_ref);
-        if ret < 0 {
-            warn!(
-                "get_vaapi_format: Failed to initialize hw_frames_ctx (error {})",
-                ret
-            );
-            av_buffer_unref(&mut (hw_frames_ref as *mut _));
-            return AVPixelFormat::AV_PIX_FMT_NV12;
-        }
-
-        // Attach to codec context
-        (*ctx).hw_frames_ctx = av_buffer_ref(hw_frames_ref);
-        av_buffer_unref(&mut (hw_frames_ref as *mut _));
-
-        info!("get_vaapi_format: VAAPI hw_frames_ctx initialized successfully!");
-        AVPixelFormat::AV_PIX_FMT_VAAPI
-    }
-
-    /// FFI Callback for Vulkan Video format negotiation (cross-GPU)
-    /// CRITICAL: This must set up hw_frames_ctx for proper frame buffer management
-    #[cfg(target_os = "linux")]
-    unsafe extern "C" fn get_vulkan_format(
-        ctx: *mut ffmpeg::ffi::AVCodecContext,
-        fmt: *const ffmpeg::ffi::AVPixelFormat,
-    ) -> ffmpeg::ffi::AVPixelFormat {
-        use ffmpeg::ffi::*;
-
-        // Check if Vulkan format is available
-        let mut has_vulkan = false;
-        let mut check_fmt = fmt;
-        while *check_fmt != AVPixelFormat::AV_PIX_FMT_NONE {
-            if *check_fmt == AVPixelFormat::AV_PIX_FMT_VULKAN {
-                has_vulkan = true;
-                break;
-            }
-            check_fmt = check_fmt.add(1);
-        }
-
-        if !has_vulkan {
-            info!("get_vulkan_format: Vulkan not in available formats, falling back to NV12");
-            return AVPixelFormat::AV_PIX_FMT_NV12;
-        }
-
-        // We need hw_device_ctx to create hw_frames_ctx
-        if (*ctx).hw_device_ctx.is_null() {
-            warn!("get_vulkan_format: hw_device_ctx is null, cannot use Vulkan");
-            return AVPixelFormat::AV_PIX_FMT_NV12;
-        }
-
-        // Check if hw_frames_ctx already exists
-        if !(*ctx).hw_frames_ctx.is_null() {
-            info!("get_vulkan_format: hw_frames_ctx already set, selecting Vulkan");
-            return AVPixelFormat::AV_PIX_FMT_VULKAN;
-        }
-
-        // Allocate hw_frames_ctx from hw_device_ctx
-        let hw_frames_ref = av_hwframe_ctx_alloc((*ctx).hw_device_ctx);
-        if hw_frames_ref.is_null() {
-            warn!("get_vulkan_format: Failed to allocate hw_frames_ctx");
-            return AVPixelFormat::AV_PIX_FMT_NV12;
-        }
-
-        // Configure the frames context
-        let frames_ctx = (*hw_frames_ref).data as *mut AVHWFramesContext;
-        (*frames_ctx).format = AVPixelFormat::AV_PIX_FMT_VULKAN;
-        (*frames_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_NV12; // Vulkan typically uses NV12
-        (*frames_ctx).width = (*ctx).coded_width;
-        (*frames_ctx).height = (*ctx).coded_height;
-        (*frames_ctx).initial_pool_size = 20; // Pool for frame reordering
-
-        info!(
-            "get_vulkan_format: Configuring Vulkan hw_frames_ctx: {}x{}, sw_format=NV12, pool_size=20",
-            (*ctx).coded_width,
-            (*ctx).coded_height
-        );
-
-        // Initialize the frames context
-        let ret = av_hwframe_ctx_init(hw_frames_ref);
-        if ret < 0 {
-            warn!(
-                "get_vulkan_format: Failed to initialize hw_frames_ctx (error {})",
-                ret
-            );
-            av_buffer_unref(&mut (hw_frames_ref as *mut _));
-            return AVPixelFormat::AV_PIX_FMT_NV12;
-        }
-
-        // Attach to codec context
-        (*ctx).hw_frames_ctx = av_buffer_ref(hw_frames_ref);
-        av_buffer_unref(&mut (hw_frames_ref as *mut _));
-
-        info!("get_vulkan_format: Vulkan hw_frames_ctx initialized successfully!");
-        AVPixelFormat::AV_PIX_FMT_VULKAN
-    }
+    // Note: VAAPI/Vulkan FFmpeg format callbacks removed - Linux now uses native Vulkan Video decoder
 
     /// Create decoder, trying hardware acceleration based on preference
+    /// (FFmpeg-based, not used on Linux)
+    #[cfg(not(target_os = "linux"))]
     fn create_decoder(
         codec_id: ffmpeg::codec::Id,
         backend: VideoDecoderBackend,
@@ -2103,7 +2061,8 @@ impl VideoDecoder {
         Ok((decoder, false))
     }
 
-    /// Check if a pixel format is a hardware format
+    /// Check if a pixel format is a hardware format (FFmpeg, not used on Linux)
+    #[cfg(not(target_os = "linux"))]
     fn is_hw_pixel_format(format: Pixel) -> bool {
         // Check common hardware formats
         // Note: Some formats may not be available depending on FFmpeg build configuration
@@ -2126,7 +2085,8 @@ impl VideoDecoder {
         format_name.contains("VAAPI") || format_name.contains("VULKAN")
     }
 
-    /// Transfer hardware frame to system memory if needed
+    /// Transfer hardware frame to system memory if needed (FFmpeg, not used on Linux)
+    #[cfg(not(target_os = "linux"))]
     fn transfer_hw_frame_if_needed(frame: &FfmpegFrame) -> Option<FfmpegFrame> {
         let format = frame.format();
 
@@ -2167,12 +2127,14 @@ impl VideoDecoder {
     }
 
     /// Calculate 256-byte aligned stride for GPU compatibility (wgpu/DX12 requirement)
+    #[cfg(not(target_os = "linux"))]
     fn get_aligned_stride(width: u32) -> u32 {
         (width + 255) & !255
     }
 
-    /// Decode a single frame (called in decoder thread)
+    /// Decode a single frame (called in decoder thread) (FFmpeg, not used on Linux)
     /// `in_recovery` suppresses repeated warnings when waiting for keyframe
+    #[cfg(not(target_os = "linux"))]
     fn decode_frame(
         decoder: &mut decoder::Video,
         scaler: &mut Option<ScalerContext>,
