@@ -3255,6 +3255,7 @@ dependencies = [
  "image",
  "lazy_static",
  "libc",
+ "libloading",
  "log",
  "metal",
  "native-tls",

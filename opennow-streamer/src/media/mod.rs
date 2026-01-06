@@ -21,6 +21,12 @@ pub mod hevc_parser;
 #[cfg(target_os = "windows")]
 pub mod native_video;
 
+#[cfg(target_os = "linux")]
+pub mod vaapi;
+
+#[cfg(target_os = "linux")]
+pub mod v4l2;
+
 pub use audio::*;
 pub use rtp::{DepacketizerCodec, RtpDepacketizer};
 pub use video::{
@@ -42,6 +48,16 @@ pub use dxva_decoder::{DxvaCodec, DxvaDecoder, DxvaDecoderConfig};
 
 #[cfg(target_os = "windows")]
 pub use native_video::{NativeDecodeStats, NativeVideoDecoder};
+
+#[cfg(target_os = "linux")]
+pub use vaapi::{LockedPlanes as VaapiLockedPlanes, VAAPISurfaceWrapper, VaapiZeroCopyManager};
+
+#[cfg(target_os = "linux")]
+pub use v4l2::{
+    get_pi_model, get_recommended_codec, is_raspberry_pi, is_v4l2_available,
+    LockedPlanes as V4L2LockedPlanes, V4L2BufferWrapper, V4L2Codec, V4L2PixelFormat,
+    V4L2ZeroCopyManager,
+};
 
 /// Pixel format of decoded video frame
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -89,6 +105,10 @@ pub struct VideoFrame {
     /// When present, y_plane/u_plane are empty and rendering imports this directly
     #[cfg(target_os = "windows")]
     pub gpu_frame: Option<std::sync::Arc<D3D11TextureWrapper>>,
+    /// Zero-copy GPU surface (Linux VAAPI only)
+    /// When present, y_plane/u_plane are empty and rendering imports this directly
+    #[cfg(target_os = "linux")]
+    pub gpu_frame: Option<std::sync::Arc<VAAPISurfaceWrapper>>,
 }
 
 /// Video color range
@@ -148,6 +168,8 @@ impl VideoFrame {
             #[cfg(target_os = "macos")]
             gpu_frame: None,
             #[cfg(target_os = "windows")]
+            gpu_frame: None,
+            #[cfg(target_os = "linux")]
             gpu_frame: None,
         }
     }
