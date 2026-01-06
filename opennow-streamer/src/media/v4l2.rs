@@ -20,7 +20,6 @@
 
 use anyhow::{anyhow, Result};
 use log::{debug, info, warn};
-use parking_lot::Mutex;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 
@@ -217,7 +216,7 @@ pub enum V4L2Codec {
 }
 
 /// Query V4L2 device capabilities (simplified)
-fn query_v4l2_caps(fd: RawFd, codec: V4L2Codec) -> bool {
+fn query_v4l2_caps(fd: RawFd, _codec: V4L2Codec) -> bool {
     // V4L2 ioctl numbers
     const VIDIOC_QUERYCAP: libc::c_ulong = 0x80685600;
 

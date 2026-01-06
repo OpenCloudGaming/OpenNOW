@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use tokio::sync::mpsc;
 
-use super::{get_timestamp_us, session_elapsed_us, MOUSE_COALESCE_INTERVAL_US};
+use crate::input::{get_timestamp_us, session_elapsed_us, MOUSE_COALESCE_INTERVAL_US};
 use crate::webrtc::InputEvent;
 
 // evdev bindings
