@@ -236,22 +236,21 @@ pub fn render_settings_modal(
                         });
                         ui.end_row();
 
-                        // Video Decoder - Hidden for now, always use Native DXVA
-                        // TODO: Re-enable when other backends are ready
-                        // ui.label("Video Decoder")
-                        //      .on_hover_text("The hardware/software backend used to decode the video stream.\nUsually 'D3D11' or 'Vulkan' on Windows.");
-                        // ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        //     egui::ComboBox::from_id_salt("decoder_combo")
-                        //         .selected_text(settings.decoder_backend.as_str())
-                        //         .show_ui(ui, |ui| {
-                        //             for backend in crate::media::get_supported_decoder_backends() {
-                        //                 if ui.selectable_label(settings.decoder_backend == backend, backend.as_str()).clicked() {
-                        //                     actions.push(UiAction::UpdateSetting(SettingChange::DecoderBackend(backend)));
-                        //                 }
-                        //             }
-                        //         });
-                        // });
-                        // ui.end_row();
+                        // Video Decoder
+                        ui.label("Video Decoder")
+                             .on_hover_text("The hardware/software backend used to decode the video stream.\n\n• Native DXVA - Windows GPU decoding (NVIDIA-style)\n• Vulkan Video - Cross-GPU Linux decoding (GFN-style)\n• VAAPI - AMD/Intel Linux decoding\n• Software - CPU fallback");
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            egui::ComboBox::from_id_salt("decoder_combo")
+                                .selected_text(settings.decoder_backend.as_str())
+                                .show_ui(ui, |ui| {
+                                    for backend in crate::media::get_supported_decoder_backends() {
+                                        if ui.selectable_label(settings.decoder_backend == backend, backend.as_str()).clicked() {
+                                            actions.push(UiAction::UpdateSetting(SettingChange::DecoderBackend(backend)));
+                                        }
+                                    }
+                                });
+                        });
+                        ui.end_row();
 
                         // Color Quality
                         ui.label("Color Quality")
