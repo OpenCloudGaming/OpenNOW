@@ -5,9 +5,11 @@
 use log::{error, info, warn};
 use std::path::PathBuf;
 
-use crate::auth::AuthTokens;
-use super::{GameInfo, GameSection, SubscriptionInfo, SessionInfo, SessionState, ActiveSessionInfo};
+use super::{
+    ActiveSessionInfo, GameInfo, GameSection, SessionInfo, SessionState, SubscriptionInfo,
+};
 use crate::app::session::MediaConnectionInfo;
+use crate::auth::AuthTokens;
 
 /// Get the application data directory
 /// Creates directory if it doesn't exist
@@ -15,47 +17,55 @@ pub fn get_app_data_dir() -> Option<PathBuf> {
     use std::sync::OnceLock;
     static APP_DATA_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-    APP_DATA_DIR.get_or_init(|| {
-        let data_dir = dirs::data_dir()?;
-        let app_dir = data_dir.join("opennow");
+    APP_DATA_DIR
+        .get_or_init(|| {
+            let data_dir = dirs::data_dir()?;
+            let app_dir = data_dir.join("opennow");
 
-        // Ensure directory exists
-        if let Err(e) = std::fs::create_dir_all(&app_dir) {
-            error!("Failed to create app data directory: {}", e);
-        }
-
-        // Migration: copy auth.json from legacy locations if it doesn't exist in new location
-        let new_auth = app_dir.join("auth.json");
-        if !new_auth.exists() {
-            // Try legacy opennow-streamer location (config_dir)
-            if let Some(config_dir) = dirs::config_dir() {
-                let legacy_path = config_dir.join("opennow-streamer").join("auth.json");
-                if legacy_path.exists() {
-                    if let Err(e) = std::fs::copy(&legacy_path, &new_auth) {
-                        warn!("Failed to migrate auth.json from legacy location: {}", e);
-                    } else {
-                        info!("Migrated auth.json from {:?} to {:?}", legacy_path, new_auth);
-                    }
-                }
+            // Ensure directory exists
+            if let Err(e) = std::fs::create_dir_all(&app_dir) {
+                error!("Failed to create app data directory: {}", e);
             }
 
-            // Try gfn-client location (config_dir)
+            // Migration: copy auth.json from legacy locations if it doesn't exist in new location
+            let new_auth = app_dir.join("auth.json");
             if !new_auth.exists() {
+                // Try legacy opennow-streamer location (config_dir)
                 if let Some(config_dir) = dirs::config_dir() {
-                    let legacy_path = config_dir.join("gfn-client").join("auth.json");
+                    let legacy_path = config_dir.join("opennow-streamer").join("auth.json");
                     if legacy_path.exists() {
                         if let Err(e) = std::fs::copy(&legacy_path, &new_auth) {
-                            warn!("Failed to migrate auth.json from gfn-client: {}", e);
+                            warn!("Failed to migrate auth.json from legacy location: {}", e);
                         } else {
-                            info!("Migrated auth.json from {:?} to {:?}", legacy_path, new_auth);
+                            info!(
+                                "Migrated auth.json from {:?} to {:?}",
+                                legacy_path, new_auth
+                            );
+                        }
+                    }
+                }
+
+                // Try gfn-client location (config_dir)
+                if !new_auth.exists() {
+                    if let Some(config_dir) = dirs::config_dir() {
+                        let legacy_path = config_dir.join("gfn-client").join("auth.json");
+                        if legacy_path.exists() {
+                            if let Err(e) = std::fs::copy(&legacy_path, &new_auth) {
+                                warn!("Failed to migrate auth.json from gfn-client: {}", e);
+                            } else {
+                                info!(
+                                    "Migrated auth.json from {:?} to {:?}",
+                                    legacy_path, new_auth
+                                );
+                            }
                         }
                     }
                 }
             }
-        }
 
-        Some(app_dir)
-    }).clone()
+            Some(app_dir)
+        })
+        .clone()
 }
 
 // ============================================================
@@ -101,18 +111,16 @@ pub fn load_tokens() -> Option<AuthTokens> {
 /// Used when loading tokens at startup
 fn try_refresh_tokens_sync(tokens: &AuthTokens) -> Option<AuthTokens> {
     let refresh_token = tokens.refresh_token.as_ref()?;
-    
+
     // Create a new tokio runtime for this blocking operation
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .ok()?;
-    
+
     let refresh_token_clone = refresh_token.clone();
-    let result = rt.block_on(async {
-        crate::auth::refresh_token(&refresh_token_clone).await
-    });
-    
+    let result = rt.block_on(async { crate::auth::refresh_token(&refresh_token_clone).await });
+
     match result {
         Ok(new_tokens) => {
             // Save the new tokens
@@ -167,7 +175,10 @@ pub fn save_login_provider(provider: &LoginProvider) {
             if let Err(e) = std::fs::write(&path, &json) {
                 error!("Failed to save login provider: {}", e);
             } else {
-                info!("Saved login provider: {}", provider.login_provider_display_name);
+                info!(
+                    "Saved login provider: {}",
+                    provider.login_provider_display_name
+                );
             }
         }
     }
@@ -177,7 +188,10 @@ pub fn load_login_provider() -> Option<LoginProvider> {
     let path = provider_cache_path()?;
     let content = std::fs::read_to_string(&path).ok()?;
     let provider: LoginProvider = serde_json::from_str(&content).ok()?;
-    info!("Loaded cached login provider: {}", provider.login_provider_display_name);
+    info!(
+        "Loaded cached login provider: {}",
+        provider.login_provider_display_name
+    );
     Some(provider)
 }
 
@@ -265,11 +279,14 @@ pub fn save_sections_cache(sections: &[GameSection]) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let cached: Vec<CachedSection> = sections.iter().map(|s| CachedSection {
-            id: s.id.clone(),
-            title: s.title.clone(),
-            games: s.games.clone(),
-        }).collect();
+        let cached: Vec<CachedSection> = sections
+            .iter()
+            .map(|s| CachedSection {
+                id: s.id.clone(),
+                title: s.title.clone(),
+                games: s.games.clone(),
+            })
+            .collect();
         if let Ok(json) = serde_json::to_string(&cached) {
             let _ = std::fs::write(path, json);
         }
@@ -280,11 +297,16 @@ pub fn load_sections_cache() -> Option<Vec<GameSection>> {
     let path = sections_cache_path()?;
     let content = std::fs::read_to_string(path).ok()?;
     let cached: Vec<CachedSection> = serde_json::from_str(&content).ok()?;
-    Some(cached.into_iter().map(|c| GameSection {
-        id: c.id,
-        title: c.title,
-        games: c.games,
-    }).collect())
+    Some(
+        cached
+            .into_iter()
+            .map(|c| GameSection {
+                id: c.id,
+                title: c.title,
+                games: c.games,
+            })
+            .collect(),
+    )
 }
 
 // ============================================================
@@ -325,9 +347,16 @@ pub fn load_subscription_cache() -> Option<SubscriptionInfo> {
         remaining_hours: cache.get("remaining_hours")?.as_f64()? as f32,
         total_hours: cache.get("total_hours")?.as_f64()? as f32,
         has_persistent_storage: cache.get("has_persistent_storage")?.as_bool()?,
-        storage_size_gb: cache.get("storage_size_gb").and_then(|v| v.as_u64()).map(|v| v as u32),
-        is_unlimited: cache.get("is_unlimited").and_then(|v| v.as_bool()).unwrap_or(false),
-        entitled_resolutions: cache.get("entitled_resolutions")
+        storage_size_gb: cache
+            .get("storage_size_gb")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+        is_unlimited: cache
+            .get("is_unlimited")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        entitled_resolutions: cache
+            .get("entitled_resolutions")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default(),
     })
@@ -386,10 +415,14 @@ pub fn load_session_cache() -> Option<SessionInfo> {
         SessionState::Streaming
     } else if state_str.contains("InQueue") {
         // Parse queue position and eta from state string
-        let position = cache.get("queue_position")
+        let position = cache
+            .get("queue_position")
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
-        SessionState::InQueue { position, eta_secs: 0 }
+        SessionState::InQueue {
+            position,
+            eta_secs: 0,
+        }
     } else if state_str.contains("Error") {
         SessionState::Error(state_str.to_string())
     } else if state_str.contains("Launching") {
@@ -399,7 +432,8 @@ pub fn load_session_cache() -> Option<SessionInfo> {
     };
 
     // Parse media_connection_info if present
-    let media_connection_info = cache.get("media_connection_info")
+    let media_connection_info = cache
+        .get("media_connection_info")
         .and_then(|v| v.as_object())
         .and_then(|obj| {
             let ip = obj.get("ip")?.as_str()?.to_string();
@@ -412,8 +446,14 @@ pub fn load_session_cache() -> Option<SessionInfo> {
         server_ip: cache.get("server_ip")?.as_str()?.to_string(),
         zone: cache.get("zone")?.as_str()?.to_string(),
         state,
-        gpu_type: cache.get("gpu_type").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        signaling_url: cache.get("signaling_url").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        gpu_type: cache
+            .get("gpu_type")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        signaling_url: cache
+            .get("signaling_url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         ice_servers: Vec::new(),
         media_connection_info,
     })
@@ -557,6 +597,47 @@ pub fn load_ping_results() -> Option<Vec<serde_json::Value>> {
 }
 
 // ============================================================
+// Queue Server Ping Results Cache
+// ============================================================
+
+pub fn save_queue_ping_results(results: &[(String, Option<u32>)]) {
+    if let Some(path) = get_app_data_dir().map(|p| p.join("queue_ping_results.json")) {
+        let cache: Vec<serde_json::Value> = results
+            .iter()
+            .map(|(id, ping)| {
+                serde_json::json!({
+                    "server_id": id,
+                    "ping_ms": ping,
+                })
+            })
+            .collect();
+
+        if let Ok(json) = serde_json::to_string(&cache) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+pub fn load_queue_ping_results() -> Option<Vec<(String, Option<u32>)>> {
+    let path = get_app_data_dir()?.join("queue_ping_results.json");
+    let content = std::fs::read_to_string(&path).ok()?;
+    let results: Vec<serde_json::Value> = serde_json::from_str(&content).ok()?;
+    // Clear the ping file after loading
+    let _ = std::fs::remove_file(&path);
+
+    let parsed: Vec<(String, Option<u32>)> = results
+        .iter()
+        .filter_map(|v| {
+            let server_id = v.get("server_id")?.as_str()?.to_string();
+            let ping_ms = v.get("ping_ms").and_then(|p| p.as_u64()).map(|p| p as u32);
+            Some((server_id, ping_ms))
+        })
+        .collect();
+
+    Some(parsed)
+}
+
+// ============================================================
 // Popup Game Details Cache
 // ============================================================
 
@@ -575,10 +656,10 @@ pub fn load_popup_game_details() -> Option<GameInfo> {
     let path = get_app_data_dir()?.join("popup_game.json");
     let content = std::fs::read_to_string(&path).ok()?;
     let game: GameInfo = serde_json::from_str(&content).ok()?;
-    
+
     // Clear the file after loading to prevent stale data
     let _ = std::fs::remove_file(&path);
-    
+
     Some(game)
 }
 
@@ -642,8 +723,14 @@ pub fn load_queue_cache() -> Option<Vec<QueueServerInfo>> {
                     ping_ms: v.get("ping_ms").and_then(|v| v.as_u64()).map(|v| v as u32),
                     queue_position: v.get("queue_position")?.as_i64()? as i32,
                     eta_seconds: v.get("eta_seconds").and_then(|v| v.as_i64()),
-                    is_4080_server: v.get("is_4080_server").and_then(|v| v.as_bool()).unwrap_or(false),
-                    is_5080_server: v.get("is_5080_server").and_then(|v| v.as_bool()).unwrap_or(false),
+                    is_4080_server: v
+                        .get("is_4080_server")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    is_5080_server: v
+                        .get("is_5080_server")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                     last_updated: v.get("last_updated").and_then(|v| v.as_i64()).unwrap_or(0),
                 })
             })
