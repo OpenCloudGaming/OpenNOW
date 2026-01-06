@@ -307,6 +307,9 @@ pub enum VideoDecoderBackend {
     NativeDxva,
     /// VideoToolbox (macOS)
     VideoToolbox,
+    /// Vulkan Video (Linux) - cross-GPU hardware decode via Vulkan extensions
+    /// Based on GeForce NOW's VkVideoDecoder implementation
+    VulkanVideo,
     /// Software decoding (CPU)
     Software,
 }
@@ -321,6 +324,7 @@ impl VideoDecoderBackend {
             VideoDecoderBackend::Dxva => "DirectX (DXVA/FFmpeg)",
             VideoDecoderBackend::NativeDxva => "Native DXVA (NVIDIA-style)",
             VideoDecoderBackend::VideoToolbox => "VideoToolbox",
+            VideoDecoderBackend::VulkanVideo => "Vulkan Video (GFN-style)",
             VideoDecoderBackend::Software => "Software (CPU)",
         }
     }
@@ -334,6 +338,7 @@ impl VideoDecoderBackend {
             VideoDecoderBackend::Dxva,
             VideoDecoderBackend::NativeDxva,
             VideoDecoderBackend::VideoToolbox,
+            VideoDecoderBackend::VulkanVideo,
             VideoDecoderBackend::Software,
         ]
     }

@@ -455,6 +455,13 @@ pub fn get_supported_decoder_backends() -> Vec<VideoDecoderBackend> {
                 let gpu = detect_gpu_vendor();
                 let qsv = check_qsv_available();
 
+                // Vulkan Video - cross-GPU hardware decode (GFN-style)
+                // This is the preferred decoder on modern Linux systems
+                // Works on NVIDIA, AMD (via RADV), and Intel (via ANV)
+                if super::vulkan_video::is_vulkan_video_available() {
+                    backends.push(VideoDecoderBackend::VulkanVideo);
+                }
+
                 if gpu == GpuVendor::Nvidia {
                     backends.push(VideoDecoderBackend::Cuvid);
                 }
