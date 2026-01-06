@@ -311,6 +311,12 @@ impl Renderer {
             info!("V3D hardware: Disabling all optional features to save memory");
         }
 
+        // Check if we're in legacy macOS mode (for 2015 and older Intel Macs)
+        #[cfg(all(target_os = "macos", feature = "legacy-macos"))]
+        let is_legacy_macos = true;
+        #[cfg(not(all(target_os = "macos", feature = "legacy-macos")))]
+        let is_legacy_macos = false;
+
         // Use appropriate limits based on GPU type
         let limits = if is_v3d_hardware {
             // V3D hardware: Use conservative limits (Pi 4/5 with 512MB+ GPU memory)
@@ -329,6 +335,24 @@ impl Renderer {
             lim.max_samplers_per_shader_stage = 4;
             lim.max_sampled_textures_per_shader_stage = 8;
             info!("  Max texture: 2048, Max buffer: 32MB, Bind groups: 4");
+            lim
+        } else if is_legacy_macos {
+            // Legacy macOS (2015 and older Intel Macs with Metal 1.0/1.1)
+            // Use conservative limits that work on Intel Iris Graphics
+            info!("Legacy macOS mode: Using conservative limits for Intel Iris Graphics");
+            let mut lim = wgpu::Limits::downlevel_defaults();
+            // Intel Iris Graphics (2015) supports up to 4096x4096 textures
+            lim.max_texture_dimension_1d = 4096;
+            lim.max_texture_dimension_2d = 4096;
+            lim.max_texture_dimension_3d = 256;
+            // Conservative buffer sizes for older GPUs
+            lim.max_buffer_size = 256 * 1024 * 1024; // 256MB
+            lim.max_uniform_buffer_binding_size = 64 * 1024;
+            lim.max_storage_buffer_binding_size = 128 * 1024 * 1024;
+            // Reduce bind groups to be safe on older Metal
+            lim.max_bind_groups = 4;
+            lim.max_bindings_per_bind_group = 16;
+            info!("  Max texture: 4096, Max buffer: 256MB, Bind groups: 4");
             lim
         } else if is_arm64_linux {
             // llvmpipe or other ARM64: Use downlevel defaults
@@ -1856,9 +1880,135 @@ impl Renderer {
             }
         }
 
-        // No CPU fallback - GPU blit is required for smooth playback
+        // CPU fallback: Lock CVPixelBuffer and upload plane data to textures
+        // This is slower than zero-copy but works on legacy Macs (2015 and earlier)
+        // that don't support the Metal features required for zero-copy rendering
+        if let Some(locked) = gpu_frame.lock_and_get_planes() {
+            log::debug!("Using CPU fallback for video frame (legacy mode or zero-copy failed)");
+
+            // Ensure textures exist
+            let size_changed = self.video_size != (frame.width, frame.height);
+            if size_changed || self.y_texture.is_none() {
+                self.current_format = frame.format;
+                self.video_size = (frame.width, frame.height);
+
+                let y_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Y Texture (CPU Fallback)"),
+                    size: wgpu::Extent3d {
+                        width: frame.width,
+                        height: frame.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::R8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+
+                let uv_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("UV Texture (CPU Fallback)"),
+                    size: wgpu::Extent3d {
+                        width: uv_width,
+                        height: uv_height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rg8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+
+                let y_view = y_texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let uv_view = uv_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("NV12 Bind Group (CPU Fallback)"),
+                    layout: &self.nv12_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&y_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&uv_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(&self.video_sampler),
+                        },
+                    ],
+                });
+
+                self.y_texture = Some(y_texture);
+                self.uv_texture = Some(uv_texture);
+                self.nv12_bind_group = Some(bind_group);
+
+                log::info!(
+                    "CPU fallback textures created: {}x{} (UV: {}x{})",
+                    frame.width,
+                    frame.height,
+                    uv_width,
+                    uv_height
+                );
+            }
+
+            // Upload Y plane data
+            if let Some(ref y_texture) = self.y_texture {
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: y_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    locked.y_data,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(locked.y_stride),
+                        rows_per_image: Some(locked.y_height),
+                    },
+                    wgpu::Extent3d {
+                        width: frame.width,
+                        height: frame.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+
+            // Upload UV plane data
+            if let Some(ref uv_texture) = self.uv_texture {
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: uv_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    locked.uv_data,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(locked.uv_stride),
+                        rows_per_image: Some(locked.uv_height),
+                    },
+                    wgpu::Extent3d {
+                        width: uv_width,
+                        height: uv_height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+
+            return; // CPU fallback succeeded
+        }
+
+        // If we get here, both zero-copy and CPU fallback failed
         log::warn!(
-            "GPU blit failed - frame dropped (zero_copy_enabled={}, manager={})",
+            "Both GPU blit and CPU fallback failed - frame dropped (zero_copy_enabled={}, manager={})",
             self.zero_copy_enabled,
             self.zero_copy_manager.is_some()
         );
