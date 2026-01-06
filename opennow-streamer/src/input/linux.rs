@@ -10,11 +10,10 @@
 //! - Lock-free event accumulation using atomics
 //! - Local cursor tracking for instant visual feedback
 //! - Direct evdev access for lowest latency (requires input group membership)
-//! - X11 XInput2 fallback for unprivileged access
+//! - X11 XInput2 fallback for unprivileged access (requires x11-input feature)
 
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
-use std::ffi::CString;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use tokio::sync::mpsc;
@@ -25,8 +24,12 @@ use crate::webrtc::InputEvent;
 // evdev bindings
 use evdev::{Device, InputEventKind, RelativeAxisType};
 
-// X11 bindings for fallback
+// X11 bindings for fallback (optional feature)
+#[cfg(feature = "x11-input")]
+use std::ffi::CString;
+#[cfg(feature = "x11-input")]
 use x11::xinput2 as xi2;
+#[cfg(feature = "x11-input")]
 use x11::xlib;
 
 // Static state
@@ -55,6 +58,7 @@ static EVENT_SENDER: Mutex<Option<mpsc::Sender<InputEvent>>> = Mutex::new(None);
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum InputBackend {
     Evdev,
+    #[cfg(feature = "x11-input")]
     X11,
     None,
 }
@@ -278,6 +282,7 @@ fn start_evdev_input(device_path: &str) -> Result<(), String> {
 }
 
 /// X11 XInput2 input thread - fallback for when evdev isn't available
+#[cfg(feature = "x11-input")]
 fn start_x11_input() -> Result<(), String> {
     unsafe {
         // Open X display
@@ -469,40 +474,72 @@ pub fn start_raw_input() -> Result<(), String> {
             }
         }
     } else {
-        warn!("No mouse device found for evdev - trying X11 fallback");
+        warn!("No mouse device found for evdev");
+        #[cfg(feature = "x11-input")]
+        warn!("Trying X11 fallback...");
     }
 
-    // Fall back to X11 XInput2 (not available on headless Pi)
-    match start_x11_input() {
-        Ok(()) => {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            if RAW_INPUT_REGISTERED.load(Ordering::SeqCst) {
-                info!("Raw input started via X11 XInput2");
-                return Ok(());
+    // Fall back to X11 XInput2 (requires x11-input feature)
+    #[cfg(feature = "x11-input")]
+    {
+        match start_x11_input() {
+            Ok(()) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                if RAW_INPUT_REGISTERED.load(Ordering::SeqCst) {
+                    info!("Raw input started via X11 XInput2");
+                    return Ok(());
+                }
+                return Err("X11 input thread failed to start".to_string());
             }
-            Err("X11 input thread failed to start".to_string())
-        }
-        Err(e) => {
-            // Check if running on Raspberry Pi for better error message
-            let is_pi = Path::new("/sys/firmware/devicetree/base/model").exists()
-                && std::fs::read_to_string("/sys/firmware/devicetree/base/model")
-                    .map(|s| s.to_lowercase().contains("raspberry pi"))
-                    .unwrap_or(false);
+            Err(e) => {
+                // Check if running on Raspberry Pi for better error message
+                let is_pi = Path::new("/sys/firmware/devicetree/base/model").exists()
+                    && std::fs::read_to_string("/sys/firmware/devicetree/base/model")
+                        .map(|s| s.to_lowercase().contains("raspberry pi"))
+                        .unwrap_or(false);
 
-            if is_pi {
-                error!(
-                    "Input setup failed on Raspberry Pi. Please add your user to the 'input' group:\n\
-                     sudo usermod -aG input $USER\n\
-                     Then log out and back in."
-                );
-            } else {
-                error!(
-                    "All input backends failed. evdev requires 'input' group membership. X11 error: {}",
-                    e
-                );
+                if is_pi {
+                    error!(
+                        "Input setup failed on Raspberry Pi. Please add your user to the 'input' group:\n\
+                         sudo usermod -aG input $USER\n\
+                         Then log out and back in."
+                    );
+                } else {
+                    error!(
+                        "All input backends failed. evdev requires 'input' group membership. X11 error: {}",
+                        e
+                    );
+                }
+                return Err(format!("Failed to start raw input: {}", e));
             }
-            Err(format!("Failed to start raw input: {}", e))
         }
+    }
+
+    // No X11 fallback available
+    #[cfg(not(feature = "x11-input"))]
+    {
+        let is_pi = Path::new("/sys/firmware/devicetree/base/model").exists()
+            && std::fs::read_to_string("/sys/firmware/devicetree/base/model")
+                .map(|s| s.to_lowercase().contains("raspberry pi"))
+                .unwrap_or(false);
+
+        if is_pi {
+            error!(
+                "Input setup failed on Raspberry Pi. Please add your user to the 'input' group:\n\
+                 sudo usermod -aG input $USER\n\
+                 Then log out and back in."
+            );
+        } else {
+            error!(
+                "evdev input failed. Please add your user to the 'input' group:\n\
+                 sudo usermod -aG input $USER\n\
+                 Then log out and back in.\n\
+                 Note: X11 fallback not available (build without x11-input feature)"
+            );
+        }
+        return Err(
+            "Failed to start raw input: evdev not available and X11 fallback disabled".to_string(),
+        );
     }
 }
 
@@ -646,6 +683,7 @@ pub fn reset_coalescing() {
 pub fn get_active_backend_name() -> &'static str {
     match *ACTIVE_BACKEND.lock() {
         InputBackend::Evdev => "evdev",
+        #[cfg(feature = "x11-input")]
         InputBackend::X11 => "X11 XInput2",
         InputBackend::None => "none",
     }
