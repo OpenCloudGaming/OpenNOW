@@ -1,10 +1,11 @@
 //! Video Decoder
 //!
-//! Hardware-accelerated H.264/H.265/AV1 decoding.
+//! Hardware-accelerated H.264/H.265 decoding.
 //!
 //! Platform-specific backends:
-//! - Windows/macOS: FFmpeg with D3D11VA/VideoToolbox
-//! - Linux: Native Vulkan Video or GStreamer (no FFmpeg)
+//! - Windows: Native DXVA (D3D11 Video API)
+//! - macOS: FFmpeg with VideoToolbox
+//! - Linux: Native Vulkan Video or GStreamer
 //!
 //! This module provides both blocking and non-blocking decode modes:
 //! - Blocking: `decode()` - waits for result (legacy, causes latency)
@@ -23,19 +24,19 @@ use std::path::Path;
 use super::{ColorRange, ColorSpace, PixelFormat, TransferFunction, VideoFrame};
 use crate::app::{config::VideoDecoderBackend, SharedFrame, VideoCodec};
 
-// FFmpeg imports - only for Windows and macOS
-#[cfg(not(target_os = "linux"))]
+// FFmpeg imports - only for macOS
+#[cfg(target_os = "macos")]
 extern crate ffmpeg_next as ffmpeg;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use ffmpeg::codec::{context::Context as CodecContext, decoder};
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use ffmpeg::format::Pixel;
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use ffmpeg::software::scaling::{context::Context as ScalerContext, flag::Flags as ScalerFlags};
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use ffmpeg::util::frame::video::Video as FfmpegFrame;
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use ffmpeg::Packet;
 
 /// GPU Vendor for decoder optimization
@@ -298,13 +299,12 @@ fn get_intel_gpu_name() -> String {
         .clone()
 }
 
-/// Check if the Intel GPU supports QSV decoding for the given codec
+/// Check if the Intel GPU supports QSV decoding for the given codec (macOS only)
 /// Older Intel GPUs have limited QSV codec support:
 /// - Gen 7 (Ivy Bridge/HD 4000, 2012): Only H.264
 /// - Gen 8 (Haswell, 2013): H.264 + limited HEVC
 /// - Gen 9 (Skylake, 2015+): H.264 + HEVC
-/// - Gen 11+ (Ice Lake, 2019+): H.264 + HEVC + some AV1
-/// - Gen 12+ (Alder Lake, 2021+): Full AV1 support
+#[cfg(target_os = "macos")]
 fn is_qsv_supported_for_codec(codec_id: ffmpeg::codec::Id) -> bool {
     // First check if QSV runtime is even available
     if !check_qsv_available() {
@@ -324,13 +324,6 @@ fn is_qsv_supported_for_codec(codec_id: ffmpeg::codec::Id) -> bool {
         || gpu_lower.contains("hd graphics 3000")
         || gpu_lower.contains("hd 3000");
 
-    let is_gen8 = gpu_lower.contains("hd graphics 4600")
-        || gpu_lower.contains("hd 4600")
-        || gpu_lower.contains("hd graphics 4400")
-        || gpu_lower.contains("iris graphics 5100")
-        || gpu_lower.contains("iris pro")
-        || gpu_lower.contains("haswell");
-
     match codec_id {
         ffmpeg::codec::Id::H264 => {
             // H.264 supported on all Intel QSV generations
@@ -345,97 +338,8 @@ fn is_qsv_supported_for_codec(codec_id: ffmpeg::codec::Id) -> bool {
             // Gen 8 has limited HEVC support (decode only, 8-bit only)
             true
         }
-        ffmpeg::codec::Id::AV1 => {
-            // AV1 requires very new Intel GPUs (Gen 12+ / Alder Lake)
-            // For safety, disable on anything that looks old
-            if is_gen7_or_older || is_gen8 {
-                info!(
-                    "Intel GPU '{}' does not support AV1 QSV - using software decoder",
-                    gpu_name
-                );
-                return false;
-            }
-            // Check for older known GPU names that don't support AV1
-            if gpu_lower.contains("skylake")
-                || gpu_lower.contains("kaby")
-                || gpu_lower.contains("coffee")
-                || gpu_lower.contains("uhd 6")
-            {
-                info!(
-                    "Intel GPU '{}' (pre-Gen 12) does not support AV1 QSV - using software decoder",
-                    gpu_name
-                );
-                return false;
-            }
-            true
-        }
         _ => true, // Unknown codecs - try QSV
     }
-}
-
-/// Cached AV1 hardware support check
-static AV1_HW_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-/// Check if AV1 hardware decoding is supported on this system
-/// Returns true if NVIDIA CUVID (RTX 30+) or Intel QSV (11th gen+) is available
-pub fn is_av1_hardware_supported() -> bool {
-    *AV1_HW_AVAILABLE.get_or_init(|| {
-        // Initialize FFmpeg if not already done
-        let _ = ffmpeg::init();
-
-        // Check for NVIDIA CUVID AV1 decoder
-        let has_nvidia = ffmpeg::codec::decoder::find_by_name("av1_cuvid").is_some();
-
-        // Check for Intel QSV AV1 decoder (requires QSV runtime)
-        let has_intel =
-            check_qsv_available() && ffmpeg::codec::decoder::find_by_name("av1_qsv").is_some();
-
-        // Check for AMD VAAPI (Linux only)
-        #[cfg(target_os = "linux")]
-        let has_amd = ffmpeg::codec::decoder::find_by_name("av1_vaapi").is_some();
-        #[cfg(not(target_os = "linux"))]
-        let has_amd = false;
-
-        // Check for VideoToolbox (macOS)
-        #[cfg(target_os = "macos")]
-        let has_videotoolbox = {
-            // VideoToolbox AV1 support was added in macOS 13 Ventura on Apple Silicon
-            // Check if the decoder exists in FFmpeg build
-            ffmpeg::codec::decoder::find_by_name("av1").map_or(false, |codec| {
-                // The standard av1 decoder with VideoToolbox hwaccel
-                // This is a heuristic - actual support depends on macOS version and hardware
-                true
-            })
-        };
-        #[cfg(not(target_os = "macos"))]
-        let has_videotoolbox = false;
-
-        let supported = has_nvidia || has_intel || has_amd || has_videotoolbox;
-
-        if supported {
-            let mut sources = Vec::new();
-            if has_nvidia {
-                sources.push("NVIDIA NVDEC");
-            }
-            if has_intel {
-                sources.push("Intel QSV");
-            }
-            if has_amd {
-                sources.push("AMD VAAPI");
-            }
-            if has_videotoolbox {
-                sources.push("Apple VideoToolbox");
-            }
-            info!(
-                "AV1 hardware decoding available via: {}",
-                sources.join(", ")
-            );
-        } else {
-            info!("AV1 hardware decoding NOT available - will use software decode (slow)");
-        }
-
-        supported
-    })
 }
 
 /// Cached supported decoder backends
@@ -530,7 +434,7 @@ pub struct VideoDecoder {
 impl VideoDecoder {
     /// Create a new video decoder with hardware acceleration
     /// Note: On Linux, use new_async() instead - Linux uses native Vulkan Video decoder
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     pub fn new(codec: VideoCodec, backend: VideoDecoderBackend) -> Result<Self> {
         // Initialize FFmpeg
         ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {:?}", e))?;
@@ -549,7 +453,6 @@ impl VideoDecoder {
         let decoder_id = match codec {
             VideoCodec::H264 => ffmpeg::codec::Id::H264,
             VideoCodec::H265 => ffmpeg::codec::Id::HEVC,
-            VideoCodec::AV1 => ffmpeg::codec::Id::AV1,
         };
 
         // Create channels for communication with decoder thread
@@ -583,17 +486,13 @@ impl VideoDecoder {
         backend: VideoDecoderBackend,
         shared_frame: Arc<SharedFrame>,
     ) -> Result<(Self, tokio_mpsc::Receiver<DecodeStats>)> {
-        // Check if NativeDxva backend is requested on Windows
-        // NativeDxva bypasses FFmpeg and uses D3D11 Video API directly
+        // On Windows, use native DXVA decoder (no FFmpeg)
+        // This uses D3D11 Video API directly for hardware acceleration
         #[cfg(target_os = "windows")]
-        if backend == VideoDecoderBackend::NativeDxva {
-            info!(
-                "NativeDxva backend requested for {:?} - this requires using NativeVideoDecoder directly",
-                codec
-            );
-            // For now, fall back to CUVID on NVIDIA since NativeVideoDecoder has a different interface
-            // TODO: Integrate NativeVideoDecoder properly or use a trait-based approach
-            info!("NativeDxva: Falling back to CUVID (native decoder integration pending)");
+        {
+            return Err(anyhow!(
+                "VideoDecoder::new_async not supported on Windows. Use UnifiedVideoDecoder::new_async instead."
+            ));
         }
 
         // On Linux, use native decoders (no FFmpeg):
@@ -612,10 +511,6 @@ impl VideoDecoder {
                 let vulkan_codec = match codec {
                     VideoCodec::H264 => super::vulkan_video::VulkanVideoCodec::H264,
                     VideoCodec::H265 => super::vulkan_video::VulkanVideoCodec::H265,
-                    VideoCodec::AV1 => {
-                        warn!("AV1 Vulkan Video support is experimental");
-                        super::vulkan_video::VulkanVideoCodec::H264
-                    }
                 };
 
                 let config = super::vulkan_video::VulkanVideoConfig {
@@ -713,9 +608,6 @@ impl VideoDecoder {
                 let gst_codec = match codec {
                     VideoCodec::H264 => super::gstreamer_decoder::GstCodec::H264,
                     VideoCodec::H265 => super::gstreamer_decoder::GstCodec::H265,
-                    VideoCodec::AV1 => {
-                        return Err(anyhow!("AV1 is not supported on GStreamer V4L2"));
-                    }
                 };
 
                 let config = super::gstreamer_decoder::GstDecoderConfig {
@@ -804,7 +696,7 @@ impl VideoDecoder {
         }
 
         // FFmpeg path (Windows/macOS only)
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
         {
             // Initialize FFmpeg
             ffmpeg::init().map_err(|e| anyhow!("Failed to initialize FFmpeg: {:?}", e))?;
@@ -823,7 +715,6 @@ impl VideoDecoder {
             let decoder_id = match codec {
                 VideoCodec::H264 => ffmpeg::codec::Id::H264,
                 VideoCodec::H265 => ffmpeg::codec::Id::HEVC,
-                VideoCodec::AV1 => ffmpeg::codec::Id::AV1,
             };
 
             // Create channels for communication with decoder thread
@@ -859,11 +750,11 @@ impl VideoDecoder {
             };
 
             Ok((decoder, stats_rx))
-        } // end #[cfg(not(target_os = "linux"))]
+        } // end #[cfg(target_os = "macos")]
     }
 
     /// Spawn a dedicated decoder thread (FFmpeg-based, not used on Linux)
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn spawn_decoder_thread(
         codec_id: ffmpeg::codec::Id,
         cmd_rx: mpsc::Receiver<DecoderCommand>,
@@ -1044,7 +935,11 @@ impl VideoDecoder {
     /// - Actual video dimensions are `width/height` (e.g., 3840x2160)
     /// - We must use dimensions that are multiples of the codec's macroblock size
     /// - For HEVC: 32x32 CTU alignment, for H.264: 16x16 MB alignment
-    #[cfg(target_os = "windows")]
+    ///
+    /// Note: This is only used on macOS where FFmpeg is used for video decoding.
+    /// Windows uses native DXVA, Linux uses Vulkan Video.
+    #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
     unsafe extern "C" fn get_d3d11va_format(
         ctx: *mut ffmpeg::ffi::AVCodecContext,
         fmt: *const ffmpeg::ffi::AVPixelFormat,
@@ -1226,7 +1121,11 @@ impl VideoDecoder {
 
     /// FFI Callback for CUDA format negotiation (NVIDIA CUVID)
     /// CRITICAL: This must set up hw_frames_ctx for proper frame buffer management
-    #[cfg(target_os = "windows")]
+    ///
+    /// Note: This is only used on macOS where FFmpeg is used for video decoding.
+    /// Windows uses native DXVA, Linux uses Vulkan Video.
+    #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
     unsafe extern "C" fn get_cuda_format(
         ctx: *mut ffmpeg::ffi::AVCodecContext,
         fmt: *const ffmpeg::ffi::AVPixelFormat,
@@ -1305,7 +1204,7 @@ impl VideoDecoder {
 
     /// Create decoder, trying hardware acceleration based on preference
     /// (FFmpeg-based, not used on Linux)
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn create_decoder(
         codec_id: ffmpeg::codec::Id,
         backend: VideoDecoderBackend,
@@ -1687,20 +1586,6 @@ impl VideoDecoder {
                         }
                         list
                     }
-                    ffmpeg::codec::Id::AV1 => {
-                        let mut list = Vec::new();
-                        // NVIDIA CUVID (RTX 30+ series, also fallback if DXVA failed)
-                        if is_nvidia && try_hw_fallback {
-                            list.push("av1_cuvid");
-                        }
-                        // Intel QSV (requires Gen 12+ for AV1 - older GPUs fallback to software)
-                        if (is_intel && is_qsv_supported_for_codec(codec_id) && try_hw_fallback)
-                            || backend == VideoDecoderBackend::Qsv
-                        {
-                            list.push("av1_qsv");
-                        }
-                        list
-                    }
                     _ => vec![],
                 };
 
@@ -1831,7 +1716,7 @@ impl VideoDecoder {
     }
 
     /// Check if a pixel format is a hardware format (FFmpeg, not used on Linux)
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn is_hw_pixel_format(format: Pixel) -> bool {
         // Check common hardware formats
         // Note: Some formats may not be available depending on FFmpeg build configuration
@@ -1855,7 +1740,7 @@ impl VideoDecoder {
     }
 
     /// Transfer hardware frame to system memory if needed (FFmpeg, not used on Linux)
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn transfer_hw_frame_if_needed(frame: &FfmpegFrame) -> Option<FfmpegFrame> {
         let format = frame.format();
 
@@ -1896,14 +1781,14 @@ impl VideoDecoder {
     }
 
     /// Calculate 256-byte aligned stride for GPU compatibility (wgpu/DX12 requirement)
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn get_aligned_stride(width: u32) -> u32 {
         (width + 255) & !255
     }
 
     /// Decode a single frame (called in decoder thread) (FFmpeg, not used on Linux)
     /// `in_recovery` suppresses repeated warnings when waiting for keyframe
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn decode_frame(
         decoder: &mut decoder::Video,
         scaler: &mut Option<ScalerContext>,
@@ -2465,19 +2350,26 @@ impl Drop for VideoDecoder {
 
 /// Unified video decoder that can use either FFmpeg or native DXVA backend
 ///
-/// This enum provides a common interface for both decoder types, allowing
-/// the streaming code to use either backend transparently.
+/// This enum provides a common interface for decoder types, allowing
+/// the streaming code to use the appropriate backend transparently.
+/// - Windows: Native D3D11 Video API (no FFmpeg)
+/// - macOS: FFmpeg with VideoToolbox
+/// - Linux: Handled separately via Vulkan Video or GStreamer
 #[cfg(target_os = "windows")]
 pub enum UnifiedVideoDecoder {
-    /// FFmpeg-based decoder (CUVID, QSV, D3D11VA, software)
-    Ffmpeg(VideoDecoder),
-    /// Native D3D11 Video decoder (bypasses FFmpeg, NVIDIA-style)
+    /// Native D3D11 Video decoder (NVIDIA-style, no FFmpeg)
     Native(super::native_video::NativeVideoDecoder),
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 pub enum UnifiedVideoDecoder {
-    /// FFmpeg-based decoder
+    /// FFmpeg-based decoder with VideoToolbox
+    Ffmpeg(VideoDecoder),
+}
+
+#[cfg(target_os = "linux")]
+pub enum UnifiedVideoDecoder {
+    /// Linux uses Vulkan Video or GStreamer (placeholder for unified interface)
     Ffmpeg(VideoDecoder),
 }
 
@@ -2485,61 +2377,53 @@ impl UnifiedVideoDecoder {
     /// Create a new unified decoder with the specified backend
     pub fn new_async(
         codec: VideoCodec,
-        backend: VideoDecoderBackend,
+        _backend: VideoDecoderBackend,
         shared_frame: Arc<SharedFrame>,
     ) -> Result<(Self, tokio_mpsc::Receiver<DecodeStats>)> {
+        // Windows: Always use native DXVA (no FFmpeg)
         #[cfg(target_os = "windows")]
         {
-            // Check if native DXVA backend is requested
-            if backend == VideoDecoderBackend::NativeDxva {
-                info!("Creating native DXVA decoder for {:?}", codec);
+            info!("Creating native DXVA decoder for {:?}", codec);
 
-                match super::native_video::NativeVideoDecoder::new_async(
-                    codec,
-                    shared_frame.clone(),
-                ) {
-                    Ok((native_decoder, native_stats_rx)) => {
-                        info!("Native DXVA decoder created successfully");
+            let (native_decoder, native_stats_rx) =
+                super::native_video::NativeVideoDecoder::new_async(codec, shared_frame.clone())?;
 
-                        // Convert NativeDecodeStats to DecodeStats via a bridge channel
-                        let (stats_tx, stats_rx) = tokio_mpsc::channel::<DecodeStats>(64);
+            info!("Native DXVA decoder created successfully");
 
-                        // Spawn a task to convert stats
-                        tokio::spawn(async move {
-                            let mut native_rx = native_stats_rx;
-                            while let Some(native_stats) = native_rx.recv().await {
-                                let stats = DecodeStats {
-                                    decode_time_ms: native_stats.decode_time_ms,
-                                    frame_produced: native_stats.frame_produced,
-                                    needs_keyframe: native_stats.needs_keyframe,
-                                };
-                                if stats_tx.send(stats).await.is_err() {
-                                    break;
-                                }
-                            }
-                        });
+            // Convert NativeDecodeStats to DecodeStats via a bridge channel
+            let (stats_tx, stats_rx) = tokio_mpsc::channel::<DecodeStats>(64);
 
-                        return Ok((UnifiedVideoDecoder::Native(native_decoder), stats_rx));
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Native DXVA decoder failed: {:?}, falling back to FFmpeg",
-                            e
-                        );
-                        // Fall through to FFmpeg
+            // Spawn a task to convert stats
+            tokio::spawn(async move {
+                let mut native_rx = native_stats_rx;
+                while let Some(native_stats) = native_rx.recv().await {
+                    let stats = DecodeStats {
+                        decode_time_ms: native_stats.decode_time_ms,
+                        frame_produced: native_stats.frame_produced,
+                        needs_keyframe: native_stats.needs_keyframe,
+                    };
+                    if stats_tx.send(stats).await.is_err() {
+                        break;
                     }
                 }
-            }
+            });
+
+            return Ok((UnifiedVideoDecoder::Native(native_decoder), stats_rx));
         }
 
-        // Use FFmpeg decoder for all other backends
-        let (ffmpeg_decoder, stats_rx) = VideoDecoder::new_async(codec, backend, shared_frame)?;
-        Ok((UnifiedVideoDecoder::Ffmpeg(ffmpeg_decoder), stats_rx))
+        // macOS/Linux: Use FFmpeg decoder
+        #[cfg(not(target_os = "windows"))]
+        {
+            let (ffmpeg_decoder, stats_rx) =
+                VideoDecoder::new_async(codec, _backend, shared_frame)?;
+            Ok((UnifiedVideoDecoder::Ffmpeg(ffmpeg_decoder), stats_rx))
+        }
     }
 
     /// Decode a frame asynchronously
     pub fn decode_async(&mut self, data: &[u8], receive_time: std::time::Instant) -> Result<()> {
         match self {
+            #[cfg(not(target_os = "windows"))]
             UnifiedVideoDecoder::Ffmpeg(decoder) => decoder.decode_async(data, receive_time),
             #[cfg(target_os = "windows")]
             UnifiedVideoDecoder::Native(decoder) => {
@@ -2552,6 +2436,7 @@ impl UnifiedVideoDecoder {
     /// Check if using hardware acceleration
     pub fn is_hw_accelerated(&self) -> bool {
         match self {
+            #[cfg(not(target_os = "windows"))]
             UnifiedVideoDecoder::Ffmpeg(decoder) => decoder.is_hw_accelerated(),
             #[cfg(target_os = "windows")]
             UnifiedVideoDecoder::Native(decoder) => decoder.is_hw_accel(),
@@ -2561,6 +2446,7 @@ impl UnifiedVideoDecoder {
     /// Get number of frames decoded
     pub fn frames_decoded(&self) -> u64 {
         match self {
+            #[cfg(not(target_os = "windows"))]
             UnifiedVideoDecoder::Ffmpeg(decoder) => decoder.frames_decoded(),
             #[cfg(target_os = "windows")]
             UnifiedVideoDecoder::Native(decoder) => decoder.frames_decoded(),

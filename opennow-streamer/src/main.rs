@@ -460,11 +460,10 @@ impl ApplicationHandler for OpenNowApp {
 
                 drop(app_guard);
 
-                // Request continuous redraws when streaming
-                // When not streaming, VSync (Fifo) handles frame pacing automatically
-                if is_streaming {
-                    renderer.window().request_redraw();
-                }
+                // Don't request redraw here - let about_to_wait handle frame pacing
+                // This ensures render rate matches decode rate (e.g., 120fps)
+                // Previously this caused double the frame rate (240+ fps) because
+                // both RedrawRequested and about_to_wait were requesting redraws
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let app = self.app.lock();
