@@ -95,6 +95,9 @@ pub struct Renderer {
     // Tracks consecutive Outdated errors to avoid panic-fixing with wrong resolution
     consecutive_surface_errors: u32,
 
+    // Supported present modes (for fallback when Immediate isn't available)
+    supported_present_modes: Vec<wgpu::PresentMode>,
+
     // Game art texture cache (URL -> TextureHandle)
     game_textures: HashMap<String, egui::TextureHandle>,
 
@@ -808,6 +811,7 @@ impl Renderer {
             stats_panel,
             fullscreen: false,
             consecutive_surface_errors: 0,
+            supported_present_modes: surface_caps.present_modes.clone(),
             game_textures: HashMap::new(),
             #[cfg(target_os = "macos")]
             zero_copy_manager: ZeroCopyTextureManager::new(),
@@ -893,13 +897,26 @@ impl Renderer {
         Self::disable_macos_vsync(&self.window);
     }
 
-    /// Set VSync mode - use Fifo (vsync) for UI, Immediate for streaming
+    /// Set VSync mode - use Fifo (vsync) for UI, Immediate/Mailbox for streaming
     /// This lets the GPU handle frame pacing, reducing CPU usage to near zero when idle
     pub fn set_vsync(&mut self, enabled: bool) {
         let new_mode = if enabled {
             wgpu::PresentMode::Fifo // VSync on - GPU waits for display refresh
         } else {
-            wgpu::PresentMode::Immediate // VSync off - lowest latency for streaming
+            // VSync off - prefer Immediate for lowest latency, fall back to Mailbox
+            if self
+                .supported_present_modes
+                .contains(&wgpu::PresentMode::Immediate)
+            {
+                wgpu::PresentMode::Immediate
+            } else if self
+                .supported_present_modes
+                .contains(&wgpu::PresentMode::Mailbox)
+            {
+                wgpu::PresentMode::Mailbox // Good low-latency alternative
+            } else {
+                wgpu::PresentMode::Fifo // Fallback to VSync if nothing else available
+            }
         };
 
         if self.config.present_mode != new_mode {
