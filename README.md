@@ -62,6 +62,7 @@ OpenNOW is a custom GeForce NOW client rewritten entirely in **Native Rust** (mo
 | **Streaming** | Zero-Copy Rendering | ✅ | GPU textures passed directly to renderer (no CPU copy). |
 | **Input** | Mouse/Keyboard | ✅ | Raw input capture (Windows Raw Input, macOS CGEventTap, Linux evdev). |
 | **Input** | Gamepad | ✅ | Cross-platform support via `gilrs`. |
+| **Input** | Steering Wheel | 🚧 | Planned. |
 | **Input** | Clipboard Paste | 🚧 | Planned. |
 | **Audio** | Playback | ✅ | Low-latency audio via `cpal`. |
 | **Audio** | Microphone | 🚧 | Planned. |
