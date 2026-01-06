@@ -302,7 +302,6 @@ pub async fn run_streaming(
     let depacketizer_codec = match codec {
         VideoCodec::H264 => DepacketizerCodec::H264,
         VideoCodec::H265 => DepacketizerCodec::H265,
-        VideoCodec::AV1 => DepacketizerCodec::AV1,
     };
     let mut rtp_depacketizer = RtpDepacketizer::with_codec(depacketizer_codec);
     info!("RTP depacketizer using {:?} mode", depacketizer_codec);
@@ -504,7 +503,6 @@ pub async fn run_streaming(
                         let codec = match settings.codec {
                             VideoCodec::H264 => "H264",
                             VideoCodec::H265 => "H265",
-                            VideoCodec::AV1 => "AV1",
                         };
 
                         info!("Preferred codec: {}", codec);
@@ -684,39 +682,22 @@ pub async fn run_streaming(
                             info!("First video RTP packet received: {} bytes", payload.len());
                         }
 
-                        // Accumulate NAL units/OBUs and send complete frames on marker bit
-                        // This is required for proper H.264/H.265/AV1 decoding
-                        if codec == VideoCodec::AV1 {
-                            // AV1: process and accumulate in one step (handles GFN's non-standard fragmentation)
-                            rtp_depacketizer.process_av1_raw(&payload);
+                        // Accumulate NAL units and send complete frames on marker bit
+                        // This is required for proper H.264/H.265 decoding
+                        // H.264/H.265: depacketize RTP and accumulate NAL units
+                        let nal_units = rtp_depacketizer.process(&payload);
 
-                            // On marker bit, we have a complete frame - send accumulated OBUs
-                            if marker {
-                                // Flush any pending OBU (TILE_GROUP/FRAME that was held for possible continuation)
-                                rtp_depacketizer.flush_pending_obu();
+                        // H.264/H.265: accumulate NAL units until marker bit (end of frame)
+                        // Each frame consists of multiple NAL units that must be sent together
+                        for nal_unit in nal_units {
+                            rtp_depacketizer.accumulate_nal(nal_unit);
+                        }
 
-                                if let Some(frame_data) = rtp_depacketizer.take_accumulated_frame() {
-                                    if let Err(e) = video_decoder.decode_async(&frame_data, packet_receive_time) {
-                                        warn!("Decode async failed: {}", e);
-                                    }
-                                }
-                            }
-                        } else {
-                            // H.264/H.265: depacketize RTP and accumulate NAL units
-                            let nal_units = rtp_depacketizer.process(&payload);
-
-                            // H.264/H.265: accumulate NAL units until marker bit (end of frame)
-                            // Each frame consists of multiple NAL units that must be sent together
-                            for nal_unit in nal_units {
-                                rtp_depacketizer.accumulate_nal(nal_unit);
-                            }
-
-                            // On marker bit, we have a complete Access Unit - send to decoder
-                            if marker {
-                                if let Some(frame_data) = rtp_depacketizer.take_nal_frame() {
-                                    if let Err(e) = video_decoder.decode_async(&frame_data, packet_receive_time) {
-                                        warn!("Decode async failed: {}", e);
-                                    }
+                        // On marker bit, we have a complete Access Unit - send to decoder
+                        if marker {
+                            if let Some(frame_data) = rtp_depacketizer.take_nal_frame() {
+                                if let Err(e) = video_decoder.decode_async(&frame_data, packet_receive_time) {
+                                    warn!("Decode async failed: {}", e);
                                 }
                             }
                         }

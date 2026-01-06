@@ -25,9 +25,8 @@ futures-util = "0.3"
 native-tls = "0.2"
 tokio-native-tls = "0.3"
 
-# Video decoding - FFmpeg with hardware acceleration (Windows/macOS only)
-# Linux uses native Vulkan Video or GStreamer
-[target.'cfg(not(target_os = "linux"))'.dependencies]
+# Audio decoding - FFmpeg for Opus (all platforms)
+# Video decoding uses native APIs (DXVA on Windows, Vulkan Video on Linux, VideoToolbox on macOS)
 ffmpeg-next = "8"
 
 # Keep OpenH264 as fallback (all platforms)
