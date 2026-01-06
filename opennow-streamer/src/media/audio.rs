@@ -4,17 +4,17 @@
 //! Optimized for low-latency streaming with jitter buffer.
 //! Supports dynamic device switching and sample rate conversion.
 
-use anyhow::{Result, Context, anyhow};
-use log::{info, warn, error, debug};
-use std::sync::Arc;
-use std::sync::mpsc;
-use std::thread;
+use anyhow::{anyhow, Context, Result};
+use log::{debug, error, info, warn};
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::thread;
 
 extern crate ffmpeg_next as ffmpeg;
 
-use ffmpeg::codec::{decoder, context::Context as CodecContext};
+use ffmpeg::codec::{context::Context as CodecContext, decoder};
 use ffmpeg::Packet;
 
 /// Audio decoder using FFmpeg for Opus
@@ -37,7 +37,10 @@ impl AudioDecoder {
     /// Create a new Opus audio decoder using FFmpeg
     /// Returns decoder and a receiver for decoded samples (for async operation)
     pub fn new(sample_rate: u32, channels: u32) -> Result<Self> {
-        info!("Creating Opus audio decoder: {}Hz, {} channels", sample_rate, channels);
+        info!(
+            "Creating Opus audio decoder: {}Hz, {} channels",
+            sample_rate, channels
+        );
 
         // Initialize FFmpeg (may already be initialized by video decoder)
         let _ = ffmpeg::init();
@@ -76,7 +79,12 @@ impl AudioDecoder {
             while let Ok(cmd) = cmd_rx.recv() {
                 match cmd {
                     AudioCommand::DecodeAsync(data) => {
-                        let samples = Self::decode_opus_packet(&mut decoder, &data, sample_rate_clone, channels_clone);
+                        let samples = Self::decode_opus_packet(
+                            &mut decoder,
+                            &data,
+                            sample_rate_clone,
+                            channels_clone,
+                        );
                         if !samples.is_empty() {
                             // Non-blocking send - drop samples if channel is full
                             let _ = sample_tx.try_send(samples);
@@ -137,9 +145,7 @@ impl AudioDecoder {
                 let samples = Self::frame_to_samples(&frame, target_sample_rate, target_channels);
                 samples
             }
-            Err(ffmpeg::Error::Other { errno }) if errno == libc::EAGAIN => {
-                Vec::new()
-            }
+            Err(ffmpeg::Error::Other { errno }) if errno == libc::EAGAIN => Vec::new(),
             Err(e) => {
                 debug!("Audio receive frame error: {:?}", e);
                 Vec::new()
@@ -245,31 +251,39 @@ impl Drop for AudioDecoder {
 }
 
 /// Audio player using cpal with optimized lock-free-ish ring buffer
-/// Supports sample rate conversion and dynamic device switching
+/// Supports sample rate conversion, channel upmixing, and dynamic device switching
 pub struct AudioPlayer {
     /// Input sample rate (from decoder, typically 48000Hz)
     input_sample_rate: u32,
     /// Output sample rate (device native rate)
     output_sample_rate: u32,
-    channels: u32,
+    /// Input channel count (from decoder, typically 2 for stereo)
+    input_channels: u32,
+    /// Output channel count (device channels, may be 8 for 7.1 headsets)
+    output_channels: u32,
     buffer: Arc<AudioRingBuffer>,
     stream: Arc<Mutex<Option<cpal::Stream>>>,
     /// Flag to indicate stream needs recreation (device change)
     needs_restart: Arc<AtomicBool>,
     /// Current device name for change detection
     current_device_name: Arc<Mutex<String>>,
-    /// Resampler state for 48000 -> device rate conversion
+    /// Resampler state for rate conversion and channel upmixing
     resampler: Arc<Mutex<AudioResampler>>,
 }
 
-/// Simple linear resampler for audio rate conversion
+/// High-quality audio resampler using Catmull-Rom spline interpolation
+/// This provides much better quality than linear interpolation, especially for 2x upsampling
+/// Also handles channel upmixing (e.g., stereo to 7.1 surround)
 struct AudioResampler {
     input_rate: u32,
     output_rate: u32,
+    input_channels: u32,
+    output_channels: u32,
     /// Fractional sample position for interpolation
     phase: f64,
-    /// Last sample for interpolation (per channel)
-    last_samples: Vec<i16>,
+    /// History buffer for 4-point interpolation (per input channel)
+    /// Stores [s_minus1, s0, s1, s2] for each channel
+    history: Vec<[i16; 4]>,
 }
 
 /// Lock-free ring buffer for audio samples
@@ -346,79 +360,194 @@ impl AudioRingBuffer {
 }
 
 impl AudioResampler {
-    fn new(input_rate: u32, output_rate: u32, channels: u32) -> Self {
+    fn new(input_rate: u32, output_rate: u32, input_channels: u32, output_channels: u32) -> Self {
+        info!(
+            "Audio resampler: {}Hz {}ch -> {}Hz {}ch",
+            input_rate, input_channels, output_rate, output_channels
+        );
         Self {
             input_rate,
             output_rate,
+            input_channels,
+            output_channels,
             phase: 0.0,
-            last_samples: vec![0i16; channels as usize],
+            // Initialize history with zeros for each input channel
+            history: vec![[0i16; 4]; input_channels as usize],
         }
     }
 
-    /// Resample audio from input_rate to output_rate using linear interpolation
-    /// Returns resampled samples
-    fn resample(&mut self, input: &[i16], channels: u32) -> Vec<i16> {
-        if self.input_rate == self.output_rate {
-            return input.to_vec();
+    /// Resample audio using Catmull-Rom spline interpolation (4-point)
+    /// This provides much better quality than linear interpolation
+    /// The Catmull-Rom spline passes through all control points and provides
+    /// smooth C1 continuous curves, ideal for audio resampling
+    /// Also handles channel upmixing (stereo -> multi-channel)
+    fn resample(&mut self, input: &[i16]) -> Vec<i16> {
+        let in_ch = self.input_channels as usize;
+        let out_ch = self.output_channels as usize;
+        let input_frames = input.len() / in_ch;
+
+        if input_frames == 0 {
+            return Vec::new();
         }
 
+        // Calculate output frame count based on sample rate ratio
         let ratio = self.input_rate as f64 / self.output_rate as f64;
-        let input_frames = input.len() / channels as usize;
-        let output_frames = ((input_frames as f64) / ratio).ceil() as usize;
-        let mut output = Vec::with_capacity(output_frames * channels as usize);
+        let output_frames = if self.input_rate == self.output_rate {
+            input_frames
+        } else {
+            ((input_frames as f64) / ratio).ceil() as usize
+        };
 
-        let channels = channels as usize;
+        let mut output = Vec::with_capacity(output_frames * out_ch);
+
+        // Ensure history is properly sized for input channels
+        if self.history.len() != in_ch {
+            self.history = vec![[0i16; 4]; in_ch];
+        }
 
         for _ in 0..output_frames {
             let input_idx = self.phase as usize;
             let frac = self.phase - input_idx as f64;
 
-            for ch in 0..channels {
-                let sample_idx = input_idx * channels + ch;
-                let next_idx = (input_idx + 1) * channels + ch;
+            // First, get the resampled stereo frame
+            let mut stereo_frame = [0i16; 2];
 
-                let s0 = if sample_idx < input.len() {
-                    input[sample_idx]
-                } else {
-                    self.last_samples.get(ch).copied().unwrap_or(0)
+            for ch in 0..in_ch.min(2) {
+                // Get 4 samples for Catmull-Rom interpolation: s[-1], s[0], s[1], s[2]
+                let get_sample = |frame_idx: isize| -> i16 {
+                    if frame_idx < 0 {
+                        // Use history for samples before current buffer
+                        let hist_idx = (4 + frame_idx) as usize;
+                        self.history[ch][hist_idx.min(3)]
+                    } else if (frame_idx as usize) < input_frames {
+                        input[frame_idx as usize * in_ch + ch]
+                    } else {
+                        // Clamp to last sample
+                        if input_frames > 0 {
+                            input[(input_frames - 1) * in_ch + ch]
+                        } else {
+                            self.history[ch][3] // Use last known sample
+                        }
+                    }
                 };
 
-                let s1 = if next_idx < input.len() {
-                    input[next_idx]
-                } else if sample_idx < input.len() {
-                    input[sample_idx]
-                } else {
-                    s0
-                };
+                let s0 = get_sample(input_idx as isize - 1) as f64;
+                let s1 = get_sample(input_idx as isize) as f64;
+                let s2 = get_sample(input_idx as isize + 1) as f64;
+                let s3 = get_sample(input_idx as isize + 2) as f64;
 
-                // Linear interpolation
-                let interpolated = s0 as f64 + (s1 as f64 - s0 as f64) * frac;
-                output.push(interpolated.clamp(-32768.0, 32767.0) as i16);
+                // Catmull-Rom spline interpolation formula
+                // This provides C1 continuity (smooth first derivative)
+                let t = frac;
+                let t2 = t * t;
+                let t3 = t2 * t;
+
+                let interpolated = 0.5
+                    * ((2.0 * s1)
+                        + (-s0 + s2) * t
+                        + (2.0 * s0 - 5.0 * s1 + 4.0 * s2 - s3) * t2
+                        + (-s0 + 3.0 * s1 - 3.0 * s2 + s3) * t3);
+
+                stereo_frame[ch] = interpolated.clamp(-32768.0, 32767.0) as i16;
+            }
+
+            // Now upmix stereo to output channel count
+            // Standard channel mapping for common configurations:
+            // 2ch: FL, FR
+            // 6ch (5.1): FL, FR, FC, LFE, BL, BR
+            // 8ch (7.1): FL, FR, FC, LFE, BL, BR, SL, SR
+            match out_ch {
+                1 => {
+                    // Mono: mix L+R
+                    let mono = ((stereo_frame[0] as i32 + stereo_frame[1] as i32) / 2) as i16;
+                    output.push(mono);
+                }
+                2 => {
+                    // Stereo: direct pass-through
+                    output.push(stereo_frame[0]);
+                    output.push(stereo_frame[1]);
+                }
+                _ => {
+                    // Multi-channel (5.1, 7.1, etc.)
+                    // Standard layout: FL, FR, FC, LFE, BL, BR, [SL, SR for 7.1+]
+                    let left = stereo_frame[0];
+                    let right = stereo_frame[1];
+
+                    for ch_idx in 0..out_ch {
+                        let sample = match ch_idx {
+                            0 => left,  // Front Left
+                            1 => right, // Front Right
+                            2 => {
+                                // Center - mix of L+R at reduced level
+                                ((left as i32 + right as i32) / 3) as i16
+                            }
+                            3 => 0, // LFE - no bass routing for now
+                            4 => {
+                                // Back/Rear Left - copy of front left at reduced level
+                                (left as i32 * 2 / 3) as i16
+                            }
+                            5 => {
+                                // Back/Rear Right - copy of front right at reduced level
+                                (right as i32 * 2 / 3) as i16
+                            }
+                            6 => {
+                                // Side Left (7.1) - copy of front left at reduced level
+                                (left as i32 / 2) as i16
+                            }
+                            7 => {
+                                // Side Right (7.1) - copy of front right at reduced level
+                                (right as i32 / 2) as i16
+                            }
+                            _ => 0, // Any additional channels: silence
+                        };
+                        output.push(sample);
+                    }
+                }
             }
 
             self.phase += ratio;
         }
 
-        // Keep fractional phase, reset integer part
-        self.phase = self.phase.fract();
-
-        // Store last samples for next buffer's interpolation
-        if input.len() >= channels {
-            for ch in 0..channels {
-                let idx = input.len() - channels + ch;
-                self.last_samples[ch] = input[idx];
+        // Update history with last 4 samples from this buffer for next call
+        if input_frames >= 4 {
+            for ch in 0..in_ch {
+                for i in 0..4 {
+                    self.history[ch][i] = input[(input_frames - 4 + i) * in_ch + ch];
+                }
+            }
+        } else if input_frames > 0 {
+            // Shift history and add new samples
+            for ch in 0..in_ch {
+                let shift = 4 - input_frames;
+                for i in 0..shift {
+                    self.history[ch][i] = self.history[ch][i + input_frames];
+                }
+                for i in 0..input_frames {
+                    self.history[ch][shift + i] = input[i * in_ch + ch];
+                }
             }
         }
+
+        // Keep fractional phase, reset integer part
+        self.phase = self.phase.fract();
 
         output
     }
 
-    /// Update rates (for device change)
-    fn set_output_rate(&mut self, output_rate: u32) {
-        if self.output_rate != output_rate {
+    /// Update output rate and channels (for device change)
+    fn set_output_config(&mut self, output_rate: u32, output_channels: u32) {
+        if self.output_rate != output_rate || self.output_channels != output_channels {
             self.output_rate = output_rate;
+            self.output_channels = output_channels;
             self.phase = 0.0;
-            info!("Resampler updated: {}Hz -> {}Hz", self.input_rate, output_rate);
+            // Reset history on config change
+            for hist in &mut self.history {
+                *hist = [0i16; 4];
+            }
+            info!(
+                "Resampler updated: {}Hz {}ch -> {}Hz {}ch",
+                self.input_rate, self.input_channels, output_rate, output_channels
+            );
         }
     }
 }
@@ -429,17 +558,22 @@ impl AudioPlayer {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
         use cpal::SampleFormat;
 
-        info!("Creating audio player: {}Hz, {} channels", sample_rate, channels);
+        info!(
+            "Creating audio player: {}Hz, {} channels",
+            sample_rate, channels
+        );
 
         let host = cpal::default_host();
 
-        let device = host.default_output_device()
+        let device = host
+            .default_output_device()
             .context("No audio output device found")?;
 
         info!("Using audio device: {}", device.name().unwrap_or_default());
 
         // Query supported configurations
-        let supported_configs: Vec<_> = device.supported_output_configs()
+        let supported_configs: Vec<_> = device
+            .supported_output_configs()
             .map(|configs| configs.collect())
             .unwrap_or_default();
 
@@ -449,8 +583,13 @@ impl AudioPlayer {
 
         // Log available configurations for debugging
         for cfg in &supported_configs {
-            debug!("Supported config: {:?} channels, {:?}-{:?} Hz, format {:?}",
-                cfg.channels(), cfg.min_sample_rate().0, cfg.max_sample_rate().0, cfg.sample_format());
+            debug!(
+                "Supported config: {:?} channels, {:?}-{:?} Hz, format {:?}",
+                cfg.channels(),
+                cfg.min_sample_rate().0,
+                cfg.max_sample_rate().0,
+                cfg.sample_format()
+            );
         }
 
         // Find best matching configuration
@@ -492,18 +631,21 @@ impl AudioPlayer {
             }
         }
 
-        let supported_range = best_config
-            .ok_or_else(|| anyhow!("No suitable audio configuration found"))?;
+        let supported_range =
+            best_config.ok_or_else(|| anyhow!("No suitable audio configuration found"))?;
 
         // Determine actual sample rate to use
         let actual_rate = if target_rate >= supported_range.min_sample_rate()
-            && target_rate <= supported_range.max_sample_rate() {
+            && target_rate <= supported_range.max_sample_rate()
+        {
             target_rate
         } else if cpal::SampleRate(48000) >= supported_range.min_sample_rate()
-            && cpal::SampleRate(48000) <= supported_range.max_sample_rate() {
+            && cpal::SampleRate(48000) <= supported_range.max_sample_rate()
+        {
             cpal::SampleRate(48000)
         } else if cpal::SampleRate(44100) >= supported_range.min_sample_rate()
-            && cpal::SampleRate(44100) <= supported_range.max_sample_rate() {
+            && cpal::SampleRate(44100) <= supported_range.max_sample_rate()
+        {
             cpal::SampleRate(44100)
         } else {
             supported_range.max_sample_rate()
@@ -512,8 +654,10 @@ impl AudioPlayer {
         let actual_channels = supported_range.channels();
         let sample_format = supported_range.sample_format();
 
-        info!("Using audio config: {}Hz, {} channels, format {:?}",
-            actual_rate.0, actual_channels, sample_format);
+        info!(
+            "Using audio config: {}Hz, {} channels, format {:?}",
+            actual_rate.0, actual_channels, sample_format
+        );
 
         // Buffer for ~150ms of audio (handles network jitter)
         // 48000Hz * 2ch * 0.15s = 14400 samples
@@ -521,8 +665,11 @@ impl AudioPlayer {
         let buffer_size = (actual_rate.0 as usize) * (actual_channels as usize) * 150 / 1000;
         let buffer = Arc::new(AudioRingBuffer::new(buffer_size));
 
-        info!("Audio buffer size: {} samples (~{}ms)", buffer_size,
-            buffer_size * 1000 / (actual_rate.0 as usize * actual_channels as usize));
+        info!(
+            "Audio buffer size: {} samples (~{}ms)",
+            buffer_size,
+            buffer_size * 1000 / (actual_rate.0 as usize * actual_channels as usize)
+        );
 
         let config = supported_range.with_sample_rate(actual_rate).into();
 
@@ -533,52 +680,58 @@ impl AudioPlayer {
         let stream = match sample_format {
             SampleFormat::F32 => {
                 let buffer_f32 = buffer_clone.clone();
-                device.build_output_stream(
-                    &config,
-                    move |data: &mut [f32], _| {
-                        // Read i16 samples in bulk and convert to f32
-                        let mut i16_buf = vec![0i16; data.len()];
-                        buffer_f32.read(&mut i16_buf);
-                        for (out, &sample) in data.iter_mut().zip(i16_buf.iter()) {
-                            *out = sample as f32 / 32768.0;
-                        }
-                    },
-                    |err| {
-                        error!("Audio stream error: {}", err);
-                    },
-                    None,
-                ).context("Failed to create f32 audio stream")?
+                device
+                    .build_output_stream(
+                        &config,
+                        move |data: &mut [f32], _| {
+                            // Read i16 samples in bulk and convert to f32
+                            let mut i16_buf = vec![0i16; data.len()];
+                            buffer_f32.read(&mut i16_buf);
+                            for (out, &sample) in data.iter_mut().zip(i16_buf.iter()) {
+                                *out = sample as f32 / 32768.0;
+                            }
+                        },
+                        |err| {
+                            error!("Audio stream error: {}", err);
+                        },
+                        None,
+                    )
+                    .context("Failed to create f32 audio stream")?
             }
             SampleFormat::I16 => {
                 let buffer_i16 = buffer_clone.clone();
-                device.build_output_stream(
-                    &config,
-                    move |data: &mut [i16], _| {
-                        buffer_i16.read(data);
-                    },
-                    |err| {
-                        error!("Audio stream error: {}", err);
-                    },
-                    None,
-                ).context("Failed to create i16 audio stream")?
+                device
+                    .build_output_stream(
+                        &config,
+                        move |data: &mut [i16], _| {
+                            buffer_i16.read(data);
+                        },
+                        |err| {
+                            error!("Audio stream error: {}", err);
+                        },
+                        None,
+                    )
+                    .context("Failed to create i16 audio stream")?
             }
             _ => {
                 // Fallback: try f32 anyway
                 let buffer_fallback = buffer_clone.clone();
-                device.build_output_stream(
-                    &config,
-                    move |data: &mut [f32], _| {
-                        let mut i16_buf = vec![0i16; data.len()];
-                        buffer_fallback.read(&mut i16_buf);
-                        for (out, &sample) in data.iter_mut().zip(i16_buf.iter()) {
-                            *out = sample as f32 / 32768.0;
-                        }
-                    },
-                    |err| {
-                        error!("Audio stream error: {}", err);
-                    },
-                    None,
-                ).context("Failed to create audio stream with fallback format")?
+                device
+                    .build_output_stream(
+                        &config,
+                        move |data: &mut [f32], _| {
+                            let mut i16_buf = vec![0i16; data.len()];
+                            buffer_fallback.read(&mut i16_buf);
+                            for (out, &sample) in data.iter_mut().zip(i16_buf.iter()) {
+                                *out = sample as f32 / 32768.0;
+                            }
+                        },
+                        |err| {
+                            error!("Audio stream error: {}", err);
+                        },
+                        None,
+                    )
+                    .context("Failed to create audio stream with fallback format")?
             }
         };
 
@@ -587,17 +740,24 @@ impl AudioPlayer {
         let device_name = device.name().unwrap_or_default();
         info!("Audio player started successfully on '{}'", device_name);
 
-        // Create resampler for input_rate -> output_rate conversion
-        let resampler = AudioResampler::new(sample_rate, actual_rate.0, actual_channels as u32);
+        // Create resampler for input_rate -> output_rate conversion and channel upmixing
+        // Input: decoder's sample_rate (48000) and channels (2 for stereo Opus)
+        // Output: device's actual_rate and actual_channels (may be 8 for 7.1 headsets)
+        let resampler =
+            AudioResampler::new(sample_rate, actual_rate.0, channels, actual_channels as u32);
 
-        if sample_rate != actual_rate.0 {
-            info!("Audio resampling enabled: {}Hz -> {}Hz", sample_rate, actual_rate.0);
+        if sample_rate != actual_rate.0 || channels != actual_channels as u32 {
+            info!(
+                "Audio conversion enabled: {}Hz {}ch -> {}Hz {}ch",
+                sample_rate, channels, actual_rate.0, actual_channels
+            );
         }
 
         Ok(Self {
             input_sample_rate: sample_rate,
             output_sample_rate: actual_rate.0,
-            channels: actual_channels as u32,
+            input_channels: channels,
+            output_channels: actual_channels as u32,
             buffer,
             stream: Arc::new(Mutex::new(Some(stream))),
             needs_restart: Arc::new(AtomicBool::new(false)),
@@ -606,15 +766,15 @@ impl AudioPlayer {
         })
     }
 
-    /// Push audio samples to the player (with automatic resampling)
+    /// Push audio samples to the player (with automatic resampling and channel upmixing)
     pub fn push_samples(&self, samples: &[i16]) {
         // Check if device changed and we need to restart
         self.check_device_change();
 
-        // Resample if needed (48000Hz decoder -> device rate)
+        // Resample and upmix (48000Hz stereo -> device rate and channels)
         let resampled = {
             let mut resampler = self.resampler.lock();
-            resampler.resample(samples, self.channels)
+            resampler.resample(samples)
         };
 
         self.buffer.write(&resampled);
@@ -630,9 +790,9 @@ impl AudioPlayer {
         self.output_sample_rate
     }
 
-    /// Get channel count
+    /// Get output channel count (device channels)
     pub fn channels(&self) -> u32 {
-        self.channels
+        self.output_channels
     }
 
     /// Check if the default audio device changed and restart stream if needed
@@ -672,7 +832,8 @@ impl AudioPlayer {
         *self.stream.lock() = None;
 
         // Query supported configurations
-        let supported_configs: Vec<_> = device.supported_output_configs()
+        let supported_configs: Vec<_> = device
+            .supported_output_configs()
             .map(|configs| configs.collect())
             .unwrap_or_default();
 
@@ -680,16 +841,24 @@ impl AudioPlayer {
             return Err(anyhow!("No supported audio configurations on new device"));
         }
 
-        // Find best config (prefer F32, matching channels)
-        let target_channels = self.channels as u16;
+        // Find best config (prefer F32, stereo-compatible)
         let mut best_config = None;
         let mut best_score = 0i32;
 
         for cfg in &supported_configs {
             let mut score = 0i32;
-            if cfg.sample_format() == SampleFormat::F32 { score += 100; }
-            if cfg.channels() == target_channels { score += 50; }
-            if cfg.max_sample_rate().0 >= 44100 { score += 25; }
+            if cfg.sample_format() == SampleFormat::F32 {
+                score += 100;
+            }
+            // Prefer stereo, but accept any channel count (we'll upmix)
+            if cfg.channels() == 2 {
+                score += 50;
+            } else if cfg.channels() >= 2 {
+                score += 25;
+            }
+            if cfg.max_sample_rate().0 >= 44100 {
+                score += 25;
+            }
 
             if score > best_score {
                 best_score = score;
@@ -697,76 +866,91 @@ impl AudioPlayer {
             }
         }
 
-        let supported_range = best_config
-            .ok_or_else(|| anyhow!("No suitable audio config on new device"))?;
+        let supported_range =
+            best_config.ok_or_else(|| anyhow!("No suitable audio config on new device"))?;
 
         // Pick sample rate
         let actual_rate = if cpal::SampleRate(48000) >= supported_range.min_sample_rate()
-            && cpal::SampleRate(48000) <= supported_range.max_sample_rate() {
+            && cpal::SampleRate(48000) <= supported_range.max_sample_rate()
+        {
             cpal::SampleRate(48000)
         } else if cpal::SampleRate(44100) >= supported_range.min_sample_rate()
-            && cpal::SampleRate(44100) <= supported_range.max_sample_rate() {
+            && cpal::SampleRate(44100) <= supported_range.max_sample_rate()
+        {
             cpal::SampleRate(44100)
         } else {
             supported_range.max_sample_rate()
         };
 
+        let actual_channels = supported_range.channels();
         let sample_format = supported_range.sample_format();
         let config = supported_range.with_sample_rate(actual_rate).into();
         let buffer = self.buffer.clone();
 
-        info!("New device config: {}Hz, {} channels, {:?}",
-            actual_rate.0, self.channels, sample_format);
+        info!(
+            "New device config: {}Hz, {} channels, {:?}",
+            actual_rate.0, actual_channels, sample_format
+        );
 
-        // Update resampler for new output rate
-        self.resampler.lock().set_output_rate(actual_rate.0);
+        // Update resampler for new output rate and channels
+        self.resampler
+            .lock()
+            .set_output_config(actual_rate.0, actual_channels as u32);
 
         // Build new stream
         let stream = match sample_format {
             SampleFormat::F32 => {
                 let buf = buffer.clone();
-                device.build_output_stream(
-                    &config,
-                    move |data: &mut [f32], _| {
-                        let mut i16_buf = vec![0i16; data.len()];
-                        buf.read(&mut i16_buf);
-                        for (out, &sample) in data.iter_mut().zip(i16_buf.iter()) {
-                            *out = sample as f32 / 32768.0;
-                        }
-                    },
-                    |err| error!("Audio stream error: {}", err),
-                    None,
-                ).context("Failed to create audio stream")?
+                device
+                    .build_output_stream(
+                        &config,
+                        move |data: &mut [f32], _| {
+                            let mut i16_buf = vec![0i16; data.len()];
+                            buf.read(&mut i16_buf);
+                            for (out, &sample) in data.iter_mut().zip(i16_buf.iter()) {
+                                *out = sample as f32 / 32768.0;
+                            }
+                        },
+                        |err| error!("Audio stream error: {}", err),
+                        None,
+                    )
+                    .context("Failed to create audio stream")?
             }
             SampleFormat::I16 => {
                 let buf = buffer.clone();
-                device.build_output_stream(
-                    &config,
-                    move |data: &mut [i16], _| {
-                        buf.read(data);
-                    },
-                    |err| error!("Audio stream error: {}", err),
-                    None,
-                ).context("Failed to create audio stream")?
+                device
+                    .build_output_stream(
+                        &config,
+                        move |data: &mut [i16], _| {
+                            buf.read(data);
+                        },
+                        |err| error!("Audio stream error: {}", err),
+                        None,
+                    )
+                    .context("Failed to create audio stream")?
             }
             _ => {
                 let buf = buffer.clone();
-                device.build_output_stream(
-                    &config,
-                    move |data: &mut [f32], _| {
-                        let mut i16_buf = vec![0i16; data.len()];
-                        buf.read(&mut i16_buf);
-                        for (out, &sample) in data.iter_mut().zip(i16_buf.iter()) {
-                            *out = sample as f32 / 32768.0;
-                        }
-                    },
-                    |err| error!("Audio stream error: {}", err),
-                    None,
-                ).context("Failed to create audio stream")?
+                device
+                    .build_output_stream(
+                        &config,
+                        move |data: &mut [f32], _| {
+                            let mut i16_buf = vec![0i16; data.len()];
+                            buf.read(&mut i16_buf);
+                            for (out, &sample) in data.iter_mut().zip(i16_buf.iter()) {
+                                *out = sample as f32 / 32768.0;
+                            }
+                        },
+                        |err| error!("Audio stream error: {}", err),
+                        None,
+                    )
+                    .context("Failed to create audio stream")?
             }
         };
 
-        stream.play().context("Failed to start audio on new device")?;
+        stream
+            .play()
+            .context("Failed to start audio on new device")?;
         *self.stream.lock() = Some(stream);
 
         Ok(())
