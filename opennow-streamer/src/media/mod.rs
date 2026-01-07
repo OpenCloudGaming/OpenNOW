@@ -64,8 +64,8 @@ pub use v4l2::{
 
 #[cfg(target_os = "linux")]
 pub use vulkan_video::{
-    get_supported_vulkan_codecs, is_vulkan_video_available, VulkanVideoCodec, VulkanVideoConfig,
-    VulkanVideoDecoder, VulkanVideoFrame,
+    get_supported_vulkan_codecs, is_vulkan_video_available, DecoderStats as VulkanDecoderStats,
+    VulkanVideoCodec, VulkanVideoConfig, VulkanVideoDecoder,
 };
 
 #[cfg(target_os = "linux")]
