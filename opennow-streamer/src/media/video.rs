@@ -2284,19 +2284,27 @@ impl Drop for VideoDecoder {
 ///
 /// This enum provides a common interface for decoder types, allowing
 /// the streaming code to use the appropriate backend transparently.
-/// - Windows: GStreamer D3D11 for H.264, Native DXVA for HEVC
+/// - Windows x64: GStreamer D3D11 for all codecs, Native DXVA for HEVC (experimental)
+/// - Windows ARM64: Native DXVA only (GStreamer not available)
 /// - macOS: FFmpeg with VideoToolbox
 /// - Linux: Handled separately via Vulkan Video or GStreamer
-#[cfg(target_os = "windows")]
+#[cfg(all(windows, target_arch = "x86_64"))]
 pub enum UnifiedVideoDecoder {
     /// Native D3D11 Video decoder (HEVC only, NVIDIA-style)
     Native(super::native_video::NativeVideoDecoder),
-    /// GStreamer D3D11 decoder (H.264, with hardware acceleration)
+    /// GStreamer D3D11 decoder (H.264/H.265/AV1, with hardware acceleration)
     GStreamer(GStreamerDecoderWrapper),
 }
 
-/// Wrapper for GStreamer decoder with async interface
-#[cfg(target_os = "windows")]
+/// Windows ARM64: Only native DXVA available (no GStreamer)
+#[cfg(all(windows, target_arch = "aarch64"))]
+pub enum UnifiedVideoDecoder {
+    /// Native D3D11 Video decoder (HEVC only)
+    Native(super::native_video::NativeVideoDecoder),
+}
+
+/// Wrapper for GStreamer decoder with async interface (Windows x64 only)
+#[cfg(all(windows, target_arch = "x86_64"))]
 pub struct GStreamerDecoderWrapper {
     decoder: super::gstreamer_decoder::GStreamerDecoder,
     shared_frame: Arc<SharedFrame>,
@@ -2325,8 +2333,8 @@ impl UnifiedVideoDecoder {
         backend: VideoDecoderBackend,
         shared_frame: Arc<SharedFrame>,
     ) -> Result<(Self, tokio_mpsc::Receiver<DecodeStats>)> {
-        // Windows: Use GStreamer D3D11 by default, Native DXVA only for HEVC when explicitly selected
-        #[cfg(target_os = "windows")]
+        // Windows x64: Use GStreamer D3D11 by default, Native DXVA only for HEVC when explicitly selected
+        #[cfg(all(windows, target_arch = "x86_64"))]
         {
             // Determine if we should use native DXVA decoder
             // Native DXVA only supports HEVC and must be explicitly selected
@@ -2409,8 +2417,48 @@ impl UnifiedVideoDecoder {
             return Ok((UnifiedVideoDecoder::GStreamer(wrapper), stats_rx));
         }
 
+        // Windows ARM64: Only native DXVA available (no GStreamer binaries for ARM64)
+        // Native DXVA only supports HEVC, so H.264/AV1 will fail
+        #[cfg(all(windows, target_arch = "aarch64"))]
+        {
+            if codec != VideoCodec::H265 {
+                return Err(anyhow!(
+                    "Windows ARM64 only supports H.265/HEVC decoding. \
+                     H.264 and AV1 are not supported because GStreamer ARM64 binaries are not available. \
+                     Please use H.265 codec in settings."
+                ));
+            }
+
+            info!("Creating native DXVA decoder for HEVC (Windows ARM64)");
+
+            let (native_decoder, native_stats_rx) =
+                super::native_video::NativeVideoDecoder::new_async(codec, shared_frame.clone())?;
+
+            info!("Native DXVA HEVC decoder created successfully (ARM64)");
+
+            // Convert NativeDecodeStats to DecodeStats via a bridge channel
+            let (stats_tx, stats_rx) = tokio_mpsc::channel::<DecodeStats>(64);
+
+            // Spawn a task to convert stats
+            tokio::spawn(async move {
+                let mut native_rx = native_stats_rx;
+                while let Some(native_stats) = native_rx.recv().await {
+                    let stats = DecodeStats {
+                        decode_time_ms: native_stats.decode_time_ms,
+                        frame_produced: native_stats.frame_produced,
+                        needs_keyframe: native_stats.needs_keyframe,
+                    };
+                    if stats_tx.send(stats).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            return Ok((UnifiedVideoDecoder::Native(native_decoder), stats_rx));
+        }
+
         // macOS/Linux: Use FFmpeg decoder
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(windows))]
         {
             let (ffmpeg_decoder, stats_rx) = VideoDecoder::new_async(codec, backend, shared_frame)?;
             Ok((UnifiedVideoDecoder::Ffmpeg(ffmpeg_decoder), stats_rx))
@@ -2420,14 +2468,14 @@ impl UnifiedVideoDecoder {
     /// Decode a frame asynchronously
     pub fn decode_async(&mut self, data: &[u8], receive_time: std::time::Instant) -> Result<()> {
         match self {
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(not(windows))]
             UnifiedVideoDecoder::Ffmpeg(decoder) => decoder.decode_async(data, receive_time),
-            #[cfg(target_os = "windows")]
+            #[cfg(windows)]
             UnifiedVideoDecoder::Native(decoder) => {
                 decoder.decode_async(data.to_vec(), receive_time);
                 Ok(())
             }
-            #[cfg(target_os = "windows")]
+            #[cfg(all(windows, target_arch = "x86_64"))]
             UnifiedVideoDecoder::GStreamer(wrapper) => {
                 wrapper.decode_async(data, receive_time);
                 Ok(())
@@ -2438,11 +2486,11 @@ impl UnifiedVideoDecoder {
     /// Check if using hardware acceleration
     pub fn is_hw_accelerated(&self) -> bool {
         match self {
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(not(windows))]
             UnifiedVideoDecoder::Ffmpeg(decoder) => decoder.is_hw_accelerated(),
-            #[cfg(target_os = "windows")]
+            #[cfg(windows)]
             UnifiedVideoDecoder::Native(decoder) => decoder.is_hw_accel(),
-            #[cfg(target_os = "windows")]
+            #[cfg(all(windows, target_arch = "x86_64"))]
             UnifiedVideoDecoder::GStreamer(_) => true, // GStreamer uses D3D11 hardware acceleration
         }
     }
@@ -2450,17 +2498,17 @@ impl UnifiedVideoDecoder {
     /// Get number of frames decoded
     pub fn frames_decoded(&self) -> u64 {
         match self {
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(not(windows))]
             UnifiedVideoDecoder::Ffmpeg(decoder) => decoder.frames_decoded(),
-            #[cfg(target_os = "windows")]
+            #[cfg(windows)]
             UnifiedVideoDecoder::Native(decoder) => decoder.frames_decoded(),
-            #[cfg(target_os = "windows")]
+            #[cfg(all(windows, target_arch = "x86_64"))]
             UnifiedVideoDecoder::GStreamer(wrapper) => wrapper.frames_decoded,
         }
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(windows, target_arch = "x86_64"))]
 impl GStreamerDecoderWrapper {
     /// Threshold for requesting a keyframe after consecutive failures
     const KEYFRAME_REQUEST_THRESHOLD: u32 = 10;

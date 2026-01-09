@@ -1,6 +1,8 @@
 //! Audio Decoder and Player
 //!
-//! Decode Opus audio using FFmpeg and play through cpal.
+//! Decode Opus audio and play through cpal.
+//! - macOS: Uses FFmpeg for Opus decoding
+//! - Linux/Windows: Uses GStreamer for Opus decoding
 //! Optimized for low-latency streaming with jitter buffer.
 //! Supports dynamic device switching and sample rate conversion.
 
@@ -12,12 +14,19 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 
+// ============================================================================
+// macOS: FFmpeg-based Opus decoder
+// ============================================================================
+
+#[cfg(target_os = "macos")]
 extern crate ffmpeg_next as ffmpeg;
 
+#[cfg(target_os = "macos")]
 use ffmpeg::codec::{context::Context as CodecContext, decoder};
+#[cfg(target_os = "macos")]
 use ffmpeg::Packet;
 
-/// Audio decoder using FFmpeg for Opus
+/// Audio decoder - platform-specific implementation
 /// Non-blocking: decoded samples are sent to a channel
 pub struct AudioDecoder {
     cmd_tx: mpsc::Sender<AudioCommand>,
@@ -33,12 +42,17 @@ enum AudioCommand {
     Stop,
 }
 
+// ============================================================================
+// macOS implementation using FFmpeg
+// ============================================================================
+
+#[cfg(target_os = "macos")]
 impl AudioDecoder {
-    /// Create a new Opus audio decoder using FFmpeg
+    /// Create a new Opus audio decoder using FFmpeg (macOS)
     /// Returns decoder and a receiver for decoded samples (for async operation)
     pub fn new(sample_rate: u32, channels: u32) -> Result<Self> {
         info!(
-            "Creating Opus audio decoder: {}Hz, {} channels",
+            "Creating Opus audio decoder (FFmpeg): {}Hz, {} channels",
             sample_rate, channels
         );
 
@@ -74,7 +88,7 @@ impl AudioDecoder {
                 }
             };
 
-            info!("Opus audio decoder initialized (async mode)");
+            info!("Opus audio decoder initialized (FFmpeg, async mode)");
 
             while let Ok(cmd) = cmd_rx.recv() {
                 match cmd {
@@ -244,6 +258,168 @@ impl AudioDecoder {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl Drop for AudioDecoder {
+    fn drop(&mut self) {
+        let _ = self.cmd_tx.send(AudioCommand::Stop);
+    }
+}
+
+// ============================================================================
+// Linux/Windows implementation using GStreamer
+// ============================================================================
+
+#[cfg(not(target_os = "macos"))]
+impl AudioDecoder {
+    /// Create a new Opus audio decoder using GStreamer (Linux/Windows)
+    /// Returns decoder and a receiver for decoded samples (for async operation)
+    pub fn new(sample_rate: u32, channels: u32) -> Result<Self> {
+        use gstreamer as gst;
+        use gstreamer::prelude::*;
+        use gstreamer_app as gst_app;
+
+        info!(
+            "Creating Opus audio decoder (GStreamer): {}Hz, {} channels",
+            sample_rate, channels
+        );
+
+        // Initialize GStreamer
+        gst::init().map_err(|e| anyhow!("Failed to initialize GStreamer: {}", e))?;
+
+        // Create channels for thread communication
+        let (cmd_tx, cmd_rx) = mpsc::channel::<AudioCommand>();
+        // Async channel for decoded samples - large buffer to prevent blocking
+        let (sample_tx, sample_rx) = tokio::sync::mpsc::channel::<Vec<i16>>(512);
+
+        let sample_rate_clone = sample_rate;
+        let channels_clone = channels;
+
+        thread::spawn(move || {
+            // Build GStreamer pipeline: appsrc ! opusparse ! opusdec ! audioconvert ! appsink
+            let pipeline_str = format!(
+                "appsrc name=src format=time do-timestamp=true ! \
+                 opusparse ! \
+                 opusdec ! \
+                 audioconvert ! \
+                 audio/x-raw,format=S16LE,rate={},channels={} ! \
+                 appsink name=sink emit-signals=true sync=false",
+                sample_rate_clone, channels_clone
+            );
+
+            let pipeline = match gst::parse::launch(&pipeline_str) {
+                Ok(p) => p.downcast::<gst::Pipeline>().unwrap(),
+                Err(e) => {
+                    error!("Failed to create GStreamer audio pipeline: {}", e);
+                    return;
+                }
+            };
+
+            let appsrc = pipeline
+                .by_name("src")
+                .unwrap()
+                .downcast::<gst_app::AppSrc>()
+                .unwrap();
+
+            let appsink = pipeline
+                .by_name("sink")
+                .unwrap()
+                .downcast::<gst_app::AppSink>()
+                .unwrap();
+
+            // Configure appsrc for Opus data
+            let caps = gst::Caps::builder("audio/x-opus")
+                .field("rate", sample_rate_clone as i32)
+                .field("channels", channels_clone as i32)
+                .build();
+            appsrc.set_caps(Some(&caps));
+            appsrc.set_format(gst::Format::Time);
+
+            // Set up appsink callback
+            let sample_tx_clone = sample_tx.clone();
+            appsink.set_callbacks(
+                gst_app::AppSinkCallbacks::builder()
+                    .new_sample(move |sink| {
+                        if let Ok(sample) = sink.pull_sample() {
+                            if let Some(buffer) = sample.buffer() {
+                                if let Ok(map) = buffer.map_readable() {
+                                    // Convert bytes to i16 samples
+                                    let bytes = map.as_slice();
+                                    let samples: Vec<i16> = bytes
+                                        .chunks_exact(2)
+                                        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+                                        .collect();
+
+                                    if !samples.is_empty() {
+                                        let _ = sample_tx_clone.try_send(samples);
+                                    }
+                                }
+                            }
+                        }
+                        Ok(gst::FlowSuccess::Ok)
+                    })
+                    .build(),
+            );
+
+            // Start pipeline
+            if let Err(e) = pipeline.set_state(gst::State::Playing) {
+                error!("Failed to start GStreamer audio pipeline: {:?}", e);
+                return;
+            }
+
+            info!("Opus audio decoder initialized (GStreamer, async mode)");
+
+            while let Ok(cmd) = cmd_rx.recv() {
+                match cmd {
+                    AudioCommand::DecodeAsync(data) => {
+                        if !data.is_empty() {
+                            // Push Opus packet to GStreamer pipeline
+                            let buffer = gst::Buffer::from_slice(data);
+                            if let Err(e) = appsrc.push_buffer(buffer) {
+                                debug!("Failed to push audio buffer: {:?}", e);
+                            }
+                        }
+                    }
+                    AudioCommand::Stop => break,
+                }
+            }
+
+            // Cleanup
+            let _ = appsrc.end_of_stream();
+            let _ = pipeline.set_state(gst::State::Null);
+            debug!("Audio decoder thread stopped");
+        });
+
+        Ok(Self {
+            cmd_tx,
+            sample_rx: Some(sample_rx),
+            sample_rate,
+            channels,
+        })
+    }
+
+    /// Take the sample receiver (for passing to audio player thread)
+    pub fn take_sample_receiver(&mut self) -> Option<tokio::sync::mpsc::Receiver<Vec<i16>>> {
+        self.sample_rx.take()
+    }
+
+    /// Decode an Opus packet asynchronously (non-blocking, fire-and-forget)
+    /// Decoded samples are sent to the sample_rx channel
+    pub fn decode_async(&self, data: &[u8]) {
+        let _ = self.cmd_tx.send(AudioCommand::DecodeAsync(data.to_vec()));
+    }
+
+    /// Get sample rate
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Get channel count
+    pub fn channels(&self) -> u32 {
+        self.channels
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 impl Drop for AudioDecoder {
     fn drop(&mut self) {
         let _ = self.cmd_tx.send(AudioCommand::Stop);

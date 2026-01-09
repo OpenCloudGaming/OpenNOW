@@ -38,8 +38,9 @@ pub mod vaapi;
 #[cfg(target_os = "linux")]
 pub mod v4l2;
 
-// GStreamer decoder available on Linux and Windows
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+// GStreamer decoder available on Linux and Windows x64
+// Note: GStreamer ARM64 Windows binaries are not available
+#[cfg(any(target_os = "linux", all(windows, target_arch = "x86_64")))]
 pub mod gstreamer_decoder;
 
 pub use audio::*;
@@ -76,7 +77,8 @@ pub use gstreamer_decoder::{
     is_gstreamer_v4l2_available, GStreamerDecoder, GstCodec, GstDecoderConfig,
 };
 
-#[cfg(target_os = "windows")]
+// GStreamer only available on Windows x64 (no ARM64 binaries)
+#[cfg(all(windows, target_arch = "x86_64"))]
 pub use gstreamer_decoder::{is_gstreamer_available, GStreamerDecoder, GstCodec, GstDecoderConfig};
 
 /// Pixel format of decoded video frame

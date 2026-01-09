@@ -25,10 +25,6 @@ futures-util = "0.3"
 native-tls = "0.2"
 tokio-native-tls = "0.3"
 
-# Audio decoding - FFmpeg for Opus (all platforms)
-# Video decoding uses native APIs (DXVA on Windows, Vulkan Video on Linux, VideoToolbox on macOS)
-ffmpeg-next = "8"
-
 # Keep OpenH264 as fallback (all platforms)
 openh264 = "0.6"
 
@@ -114,20 +110,23 @@ metal = "0.33"
 wgpu-hal = { version = "28", features = ["metal"] }
 foreign-types = "0.5"
 block = "0.1"
+# FFmpeg for video/audio decoding on macOS (VideoToolbox hardware acceleration)
+ffmpeg-next = "8"
 
 [target.'cfg(windows)'.dependencies.wgpu-hal]
 version = "28"
 features = ["dx12"]
 
-# GStreamer for H.264 hardware decoding via D3D11 (Windows)
+# GStreamer for H.264 hardware decoding via D3D11 (Windows x64 only)
 # Bundle GStreamer runtime with the app - see scripts/bundle-gstreamer.ps1
-[target.'cfg(windows)'.dependencies.gstreamer]
+# Note: GStreamer ARM64 Windows binaries are not available, so ARM64 uses native DXVA only
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies.gstreamer]
 version = "0.23"
 
-[target.'cfg(windows)'.dependencies.gstreamer-video]
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies.gstreamer-video]
 version = "0.23"
 
-[target.'cfg(windows)'.dependencies.gstreamer-app]
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies.gstreamer-app]
 version = "0.23"
 
 [target.'cfg(target_os = "linux")'.dependencies]
