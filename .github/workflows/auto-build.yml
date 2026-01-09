@@ -242,37 +242,54 @@ jobs:
         if: matrix.target == 'windows'
         shell: pwsh
         run: |
-          # Download GStreamer MSVC runtime and development packages
-          $gstVersion = "1.26.10"
-          $gstBaseUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/$gstVersion/msvc"
+          # Install GStreamer runtime and development packages via Chocolatey
+          # (avoids bot protection on direct downloads from gstreamer.freedesktop.org)
+          Write-Host "Installing GStreamer runtime via Chocolatey..."
+          choco install gstreamer -y --no-progress
 
-          Write-Host "Downloading GStreamer $gstVersion x64..."
+          Write-Host "Installing GStreamer development package via Chocolatey..."
+          choco install gstreamer-devel -y --no-progress
 
-          # Download runtime installer
-          $runtimeUrl = "$gstBaseUrl/gstreamer-1.0-msvc-x86_64-$gstVersion.msi"
-          Write-Host "Downloading runtime from $runtimeUrl..."
-          Invoke-WebRequest -Uri $runtimeUrl -OutFile gstreamer-runtime.msi
+          # Refresh environment variables from registry
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+          refreshenv
 
-          # Download development installer
-          $devUrl = "$gstBaseUrl/gstreamer-1.0-devel-msvc-x86_64-$gstVersion.msi"
-          Write-Host "Downloading development package from $devUrl..."
-          Invoke-WebRequest -Uri $devUrl -OutFile gstreamer-devel.msi
+          # Also manually refresh Path
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
-          # Install both packages silently
-          Write-Host "Installing GStreamer runtime..."
-          Start-Process msiexec.exe -ArgumentList "/i", "gstreamer-runtime.msi", "/quiet", "/norestart", "INSTALLDIR=C:\gstreamer" -Wait -NoNewWindow
+          # Get GStreamer path from environment variable set by installer
+          $gstDir = [System.Environment]::GetEnvironmentVariable("GSTREAMER_1_0_ROOT_MSVC_X86_64","Machine")
 
-          Write-Host "Installing GStreamer development package..."
-          Start-Process msiexec.exe -ArgumentList "/i", "gstreamer-devel.msi", "/quiet", "/norestart", "INSTALLDIR=C:\gstreamer" -Wait -NoNewWindow
+          # Fallback to common installation paths
+          if (-not $gstDir -or -not (Test-Path $gstDir)) {
+            $possiblePaths = @(
+              "C:\gstreamer\1.0\msvc_x86_64",
+              "C:\gstreamer\1.0\x86_64",
+              "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+            )
+            foreach ($path in $possiblePaths) {
+              if (Test-Path $path) {
+                $gstDir = $path
+                Write-Host "Found GStreamer at fallback path: $gstDir"
+                break
+              }
+            }
+          }
 
-          # Set environment variables
-          $gstDir = "C:\gstreamer\1.0\msvc_x86_64"
+          if (-not $gstDir -or -not (Test-Path $gstDir)) {
+            Write-Error "GStreamer installation not found!"
+            exit 1
+          }
+
+          Write-Host "GStreamer directory: $gstDir"
+
+          # Set environment variables for build and bundling
           echo "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstDir" >> $env:GITHUB_ENV
           echo "PKG_CONFIG_PATH=$gstDir\lib\pkgconfig" >> $env:GITHUB_ENV
           echo "PATH=$gstDir\bin;$env:PATH" >> $env:GITHUB_ENV
           echo "GST_PLUGIN_PATH=$gstDir\lib\gstreamer-1.0" >> $env:GITHUB_ENV
 
-          # Store path for later bundling
+          # Store paths for later bundling
           echo "GSTREAMER_BIN_DIR=$gstDir\bin" >> $env:GITHUB_ENV
           echo "GSTREAMER_LIB_DIR=$gstDir\lib" >> $env:GITHUB_ENV
           echo "GSTREAMER_PLUGIN_DIR=$gstDir\lib\gstreamer-1.0" >> $env:GITHUB_ENV
@@ -280,57 +297,71 @@ jobs:
           Write-Host "`n=== GStreamer directory structure ==="
           Get-ChildItem $gstDir -ErrorAction SilentlyContinue
 
+          Write-Host "`n=== GStreamer bin directory ==="
+          Get-ChildItem "$gstDir\bin" -Filter "*.dll" | Select-Object -First 10
+
+          Write-Host "`n=== Verifying GStreamer installation ==="
+          & "$gstDir\bin\gst-inspect-1.0.exe" --version
+
           Write-Host "GStreamer x64 setup complete"
 
       - name: Install GStreamer (Windows ARM64)
         if: matrix.target == 'windows-arm64'
         shell: pwsh
         run: |
-          # Download GStreamer for ARM64
-          # Note: GStreamer official builds may not have ARM64, using x64 with emulation or check for ARM64 builds
-          $gstVersion = "1.26.10"
-          $gstBaseUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/$gstVersion/msvc"
+          # Install GStreamer runtime and development packages via Chocolatey
+          # Note: Chocolatey installs x64 version which will run under emulation on ARM64
+          Write-Host "Installing GStreamer runtime via Chocolatey..."
+          choco install gstreamer -y --no-progress
 
-          Write-Host "Downloading GStreamer $gstVersion for ARM64..."
+          Write-Host "Installing GStreamer development package via Chocolatey..."
+          choco install gstreamer-devel -y --no-progress
 
-          # Try ARM64 build first, fall back to x64 if not available
-          $runtimeUrl = "$gstBaseUrl/gstreamer-1.0-msvc-arm64-$gstVersion.msi"
-          $devUrl = "$gstBaseUrl/gstreamer-1.0-devel-msvc-arm64-$gstVersion.msi"
+          # Refresh environment variables from registry
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+          refreshenv
 
-          try {
-            Write-Host "Attempting ARM64 runtime download..."
-            Invoke-WebRequest -Uri $runtimeUrl -OutFile gstreamer-runtime.msi -ErrorAction Stop
-            Invoke-WebRequest -Uri $devUrl -OutFile gstreamer-devel.msi -ErrorAction Stop
-            $arch = "arm64"
-          } catch {
-            Write-Host "ARM64 builds not available, using x64 builds (will run under emulation)..."
-            $runtimeUrl = "$gstBaseUrl/gstreamer-1.0-msvc-x86_64-$gstVersion.msi"
-            $devUrl = "$gstBaseUrl/gstreamer-1.0-devel-msvc-x86_64-$gstVersion.msi"
-            Invoke-WebRequest -Uri $runtimeUrl -OutFile gstreamer-runtime.msi
-            Invoke-WebRequest -Uri $devUrl -OutFile gstreamer-devel.msi
-            $arch = "msvc_x86_64"
+          # Also manually refresh Path
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+
+          # Get GStreamer path from environment variable set by installer
+          $gstDir = [System.Environment]::GetEnvironmentVariable("GSTREAMER_1_0_ROOT_MSVC_X86_64","Machine")
+
+          # Fallback to common installation paths
+          if (-not $gstDir -or -not (Test-Path $gstDir)) {
+            $possiblePaths = @(
+              "C:\gstreamer\1.0\msvc_x86_64",
+              "C:\gstreamer\1.0\x86_64",
+              "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+            )
+            foreach ($path in $possiblePaths) {
+              if (Test-Path $path) {
+                $gstDir = $path
+                Write-Host "Found GStreamer at fallback path: $gstDir"
+                break
+              }
+            }
           }
 
-          # Install both packages silently
-          Write-Host "Installing GStreamer runtime..."
-          Start-Process msiexec.exe -ArgumentList "/i", "gstreamer-runtime.msi", "/quiet", "/norestart", "INSTALLDIR=C:\gstreamer" -Wait -NoNewWindow
+          if (-not $gstDir -or -not (Test-Path $gstDir)) {
+            Write-Error "GStreamer installation not found!"
+            exit 1
+          }
 
-          Write-Host "Installing GStreamer development package..."
-          Start-Process msiexec.exe -ArgumentList "/i", "gstreamer-devel.msi", "/quiet", "/norestart", "INSTALLDIR=C:\gstreamer" -Wait -NoNewWindow
+          Write-Host "GStreamer directory: $gstDir"
 
-          # Set environment variables
-          $gstDir = "C:\gstreamer\1.0\$arch"
+          # Set environment variables for build and bundling
           echo "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstDir" >> $env:GITHUB_ENV
           echo "PKG_CONFIG_PATH=$gstDir\lib\pkgconfig" >> $env:GITHUB_ENV
           echo "PATH=$gstDir\bin;$env:PATH" >> $env:GITHUB_ENV
           echo "GST_PLUGIN_PATH=$gstDir\lib\gstreamer-1.0" >> $env:GITHUB_ENV
 
-          # Store path for later bundling
+          # Store paths for later bundling
           echo "GSTREAMER_BIN_DIR=$gstDir\bin" >> $env:GITHUB_ENV
           echo "GSTREAMER_LIB_DIR=$gstDir\lib" >> $env:GITHUB_ENV
           echo "GSTREAMER_PLUGIN_DIR=$gstDir\lib\gstreamer-1.0" >> $env:GITHUB_ENV
 
-          Write-Host "GStreamer ARM64 setup complete"
+          Write-Host "GStreamer ARM64 setup complete (using x64 under emulation)"
 
       # ==================== FFmpeg + GStreamer Installation (macOS only) ====================
 
@@ -357,35 +388,18 @@ jobs:
             clang \
             libclang-dev \
             libunwind-dev \
-            wget \
-            patchelf
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-libav \
+            gstreamer1.0-tools
 
-          # Download pre-built GStreamer from official releases
-          GST_VERSION="1.26.10"
-          GST_URL="https://gstreamer.freedesktop.org/data/pkg/linux/1.26.10/gstreamer-1.0-linux-x86_64-1.26.10.tar.xz"
-
-          echo "Downloading GStreamer $GST_VERSION for Linux x64..."
-          wget -q "$GST_URL" -O gstreamer.tar.xz
-
-          echo "Extracting GStreamer..."
-          mkdir -p gstreamer-linux
-          tar -xf gstreamer.tar.xz -C gstreamer-linux
-
-          GST_DIR=$(realpath gstreamer-linux)
-          echo "GStreamer extracted to: $GST_DIR"
-
-          # Set environment variables for building
-          echo "PKG_CONFIG_PATH=$GST_DIR/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=$GST_DIR/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-          echo "GST_PLUGIN_PATH=$GST_DIR/lib/x86_64-linux-gnu/gstreamer-1.0" >> $GITHUB_ENV
-          echo "PATH=$GST_DIR/bin:$PATH" >> $GITHUB_ENV
-
-          # Store for bundling
-          echo "GSTREAMER_DIR=$GST_DIR" >> $GITHUB_ENV
-          echo "GSTREAMER_LIB_DIR=$GST_DIR/lib/x86_64-linux-gnu" >> $GITHUB_ENV
-          echo "GSTREAMER_PLUGIN_DIR=$GST_DIR/lib/x86_64-linux-gnu/gstreamer-1.0" >> $GITHUB_ENV
-
-          echo "GStreamer $GST_VERSION setup complete"
+          echo "GStreamer development libraries installed"
+          gst-inspect-1.0 --version
 
       - name: Install GStreamer (Linux ARM64)
         if: matrix.target == 'linux-arm64'
@@ -1101,62 +1115,12 @@ jobs:
       #     path: opennow-streamer/target/release/OpenNOW-macos-x86_64.zip
       #     retention-days: 30
 
-      - name: Bundle GStreamer libs (Linux x64)
-        if: matrix.target == 'linux'
-        shell: bash
-        run: |
-          cd opennow-streamer
-
-          BINARY="target/release/opennow-streamer"
-          BUNDLE_DIR="target/release/bundle"
-
-          echo "Creating bundle directory structure..."
-          mkdir -p "$BUNDLE_DIR/lib"
-          mkdir -p "$BUNDLE_DIR/lib/gstreamer-1.0"
-
-          # Copy the binary
-          cp "$BINARY" "$BUNDLE_DIR/"
-          chmod +x "$BUNDLE_DIR/opennow-streamer"
-
-          # Copy GStreamer shared libraries
-          echo "Copying GStreamer libraries..."
-          if [ -d "$GSTREAMER_LIB_DIR" ]; then
-            cp -P "$GSTREAMER_LIB_DIR"/*.so* "$BUNDLE_DIR/lib/" 2>/dev/null || true
-
-            # Copy GStreamer plugins
-            echo "Copying GStreamer plugins..."
-            if [ -d "$GSTREAMER_PLUGIN_DIR" ]; then
-              cp -P "$GSTREAMER_PLUGIN_DIR"/*.so "$BUNDLE_DIR/lib/gstreamer-1.0/" 2>/dev/null || true
-            fi
-          fi
-
-          # Create wrapper script that sets library paths
-          cat > "$BUNDLE_DIR/run.sh" << 'WRAPPER'
-          #!/bin/bash
-          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
-          export GST_PLUGIN_PATH="$SCRIPT_DIR/lib/gstreamer-1.0"
-          export GST_PLUGIN_SYSTEM_PATH=""
-          exec "$SCRIPT_DIR/opennow-streamer" "$@"
-          WRAPPER
-          chmod +x "$BUNDLE_DIR/run.sh"
-
-          echo ""
-          echo "=== Bundled libraries ==="
-          ls -lh "$BUNDLE_DIR/lib/" | head -30
-          echo ""
-          echo "=== Bundled plugins ==="
-          ls -1 "$BUNDLE_DIR/lib/gstreamer-1.0/" | head -30
-          echo ""
-          echo "Bundle created at: $BUNDLE_DIR"
-          echo "Run with: ./run.sh"
-
       - name: Zip Linux x64 artifacts
         if: matrix.target == 'linux'
         shell: bash
         run: |
           cd opennow-streamer/target/release
-          zip -r "OpenNOW-linux-x64.zip" bundle/
+          zip -r "OpenNOW-linux-x64.zip" opennow-streamer
 
       - name: Upload Linux x64 artifacts
         if: matrix.target == 'linux'
@@ -1199,13 +1163,13 @@ jobs:
             ---
 
             ### Downloads
-            - **Windows x64**: Portable executable with bundled GStreamer (run via `./run.sh`)
+            - **Windows x64**: Portable executable with bundled GStreamer
             - **Windows ARM64**: Portable executable with bundled GStreamer (Surface Pro X, etc.)
             - **macOS ARM64**: Apple Silicon native binary with bundled FFmpeg + GStreamer (Intel Macs can use Rosetta 2)
-            - **Linux x64**: Portable bundle with GStreamer libs (run via `./run.sh`)
+            - **Linux x64**: Portable binary (requires system GStreamer - see below)
             - **Linux ARM64**: Portable binary (requires system GStreamer - see below)
 
-            **Linux ARM64 users**: Install GStreamer via your package manager:
+            **Linux users**: Install GStreamer via your package manager:
             ```bash
             # Ubuntu/Debian
             sudo apt install gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
