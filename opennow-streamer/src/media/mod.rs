@@ -2,9 +2,20 @@
 //!
 //! Video decoding, audio decoding, and rendering.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 mod audio;
 mod rtp;
 mod video;
+
+/// Global frame ID counter for unique frame identification
+/// Used to avoid redundant GPU texture uploads
+static FRAME_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a new unique frame ID
+pub fn next_frame_id() -> u64 {
+    FRAME_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
 
 #[cfg(target_os = "macos")]
 pub mod videotoolbox;
@@ -30,7 +41,8 @@ pub mod v4l2;
 #[cfg(target_os = "linux")]
 pub mod vulkan_video;
 
-#[cfg(target_os = "linux")]
+// GStreamer decoder available on Linux and Windows
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub mod gstreamer_decoder;
 
 pub use audio::*;
@@ -73,6 +85,11 @@ pub use gstreamer_decoder::{
     is_gstreamer_v4l2_available, GStreamerDecoder, GstCodec, GstDecoderConfig,
 };
 
+#[cfg(target_os = "windows")]
+pub use gstreamer_decoder::{
+    is_gstreamer_available, GStreamerDecoder, GstCodec, GstDecoderConfig,
+};
+
 /// Pixel format of decoded video frame
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum PixelFormat {
@@ -89,6 +106,9 @@ pub enum PixelFormat {
 /// Decoded video frame
 #[derive(Debug, Clone)]
 pub struct VideoFrame {
+    /// Unique frame ID for tracking (monotonically increasing)
+    /// Used to avoid redundant GPU uploads of the same frame
+    pub frame_id: u64,
     pub width: u32,
     pub height: u32,
     /// Y plane (luma) - full resolution
@@ -166,6 +186,7 @@ impl VideoFrame {
         let uv_size = y_size / 4;
 
         Self {
+            frame_id: next_frame_id(),
             width,
             height,
             y_plane: vec![0; y_size],
@@ -312,6 +333,10 @@ pub struct StreamStats {
     pub estimated_e2e_ms: f32,
     /// Audio buffer level in ms
     pub audio_buffer_ms: f32,
+    /// HDR mode (true = HDR/PQ, false = SDR)
+    pub is_hdr: bool,
+    /// Color space (e.g., "BT.709", "BT.2020")
+    pub color_space: String,
 }
 
 impl StreamStats {

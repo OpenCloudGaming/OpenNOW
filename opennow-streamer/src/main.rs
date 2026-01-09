@@ -10,8 +10,13 @@ mod auth;
 mod gui;
 mod input;
 mod media;
+mod profiling;
 mod utils;
 mod webrtc;
+
+// Re-export profiling functions for use throughout the codebase
+#[allow(unused_imports)]
+pub use profiling::frame_mark;
 
 use anyhow::Result;
 use log::info;
@@ -224,9 +229,27 @@ impl ApplicationHandler for OpenNowApp {
         // Let egui handle events first
         let response = renderer.handle_event(&event);
 
-        // Request redraw if egui wants to repaint (for UI interactions)
-        // VSync (Fifo present mode) handles frame pacing when not streaming
-        if response.repaint {
+        // Request redraw based on app state:
+        // - When streaming: always honor egui repaint (low latency needed)
+        // - When not streaming: only repaint on actual user interaction events
+        //   (egui's request_repaint_after handles timed repaints via ControlFlow)
+        let app_state = self.app.lock().state;
+        let should_repaint = match app_state {
+            AppState::Streaming => response.repaint,
+            _ => {
+                // Only repaint on actual input events, not egui's internal repaint requests
+                matches!(event,
+                    WindowEvent::MouseInput { .. } |
+                    WindowEvent::MouseWheel { .. } |
+                    WindowEvent::KeyboardInput { .. } |
+                    WindowEvent::CursorMoved { .. } |
+                    WindowEvent::Resized(_) |
+                    WindowEvent::Focused(_)
+                )
+            }
+        };
+
+        if should_repaint {
             renderer.window().request_redraw();
         }
 
@@ -410,6 +433,9 @@ impl ApplicationHandler for OpenNowApp {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // Mark frame for Tracy profiler (if enabled)
+                profiling::frame_mark();
+
                 let mut app_guard = self.app.lock();
                 let is_streaming = app_guard.state == AppState::Streaming;
 
@@ -447,10 +473,22 @@ impl ApplicationHandler for OpenNowApp {
                 app_guard.update();
 
                 match renderer.render(&app_guard) {
-                    Ok(actions) => {
+                    Ok((actions, repaint_after)) => {
                         // Apply UI actions to app state
                         for action in actions {
                             app_guard.handle_action(action);
+                        }
+
+                        // Schedule next repaint based on egui's request
+                        // This enables idle throttling (e.g., 10 FPS when not interacting)
+                        if !is_streaming {
+                            if let Some(delay) = repaint_after {
+                                if !delay.is_zero() {
+                                    // Schedule a repaint after the delay
+                                    let wake_time = std::time::Instant::now() + delay;
+                                    event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(wake_time));
+                                }
+                            }
                         }
                     }
                     Err(e) => {
@@ -542,11 +580,21 @@ impl ApplicationHandler for OpenNowApp {
 }
 
 fn main() -> Result<()> {
-    // Initialize logging
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Initialize profiling (Tracy) if enabled
+    // Build with: cargo build --release --features tracy
+    // Returns true if it initialized logging (we should skip env_logger)
+    let profiling_initialized_logging = profiling::init();
+
+    // Initialize logging (only if profiling didn't already set it up)
+    if !profiling_initialized_logging {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    }
 
     info!("OpenNow Streamer v{}", env!("CARGO_PKG_VERSION"));
     info!("Platform: {}", std::env::consts::OS);
+
+    #[cfg(feature = "tracy")]
+    info!("Tracy profiler ENABLED - connect with Tracy Profiler application");
 
     // Create tokio runtime for async operations
     let runtime = tokio::runtime::Builder::new_multi_thread()

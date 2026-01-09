@@ -218,6 +218,10 @@ pub struct StreamingFeatures {
     pub prefilter_sharpness: i32,
     pub prefilter_noise_reduction: i32,
     pub hud_streaming_mode: i32,
+    /// SDR color space (2 = BT.709 / YCBCR_LIMITED_BT709)
+    pub sdr_color_space: i32,
+    /// HDR color space (4 = BT.2020 / YCBCR_LIMITED_BT2020, 0 = disabled)
+    pub hdr_color_space: i32,
 }
 
 // ============================================
@@ -357,13 +361,13 @@ impl CloudMatchSession {
             .or_else(|| url.strip_prefix("rtsp://"))
             .or_else(|| url.strip_prefix("wss://"))
             .or_else(|| url.strip_prefix("https://"))?;
-        
+
         // Get host (before port or path)
         let host = after_proto
             .split(':')
             .next()
             .or_else(|| after_proto.split('/').next())?;
-        
+
         if host.is_empty() || host.starts_with('.') {
             None
         } else {
@@ -392,12 +396,12 @@ impl CloudMatchSession {
                 let ip = conn.ip.clone().or_else(|| {
                     conn.resource_path.as_ref().and_then(|p| Self::extract_host_from_url(p))
                 });
-                let port = if conn.port > 0 { 
-                    conn.port 
+                let port = if conn.port > 0 {
+                    conn.port
                 } else {
                     conn.resource_path.as_ref().and_then(|p| Self::extract_port_from_url(p)).unwrap_or(0)
                 };
-                
+
                 if let Some(ip) = ip {
                     if port > 0 {
                         return Some(MediaConnectionInfo { ip, port });
@@ -415,12 +419,12 @@ impl CloudMatchSession {
                 let ip = conn.ip.clone().or_else(|| {
                     conn.resource_path.as_ref().and_then(|p| Self::extract_host_from_url(p))
                 });
-                let port = if conn.port > 0 { 
-                    conn.port 
+                let port = if conn.port > 0 {
+                    conn.port
                 } else {
                     conn.resource_path.as_ref().and_then(|p| Self::extract_port_from_url(p)).unwrap_or(0)
                 };
-                
+
                 ip.filter(|_| port > 0).map(|ip| MediaConnectionInfo { ip, port })
             })
         })
@@ -434,7 +438,7 @@ impl CloudMatchSession {
             .or_else(|| url.strip_prefix("rtsp://"))
             .or_else(|| url.strip_prefix("wss://"))
             .or_else(|| url.strip_prefix("https://"))?;
-        
+
         // Extract port after colon
         let parts: Vec<&str> = after_proto.split(':').collect();
         if parts.len() >= 2 {

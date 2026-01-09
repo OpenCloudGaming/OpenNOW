@@ -236,86 +236,117 @@ jobs:
           workspaces: "opennow-streamer -> target"
           key: ${{ matrix.target }}
 
-      # ==================== FFmpeg Installation ====================
+      # ==================== GStreamer Installation (Windows/Linux) ====================
 
-      - name: Install FFmpeg (Windows x64)
+      - name: Install GStreamer (Windows x64)
         if: matrix.target == 'windows'
         shell: pwsh
         run: |
-          # Download shared FFmpeg build from BtbN (GitHub releases) - use master-latest for stability
-          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z"
-          Write-Host "Downloading FFmpeg x64 from $ffmpegUrl..."
-          Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.7z
+          # Download GStreamer MSVC runtime and development packages
+          $gstVersion = "1.26.10"
+          $gstBaseUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/$gstVersion/msvc"
 
-          Write-Host "Extracting FFmpeg..."
-          7z x ffmpeg.7z -offmpeg
-          $ffmpegDir = (Get-ChildItem -Path ffmpeg -Directory)[0].FullName
-          Write-Host "FFmpeg extracted to: $ffmpegDir"
+          Write-Host "Downloading GStreamer $gstVersion x64..."
 
-          # List contents to verify structure
-          Write-Host "`n=== FFmpeg directory structure ==="
-          Get-ChildItem $ffmpegDir
-          Write-Host "`n=== Lib directory ==="
-          Get-ChildItem "$ffmpegDir\lib" -ErrorAction SilentlyContinue
+          # Download runtime installer
+          $runtimeUrl = "$gstBaseUrl/gstreamer-1.0-msvc-x86_64-$gstVersion.msi"
+          Write-Host "Downloading runtime from $runtimeUrl..."
+          Invoke-WebRequest -Uri $runtimeUrl -OutFile gstreamer-runtime.msi
 
-          # Set environment variables for ffmpeg-next crate
-          echo "FFMPEG_DIR=$ffmpegDir" >> $env:GITHUB_ENV
-          echo "PATH=$ffmpegDir\bin;$env:PATH" >> $env:GITHUB_ENV
+          # Download development installer
+          $devUrl = "$gstBaseUrl/gstreamer-1.0-devel-msvc-x86_64-$gstVersion.msi"
+          Write-Host "Downloading development package from $devUrl..."
+          Invoke-WebRequest -Uri $devUrl -OutFile gstreamer-devel.msi
+
+          # Install both packages silently
+          Write-Host "Installing GStreamer runtime..."
+          Start-Process msiexec.exe -ArgumentList "/i", "gstreamer-runtime.msi", "/quiet", "/norestart", "INSTALLDIR=C:\gstreamer" -Wait -NoNewWindow
+
+          Write-Host "Installing GStreamer development package..."
+          Start-Process msiexec.exe -ArgumentList "/i", "gstreamer-devel.msi", "/quiet", "/norestart", "INSTALLDIR=C:\gstreamer" -Wait -NoNewWindow
+
+          # Set environment variables
+          $gstDir = "C:\gstreamer\1.0\msvc_x86_64"
+          echo "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstDir" >> $env:GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$gstDir\lib\pkgconfig" >> $env:GITHUB_ENV
+          echo "PATH=$gstDir\bin;$env:PATH" >> $env:GITHUB_ENV
+          echo "GST_PLUGIN_PATH=$gstDir\lib\gstreamer-1.0" >> $env:GITHUB_ENV
 
           # Store path for later bundling
-          echo "FFMPEG_BIN_DIR=$ffmpegDir\bin" >> $env:GITHUB_ENV
+          echo "GSTREAMER_BIN_DIR=$gstDir\bin" >> $env:GITHUB_ENV
+          echo "GSTREAMER_LIB_DIR=$gstDir\lib" >> $env:GITHUB_ENV
+          echo "GSTREAMER_PLUGIN_DIR=$gstDir\lib\gstreamer-1.0" >> $env:GITHUB_ENV
 
-          Write-Host "FFmpeg setup complete"
-          Write-Host "FFMPEG_DIR: $ffmpegDir"
+          Write-Host "`n=== GStreamer directory structure ==="
+          Get-ChildItem $gstDir -ErrorAction SilentlyContinue
 
-      - name: Install FFmpeg (Windows ARM64)
+          Write-Host "GStreamer x64 setup complete"
+
+      - name: Install GStreamer (Windows ARM64)
         if: matrix.target == 'windows-arm64'
         shell: pwsh
         run: |
-          # Download ARM64 FFmpeg build from BtbN (GitHub releases)
-          # Use FFmpeg 8.0 stable (not master-latest which may have unsupported enum variants)
-          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-winarm64-lgpl-shared-8.0.zip"
-          Write-Host "Downloading FFmpeg ARM64 from $ffmpegUrl..."
-          Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.zip
+          # Download GStreamer for ARM64
+          # Note: GStreamer official builds may not have ARM64, using x64 with emulation or check for ARM64 builds
+          $gstVersion = "1.26.10"
+          $gstBaseUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/$gstVersion/msvc"
 
-          Write-Host "Extracting FFmpeg..."
-          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg
-          $ffmpegDir = (Get-ChildItem -Path ffmpeg -Directory)[0].FullName
-          # Rename .dll.a to .lib for MSVC compatibility (MinGW -> MSVC hack)
-          Get-ChildItem "$ffmpegDir\lib\*.dll.a" | Rename-Item -NewName { $_.Name -replace '\.dll\.a','.lib' -replace '^lib','' } -Force -ErrorAction SilentlyContinue
+          Write-Host "Downloading GStreamer $gstVersion for ARM64..."
 
-          # Verify renaming
-          Write-Host "`n=== Renamed Lib directory ==="
-          Get-ChildItem "$ffmpegDir\lib"
+          # Try ARM64 build first, fall back to x64 if not available
+          $runtimeUrl = "$gstBaseUrl/gstreamer-1.0-msvc-arm64-$gstVersion.msi"
+          $devUrl = "$gstBaseUrl/gstreamer-1.0-devel-msvc-arm64-$gstVersion.msi"
 
-          # Set environment variables for ffmpeg-next crate
-          echo "FFMPEG_DIR=$ffmpegDir" >> $env:GITHUB_ENV
-          echo "PATH=$ffmpegDir\bin;$env:PATH" >> $env:GITHUB_ENV
+          try {
+            Write-Host "Attempting ARM64 runtime download..."
+            Invoke-WebRequest -Uri $runtimeUrl -OutFile gstreamer-runtime.msi -ErrorAction Stop
+            Invoke-WebRequest -Uri $devUrl -OutFile gstreamer-devel.msi -ErrorAction Stop
+            $arch = "arm64"
+          } catch {
+            Write-Host "ARM64 builds not available, using x64 builds (will run under emulation)..."
+            $runtimeUrl = "$gstBaseUrl/gstreamer-1.0-msvc-x86_64-$gstVersion.msi"
+            $devUrl = "$gstBaseUrl/gstreamer-1.0-devel-msvc-x86_64-$gstVersion.msi"
+            Invoke-WebRequest -Uri $runtimeUrl -OutFile gstreamer-runtime.msi
+            Invoke-WebRequest -Uri $devUrl -OutFile gstreamer-devel.msi
+            $arch = "msvc_x86_64"
+          }
+
+          # Install both packages silently
+          Write-Host "Installing GStreamer runtime..."
+          Start-Process msiexec.exe -ArgumentList "/i", "gstreamer-runtime.msi", "/quiet", "/norestart", "INSTALLDIR=C:\gstreamer" -Wait -NoNewWindow
+
+          Write-Host "Installing GStreamer development package..."
+          Start-Process msiexec.exe -ArgumentList "/i", "gstreamer-devel.msi", "/quiet", "/norestart", "INSTALLDIR=C:\gstreamer" -Wait -NoNewWindow
+
+          # Set environment variables
+          $gstDir = "C:\gstreamer\1.0\$arch"
+          echo "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstDir" >> $env:GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$gstDir\lib\pkgconfig" >> $env:GITHUB_ENV
+          echo "PATH=$gstDir\bin;$env:PATH" >> $env:GITHUB_ENV
+          echo "GST_PLUGIN_PATH=$gstDir\lib\gstreamer-1.0" >> $env:GITHUB_ENV
 
           # Store path for later bundling
-          echo "FFMPEG_BIN_DIR=$ffmpegDir\bin" >> $env:GITHUB_ENV
+          echo "GSTREAMER_BIN_DIR=$gstDir\bin" >> $env:GITHUB_ENV
+          echo "GSTREAMER_LIB_DIR=$gstDir\lib" >> $env:GITHUB_ENV
+          echo "GSTREAMER_PLUGIN_DIR=$gstDir\lib\gstreamer-1.0" >> $env:GITHUB_ENV
 
-          Write-Host "FFmpeg ARM64 setup complete"
-          Write-Host "FFMPEG_DIR: $ffmpegDir"
+          Write-Host "GStreamer ARM64 setup complete"
 
-      - name: Install FFmpeg (macOS)
+      # ==================== FFmpeg + GStreamer Installation (macOS only) ====================
+
+      - name: Install FFmpeg and GStreamer (macOS)
         if: matrix.target == 'macos'
         run: |
-          brew install ffmpeg pkg-config
-          echo "FFmpeg installed via Homebrew"
+          brew install ffmpeg gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly pkg-config
+          echo "FFmpeg and GStreamer installed via Homebrew"
 
-      - name: Install FFmpeg (Linux x64)
+      # ==================== GStreamer Installation (Linux) ====================
+
+      - name: Install GStreamer (Linux x64)
         if: matrix.target == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libavcodec-dev \
-            libavformat-dev \
-            libavutil-dev \
-            libswscale-dev \
-            libswresample-dev \
-            libavfilter-dev \
-            libavdevice-dev \
             pkg-config \
             libasound2-dev \
             libx11-dev \
@@ -326,11 +357,37 @@ jobs:
             clang \
             libclang-dev \
             libunwind-dev \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev
-          echo "FFmpeg and GStreamer development libraries installed"
+            wget \
+            patchelf
 
-      - name: Install FFmpeg (Linux ARM64)
+          # Download pre-built GStreamer from official releases
+          GST_VERSION="1.26.10"
+          GST_URL="https://gstreamer.freedesktop.org/data/pkg/linux/1.26.10/gstreamer-1.0-linux-x86_64-1.26.10.tar.xz"
+
+          echo "Downloading GStreamer $GST_VERSION for Linux x64..."
+          wget -q "$GST_URL" -O gstreamer.tar.xz
+
+          echo "Extracting GStreamer..."
+          mkdir -p gstreamer-linux
+          tar -xf gstreamer.tar.xz -C gstreamer-linux
+
+          GST_DIR=$(realpath gstreamer-linux)
+          echo "GStreamer extracted to: $GST_DIR"
+
+          # Set environment variables for building
+          echo "PKG_CONFIG_PATH=$GST_DIR/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$GST_DIR/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+          echo "GST_PLUGIN_PATH=$GST_DIR/lib/x86_64-linux-gnu/gstreamer-1.0" >> $GITHUB_ENV
+          echo "PATH=$GST_DIR/bin:$PATH" >> $GITHUB_ENV
+
+          # Store for bundling
+          echo "GSTREAMER_DIR=$GST_DIR" >> $GITHUB_ENV
+          echo "GSTREAMER_LIB_DIR=$GST_DIR/lib/x86_64-linux-gnu" >> $GITHUB_ENV
+          echo "GSTREAMER_PLUGIN_DIR=$GST_DIR/lib/x86_64-linux-gnu/gstreamer-1.0" >> $GITHUB_ENV
+
+          echo "GStreamer $GST_VERSION setup complete"
+
+      - name: Install GStreamer (Linux ARM64)
         if: matrix.target == 'linux-arm64'
         run: |
           sudo apt-get update
@@ -358,41 +415,27 @@ jobs:
             libudev-dev:arm64 \
             libunwind-dev:arm64 \
             libgstreamer1.0-dev:arm64 \
-            libgstreamer-plugins-base1.0-dev:arm64
-
-          # Download pre-built FFmpeg ARM64 from BtbN
-          # Use FFmpeg 8.0 stable (not master-latest which may have unsupported enum variants)
-          FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-linuxarm64-lgpl-shared-8.0.tar.xz"
-          echo "Downloading FFmpeg ARM64 from $FFMPEG_URL..."
-          wget -q "$FFMPEG_URL" -O ffmpeg.tar.xz
-
-          echo "Extracting FFmpeg..."
-          tar -xf ffmpeg.tar.xz
-          FFMPEG_DIR=$(ls -d ffmpeg-*/  | head -1)
-          FFMPEG_DIR=$(realpath "$FFMPEG_DIR")
-          echo "FFmpeg extracted to: $FFMPEG_DIR"
-
-          # Set FFmpeg environment for ffmpeg-next crate
-          echo "FFMPEG_DIR=$FFMPEG_DIR" >> $GITHUB_ENV
-          echo "FFMPEG_INCLUDE_DIR=$FFMPEG_DIR/include" >> $GITHUB_ENV
-          echo "FFMPEG_LIB_DIR=$FFMPEG_DIR/lib" >> $GITHUB_ENV
-
-          # Store for bundling
-          echo "FFMPEG_BIN_DIR=$FFMPEG_DIR/bin" >> $GITHUB_ENV
+            libgstreamer-plugins-base1.0-dev:arm64 \
+            libgstreamer-plugins-bad1.0-dev:arm64 \
+            gstreamer1.0-plugins-base:arm64 \
+            gstreamer1.0-plugins-good:arm64 \
+            gstreamer1.0-plugins-bad:arm64 \
+            gstreamer1.0-plugins-ugly:arm64 \
+            gstreamer1.0-libav:arm64
 
           # Set cross-compilation environment
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:$FFMPEG_DIR/lib/pkgconfig" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
 
           # Set OpenSSL paths for ARM64 cross-compilation
           echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
           echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=/usr/include" >> $GITHUB_ENV
 
-          echo "FFmpeg ARM64 setup complete"
+          echo "GStreamer ARM64 setup complete"
 
       # ==================== Build Native Client ====================
 
@@ -447,31 +490,193 @@ jobs:
           echo "Building for Linux ARM64..."
           cargo build --release --target aarch64-unknown-linux-gnu --verbose
 
-      # ==================== Bundle FFmpeg Libraries ====================
+      # ==================== Bundle GStreamer Libraries ====================
 
-      - name: Bundle FFmpeg DLLs (Windows x64)
+      - name: Bundle GStreamer DLLs (Windows x64)
         if: matrix.target == 'windows'
         shell: pwsh
         run: |
           $targetDir = "opennow-streamer/target/release"
+          $gstBinDir = $env:GSTREAMER_BIN_DIR
+          $gstPluginDir = $env:GSTREAMER_PLUGIN_DIR
 
-          Write-Host "Copying FFmpeg DLLs to $targetDir..."
-          Copy-Item "$env:FFMPEG_BIN_DIR\*.dll" -Destination $targetDir -Verbose
+          # Create plugins directory in target
+          $pluginsTargetDir = "$targetDir\lib\gstreamer-1.0"
+          New-Item -ItemType Directory -Force -Path $pluginsTargetDir | Out-Null
 
-          Write-Host "`n=== Bundled FFmpeg DLLs ==="
+          Write-Host "Copying GStreamer core DLLs to $targetDir..."
+
+          # Copy core GStreamer DLLs
+          $coreDlls = @(
+            "gstreamer-1.0-0.dll",
+            "gstbase-1.0-0.dll",
+            "gstapp-1.0-0.dll",
+            "gstaudio-1.0-0.dll",
+            "gstvideo-1.0-0.dll",
+            "gstpbutils-1.0-0.dll",
+            "gstrtp-1.0-0.dll",
+            "gstrtsp-1.0-0.dll",
+            "gstsdp-1.0-0.dll",
+            "gstwebrtc-1.0-0.dll",
+            "gstcodecs-1.0-0.dll",
+            "gstgl-1.0-0.dll",
+            "glib-2.0-0.dll",
+            "gobject-2.0-0.dll",
+            "gmodule-2.0-0.dll",
+            "gio-2.0-0.dll",
+            "intl-8.dll",
+            "ffi-8.dll",
+            "z-1.dll",
+            "orc-0.4-0.dll",
+            "pcre2-8-0.dll"
+          )
+
+          foreach ($dll in $coreDlls) {
+            $srcPath = Join-Path $gstBinDir $dll
+            if (Test-Path $srcPath) {
+              Copy-Item $srcPath -Destination $targetDir -Verbose
+            } else {
+              Write-Host "Warning: $dll not found at $srcPath"
+            }
+          }
+
+          # Copy essential plugins
+          Write-Host "`nCopying GStreamer plugins..."
+          $essentialPlugins = @(
+            "gstcoreelements.dll",
+            "gstapp.dll",
+            "gstaudioconvert.dll",
+            "gstaudioresample.dll",
+            "gstvideoconvertscale.dll",
+            "gstvideoparsersbad.dll",
+            "gstd3d11.dll",
+            "gstd3d12.dll",
+            "gstopenh264.dll",
+            "gstx264.dll",
+            "gstx265.dll",
+            "gstvpx.dll",
+            "gstopus.dll",
+            "gstrtp.dll",
+            "gstrtpmanager.dll",
+            "gstwebrtc.dll",
+            "gstdtls.dll",
+            "gstsrtp.dll",
+            "gstnice.dll",
+            "gstplayback.dll",
+            "gsttypefindfunctions.dll",
+            "gstautodetect.dll",
+            "gstwasapi.dll",
+            "gstwasapi2.dll",
+            "gstdirectshow.dll",
+            "gstdirectsound.dll"
+          )
+
+          foreach ($plugin in $essentialPlugins) {
+            $srcPath = Join-Path $gstPluginDir $plugin
+            if (Test-Path $srcPath) {
+              Copy-Item $srcPath -Destination $pluginsTargetDir -Verbose
+            } else {
+              Write-Host "Warning: Plugin $plugin not found"
+            }
+          }
+
+          Write-Host "`n=== Bundled GStreamer DLLs ==="
           Get-ChildItem $targetDir -Filter "*.dll" | ForEach-Object { Write-Host "  - $($_.Name)" }
+          Write-Host "`n=== Bundled GStreamer Plugins ==="
+          Get-ChildItem $pluginsTargetDir -Filter "*.dll" | ForEach-Object { Write-Host "  - $($_.Name)" }
 
-      - name: Bundle FFmpeg DLLs (Windows ARM64)
+      - name: Bundle GStreamer DLLs (Windows ARM64)
         if: matrix.target == 'windows-arm64'
         shell: pwsh
         run: |
           $targetDir = "opennow-streamer/target/aarch64-pc-windows-msvc/release"
+          $gstBinDir = $env:GSTREAMER_BIN_DIR
+          $gstPluginDir = $env:GSTREAMER_PLUGIN_DIR
 
-          Write-Host "Copying FFmpeg ARM64 DLLs to $targetDir..."
-          Copy-Item "$env:FFMPEG_BIN_DIR\*.dll" -Destination $targetDir -Verbose
+          # Create plugins directory in target
+          $pluginsTargetDir = "$targetDir\lib\gstreamer-1.0"
+          New-Item -ItemType Directory -Force -Path $pluginsTargetDir | Out-Null
 
-          Write-Host "`n=== Bundled FFmpeg DLLs ==="
+          Write-Host "Copying GStreamer core DLLs to $targetDir..."
+
+          # Copy core GStreamer DLLs
+          $coreDlls = @(
+            "gstreamer-1.0-0.dll",
+            "gstbase-1.0-0.dll",
+            "gstapp-1.0-0.dll",
+            "gstaudio-1.0-0.dll",
+            "gstvideo-1.0-0.dll",
+            "gstpbutils-1.0-0.dll",
+            "gstrtp-1.0-0.dll",
+            "gstrtsp-1.0-0.dll",
+            "gstsdp-1.0-0.dll",
+            "gstwebrtc-1.0-0.dll",
+            "gstcodecs-1.0-0.dll",
+            "gstgl-1.0-0.dll",
+            "glib-2.0-0.dll",
+            "gobject-2.0-0.dll",
+            "gmodule-2.0-0.dll",
+            "gio-2.0-0.dll",
+            "intl-8.dll",
+            "ffi-8.dll",
+            "z-1.dll",
+            "orc-0.4-0.dll",
+            "pcre2-8-0.dll"
+          )
+
+          foreach ($dll in $coreDlls) {
+            $srcPath = Join-Path $gstBinDir $dll
+            if (Test-Path $srcPath) {
+              Copy-Item $srcPath -Destination $targetDir -Verbose
+            } else {
+              Write-Host "Warning: $dll not found at $srcPath"
+            }
+          }
+
+          # Copy essential plugins
+          Write-Host "`nCopying GStreamer plugins..."
+          $essentialPlugins = @(
+            "gstcoreelements.dll",
+            "gstapp.dll",
+            "gstaudioconvert.dll",
+            "gstaudioresample.dll",
+            "gstvideoconvertscale.dll",
+            "gstvideoparsersbad.dll",
+            "gstd3d11.dll",
+            "gstd3d12.dll",
+            "gstopenh264.dll",
+            "gstx264.dll",
+            "gstx265.dll",
+            "gstvpx.dll",
+            "gstopus.dll",
+            "gstrtp.dll",
+            "gstrtpmanager.dll",
+            "gstwebrtc.dll",
+            "gstdtls.dll",
+            "gstsrtp.dll",
+            "gstnice.dll",
+            "gstplayback.dll",
+            "gsttypefindfunctions.dll",
+            "gstautodetect.dll",
+            "gstwasapi.dll",
+            "gstwasapi2.dll",
+            "gstdirectshow.dll",
+            "gstdirectsound.dll"
+          )
+
+          foreach ($plugin in $essentialPlugins) {
+            $srcPath = Join-Path $gstPluginDir $plugin
+            if (Test-Path $srcPath) {
+              Copy-Item $srcPath -Destination $pluginsTargetDir -Verbose
+            } else {
+              Write-Host "Warning: Plugin $plugin not found"
+            }
+          }
+
+          Write-Host "`n=== Bundled GStreamer DLLs ==="
           Get-ChildItem $targetDir -Filter "*.dll" | ForEach-Object { Write-Host "  - $($_.Name)" }
+          Write-Host "`n=== Bundled GStreamer Plugins ==="
+          Get-ChildItem $pluginsTargetDir -Filter "*.dll" | ForEach-Object { Write-Host "  - $($_.Name)" }
 
       - name: Bundle macOS App
         if: matrix.target == 'macos' || matrix.target == 'macos-intel'
@@ -564,7 +769,7 @@ jobs:
           }
 
           echo ""
-          echo "=== Phase 1: Explicitly copy FFmpeg libraries ==="
+          echo "=== Phase 1a: Explicitly copy FFmpeg libraries ==="
           # FFmpeg libraries might not show up in otool if dlopened or linked with @rpath
           # So we explicitly find and copy them
 
@@ -583,14 +788,6 @@ jobs:
           )
 
           for lib_base in "${FFMPEG_LIBS[@]}"; do
-             # Find the actual dylib file (resolving symlinks if needed, but we usually want the versioned one)
-             # Looking for *.dylib in lib folder
-             # We want the main shared library, usually something like libavcodec.60.dylib
-
-             # Using find to locate the main library file
-             # We avoid symlinks that point to themselves or just the .dylib -> .X.dylib
-             # We want the file that the binary is likely linked against or will try to load
-
              echo "Looking for $lib_base in $FFMPEG_PREFIX/lib..."
              FOUND_LIBS=$(find "$FFMPEG_PREFIX/lib" -name "${lib_base}.*.dylib" -type f )
 
@@ -598,6 +795,85 @@ jobs:
                 echo "Found FFmpeg lib: $lib"
                 copy_lib "$lib"
              done
+          done
+
+          echo ""
+          echo "=== Phase 1b: Explicitly copy GStreamer libraries ==="
+          # GStreamer libraries for macOS
+
+          GSTREAMER_PREFIX=$(brew --prefix gstreamer)
+          echo "GStreamer prefix: $GSTREAMER_PREFIX"
+
+          # Core GStreamer libraries
+          GSTREAMER_LIBS=(
+            "libgstreamer-1.0"
+            "libgstbase-1.0"
+            "libgstapp-1.0"
+            "libgstaudio-1.0"
+            "libgstvideo-1.0"
+            "libgstpbutils-1.0"
+            "libgstrtp-1.0"
+            "libgstrtsp-1.0"
+            "libgstsdp-1.0"
+            "libgstwebrtc-1.0"
+            "libgstcodecs-1.0"
+            "libgstgl-1.0"
+          )
+
+          for lib_base in "${GSTREAMER_LIBS[@]}"; do
+             echo "Looking for $lib_base in $GSTREAMER_PREFIX/lib..."
+             FOUND_LIBS=$(find "$GSTREAMER_PREFIX/lib" -name "${lib_base}*.dylib" -type f 2>/dev/null || true)
+
+             for lib in $FOUND_LIBS; do
+                echo "Found GStreamer lib: $lib"
+                copy_lib "$lib"
+             done
+          done
+
+          # Also copy GLib dependencies (required by GStreamer)
+          GLIB_PREFIX=$(brew --prefix glib)
+          echo "GLib prefix: $GLIB_PREFIX"
+
+          GLIB_LIBS=(
+            "libglib-2.0"
+            "libgobject-2.0"
+            "libgmodule-2.0"
+            "libgio-2.0"
+            "libgthread-2.0"
+          )
+
+          for lib_base in "${GLIB_LIBS[@]}"; do
+             echo "Looking for $lib_base in $GLIB_PREFIX/lib..."
+             FOUND_LIBS=$(find "$GLIB_PREFIX/lib" -name "${lib_base}*.dylib" -type f 2>/dev/null || true)
+
+             for lib in $FOUND_LIBS; do
+                echo "Found GLib lib: $lib"
+                copy_lib "$lib"
+             done
+          done
+
+          # Copy GStreamer plugins
+          echo ""
+          echo "=== Phase 1c: Copy GStreamer plugins ==="
+          GST_PLUGINS_DIR="$CONTENTS_DIR/PlugIns/gstreamer-1.0"
+          mkdir -p "$GST_PLUGINS_DIR"
+
+          # Find plugins from various plugin packages
+          for plugin_pkg in gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly; do
+            PLUGIN_PREFIX=$(brew --prefix $plugin_pkg 2>/dev/null || true)
+            if [ -d "$PLUGIN_PREFIX/lib/gstreamer-1.0" ]; then
+              echo "Copying plugins from $plugin_pkg..."
+              for plugin in "$PLUGIN_PREFIX/lib/gstreamer-1.0/"*.dylib; do
+                if [ -f "$plugin" ]; then
+                  plugin_name=$(basename "$plugin")
+                  if [ ! -f "$GST_PLUGINS_DIR/$plugin_name" ]; then
+                    echo "  Copying plugin: $plugin_name"
+                    cp "$plugin" "$GST_PLUGINS_DIR/"
+                    chmod 755 "$GST_PLUGINS_DIR/$plugin_name"
+                  fi
+                fi
+              done
+            fi
           done
 
 
@@ -725,7 +1001,7 @@ jobs:
           zip -r "$ZIP_NAME" "$APP_NAME.app"
           echo "Created: $ZIP_NAME"
 
-      - name: Bundle FFmpeg libs (Linux ARM64)
+      - name: Bundle Linux ARM64 binary
         if: matrix.target == 'linux-arm64'
         shell: bash
         run: |
@@ -735,32 +1011,24 @@ jobs:
           BUNDLE_DIR="target/aarch64-unknown-linux-gnu/release/bundle"
 
           echo "Creating bundle directory structure..."
-          mkdir -p "$BUNDLE_DIR/libs"
+          mkdir -p "$BUNDLE_DIR"
 
           # Copy the binary
           cp "$BINARY" "$BUNDLE_DIR/"
           chmod +x "$BUNDLE_DIR/opennow-streamer"
 
-          # Copy FFmpeg shared libraries
-          echo "Copying FFmpeg libraries..."
-          cp "$FFMPEG_DIR"/lib/*.so* "$BUNDLE_DIR/libs/" 2>/dev/null || true
-
-          # Create wrapper script that sets LD_LIBRARY_PATH
+          # Create wrapper script that sets GST_PLUGIN_PATH if needed
           cat > "$BUNDLE_DIR/run.sh" << 'WRAPPER'
           #!/bin/bash
           SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          export LD_LIBRARY_PATH="$SCRIPT_DIR/libs:$LD_LIBRARY_PATH"
           exec "$SCRIPT_DIR/opennow-streamer" "$@"
           WRAPPER
           chmod +x "$BUNDLE_DIR/run.sh"
 
           echo ""
-          echo "=== Bundled libraries ==="
-          ls -lh "$BUNDLE_DIR/libs/" | head -20
-
-          echo ""
           echo "Bundle created at: $BUNDLE_DIR"
-          echo "Run with: ./run.sh"
+          echo "Run with: ./run.sh or ./opennow-streamer"
+          echo "Note: Requires GStreamer to be installed on the system"
 
       # ==================== Upload Artifacts ====================
 
@@ -770,7 +1038,17 @@ jobs:
         run: |
           $releaseDir = "opennow-streamer/target/release"
           $zipName = "OpenNOW-windows-x64.zip"
-          Compress-Archive -Path "$releaseDir\opennow-streamer.exe", "$releaseDir\*.dll" -DestinationPath "$releaseDir\$zipName"
+          # Include exe, dlls, and lib folder with GStreamer plugins
+          $items = @(
+            "$releaseDir\opennow-streamer.exe"
+          )
+          # Add all DLLs
+          $items += Get-ChildItem "$releaseDir\*.dll" | ForEach-Object { $_.FullName }
+          # Add lib folder if it exists (contains GStreamer plugins)
+          if (Test-Path "$releaseDir\lib") {
+            $items += "$releaseDir\lib"
+          }
+          Compress-Archive -Path $items -DestinationPath "$releaseDir\$zipName"
 
       - name: Upload Windows x64 artifacts
         if: matrix.target == 'windows'
@@ -786,7 +1064,17 @@ jobs:
         run: |
           $releaseDir = "opennow-streamer/target/aarch64-pc-windows-msvc/release"
           $zipName = "OpenNOW-windows-arm64.zip"
-          Compress-Archive -Path "$releaseDir\opennow-streamer.exe", "$releaseDir\*.dll" -DestinationPath "$releaseDir\$zipName"
+          # Include exe, dlls, and lib folder with GStreamer plugins
+          $items = @(
+            "$releaseDir\opennow-streamer.exe"
+          )
+          # Add all DLLs
+          $items += Get-ChildItem "$releaseDir\*.dll" | ForEach-Object { $_.FullName }
+          # Add lib folder if it exists (contains GStreamer plugins)
+          if (Test-Path "$releaseDir\lib") {
+            $items += "$releaseDir\lib"
+          }
+          Compress-Archive -Path $items -DestinationPath "$releaseDir\$zipName"
 
       - name: Upload Windows ARM64 artifacts
         if: matrix.target == 'windows-arm64'
@@ -813,12 +1101,62 @@ jobs:
       #     path: opennow-streamer/target/release/OpenNOW-macos-x86_64.zip
       #     retention-days: 30
 
+      - name: Bundle GStreamer libs (Linux x64)
+        if: matrix.target == 'linux'
+        shell: bash
+        run: |
+          cd opennow-streamer
+
+          BINARY="target/release/opennow-streamer"
+          BUNDLE_DIR="target/release/bundle"
+
+          echo "Creating bundle directory structure..."
+          mkdir -p "$BUNDLE_DIR/lib"
+          mkdir -p "$BUNDLE_DIR/lib/gstreamer-1.0"
+
+          # Copy the binary
+          cp "$BINARY" "$BUNDLE_DIR/"
+          chmod +x "$BUNDLE_DIR/opennow-streamer"
+
+          # Copy GStreamer shared libraries
+          echo "Copying GStreamer libraries..."
+          if [ -d "$GSTREAMER_LIB_DIR" ]; then
+            cp -P "$GSTREAMER_LIB_DIR"/*.so* "$BUNDLE_DIR/lib/" 2>/dev/null || true
+
+            # Copy GStreamer plugins
+            echo "Copying GStreamer plugins..."
+            if [ -d "$GSTREAMER_PLUGIN_DIR" ]; then
+              cp -P "$GSTREAMER_PLUGIN_DIR"/*.so "$BUNDLE_DIR/lib/gstreamer-1.0/" 2>/dev/null || true
+            fi
+          fi
+
+          # Create wrapper script that sets library paths
+          cat > "$BUNDLE_DIR/run.sh" << 'WRAPPER'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
+          export GST_PLUGIN_PATH="$SCRIPT_DIR/lib/gstreamer-1.0"
+          export GST_PLUGIN_SYSTEM_PATH=""
+          exec "$SCRIPT_DIR/opennow-streamer" "$@"
+          WRAPPER
+          chmod +x "$BUNDLE_DIR/run.sh"
+
+          echo ""
+          echo "=== Bundled libraries ==="
+          ls -lh "$BUNDLE_DIR/lib/" | head -30
+          echo ""
+          echo "=== Bundled plugins ==="
+          ls -1 "$BUNDLE_DIR/lib/gstreamer-1.0/" | head -30
+          echo ""
+          echo "Bundle created at: $BUNDLE_DIR"
+          echo "Run with: ./run.sh"
+
       - name: Zip Linux x64 artifacts
         if: matrix.target == 'linux'
         shell: bash
         run: |
           cd opennow-streamer/target/release
-          zip -r "OpenNOW-linux-x64.zip" opennow-streamer
+          zip -r "OpenNOW-linux-x64.zip" bundle/
 
       - name: Upload Linux x64 artifacts
         if: matrix.target == 'linux'
@@ -861,22 +1199,22 @@ jobs:
             ---
 
             ### Downloads
-            - **Windows x64**: Portable executable with bundled FFmpeg DLLs
-            - **Windows ARM64**: Portable executable with bundled FFmpeg DLLs (Surface Pro X, etc.)
-            - **macOS ARM64**: Apple Silicon native binary with bundled FFmpeg dylibs (Intel Macs can use Rosetta 2)
-            - **Linux x64**: Portable binary (requires system FFmpeg - see below)
-            - **Linux ARM64**: Portable bundle with FFmpeg libs (run via `./run.sh`)
+            - **Windows x64**: Portable executable with bundled GStreamer (run via `./run.sh`)
+            - **Windows ARM64**: Portable executable with bundled GStreamer (Surface Pro X, etc.)
+            - **macOS ARM64**: Apple Silicon native binary with bundled FFmpeg + GStreamer (Intel Macs can use Rosetta 2)
+            - **Linux x64**: Portable bundle with GStreamer libs (run via `./run.sh`)
+            - **Linux ARM64**: Portable binary (requires system GStreamer - see below)
 
-            **Linux x64 users**: Install FFmpeg via your package manager:
+            **Linux ARM64 users**: Install GStreamer via your package manager:
             ```bash
             # Ubuntu/Debian
-            sudo apt install ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+            sudo apt install gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
 
             # Fedora/RHEL
-            sudo dnf install ffmpeg-free ffmpeg-free-devel
+            sudo dnf install gstreamer1-plugins-base gstreamer1-plugins-good gstreamer1-plugins-bad-free gstreamer1-plugins-ugly-free gstreamer1-libav
 
             # Arch
-            sudo pacman -S ffmpeg
+            sudo pacman -S gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
             ```
 
             [Sponsor this project](https://github.com/sponsors/zortos293)

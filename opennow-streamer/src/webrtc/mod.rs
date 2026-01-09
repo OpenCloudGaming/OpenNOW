@@ -11,14 +11,25 @@ pub use datachannel::*;
 pub use peer::{request_keyframe, NetworkStats, WebRtcEvent, WebRtcPeer};
 pub use sdp::*;
 pub use signaling::{GfnSignaling, IceCandidate, SignalingEvent};
-
-use anyhow::Result;
+// StreamingResult is defined in this module and exported automatically
 use log::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 
 use crate::app::{SessionInfo, Settings, SharedFrame, VideoCodec};
+
+/// Result of a streaming session - indicates why the stream ended
+#[derive(Debug, Clone)]
+pub enum StreamingResult {
+    /// Stream ended normally (user stopped or server disconnected gracefully)
+    Normal,
+    /// Stream failed due to an error
+    Error(String),
+    /// Stream was interrupted by SSRC change (resolution change on server)
+    /// Contains the stall duration in milliseconds before detection
+    SsrcChangeDetected { stall_duration_ms: u64 },
+}
 use crate::input::{ControllerManager, InputHandler};
 use crate::media::{
     AudioDecoder, AudioPlayer, DepacketizerCodec, RtpDepacketizer, StreamStats, UnifiedVideoDecoder,
@@ -149,7 +160,15 @@ fn build_nvst_sdp(
         "a=vqos.adjustStreamingFpsDuringOutOfFocus:1".to_string(),
         "a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1".to_string(),
         "a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1".to_string(),
-        "a=vqos.resControl.cpmRtc.featureMask:3".to_string(),
+        // Disable CPM-based resolution changes (prevents SSRC switches)
+        // featureMask: 0 = disable all CPM features, 3 = enable some
+        "a=vqos.resControl.cpmRtc.featureMask:0".to_string(),
+        // Disable resolution scaling entirely
+        "a=vqos.resControl.cpmRtc.enable:0".to_string(),
+        // Never scale down resolution
+        "a=vqos.resControl.cpmRtc.minResolutionPercent:100".to_string(),
+        // Infinite cooldown to prevent resolution changes
+        "a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999".to_string(),
         format!(
             "a=packetPacing.numGroups:{}",
             if is_120_fps { 3 } else { 5 }
@@ -251,13 +270,14 @@ fn extract_public_ip(input: &str) -> Option<String> {
 }
 
 /// Run the streaming session
+/// Returns a `StreamingResult` indicating how/why the session ended
 pub async fn run_streaming(
     session_info: SessionInfo,
     settings: Settings,
     shared_frame: Arc<SharedFrame>,
     stats_tx: mpsc::Sender<StreamStats>,
     input_handler: Arc<InputHandler>,
-) -> Result<()> {
+) -> StreamingResult {
     info!(
         "Starting streaming to {} with session {}",
         session_info.server_ip, session_info.session_id
@@ -285,7 +305,9 @@ pub async fn run_streaming(
     );
 
     // Connect to signaling
-    signaling.connect().await?;
+    if let Err(e) = signaling.connect().await {
+        return StreamingResult::Error(format!("Failed to connect signaling: {}", e));
+    }
     info!("Signaling connected");
 
     // Create WebRTC peer
@@ -296,17 +318,24 @@ pub async fn run_streaming(
     // Decoded frames are written directly to SharedFrame by the decoder thread
     // Uses UnifiedVideoDecoder to support both FFmpeg and native DXVA backends
     let (mut video_decoder, mut decode_stats_rx) =
-        UnifiedVideoDecoder::new_async(codec, settings.decoder_backend, shared_frame.clone())?;
+        match UnifiedVideoDecoder::new_async(codec, settings.decoder_backend, shared_frame.clone()) {
+            Ok(decoder) => decoder,
+            Err(e) => return StreamingResult::Error(format!("Failed to create video decoder: {}", e)),
+        };
 
     // Create RTP depacketizer with correct codec
     let depacketizer_codec = match codec {
         VideoCodec::H264 => DepacketizerCodec::H264,
         VideoCodec::H265 => DepacketizerCodec::H265,
+        VideoCodec::AV1 => DepacketizerCodec::AV1,
     };
     let mut rtp_depacketizer = RtpDepacketizer::with_codec(depacketizer_codec);
     info!("RTP depacketizer using {:?} mode", depacketizer_codec);
 
-    let mut audio_decoder = AudioDecoder::new(48000, 2)?;
+    let mut audio_decoder = match AudioDecoder::new(48000, 2) {
+        Ok(decoder) => decoder,
+        Err(e) => return StreamingResult::Error(format!("Failed to create audio decoder: {}", e)),
+    };
 
     // Get the sample receiver from the decoder for async operation
     let audio_sample_rx = audio_decoder.take_sample_receiver();
@@ -503,6 +532,7 @@ pub async fn run_streaming(
                         let codec = match settings.codec {
                             VideoCodec::H264 => "H264",
                             VideoCodec::H265 => "H265",
+                            VideoCodec::AV1 => "AV1",
                         };
 
                         info!("Preferred codec: {}", codec);
@@ -519,7 +549,11 @@ pub async fn run_streaming(
                             sdp.clone()
                         };
 
-
+                        // CRITICAL: Inject provisional SSRCs (2, 3, 4) for video
+                        // GFN server uses sequential SSRCs when resolution changes, but
+                        // webrtc-rs can't handle undeclared SSRCs without MID extensions.
+                        // This is based on reverse-engineering of official GFN client (Bifrost2.dll).
+                        let modified_sdp = inject_provisional_ssrcs(&modified_sdp);
 
                         // Prefer codec
                         let modified_sdp = prefer_codec(&modified_sdp, &settings.codec);
@@ -584,7 +618,9 @@ pub async fn run_streaming(
                                 info!("Generated nvstSdp, length: {}", nvst_sdp_content.len());
 
                                 // Use raw nvstSdp string (no wrapper object)
-                                signaling.send_answer(&answer_sdp, Some(&nvst_sdp_content)).await?;
+                                if let Err(e) = signaling.send_answer(&answer_sdp, Some(&nvst_sdp_content)).await {
+                                    error!("Failed to send SDP answer: {}", e);
+                                }
 
                                 // For resume flow or Alliance partners (manual candidate needed)
                                 if let Some(ref mci) = session_info.media_connection_info {
@@ -682,22 +718,39 @@ pub async fn run_streaming(
                             info!("First video RTP packet received: {} bytes", payload.len());
                         }
 
-                        // Accumulate NAL units and send complete frames on marker bit
-                        // This is required for proper H.264/H.265 decoding
-                        // H.264/H.265: depacketize RTP and accumulate NAL units
-                        let nal_units = rtp_depacketizer.process(&payload);
+                        // Handle codec-specific depacketization
+                        match depacketizer_codec {
+                            DepacketizerCodec::AV1 => {
+                                // AV1: Use specialized OBU accumulation
+                                rtp_depacketizer.process_av1_raw(&payload);
 
-                        // H.264/H.265: accumulate NAL units until marker bit (end of frame)
-                        // Each frame consists of multiple NAL units that must be sent together
-                        for nal_unit in nal_units {
-                            rtp_depacketizer.accumulate_nal(nal_unit);
-                        }
+                                // On marker bit, flush pending OBU and get complete frame
+                                if marker {
+                                    rtp_depacketizer.flush_pending_obu();
+                                    if let Some(frame_data) = rtp_depacketizer.take_accumulated_frame() {
+                                        if let Err(e) = video_decoder.decode_async(&frame_data, packet_receive_time) {
+                                            warn!("AV1 decode async failed: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                            DepacketizerCodec::H264 | DepacketizerCodec::H265 => {
+                                // H.264/H.265: depacketize RTP and accumulate NAL units
+                                let nal_units = rtp_depacketizer.process(&payload);
 
-                        // On marker bit, we have a complete Access Unit - send to decoder
-                        if marker {
-                            if let Some(frame_data) = rtp_depacketizer.take_nal_frame() {
-                                if let Err(e) = video_decoder.decode_async(&frame_data, packet_receive_time) {
-                                    warn!("Decode async failed: {}", e);
+                                // Accumulate NAL units until marker bit (end of frame)
+                                // Each frame consists of multiple NAL units that must be sent together
+                                for nal_unit in nal_units {
+                                    rtp_depacketizer.accumulate_nal(nal_unit);
+                                }
+
+                                // On marker bit, we have a complete Access Unit - send to decoder
+                                if marker {
+                                    if let Some(frame_data) = rtp_depacketizer.take_nal_frame() {
+                                        if let Err(e) = video_decoder.decode_async(&frame_data, packet_receive_time) {
+                                            warn!("Decode async failed: {}", e);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -763,6 +816,25 @@ pub async fn run_streaming(
                     }
                     WebRtcEvent::Error(e) => {
                         error!("WebRTC error: {}", e);
+                    }
+                    WebRtcEvent::SsrcChangeDetected { stall_duration_ms } => {
+                        // SSRC change detected - the server switched video streams
+                        // This is a known limitation of webrtc-rs when handling mid-stream SSRC changes
+                        // without MID header extensions (which GFN doesn't send).
+                        error!(
+                            "SSRC change detected after {}ms stall. Initiating auto-reconnect...",
+                            stall_duration_ms
+                        );
+
+                        // Stop controller manager before returning
+                        controller_manager.stop();
+
+                        // Clear raw input sender
+                        #[cfg(any(target_os = "windows", target_os = "macos"))]
+                        crate::input::clear_raw_input_sender();
+
+                        // Return SSRC change result to trigger reconnection
+                        return StreamingResult::SsrcChangeDetected { stall_duration_ms };
                     }
                 }
             }
@@ -882,5 +954,5 @@ pub async fn run_streaming(
     crate::input::clear_raw_input_sender();
 
     info!("Streaming session ended");
-    Ok(())
+    StreamingResult::Normal
 }

@@ -214,6 +214,7 @@ pub fn render_settings_modal(
                             let codec_text = match settings.codec {
                                 crate::app::VideoCodec::H264 => "H.264",
                                 crate::app::VideoCodec::H265 => "H.265 (HEVC)",
+                                crate::app::VideoCodec::AV1 => "AV1",
                             };
                             egui::ComboBox::from_id_salt("codec_combo")
                                 .selected_text(codec_text)
@@ -224,19 +225,33 @@ pub fn render_settings_modal(
                                     if ui.selectable_label(matches!(settings.codec, crate::app::VideoCodec::H265), "H.265 (HEVC)").clicked() {
                                         actions.push(UiAction::UpdateSetting(SettingChange::Codec(crate::app::VideoCodec::H265)));
                                     }
+                                    if ui.selectable_label(matches!(settings.codec, crate::app::VideoCodec::AV1), "AV1").clicked() {
+                                        actions.push(UiAction::UpdateSetting(SettingChange::Codec(crate::app::VideoCodec::AV1)));
+                                    }
                                 });
                         });
                         ui.end_row();
 
                         // Video Decoder
                         ui.label("Video Decoder")
-                             .on_hover_text("The hardware/software backend used to decode the video stream.\n\n• Native DXVA - Windows GPU decoding (NVIDIA-style)\n• Vulkan Video - Cross-GPU Linux decoding (GFN-style)\n• VAAPI - AMD/Intel Linux decoding\n• Software - CPU fallback");
+                             .on_hover_text(settings.decoder_backend.description());
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            // Show backend info next to selected decoder
+                            let selected_backend = format!("{} ({})",
+                                settings.decoder_backend.as_str(),
+                                settings.decoder_backend.backend_name()
+                            );
                             egui::ComboBox::from_id_salt("decoder_combo")
-                                .selected_text(settings.decoder_backend.as_str())
+                                .selected_text(selected_backend)
                                 .show_ui(ui, |ui| {
                                     for backend in crate::media::get_supported_decoder_backends() {
-                                        if ui.selectable_label(settings.decoder_backend == backend, backend.as_str()).clicked() {
+                                        let label = format!("{} ({})", backend.as_str(), backend.backend_name());
+                                        if ui.selectable_label(settings.decoder_backend == backend, &label)
+                                            .on_hover_ui_at_pointer(|ui| {
+                                                ui.label(backend.description());
+                                            })
+                                            .clicked()
+                                        {
                                             actions.push(UiAction::UpdateSetting(SettingChange::DecoderBackend(backend)));
                                         }
                                     }

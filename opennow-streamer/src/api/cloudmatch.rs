@@ -132,7 +132,7 @@ impl GfnApiClient {
                 user_age: 26,
                 requested_streaming_features: Some(StreamingFeatures {
                     reflex: settings.fps >= 120, // Enable Reflex for high refresh rate
-                    bit_depth: settings.color_quality.bit_depth(),
+                    bit_depth: if settings.hdr_enabled { 10 } else { settings.color_quality.bit_depth() },
                     cloud_gsync: false,
                     enabled_l4s: false,
                     mouse_movement_flags: 0,
@@ -146,6 +146,11 @@ impl GfnApiClient {
                     prefilter_sharpness: 0,
                     prefilter_noise_reduction: 0,
                     hud_streaming_mode: 0,
+                    // Color space values from NVIDIA GFN client:
+                    // SDR colorSpace = 2 (BT.709 / YCBCR_LIMITED_BT709)
+                    // HDR colorSpace = 4 (BT.2020 / YCBCR_LIMITED_BT2020)
+                    sdr_color_space: 2,
+                    hdr_color_space: if settings.hdr_enabled { 4 } else { 0 },
                 }),
             },
         };

@@ -42,6 +42,8 @@ pub struct VulkanVideoConfig {
     pub is_10bit: bool,
     /// Number of decode surfaces (DPB + output)
     pub num_decode_surfaces: u32,
+    /// Enable low latency mode (minimize buffering)
+    pub low_latency: bool,
 }
 
 impl Default for VulkanVideoConfig {
@@ -52,6 +54,7 @@ impl Default for VulkanVideoConfig {
             height: 1080,
             is_10bit: false,
             num_decode_surfaces: 17, // H.264 max: 16 refs + 1 current
+            low_latency: true,       // Default to low latency for streaming
         }
     }
 }
@@ -165,17 +168,24 @@ fn check_vulkan_video_support() -> Result<bool> {
                     .unwrap_or(false)
             });
 
+            let has_av1 = device_extensions.iter().any(|ext| {
+                CStr::from_ptr(ext.extension_name.as_ptr())
+                    .to_str()
+                    .map(|s| s == "VK_KHR_video_decode_av1")
+                    .unwrap_or(false)
+            });
+
             let props = instance.get_physical_device_properties(*physical_device);
             let device_name = CStr::from_ptr(props.device_name.as_ptr())
                 .to_str()
                 .unwrap_or("Unknown");
 
             info!(
-                "Vulkan device '{}': video_queue={}, video_decode={}, h264={}, h265={}",
-                device_name, has_video_queue, has_video_decode, has_h264, has_h265
+                "Vulkan device '{}': video_queue={}, video_decode={}, h264={}, h265={}, av1={}",
+                device_name, has_video_queue, has_video_decode, has_h264, has_h265, has_av1
             );
 
-            if has_video_queue && has_video_decode && (has_h264 || has_h265) {
+            if has_video_queue && has_video_decode && (has_h264 || has_h265 || has_av1) {
                 instance.destroy_instance(None);
                 return Ok(true);
             }
@@ -216,11 +226,21 @@ fn query_supported_codecs() -> Result<Vec<VulkanVideoCodec>> {
                     .unwrap_or(false)
             });
 
+            let has_av1 = device_extensions.iter().any(|ext| {
+                CStr::from_ptr(ext.extension_name.as_ptr())
+                    .to_str()
+                    .map(|s| s == "VK_KHR_video_decode_av1")
+                    .unwrap_or(false)
+            });
+
             if has_h264 && !codecs.contains(&VulkanVideoCodec::H264) {
                 codecs.push(VulkanVideoCodec::H264);
             }
             if has_h265 && !codecs.contains(&VulkanVideoCodec::H265) {
                 codecs.push(VulkanVideoCodec::H265);
+            }
+            if has_av1 && !codecs.contains(&VulkanVideoCodec::AV1) {
+                codecs.push(VulkanVideoCodec::AV1);
             }
         }
 
@@ -640,7 +660,7 @@ impl VulkanVideoDecoder {
                 match config.codec {
                     VulkanVideoCodec::H264 => "VK_KHR_video_decode_h264",
                     VulkanVideoCodec::H265 => "VK_KHR_video_decode_h265",
-                    VulkanVideoCodec::AV1 => return Err(anyhow!("AV1 not yet supported")),
+                    VulkanVideoCodec::AV1 => "VK_KHR_video_decode_av1",
                 },
             ];
 
@@ -688,7 +708,7 @@ impl VulkanVideoDecoder {
             CString::new(match config.codec {
                 VulkanVideoCodec::H264 => "VK_KHR_video_decode_h264",
                 VulkanVideoCodec::H265 => "VK_KHR_video_decode_h265",
-                VulkanVideoCodec::AV1 => return Err(anyhow!("AV1 not supported")),
+                VulkanVideoCodec::AV1 => "VK_KHR_video_decode_av1",
             })
             .unwrap(),
             CString::new("VK_KHR_synchronization2").unwrap(),
@@ -1707,6 +1727,7 @@ impl VulkanVideoDecoder {
         );
 
         Ok(Some(VideoFrame {
+            frame_id: super::next_frame_id(),
             width: self.config.width,
             height: self.config.height,
             y_plane,

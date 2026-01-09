@@ -792,6 +792,30 @@ impl App {
                         frame.height
                     );
                 }
+
+                // Update HDR status in stats from frame's transfer function
+                use crate::media::{TransferFunction, ColorSpace};
+                let is_hdr = frame.transfer_function == TransferFunction::PQ
+                          || frame.transfer_function == TransferFunction::HLG;
+                if self.stats.is_hdr != is_hdr {
+                    self.stats.is_hdr = is_hdr;
+                    self.stats.color_space = match frame.color_space {
+                        ColorSpace::BT2020 => "BT.2020".to_string(),
+                        ColorSpace::BT709 => "BT.709".to_string(),
+                        ColorSpace::BT601 => "BT.601".to_string(),
+                    };
+                }
+
+                // Update resolution in stats from actual decoded frame dimensions
+                // This catches resolution changes from SSRC switches (GFN adaptive quality)
+                let new_res = format!("{}x{}", frame.width, frame.height);
+                if self.stats.resolution != new_res {
+                    if !self.stats.resolution.is_empty() {
+                        log::info!("Resolution changed: {} -> {}", self.stats.resolution, new_res);
+                    }
+                    self.stats.resolution = new_res;
+                }
+
                 self.current_frame = Some(frame);
                 // Increment render frame count only when we get a new video frame
                 // This ensures render FPS matches decode FPS
@@ -805,6 +829,10 @@ impl App {
                 // Preserve render_fps from our local tracking
                 stats.render_fps = self.stats.render_fps;
                 stats.frames_rendered = self.stats.frames_rendered;
+                // Preserve resolution from actual decoded frames (more accurate than SDP)
+                if !self.stats.resolution.is_empty() {
+                    stats.resolution = self.stats.resolution.clone();
+                }
                 self.stats = stats;
             }
         }
@@ -1944,20 +1972,70 @@ impl App {
         // Spawn the streaming task
         let runtime = self.runtime.clone();
         runtime.spawn(async move {
+            use crate::webrtc::StreamingResult;
+
             match crate::webrtc::run_streaming(
-                session,
-                settings,
-                shared_frame,
-                stats_tx,
-                input_handler,
+                session.clone(),
+                settings.clone(),
+                shared_frame.clone(),
+                stats_tx.clone(),
+                input_handler.clone(),
             )
             .await
             {
-                Ok(()) => {
+                StreamingResult::Normal => {
                     info!("Streaming ended normally");
                 }
-                Err(e) => {
+                StreamingResult::Error(e) => {
                     error!("Streaming error: {}", e);
+                }
+                StreamingResult::SsrcChangeDetected { stall_duration_ms } => {
+                    // SSRC change detected - attempt auto-reconnect
+                    warn!(
+                        "SSRC change detected after {}ms stall. Attempting auto-reconnect...",
+                        stall_duration_ms
+                    );
+
+                    // Brief delay to let resources clean up
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                    // Retry the connection with the same session info
+                    // The server-side session is still active, we just need to re-establish WebRTC
+                    info!("Auto-reconnecting to session {}...", session.session_id);
+
+                    // Create new shared frame for reconnection
+                    let new_shared_frame = std::sync::Arc::new(crate::app::SharedFrame::new());
+
+                    // Create new stats channel
+                    let (new_stats_tx, _new_stats_rx) = tokio::sync::mpsc::channel(8);
+
+                    // Create new input handler
+                    let new_input_handler = std::sync::Arc::new(crate::input::InputHandler::new());
+
+                    // Attempt reconnection
+                    match crate::webrtc::run_streaming(
+                        session,
+                        settings,
+                        new_shared_frame,
+                        new_stats_tx,
+                        new_input_handler,
+                    )
+                    .await
+                    {
+                        StreamingResult::Normal => {
+                            info!("Reconnected stream ended normally");
+                        }
+                        StreamingResult::Error(e) => {
+                            error!("Reconnected stream error: {}", e);
+                        }
+                        StreamingResult::SsrcChangeDetected { stall_duration_ms } => {
+                            // Second SSRC change - give up and let user know
+                            error!(
+                                "Second SSRC change detected after {}ms. Auto-reconnect failed. Please restart the session manually.",
+                                stall_duration_ms
+                            );
+                        }
+                    }
                 }
             }
         });
