@@ -2412,8 +2412,7 @@ impl UnifiedVideoDecoder {
         // macOS/Linux: Use FFmpeg decoder
         #[cfg(not(target_os = "windows"))]
         {
-            let (ffmpeg_decoder, stats_rx) =
-                VideoDecoder::new_async(codec, _backend, shared_frame)?;
+            let (ffmpeg_decoder, stats_rx) = VideoDecoder::new_async(codec, backend, shared_frame)?;
             Ok((UnifiedVideoDecoder::Ffmpeg(ffmpeg_decoder), stats_rx))
         }
     }
