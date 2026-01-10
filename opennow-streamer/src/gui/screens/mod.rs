@@ -824,7 +824,7 @@ pub fn render_welcome_popup(ctx: &egui::Context, actions: &mut Vec<UiAction>) {
                     egui::RichText::new("github.com/zortos293/OpenNOW")
                         .size(12.0)
                         .color(egui::Color32::from_rgb(100, 180, 255)),
-                    "https://github.com/zortos293/OpenNOWas3",
+                    "https://github.com/zortos293/OpenNOW",
                 );
 
                 ui.add_space(20.0);
