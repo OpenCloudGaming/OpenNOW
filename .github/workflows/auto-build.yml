@@ -516,81 +516,72 @@ jobs:
           $gstBinDir = $env:GSTREAMER_BIN_DIR
           $gstPluginDir = $env:GSTREAMER_PLUGIN_DIR
 
-          # Create bundled GStreamer directory structure that matches what the Rust code expects:
-          # gstreamer/bin/ - Core DLLs (added to PATH)
-          # gstreamer/lib/gstreamer-1.0/ - Plugins (GST_PLUGIN_PATH)
-          $gstBundleDir = "$targetDir\gstreamer"
-          $gstBundleBin = "$gstBundleDir\bin"
-          $gstBundlePlugins = "$gstBundleDir\lib\gstreamer-1.0"
+          # GStreamer DLLs MUST be next to the exe because Rust links to them at load time
+          # (Windows loads DLLs before any Rust code runs, so we can't set PATH first)
+          # Core DLLs go next to exe, plugins go in lib/gstreamer-1.0/
+          $gstBundlePlugins = "$targetDir\lib\gstreamer-1.0"
 
-          New-Item -ItemType Directory -Force -Path $gstBundleBin | Out-Null
           New-Item -ItemType Directory -Force -Path $gstBundlePlugins | Out-Null
 
-          Write-Host "Copying GStreamer core DLLs to $gstBundleBin..."
+          Write-Host "Copying ALL GStreamer DLLs from $gstBinDir to $targetDir (next to exe for load-time linking)..."
 
-          # Copy core GStreamer DLLs
-          $coreDlls = @(
-            "gstreamer-1.0-0.dll",
-            "gstbase-1.0-0.dll",
-            "gstapp-1.0-0.dll",
-            "gstaudio-1.0-0.dll",
-            "gstvideo-1.0-0.dll",
-            "gstpbutils-1.0-0.dll",
-            "gstrtp-1.0-0.dll",
-            "gstrtsp-1.0-0.dll",
-            "gstsdp-1.0-0.dll",
-            "gstwebrtc-1.0-0.dll",
-            "gstcodecs-1.0-0.dll",
-            "gstgl-1.0-0.dll",
-            "glib-2.0-0.dll",
-            "gobject-2.0-0.dll",
-            "gmodule-2.0-0.dll",
-            "gio-2.0-0.dll",
-            "intl-8.dll",
-            "ffi-8.dll",
-            "z-1.dll",
-            "orc-0.4-0.dll",
-            "pcre2-8-0.dll"
-          )
-
-          foreach ($dll in $coreDlls) {
-            $srcPath = Join-Path $gstBinDir $dll
-            if (Test-Path $srcPath) {
-              Copy-Item $srcPath -Destination $gstBundleBin -Verbose
-            } else {
-              Write-Host "Warning: $dll not found at $srcPath"
-            }
+          # Copy ALL DLLs from GStreamer bin directory
+          # This ensures we don't miss any dependencies (ffi, intl, glib, etc.)
+          # The GStreamer Rust bindings link at load time, so ALL dependencies must be present
+          $allDlls = Get-ChildItem -Path $gstBinDir -Filter "*.dll" -ErrorAction SilentlyContinue
+          $copiedCount = 0
+          foreach ($dll in $allDlls) {
+            Copy-Item $dll.FullName -Destination $targetDir -Force
+            $copiedCount++
           }
+          Write-Host "Copied $copiedCount DLLs from GStreamer bin directory"
 
           # Copy essential plugins
           Write-Host "`nCopying GStreamer plugins to $gstBundlePlugins..."
           $essentialPlugins = @(
+            # Core elements
             "gstcoreelements.dll",
+            "gstcoretracers.dll",
+            # App source/sink
             "gstapp.dll",
+            # Audio plugins
             "gstaudioconvert.dll",
             "gstaudioresample.dll",
+            "gstaudioparsers.dll",
+            # Video plugins
             "gstvideoconvertscale.dll",
             "gstvideoparsersbad.dll",
+            "gstvideorate.dll",
+            # Hardware decoders
             "gstd3d11.dll",
             "gstd3d12.dll",
+            # Software codecs
             "gstopenh264.dll",
             "gstx264.dll",
             "gstx265.dll",
             "gstvpx.dll",
             "gstopus.dll",
+            "gstlibav.dll",
+            # RTP/WebRTC
             "gstrtp.dll",
             "gstrtpmanager.dll",
             "gstwebrtc.dll",
             "gstdtls.dll",
             "gstsrtp.dll",
             "gstnice.dll",
+            # Utility plugins
             "gstplayback.dll",
             "gsttypefindfunctions.dll",
             "gstautodetect.dll",
+            # Audio output
             "gstwasapi.dll",
             "gstwasapi2.dll",
             "gstdirectshow.dll",
-            "gstdirectsound.dll"
+            "gstdirectsound.dll",
+            # Additional base plugins
+            "gstgio.dll",
+            "gstisomp4.dll",
+            "gstmatroska.dll"
           )
 
           foreach ($plugin in $essentialPlugins) {
@@ -602,10 +593,11 @@ jobs:
             }
           }
 
-          Write-Host "`n=== Bundled GStreamer DLLs (gstreamer/bin/) ==="
-          Get-ChildItem $gstBundleBin -Filter "*.dll" | ForEach-Object { Write-Host "  - $($_.Name)" }
-          Write-Host "`n=== Bundled GStreamer Plugins (gstreamer/lib/gstreamer-1.0/) ==="
-          Get-ChildItem $gstBundlePlugins -Filter "*.dll" | ForEach-Object { Write-Host "  - $($_.Name)" }
+          $totalDlls = (Get-ChildItem $targetDir -Filter "*.dll").Count
+          $totalPlugins = (Get-ChildItem $gstBundlePlugins -Filter "*.dll").Count
+          Write-Host "`n=== Bundle Summary ==="
+          Write-Host "  Core DLLs (next to exe): $totalDlls"
+          Write-Host "  Plugins (lib/gstreamer-1.0/): $totalPlugins"
 
       - name: Bundle GStreamer DLLs (Windows ARM64)
         if: matrix.target == 'windows-arm64'
@@ -615,81 +607,72 @@ jobs:
           $gstBinDir = $env:GSTREAMER_BIN_DIR
           $gstPluginDir = $env:GSTREAMER_PLUGIN_DIR
 
-          # Create bundled GStreamer directory structure that matches what the Rust code expects:
-          # gstreamer/bin/ - Core DLLs (added to PATH)
-          # gstreamer/lib/gstreamer-1.0/ - Plugins (GST_PLUGIN_PATH)
-          $gstBundleDir = "$targetDir\gstreamer"
-          $gstBundleBin = "$gstBundleDir\bin"
-          $gstBundlePlugins = "$gstBundleDir\lib\gstreamer-1.0"
+          # GStreamer DLLs MUST be next to the exe because Rust links to them at load time
+          # (Windows loads DLLs before any Rust code runs, so we can't set PATH first)
+          # Core DLLs go next to exe, plugins go in lib/gstreamer-1.0/
+          $gstBundlePlugins = "$targetDir\lib\gstreamer-1.0"
 
-          New-Item -ItemType Directory -Force -Path $gstBundleBin | Out-Null
           New-Item -ItemType Directory -Force -Path $gstBundlePlugins | Out-Null
 
-          Write-Host "Copying GStreamer core DLLs to $gstBundleBin..."
+          Write-Host "Copying ALL GStreamer DLLs from $gstBinDir to $targetDir (next to exe for load-time linking)..."
 
-          # Copy core GStreamer DLLs
-          $coreDlls = @(
-            "gstreamer-1.0-0.dll",
-            "gstbase-1.0-0.dll",
-            "gstapp-1.0-0.dll",
-            "gstaudio-1.0-0.dll",
-            "gstvideo-1.0-0.dll",
-            "gstpbutils-1.0-0.dll",
-            "gstrtp-1.0-0.dll",
-            "gstrtsp-1.0-0.dll",
-            "gstsdp-1.0-0.dll",
-            "gstwebrtc-1.0-0.dll",
-            "gstcodecs-1.0-0.dll",
-            "gstgl-1.0-0.dll",
-            "glib-2.0-0.dll",
-            "gobject-2.0-0.dll",
-            "gmodule-2.0-0.dll",
-            "gio-2.0-0.dll",
-            "intl-8.dll",
-            "ffi-8.dll",
-            "z-1.dll",
-            "orc-0.4-0.dll",
-            "pcre2-8-0.dll"
-          )
-
-          foreach ($dll in $coreDlls) {
-            $srcPath = Join-Path $gstBinDir $dll
-            if (Test-Path $srcPath) {
-              Copy-Item $srcPath -Destination $gstBundleBin -Verbose
-            } else {
-              Write-Host "Warning: $dll not found at $srcPath"
-            }
+          # Copy ALL DLLs from GStreamer bin directory
+          # This ensures we don't miss any dependencies (ffi, intl, glib, etc.)
+          # The GStreamer Rust bindings link at load time, so ALL dependencies must be present
+          $allDlls = Get-ChildItem -Path $gstBinDir -Filter "*.dll" -ErrorAction SilentlyContinue
+          $copiedCount = 0
+          foreach ($dll in $allDlls) {
+            Copy-Item $dll.FullName -Destination $targetDir -Force
+            $copiedCount++
           }
+          Write-Host "Copied $copiedCount DLLs from GStreamer bin directory"
 
           # Copy essential plugins
           Write-Host "`nCopying GStreamer plugins to $gstBundlePlugins..."
           $essentialPlugins = @(
+            # Core elements
             "gstcoreelements.dll",
+            "gstcoretracers.dll",
+            # App source/sink
             "gstapp.dll",
+            # Audio plugins
             "gstaudioconvert.dll",
             "gstaudioresample.dll",
+            "gstaudioparsers.dll",
+            # Video plugins
             "gstvideoconvertscale.dll",
             "gstvideoparsersbad.dll",
+            "gstvideorate.dll",
+            # Hardware decoders
             "gstd3d11.dll",
             "gstd3d12.dll",
+            # Software codecs
             "gstopenh264.dll",
             "gstx264.dll",
             "gstx265.dll",
             "gstvpx.dll",
             "gstopus.dll",
+            "gstlibav.dll",
+            # RTP/WebRTC
             "gstrtp.dll",
             "gstrtpmanager.dll",
             "gstwebrtc.dll",
             "gstdtls.dll",
             "gstsrtp.dll",
             "gstnice.dll",
+            # Utility plugins
             "gstplayback.dll",
             "gsttypefindfunctions.dll",
             "gstautodetect.dll",
+            # Audio output
             "gstwasapi.dll",
             "gstwasapi2.dll",
             "gstdirectshow.dll",
-            "gstdirectsound.dll"
+            "gstdirectsound.dll",
+            # Additional base plugins
+            "gstgio.dll",
+            "gstisomp4.dll",
+            "gstmatroska.dll"
           )
 
           foreach ($plugin in $essentialPlugins) {
@@ -701,10 +684,11 @@ jobs:
             }
           }
 
-          Write-Host "`n=== Bundled GStreamer DLLs (gstreamer/bin/) ==="
-          Get-ChildItem $gstBundleBin -Filter "*.dll" | ForEach-Object { Write-Host "  - $($_.Name)" }
-          Write-Host "`n=== Bundled GStreamer Plugins (gstreamer/lib/gstreamer-1.0/) ==="
-          Get-ChildItem $gstBundlePlugins -Filter "*.dll" | ForEach-Object { Write-Host "  - $($_.Name)" }
+          $totalDlls = (Get-ChildItem $targetDir -Filter "*.dll").Count
+          $totalPlugins = (Get-ChildItem $gstBundlePlugins -Filter "*.dll").Count
+          Write-Host "`n=== Bundle Summary ==="
+          Write-Host "  Core DLLs (next to exe): $totalDlls"
+          Write-Host "  Plugins (lib/gstreamer-1.0/): $totalPlugins"
 
       - name: Bundle macOS App
         if: matrix.target == 'macos' || matrix.target == 'macos-intel'
@@ -1002,13 +986,15 @@ jobs:
         run: |
           $releaseDir = "opennow-streamer/target/release"
           $zipName = "OpenNOW-windows-x64.zip"
-          # Include exe and gstreamer folder (contains bin/ with DLLs and lib/gstreamer-1.0/ with plugins)
+          # Include exe, all DLLs (GStreamer core), and lib folder (GStreamer plugins)
           $items = @(
             "$releaseDir\opennow-streamer.exe"
           )
-          # Add gstreamer folder if it exists (contains bundled GStreamer runtime)
-          if (Test-Path "$releaseDir\gstreamer") {
-            $items += "$releaseDir\gstreamer"
+          # Add all DLLs (GStreamer core libraries next to exe)
+          $items += Get-ChildItem "$releaseDir\*.dll" | ForEach-Object { $_.FullName }
+          # Add lib folder if it exists (contains GStreamer plugins)
+          if (Test-Path "$releaseDir\lib") {
+            $items += "$releaseDir\lib"
           }
           Compress-Archive -Path $items -DestinationPath "$releaseDir\$zipName"
 
@@ -1026,13 +1012,15 @@ jobs:
         run: |
           $releaseDir = "opennow-streamer/target/aarch64-pc-windows-msvc/release"
           $zipName = "OpenNOW-windows-arm64.zip"
-          # Include exe and gstreamer folder (contains bin/ with DLLs and lib/gstreamer-1.0/ with plugins)
+          # Include exe, all DLLs (GStreamer core), and lib folder (GStreamer plugins)
           $items = @(
             "$releaseDir\opennow-streamer.exe"
           )
-          # Add gstreamer folder if it exists (contains bundled GStreamer runtime)
-          if (Test-Path "$releaseDir\gstreamer") {
-            $items += "$releaseDir\gstreamer"
+          # Add all DLLs (GStreamer core libraries next to exe)
+          $items += Get-ChildItem "$releaseDir\*.dll" | ForEach-Object { $_.FullName }
+          # Add lib folder if it exists (contains GStreamer plugins)
+          if (Test-Path "$releaseDir\lib") {
+            $items += "$releaseDir\lib"
           }
           Compress-Archive -Path $items -DestinationPath "$releaseDir\$zipName"
 
