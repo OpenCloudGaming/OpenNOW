@@ -74,12 +74,14 @@ pub use v4l2::{
 
 #[cfg(target_os = "linux")]
 pub use gstreamer_decoder::{
-    is_gstreamer_v4l2_available, GStreamerDecoder, GstCodec, GstDecoderConfig,
+    init_gstreamer, is_gstreamer_v4l2_available, GStreamerDecoder, GstCodec, GstDecoderConfig,
 };
 
 // GStreamer only available on Windows x64 (no ARM64 binaries)
 #[cfg(all(windows, target_arch = "x86_64"))]
-pub use gstreamer_decoder::{is_gstreamer_available, GStreamerDecoder, GstCodec, GstDecoderConfig};
+pub use gstreamer_decoder::{
+    init_gstreamer, is_gstreamer_available, GStreamerDecoder, GstCodec, GstDecoderConfig,
+};
 
 /// Pixel format of decoded video frame
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

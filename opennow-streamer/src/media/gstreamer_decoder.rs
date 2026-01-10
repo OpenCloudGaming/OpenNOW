@@ -32,62 +32,73 @@ use std::sync::{Arc, Mutex};
 use super::{ColorRange, ColorSpace, PixelFormat, TransferFunction, VideoFrame};
 
 /// Initialize GStreamer with support for bundled runtime on Windows
+/// This function MUST be called before any other GStreamer operations.
+/// It sets up the PATH and plugin paths for bundled GStreamer on Windows.
 #[cfg(target_os = "windows")]
-fn init_gstreamer() -> Result<()> {
+pub fn init_gstreamer() -> Result<()> {
     use std::env;
     use std::path::PathBuf;
+    use std::sync::Once;
 
-    // Check if already initialized
-    if gst::init().is_ok() {
-        return Ok(());
-    }
+    static INIT: Once = Once::new();
+    static mut INIT_RESULT: Option<Result<(), String>> = None;
 
-    // Try to find bundled GStreamer
-    let exe_dir = env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
+    // Thread-safe one-time initialization
+    INIT.call_once(|| {
+        // Try to find bundled GStreamer FIRST, before calling gst::init()
+        // The DLLs must be in PATH before GStreamer tries to load them
+        let exe_dir = env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from("."));
 
-    let bundled_gst = exe_dir.join("gstreamer");
-    let bundled_bin = bundled_gst.join("bin");
-    let bundled_plugins = bundled_gst.join("lib").join("gstreamer-1.0");
+        // GStreamer core DLLs are next to the exe (for load-time linking)
+        // Plugins are in lib/gstreamer-1.0/ subdirectory
+        let bundled_plugins = exe_dir.join("lib").join("gstreamer-1.0");
 
-    if bundled_bin.exists() {
-        info!("Found bundled GStreamer at: {}", bundled_gst.display());
+        // Check if we have bundled GStreamer (look for a core DLL next to exe)
+        let has_bundled_gst = exe_dir.join("gstreamer-1.0-0.dll").exists();
 
-        // Add bundled bin to PATH for DLL loading
-        if let Ok(path) = env::var("PATH") {
-            let new_path = format!("{};{}", bundled_bin.display(), path);
-            env::set_var("PATH", &new_path);
+        if has_bundled_gst {
+            info!("Found bundled GStreamer DLLs at: {}", exe_dir.display());
+
+            // Set plugin path
+            if bundled_plugins.exists() {
+                env::set_var("GST_PLUGIN_PATH", bundled_plugins.to_str().unwrap_or(""));
+                info!("Set GST_PLUGIN_PATH to: {}", bundled_plugins.display());
+            }
+
+            // Disable plugin scanning outside bundled path for faster startup
+            env::set_var("GST_PLUGIN_SYSTEM_PATH", "");
         } else {
-            env::set_var("PATH", bundled_bin.to_str().unwrap_or(""));
+            // Check for system GStreamer
+            if let Ok(gst_root) = env::var("GSTREAMER_1_0_ROOT_MSVC_X86_64") {
+                info!("Using system GStreamer from: {}", gst_root);
+            } else {
+                warn!("GStreamer not found. Please install GStreamer or bundle it with the app.");
+                warn!("Download from: https://gstreamer.freedesktop.org/download/");
+            }
         }
 
-        // Set plugin path
-        if bundled_plugins.exists() {
-            env::set_var("GST_PLUGIN_PATH", bundled_plugins.to_str().unwrap_or(""));
-            info!("Set GST_PLUGIN_PATH to: {}", bundled_plugins.display());
+        // Now initialize GStreamer after PATH is set up
+        unsafe {
+            INIT_RESULT = Some(gst::init().map_err(|e| e.to_string()));
         }
+    });
 
-        // Disable plugin scanning outside bundled path for faster startup
-        env::set_var("GST_PLUGIN_SYSTEM_PATH", "");
-    } else {
-        // Check for system GStreamer
-        if let Ok(gst_root) = env::var("GSTREAMER_1_0_ROOT_MSVC_X86_64") {
-            info!("Using system GStreamer from: {}", gst_root);
-        } else {
-            warn!("GStreamer not found. Please install GStreamer or bundle it with the app.");
-            warn!("Download from: https://gstreamer.freedesktop.org/download/");
+    // Return cached result
+    unsafe {
+        match &INIT_RESULT {
+            Some(Ok(())) => Ok(()),
+            Some(Err(e)) => Err(anyhow!("Failed to initialize GStreamer: {}", e)),
+            None => Err(anyhow!("GStreamer initialization not completed")),
         }
     }
-
-    // Now initialize GStreamer
-    gst::init().map_err(|e| anyhow!("Failed to initialize GStreamer: {}", e))
 }
 
 /// Initialize GStreamer (Linux - straightforward)
 #[cfg(target_os = "linux")]
-fn init_gstreamer() -> Result<()> {
+pub fn init_gstreamer() -> Result<()> {
     gst::init().map_err(|e| anyhow!("Failed to initialize GStreamer: {}", e))
 }
 
@@ -314,14 +325,18 @@ impl GStreamerDecoder {
 
                                         // Detect color space (BT.709 vs BT.2020)
                                         let color_space = match colorimetry.matrix() {
-                                            gst_video::VideoColorMatrix::Bt2020 => ColorSpace::BT2020,
+                                            gst_video::VideoColorMatrix::Bt2020 => {
+                                                ColorSpace::BT2020
+                                            }
                                             gst_video::VideoColorMatrix::Bt601 => ColorSpace::BT601,
                                             _ => ColorSpace::BT709,
                                         };
 
                                         // Detect color range (Limited vs Full)
                                         let color_range = match colorimetry.range() {
-                                            gst_video::VideoColorRange::Range0_255 => ColorRange::Full,
+                                            gst_video::VideoColorRange::Range0_255 => {
+                                                ColorRange::Full
+                                            }
                                             _ => ColorRange::Limited,
                                         };
 
@@ -390,7 +405,11 @@ impl GStreamerDecoder {
                         );
                     }
                     MessageView::StateChanged(state) => {
-                        if state.src().map(|s| s.path_string().contains("pipeline")).unwrap_or(false) {
+                        if state
+                            .src()
+                            .map(|s| s.path_string().contains("pipeline"))
+                            .unwrap_or(false)
+                        {
                             log::debug!(
                                 "GStreamer pipeline state: {:?} -> {:?}",
                                 state.old(),
@@ -529,7 +548,10 @@ impl GStreamerDecoder {
             if v4l2_available {
                 // Raspberry Pi / embedded V4L2 hardware decoder - ULTRA LOW LATENCY
                 // V4L2 decoders output directly to DMA buffers
-                info!("Using V4L2 hardware decoder: {} (Raspberry Pi / embedded)", v4l2_decoder);
+                info!(
+                    "Using V4L2 hardware decoder: {} (Raspberry Pi / embedded)",
+                    v4l2_decoder
+                );
                 Ok(format!(
                     "appsrc name=src is-live=true format=time do-timestamp=true max-buffers=1 \
                      ! {} \
@@ -542,7 +564,10 @@ impl GStreamerDecoder {
             } else if va_available {
                 // Modern VA plugin (Intel/AMD desktop Linux) - LOW LATENCY
                 // va plugin is the newer, preferred method for VAAPI
-                info!("Using VA hardware decoder: {} (Intel/AMD via va plugin)", va_decoder);
+                info!(
+                    "Using VA hardware decoder: {} (Intel/AMD via va plugin)",
+                    va_decoder
+                );
                 Ok(format!(
                     "appsrc name=src is-live=true format=time do-timestamp=true max-buffers=1 \
                      ! {} \
@@ -703,7 +728,10 @@ pub fn is_gstreamer_available() -> bool {
         );
         true
     } else if avdec_h264 || av1dec {
-        info!("GStreamer software decoders available: H.264={}, AV1={}", avdec_h264, av1dec);
+        info!(
+            "GStreamer software decoders available: H.264={}, AV1={}",
+            avdec_h264, av1dec
+        );
         true
     } else {
         debug!("GStreamer decoders not available");
@@ -715,7 +743,7 @@ pub fn is_gstreamer_available() -> bool {
 #[cfg(target_os = "linux")]
 pub fn is_gstreamer_v4l2_available() -> bool {
     // Initialize GStreamer if needed
-    if gst::init().is_err() {
+    if init_gstreamer().is_err() {
         return false;
     }
 
@@ -747,7 +775,7 @@ pub fn is_gstreamer_v4l2_available() -> bool {
 #[cfg(target_os = "linux")]
 pub fn is_gstreamer_va_available() -> bool {
     // Initialize GStreamer if needed
-    if gst::init().is_err() {
+    if init_gstreamer().is_err() {
         return false;
     }
 
@@ -794,34 +822,78 @@ pub fn is_gstreamer_va_available() -> bool {
 #[cfg(target_os = "linux")]
 pub fn is_gstreamer_available() -> bool {
     // Initialize GStreamer if needed
-    if gst::init().is_err() {
+    if init_gstreamer().is_err() {
         return false;
     }
 
     let registry = gst::Registry::get();
 
     // Check all available decoders (H.264, H.265, AV1)
-    let v4l2_h264 = registry.find_feature("v4l2h264dec", gst::ElementFactory::static_type()).is_some();
-    let v4l2_h265 = registry.find_feature("v4l2h265dec", gst::ElementFactory::static_type()).is_some();
-    let v4l2_av1 = registry.find_feature("v4l2av1dec", gst::ElementFactory::static_type()).is_some();
-    let va_h264 = registry.find_feature("vah264dec", gst::ElementFactory::static_type()).is_some();
-    let va_h265 = registry.find_feature("vah265dec", gst::ElementFactory::static_type()).is_some();
-    let va_av1 = registry.find_feature("vaav1dec", gst::ElementFactory::static_type()).is_some();
-    let vaapi_h264 = registry.find_feature("vaapih264dec", gst::ElementFactory::static_type()).is_some();
-    let vaapi_h265 = registry.find_feature("vaapih265dec", gst::ElementFactory::static_type()).is_some();
-    let avdec_h264 = registry.find_feature("avdec_h264", gst::ElementFactory::static_type()).is_some();
-    let avdec_h265 = registry.find_feature("avdec_h265", gst::ElementFactory::static_type()).is_some();
-    let av1dec = registry.find_feature("av1dec", gst::ElementFactory::static_type()).is_some();
+    let v4l2_h264 = registry
+        .find_feature("v4l2h264dec", gst::ElementFactory::static_type())
+        .is_some();
+    let v4l2_h265 = registry
+        .find_feature("v4l2h265dec", gst::ElementFactory::static_type())
+        .is_some();
+    let v4l2_av1 = registry
+        .find_feature("v4l2av1dec", gst::ElementFactory::static_type())
+        .is_some();
+    let va_h264 = registry
+        .find_feature("vah264dec", gst::ElementFactory::static_type())
+        .is_some();
+    let va_h265 = registry
+        .find_feature("vah265dec", gst::ElementFactory::static_type())
+        .is_some();
+    let va_av1 = registry
+        .find_feature("vaav1dec", gst::ElementFactory::static_type())
+        .is_some();
+    let vaapi_h264 = registry
+        .find_feature("vaapih264dec", gst::ElementFactory::static_type())
+        .is_some();
+    let vaapi_h265 = registry
+        .find_feature("vaapih265dec", gst::ElementFactory::static_type())
+        .is_some();
+    let avdec_h264 = registry
+        .find_feature("avdec_h264", gst::ElementFactory::static_type())
+        .is_some();
+    let avdec_h265 = registry
+        .find_feature("avdec_h265", gst::ElementFactory::static_type())
+        .is_some();
+    let av1dec = registry
+        .find_feature("av1dec", gst::ElementFactory::static_type())
+        .is_some();
 
     // Log available decoders
     info!("GStreamer Linux decoders:");
-    info!("  V4L2 (Raspberry Pi): H.264={}, H.265={}, AV1={}", v4l2_h264, v4l2_h265, v4l2_av1);
-    info!("  VA (Intel/AMD): H.264={}, H.265={}, AV1={}", va_h264, va_h265, va_av1);
-    info!("  VAAPI (legacy): H.264={}, H.265={}", vaapi_h264, vaapi_h265);
-    info!("  Software: H.264={}, H.265={}, AV1={}", avdec_h264, avdec_h265, av1dec);
+    info!(
+        "  V4L2 (Raspberry Pi): H.264={}, H.265={}, AV1={}",
+        v4l2_h264, v4l2_h265, v4l2_av1
+    );
+    info!(
+        "  VA (Intel/AMD): H.264={}, H.265={}, AV1={}",
+        va_h264, va_h265, va_av1
+    );
+    info!(
+        "  VAAPI (legacy): H.264={}, H.265={}",
+        vaapi_h264, vaapi_h265
+    );
+    info!(
+        "  Software: H.264={}, H.265={}, AV1={}",
+        avdec_h264, avdec_h265, av1dec
+    );
 
     // Return true if any decoder is available
-    v4l2_h264 || v4l2_h265 || v4l2_av1 || va_h264 || va_h265 || va_av1 || vaapi_h264 || vaapi_h265 || avdec_h264 || avdec_h265 || av1dec
+    v4l2_h264
+        || v4l2_h265
+        || v4l2_av1
+        || va_h264
+        || va_h265
+        || va_av1
+        || vaapi_h264
+        || vaapi_h265
+        || avdec_h264
+        || avdec_h265
+        || av1dec
 }
 
 /// Check if running on Raspberry Pi

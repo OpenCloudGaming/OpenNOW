@@ -283,8 +283,8 @@ impl AudioDecoder {
             sample_rate, channels
         );
 
-        // Initialize GStreamer
-        gst::init().map_err(|e| anyhow!("Failed to initialize GStreamer: {}", e))?;
+        // Initialize GStreamer (uses bundled runtime on Windows)
+        super::init_gstreamer()?;
 
         // Create channels for thread communication
         let (cmd_tx, cmd_rx) = mpsc::channel::<AudioCommand>();
