@@ -536,62 +536,16 @@ jobs:
           }
           Write-Host "Copied $copiedCount DLLs from GStreamer bin directory"
 
-          # Copy essential plugins
-          Write-Host "`nCopying GStreamer plugins to $gstBundlePlugins..."
-          $essentialPlugins = @(
-            # Core elements
-            "gstcoreelements.dll",
-            "gstcoretracers.dll",
-            # App source/sink
-            "gstapp.dll",
-            # Audio plugins
-            "gstaudioconvert.dll",
-            "gstaudioresample.dll",
-            "gstaudioparsers.dll",
-            # Video plugins
-            "gstvideoconvertscale.dll",
-            "gstvideoparsersbad.dll",
-            "gstvideorate.dll",
-            # Hardware decoders
-            "gstd3d11.dll",
-            "gstd3d12.dll",
-            # Software codecs
-            "gstopenh264.dll",
-            "gstx264.dll",
-            "gstx265.dll",
-            "gstvpx.dll",
-            "gstopus.dll",
-            "gstlibav.dll",
-            # RTP/WebRTC
-            "gstrtp.dll",
-            "gstrtpmanager.dll",
-            "gstwebrtc.dll",
-            "gstdtls.dll",
-            "gstsrtp.dll",
-            "gstnice.dll",
-            # Utility plugins
-            "gstplayback.dll",
-            "gsttypefindfunctions.dll",
-            "gstautodetect.dll",
-            # Audio output
-            "gstwasapi.dll",
-            "gstwasapi2.dll",
-            "gstdirectshow.dll",
-            "gstdirectsound.dll",
-            # Additional base plugins
-            "gstgio.dll",
-            "gstisomp4.dll",
-            "gstmatroska.dll"
-          )
-
-          foreach ($plugin in $essentialPlugins) {
-            $srcPath = Join-Path $gstPluginDir $plugin
-            if (Test-Path $srcPath) {
-              Copy-Item $srcPath -Destination $gstBundlePlugins -Verbose
-            } else {
-              Write-Host "Warning: Plugin $plugin not found"
-            }
+          # Copy ALL plugins from GStreamer plugin directory
+          # This ensures we don't miss any required plugins (opus, audio, video, etc.)
+          Write-Host "`nCopying ALL GStreamer plugins to $gstBundlePlugins..."
+          $allPlugins = Get-ChildItem -Path $gstPluginDir -Filter "*.dll" -ErrorAction SilentlyContinue
+          $pluginCount = 0
+          foreach ($plugin in $allPlugins) {
+            Copy-Item $plugin.FullName -Destination $gstBundlePlugins -Force
+            $pluginCount++
           }
+          Write-Host "Copied $pluginCount plugins from GStreamer plugin directory"
 
           $totalDlls = (Get-ChildItem $targetDir -Filter "*.dll").Count
           $totalPlugins = (Get-ChildItem $gstBundlePlugins -Filter "*.dll").Count
@@ -627,62 +581,16 @@ jobs:
           }
           Write-Host "Copied $copiedCount DLLs from GStreamer bin directory"
 
-          # Copy essential plugins
-          Write-Host "`nCopying GStreamer plugins to $gstBundlePlugins..."
-          $essentialPlugins = @(
-            # Core elements
-            "gstcoreelements.dll",
-            "gstcoretracers.dll",
-            # App source/sink
-            "gstapp.dll",
-            # Audio plugins
-            "gstaudioconvert.dll",
-            "gstaudioresample.dll",
-            "gstaudioparsers.dll",
-            # Video plugins
-            "gstvideoconvertscale.dll",
-            "gstvideoparsersbad.dll",
-            "gstvideorate.dll",
-            # Hardware decoders
-            "gstd3d11.dll",
-            "gstd3d12.dll",
-            # Software codecs
-            "gstopenh264.dll",
-            "gstx264.dll",
-            "gstx265.dll",
-            "gstvpx.dll",
-            "gstopus.dll",
-            "gstlibav.dll",
-            # RTP/WebRTC
-            "gstrtp.dll",
-            "gstrtpmanager.dll",
-            "gstwebrtc.dll",
-            "gstdtls.dll",
-            "gstsrtp.dll",
-            "gstnice.dll",
-            # Utility plugins
-            "gstplayback.dll",
-            "gsttypefindfunctions.dll",
-            "gstautodetect.dll",
-            # Audio output
-            "gstwasapi.dll",
-            "gstwasapi2.dll",
-            "gstdirectshow.dll",
-            "gstdirectsound.dll",
-            # Additional base plugins
-            "gstgio.dll",
-            "gstisomp4.dll",
-            "gstmatroska.dll"
-          )
-
-          foreach ($plugin in $essentialPlugins) {
-            $srcPath = Join-Path $gstPluginDir $plugin
-            if (Test-Path $srcPath) {
-              Copy-Item $srcPath -Destination $gstBundlePlugins -Verbose
-            } else {
-              Write-Host "Warning: Plugin $plugin not found"
-            }
+          # Copy ALL plugins from GStreamer plugin directory
+          # This ensures we don't miss any required plugins (opus, audio, video, etc.)
+          Write-Host "`nCopying ALL GStreamer plugins to $gstBundlePlugins..."
+          $allPlugins = Get-ChildItem -Path $gstPluginDir -Filter "*.dll" -ErrorAction SilentlyContinue
+          $pluginCount = 0
+          foreach ($plugin in $allPlugins) {
+            Copy-Item $plugin.FullName -Destination $gstBundlePlugins -Force
+            $pluginCount++
           }
+          Write-Host "Copied $pluginCount plugins from GStreamer plugin directory"
 
           $totalDlls = (Get-ChildItem $targetDir -Filter "*.dll").Count
           $totalPlugins = (Get-ChildItem $gstBundlePlugins -Filter "*.dll").Count

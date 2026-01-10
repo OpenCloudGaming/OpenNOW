@@ -295,12 +295,14 @@ impl AudioDecoder {
         let channels_clone = channels;
 
         thread::spawn(move || {
-            // Build GStreamer pipeline: appsrc ! opusparse ! opusdec ! audioconvert ! appsink
+            // Build GStreamer pipeline for Opus decoding
+            // Try simpler pipeline first (no opusparse - works with raw Opus packets)
+            // opusdec can handle raw Opus packets directly when caps are set correctly
             let pipeline_str = format!(
                 "appsrc name=src format=time do-timestamp=true ! \
-                 opusparse ! \
                  opusdec ! \
                  audioconvert ! \
+                 audioresample ! \
                  audio/x-raw,format=S16LE,rate={},channels={} ! \
                  appsink name=sink emit-signals=true sync=false",
                 sample_rate_clone, channels_clone
@@ -310,6 +312,7 @@ impl AudioDecoder {
                 Ok(p) => p.downcast::<gst::Pipeline>().unwrap(),
                 Err(e) => {
                     error!("Failed to create GStreamer audio pipeline: {}", e);
+                    error!("Make sure gstopus.dll and gstaudioconvert.dll plugins are present");
                     return;
                 }
             };
