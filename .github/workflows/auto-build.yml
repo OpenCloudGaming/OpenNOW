@@ -865,26 +865,65 @@ jobs:
 
           BINARY="target/aarch64-unknown-linux-gnu/release/opennow-streamer"
           BUNDLE_DIR="target/aarch64-unknown-linux-gnu/release/bundle"
+          LIB_DIR="$BUNDLE_DIR/lib"
+          GST_PLUGIN_DIR="$BUNDLE_DIR/lib/gstreamer-1.0"
 
           echo "Creating bundle directory structure..."
-          mkdir -p "$BUNDLE_DIR"
+          mkdir -p "$BUNDLE_DIR" "$LIB_DIR" "$GST_PLUGIN_DIR"
 
           # Copy the binary
           cp "$BINARY" "$BUNDLE_DIR/"
           chmod +x "$BUNDLE_DIR/opennow-streamer"
 
-          # Create wrapper script that sets GST_PLUGIN_PATH if needed
+          # Copy GStreamer libraries for ARM64
+          echo "Bundling GStreamer libraries..."
+
+          # Core GStreamer libraries
+          for lib in /usr/lib/aarch64-linux-gnu/libgstreamer-1.0.so* \
+                     /usr/lib/aarch64-linux-gnu/libgstbase-1.0.so* \
+                     /usr/lib/aarch64-linux-gnu/libgstapp-1.0.so* \
+                     /usr/lib/aarch64-linux-gnu/libgstaudio-1.0.so* \
+                     /usr/lib/aarch64-linux-gnu/libgstvideo-1.0.so* \
+                     /usr/lib/aarch64-linux-gnu/libgstpbutils-1.0.so* \
+                     /usr/lib/aarch64-linux-gnu/libgstrtp-1.0.so* \
+                     /usr/lib/aarch64-linux-gnu/libgstcodecs-1.0.so* \
+                     /usr/lib/aarch64-linux-gnu/libgstgl-1.0.so* \
+                     /usr/lib/aarch64-linux-gnu/libglib-2.0.so* \
+                     /usr/lib/aarch64-linux-gnu/libgobject-2.0.so* \
+                     /usr/lib/aarch64-linux-gnu/libgmodule-2.0.so* \
+                     /usr/lib/aarch64-linux-gnu/libgio-2.0.so* \
+                     /usr/lib/aarch64-linux-gnu/liborc-0.4.so*; do
+            if [ -f "$lib" ]; then
+              cp -L "$lib" "$LIB_DIR/" 2>/dev/null || true
+            fi
+          done
+
+          # Copy GStreamer plugins
+          echo "Bundling GStreamer plugins..."
+          if [ -d "/usr/lib/aarch64-linux-gnu/gstreamer-1.0" ]; then
+            cp -L /usr/lib/aarch64-linux-gnu/gstreamer-1.0/*.so "$GST_PLUGIN_DIR/" 2>/dev/null || true
+          fi
+
+          # Count bundled files
+          LIB_COUNT=$(ls -1 "$LIB_DIR"/*.so* 2>/dev/null | wc -l)
+          PLUGIN_COUNT=$(ls -1 "$GST_PLUGIN_DIR"/*.so 2>/dev/null | wc -l)
+          echo "Bundled $LIB_COUNT libraries and $PLUGIN_COUNT plugins"
+
+          # Create wrapper script that sets library paths
           cat > "$BUNDLE_DIR/run.sh" << 'WRAPPER'
-          #!/bin/bash
-          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          exec "$SCRIPT_DIR/opennow-streamer" "$@"
-          WRAPPER
+#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
+export GST_PLUGIN_PATH="$SCRIPT_DIR/lib/gstreamer-1.0"
+export GST_PLUGIN_SYSTEM_PATH=""
+exec "$SCRIPT_DIR/opennow-streamer" "$@"
+WRAPPER
           chmod +x "$BUNDLE_DIR/run.sh"
 
           echo ""
           echo "Bundle created at: $BUNDLE_DIR"
-          echo "Run with: ./run.sh or ./opennow-streamer"
-          echo "Note: Requires GStreamer to be installed on the system"
+          echo "Run with: ./run.sh (uses bundled libraries)"
+          echo "Or install GStreamer system-wide and run ./opennow-streamer directly"
 
       # ==================== Upload Artifacts ====================
 
@@ -957,12 +996,78 @@ jobs:
       #     path: opennow-streamer/target/release/OpenNOW-macos-x86_64.zip
       #     retention-days: 30
 
+      - name: Bundle Linux x64 binary
+        if: matrix.target == 'linux'
+        shell: bash
+        run: |
+          cd opennow-streamer
+
+          BINARY="target/release/opennow-streamer"
+          BUNDLE_DIR="target/release/bundle"
+          LIB_DIR="$BUNDLE_DIR/lib"
+          GST_PLUGIN_DIR="$BUNDLE_DIR/lib/gstreamer-1.0"
+
+          echo "Creating bundle directory structure..."
+          mkdir -p "$BUNDLE_DIR" "$LIB_DIR" "$GST_PLUGIN_DIR"
+
+          # Copy the binary
+          cp "$BINARY" "$BUNDLE_DIR/"
+          chmod +x "$BUNDLE_DIR/opennow-streamer"
+
+          # Copy GStreamer libraries for x64
+          echo "Bundling GStreamer libraries..."
+
+          # Core GStreamer libraries
+          for lib in /usr/lib/x86_64-linux-gnu/libgstreamer-1.0.so* \
+                     /usr/lib/x86_64-linux-gnu/libgstbase-1.0.so* \
+                     /usr/lib/x86_64-linux-gnu/libgstapp-1.0.so* \
+                     /usr/lib/x86_64-linux-gnu/libgstaudio-1.0.so* \
+                     /usr/lib/x86_64-linux-gnu/libgstvideo-1.0.so* \
+                     /usr/lib/x86_64-linux-gnu/libgstpbutils-1.0.so* \
+                     /usr/lib/x86_64-linux-gnu/libgstrtp-1.0.so* \
+                     /usr/lib/x86_64-linux-gnu/libgstcodecs-1.0.so* \
+                     /usr/lib/x86_64-linux-gnu/libgstgl-1.0.so* \
+                     /usr/lib/x86_64-linux-gnu/libglib-2.0.so* \
+                     /usr/lib/x86_64-linux-gnu/libgobject-2.0.so* \
+                     /usr/lib/x86_64-linux-gnu/libgmodule-2.0.so* \
+                     /usr/lib/x86_64-linux-gnu/libgio-2.0.so* \
+                     /usr/lib/x86_64-linux-gnu/liborc-0.4.so*; do
+            if [ -f "$lib" ]; then
+              cp -L "$lib" "$LIB_DIR/" 2>/dev/null || true
+            fi
+          done
+
+          # Copy GStreamer plugins
+          echo "Bundling GStreamer plugins..."
+          if [ -d "/usr/lib/x86_64-linux-gnu/gstreamer-1.0" ]; then
+            cp -L /usr/lib/x86_64-linux-gnu/gstreamer-1.0/*.so "$GST_PLUGIN_DIR/" 2>/dev/null || true
+          fi
+
+          # Count bundled files
+          LIB_COUNT=$(ls -1 "$LIB_DIR"/*.so* 2>/dev/null | wc -l)
+          PLUGIN_COUNT=$(ls -1 "$GST_PLUGIN_DIR"/*.so 2>/dev/null | wc -l)
+          echo "Bundled $LIB_COUNT libraries and $PLUGIN_COUNT plugins"
+
+          # Create wrapper script that sets library paths
+          cat > "$BUNDLE_DIR/run.sh" << 'WRAPPER'
+#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
+export GST_PLUGIN_PATH="$SCRIPT_DIR/lib/gstreamer-1.0"
+export GST_PLUGIN_SYSTEM_PATH=""
+exec "$SCRIPT_DIR/opennow-streamer" "$@"
+WRAPPER
+          chmod +x "$BUNDLE_DIR/run.sh"
+
+          echo ""
+          echo "Bundle created at: $BUNDLE_DIR"
+
       - name: Zip Linux x64 artifacts
         if: matrix.target == 'linux'
         shell: bash
         run: |
           cd opennow-streamer/target/release
-          zip -r "OpenNOW-linux-x64.zip" opennow-streamer
+          zip -r "OpenNOW-linux-x64.zip" bundle/
 
       - name: Upload Linux x64 artifacts
         if: matrix.target == 'linux'
