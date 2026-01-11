@@ -2,6 +2,17 @@
 //!
 //! wgpu-based rendering for video frames and UI overlays.
 
+// Local profiling macro for Tracy integration
+// When tracy feature is enabled, creates tracing spans that Tracy visualizes
+macro_rules! profile_scope {
+    ($name:expr) => {
+        #[cfg(feature = "tracy")]
+        let _span = tracing::info_span!($name).entered();
+        #[cfg(not(feature = "tracy"))]
+        let _ = $name; // Suppress unused warning
+    };
+}
+
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
 use std::sync::Arc;
@@ -16,10 +27,11 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use super::image_cache;
 use super::screens::{
-    render_alliance_warning_dialog, render_av1_warning_dialog, render_login_screen,
-    render_session_conflict_dialog, render_session_screen, render_settings_modal,
+    render_ads_required_screen, render_alliance_warning_dialog, render_av1_warning_dialog,
+    render_login_screen, render_session_conflict_dialog, render_session_screen,
+    render_settings_modal, render_welcome_popup,
 };
-use super::shaders::{EXTERNAL_TEXTURE_SHADER, NV12_SHADER, VIDEO_SHADER};
+use super::shaders::{EXTERNAL_TEXTURE_SHADER, NV12_HDR_TONEMAP_SHADER, NV12_SHADER, VIDEO_SHADER};
 use super::StatsPanel;
 use crate::app::session::ActiveSessionInfo;
 use crate::app::{App, AppState, GameInfo, GamesTab, UiAction};
@@ -29,8 +41,9 @@ use crate::media::D3D11TextureWrapper;
 use crate::media::VAAPISurfaceWrapper;
 #[cfg(target_os = "macos")]
 use crate::media::{CVMetalTexture, MetalVideoRenderer, ZeroCopyTextureManager};
-use crate::media::{ColorSpace, PixelFormat, TransferFunction, VideoFrame};
+use crate::media::{ColorSpace, PixelFormat, StreamStats, TransferFunction, VideoFrame};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 #[cfg(target_os = "windows")]
 // unused: use windows::core::Interface;
 #[cfg(target_os = "windows")]
@@ -43,6 +56,120 @@ use windows::Win32::Graphics::Direct3D12::{ID3D12Device, ID3D12Resource};
 
 // Color conversion is now hardcoded in the shader using official GFN client BT.709 values
 // This eliminates potential initialization bugs with uniform buffers
+
+/// Resolution change notification for animated popup
+struct ResolutionNotification {
+    old_resolution: String,
+    new_resolution: String,
+    direction: ResolutionDirection,
+    start_time: Instant,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ResolutionDirection {
+    Up,
+    Down,
+    Same,
+}
+
+impl ResolutionNotification {
+    const DURATION_SECS: f32 = 5.0;
+    const FADE_IN_SECS: f32 = 0.3;
+    const FADE_OUT_SECS: f32 = 0.7;
+
+    fn new(old_res: &str, new_res: &str) -> Self {
+        // Parse resolutions to determine direction
+        let old_pixels = Self::parse_resolution(old_res);
+        let new_pixels = Self::parse_resolution(new_res);
+
+        let direction = if new_pixels > old_pixels {
+            ResolutionDirection::Up
+        } else if new_pixels < old_pixels {
+            ResolutionDirection::Down
+        } else {
+            ResolutionDirection::Same
+        };
+
+        Self {
+            old_resolution: old_res.to_string(),
+            new_resolution: new_res.to_string(),
+            direction,
+            start_time: Instant::now(),
+        }
+    }
+
+    fn parse_resolution(res: &str) -> u64 {
+        // Parse "1920x1080" or "1920x1080 @ 60fps" format
+        let parts: Vec<&str> = res.split(['x', ' ', '@']).collect();
+        if parts.len() >= 2 {
+            let w: u64 = parts[0].trim().parse().unwrap_or(0);
+            let h: u64 = parts[1].trim().parse().unwrap_or(0);
+            w * h
+        } else {
+            0
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        self.start_time.elapsed().as_secs_f32() > Self::DURATION_SECS
+    }
+
+    fn alpha(&self) -> f32 {
+        let elapsed = self.start_time.elapsed().as_secs_f32();
+
+        if elapsed < Self::FADE_IN_SECS {
+            // Fade in
+            elapsed / Self::FADE_IN_SECS
+        } else if elapsed > Self::DURATION_SECS - Self::FADE_OUT_SECS {
+            // Fade out
+            let fade_progress = (Self::DURATION_SECS - elapsed) / Self::FADE_OUT_SECS;
+            fade_progress.max(0.0)
+        } else {
+            // Full opacity
+            1.0
+        }
+    }
+}
+
+/// Racing wheel connection notification for animated popup
+/// Shows when a racing wheel is detected during a streaming session
+struct WheelNotification {
+    wheel_count: usize,
+    start_time: Instant,
+}
+
+impl WheelNotification {
+    const DURATION_SECS: f32 = 6.0;
+    const FADE_IN_SECS: f32 = 0.3;
+    const FADE_OUT_SECS: f32 = 0.8;
+
+    fn new(wheel_count: usize) -> Self {
+        Self {
+            wheel_count,
+            start_time: Instant::now(),
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        self.start_time.elapsed().as_secs_f32() > Self::DURATION_SECS
+    }
+
+    fn alpha(&self) -> f32 {
+        let elapsed = self.start_time.elapsed().as_secs_f32();
+
+        if elapsed < Self::FADE_IN_SECS {
+            // Fade in
+            elapsed / Self::FADE_IN_SECS
+        } else if elapsed > Self::DURATION_SECS - Self::FADE_OUT_SECS {
+            // Fade out
+            let fade_progress = (Self::DURATION_SECS - elapsed) / Self::FADE_OUT_SECS;
+            fade_progress.max(0.0)
+        } else {
+            // Full opacity
+            1.0
+        }
+    }
+}
 
 /// Main renderer
 pub struct Renderer {
@@ -72,11 +199,18 @@ pub struct Renderer {
     // NV12 pipeline (for VideoToolbox on macOS - faster than CPU scaler)
     nv12_pipeline: wgpu::RenderPipeline,
     nv12_bind_group_layout: wgpu::BindGroupLayout,
+    // NV12 HDR tone mapping pipeline (for HDR content on SDR displays)
+    nv12_hdr_pipeline: wgpu::RenderPipeline,
     // NV12 textures: Y (R8) and UV interleaved (Rg8)
     uv_texture: Option<wgpu::Texture>,
     nv12_bind_group: Option<wgpu::BindGroup>,
     // Current pixel format
     current_format: PixelFormat,
+    // Current transfer function (for HDR detection)
+    current_transfer_function: TransferFunction,
+
+    // Direct access to decoder's frame buffer - pull frames here, not from App
+    shared_frame: Option<Arc<crate::app::SharedFrame>>,
 
     // External Texture pipeline (true zero-copy hardware YUV->RGB)
     external_texture_pipeline: Option<wgpu::RenderPipeline>,
@@ -101,6 +235,26 @@ pub struct Renderer {
     // Game art texture cache (URL -> TextureHandle)
     game_textures: HashMap<String, egui::TextureHandle>,
 
+    // === UI Optimization: Stats throttling ===
+    // Cached stats for throttled rendering (updates every 200ms instead of every frame)
+    cached_stats: Option<StreamStats>,
+    stats_last_update: Instant,
+
+    // === UI Optimization: Game grid caching ===
+    // Cached game grid to avoid re-laying out every frame
+    games_cache_hash: u64,
+
+    // Track last uploaded frame to avoid redundant GPU uploads
+    last_uploaded_frame_id: u64,
+
+    // Resolution change notification
+    resolution_notification: Option<ResolutionNotification>,
+    last_resolution: String,
+
+    // Racing wheel connection notification
+    wheel_notification: Option<WheelNotification>,
+    last_wheel_count: usize,
+
     // macOS zero-copy video rendering (Metal-based, no CPU copy)
     #[cfg(target_os = "macos")]
     zero_copy_manager: Option<ZeroCopyTextureManager>,
@@ -120,12 +274,23 @@ pub struct Renderer {
 impl Renderer {
     /// Create a new renderer
     pub async fn new(event_loop: &ActiveEventLoop) -> Result<Self> {
+        // Load settings to get saved window size
+        let settings = crate::app::Settings::load().unwrap_or_default();
+
         // Create window attributes
+        // Use saved window size if available, otherwise use defaults
         // ARM64 Linux: Start with smaller window to reduce initial GPU memory usage
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-        let initial_size = PhysicalSize::new(800, 600);
+        let default_size = PhysicalSize::new(800u32, 600u32);
         #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
-        let initial_size = PhysicalSize::new(1280, 720);
+        let default_size = PhysicalSize::new(1280u32, 720u32);
+
+        // Use saved size if valid (non-zero and reasonable), otherwise use default
+        let initial_size = if settings.window_width >= 640 && settings.window_height >= 480 {
+            PhysicalSize::new(settings.window_width, settings.window_height)
+        } else {
+            default_size
+        };
 
         let window_attrs = WindowAttributes::default()
             .with_title("OpenNow")
@@ -720,6 +885,49 @@ impl Renderer {
             cache: None,
         });
 
+        // Create NV12 HDR tone mapping pipeline (for HDR content on SDR displays)
+        let nv12_hdr_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("NV12 HDR Tonemap Shader"),
+            source: wgpu::ShaderSource::Wgsl(NV12_HDR_TONEMAP_SHADER.into()),
+        });
+
+        // HDR pipeline uses the same bind group layout as NV12
+        let nv12_hdr_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("NV12 HDR Tonemap Pipeline"),
+            layout: Some(&nv12_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &nv12_hdr_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &nv12_hdr_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        info!("NV12 HDR tone mapping pipeline created");
+
         // Create External Texture pipeline (true zero-copy hardware YUV->RGB)
         let (external_texture_pipeline, external_texture_bind_group_layout) =
             if external_texture_supported {
@@ -824,9 +1032,12 @@ impl Renderer {
             video_size: (0, 0),
             nv12_pipeline,
             nv12_bind_group_layout,
+            nv12_hdr_pipeline,
             uv_texture: None,
             nv12_bind_group: None,
             current_format: PixelFormat::YUV420P,
+            current_transfer_function: TransferFunction::SDR,
+            shared_frame: None,
             external_texture_pipeline,
             external_texture_bind_group_layout,
             external_texture_bind_group: None,
@@ -837,6 +1048,19 @@ impl Renderer {
             consecutive_surface_errors: 0,
             supported_present_modes: surface_caps.present_modes.clone(),
             game_textures: HashMap::new(),
+            // UI optimization: stats throttling (200ms intervals)
+            cached_stats: None,
+            stats_last_update: Instant::now(),
+            // UI optimization: game grid caching
+            games_cache_hash: 0,
+            // Track last uploaded frame to avoid redundant GPU uploads
+            last_uploaded_frame_id: 0,
+            // Resolution change notification
+            resolution_notification: None,
+            last_resolution: String::new(),
+            // Racing wheel connection notification
+            wheel_notification: None,
+            last_wheel_count: 0,
             #[cfg(target_os = "macos")]
             zero_copy_manager: ZeroCopyTextureManager::new(),
             #[cfg(target_os = "macos")]
@@ -995,6 +1219,21 @@ impl Renderer {
             // On other platforms, try exclusive fullscreen
             #[cfg(not(target_os = "macos"))]
             {
+                // Wayland doesn't support exclusive fullscreen - use borderless instead
+                #[cfg(target_os = "linux")]
+                let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+                #[cfg(not(target_os = "linux"))]
+                let is_wayland = false;
+
+                if is_wayland {
+                    info!(
+                        "Wayland detected - using borderless fullscreen (exclusive not supported)"
+                    );
+                    self.window
+                        .set_fullscreen(Some(Fullscreen::Borderless(None)));
+                    return;
+                }
+
                 let current_monitor = self.window.current_monitor();
 
                 if let Some(monitor) = current_monitor {
@@ -1067,6 +1306,23 @@ impl Renderer {
     /// Enter fullscreen with a specific target refresh rate
     /// Useful when the stream FPS is known (e.g., 120fps stream -> 120Hz mode)
     pub fn set_fullscreen_with_refresh(&mut self, target_fps: u32) {
+        // Wayland doesn't support exclusive fullscreen - use borderless instead
+        #[cfg(target_os = "linux")]
+        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+        #[cfg(not(target_os = "linux"))]
+        let is_wayland = false;
+
+        if is_wayland {
+            info!(
+                "Wayland detected - using borderless fullscreen for {}fps stream",
+                target_fps
+            );
+            self.fullscreen = true;
+            self.window
+                .set_fullscreen(Some(Fullscreen::Borderless(None)));
+            return;
+        }
+
         let current_monitor = self.window.current_monitor();
 
         if let Some(monitor) = current_monitor {
@@ -1353,6 +1609,31 @@ impl Renderer {
         self.fullscreen
     }
 
+    /// Set the shared frame buffer for direct frame access
+    /// This allows the renderer to pull frames directly from the decoder
+    pub fn set_shared_frame(&mut self, shared_frame: Arc<crate::app::SharedFrame>) {
+        self.shared_frame = Some(shared_frame);
+    }
+
+    /// Show racing wheel connection notification
+    /// Called when racing wheels are detected during streaming session
+    pub fn show_wheel_notification(&mut self, wheel_count: usize) {
+        if wheel_count > 0 && wheel_count != self.last_wheel_count {
+            info!(
+                "Racing wheel notification: {} wheel(s) detected",
+                wheel_count
+            );
+            self.wheel_notification = Some(WheelNotification::new(wheel_count));
+            self.last_wheel_count = wheel_count;
+        }
+    }
+
+    /// Reset wheel notification state (call when streaming stops)
+    pub fn reset_wheel_notification(&mut self) {
+        self.wheel_notification = None;
+        self.last_wheel_count = 0;
+    }
+
     /// Update video textures from frame (GPU YUV->RGB conversion)
     /// Supports both YUV420P (3 planes) and NV12 (2 planes) formats
     /// On macOS, uses zero-copy path via CVPixelBuffer + Metal blit
@@ -1374,6 +1655,7 @@ impl Renderer {
         #[cfg(target_os = "windows")]
         if let Some(ref gpu_frame) = frame.gpu_frame {
             self.update_video_d3d11(frame, gpu_frame, uv_width, uv_height);
+            self.last_uploaded_frame_id = frame.frame_id;
             return;
         }
 
@@ -1382,6 +1664,7 @@ impl Renderer {
         #[cfg(target_os = "linux")]
         if let Some(ref gpu_frame) = frame.gpu_frame {
             self.update_video_vaapi(frame, gpu_frame, uv_width, uv_height);
+            self.last_uploaded_frame_id = frame.frame_id;
             return;
         }
 
@@ -1396,6 +1679,15 @@ impl Renderer {
         // Check if we need to recreate textures (size or format change)
         let format_changed = self.current_format != frame.format;
         let size_changed = self.video_size != (frame.width, frame.height);
+
+        // Update transfer function (HDR detection) - can change during stream
+        if self.current_transfer_function != frame.transfer_function {
+            info!(
+                "Transfer function changed: {:?} -> {:?}",
+                self.current_transfer_function, frame.transfer_function
+            );
+            self.current_transfer_function = frame.transfer_function;
+        }
 
         if size_changed || format_changed {
             self.current_format = frame.format;
@@ -1714,6 +2006,9 @@ impl Renderer {
                 }
             }
         }
+
+        // Mark this frame as uploaded to avoid redundant uploads
+        self.last_uploaded_frame_id = frame.frame_id;
     }
 
     /// TRUE zero-copy video update using CVMetalTextureCache (macOS only)
@@ -2025,13 +2320,21 @@ impl Renderer {
         uv_width: u32,
         uv_height: u32,
     ) {
+        log::info!(
+            "update_video_d3d11: {}x{}, array_index={}, is_texture_array={}",
+            frame.width,
+            frame.height,
+            gpu_frame.array_index(),
+            gpu_frame.is_texture_array()
+        );
+
         // Skip zero-copy for texture arrays (array_index > 0 means it's part of an array)
         // The zero-copy path doesn't properly handle texture array slices yet
         // The CPU path correctly uses CopySubresourceRegion with the array_index
         let is_texture_array = gpu_frame.array_index() > 0 || gpu_frame.is_texture_array();
 
         if is_texture_array {
-            log::debug!(
+            log::info!(
                 "D3D11: Using CPU path for texture array (array_index={})",
                 gpu_frame.array_index()
             );
@@ -2281,8 +2584,51 @@ impl Renderer {
         } // end if !is_texture_array
 
         // Fallback: Lock the D3D11 texture and get plane data (CPU Copy)
+        log::info!("D3D11: Locking texture for CPU copy...");
         let planes = match gpu_frame.lock_and_get_planes() {
-            Ok(p) => p,
+            Ok(p) => {
+                log::info!(
+                    "D3D11: Got planes - y_size={}, uv_size={}, stride={}",
+                    p.y_plane.len(),
+                    p.uv_plane.len(),
+                    p.y_stride
+                );
+
+                // Debug: Check Y plane data content
+                if !p.y_plane.is_empty() {
+                    // Sample first few rows to check if data is valid or all zeros/gray
+                    let sample_size = std::cmp::min(256, p.y_plane.len());
+                    let sample = &p.y_plane[..sample_size];
+                    let min_y = sample.iter().min().copied().unwrap_or(0);
+                    let max_y = sample.iter().max().copied().unwrap_or(0);
+                    let avg_y: u32 =
+                        sample.iter().map(|&x| x as u32).sum::<u32>() / sample.len() as u32;
+                    log::info!(
+                        "D3D11: Y plane stats (first {} bytes): min={}, max={}, avg={}",
+                        sample_size,
+                        min_y,
+                        max_y,
+                        avg_y
+                    );
+
+                    // Also sample middle of the frame
+                    let mid_offset = p.y_plane.len() / 2;
+                    if mid_offset + 256 <= p.y_plane.len() {
+                        let mid_sample = &p.y_plane[mid_offset..mid_offset + 256];
+                        let mid_min = mid_sample.iter().min().copied().unwrap_or(0);
+                        let mid_max = mid_sample.iter().max().copied().unwrap_or(0);
+                        let mid_avg: u32 = mid_sample.iter().map(|&x| x as u32).sum::<u32>() / 256;
+                        log::info!(
+                            "D3D11: Y plane middle stats: min={}, max={}, avg={}",
+                            mid_min,
+                            mid_max,
+                            mid_avg
+                        );
+                    }
+                }
+
+                p
+            }
             Err(e) => {
                 log::warn!("Failed to lock D3D11 texture: {:?}", e);
                 return;
@@ -2291,6 +2637,13 @@ impl Renderer {
 
         // Check if we need to recreate textures (size change)
         let size_changed = self.video_size != (frame.width, frame.height);
+        log::info!(
+            "D3D11: size_changed={}, video_size={:?}, frame_size={}x{}",
+            size_changed,
+            self.video_size,
+            frame.width,
+            frame.height
+        );
 
         if size_changed {
             self.video_size = (frame.width, frame.height);
@@ -2984,7 +3337,13 @@ impl Renderer {
         let (pipeline, bind_group) = match self.current_format {
             PixelFormat::NV12 => {
                 if let Some(ref bg) = self.nv12_bind_group {
-                    (&self.nv12_pipeline, bg)
+                    // Use HDR tone mapping pipeline for PQ content on SDR displays
+                    let pipeline = if self.current_transfer_function == TransferFunction::PQ {
+                        &self.nv12_hdr_pipeline
+                    } else {
+                        &self.nv12_pipeline
+                    };
+                    (pipeline, bg)
                 } else {
                     return; // No bind group ready
                 }
@@ -2997,9 +3356,14 @@ impl Renderer {
                 }
             }
             PixelFormat::P010 => {
-                // P010 uses the same pipeline as NV12 (just different bit depth)
+                // P010 is 10-bit HDR format - use HDR pipeline for PQ content
                 if let Some(ref bg) = self.nv12_bind_group {
-                    (&self.nv12_pipeline, bg)
+                    let pipeline = if self.current_transfer_function == TransferFunction::PQ {
+                        &self.nv12_hdr_pipeline
+                    } else {
+                        &self.nv12_pipeline
+                    };
+                    (pipeline, bg)
                 } else {
                     return; // No bind group ready
                 }
@@ -3026,8 +3390,11 @@ impl Renderer {
         render_pass.draw(0..6, 0..1); // Draw 6 vertices (2 triangles = 1 quad)
     }
 
-    /// Render frame and return UI actions
-    pub fn render(&mut self, app: &App) -> Result<Vec<UiAction>> {
+    /// Render frame and return UI actions plus optional repaint delay
+    /// The Duration indicates when the next repaint should happen (for idle throttling)
+    pub fn render(&mut self, app: &App) -> Result<(Vec<UiAction>, Option<Duration>)> {
+        profile_scope!("render");
+
         // Get surface texture with SMART error recovery for swapchain issues
         // Key insight: During fullscreen transitions, the window size updates AFTER
         // the surface error occurs. If we immediately "recover" with the old size,
@@ -3071,7 +3438,7 @@ impl Renderer {
                         }
                         Err(e) => {
                             debug!("Still failing after resize: {} - yielding", e);
-                            return Ok(vec![]);
+                            return Ok((vec![], None));
                         }
                     }
                 } else if self.consecutive_surface_errors < 10 {
@@ -3082,7 +3449,7 @@ impl Renderer {
                         self.consecutive_surface_errors,
                         self.config.width, self.config.height
                     );
-                    return Ok(vec![]);
+                    return Ok((vec![], None));
                 } else {
                     // Persistent error (10+ frames) - force recovery as fallback
                     warn!(
@@ -3090,7 +3457,7 @@ impl Renderer {
                         self.consecutive_surface_errors
                     );
                     if !self.recover_swapchain() {
-                        return Ok(vec![]);
+                        return Ok((vec![], None));
                     }
                     match self.surface.get_current_texture() {
                         Ok(texture) => {
@@ -3099,7 +3466,7 @@ impl Renderer {
                         }
                         Err(e) => {
                             warn!("Failed to get texture after forced recovery: {}", e);
-                            return Ok(vec![]);
+                            return Ok((vec![], None));
                         }
                     }
                 }
@@ -3107,7 +3474,7 @@ impl Renderer {
             Err(wgpu::SurfaceError::Timeout) => {
                 // GPU is busy, skip this frame
                 debug!("Surface timeout - skipping frame");
-                return Ok(vec![]);
+                return Ok((vec![], None));
             }
             Err(e) => {
                 // Fatal error (e.g., OutOfMemory)
@@ -3127,6 +3494,7 @@ impl Renderer {
 
         // Update video texture if we have a frame
         if let Some(ref frame) = app.current_frame {
+            profile_scope!("update_video");
             self.update_video(frame);
         }
 
@@ -3134,6 +3502,7 @@ impl Renderer {
         // Check for either YUV420P (video_bind_group) or NV12 (nv12_bind_group)
         let has_video = self.video_bind_group.is_some() || self.nv12_bind_group.is_some();
         if app.state == AppState::Streaming && has_video {
+            profile_scope!("render_video");
             // Render video full-screen
             self.render_video(&mut encoder, &view);
         } else {
@@ -3163,9 +3532,53 @@ impl Renderer {
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let mut actions: Vec<UiAction> = Vec::new();
 
+        // === UI Optimization: Throttle stats updates to 200ms ===
+        // This dramatically reduces CPU usage from stats panel rendering
+        const STATS_UPDATE_INTERVAL: Duration = Duration::from_millis(200);
+        if self.stats_last_update.elapsed() >= STATS_UPDATE_INTERVAL {
+            self.cached_stats = Some(app.stats.clone());
+            self.stats_last_update = Instant::now();
+
+            // Detect resolution changes and show notification
+            if !app.stats.resolution.is_empty() && app.stats.resolution != self.last_resolution {
+                if !self.last_resolution.is_empty() {
+                    // Resolution changed - create notification
+                    self.resolution_notification = Some(ResolutionNotification::new(
+                        &self.last_resolution,
+                        &app.stats.resolution,
+                    ));
+                }
+                self.last_resolution = app.stats.resolution.clone();
+            }
+
+            // Detect racing wheel connection and show notification
+            if app.stats.wheel_count > 0 && app.stats.wheel_count != self.last_wheel_count {
+                self.show_wheel_notification(app.stats.wheel_count);
+            } else if app.stats.wheel_count == 0 && self.last_wheel_count > 0 {
+                // Wheels disconnected - reset state
+                self.last_wheel_count = 0;
+            }
+        }
+
+        // Clean up expired notifications
+        if let Some(ref notif) = self.resolution_notification {
+            if notif.is_expired() {
+                self.resolution_notification = None;
+            }
+        }
+        if let Some(ref notif) = self.wheel_notification {
+            if notif.is_expired() {
+                self.wheel_notification = None;
+            }
+        }
+
         // Extract state needed for UI rendering
         let app_state = app.state;
-        let stats = app.stats.clone();
+        // Use cached stats for display (throttled to 200ms updates)
+        let stats = self
+            .cached_stats
+            .clone()
+            .unwrap_or_else(|| app.stats.clone());
         let show_stats = app.show_stats;
         let status_message = app.status_message.clone();
         let error_message = app.error_message.clone();
@@ -3177,6 +3590,8 @@ impl Renderer {
         let login_providers = app.login_providers.clone();
         let selected_provider_index = app.selected_provider_index;
         let is_loading = app.is_loading;
+        let login_url = app.login_url.clone();
+        let show_welcome_popup = app.show_welcome_popup;
         let mut search_query = app.search_query.clone();
         let runtime = app.runtime.clone();
 
@@ -3192,6 +3607,22 @@ impl Renderer {
         let ping_testing = app.ping_testing;
         let show_settings_modal = app.show_settings_modal;
 
+        // Resolution notification data (extracted for use in closure)
+        let resolution_notif = self.resolution_notification.as_ref().map(|n| {
+            (
+                n.old_resolution.clone(),
+                n.new_resolution.clone(),
+                n.direction,
+                n.alpha(),
+            )
+        });
+
+        // Wheel notification data (extracted for use in closure)
+        let wheel_notif = self
+            .wheel_notification
+            .as_ref()
+            .map(|n| (n.wheel_count, n.alpha()));
+
         // Queue times state
         let mut queue_servers = app.queue_servers.clone();
         let queue_loading = app.queue_loading;
@@ -3201,142 +3632,199 @@ impl Renderer {
         let selected_queue_server = app.selected_queue_server.clone();
         let pending_server_selection_game = app.pending_server_selection_game.clone();
 
+        // Ads state (free tier)
+        let ads_required = app.ads_required;
+        let ads_remaining_secs = app.ads_remaining_secs;
+        let ads_total_secs = app.ads_total_secs;
+
         // Get games based on current tab
-        let games_list: Vec<_> = match current_tab {
+        // Optimization: Home tab uses game_sections, not games_list - avoid cloning games
+        let games_list: Vec<(usize, crate::app::GameInfo)> = match current_tab {
             GamesTab::Home => {
-                // For Home tab, we show sections but also need flat list for searches
-                let query = app.search_query.to_lowercase();
-                app.games
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, g)| query.is_empty() || g.title.to_lowercase().contains(&query))
-                    .map(|(i, g)| (i, g.clone()))
-                    .collect()
-            }
-            GamesTab::AllGames => app
-                .filtered_games()
-                .into_iter()
-                .map(|(i, g)| (i, g.clone()))
-                .collect(),
-            GamesTab::MyLibrary => {
-                let query = app.search_query.to_lowercase();
-                app.library_games
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, g)| query.is_empty() || g.title.to_lowercase().contains(&query))
-                    .map(|(i, g)| (i, g.clone()))
-                    .collect()
-            }
-            GamesTab::QueueTimes => {
-                // Queue Times tab doesn't show games, return empty list
+                // Home tab renders from game_sections, return empty to avoid clone
                 Vec::new()
             }
+            GamesTab::AllGames | GamesTab::MyLibrary => {
+                // Only clone filtered games for tabs that need them
+                let query = app.search_query.to_lowercase();
+                let source = if current_tab == GamesTab::MyLibrary {
+                    &app.library_games
+                } else {
+                    &app.games
+                };
+                source
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, g)| query.is_empty() || g.title.to_lowercase().contains(&query))
+                    .map(|(i, g)| (i, g.clone()))
+                    .collect()
+            }
+            GamesTab::QueueTimes => Vec::new(),
         };
 
-        // Get game sections for Home tab
-        let game_sections = app.game_sections.clone();
+        // Get game sections for Home tab - only clone if on Home tab
+        let game_sections = if current_tab == GamesTab::Home {
+            app.game_sections.clone()
+        } else {
+            Vec::new()
+        };
 
         // Clone texture map for rendering (avoid borrow issues)
         let game_textures = self.game_textures.clone();
         let mut new_textures: Vec<(String, egui::TextureHandle)> = Vec::new();
 
-        let full_output = self.egui_ctx.run_ui(raw_input, |ctx| {
-            // Custom styling
-            let mut style = (*ctx.global_style()).clone();
-            style.visuals.window_fill = egui::Color32::from_rgb(20, 20, 30);
-            style.visuals.panel_fill = egui::Color32::from_rgb(25, 25, 35);
-            style.visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(35, 35, 50);
-            style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(45, 45, 65);
-            style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(60, 60, 90);
-            style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(80, 180, 80);
-            style.visuals.selection.bg_fill = egui::Color32::from_rgb(60, 120, 60);
-            ctx.set_global_style(style);
+        let full_output;
+        {
+            profile_scope!("egui_run");
+            full_output = self.egui_ctx.run_ui(raw_input, |ctx| {
+                // Custom styling
+                let mut style = (*ctx.global_style()).clone();
+                style.visuals.window_fill = egui::Color32::from_rgb(20, 20, 30);
+                style.visuals.panel_fill = egui::Color32::from_rgb(25, 25, 35);
+                style.visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(35, 35, 50);
+                style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(45, 45, 65);
+                style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(60, 60, 90);
+                style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(80, 180, 80);
+                style.visuals.selection.bg_fill = egui::Color32::from_rgb(60, 120, 60);
+                ctx.set_global_style(style);
 
-            match app_state {
-                AppState::Login => {
-                    render_login_screen(
-                        ctx,
-                        &login_providers,
-                        selected_provider_index,
-                        &status_message,
-                        is_loading,
-                        &mut actions,
-                    );
-                }
-                AppState::Games => {
-                    // Update image cache for async loading
-                    image_cache::update_cache();
-                    self.render_games_screen(
-                        ctx,
-                        &games_list,
-                        &game_sections,
-                        &mut search_query,
-                        &status_message,
-                        show_settings,
-                        &settings,
-                        &runtime,
-                        &game_textures,
-                        &mut new_textures,
-                        current_tab,
-                        subscription.as_ref(),
-                        selected_game_popup.as_ref(),
-                        &servers,
-                        selected_server_index,
-                        auto_server_selection,
-                        ping_testing,
-                        show_settings_modal,
-                        app.show_session_conflict,
-                        app.show_av1_warning,
-                        app.show_alliance_warning,
-                        crate::auth::get_selected_provider()
-                            .login_provider_display_name
-                            .as_str(),
-                        &app.active_sessions,
-                        app.pending_game_launch.as_ref(),
-                        &mut queue_servers,
-                        queue_loading,
-                        queue_sort_mode,
-                        &queue_region_filter,
-                        show_server_selection,
-                        &selected_queue_server,
-                        pending_server_selection_game.as_ref(),
-                        &mut actions,
-                    );
-                }
-                AppState::Session => {
-                    render_session_screen(
-                        ctx,
-                        &selected_game,
-                        &status_message,
-                        &error_message,
-                        &mut actions,
-                    );
-                }
-                AppState::Streaming => {
-                    // Render stats overlay
-                    if show_stats && stats_visible {
-                        render_stats_panel(ctx, &stats, stats_position);
+                match app_state {
+                    AppState::Login => {
+                        // Reduce idle CPU usage on login screen
+                        ctx.request_repaint_after(Duration::from_millis(100));
+
+                        render_login_screen(
+                            ctx,
+                            &login_providers,
+                            selected_provider_index,
+                            &status_message,
+                            is_loading,
+                            login_url.as_deref(),
+                            &mut actions,
+                        );
+
+                        // Show welcome popup for first-time users
+                        if show_welcome_popup {
+                            render_welcome_popup(ctx, &mut actions);
+                        }
                     }
+                    AppState::Games => {
+                        // Update image cache for async loading
+                        image_cache::update_cache();
 
-                    // Small overlay hint
-                    egui::Area::new(egui::Id::new("stream_hint"))
-                        .anchor(egui::Align2::CENTER_TOP, [0.0, 10.0])
-                        .interactable(false)
-                        .show(ctx, |ui| {
-                            ui.label(
-                                egui::RichText::new(
-                                    "Ctrl+Shift+Q to stop • F3 stats • F11 fullscreen",
-                                )
-                                .color(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 100))
-                                .size(12.0),
+                        // === UI Optimization: Reduce idle repaints ===
+                        // When in Games view with no user interaction, we only need to repaint
+                        // occasionally to check for newly loaded images. This reduces CPU from
+                        // 100% to ~5% when idle in the game library.
+                        // Note: User interactions (mouse, keyboard) will trigger immediate repaints
+                        // via the winit event system, so responsiveness is not affected.
+                        ctx.request_repaint_after(Duration::from_millis(100));
+
+                        self.render_games_screen(
+                            ctx,
+                            &games_list,
+                            &game_sections,
+                            &mut search_query,
+                            &status_message,
+                            show_settings,
+                            &settings,
+                            &runtime,
+                            &game_textures,
+                            &mut new_textures,
+                            current_tab,
+                            subscription.as_ref(),
+                            selected_game_popup.as_ref(),
+                            &servers,
+                            selected_server_index,
+                            auto_server_selection,
+                            ping_testing,
+                            show_settings_modal,
+                            app.show_session_conflict,
+                            app.show_av1_warning,
+                            app.show_alliance_warning,
+                            crate::auth::get_selected_provider()
+                                .login_provider_display_name
+                                .as_str(),
+                            &app.active_sessions,
+                            app.pending_game_launch.as_ref(),
+                            &mut queue_servers,
+                            queue_loading,
+                            queue_sort_mode,
+                            &queue_region_filter,
+                            show_server_selection,
+                            &selected_queue_server,
+                            pending_server_selection_game.as_ref(),
+                            &mut actions,
+                        );
+                    }
+                    AppState::Session => {
+                        // Session screen shows loading spinner, update at 30fps for smooth animation
+                        ctx.request_repaint_after(Duration::from_millis(33));
+
+                        // Show ads screen if ads are required (free tier)
+                        if ads_required {
+                            render_ads_required_screen(
+                                ctx,
+                                &selected_game,
+                                ads_remaining_secs,
+                                ads_total_secs,
+                                &mut actions,
                             );
-                        });
+                        } else {
+                            render_session_screen(
+                                ctx,
+                                &selected_game,
+                                &status_message,
+                                &error_message,
+                                &mut actions,
+                            );
+                        }
+                    }
+                    AppState::Streaming => {
+                        // Render stats overlay
+                        if show_stats && stats_visible {
+                            render_stats_panel(ctx, &stats, stats_position);
+                        }
+
+                        // Render resolution change notification
+                        if let Some((old_res, new_res, direction, alpha)) = &resolution_notif {
+                            render_resolution_notification(
+                                ctx, old_res, new_res, *direction, *alpha,
+                            );
+                        }
+
+                        // Render racing wheel connection notification
+                        if let Some((wheel_count, alpha)) = wheel_notif {
+                            render_wheel_notification(ctx, wheel_count, alpha);
+                        }
+
+                        // Small overlay hint
+                        egui::Area::new(egui::Id::new("stream_hint"))
+                            .anchor(egui::Align2::CENTER_TOP, [0.0, 10.0])
+                            .interactable(false)
+                            .show(ctx, |ui| {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Ctrl+Shift+Q to stop • F3 stats • F11 fullscreen",
+                                    )
+                                    .color(egui::Color32::from_rgba_unmultiplied(
+                                        255, 255, 255, 100,
+                                    ))
+                                    .size(12.0),
+                                );
+                            });
+                    }
                 }
-            }
-        });
+            });
+        } // end profile_scope!("egui_run")
 
         // Check if search query changed
         if search_query != app.search_query {
+            // If user starts typing a search and is on Home tab, switch to All Games tab
+            // so they can see the filtered results
+            if !search_query.is_empty() && current_tab == GamesTab::Home {
+                actions.push(UiAction::SwitchTab(GamesTab::AllGames));
+            }
             actions.push(UiAction::UpdateSearch(search_query));
         }
 
@@ -3399,10 +3887,24 @@ impl Renderer {
             self.egui_renderer.free_texture(id);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+        {
+            profile_scope!("gpu_submit");
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
+        {
+            profile_scope!("present");
+            output.present();
+        }
 
-        Ok(actions)
+        // Return repaint delay based on app state for idle throttling
+        // This is set by request_repaint_after() calls in the UI code
+        let repaint_delay = match app.state {
+            AppState::Login | AppState::Games => Some(Duration::from_millis(100)),
+            AppState::Session => Some(Duration::from_millis(33)), // 30fps for spinner
+            AppState::Streaming => None,                          // No delay when streaming
+        };
+
+        Ok((actions, repaint_delay))
     }
 
     // render_login_screen moved to screens/login.rs
@@ -4476,36 +4978,61 @@ impl Renderer {
                             );
                         });
                     } else {
-                        // Games grid - calculate columns based on available width
+                        // Games grid with VIRTUAL SCROLLING - only render visible rows
+                        // This dramatically reduces CPU usage from rendering 648 games to ~20-30
                         let available_width = ui.available_width();
                         let card_width = 220.0;
                         let spacing = 16.0;
                         let num_columns = ((available_width + spacing) / (card_width + spacing)).floor() as usize;
-                        let num_columns = num_columns.max(2).min(6); // Between 2 and 6 columns
+                        let num_columns = num_columns.max(2).min(6);
 
-                        // Collect games to render (avoid borrow issues)
-                        let games_to_render: Vec<_> = games.iter().map(|(idx, game)| (*idx, game.clone())).collect();
+                        // Card height including image (124px) + title area (~60px) + spacing
+                        let row_height = 124.0 + 60.0 + spacing;
+                        let total_games = games.len();
+                        let total_rows = (total_games + num_columns - 1) / num_columns;
 
                         egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
-                            .show(ui, |ui| {
+                            .show_viewport(ui, |ui, viewport| {
+                                // Calculate which rows are visible
+                                let first_visible_row = (viewport.min.y / row_height).floor() as usize;
+                                let last_visible_row = ((viewport.max.y / row_height).ceil() as usize).min(total_rows);
+
+                                // Add buffer rows for smoother scrolling
+                                let first_row = first_visible_row.saturating_sub(1);
+                                let last_row = (last_visible_row + 1).min(total_rows);
+
+                                // Reserve space for rows before visible area
+                                if first_row > 0 {
+                                    ui.allocate_space(egui::vec2(available_width, first_row as f32 * row_height));
+                                }
+
                                 ui.horizontal(|ui| {
                                     ui.add_space(10.0);
                                     ui.vertical(|ui| {
-                                        egui::Grid::new("games_grid")
-                                            .num_columns(num_columns)
-                                            .spacing([spacing, spacing])
-                                            .show(ui, |ui| {
-                                                for (col, (idx, game)) in games_to_render.iter().enumerate() {
-                                                    Self::render_game_card(ui, ctx, *idx, game, _runtime, game_textures, new_textures, actions);
+                                        // Only render visible rows
+                                        for row in first_row..last_row {
+                                            let start_idx = row * num_columns;
+                                            let end_idx = (start_idx + num_columns).min(total_games);
 
-                                                    if (col + 1) % num_columns == 0 {
-                                                        ui.end_row();
+                                            ui.horizontal(|ui| {
+                                                ui.spacing_mut().item_spacing.x = spacing;
+                                                for game_idx in start_idx..end_idx {
+                                                    if let Some((idx, game)) = games.get(game_idx) {
+                                                        Self::render_game_card(ui, ctx, *idx, game, _runtime, game_textures, new_textures, actions);
                                                     }
                                                 }
                                             });
+                                            ui.add_space(spacing);
+                                        }
                                     });
                                 });
+
+                                // Reserve space for rows after visible area
+                                let remaining_rows = total_rows.saturating_sub(last_row);
+                                if remaining_rows > 0 {
+                                    ui.allocate_space(egui::vec2(available_width, remaining_rows as f32 * row_height));
+                                }
                             });
                     }
                 }
@@ -5501,18 +6028,29 @@ fn render_stats_panel(
                 .show(ui, |ui| {
                     ui.set_min_width(200.0);
 
-                    // Resolution
+                    // Resolution and HDR status
                     let res_text = if stats.resolution.is_empty() {
                         "Connecting...".to_string()
                     } else {
                         stats.resolution.clone()
                     };
 
-                    ui.label(
-                        RichText::new(res_text)
-                            .font(FontId::monospace(13.0))
-                            .color(Color32::WHITE),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(res_text)
+                                .font(FontId::monospace(13.0))
+                                .color(Color32::WHITE),
+                        );
+
+                        // HDR indicator
+                        if stats.is_hdr {
+                            ui.label(
+                                RichText::new(" HDR")
+                                    .font(FontId::monospace(13.0))
+                                    .color(Color32::from_rgb(255, 180, 0)), // Orange/gold for HDR
+                            );
+                        }
+                    });
 
                     // Decoded FPS vs Render FPS (shows if renderer is bottlenecked)
                     let decode_fps = stats.fps;
@@ -5732,4 +6270,192 @@ fn render_stats_panel(
                     }
                 });
         });
+}
+
+/// Render resolution change notification popup (animated, center-top)
+fn render_resolution_notification(
+    ctx: &egui::Context,
+    old_res: &str,
+    new_res: &str,
+    direction: ResolutionDirection,
+    alpha: f32,
+) {
+    use egui::{Align2, Color32, FontId, RichText};
+
+    // Calculate alpha for animation (0-255)
+    let alpha_u8 = (alpha * 255.0) as u8;
+
+    // Colors based on direction (using ASCII-compatible symbols)
+    let (arrow, color, label) = match direction {
+        ResolutionDirection::Up => (
+            "+",
+            Color32::from_rgba_unmultiplied(100, 255, 100, alpha_u8),
+            "Quality Increased",
+        ),
+        ResolutionDirection::Down => (
+            "-",
+            Color32::from_rgba_unmultiplied(255, 150, 100, alpha_u8),
+            "Quality Decreased",
+        ),
+        ResolutionDirection::Same => (
+            "=",
+            Color32::from_rgba_unmultiplied(200, 200, 200, alpha_u8),
+            "Quality Changed",
+        ),
+    };
+
+    // Slide-in animation: start 20px above, slide down to final position
+    let slide_offset = (1.0 - alpha.min(1.0)) * -20.0;
+
+    egui::Area::new(egui::Id::new("resolution_notification"))
+        .anchor(Align2::CENTER_TOP, [0.0, 40.0 + slide_offset])
+        .interactable(false)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(Color32::from_rgba_unmultiplied(
+                    20,
+                    20,
+                    25,
+                    (alpha * 230.0) as u8,
+                ))
+                .corner_radius(8.0)
+                .inner_margin(egui::Margin::symmetric(16, 12))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    Color32::from_rgba_unmultiplied(80, 80, 90, alpha_u8),
+                ))
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 6.0;
+
+                        // Title with arrow
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(arrow)
+                                    .font(FontId::proportional(18.0))
+                                    .color(color),
+                            );
+                            ui.label(
+                                RichText::new(label).font(FontId::proportional(14.0)).color(
+                                    Color32::from_rgba_unmultiplied(255, 255, 255, alpha_u8),
+                                ),
+                            );
+                        });
+
+                        // Resolution change details
+                        ui.horizontal(|ui| {
+                            // Old resolution (strikethrough effect with dim color)
+                            ui.label(
+                                RichText::new(old_res).font(FontId::monospace(13.0)).color(
+                                    Color32::from_rgba_unmultiplied(150, 150, 150, alpha_u8),
+                                ),
+                            );
+                            ui.label(
+                                RichText::new("->").font(FontId::monospace(13.0)).color(
+                                    Color32::from_rgba_unmultiplied(200, 200, 200, alpha_u8),
+                                ),
+                            );
+                            // New resolution (bright)
+                            ui.label(
+                                RichText::new(new_res)
+                                    .font(FontId::monospace(13.0))
+                                    .strong()
+                                    .color(color),
+                            );
+                        });
+                    });
+                });
+        });
+
+    // Request repaint for smooth animation
+    ctx.request_repaint();
+}
+
+/// Render racing wheel connection notification popup (animated, center-top)
+/// Shows when a racing wheel is detected during streaming session
+fn render_wheel_notification(ctx: &egui::Context, wheel_count: usize, alpha: f32) {
+    use egui::{Align2, Color32, FontId, RichText};
+
+    // Calculate alpha for animation (0-255)
+    let alpha_u8 = (alpha * 255.0) as u8;
+
+    // Green color for wheel detection (positive feedback)
+    let accent_color = Color32::from_rgba_unmultiplied(100, 200, 100, alpha_u8);
+
+    // Slide-in animation: start 20px above, slide down to final position
+    let slide_offset = (1.0 - alpha.min(1.0)) * -20.0;
+
+    egui::Area::new(egui::Id::new("wheel_notification"))
+        .anchor(Align2::CENTER_TOP, [0.0, 100.0 + slide_offset]) // Below resolution notification
+        .interactable(false)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(Color32::from_rgba_unmultiplied(
+                    20,
+                    30,
+                    25,
+                    (alpha * 230.0) as u8,
+                ))
+                .corner_radius(8.0)
+                .inner_margin(egui::Margin::symmetric(16, 12))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    Color32::from_rgba_unmultiplied(60, 100, 70, alpha_u8),
+                ))
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 6.0;
+
+                        // Title with steering wheel icon (using ASCII-compatible symbol)
+                        ui.horizontal(|ui| {
+                            // Use a circle/wheel-like character that's cross-platform compatible
+                            ui.label(
+                                RichText::new("(O)")
+                                    .font(FontId::monospace(16.0))
+                                    .color(accent_color),
+                            );
+                            ui.label(
+                                RichText::new("Racing Wheel Detected")
+                                    .font(FontId::proportional(14.0))
+                                    .strong()
+                                    .color(Color32::from_rgba_unmultiplied(
+                                        255, 255, 255, alpha_u8,
+                                    )),
+                            );
+                        });
+
+                        // Wheel count and info
+                        ui.horizontal(|ui| {
+                            let wheel_text = if wheel_count == 1 {
+                                "1 wheel connected".to_string()
+                            } else {
+                                format!("{} wheels connected", wheel_count)
+                            };
+                            ui.label(
+                                RichText::new(wheel_text)
+                                    .font(FontId::monospace(12.0))
+                                    .color(Color32::from_rgba_unmultiplied(
+                                        180, 180, 180, alpha_u8,
+                                    )),
+                            );
+                        });
+
+                        // Supported features hint
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Wheel, pedals, and shifter input active")
+                                    .font(FontId::proportional(11.0))
+                                    .color(Color32::from_rgba_unmultiplied(
+                                        140, 160, 140, alpha_u8,
+                                    )),
+                            );
+                        });
+                    });
+                });
+        });
+
+    // Request repaint for smooth animation
+    ctx.request_repaint();
 }

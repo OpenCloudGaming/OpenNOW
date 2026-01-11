@@ -1,15 +1,25 @@
 //! Stats Panel Overlay
 //!
 //! Bottom-left stats display matching the web client style.
+//! Includes throttling to reduce CPU usage - stats update every 200ms instead of every frame.
 
 use egui::{Align2, Color32, FontId, RichText};
 use crate::media::StreamStats;
 use crate::app::StatsPosition;
+use std::time::{Duration, Instant};
 
-/// Stats panel overlay
+/// Interval between stats updates (200ms = 5 updates per second)
+/// This dramatically reduces CPU usage while still providing responsive feedback
+const STATS_UPDATE_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Stats panel overlay with throttled updates
 pub struct StatsPanel {
     pub visible: bool,
     pub position: StatsPosition,
+    /// Cached stats for throttled rendering
+    cached_stats: Option<StreamStats>,
+    /// Last time stats were updated
+    last_update: Instant,
 }
 
 impl StatsPanel {
@@ -17,14 +27,37 @@ impl StatsPanel {
         Self {
             visible: true,
             position: StatsPosition::BottomLeft,
+            cached_stats: None,
+            last_update: Instant::now(),
         }
     }
 
-    /// Render the stats panel
+    /// Check if stats need to be updated (throttled to STATS_UPDATE_INTERVAL)
+    fn should_update(&self) -> bool {
+        self.last_update.elapsed() >= STATS_UPDATE_INTERVAL
+    }
+
+    /// Update cached stats if the throttle interval has passed
+    /// Returns true if stats were updated (UI needs repaint)
+    pub fn update_stats(&mut self, stats: &StreamStats) -> bool {
+        if self.should_update() {
+            self.cached_stats = Some(stats.clone());
+            self.last_update = Instant::now();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Render the stats panel using cached stats
+    /// This avoids recalculating the display every frame
     pub fn render(&self, ctx: &egui::Context, stats: &StreamStats) {
         if !self.visible {
             return;
         }
+
+        // Use cached stats if available, otherwise use provided stats
+        let display_stats = self.cached_stats.as_ref().unwrap_or(stats);
 
         let (anchor, offset) = match self.position {
             StatsPosition::BottomLeft => (Align2::LEFT_BOTTOM, [10.0, -10.0]),
@@ -45,10 +78,10 @@ impl StatsPanel {
                         ui.set_min_width(200.0);
 
                         // Resolution and FPS
-                        let res_text = if stats.resolution.is_empty() {
+                        let res_text = if display_stats.resolution.is_empty() {
                             "Connecting...".to_string()
                         } else {
-                            format!("{} @ {} fps", stats.resolution, stats.fps as u32)
+                            format!("{} @ {} fps", display_stats.resolution, display_stats.fps as u32)
                         };
 
                         ui.label(
@@ -57,31 +90,51 @@ impl StatsPanel {
                                 .color(Color32::WHITE)
                         );
 
-                        // Codec and bitrate
-                        if !stats.codec.is_empty() {
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} • {:.1} Mbps",
-                                    stats.codec,
-                                    stats.bitrate_mbps
-                                ))
-                                .font(FontId::monospace(11.0))
-                                .color(Color32::LIGHT_GRAY)
-                            );
+                        // Codec, HDR status, and bitrate
+                        if !display_stats.codec.is_empty() {
+                            let hdr_indicator = if display_stats.is_hdr {
+                                " • HDR"
+                            } else {
+                                ""
+                            };
+                            let hdr_color = if display_stats.is_hdr {
+                                Color32::from_rgb(255, 180, 0) // Orange/gold for HDR
+                            } else {
+                                Color32::LIGHT_GRAY
+                            };
+
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} • {:.1} Mbps",
+                                        display_stats.codec,
+                                        display_stats.bitrate_mbps
+                                    ))
+                                    .font(FontId::monospace(11.0))
+                                    .color(Color32::LIGHT_GRAY)
+                                );
+                                if display_stats.is_hdr {
+                                    ui.label(
+                                        RichText::new("HDR")
+                                            .font(FontId::monospace(11.0))
+                                            .color(hdr_color)
+                                    );
+                                }
+                            });
                         }
 
                         // Network RTT (round-trip time)
-                        if stats.rtt_ms > 0.0 {
-                            let rtt_color = if stats.rtt_ms < 30.0 {
+                        if display_stats.rtt_ms > 0.0 {
+                            let rtt_color = if display_stats.rtt_ms < 30.0 {
                                 Color32::GREEN
-                            } else if stats.rtt_ms < 60.0 {
+                            } else if display_stats.rtt_ms < 60.0 {
                                 Color32::YELLOW
                             } else {
                                 Color32::RED
                             };
 
                             ui.label(
-                                RichText::new(format!("RTT: {:.0}ms", stats.rtt_ms))
+                                RichText::new(format!("RTT: {:.0}ms", display_stats.rtt_ms))
                                 .font(FontId::monospace(11.0))
                                 .color(rtt_color)
                             );
@@ -94,8 +147,8 @@ impl StatsPanel {
                         }
 
                         // Packet loss
-                        if stats.packet_loss > 0.1 {
-                            let loss_color = if stats.packet_loss < 1.0 {
+                        if display_stats.packet_loss > 0.1 {
+                            let loss_color = if display_stats.packet_loss < 1.0 {
                                 Color32::YELLOW
                             } else {
                                 Color32::RED
@@ -104,7 +157,7 @@ impl StatsPanel {
                             ui.label(
                                 RichText::new(format!(
                                     "Packet Loss: {:.2}%",
-                                    stats.packet_loss
+                                    display_stats.packet_loss
                                 ))
                                 .font(FontId::monospace(11.0))
                                 .color(loss_color)
@@ -112,12 +165,12 @@ impl StatsPanel {
                         }
 
                         // Decode, render, and input latency
-                        if stats.decode_time_ms > 0.0 || stats.render_time_ms > 0.0 {
+                        if display_stats.decode_time_ms > 0.0 || display_stats.render_time_ms > 0.0 {
                             ui.label(
                                 RichText::new(format!(
                                     "Decode: {:.1}ms • Render: {:.1}ms",
-                                    stats.decode_time_ms,
-                                    stats.render_time_ms
+                                    display_stats.decode_time_ms,
+                                    display_stats.render_time_ms
                                 ))
                                 .font(FontId::monospace(10.0))
                                 .color(Color32::GRAY)
@@ -125,10 +178,10 @@ impl StatsPanel {
                         }
 
                         // Input latency (client-side only)
-                        if stats.input_latency_ms > 0.0 {
-                            let input_color = if stats.input_latency_ms < 5.0 {
+                        if display_stats.input_latency_ms > 0.0 {
+                            let input_color = if display_stats.input_latency_ms < 5.0 {
                                 Color32::GREEN
-                            } else if stats.input_latency_ms < 10.0 {
+                            } else if display_stats.input_latency_ms < 10.0 {
                                 Color32::YELLOW
                             } else {
                                 Color32::RED
@@ -137,7 +190,7 @@ impl StatsPanel {
                             ui.label(
                                 RichText::new(format!(
                                     "Input: {:.1}ms",
-                                    stats.input_latency_ms
+                                    display_stats.input_latency_ms
                                 ))
                                 .font(FontId::monospace(10.0))
                                 .color(input_color)
@@ -145,13 +198,13 @@ impl StatsPanel {
                         }
 
                         // Frame stats
-                        if stats.frames_received > 0 {
+                        if display_stats.frames_received > 0 {
                             ui.label(
                                 RichText::new(format!(
                                     "Frames: {} rx, {} dec, {} drop",
-                                    stats.frames_received,
-                                    stats.frames_decoded,
-                                    stats.frames_dropped
+                                    display_stats.frames_received,
+                                    display_stats.frames_decoded,
+                                    display_stats.frames_dropped
                                 ))
                                 .font(FontId::monospace(10.0))
                                 .color(Color32::DARK_GRAY)
@@ -159,12 +212,12 @@ impl StatsPanel {
                         }
 
                         // GPU and server info
-                        if !stats.gpu_type.is_empty() || !stats.server_region.is_empty() {
+                        if !display_stats.gpu_type.is_empty() || !display_stats.server_region.is_empty() {
                             let info = format!(
                                 "{}{}{}",
-                                stats.gpu_type,
-                                if !stats.gpu_type.is_empty() && !stats.server_region.is_empty() { " • " } else { "" },
-                                stats.server_region
+                                display_stats.gpu_type,
+                                if !display_stats.gpu_type.is_empty() && !display_stats.server_region.is_empty() { " • " } else { "" },
+                                display_stats.server_region
                             );
 
                             ui.label(

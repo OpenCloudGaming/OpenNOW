@@ -396,6 +396,7 @@ pub fn save_session_cache(session: &SessionInfo) {
                     "port": mci.port,
                 })
             }),
+            "ads_required": session.ads_required,
         });
         if let Ok(json) = serde_json::to_string(&cache) {
             let _ = std::fs::write(path, json);
@@ -456,6 +457,11 @@ pub fn load_session_cache() -> Option<SessionInfo> {
             .map(|s| s.to_string()),
         ice_servers: Vec::new(),
         media_connection_info,
+        ads_required: cache
+            .get("ads_required")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        ads_info: None, // Ads info not persisted to cache
     })
 }
 
@@ -741,5 +747,28 @@ pub fn load_queue_cache() -> Option<Vec<QueueServerInfo>> {
 pub fn clear_queue_cache() {
     if let Some(path) = queue_cache_path() {
         let _ = std::fs::remove_file(path);
+    }
+}
+
+// ============================================================
+// Welcome Shown Flag (first-time user experience)
+// ============================================================
+
+fn welcome_shown_path() -> Option<PathBuf> {
+    get_app_data_dir().map(|p| p.join("welcome_shown"))
+}
+
+/// Check if the welcome popup has been shown before
+pub fn has_shown_welcome() -> bool {
+    welcome_shown_path().map(|p| p.exists()).unwrap_or(false)
+}
+
+/// Mark the welcome popup as shown
+pub fn mark_welcome_shown() {
+    if let Some(path) = welcome_shown_path() {
+        // Just create an empty file as a marker
+        if let Err(e) = std::fs::write(&path, "1") {
+            warn!("Failed to save welcome shown flag: {}", e);
+        }
     }
 }

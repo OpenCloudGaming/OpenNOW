@@ -214,6 +214,7 @@ pub fn render_settings_modal(
                             let codec_text = match settings.codec {
                                 crate::app::VideoCodec::H264 => "H.264",
                                 crate::app::VideoCodec::H265 => "H.265 (HEVC)",
+                                crate::app::VideoCodec::AV1 => "AV1",
                             };
                             egui::ComboBox::from_id_salt("codec_combo")
                                 .selected_text(codec_text)
@@ -224,19 +225,33 @@ pub fn render_settings_modal(
                                     if ui.selectable_label(matches!(settings.codec, crate::app::VideoCodec::H265), "H.265 (HEVC)").clicked() {
                                         actions.push(UiAction::UpdateSetting(SettingChange::Codec(crate::app::VideoCodec::H265)));
                                     }
+                                    if ui.selectable_label(matches!(settings.codec, crate::app::VideoCodec::AV1), "AV1").clicked() {
+                                        actions.push(UiAction::UpdateSetting(SettingChange::Codec(crate::app::VideoCodec::AV1)));
+                                    }
                                 });
                         });
                         ui.end_row();
 
                         // Video Decoder
                         ui.label("Video Decoder")
-                             .on_hover_text("The hardware/software backend used to decode the video stream.\n\n• Native DXVA - Windows GPU decoding (NVIDIA-style)\n• Vulkan Video - Cross-GPU Linux decoding (GFN-style)\n• VAAPI - AMD/Intel Linux decoding\n• Software - CPU fallback");
+                             .on_hover_text(settings.decoder_backend.description());
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            // Show backend info next to selected decoder
+                            let selected_backend = format!("{} ({})",
+                                settings.decoder_backend.as_str(),
+                                settings.decoder_backend.backend_name()
+                            );
                             egui::ComboBox::from_id_salt("decoder_combo")
-                                .selected_text(settings.decoder_backend.as_str())
+                                .selected_text(selected_backend)
                                 .show_ui(ui, |ui| {
                                     for backend in crate::media::get_supported_decoder_backends() {
-                                        if ui.selectable_label(settings.decoder_backend == backend, backend.as_str()).clicked() {
+                                        let label = format!("{} ({})", backend.as_str(), backend.backend_name());
+                                        if ui.selectable_label(settings.decoder_backend == backend, &label)
+                                            .on_hover_ui_at_pointer(|ui| {
+                                                ui.label(backend.description());
+                                            })
+                                            .clicked()
+                                        {
                                             actions.push(UiAction::UpdateSetting(SettingChange::DecoderBackend(backend)));
                                         }
                                     }
@@ -340,6 +355,30 @@ pub fn render_settings_modal(
                             });
                             ui.end_row();
                         }
+                    });
+
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // === Input Settings Section ===
+                ui.heading(egui::RichText::new("Input").color(egui::Color32::from_rgb(118, 185, 0)));
+                ui.add_space(8.0);
+
+                egui::Grid::new("input_settings_grid")
+                    .num_columns(2)
+                    .spacing([24.0, 16.0])
+                    .show(ui, |ui| {
+                        // Clipboard Paste
+                        ui.label("Clipboard Paste")
+                            .on_hover_text("Enable Ctrl+V to paste clipboard text into the remote session.\nText is typed character-by-character (max 64KB).\nUseful for pasting passwords, URLs, or codes.");
+                        ui.horizontal(|ui| {
+                            let mut clipboard_enabled = settings.clipboard_paste_enabled;
+                            if ui.checkbox(&mut clipboard_enabled, "Enable clipboard paste (Ctrl+V)").changed() {
+                                actions.push(UiAction::UpdateSetting(SettingChange::ClipboardPasteEnabled(clipboard_enabled)));
+                            }
+                        });
+                        ui.end_row();
                     });
 
                 ui.add_space(24.0);
@@ -579,6 +618,248 @@ pub fn render_alliance_warning_dialog(
 
                 if ui.add(got_it_btn).clicked() {
                     actions.push(UiAction::CloseAllianceWarning);
+                }
+            });
+        });
+}
+
+/// Render the ads required screen for free tier users
+///
+/// This shows an informational screen explaining that ads are required
+/// but cannot be displayed in this client.
+pub fn render_ads_required_screen(
+    ctx: &egui::Context,
+    selected_game: &Option<GameInfo>,
+    ads_remaining_secs: u32,
+    ads_total_secs: u32,
+    actions: &mut Vec<UiAction>,
+) {
+    egui::CentralPanel::default().show(ctx, |ui| {
+        ui.vertical_centered(|ui| {
+            ui.add_space(80.0);
+
+            // Game title
+            if let Some(ref game) = selected_game {
+                ui.label(
+                    egui::RichText::new(&game.title)
+                        .size(28.0)
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                );
+                ui.add_space(30.0);
+            }
+
+            // Warning icon and header
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgb(60, 50, 20))
+                .corner_radius(8.0)
+                .inner_margin(egui::Margin::same(20))
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new("FREE TIER - ADS REQUIRED")
+                                .size(20.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(255, 200, 80)),
+                        );
+
+                        ui.add_space(15.0);
+
+                        ui.label(
+                            egui::RichText::new(
+                                "GeForce NOW free tier requires watching video ads\nbefore your gaming session can start.",
+                            )
+                            .size(14.0)
+                            .color(egui::Color32::LIGHT_GRAY),
+                        );
+
+                        ui.add_space(15.0);
+
+                        // Progress indicator (simulated)
+                        let progress = if ads_total_secs > 0 {
+                            1.0 - (ads_remaining_secs as f32 / ads_total_secs as f32)
+                        } else {
+                            0.0
+                        };
+
+                        ui.add(
+                            egui::ProgressBar::new(progress)
+                                .desired_width(300.0)
+                                .text(format!(
+                                    "Waiting for ads... (~{} seconds remaining)",
+                                    ads_remaining_secs
+                                )),
+                        );
+
+                        ui.add_space(20.0);
+
+                        ui.label(
+                            egui::RichText::new(
+                                "OpenNOW cannot display ads from NVIDIA's ad partner.\nYour session will timeout if ads are not watched.",
+                            )
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(255, 150, 100)),
+                        );
+
+                        ui.add_space(15.0);
+
+                        ui.separator();
+
+                        ui.add_space(10.0);
+
+                        ui.label(
+                            egui::RichText::new("Options:")
+                                .size(14.0)
+                                .strong()
+                                .color(egui::Color32::WHITE),
+                        );
+
+                        ui.add_space(8.0);
+
+                        ui.label(
+                            egui::RichText::new(
+                                "1. Subscribe to GeForce NOW Priority or Ultimate to skip ads\n2. Use the official GFN client for free tier sessions\n3. Wait - session may proceed if ads timeout (not guaranteed)",
+                            )
+                            .size(12.0)
+                            .color(egui::Color32::LIGHT_GRAY),
+                        );
+                    });
+                });
+
+            ui.add_space(30.0);
+
+            // Buttons
+            ui.horizontal(|ui| {
+                ui.add_space(ui.available_width() / 2.0 - 150.0);
+
+                // Continue anyway button (session may work after timeout)
+                let continue_btn = egui::Button::new(
+                    egui::RichText::new("Continue Waiting").size(14.0),
+                )
+                .fill(egui::Color32::from_rgb(60, 80, 60))
+                .min_size(egui::vec2(140.0, 35.0));
+
+                if ui.add(continue_btn).on_hover_text("Wait for the session to proceed (may timeout)").clicked() {
+                    // Just continue - the session poll loop will handle state changes
+                }
+
+                ui.add_space(20.0);
+
+                // Cancel button
+                let cancel_btn = egui::Button::new(
+                    egui::RichText::new("Cancel Session").size(14.0),
+                )
+                .fill(egui::Color32::from_rgb(100, 50, 50))
+                .min_size(egui::vec2(140.0, 35.0));
+
+                if ui.add(cancel_btn).clicked() {
+                    actions.push(UiAction::StopStreaming);
+                }
+            });
+
+            ui.add_space(20.0);
+
+            // Link to subscription page
+            ui.hyperlink_to(
+                egui::RichText::new("Learn about GeForce NOW subscriptions")
+                    .size(12.0)
+                    .color(egui::Color32::from_rgb(100, 180, 255)),
+                "https://www.nvidia.com/en-us/geforce-now/memberships/",
+            );
+        });
+    });
+}
+
+/// Render first-time welcome popup
+pub fn render_welcome_popup(ctx: &egui::Context, actions: &mut Vec<UiAction>) {
+    egui::Window::new("Welcome to OpenNOW")
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size([450.0, 280.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(15.0);
+
+                // Logo
+                ui.label(
+                    egui::RichText::new("OpenNOW")
+                        .size(32.0)
+                        .color(egui::Color32::from_rgb(118, 185, 0))
+                        .strong(),
+                );
+
+                ui.add_space(8.0);
+
+                ui.label(
+                    egui::RichText::new("Open Source GeForce NOW Client")
+                        .size(14.0)
+                        .color(egui::Color32::from_rgb(180, 180, 180)),
+                );
+
+                ui.add_space(20.0);
+
+                // Beta warning badge
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(80, 60, 20))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin {
+                        left: 14,
+                        right: 14,
+                        top: 6,
+                        bottom: 6,
+                    })
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("BETA")
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(255, 200, 80))
+                                .strong(),
+                        );
+                    });
+
+                ui.add_space(15.0);
+
+                ui.label(
+                    egui::RichText::new("This software is still in beta.")
+                        .size(14.0)
+                        .color(egui::Color32::from_rgb(255, 200, 80)),
+                );
+
+                ui.add_space(8.0);
+
+                ui.label(
+                    egui::RichText::new("You may encounter bugs and issues.")
+                        .size(13.0)
+                        .color(egui::Color32::from_rgb(180, 180, 180)),
+                );
+
+                ui.add_space(5.0);
+
+                ui.label(
+                    egui::RichText::new("Please report any problems to our GitHub:")
+                        .size(12.0)
+                        .color(egui::Color32::GRAY),
+                );
+
+                ui.add_space(3.0);
+
+                ui.hyperlink_to(
+                    egui::RichText::new("github.com/zortos293/OpenNOW")
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(100, 180, 255)),
+                    "https://github.com/zortos293/OpenNOW",
+                );
+
+                ui.add_space(20.0);
+
+                let continue_btn =
+                    egui::Button::new(egui::RichText::new("Continue").size(14.0).strong())
+                        .fill(egui::Color32::from_rgb(118, 185, 0))
+                        .min_size(egui::vec2(120.0, 36.0));
+
+                if ui.add(continue_btn).clicked() {
+                    actions.push(UiAction::CloseWelcomePopup);
                 }
             });
         });
