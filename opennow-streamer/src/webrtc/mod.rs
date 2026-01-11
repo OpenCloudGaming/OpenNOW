@@ -11,15 +11,26 @@ pub use datachannel::*;
 pub use peer::{request_keyframe, NetworkStats, WebRtcEvent, WebRtcPeer};
 pub use sdp::*;
 pub use signaling::{GfnSignaling, IceCandidate, SignalingEvent};
-
-use anyhow::Result;
+// StreamingResult is defined in this module and exported automatically
 use log::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 
 use crate::app::{SessionInfo, Settings, SharedFrame, VideoCodec};
-use crate::input::{ControllerManager, InputHandler};
+
+/// Result of a streaming session - indicates why the stream ended
+#[derive(Debug, Clone)]
+pub enum StreamingResult {
+    /// Stream ended normally (user stopped or server disconnected gracefully)
+    Normal,
+    /// Stream failed due to an error
+    Error(String),
+    /// Stream was interrupted by SSRC change (resolution change on server)
+    /// Contains the stall duration in milliseconds before detection
+    SsrcChangeDetected { stall_duration_ms: u64 },
+}
+use crate::input::{ControllerManager, FfbEffectType, G29FfbManager, InputHandler, WheelManager};
 use crate::media::{
     AudioDecoder, AudioPlayer, DepacketizerCodec, RtpDepacketizer, StreamStats, UnifiedVideoDecoder,
 };
@@ -149,7 +160,15 @@ fn build_nvst_sdp(
         "a=vqos.adjustStreamingFpsDuringOutOfFocus:1".to_string(),
         "a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1".to_string(),
         "a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1".to_string(),
-        "a=vqos.resControl.cpmRtc.featureMask:3".to_string(),
+        // Disable CPM-based resolution changes (prevents SSRC switches)
+        // featureMask: 0 = disable all CPM features, 3 = enable some
+        "a=vqos.resControl.cpmRtc.featureMask:0".to_string(),
+        // Disable resolution scaling entirely
+        "a=vqos.resControl.cpmRtc.enable:0".to_string(),
+        // Never scale down resolution
+        "a=vqos.resControl.cpmRtc.minResolutionPercent:100".to_string(),
+        // Infinite cooldown to prevent resolution changes
+        "a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999".to_string(),
         format!(
             "a=packetPacing.numGroups:{}",
             if is_120_fps { 3 } else { 5 }
@@ -251,13 +270,14 @@ fn extract_public_ip(input: &str) -> Option<String> {
 }
 
 /// Run the streaming session
+/// Returns a `StreamingResult` indicating how/why the session ended
 pub async fn run_streaming(
     session_info: SessionInfo,
     settings: Settings,
     shared_frame: Arc<SharedFrame>,
     stats_tx: mpsc::Sender<StreamStats>,
     input_handler: Arc<InputHandler>,
-) -> Result<()> {
+) -> StreamingResult {
     info!(
         "Starting streaming to {} with session {}",
         session_info.server_ip, session_info.session_id
@@ -285,7 +305,9 @@ pub async fn run_streaming(
     );
 
     // Connect to signaling
-    signaling.connect().await?;
+    if let Err(e) = signaling.connect().await {
+        return StreamingResult::Error(format!("Failed to connect signaling: {}", e));
+    }
     info!("Signaling connected");
 
     // Create WebRTC peer
@@ -296,17 +318,27 @@ pub async fn run_streaming(
     // Decoded frames are written directly to SharedFrame by the decoder thread
     // Uses UnifiedVideoDecoder to support both FFmpeg and native DXVA backends
     let (mut video_decoder, mut decode_stats_rx) =
-        UnifiedVideoDecoder::new_async(codec, settings.decoder_backend, shared_frame.clone())?;
+        match UnifiedVideoDecoder::new_async(codec, settings.decoder_backend, shared_frame.clone())
+        {
+            Ok(decoder) => decoder,
+            Err(e) => {
+                return StreamingResult::Error(format!("Failed to create video decoder: {}", e))
+            }
+        };
 
     // Create RTP depacketizer with correct codec
     let depacketizer_codec = match codec {
         VideoCodec::H264 => DepacketizerCodec::H264,
         VideoCodec::H265 => DepacketizerCodec::H265,
+        VideoCodec::AV1 => DepacketizerCodec::AV1,
     };
     let mut rtp_depacketizer = RtpDepacketizer::with_codec(depacketizer_codec);
     info!("RTP depacketizer using {:?} mode", depacketizer_codec);
 
-    let mut audio_decoder = AudioDecoder::new(48000, 2)?;
+    let mut audio_decoder = match AudioDecoder::new(48000, 2) {
+        Ok(decoder) => decoder,
+        Err(e) => return StreamingResult::Error(format!("Failed to create audio decoder: {}", e)),
+    };
 
     // Get the sample receiver from the decoder for async operation
     let audio_sample_rx = audio_decoder.take_sample_receiver();
@@ -317,8 +349,27 @@ pub async fn run_streaming(
         if let Ok(audio_player) = AudioPlayer::new(48000, 2) {
             info!("Audio player thread started (async mode with jitter buffer)");
             if let Some(mut rx) = audio_sample_rx {
+                let mut total_samples: u64 = 0;
+                let mut log_interval = std::time::Instant::now();
                 while let Some(samples) = rx.blocking_recv() {
+                    if total_samples == 0 {
+                        info!(
+                            "First audio samples received by player: {} samples",
+                            samples.len()
+                        );
+                    }
+                    total_samples += samples.len() as u64;
                     audio_player.push_samples(&samples);
+
+                    // Log buffer status periodically
+                    if log_interval.elapsed().as_secs() >= 5 {
+                        info!(
+                            "Audio: {} total samples played, buffer level: {} samples",
+                            total_samples,
+                            audio_player.buffer_available()
+                        );
+                        log_interval = std::time::Instant::now();
+                    }
                 }
             }
         } else {
@@ -361,11 +412,40 @@ pub async fn run_streaming(
 
     info!("Input handler connected to streaming loop");
 
-    // Initialize and start ControllerManager
+    // Initialize and start ControllerManager (gamepads via gilrs)
     let controller_manager = Arc::new(ControllerManager::new());
     controller_manager.set_event_sender(input_event_tx.clone());
     controller_manager.start();
     info!("Controller manager started");
+
+    // Initialize and start WheelManager (racing wheels via Windows.Gaming.Input)
+    // WheelManager detects dedicated racing wheels and provides proper axis separation
+    // (wheel rotation, throttle, brake, clutch, handbrake) mapped to gamepad format
+    let wheel_manager = Arc::new(WheelManager::new());
+    wheel_manager.set_event_sender(input_event_tx.clone());
+    wheel_manager.start();
+    if wheel_manager.has_wheels() {
+        info!("Racing wheel manager started - wheel input active");
+        // Initialize force feedback for detected wheels
+        for i in 0..wheel_manager.wheel_count() {
+            if wheel_manager.init_force_feedback(i) {
+                info!("Force feedback initialized for wheel {}", i);
+            }
+        }
+    } else {
+        info!("No racing wheels detected - wheels will be handled as gamepads via gilrs");
+    }
+
+    // Initialize G29 force feedback manager (HID-based, works in PS3 mode)
+    // This provides FFB support for Logitech G29 wheels that aren't detected by Windows.Gaming.Input
+    let g29_ffb = Arc::new(G29FfbManager::new());
+    let g29_connected = g29_ffb.init();
+    if g29_connected {
+        info!("G29 force feedback initialized via HID");
+    }
+
+    // Output decoder for force feedback / rumble messages from server
+    let mut output_decoder = OutputDecoder::new();
 
     // Channel for input task to send encoded packets to the WebRTC peer
     // This decouples input processing from video decoding completely
@@ -401,6 +481,25 @@ pub async fn run_streaming(
                         input_protocol_version_clone.load(std::sync::atomic::Ordering::Relaxed);
                     input_encoder.set_protocol_version(version);
 
+                    // Handle ClipboardPaste specially - expand into multiple key events
+                    if let InputEvent::ClipboardPaste { ref text } = event {
+                        info!("Processing clipboard paste: {} chars", text.chars().count());
+                        let packets = datachannel::encode_clipboard_paste(&mut input_encoder, text);
+                        for encoded in packets {
+                            // Send each key event packet
+                            // Clipboard paste uses keyboard channel (reliable)
+                            if input_packet_tx_clone
+                                .try_send((encoded, false, false, 0))
+                                .is_err()
+                            {
+                                warn!("Input channel full during clipboard paste");
+                            }
+                            // Small delay between packets to avoid overwhelming the server
+                            // This is handled by timestamps in the packets themselves
+                        }
+                        continue; // Don't process as normal event
+                    }
+
                     // Extract event timestamp for latency calculation
                     let event_timestamp_us = match &event {
                         InputEvent::KeyDown { timestamp_us, .. }
@@ -410,7 +509,7 @@ pub async fn run_streaming(
                         | InputEvent::MouseButtonUp { timestamp_us, .. }
                         | InputEvent::MouseWheel { timestamp_us, .. }
                         | InputEvent::Gamepad { timestamp_us, .. } => *timestamp_us,
-                        InputEvent::Heartbeat => 0,
+                        InputEvent::Heartbeat | InputEvent::ClipboardPaste { .. } => 0,
                     };
 
                     // Calculate input latency (time from event creation to now)
@@ -503,6 +602,7 @@ pub async fn run_streaming(
                         let codec = match settings.codec {
                             VideoCodec::H264 => "H264",
                             VideoCodec::H265 => "H265",
+                            VideoCodec::AV1 => "AV1",
                         };
 
                         info!("Preferred codec: {}", codec);
@@ -519,7 +619,11 @@ pub async fn run_streaming(
                             sdp.clone()
                         };
 
-
+                        // CRITICAL: Inject provisional SSRCs (2, 3, 4) for video
+                        // GFN server uses sequential SSRCs when resolution changes, but
+                        // webrtc-rs can't handle undeclared SSRCs without MID extensions.
+                        // This is based on reverse-engineering of official GFN client (Bifrost2.dll).
+                        let modified_sdp = inject_provisional_ssrcs(&modified_sdp);
 
                         // Prefer codec
                         let modified_sdp = prefer_codec(&modified_sdp, &settings.codec);
@@ -584,7 +688,9 @@ pub async fn run_streaming(
                                 info!("Generated nvstSdp, length: {}", nvst_sdp_content.len());
 
                                 // Use raw nvstSdp string (no wrapper object)
-                                signaling.send_answer(&answer_sdp, Some(&nvst_sdp_content)).await?;
+                                if let Err(e) = signaling.send_answer(&answer_sdp, Some(&nvst_sdp_content)).await {
+                                    error!("Failed to send SDP answer: {}", e);
+                                }
 
                                 // For resume flow or Alliance partners (manual candidate needed)
                                 if let Some(ref mci) = session_info.media_connection_info {
@@ -682,28 +788,52 @@ pub async fn run_streaming(
                             info!("First video RTP packet received: {} bytes", payload.len());
                         }
 
-                        // Accumulate NAL units and send complete frames on marker bit
-                        // This is required for proper H.264/H.265 decoding
-                        // H.264/H.265: depacketize RTP and accumulate NAL units
-                        let nal_units = rtp_depacketizer.process(&payload);
+                        // Handle codec-specific depacketization
+                        match depacketizer_codec {
+                            DepacketizerCodec::AV1 => {
+                                // AV1: Use specialized OBU accumulation
+                                rtp_depacketizer.process_av1_raw(&payload);
 
-                        // H.264/H.265: accumulate NAL units until marker bit (end of frame)
-                        // Each frame consists of multiple NAL units that must be sent together
-                        for nal_unit in nal_units {
-                            rtp_depacketizer.accumulate_nal(nal_unit);
-                        }
+                                // On marker bit, flush pending OBU and get complete frame
+                                if marker {
+                                    rtp_depacketizer.flush_pending_obu();
+                                    if let Some(frame_data) = rtp_depacketizer.take_accumulated_frame() {
+                                        if let Err(e) = video_decoder.decode_async(&frame_data, packet_receive_time) {
+                                            warn!("AV1 decode async failed: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                            DepacketizerCodec::H264 | DepacketizerCodec::H265 => {
+                                // H.264/H.265: depacketize RTP and accumulate NAL units
+                                let nal_units = rtp_depacketizer.process(&payload);
 
-                        // On marker bit, we have a complete Access Unit - send to decoder
-                        if marker {
-                            if let Some(frame_data) = rtp_depacketizer.take_nal_frame() {
-                                if let Err(e) = video_decoder.decode_async(&frame_data, packet_receive_time) {
-                                    warn!("Decode async failed: {}", e);
+                                // Accumulate NAL units until marker bit (end of frame)
+                                // Each frame consists of multiple NAL units that must be sent together
+                                for nal_unit in nal_units {
+                                    rtp_depacketizer.accumulate_nal(nal_unit);
+                                }
+
+                                // On marker bit, we have a complete Access Unit - send to decoder
+                                if marker {
+                                    if let Some(frame_data) = rtp_depacketizer.take_nal_frame() {
+                                        if let Err(e) = video_decoder.decode_async(&frame_data, packet_receive_time) {
+                                            warn!("Decode async failed: {}", e);
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                     WebRtcEvent::AudioFrame(rtp_data) => {
                         // Async decode - non-blocking, samples go directly to audio player
+                        static AUDIO_PACKET_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                        let count = AUDIO_PACKET_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if count == 0 {
+                            info!("First audio packet received: {} bytes", rtp_data.len());
+                        } else if count % 500 == 0 {
+                            debug!("Audio packets received: {}", count);
+                        }
                         audio_decoder.decode_async(&rtp_data);
                     }
                     WebRtcEvent::DataChannelOpen(label) => {
@@ -714,6 +844,60 @@ pub async fn run_streaming(
                     }
                     WebRtcEvent::DataChannelMessage(label, data) => {
                         debug!("Data channel '{}' message: {} bytes", label, data.len());
+
+                        // Try to decode as output event (force feedback / rumble)
+                        if let Some(output_event) = output_decoder.decode(&data) {
+                            match output_event {
+                                OutputEvent::Rumble {
+                                    controller_id,
+                                    left_motor,
+                                    right_motor,
+                                    duration_ms,
+                                } => {
+                                    debug!(
+                                        "Rumble event: controller={}, left={}, right={}, duration={}ms",
+                                        controller_id, left_motor, right_motor, duration_ms
+                                    );
+                                    // Queue rumble effect on the controller
+                                    controller_manager.queue_rumble(
+                                        controller_id,
+                                        left_motor,
+                                        right_motor,
+                                        duration_ms,
+                                    );
+                                }
+                                OutputEvent::ForceFeedback {
+                                    wheel_id,
+                                    effect_type,
+                                    magnitude,
+                                    duration_ms,
+                                    ..
+                                } => {
+                                    debug!(
+                                        "FFB event: wheel={}, type={}, magnitude={}, duration={}ms",
+                                        wheel_id, effect_type, magnitude, duration_ms
+                                    );
+                                    // Convert magnitude from i16 (-32768 to 32767) to f64 (-1.0 to 1.0)
+                                    let mag_normalized = magnitude as f64 / 32767.0;
+
+                                    // Try Windows.Gaming.Input first (for wheels that support it)
+                                    if wheel_manager.has_wheels() {
+                                        wheel_manager.apply_force_feedback(
+                                            wheel_id as usize,
+                                            FfbEffectType::from(effect_type),
+                                            mag_normalized,
+                                            duration_ms,
+                                        );
+                                    } else if g29_ffb.is_connected() {
+                                        // Fallback to G29 HID-based FFB
+                                        g29_ffb.apply_constant_force(mag_normalized);
+                                    }
+                                }
+                                OutputEvent::Unknown { .. } => {
+                                    // Should not happen - decoder only returns Rumble/ForceFeedback
+                                }
+                            }
+                        }
 
                         // Handle input handshake
                         if data.len() >= 2 {
@@ -743,6 +927,9 @@ pub async fn run_streaming(
                                     // Update shared protocol version for input task
                                     input_protocol_version_shared.store(protocol_version as u8, std::sync::atomic::Ordering::Release);
 
+                                    // Update output decoder protocol version too
+                                    output_decoder.set_protocol_version(protocol_version as u8);
+
                                     // Signal input task that handshake is complete
                                     input_ready_flag.store(true, std::sync::atomic::Ordering::Release);
 
@@ -763,6 +950,27 @@ pub async fn run_streaming(
                     }
                     WebRtcEvent::Error(e) => {
                         error!("WebRTC error: {}", e);
+                    }
+                    WebRtcEvent::SsrcChangeDetected { stall_duration_ms } => {
+                        // SSRC change detected - the server switched video streams
+                        // This is a known limitation of webrtc-rs when handling mid-stream SSRC changes
+                        // without MID header extensions (which GFN doesn't send).
+                        error!(
+                            "SSRC change detected after {}ms stall. Initiating auto-reconnect...",
+                            stall_duration_ms
+                        );
+
+                        // Stop input managers before returning
+                        controller_manager.stop();
+                        wheel_manager.stop();
+                        g29_ffb.stop();
+
+                        // Clear raw input sender
+                        #[cfg(any(target_os = "windows", target_os = "macos"))]
+                        crate::input::clear_raw_input_sender();
+
+                        // Return SSRC change result to trigger reconnection
+                        return StreamingResult::SsrcChangeDetected { stall_duration_ms };
                     }
                 }
             }
@@ -864,6 +1072,9 @@ pub async fn run_streaming(
                     debug!("FPS below target: {:.1} / {} (dropped: {})", stats.fps, fps, frames_dropped);
                 }
 
+                // Update racing wheel count for UI notification
+                stats.wheel_count = wheel_manager.wheel_count();
+
                 // Reset counters
                 bytes_received = 0;
                 last_stats_time = now;
@@ -874,13 +1085,15 @@ pub async fn run_streaming(
         }
     }
 
-    // Stop controller manager
+    // Stop input managers
     controller_manager.stop();
+    wheel_manager.stop();
+    g29_ffb.stop();
 
     // Clean up raw input sender
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     crate::input::clear_raw_input_sender();
 
     info!("Streaming session ended");
-    Ok(())
+    StreamingResult::Normal
 }

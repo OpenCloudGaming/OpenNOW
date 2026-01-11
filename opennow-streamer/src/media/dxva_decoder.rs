@@ -8,9 +8,12 @@
 //! - Direct control over texture arrays (RTArray)
 //! - Better compatibility with NVIDIA drivers
 //! - Zero-copy output to D3D11 textures
+//!
+//! Note: This decoder only supports HEVC (H.265). H.264 support was removed as
+//! GeForce NOW streams use HEVC for better compression and quality.
 
 use anyhow::{anyhow, Result};
-use log::info;
+use log::{error, info};
 
 use windows::core::Interface;
 use windows::Win32::Foundation::HMODULE;
@@ -21,17 +24,12 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 /// Video codec types supported by the decoder
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DxvaCodec {
-    H264,
     HEVC,
 }
 
 /// DXVA2 decoder profile GUIDs
 mod profiles {
     use windows::core::GUID;
-
-    // H.264/AVC profiles
-    pub const D3D11_DECODER_PROFILE_H264_VLD_NOFGT: GUID =
-        GUID::from_u128(0x1b81be68_a0c7_11d3_b984_00c04f2e73c5);
 
     // HEVC/H.265 profiles
     pub const D3D11_DECODER_PROFILE_HEVC_VLD_MAIN: GUID =
@@ -53,6 +51,8 @@ pub struct DxvaDecoderConfig {
     pub is_hdr: bool,
     /// Number of surfaces in the decoder pool (RTArray size)
     pub surface_count: u32,
+    /// Enable low latency mode (reduces buffering, prioritizes decode speed)
+    pub low_latency: bool,
 }
 
 impl Default for DxvaDecoderConfig {
@@ -63,6 +63,7 @@ impl Default for DxvaDecoderConfig {
             height: 1080,
             is_hdr: false,
             surface_count: 25, // Increased from 20 for high bitrate 4K streams
+            low_latency: true, // Default to low latency for streaming
         }
     }
 }
@@ -263,15 +264,10 @@ impl DxvaDecoder {
             DXGI_FORMAT_NV12 // 8-bit SDR
         };
 
-        let profile = match config.codec {
-            DxvaCodec::H264 => profiles::D3D11_DECODER_PROFILE_H264_VLD_NOFGT,
-            DxvaCodec::HEVC => {
-                if config.is_hdr {
-                    profiles::D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10
-                } else {
-                    profiles::D3D11_DECODER_PROFILE_HEVC_VLD_MAIN
-                }
-            }
+        let profile = if config.is_hdr {
+            profiles::D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10
+        } else {
+            profiles::D3D11_DECODER_PROFILE_HEVC_VLD_MAIN
         };
 
         Ok((format, profile))
@@ -404,10 +400,12 @@ impl DxvaDecoder {
                         config.Config4GroupedCoefs
                     );
 
-                    // Prefer ConfigBitstreamRaw=2 (short slice format)
-                    if config.ConfigBitstreamRaw == 2 {
+                    // Prefer ConfigBitstreamRaw=1 (Annex-B format with start codes)
+                    // This is more straightforward and widely compatible
+                    // ConfigBitstreamRaw=2 (short slice format) requires more precise buffer formatting
+                    if config.ConfigBitstreamRaw == 1 {
                         selected_config = Some(config);
-                        info!("  -> Selected config {} (short slice format)", i);
+                        info!("  -> Selected config {} (Annex-B with start codes)", i);
                     } else if fallback_config.is_none() {
                         fallback_config = Some(config);
                     }
@@ -595,6 +593,7 @@ impl DxvaDecoder {
             height,
             is_hdr,
             surface_count: 1,
+            low_latency: true,
         };
 
         let (output_format, profile_guid) = Self::get_format_and_profile(&config)?;
@@ -1564,44 +1563,35 @@ mod tests {
     #[test]
     fn test_dxva_struct_sizes() {
         // Verify structure sizes match Microsoft DXVA specification
+
         // DXVA_PicParams_HEVC should be 232 bytes (packed)
-        let pic_params_size = std::mem::size_of::<DxvaHevcPicParams>();
-        println!("DxvaHevcPicParams size: {} bytes", pic_params_size);
+        let hevc_pic_params_size = std::mem::size_of::<DxvaHevcPicParams>();
+        println!("DxvaHevcPicParams size: {} bytes", hevc_pic_params_size);
 
         // DXVA_Slice_HEVC_Short should be 10 bytes
-        let slice_short_size = std::mem::size_of::<DxvaHevcSliceShort>();
-        println!("DxvaHevcSliceShort size: {} bytes", slice_short_size);
+        let hevc_slice_short_size = std::mem::size_of::<DxvaHevcSliceShort>();
+        println!("DxvaHevcSliceShort size: {} bytes", hevc_slice_short_size);
 
-        // DXVA_Qmatrix_HEVC should be 880 bytes
+        // DXVA_Qmatrix_HEVC
         let qmatrix_size = std::mem::size_of::<DxvaHevcQMatrix>();
         println!("DxvaHevcQMatrix size: {} bytes", qmatrix_size);
 
         // DxvaPicEntryHevc should be 1 byte
-        let pic_entry_size = std::mem::size_of::<DxvaPicEntryHevc>();
-        println!("DxvaPicEntryHevc size: {} bytes", pic_entry_size);
-        assert_eq!(pic_entry_size, 1, "DxvaPicEntryHevc should be 1 byte");
+        let hevc_pic_entry_size = std::mem::size_of::<DxvaPicEntryHevc>();
+        println!("DxvaPicEntryHevc size: {} bytes", hevc_pic_entry_size);
+        assert_eq!(hevc_pic_entry_size, 1, "DxvaPicEntryHevc should be 1 byte");
 
         // Slice short should be 10 bytes (4 + 4 + 2)
         assert_eq!(
-            slice_short_size, 10,
+            hevc_slice_short_size, 10,
             "DxvaHevcSliceShort should be 10 bytes"
         );
 
-        // QMatrix: 6*16 + 6*64 + 6*64 + 2*64 + 6 + 2 = 96 + 384 + 384 + 128 + 8 = 1000
-        // Wait, let me recalculate: 6*16=96, 6*64=384, 6*64=384, 2*64=128, 6+2=8
-        // Total = 96 + 384 + 384 + 128 + 8 = 1000? No that's wrong
-        // Actually: scaling_list_4x4[6][16] = 96, scaling_list_8x8[6][64] = 384,
-        // scaling_list_16x16[6][64] = 384, scaling_list_32x32[2][64] = 128,
-        // scaling_list_dc_16x16[6] = 6, scaling_list_dc_32x32[2] = 2
-        // Total = 96 + 384 + 384 + 128 + 6 + 2 = 1000 bytes
-        println!("Expected QMatrix size: 1000 bytes");
-
         // PicParams size check - the packed struct should be around 232 bytes
-        // This is a rough check since the exact size depends on packing
         assert!(
-            pic_params_size >= 200 && pic_params_size <= 256,
+            hevc_pic_params_size >= 200 && hevc_pic_params_size <= 256,
             "DxvaHevcPicParams size {} is outside expected range 200-256",
-            pic_params_size
+            hevc_pic_params_size
         );
     }
 }

@@ -107,6 +107,9 @@ pub struct App {
     /// Loading state for async operations
     pub is_loading: bool,
 
+    /// Login URL for manual copy/paste if browser doesn't open
+    pub login_url: Option<String>,
+
     /// VPC ID for current provider
     pub vpc_id: Option<String>,
 
@@ -155,6 +158,9 @@ pub struct App {
     /// Whether showing Alliance experimental warning dialog
     pub show_alliance_warning: bool,
 
+    /// Whether showing first-time welcome popup
+    pub show_welcome_popup: bool,
+
     /// Pending game launch (waiting for session conflict resolution)
     pub pending_game_launch: Option<GameInfo>,
 
@@ -201,6 +207,15 @@ pub struct App {
 
     /// Pending game for server selection (stored when showing modal)
     pub pending_server_selection_game: Option<GameInfo>,
+
+    /// Whether session requires ads (free tier)
+    pub ads_required: bool,
+
+    /// Ads remaining seconds (for countdown display)
+    pub ads_remaining_secs: u32,
+
+    /// Ads total duration in seconds
+    pub ads_total_secs: u32,
 }
 
 /// Poll interval for session status (2 seconds)
@@ -246,6 +261,9 @@ impl App {
         });
 
         // Start checking active sessions if we have a token
+        // Clear stale cache first to ensure we always use fresh data from API
+        cache::clear_active_sessions_cache();
+
         if has_token {
             let rt = runtime.clone();
             let token = auth_tokens.as_ref().unwrap().jwt().to_string();
@@ -258,7 +276,10 @@ impl App {
                             "Checked active sessions at startup: found {}",
                             sessions.len()
                         );
-                        cache::save_active_sessions_cache(&sessions);
+                        // Only save to cache if we have sessions - this is fresh data from API
+                        if !sessions.is_empty() {
+                            cache::save_active_sessions_cache(&sessions);
+                        }
                     }
                     Err(e) => {
                         warn!("Failed to check active sessions at startup: {}", e);
@@ -308,6 +329,7 @@ impl App {
             selected_provider_index: 0,
             show_settings: false,
             is_loading: false,
+            login_url: None,
             vpc_id: None,
             api_client: GfnApiClient::new(),
             subscription: None,
@@ -324,6 +346,7 @@ impl App {
             show_session_conflict: false,
             show_av1_warning: false,
             show_alliance_warning: false,
+            show_welcome_popup: !cache::has_shown_welcome(),
 
             pending_game_launch: None,
             last_poll_time: std::time::Instant::now(),
@@ -342,6 +365,9 @@ impl App {
             show_server_selection: false,
             selected_queue_server: None,
             pending_server_selection_game: None,
+            ads_required: false,
+            ads_remaining_secs: 0,
+            ads_total_secs: 0,
         }
     }
 
@@ -452,6 +478,9 @@ impl App {
                                 self.settings.codec = VideoCodec::H265;
                             }
                         }
+                    }
+                    SettingChange::ClipboardPasteEnabled(enabled) => {
+                        self.settings.clipboard_paste_enabled = enabled;
                     }
                 }
                 self.save_settings();
@@ -578,6 +607,10 @@ impl App {
             UiAction::CloseAllianceWarning => {
                 self.show_alliance_warning = false;
             }
+            UiAction::CloseWelcomePopup => {
+                self.show_welcome_popup = false;
+                cache::mark_welcome_shown();
+            }
             UiAction::ResetSettings => {
                 info!("Resetting all settings to defaults");
                 self.settings = Settings::default();
@@ -632,6 +665,17 @@ impl App {
                 self.queue_last_fetch =
                     std::time::Instant::now() - std::time::Duration::from_secs(60);
                 self.fetch_queue_times();
+            }
+            UiAction::UpdateWindowSize(width, height) => {
+                // Only save if size is valid and different from current
+                if width >= 640 && height >= 480 {
+                    if self.settings.window_width != width || self.settings.window_height != height
+                    {
+                        self.settings.window_width = width;
+                        self.settings.window_height = height;
+                        self.save_settings();
+                    }
+                }
             }
         }
     }
@@ -690,14 +734,16 @@ impl App {
         let auth_url = auth::build_auth_url(&pkce, port);
         let verifier = pkce.verifier.clone();
 
-        // Open browser
-        if let Err(e) = open::that(&auth_url) {
-            self.error_message = Some(format!("Failed to open browser: {}", e));
-            self.is_loading = false;
-            return;
-        }
+        // Store the URL for manual copy/paste fallback
+        self.login_url = Some(auth_url.clone());
 
-        info!("Opened browser for OAuth login");
+        // Try to open browser (don't fail if it doesn't work - user can copy URL)
+        match open::that(&auth_url) {
+            Ok(_) => info!("Opened browser for OAuth login"),
+            Err(e) => {
+                warn!("Failed to open browser: {} - user can copy URL manually", e);
+            }
+        }
 
         // Spawn task to wait for callback
         let runtime = self.runtime.clone();
@@ -792,6 +838,34 @@ impl App {
                         frame.height
                     );
                 }
+
+                // Update HDR status in stats from frame's transfer function
+                use crate::media::{ColorSpace, TransferFunction};
+                let is_hdr = frame.transfer_function == TransferFunction::PQ
+                    || frame.transfer_function == TransferFunction::HLG;
+                if self.stats.is_hdr != is_hdr {
+                    self.stats.is_hdr = is_hdr;
+                    self.stats.color_space = match frame.color_space {
+                        ColorSpace::BT2020 => "BT.2020".to_string(),
+                        ColorSpace::BT709 => "BT.709".to_string(),
+                        ColorSpace::BT601 => "BT.601".to_string(),
+                    };
+                }
+
+                // Update resolution in stats from actual decoded frame dimensions
+                // This catches resolution changes from SSRC switches (GFN adaptive quality)
+                let new_res = format!("{}x{}", frame.width, frame.height);
+                if self.stats.resolution != new_res {
+                    if !self.stats.resolution.is_empty() {
+                        log::info!(
+                            "Resolution changed: {} -> {}",
+                            self.stats.resolution,
+                            new_res
+                        );
+                    }
+                    self.stats.resolution = new_res;
+                }
+
                 self.current_frame = Some(frame);
                 // Increment render frame count only when we get a new video frame
                 // This ensures render FPS matches decode FPS
@@ -805,6 +879,10 @@ impl App {
                 // Preserve render_fps from our local tracking
                 stats.render_fps = self.stats.render_fps;
                 stats.frames_rendered = self.stats.frames_rendered;
+                // Preserve resolution from actual decoded frames (more accurate than SDP)
+                if !self.stats.resolution.is_empty() {
+                    stats.resolution = self.stats.resolution.clone();
+                }
                 self.stats = stats;
             }
         }
@@ -823,6 +901,7 @@ impl App {
                     self.auth_tokens = Some(tokens.clone());
                     self.api_client.set_access_token(tokens.jwt().to_string());
                     self.is_loading = false;
+                    self.login_url = None; // Clear login URL after successful login
                     self.state = AppState::Games;
                     self.status_message = "Login successful!".to_string();
                     self.fetch_games();
@@ -1656,7 +1735,13 @@ impl App {
 
     /// Resume an existing session
     fn resume_session(&mut self, session_info: ActiveSessionInfo) {
-        info!("Resuming session: {}", session_info.session_id);
+        info!(
+            "Resuming session: {} (status: {}, server_ip: {:?}, signaling_url: {:?})",
+            session_info.session_id,
+            session_info.status,
+            session_info.server_ip,
+            session_info.signaling_url
+        );
 
         self.show_session_conflict = false;
         self.pending_game_launch = None;
@@ -1665,6 +1750,11 @@ impl App {
         self.error_message = None;
         self.is_loading = true;
         self.last_poll_time = std::time::Instant::now() - POLL_INTERVAL;
+
+        // Session status codes:
+        // 2 = Ready (needs RESUME PUT to re-attach client)
+        // 3 = Streaming (also needs RESUME PUT to re-attach client)
+        // Both status 2 and 3 need the claim/resume PUT request
 
         let token = match &self.auth_tokens {
             Some(t) => t.jwt().to_string(),
@@ -1786,6 +1876,16 @@ impl App {
                 }
             } else if let SessionState::InQueue { position, eta_secs } = session.state {
                 self.status_message = format!("Queue position: {} (ETA: {}s)", position, eta_secs);
+            } else if let SessionState::WatchingAds {
+                remaining_secs,
+                total_secs,
+            } = session.state
+            {
+                self.ads_required = true;
+                self.ads_remaining_secs = remaining_secs;
+                self.ads_total_secs = total_secs;
+                self.status_message =
+                    format!("Waiting for ads... (~{}s remaining)", remaining_secs);
             } else if let SessionState::Error(ref msg) = session.state {
                 self.error_message = Some(msg.clone());
                 self.is_loading = false;
@@ -1817,6 +1917,7 @@ impl App {
                     | SessionState::CleaningUp
                     | SessionState::WaitingForStorage
                     | SessionState::InQueue { .. }
+                    | SessionState::WatchingAds { .. }
             );
 
             // Also poll if Ready but count < 3
@@ -1944,20 +2045,70 @@ impl App {
         // Spawn the streaming task
         let runtime = self.runtime.clone();
         runtime.spawn(async move {
+            use crate::webrtc::StreamingResult;
+
             match crate::webrtc::run_streaming(
-                session,
-                settings,
-                shared_frame,
-                stats_tx,
-                input_handler,
+                session.clone(),
+                settings.clone(),
+                shared_frame.clone(),
+                stats_tx.clone(),
+                input_handler.clone(),
             )
             .await
             {
-                Ok(()) => {
+                StreamingResult::Normal => {
                     info!("Streaming ended normally");
                 }
-                Err(e) => {
+                StreamingResult::Error(e) => {
                     error!("Streaming error: {}", e);
+                }
+                StreamingResult::SsrcChangeDetected { stall_duration_ms } => {
+                    // SSRC change detected - attempt auto-reconnect
+                    warn!(
+                        "SSRC change detected after {}ms stall. Attempting auto-reconnect...",
+                        stall_duration_ms
+                    );
+
+                    // Brief delay to let resources clean up
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                    // Retry the connection with the same session info
+                    // The server-side session is still active, we just need to re-establish WebRTC
+                    info!("Auto-reconnecting to session {}...", session.session_id);
+
+                    // Create new shared frame for reconnection
+                    let new_shared_frame = std::sync::Arc::new(crate::app::SharedFrame::new());
+
+                    // Create new stats channel
+                    let (new_stats_tx, _new_stats_rx) = tokio::sync::mpsc::channel(8);
+
+                    // Create new input handler
+                    let new_input_handler = std::sync::Arc::new(crate::input::InputHandler::new());
+
+                    // Attempt reconnection
+                    match crate::webrtc::run_streaming(
+                        session,
+                        settings,
+                        new_shared_frame,
+                        new_stats_tx,
+                        new_input_handler,
+                    )
+                    .await
+                    {
+                        StreamingResult::Normal => {
+                            info!("Reconnected stream ended normally");
+                        }
+                        StreamingResult::Error(e) => {
+                            error!("Reconnected stream error: {}", e);
+                        }
+                        StreamingResult::SsrcChangeDetected { stall_duration_ms } => {
+                            // Second SSRC change - give up and let user know
+                            error!(
+                                "Second SSRC change detected after {}ms. Auto-reconnect failed. Please restart the session manually.",
+                                stall_duration_ms
+                            );
+                        }
+                    }
                 }
             }
         });
@@ -2037,6 +2188,11 @@ impl App {
 
         // Reset session ready poll count for next session
         self.session_ready_poll_count = 0;
+
+        // Reset ads state
+        self.ads_required = false;
+        self.ads_remaining_secs = 0;
+        self.ads_total_secs = 0;
 
         self.status_message = "Stream ended".to_string();
     }

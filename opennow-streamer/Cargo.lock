@@ -1713,6 +1713,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "g29"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dcb2c86bc924b0adf8dd32db37e0b3cb57714adcad5c584c4fe9734ac8f5a1cd"
+dependencies = [
+ "hidapi",
+]
+
+[[package]]
+name = "generator"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52f04ae4152da20c76fe800fa48659201d5cf627c5149ca0b707b69d7eef6cf9"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "log",
+ "rustversion",
+ "windows-link",
+ "windows-result 0.4.1",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2154,6 +2178,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
+name = "hidapi"
+version = "2.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "565dd4c730b8f8b2c0fb36df6be12e5470ae10895ddcc4e9dcfbfb495de202b0"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "pkg-config",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
 name = "hkdf"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2487,8 +2524,7 @@ dependencies = [
 [[package]]
 name = "interceptor"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4705c00485029e738bea8c9505b5ddb1486a8f3627a953e1e77e6abdf5eef90c"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2501,7 +2537,7 @@ dependencies = [
  "tokio",
  "waitgroup",
  "webrtc-srtp",
- "webrtc-util 0.9.0",
+ "webrtc-util",
 ]
 
 [[package]]
@@ -2768,6 +2804,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "loom"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "419e0dc8046cb947daa77eb95ae174acfbddb7673b4151f56d1eed8e93fbfaca"
+dependencies = [
+ "cfg-if",
+ "generator",
+ "scoped-tls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2789,6 +2838,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
 ]
 
 [[package]]
@@ -3054,6 +3112,15 @@ checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
  "memchr",
  "minimal-lexical",
+]
+
+[[package]]
+name = "nu-ansi-term"
+version = "0.50.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3510,6 +3577,7 @@ name = "opennow-streamer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "ash",
  "ash-window",
  "base64 0.22.1",
@@ -3530,6 +3598,7 @@ dependencies = [
  "ffmpeg-next",
  "foreign-types 0.5.0",
  "futures-util",
+ "g29",
  "gilrs",
  "gstreamer",
  "gstreamer-app",
@@ -3559,13 +3628,18 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-tungstenite",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
+ "tracing-tracy",
  "urlencoding",
  "uuid",
  "webrtc",
- "webrtc-util 0.8.1",
+ "webrtc-util",
  "wgpu",
  "wgpu-hal",
  "windows 0.62.2",
+ "windows-numerics",
  "winit",
  "x11",
 ]
@@ -4282,26 +4356,24 @@ dependencies = [
 [[package]]
 name = "rtcp"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc9f775ff89c5fe7f0cc0abafb7c57688ae25ce688f1a52dd88e277616c76ab2"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "bytes",
  "thiserror 1.0.69",
- "webrtc-util 0.9.0",
+ "webrtc-util",
 ]
 
 [[package]]
 name = "rtp"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6870f09b5db96f8b9e7290324673259fd15519ebb7d55acf8e7eb044a9ead6af"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "bytes",
  "portable-atomic",
  "rand 0.8.5",
  "serde",
  "thiserror 1.0.69",
- "webrtc-util 0.9.0",
+ "webrtc-util",
 ]
 
 [[package]]
@@ -4474,8 +4546,7 @@ dependencies = [
 [[package]]
 name = "sdp"
 version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13254db766b17451aced321e7397ebf0a446ef0c8d2942b6e67a95815421093f"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "rand 0.8.5",
  "substring",
@@ -4629,6 +4700,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
 ]
 
 [[package]]
@@ -4826,8 +4906,7 @@ checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
 [[package]]
 name = "stun"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28fad383a1cc63ae141e84e48eaef44a1063e9d9e55bcb8f51a99b886486e01b"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "base64 0.21.7",
  "crc",
@@ -4839,7 +4918,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "url",
- "webrtc-util 0.9.0",
+ "webrtc-util",
 ]
 
 [[package]]
@@ -5017,6 +5096,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.112",
+]
+
+[[package]]
+name = "thread_local"
+version = "1.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
@@ -5300,7 +5388,19 @@ checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
  "log",
  "pin-project-lite",
+ "tracing-attributes",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-attributes"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.112",
 ]
 
 [[package]]
@@ -5310,6 +5410,68 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+ "valuable",
+]
+
+[[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f30143827ddab0d256fd843b7a66d164e9f271cfa0dde49142c5ca0ca291f1e"
+dependencies = [
+ "matchers",
+ "nu-ansi-term",
+ "once_cell",
+ "regex-automata",
+ "sharded-slab",
+ "smallvec",
+ "thread_local",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
+]
+
+[[package]]
+name = "tracing-tracy"
+version = "0.11.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0eaa1852afa96e0fe9e44caa53dc0bd2d9d05e0f2611ce09f97f8677af56e4ba"
+dependencies = [
+ "tracing-core",
+ "tracing-subscriber",
+ "tracy-client",
+]
+
+[[package]]
+name = "tracy-client"
+version = "0.18.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f6fc3baeac5d86ab90c772e9e30620fc653bf1864295029921a15ef478e6a5"
+dependencies = [
+ "loom",
+ "once_cell",
+ "tracy-client-sys",
+]
+
+[[package]]
+name = "tracy-client-sys"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5f7c95348f20c1c913d72157b3c6dee6ea3e30b3d19502c5a7f6d3f160dacbf"
+dependencies = [
+ "cc",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -5347,8 +5509,7 @@ dependencies = [
 [[package]]
 name = "turn"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b000cebd930420ac1ed842c8128e3b3412512dfd5b82657eab035a3f5126acc"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "async-trait",
  "base64 0.21.7",
@@ -5362,7 +5523,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
- "webrtc-util 0.9.0",
+ "webrtc-util",
 ]
 
 [[package]]
@@ -5466,6 +5627,12 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "valuable"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vcpkg"
@@ -5799,8 +5966,7 @@ dependencies = [
 [[package]]
 name = "webrtc"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8b3a840e31c969844714f93b5a87e73ee49f3bc2a4094ab9132c69497eb31db"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -5837,14 +6003,13 @@ dependencies = [
  "webrtc-media",
  "webrtc-sctp",
  "webrtc-srtp",
- "webrtc-util 0.9.0",
+ "webrtc-util",
 ]
 
 [[package]]
 name = "webrtc-data"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8b7c550f8d35867b72d511640adf5159729b9692899826fe00ba7fa74f0bf70"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "bytes",
  "log",
@@ -5852,14 +6017,13 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "webrtc-sctp",
- "webrtc-util 0.9.0",
+ "webrtc-util",
 ]
 
 [[package]]
 name = "webrtc-dtls"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86e5eedbb0375aa04da93fc3a189b49ed3ed9ee844b6997d5aade14fc3e2c26e"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -5887,7 +6051,7 @@ dependencies = [
  "subtle",
  "thiserror 1.0.69",
  "tokio",
- "webrtc-util 0.9.0",
+ "webrtc-util",
  "x25519-dalek",
  "x509-parser",
 ]
@@ -5895,8 +6059,7 @@ dependencies = [
 [[package]]
 name = "webrtc-ice"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d4f0ca6d4df8d1bdd34eece61b51b62540840b7a000397bcfb53a7bfcf347c8"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -5914,27 +6077,25 @@ dependencies = [
  "uuid",
  "waitgroup",
  "webrtc-mdns",
- "webrtc-util 0.9.0",
+ "webrtc-util",
 ]
 
 [[package]]
 name = "webrtc-mdns"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0804694f3b2acfdff48f6df217979b13cb0a00377c63b5effd111daaee7e8c4"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "log",
  "socket2 0.5.10",
  "thiserror 1.0.69",
  "tokio",
- "webrtc-util 0.9.0",
+ "webrtc-util",
 ]
 
 [[package]]
 name = "webrtc-media"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c15b20e98167b22949abc1c20eca7c6d814307d187068fe7a48f0b87a4f6d46"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "byteorder",
  "bytes",
@@ -5946,8 +6107,7 @@ dependencies = [
 [[package]]
 name = "webrtc-sctp"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d850daa68639b9d7bb16400676e97525d1e52b15b4928240ae2ba0e849817a5"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -5958,14 +6118,13 @@ dependencies = [
  "rand 0.8.5",
  "thiserror 1.0.69",
  "tokio",
- "webrtc-util 0.9.0",
+ "webrtc-util",
 ]
 
 [[package]]
 name = "webrtc-srtp"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbec5da43a62c228d321d93fb12cc9b4d9c03c9b736b0c215be89d8bd0774cfe"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "aead",
  "aes",
@@ -5981,34 +6140,13 @@ dependencies = [
  "subtle",
  "thiserror 1.0.69",
  "tokio",
- "webrtc-util 0.9.0",
-]
-
-[[package]]
-name = "webrtc-util"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e85154ef743d9a2a116d104faaaa82740a281b8b4bed5ee691a2df6c133d873"
-dependencies = [
- "async-trait",
- "bitflags 1.3.2",
- "bytes",
- "ipnet",
- "lazy_static",
- "libc",
- "log",
- "nix 0.26.4",
- "rand 0.8.5",
- "thiserror 1.0.69",
- "tokio",
- "winapi",
+ "webrtc-util",
 ]
 
 [[package]]
 name = "webrtc-util"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc8d9bc631768958ed97b8d68b5d301e63054ae90b09083d43e2fefb939fd77e"
+source = "git+https://github.com/zortos293/webrtc-rs-gfn?branch=gfn-ssrc-fix#822de5f07547ee9e103492012ae45681faa60bd4"
 dependencies = [
  "async-trait",
  "bitflags 1.3.2",

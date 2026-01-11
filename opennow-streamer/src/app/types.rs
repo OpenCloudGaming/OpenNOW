@@ -259,6 +259,8 @@ pub enum UiAction {
     CloseAV1Warning,
     /// Close Alliance experimental warning dialog
     CloseAllianceWarning,
+    /// Close welcome popup
+    CloseWelcomePopup,
     /// Reset all settings to defaults
     ResetSettings,
     /// Set queue sort mode
@@ -275,6 +277,8 @@ pub enum UiAction {
     LaunchWithServer(GameInfo, Option<String>),
     /// Refresh queue times
     RefreshQueueTimes,
+    /// Update window size (width, height) - saved to settings
+    UpdateWindowSize(u32, u32),
 }
 
 /// Setting changes
@@ -290,6 +294,7 @@ pub enum SettingChange {
     DecoderBackend(VideoDecoderBackend),
     ColorQuality(ColorQuality),
     Hdr(bool),
+    ClipboardPasteEnabled(bool),
 }
 
 /// Application state enum
