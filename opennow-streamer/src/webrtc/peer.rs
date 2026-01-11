@@ -18,9 +18,11 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpHeaderExtensionCapability;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use anyhow::{Result, Context};
-use log::{info, debug, warn};
+use log::{info, debug, warn, error};
 use bytes::Bytes;
 
 /// MIME type for H265/HEVC video codec
@@ -43,6 +45,10 @@ pub enum WebRtcEvent {
     DataChannelMessage(String, Vec<u8>),
     IceCandidate(String, Option<String>, Option<u16>),
     Error(String),
+    /// Stream stalled due to SSRC change - reconnection recommended
+    /// This happens when GFN server changes resolution and switches to a new SSRC
+    /// that webrtc-rs can't handle without MID header extensions.
+    SsrcChangeDetected { stall_duration_ms: u64 },
 }
 
 /// Shared peer connection for PLI requests (static to allow access from decoder)
@@ -149,6 +155,46 @@ impl WebRtcPeer {
         )?;
         info!("Registered AV1 codec");
 
+        // Register RTP header extensions for SSRC demuxing
+        // These are required to handle mid-stream SSRC changes and simulcast
+        // MID extension - identifies which media section an RTP packet belongs to
+        media_engine.register_header_extension(
+            RTCRtpHeaderExtensionCapability {
+                uri: "urn:ietf:params:rtp-hdrext:sdes:mid".to_string(),
+            },
+            RTPCodecType::Video,
+            Some(RTCRtpTransceiverDirection::Recvonly),
+        )?;
+        media_engine.register_header_extension(
+            RTCRtpHeaderExtensionCapability {
+                uri: "urn:ietf:params:rtp-hdrext:sdes:mid".to_string(),
+            },
+            RTPCodecType::Audio,
+            Some(RTCRtpTransceiverDirection::Recvonly),
+        )?;
+        info!("Registered SDES MID header extension for video and audio");
+
+        // RTP Stream ID extension - identifies specific streams in simulcast
+        media_engine.register_header_extension(
+            RTCRtpHeaderExtensionCapability {
+                uri: "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id".to_string(),
+            },
+            RTPCodecType::Video,
+            Some(RTCRtpTransceiverDirection::Recvonly),
+        )?;
+        info!("Registered SDES RTP-Stream-ID header extension");
+
+        // Repaired RTP Stream ID extension - required for SSRC changes during stream
+        // This allows webrtc-rs to handle mid-stream SSRC switches (e.g., HDR mode changes)
+        media_engine.register_header_extension(
+            RTCRtpHeaderExtensionCapability {
+                uri: "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id".to_string(),
+            },
+            RTPCodecType::Video,
+            Some(RTCRtpTransceiverDirection::Recvonly),
+        )?;
+        info!("Registered SDES Repaired-RTP-Stream-ID header extension");
+
         // Create interceptor registry
         let mut registry = Registry::new();
         registry = register_default_interceptors(registry, &mut media_engine)?;
@@ -161,6 +207,12 @@ impl WebRtcPeer {
             setting_engine.set_answering_dtls_role(DTLSRole::Client)?;
             info!("Configured DTLS role to Client (active) for ice-lite server");
         }
+
+        // Enable provisional SSRC support for GFN resolution changes
+        // GFN server uses new SSRCs when changing resolution, and doesn't send MID extensions
+        // This allows undeclared SSRCs to be routed to existing video transceivers
+        setting_engine.set_allow_provisional_ssrc(true);
+        info!("Enabled provisional SSRC support for GFN compatibility");
 
         // Create API with setting engine
         let api = APIBuilder::new()
@@ -254,15 +306,22 @@ impl WebRtcPeer {
             tokio::spawn(async move {
                 let mut buffer = vec![0u8; 1500];
                 let mut packet_count: u64 = 0;
+                let mut last_packet_time = std::time::Instant::now();
+                let mut stall_warning_sent = false;
+                const STALL_TIMEOUT_MS: u64 = 2000; // 2 seconds without packets = stall
 
                 info!("=== Starting track read loop for {} ({}) ===",
                     track_id_clone,
                     if track_kind == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video { "VIDEO" } else { "AUDIO" });
 
                 loop {
-                    match track_clone.read(&mut buffer).await {
-                        Ok((rtp_packet, _)) => {
+                    // Use timeout on read to detect stalls (e.g., SSRC change that we can't handle)
+                    let read_timeout = tokio::time::Duration::from_millis(500);
+                    match tokio::time::timeout(read_timeout, track_clone.read(&mut buffer)).await {
+                        Ok(Ok((rtp_packet, _))) => {
                             packet_count += 1;
+                            last_packet_time = std::time::Instant::now();
+                            stall_warning_sent = false;
 
                             // Store SSRC for PLI on first video packet
                             if packet_count == 1 {
@@ -306,13 +365,60 @@ impl WebRtcPeer {
                                 }
                             }
                         }
-                        Err(e) => {
-                            warn!("Track {} read error: {}", track_id_clone, e);
-                            break;
+                        Ok(Err(e)) => {
+                            // Check if this is a transient error or connection closed
+                            let error_str = format!("{:?}", e);
+                            if error_str.contains("EOF") || error_str.contains("closed") {
+                                info!("Track {} connection closed: {}", track_id_clone, e);
+                                break;
+                            } else {
+                                error!("Track {} read error (will retry): {}", track_id_clone, e);
+                                // Don't break on transient errors - continue reading
+                                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                                continue;
+                            }
+                        }
+                        Err(_timeout) => {
+                            // Read timed out - check for stall
+                            let elapsed_ms = last_packet_time.elapsed().as_millis() as u64;
+
+                            if elapsed_ms > STALL_TIMEOUT_MS && !stall_warning_sent {
+                                // Video track has stalled - likely SSRC changed
+                                if track_kind == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video {
+                                    warn!("Video track stalled for {}ms - SSRC change detected (server switched stream ID). This is a webrtc-rs limitation.", elapsed_ms);
+                                    stall_warning_sent = true;
+
+                                    // Send SSRC change event to trigger auto-reconnect
+                                    let _ = tx_clone.send(WebRtcEvent::SsrcChangeDetected {
+                                        stall_duration_ms: elapsed_ms,
+                                    }).await;
+
+                                    // Also send user-visible error
+                                    let _ = tx_clone.send(WebRtcEvent::Error(
+                                        "Stream interrupted: Server changed video stream (SSRC change). Auto-reconnect recommended.".to_string()
+                                    )).await;
+
+                                    // Try to request keyframe in case it helps (unlikely but worth trying)
+                                    let ssrc = VIDEO_SSRC.load(std::sync::atomic::Ordering::Relaxed);
+                                    if ssrc != 0 {
+                                        let pc_clone = PEER_CONNECTION.lock().clone();
+                                        if let Some(pc) = pc_clone {
+                                            let pli = PictureLossIndication {
+                                                sender_ssrc: 0,
+                                                media_ssrc: ssrc,
+                                            };
+                                            let _ = pc.write_rtcp(&[Box::new(pli)]).await;
+                                        }
+                                    }
+                                }
+                            }
+                            // Continue loop to try reading again
+                            continue;
                         }
                     }
                 }
-                info!("Track {} read loop ended after {} packets", track_id_clone, packet_count);
+                error!("Track {} read loop ended after {} packets - THIS SHOULD NOT HAPPEN DURING STREAM",
+                    track_id_clone, packet_count);
             });
 
             // Return empty future since we spawned the actual work

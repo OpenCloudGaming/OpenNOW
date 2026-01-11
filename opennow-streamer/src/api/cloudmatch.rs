@@ -132,7 +132,11 @@ impl GfnApiClient {
                 user_age: 26,
                 requested_streaming_features: Some(StreamingFeatures {
                     reflex: settings.fps >= 120, // Enable Reflex for high refresh rate
-                    bit_depth: settings.color_quality.bit_depth(),
+                    bit_depth: if settings.hdr_enabled {
+                        10
+                    } else {
+                        settings.color_quality.bit_depth()
+                    },
                     cloud_gsync: false,
                     enabled_l4s: false,
                     mouse_movement_flags: 0,
@@ -146,6 +150,11 @@ impl GfnApiClient {
                     prefilter_sharpness: 0,
                     prefilter_noise_reduction: 0,
                     hud_streaming_mode: 0,
+                    // Color space values from NVIDIA GFN client:
+                    // SDR colorSpace = 2 (BT.709 / YCBCR_LIMITED_BT709)
+                    // HDR colorSpace = 4 (BT.2020 / YCBCR_LIMITED_BT2020)
+                    sdr_color_space: 2,
+                    hdr_color_space: if settings.hdr_enabled { 4 } else { 0 },
                 }),
             },
         };
@@ -299,15 +308,49 @@ impl GfnApiClient {
         }
         info!("Media connection info: {:?}", media_connection_info);
 
+        // Extract ads info if present
+        let ads_required = session_data.session_ads_required;
+        let ads_info = session_data.session_ads.as_ref().map(|ads| SessionAdsInfo {
+            video_url: ads
+                .get("videoUrl")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            duration_secs: ads.get("duration").and_then(|v| v.as_u64()).unwrap_or(120) as u32,
+            completion_url: ads
+                .get("completionUrl")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            raw_config: Some(ads.clone()),
+        });
+
+        // If ads are required and we're in queue, switch to WatchingAds state
+        let final_state = if ads_required {
+            info!("Session requires ads (free tier user)");
+            match state {
+                SessionState::InQueue { .. } | SessionState::Launching => {
+                    let duration = ads_info.as_ref().map(|a| a.duration_secs).unwrap_or(120);
+                    SessionState::WatchingAds {
+                        remaining_secs: duration,
+                        total_secs: duration,
+                    }
+                }
+                other => other,
+            }
+        } else {
+            state
+        };
+
         Ok(SessionInfo {
             session_id: session_data.session_id,
             server_ip,
             zone: zone.to_string(),
-            state,
+            state: final_state,
             gpu_type: session_data.gpu_type,
             signaling_url,
             ice_servers,
             media_connection_info,
+            ads_required,
+            ads_info,
         })
     }
 
@@ -398,11 +441,20 @@ impl GfnApiClient {
             serde_json::from_str(&response_text).context("Failed to parse poll response")?;
 
         if poll_response.request_status.status_code != 1 {
-            let error = poll_response
-                .request_status
-                .status_description
-                .unwrap_or_else(|| "Unknown error".to_string());
-            return Err(anyhow::anyhow!("Session poll error: {}", error));
+            // Parse error for user-friendly message
+            let session_error = SessionError::from_response(200, &response_text);
+            error!(
+                "Poll failed: {} - {} (statusCode: {}, unified: {})",
+                session_error.title,
+                session_error.description,
+                poll_response.request_status.status_code,
+                poll_response.request_status.unified_error_code
+            );
+            return Err(anyhow::anyhow!(
+                "Poll failed: {} - {}",
+                session_error.title,
+                session_error.description
+            ));
         }
 
         let session_data = poll_response.session;
@@ -439,15 +491,48 @@ impl GfnApiClient {
             info!("Poll media connection info: {:?}", media_connection_info);
         }
 
+        // Extract ads info if present
+        let ads_required = session_data.session_ads_required;
+        let ads_info = session_data.session_ads.as_ref().map(|ads| SessionAdsInfo {
+            video_url: ads
+                .get("videoUrl")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            duration_secs: ads.get("duration").and_then(|v| v.as_u64()).unwrap_or(120) as u32,
+            completion_url: ads
+                .get("completionUrl")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            raw_config: Some(ads.clone()),
+        });
+
+        // If ads are required and we're in queue, switch to WatchingAds state
+        let final_state = if ads_required {
+            match state {
+                SessionState::InQueue { .. } | SessionState::Launching => {
+                    let duration = ads_info.as_ref().map(|a| a.duration_secs).unwrap_or(120);
+                    SessionState::WatchingAds {
+                        remaining_secs: duration,
+                        total_secs: duration,
+                    }
+                }
+                other => other,
+            }
+        } else {
+            state
+        };
+
         Ok(SessionInfo {
             session_id: session_data.session_id,
             server_ip,
             zone: zone.to_string(),
-            state,
+            state: final_state,
             gpu_type: session_data.gpu_type,
             signaling_url,
             ice_servers,
             media_connection_info,
+            ads_required,
+            ads_info,
         })
     }
 
@@ -593,7 +678,7 @@ impl GfnApiClient {
             return Ok(vec![]);
         }
 
-        debug!("Active sessions response: {} bytes", response_text.len());
+        info!("Active sessions response: {}", response_text);
 
         let sessions_response: GetSessionsResponse =
             serde_json::from_str(&response_text).context("Failed to parse sessions response")?;
@@ -626,6 +711,15 @@ impl GfnApiClient {
                     .unwrap_or(0);
 
                 let server_ip = s.session_control_info.as_ref().and_then(|c| c.ip.clone());
+
+                debug!(
+                    "Session {} control info: {:?}",
+                    s.session_id, s.session_control_info
+                );
+                debug!(
+                    "Session {} server_ip extracted: {:?}",
+                    s.session_id, server_ip
+                );
 
                 let signaling_url = s
                     .connection_info
@@ -760,13 +854,13 @@ impl GfnApiClient {
                         "desiredContentMinLuminance": 0,
                         "desiredContentMaxFrameAverageLuminance": if settings.hdr_enabled { 500 } else { 0 }
                     },
-                    "dpi": 100
+                    "dpi": 0
                 }],
                 "appLaunchMode": 1,
                 "sdkVersion": "1.0",
                 "enhancedStreamMode": 1,
                 "useOps": true,
-                "clientDisplayHdrCapabilities": hdr_capabilities,
+                "clientDisplayHdrCapabilities": if settings.hdr_enabled { hdr_capabilities } else { serde_json::Value::Null },
                 "accountLinked": true,
                 "partnerCustomData": "",
                 "enablePersistingInGameSettings": true,
@@ -774,22 +868,14 @@ impl GfnApiClient {
                 "userAge": 26,
                 "requestedStreamingFeatures": {
                     "reflex": settings.fps >= 120,
-                    "bitDepth": if settings.hdr_enabled { 10 } else { settings.color_quality.bit_depth() },
+                    "bitDepth": if settings.hdr_enabled { 10 } else { 0 },
                     "cloudGsync": false,
                     "enabledL4S": false,
-                    "mouseMovementFlags": 0,
-                    "trueHdr": settings.hdr_enabled,
-                    "supportedHidDevices": 0,
                     "profile": 0,
                     "fallbackToLogicalResolution": false,
-                    "hidDevices": null,
                     "chromaFormat": settings.color_quality.chroma_format(),
                     "prefilterMode": 0,
-                    "prefilterSharpness": 0,
-                    "prefilterNoiseReduction": 0,
-                    "hudStreamingMode": 0,
-                    "sdrColorSpace": sdr_color_space,
-                    "hdrColorSpace": if settings.hdr_enabled { hdr_color_space } else { 0 }
+                    "hudStreamingMode": 0
                 }
             },
             "metaData": []
@@ -822,10 +908,11 @@ impl GfnApiClient {
             .context("Failed to read claim response")?;
 
         if !status.is_success() {
+            error!("Claim session failed response: {}", response_text);
             return Err(anyhow::anyhow!(
                 "Claim session failed: {} - {}",
                 status,
-                &response_text[..response_text.len().min(200)]
+                &response_text[..response_text.len().min(1000)]
             ));
         }
 
@@ -833,11 +920,19 @@ impl GfnApiClient {
             serde_json::from_str(&response_text).context("Failed to parse claim response")?;
 
         if api_response.request_status.status_code != 1 {
-            let error = api_response
-                .request_status
-                .status_description
-                .unwrap_or_else(|| "Unknown error".to_string());
-            return Err(anyhow::anyhow!("Claim session error: {}", error));
+            // Parse error for user-friendly message
+            let session_error = SessionError::from_response(200, &response_text);
+            error!(
+                "Claim failed: {} - {} (statusCode: {})",
+                session_error.title,
+                session_error.description,
+                api_response.request_status.status_code
+            );
+            return Err(anyhow::anyhow!(
+                "Claim failed: {} - {}",
+                session_error.title,
+                session_error.description
+            ));
         }
 
         info!("Session claimed! Polling until ready...");
@@ -902,15 +997,50 @@ impl GfnApiClient {
                 let ice_servers = session_data.ice_servers();
                 let media_connection_info = session_data.media_connection_info();
 
+                // Extract ads info if present
+                let ads_required = session_data.session_ads_required;
+                let ads_info = session_data.session_ads.as_ref().map(|ads| SessionAdsInfo {
+                    video_url: ads
+                        .get("videoUrl")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    duration_secs: ads.get("duration").and_then(|v| v.as_u64()).unwrap_or(120)
+                        as u32,
+                    completion_url: ads
+                        .get("completionUrl")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    raw_config: Some(ads.clone()),
+                });
+
+                // If ads are required and we're in queue, switch to WatchingAds state
+                let final_state = if ads_required {
+                    match state {
+                        SessionState::InQueue { .. } | SessionState::Launching => {
+                            let duration =
+                                ads_info.as_ref().map(|a| a.duration_secs).unwrap_or(120);
+                            SessionState::WatchingAds {
+                                remaining_secs: duration,
+                                total_secs: duration,
+                            }
+                        }
+                        other => other,
+                    }
+                } else {
+                    state
+                };
+
                 return Ok(SessionInfo {
                     session_id: session_data.session_id,
                     server_ip: server_ip_final,
                     zone: String::new(),
-                    state,
+                    state: final_state,
                     gpu_type: session_data.gpu_type,
                     signaling_url,
                     ice_servers,
                     media_connection_info,
+                    ads_required,
+                    ads_info,
                 });
             }
 

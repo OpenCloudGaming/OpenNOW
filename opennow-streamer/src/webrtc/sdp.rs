@@ -31,6 +31,7 @@ pub fn prefer_codec(sdp: &str, codec: &VideoCodec) -> String {
     let codec_name = match codec {
         VideoCodec::H264 => "H264",
         VideoCodec::H265 => "H265",
+        VideoCodec::AV1 => "AV1",
     };
 
     info!("Forcing codec: {}", codec_name);
@@ -226,6 +227,178 @@ pub fn fix_dtls_setup_for_ice_lite(answer_sdp: &str) -> String {
     fixed
 }
 
+/// Inject additional SSRCs into the video section of the offer SDP
+///
+/// GFN server uses sequential SSRCs (1, 2, 3, 4...) for video streams when
+/// resolution changes occur. However, webrtc-rs requires SSRCs to be declared
+/// in the SDP or have MID header extensions (which GFN doesn't send).
+///
+/// This function injects `a=ssrc:N` lines for SSRCs 2, 3, 4 into the video
+/// section, similar to how the official GFN client (Bifrost2.dll) does it.
+/// This allows webrtc-rs to accept packets from these SSRCs when the server
+/// switches resolution.
+///
+/// Based on reverse engineering of official GFN client:
+/// - Bifrost2.dll contains: "a=ssrc:2 cname:odrerir", "a=ssrc:3 cname:odrerir"
+/// - Uses "provisional stream" concept to handle SSRC changes
+pub fn inject_provisional_ssrcs(sdp: &str) -> String {
+    let line_ending = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
+    let lines: Vec<&str> = sdp.lines().collect();
+    let mut result: Vec<String> = Vec::new();
+
+    let mut in_video = false;
+    let mut video_msid: Option<(String, String)> = None; // (stream_id, track_id)
+    let mut existing_ssrcs: Vec<u32> = Vec::new();
+    let mut injected = false;
+
+    // First pass: find existing video SSRCs and msid
+    for line in &lines {
+        if line.starts_with("m=video") {
+            in_video = true;
+        } else if line.starts_with("m=") && in_video {
+            in_video = false;
+        }
+
+        if in_video {
+            // Parse a=ssrc:N ...
+            if let Some(rest) = line.strip_prefix("a=ssrc:") {
+                if let Some(ssrc_str) = rest.split_whitespace().next() {
+                    if let Ok(ssrc) = ssrc_str.parse::<u32>() {
+                        existing_ssrcs.push(ssrc);
+                    }
+                }
+            }
+            // Parse a=msid:stream_id track_id
+            if let Some(rest) = line.strip_prefix("a=msid:") {
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    video_msid = Some((parts[0].to_string(), parts[1].to_string()));
+                }
+            }
+        }
+    }
+
+    // Determine which SSRCs to inject (2, 3, 4 that don't already exist)
+    let ssrcs_to_inject: Vec<u32> = (2..=4)
+        .filter(|ssrc| !existing_ssrcs.contains(ssrc))
+        .collect();
+
+    if ssrcs_to_inject.is_empty() {
+        debug!("No provisional SSRCs needed - all already declared");
+        return sdp.to_string();
+    }
+
+    info!(
+        "Injecting provisional SSRCs {:?} for video (existing: {:?})",
+        ssrcs_to_inject, existing_ssrcs
+    );
+
+    // Second pass: find injection point
+    // - If there are existing a=ssrc lines, inject after the last one
+    // - If no a=ssrc lines exist, inject before the next m= line (end of video section)
+    in_video = false;
+    let mut last_ssrc_line_idx: Option<usize> = None;
+    let mut video_section_end_idx: Option<usize> = None;
+    let mut video_section_start_idx: Option<usize> = None;
+
+    for (idx, line) in lines.iter().enumerate() {
+        if line.starts_with("m=video") {
+            in_video = true;
+            video_section_start_idx = Some(idx);
+        } else if line.starts_with("m=") && in_video {
+            // Found start of next section - this is where video section ends
+            video_section_end_idx = Some(idx);
+            in_video = false;
+        }
+
+        if in_video && line.starts_with("a=ssrc:") {
+            last_ssrc_line_idx = Some(idx);
+        }
+    }
+
+    // If we're still in video section at end of file, end is after last line
+    if in_video && video_section_end_idx.is_none() {
+        video_section_end_idx = Some(lines.len());
+    }
+
+    // Determine injection point:
+    // - After last a=ssrc line if exists
+    // - Otherwise, before the next m= section (or end of file)
+    // - If still no valid point, inject after m=video line
+    let _injection_after_idx = last_ssrc_line_idx
+        .or_else(|| video_section_end_idx.map(|idx| idx.saturating_sub(1)))
+        .or(video_section_start_idx);
+
+    // Third pass: build result with injected SSRCs
+    in_video = false;
+    for (idx, line) in lines.iter().enumerate() {
+        // If we need to inject BEFORE this line (when inserting at section end)
+        if !injected && video_section_end_idx == Some(idx) && last_ssrc_line_idx.is_none() {
+            // Inject at end of video section (before next m= line)
+            let (stream_id, track_id) = video_msid
+                .clone()
+                .unwrap_or_else(|| ("odrerir".to_string(), "video".to_string()));
+
+            for ssrc in &ssrcs_to_inject {
+                result.push(format!("a=ssrc:{} msid:{} {}", ssrc, stream_id, track_id));
+                result.push(format!("a=ssrc:{} cname:odrerir", ssrc));
+            }
+
+            injected = true;
+            info!(
+                "Injected {} provisional SSRCs at end of video section",
+                ssrcs_to_inject.len()
+            );
+        }
+
+        result.push(line.to_string());
+
+        if line.starts_with("m=video") {
+            in_video = true;
+        } else if line.starts_with("m=") && in_video {
+            in_video = false;
+        }
+
+        // Inject after the last a=ssrc line in video section
+        if in_video && Some(idx) == last_ssrc_line_idx && !injected {
+            // Use the same msid as existing video track, or generate one
+            let (stream_id, track_id) = video_msid
+                .clone()
+                .unwrap_or_else(|| ("odrerir".to_string(), "video".to_string()));
+
+            for ssrc in &ssrcs_to_inject {
+                // Add ssrc with msid (required for webrtc-rs to create track)
+                result.push(format!("a=ssrc:{} msid:{} {}", ssrc, stream_id, track_id));
+                result.push(format!("a=ssrc:{} cname:odrerir", ssrc));
+            }
+
+            injected = true;
+            info!(
+                "Injected {} provisional SSRCs after existing SSRC declarations",
+                ssrcs_to_inject.len()
+            );
+        }
+    }
+
+    // Handle edge case: video section at end of file with no ssrc lines
+    if !injected && video_section_start_idx.is_some() {
+        let (stream_id, track_id) = video_msid
+            .unwrap_or_else(|| ("odrerir".to_string(), "video".to_string()));
+
+        for ssrc in &ssrcs_to_inject {
+            result.push(format!("a=ssrc:{} msid:{} {}", ssrc, stream_id, track_id));
+            result.push(format!("a=ssrc:{} cname:odrerir", ssrc));
+        }
+
+        info!(
+            "Injected {} provisional SSRCs at end of SDP (video section at EOF)",
+            ssrcs_to_inject.len()
+        );
+    }
+
+    result.join(line_ending)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +410,71 @@ mod tests {
         assert!(fixed.contains("c=IN IP4 192.168.1.1"));
         // Should NOT add candidates - that corrupts ICE negotiation
         assert!(!fixed.contains("a=candidate:"));
+    }
+
+    #[test]
+    fn test_inject_provisional_ssrcs_with_existing() {
+        // SDP with existing SSRC 1
+        let sdp = "v=0\r\n\
+            m=video 9 UDP/TLS/RTP/SAVPF 96\r\n\
+            a=msid:stream1 video1\r\n\
+            a=ssrc:1 msid:stream1 video1\r\n\
+            a=ssrc:1 cname:test\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n";
+
+        let result = inject_provisional_ssrcs(sdp);
+
+        // Should inject SSRCs 2, 3, 4
+        assert!(result.contains("a=ssrc:2 msid:stream1 video1"));
+        assert!(result.contains("a=ssrc:3 msid:stream1 video1"));
+        assert!(result.contains("a=ssrc:4 msid:stream1 video1"));
+        assert!(result.contains("a=ssrc:2 cname:odrerir"));
+        assert!(result.contains("a=ssrc:3 cname:odrerir"));
+        assert!(result.contains("a=ssrc:4 cname:odrerir"));
+
+        // Original SSRC should still be there
+        assert!(result.contains("a=ssrc:1 msid:stream1 video1"));
+    }
+
+    #[test]
+    fn test_inject_provisional_ssrcs_without_existing() {
+        // SDP without any SSRC lines
+        let sdp = "v=0\r\n\
+            m=video 9 UDP/TLS/RTP/SAVPF 96\r\n\
+            a=msid:stream1 video1\r\n\
+            a=rtpmap:96 H264/90000\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n";
+
+        let result = inject_provisional_ssrcs(sdp);
+
+        // Should inject SSRCs 2, 3, 4 (no SSRC 1 since none existed)
+        assert!(result.contains("a=ssrc:2 msid:stream1 video1"));
+        assert!(result.contains("a=ssrc:3 msid:stream1 video1"));
+        assert!(result.contains("a=ssrc:4 msid:stream1 video1"));
+
+        // SSRCs should be injected before the audio section
+        let video_pos = result.find("m=video").unwrap();
+        let audio_pos = result.find("m=audio").unwrap();
+        let ssrc2_pos = result.find("a=ssrc:2").unwrap();
+        assert!(ssrc2_pos > video_pos && ssrc2_pos < audio_pos);
+    }
+
+    #[test]
+    fn test_inject_provisional_ssrcs_already_declared() {
+        // SDP with SSRCs 1, 2, 3, 4 already declared
+        let sdp = "v=0\r\n\
+            m=video 9 UDP/TLS/RTP/SAVPF 96\r\n\
+            a=ssrc:1 cname:test\r\n\
+            a=ssrc:2 cname:test\r\n\
+            a=ssrc:3 cname:test\r\n\
+            a=ssrc:4 cname:test\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n";
+
+        let result = inject_provisional_ssrcs(sdp);
+
+        // Should not inject anything - all SSRCs already exist
+        // Count occurrences of a=ssrc:2
+        let count = result.matches("a=ssrc:2").count();
+        assert_eq!(count, 1, "Should not duplicate existing SSRC 2");
     }
 }
