@@ -115,18 +115,12 @@ pub fn init_gstreamer() -> Result<()> {
         env::set_var("GST_REGISTRY_UPDATE", "yes");
 
         // Initialize GStreamer
+        // GST_REGISTRY_UPDATE=yes (set above) forces GStreamer to rescan plugins
         if let Err(e) = gst::init() {
             unsafe {
                 INIT_RESULT = Some(Err(e.to_string()));
             }
             return;
-        }
-
-        // Force a registry update to discover all plugins
-        // This rescans GST_PLUGIN_PATH and system paths
-        if let Err(e) = gst::update_registry() {
-            warn!("Failed to update GStreamer registry: {}", e);
-            // Continue anyway - plugins may still be available
         }
 
         // Log available parsers for debugging
