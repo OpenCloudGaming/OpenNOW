@@ -482,6 +482,9 @@ impl App {
                     SettingChange::ClipboardPasteEnabled(enabled) => {
                         self.settings.clipboard_paste_enabled = enabled;
                     }
+                    SettingChange::Borderless(enabled) => {
+                        self.settings.borderless = enabled;
+                    }
                 }
                 self.save_settings();
             }

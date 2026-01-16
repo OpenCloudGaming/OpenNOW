@@ -381,6 +381,30 @@ pub fn render_settings_modal(
                         ui.end_row();
                     });
 
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // === Display Settings Section ===
+                ui.heading(egui::RichText::new("Display").color(egui::Color32::from_rgb(118, 185, 0)));
+                ui.add_space(8.0);
+
+                egui::Grid::new("display_settings_grid")
+                    .num_columns(2)
+                    .spacing([24.0, 16.0])
+                    .show(ui, |ui| {
+                        // Borderless Fullscreen
+                        ui.label("Fullscreen Mode")
+                            .on_hover_text("Controls how fullscreen mode works (F11).\n\nBorderless: Allows Alt+Tab to work and other windows to appear on top.\nExclusive: May have slightly lower latency but prevents Alt+Tab.");
+                        ui.horizontal(|ui| {
+                            let mut borderless = settings.borderless;
+                            if ui.checkbox(&mut borderless, "Borderless fullscreen (recommended)").changed() {
+                                actions.push(UiAction::UpdateSetting(SettingChange::Borderless(borderless)));
+                            }
+                        });
+                        ui.end_row();
+                    });
+
                 ui.add_space(24.0);
 
                 // Buttons row

@@ -295,6 +295,7 @@ pub enum SettingChange {
     ColorQuality(ColorQuality),
     Hdr(bool),
     ClipboardPasteEnabled(bool),
+    Borderless(bool),
 }
 
 /// Application state enum
