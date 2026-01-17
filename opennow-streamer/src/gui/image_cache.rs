@@ -2,10 +2,10 @@
 //!
 //! Loads and caches game box art images for display in the UI.
 
+use log::{debug, warn};
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
-use log::{debug, warn};
 
 /// Image loading state
 #[derive(Clone)]
@@ -74,7 +74,10 @@ impl ImageCache {
             match Self::load_image_async(&client, &url_clone).await {
                 Ok((pixels, width, height)) => {
                     debug!("Loaded image: {} ({}x{})", url_clone, width, height);
-                    LOADED_IMAGES.write().insert(url_clone, ImageState::Loaded(Arc::new(pixels), width, height));
+                    LOADED_IMAGES.write().insert(
+                        url_clone,
+                        ImageState::Loaded(Arc::new(pixels), width, height),
+                    );
                 }
                 Err(e) => {
                     warn!("Failed to load image {}: {}", url_clone, e);
@@ -86,10 +89,14 @@ impl ImageCache {
 
     /// Load an image asynchronously
     /// Images are resized to max 300x400 for efficient UI rendering on low-end devices
-    async fn load_image_async(client: &reqwest::Client, url: &str) -> anyhow::Result<(Vec<u8>, u32, u32)> {
+    async fn load_image_async(
+        client: &reqwest::Client,
+        url: &str,
+    ) -> anyhow::Result<(Vec<u8>, u32, u32)> {
         use anyhow::Context;
 
-        let response = client.get(url)
+        let response = client
+            .get(url)
             .header("Accept", "image/webp,image/png,image/jpeg,*/*")
             .header("Referer", "https://play.geforcenow.com/")
             .send()
@@ -100,26 +107,29 @@ impl ImageCache {
             return Err(anyhow::anyhow!("Image fetch failed: {}", response.status()));
         }
 
-        let bytes = response.bytes().await
+        let bytes = response
+            .bytes()
+            .await
             .context("Failed to read image bytes")?;
 
         // Decode image
-        let img = image::load_from_memory(&bytes)
-            .context("Failed to decode image")?;
+        let img = image::load_from_memory(&bytes).context("Failed to decode image")?;
 
         // Resize to thumbnail size for efficient UI rendering
         // Game cards are typically displayed at ~200x280 pixels
         // Cap at 300x400 to balance quality and performance on low-end devices
         const MAX_WIDTH: u32 = 300;
         const MAX_HEIGHT: u32 = 400;
-        
+
         let (orig_w, orig_h) = (img.width(), img.height());
         let img = if orig_w > MAX_WIDTH || orig_h > MAX_HEIGHT {
-            let scale = (MAX_WIDTH as f32 / orig_w as f32)
-                .min(MAX_HEIGHT as f32 / orig_h as f32);
+            let scale = (MAX_WIDTH as f32 / orig_w as f32).min(MAX_HEIGHT as f32 / orig_h as f32);
             let new_w = (orig_w as f32 * scale) as u32;
             let new_h = (orig_h as f32 * scale) as u32;
-            debug!("Resizing image {}x{} -> {}x{}", orig_w, orig_h, new_w, new_h);
+            debug!(
+                "Resizing image {}x{} -> {}x{}",
+                orig_w, orig_h, new_w, new_h
+            );
             img.resize(new_w, new_h, image::imageops::FilterType::Triangle)
         } else {
             img

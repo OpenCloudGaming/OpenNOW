@@ -2,11 +2,11 @@
 //!
 //! File-based and console logging.
 
+use log::{Level, LevelFilter, Log, Metadata, Record};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use log::{Log, Metadata, Record, Level, LevelFilter};
 
 /// Get the log file path
 pub fn get_log_file_path() -> PathBuf {
@@ -51,7 +51,7 @@ impl Log for FileLogger {
 
         // STRICT filtering to prevent log spam from external crates
         // This is CRITICAL for performance - even file I/O has overhead
-        
+
         // Our crate: allow INFO and above (DEBUG only if explicitly needed)
         if target.starts_with("opennow_streamer") {
             level <= Level::Info
@@ -105,7 +105,7 @@ impl Log for FileLogger {
 }
 
 /// Initialize the logging system
-/// 
+///
 /// Console logging is DISABLED by default for performance.
 /// Windows console I/O is blocking and causes severe frame drops when
 /// external crates (webrtc_sctp, wgpu, etc.) spam debug messages.

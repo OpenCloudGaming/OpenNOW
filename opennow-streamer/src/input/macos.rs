@@ -8,16 +8,14 @@
 //! - Lock-free event accumulation using atomics
 //! - Local cursor tracking for instant visual feedback
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicPtr, Ordering};
-use std::ffi::c_void;
-use log::{info, error, debug, warn};
-use tokio::sync::mpsc;
+use log::{debug, error, info, warn};
 use parking_lot::Mutex;
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
+use tokio::sync::mpsc;
 
-use crate::webrtc::InputEvent;
 use super::{get_timestamp_us, session_elapsed_us, MOUSE_COALESCE_INTERVAL_US};
-
-
+use crate::webrtc::InputEvent;
 
 // Core Graphics bindings
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -166,8 +164,6 @@ static EVENT_SENDER: Mutex<Option<mpsc::Sender<InputEvent>>> = Mutex::new(None);
 static RUN_LOOP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static EVENT_TAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
-
-
 /// Flush coalesced mouse events
 /// Uses blocking lock to ensure events are never dropped (matches Windows behavior)
 #[inline]
@@ -190,11 +186,14 @@ fn flush_coalesced_events() {
         // Use blocking lock to match Windows behavior - never drop events
         let guard = EVENT_SENDER.lock();
         if let Some(ref sender) = *guard {
-            if sender.try_send(InputEvent::MouseMove {
-                dx: dx as i16,
-                dy: dy as i16,
-                timestamp_us,
-            }).is_err() {
+            if sender
+                .try_send(InputEvent::MouseMove {
+                    dx: dx as i16,
+                    dy: dy as i16,
+                    timestamp_us,
+                })
+                .is_err()
+            {
                 // Channel full - this is a real backpressure situation
                 // Log it but don't re-queue (would cause more delays)
                 warn!("Input channel full - event dropped");
@@ -214,7 +213,8 @@ extern "C" fn event_tap_callback(
 ) -> CGEventRef {
     // Handle tap being disabled
     if event_type == CGEventType::TapDisabledByTimeout
-        || event_type == CGEventType::TapDisabledByUserInput {
+        || event_type == CGEventType::TapDisabledByUserInput
+    {
         // Re-enable the tap
         let tap = EVENT_TAP.load(Ordering::Acquire);
         if !tap.is_null() {
@@ -270,7 +270,9 @@ extern "C" fn event_tap_callback(
                 }
             }
             CGEventType::ScrollWheel => {
-                let delta = CGEventGetIntegerValueField(event, CGEventField::ScrollWheelEventDeltaAxis1) as i16;
+                let delta =
+                    CGEventGetIntegerValueField(event, CGEventField::ScrollWheelEventDeltaAxis1)
+                        as i16;
                 if delta != 0 {
                     let timestamp_us = get_timestamp_us();
                     // Use try_lock to avoid blocking the event tap callback
@@ -294,8 +296,6 @@ extern "C" fn event_tap_callback(
     event
 }
 
-
-
 /// Start raw input capture
 pub fn start_raw_input() -> Result<(), String> {
     if RAW_INPUT_REGISTERED.load(Ordering::SeqCst) {
@@ -311,9 +311,9 @@ pub fn start_raw_input() -> Result<(), String> {
             let event_mask: CGEventMask = CGMOUSEMOVED_MASK | CGSCROLL_MASK;
 
             let tap = CGEventTapCreate(
-                CGEventTapLocation::HIDEventTap,  // Capture at HID level for raw input
+                CGEventTapLocation::HIDEventTap, // Capture at HID level for raw input
                 CGEventTapPlacement::HeadInsertEventTap,
-                CGEventTapOptions::ListenOnly,  // Don't modify events
+                CGEventTapOptions::ListenOnly, // Don't modify events
                 event_mask,
                 event_tap_callback,
                 std::ptr::null_mut(),
@@ -327,11 +327,7 @@ pub fn start_raw_input() -> Result<(), String> {
             EVENT_TAP.store(tap, Ordering::Release);
 
             // Create run loop source
-            let source = CFMachPortCreateRunLoopSource(
-                kCFAllocatorDefault,
-                tap,
-                0,
-            );
+            let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0);
 
             if source.is_null() {
                 error!("Failed to create run loop source");

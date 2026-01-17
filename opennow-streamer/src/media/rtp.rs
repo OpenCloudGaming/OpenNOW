@@ -148,7 +148,11 @@ impl RtpDepacketizer {
             }
 
             let obu_data = &payload[offset..offset + obu_size];
-            let obu_type = if !obu_data.is_empty() { (obu_data[0] >> 3) & 0x0F } else { 0 };
+            let obu_type = if !obu_data.is_empty() {
+                (obu_data[0] >> 3) & 0x0F
+            } else {
+                0
+            };
 
             // Check if last OBU is fragmented or is a large OBU type that might span packets
             // GFN bug: sometimes marks Y=1 even when TILE_GROUP/FRAME spans packets
@@ -176,7 +180,8 @@ impl RtpDepacketizer {
     /// Call take_nal_frame() when marker bit is set to get complete frame
     pub fn accumulate_nal(&mut self, nal: Vec<u8>) {
         // Add Annex B start code before each NAL unit
-        self.nal_frame_buffer.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        self.nal_frame_buffer
+            .extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
         self.nal_frame_buffer.extend_from_slice(&nal);
     }
 
@@ -246,7 +251,9 @@ impl RtpDepacketizer {
     /// Check if an AV1 frame contains actual picture data (TILE_GROUP or FRAME OBU)
     /// Frames with only SEQUENCE_HEADER, FRAME_HEADER, etc. are not decodable
     fn av1_frame_has_picture_data(data: &[u8]) -> bool {
-        Self::av1_find_obu_types(data).iter().any(|&t| t == 4 || t == 6)
+        Self::av1_find_obu_types(data)
+            .iter()
+            .any(|&t| t == 4 || t == 6)
     }
 
     /// Check if an AV1 frame contains a SEQUENCE_HEADER OBU

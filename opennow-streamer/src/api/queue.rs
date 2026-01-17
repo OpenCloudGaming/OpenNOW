@@ -2,7 +2,7 @@
 //!
 //! Fetches queue time information from PrintedWaste API for GeForce NOW servers.
 
-use log::{info, warn, debug};
+use log::{debug, info, warn};
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -95,10 +95,13 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// PrintedWaste API endpoints
 const QUEUE_API_URL: &str = "https://api.printedwaste.com/gfn/queue/";
-const MAPPING_API_URL: &str = "https://remote.printedwaste.com/config/GFN_SERVERID_TO_REGION_MAPPING";
+const MAPPING_API_URL: &str =
+    "https://remote.printedwaste.com/config/GFN_SERVERID_TO_REGION_MAPPING";
 
 /// Fetch server mapping from PrintedWaste
-pub async fn fetch_server_mapping(client: &Client) -> Result<HashMap<String, ServerMapping>, String> {
+pub async fn fetch_server_mapping(
+    client: &Client,
+) -> Result<HashMap<String, ServerMapping>, String> {
     let user_agent = format!("OpenNOW/{}", APP_VERSION);
 
     debug!("Fetching server mapping from PrintedWaste...");
@@ -111,26 +114,38 @@ pub async fn fetch_server_mapping(client: &Client) -> Result<HashMap<String, Ser
         .map_err(|e| format!("Failed to fetch server mapping: {}", e))?;
 
     if !response.status().is_success() {
-        return Err(format!("Server mapping API returned status: {}", response.status()));
+        return Err(format!(
+            "Server mapping API returned status: {}",
+            response.status()
+        ));
     }
 
-    let body = response.text().await
+    let body = response
+        .text()
+        .await
         .map_err(|e| format!("Failed to read server mapping response: {}", e))?;
 
     let raw: RawMappingResponse = serde_json::from_str(&body)
         .map_err(|e| format!("Failed to parse server mapping: {}", e))?;
 
     if !raw.errors.is_empty() {
-        return Err(format!("Server mapping API returned errors: {:?}", raw.errors));
+        return Err(format!(
+            "Server mapping API returned errors: {:?}",
+            raw.errors
+        ));
     }
 
     // Convert raw mappings to our struct
-    let mappings: HashMap<String, ServerMapping> = raw.data
+    let mappings: HashMap<String, ServerMapping> = raw
+        .data
         .into_iter()
         .map(|(k, v)| (k, ServerMapping::from_raw(v)))
         .collect();
 
-    info!("Fetched {} server mappings from PrintedWaste", mappings.len());
+    info!(
+        "Fetched {} server mappings from PrintedWaste",
+        mappings.len()
+    );
     Ok(mappings)
 }
 
@@ -151,27 +166,30 @@ pub async fn fetch_queue_data(client: &Client) -> Result<QueueResponse, String> 
         return Err(format!("Queue API returned status: {}", response.status()));
     }
 
-    let body = response.text().await
+    let body = response
+        .text()
+        .await
         .map_err(|e| format!("Failed to read queue response: {}", e))?;
 
-    let queue: QueueResponse = serde_json::from_str(&body)
-        .map_err(|e| format!("Failed to parse queue data: {}", e))?;
+    let queue: QueueResponse =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse queue data: {}", e))?;
 
     if !queue.errors.is_empty() {
         return Err(format!("Queue API returned errors: {:?}", queue.errors));
     }
 
-    info!("Fetched queue data for {} servers from PrintedWaste", queue.data.len());
+    info!(
+        "Fetched queue data for {} servers from PrintedWaste",
+        queue.data.len()
+    );
     Ok(queue)
 }
 
 /// Fetch combined queue server info
 pub async fn fetch_queue_servers(client: &Client) -> Result<Vec<QueueServerInfo>, String> {
     // Fetch both mapping and queue data
-    let (mapping_result, queue_result) = tokio::join!(
-        fetch_server_mapping(client),
-        fetch_queue_data(client)
-    );
+    let (mapping_result, queue_result) =
+        tokio::join!(fetch_server_mapping(client), fetch_queue_data(client));
 
     let mapping = mapping_result?;
     let queue = queue_result?;
@@ -207,7 +225,10 @@ pub async fn fetch_queue_servers(client: &Client) -> Result<Vec<QueueServerInfo>
             });
         } else {
             servers_missing_queue_data += 1;
-            debug!("Server {} ({}) has no queue data", server_id, server_mapping.title);
+            debug!(
+                "Server {} ({}) has no queue data",
+                server_id, server_mapping.title
+            );
         }
     }
 
@@ -278,7 +299,9 @@ pub fn get_auto_selected_server(servers: &[QueueServerInfo]) -> Option<&QueueSer
     servers.iter().min_by(|a, b| {
         let score_a = calculate_server_score(a);
         let score_b = calculate_server_score(b);
-        score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
+        score_a
+            .partial_cmp(&score_b)
+            .unwrap_or(std::cmp::Ordering::Equal)
     })
 }
 
@@ -303,7 +326,9 @@ pub fn sort_servers(servers: &mut [QueueServerInfo], mode: crate::app::QueueSort
             servers.sort_by(|a, b| {
                 let score_a = calculate_server_score(a);
                 let score_b = calculate_server_score(b);
-                score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
+                score_a
+                    .partial_cmp(&score_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
         }
         QueueSortMode::QueueTime => {

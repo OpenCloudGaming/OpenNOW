@@ -3,19 +3,22 @@
 //! HTTP API interactions with GeForce NOW services.
 
 mod cloudmatch;
-mod games;
 pub mod error_codes;
+mod games;
 pub mod queue;
 
 #[allow(unused_imports)]
 pub use cloudmatch::*;
-pub use games::*;
 pub use error_codes::SessionError;
-pub use queue::{QueueServerInfo, fetch_queue_servers, format_queue_eta, calculate_server_score, get_auto_selected_server, get_unique_regions, sort_servers};
+pub use games::*;
+pub use queue::{
+    calculate_server_score, fetch_queue_servers, format_queue_eta, get_auto_selected_server,
+    get_unique_regions, sort_servers, QueueServerInfo,
+};
 
-use reqwest::Client;
+use log::{debug, info, warn};
 use parking_lot::RwLock;
-use log::{info, debug, warn};
+use reqwest::Client;
 use serde::Deserialize;
 
 /// Cached VPC ID from serverInfo
@@ -121,8 +124,7 @@ async fn fetch_vpc_id_from_server_info(client: &Client, token: Option<&str>) -> 
         }
     };
 
-    let vpc_id = info.request_status
-        .and_then(|s| s.server_id);
+    let vpc_id = info.request_status.and_then(|s| s.server_id);
 
     info!("Discovered VPC ID: {:?}", vpc_id);
     vpc_id
@@ -136,7 +138,10 @@ pub fn clear_vpc_cache() {
 /// Fetch dynamic server regions from the /v2/serverInfo endpoint
 /// Uses the selected provider's streaming URL (supports Alliance partners)
 /// Returns regions discovered from metaData with their streaming URLs
-pub async fn fetch_dynamic_regions(client: &Client, token: Option<&str>) -> Vec<DynamicServerRegion> {
+pub async fn fetch_dynamic_regions(
+    client: &Client,
+    token: Option<&str>,
+) -> Vec<DynamicServerRegion> {
     use crate::auth;
 
     // Get the base URL from the selected provider (Alliance partners have different URLs)
@@ -294,7 +299,7 @@ struct SubscriptionResponse {
     remaining_time_in_minutes: Option<i32>,
     total_time_in_minutes: Option<i32>,
     #[serde(default)]
-    sub_type: Option<String>,  // TIME_CAPPED or UNLIMITED
+    sub_type: Option<String>, // TIME_CAPPED or UNLIMITED
     #[serde(default)]
     addons: Vec<SubscriptionAddon>,
     features: Option<SubscriptionFeatures>,
@@ -339,9 +344,12 @@ struct AddonAttribute {
 }
 
 /// Fetch subscription info from MES API
-pub async fn fetch_subscription(token: &str, user_id: &str) -> Result<crate::app::SubscriptionInfo, String> {
+pub async fn fetch_subscription(
+    token: &str,
+    user_id: &str,
+) -> Result<crate::app::SubscriptionInfo, String> {
     use crate::auth;
-    
+
     let client = Client::builder()
         .gzip(true)
         .build()
@@ -352,9 +360,12 @@ pub async fn fetch_subscription(token: &str, user_id: &str) -> Result<crate::app
     let provider = auth::get_selected_provider();
     let vpc_id = if provider.is_alliance_partner() {
         // Fetch VPC ID from Alliance partner's serverInfo
-        info!("Fetching VPC ID for Alliance partner: {}", provider.login_provider_display_name);
+        info!(
+            "Fetching VPC ID for Alliance partner: {}",
+            provider.login_provider_display_name
+        );
         let regions = fetch_dynamic_regions(&client, Some(token)).await;
-        
+
         // The VPC ID gets cached by fetch_dynamic_regions, so try to read it
         let cached = CACHED_VPC_ID.read();
         if let Some(vpc) = cached.as_ref() {
@@ -373,7 +384,10 @@ pub async fn fetch_subscription(token: &str, user_id: &str) -> Result<crate::app
     } else {
         // For NVIDIA, use cached VPC ID or fallback
         let cached = CACHED_VPC_ID.read();
-        cached.as_ref().cloned().unwrap_or_else(|| "NP-AMS-08".to_string())
+        cached
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| "NP-AMS-08".to_string())
     };
 
     let url = format!(
@@ -400,22 +414,29 @@ pub async fn fetch_subscription(token: &str, user_id: &str) -> Result<crate::app
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("Subscription API failed with status {}: {}", status, body));
+        return Err(format!(
+            "Subscription API failed with status {}: {}",
+            status, body
+        ));
     }
 
-    let body = response.text().await
+    let body = response
+        .text()
+        .await
         .map_err(|e| format!("Failed to read subscription response: {}", e))?;
 
     debug!("Subscription response: {}", &body[..body.len().min(500)]);
 
-    let sub: SubscriptionResponse = serde_json::from_str(&body)
-        .map_err(|e| format!("Failed to parse subscription: {}", e))?;
+    let sub: SubscriptionResponse =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse subscription: {}", e))?;
 
     // Convert minutes to hours
-    let remaining_hours = sub.remaining_time_in_minutes
+    let remaining_hours = sub
+        .remaining_time_in_minutes
         .map(|m| m as f32 / 60.0)
         .unwrap_or(0.0);
-    let total_hours = sub.total_time_in_minutes
+    let total_hours = sub
+        .total_time_in_minutes
         .map(|m| m as f32 / 60.0)
         .unwrap_or(0.0);
 
@@ -441,8 +462,10 @@ pub async fn fetch_subscription(token: &str, user_id: &str) -> Result<crate::app
         }
     }
 
-    info!("Subscription: tier={}, hours={:.1}/{:.1}, storage={}, subType={:?}",
-        sub.membership_tier, remaining_hours, total_hours, has_persistent_storage, sub.sub_type);
+    info!(
+        "Subscription: tier={}, hours={:.1}/{:.1}, storage={}, subType={:?}",
+        sub.membership_tier, remaining_hours, total_hours, has_persistent_storage, sub.sub_type
+    );
 
     // Check if this is an unlimited subscription (no hour cap)
     let is_unlimited = sub.sub_type.as_deref() == Some("UNLIMITED");
@@ -459,10 +482,11 @@ pub async fn fetch_subscription(token: &str, user_id: &str) -> Result<crate::app
             });
         }
     }
-    
+
     // Sort to be nice (highest res/fps first)
     entitled_resolutions.sort_by(|a, b| {
-        b.width.cmp(&a.width)
+        b.width
+            .cmp(&a.width)
             .then(b.height.cmp(&a.height))
             .then(b.fps.cmp(&a.fps))
     });
