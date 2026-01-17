@@ -1145,23 +1145,31 @@ impl Renderer {
         Self::disable_macos_vsync(&self.window);
     }
 
-    /// Set VSync mode - use Fifo (vsync) for UI, Immediate/Mailbox for streaming
+    /// Set VSync mode - use Fifo (vsync) for UI, Mailbox for streaming
     /// This lets the GPU handle frame pacing, reducing CPU usage to near zero when idle
+    ///
+    /// Present mode selection for streaming (vsync=false):
+    /// - Mailbox (preferred): Tear-free with minimal latency (~1 frame). Queues frames and
+    ///   displays the most recent one at the next vertical blank. Best balance of quality/latency.
+    /// - Immediate (fallback): Lowest possible latency but can cause visible tearing artifacts.
+    ///   Only used if Mailbox is not available.
     pub fn set_vsync(&mut self, enabled: bool) {
         let new_mode = if enabled {
             wgpu::PresentMode::Fifo // VSync on - GPU waits for display refresh
         } else {
-            // VSync off - prefer Immediate for lowest latency, fall back to Mailbox
+            // VSync off - prefer Mailbox for tear-free low-latency, fall back to Immediate
+            // Mailbox provides the best balance: no tearing with only ~1 frame of latency
+            // This fixes screen tearing issues reported on Windows (issue #104)
             if self
-                .supported_present_modes
-                .contains(&wgpu::PresentMode::Immediate)
-            {
-                wgpu::PresentMode::Immediate
-            } else if self
                 .supported_present_modes
                 .contains(&wgpu::PresentMode::Mailbox)
             {
-                wgpu::PresentMode::Mailbox // Good low-latency alternative
+                wgpu::PresentMode::Mailbox // Tear-free with low latency
+            } else if self
+                .supported_present_modes
+                .contains(&wgpu::PresentMode::Immediate)
+            {
+                wgpu::PresentMode::Immediate // Lowest latency but may tear
             } else {
                 wgpu::PresentMode::Fifo // Fallback to VSync if nothing else available
             }
