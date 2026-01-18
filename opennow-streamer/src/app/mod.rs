@@ -485,6 +485,9 @@ impl App {
                     SettingChange::Borderless(enabled) => {
                         self.settings.borderless = enabled;
                     }
+                    SettingChange::GameLanguage(lang) => {
+                        self.settings.game_language = lang;
+                    }
                 }
                 self.save_settings();
             }

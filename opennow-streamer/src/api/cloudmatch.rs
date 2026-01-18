@@ -167,13 +167,15 @@ impl GfnApiClient {
         let url = if is_alliance_partner {
             let base = streaming_base_url.trim_end_matches('/');
             format!(
-                "{}/v2/session?keyboardLayout=en-US&languageCode=en_US",
-                base
+                "{}/v2/session?keyboardLayout=en-US&languageCode={}",
+                base,
+                settings.game_language.as_code()
             )
         } else {
             format!(
-                "{}/v2/session?keyboardLayout=en-US&languageCode=en_US",
-                cloudmatch_zone_url(zone)
+                "{}/v2/session?keyboardLayout=en-US&languageCode={}",
+                cloudmatch_zone_url(zone),
+                settings.game_language.as_code()
             )
         };
 
@@ -785,8 +787,10 @@ impl GfnApiClient {
         let timezone_offset_ms = chrono::Local::now().offset().local_minus_utc() as i64 * 1000;
 
         let claim_url = format!(
-            "https://{}/v2/session/{}?keyboardLayout=en-US&languageCode=en_US",
-            server_ip, session_id
+            "https://{}/v2/session/{}?keyboardLayout=en-US&languageCode={}",
+            server_ip,
+            session_id,
+            settings.game_language.as_code()
         );
 
         info!("Claiming session: {} at {}", session_id, claim_url);

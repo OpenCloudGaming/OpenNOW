@@ -2,36 +2,38 @@
 //!
 //! Handles WebRTC peer connection, media streams, and data channels.
 
+use anyhow::{Context, Result};
+use bytes::Bytes;
+use log::{debug, error, info, warn};
+use parking_lot::Mutex;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use parking_lot::Mutex;
+use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
-use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::dtls_transport::dtls_role::DTLSRole;
-use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::ice_transport::ice_gatherer_state::RTCIceGathererState;
+use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
-use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
-use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpHeaderExtensionCapability;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
-use anyhow::{Result, Context};
-use log::{info, debug, warn, error};
-use bytes::Bytes;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpHeaderExtensionCapability;
+use webrtc::rtp_transceiver::rtp_codec::{
+    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
+};
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 
 /// MIME type for H265/HEVC video codec
 const MIME_TYPE_H265: &str = "video/H265";
 /// MIME type for AV1 video codec
 const MIME_TYPE_AV1: &str = "video/AV1";
 
-use super::InputEncoder;
 use super::sdp::is_ice_lite;
+use super::InputEncoder;
 
 /// Events from WebRTC connection
 #[derive(Debug)]
@@ -39,7 +41,11 @@ pub enum WebRtcEvent {
     Connected,
     Disconnected,
     /// Video frame with RTP timestamp (90kHz clock) and marker bit
-    VideoFrame { payload: Vec<u8>, rtp_timestamp: u32, marker: bool },
+    VideoFrame {
+        payload: Vec<u8>,
+        rtp_timestamp: u32,
+        marker: bool,
+    },
     AudioFrame(Vec<u8>),
     DataChannelOpen(String),
     DataChannelMessage(String, Vec<u8>),
@@ -48,7 +54,9 @@ pub enum WebRtcEvent {
     /// Stream stalled due to SSRC change - reconnection recommended
     /// This happens when GFN server changes resolution and switches to a new SSRC
     /// that webrtc-rs can't handle without MID header extensions.
-    SsrcChangeDetected { stall_duration_ms: u64 },
+    SsrcChangeDetected {
+        stall_duration_ms: u64,
+    },
 }
 
 /// Shared peer connection for PLI requests (static to allow access from decoder)
@@ -105,7 +113,11 @@ impl WebRtcPeer {
     }
 
     /// Create peer connection and set remote SDP offer
-    pub async fn handle_offer(&mut self, sdp_offer: &str, ice_servers: Vec<RTCIceServer>) -> Result<String> {
+    pub async fn handle_offer(
+        &mut self,
+        sdp_offer: &str,
+        ice_servers: Vec<RTCIceServer>,
+    ) -> Result<String> {
         info!("Setting up WebRTC peer connection");
 
         // Detect ice-lite BEFORE creating peer connection - this affects DTLS role
@@ -244,11 +256,13 @@ impl WebRtcPeer {
                     info!("Gathered local ICE candidate: {}", candidate_str);
                     let sdp_mid = c.to_json().ok().and_then(|j| j.sdp_mid);
                     let sdp_mline_index = c.to_json().ok().and_then(|j| j.sdp_mline_index);
-                    let _ = tx.send(WebRtcEvent::IceCandidate(
-                        candidate_str,
-                        sdp_mid,
-                        sdp_mline_index,
-                    )).await;
+                    let _ = tx
+                        .send(WebRtcEvent::IceCandidate(
+                            candidate_str,
+                            sdp_mid,
+                            sdp_mline_index,
+                        ))
+                        .await;
                 }
             })
         }));
@@ -453,7 +467,9 @@ impl WebRtcPeer {
                     let label = label_msg.clone();
                     Box::pin(async move {
                         debug!("Data channel '{}' message: {} bytes", label, msg.data.len());
-                        let _ = tx.send(WebRtcEvent::DataChannelMessage(label, msg.data.to_vec())).await;
+                        let _ = tx
+                            .send(WebRtcEvent::DataChannelMessage(label, msg.data.to_vec()))
+                            .await;
                     })
                 }));
             })
@@ -490,14 +506,14 @@ impl WebRtcPeer {
 
         // Create answer (DTLS role is already configured via SettingEngine if ice-lite)
         let answer = peer_connection.create_answer(None).await?;
-        peer_connection.set_local_description(answer.clone()).await?;
+        peer_connection
+            .set_local_description(answer.clone())
+            .await?;
         info!("Local description set, waiting for ICE gathering...");
 
         // Wait for ICE gathering (with timeout)
-        let gather_result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            gather_rx
-        ).await;
+        let gather_result =
+            tokio::time::timeout(std::time::Duration::from_secs(5), gather_rx).await;
 
         match gather_result {
             Ok(_) => info!("ICE gathering complete"),
@@ -505,7 +521,9 @@ impl WebRtcPeer {
         }
 
         // Get final SDP (already has DTLS setup fixed if ice-lite)
-        let final_sdp = peer_connection.local_description().await
+        let final_sdp = peer_connection
+            .local_description()
+            .await
             .map(|d| d.sdp)
             .unwrap_or_else(|| answer.sdp.clone());
 
@@ -528,17 +546,24 @@ impl WebRtcPeer {
 
     /// Create input data channels (reliable for keyboard, partially reliable for mouse)
     pub async fn create_input_channel(&mut self) -> Result<()> {
-        let pc = self.peer_connection.as_ref().context("No peer connection")?;
+        let pc = self
+            .peer_connection
+            .as_ref()
+            .context("No peer connection")?;
 
         // Reliable channel for keyboard and handshake
-        let dc = pc.create_data_channel(
-            "input_channel_v1",
-            Some(webrtc::data_channel::data_channel_init::RTCDataChannelInit {
-                ordered: Some(true),  // Keyboard needs ordering
-                max_retransmits: Some(0),
-                ..Default::default()
-            }),
-        ).await?;
+        let dc = pc
+            .create_data_channel(
+                "input_channel_v1",
+                Some(
+                    webrtc::data_channel::data_channel_init::RTCDataChannelInit {
+                        ordered: Some(true), // Keyboard needs ordering
+                        max_retransmits: Some(0),
+                        ..Default::default()
+                    },
+                ),
+            )
+            .await?;
 
         info!("Created reliable input channel: {}", dc.label());
 
@@ -556,10 +581,12 @@ impl WebRtcPeer {
             Box::pin(async move {
                 debug!("Input channel message: {} bytes", data.len());
                 if data.len() >= 2 && data[0] == 0x0e {
-                    let _ = tx.send(WebRtcEvent::DataChannelMessage(
-                        "input_handshake".to_string(),
-                        data,
-                    )).await;
+                    let _ = tx
+                        .send(WebRtcEvent::DataChannelMessage(
+                            "input_handshake".to_string(),
+                            data,
+                        ))
+                        .await;
                 }
             })
         }));
@@ -568,16 +595,23 @@ impl WebRtcPeer {
 
         // Partially reliable channel for mouse - lower latency!
         // Uses maxPacketLifeTime instead of retransmits for time-sensitive data
-        let mouse_dc = pc.create_data_channel(
-            "input_channel_partially_reliable",
-            Some(webrtc::data_channel::data_channel_init::RTCDataChannelInit {
-                ordered: Some(false),           // Unordered for lower latency
-                max_packet_life_time: Some(8), // 8ms lifetime for low-latency mouse
-                ..Default::default()
-            }),
-        ).await?;
+        let mouse_dc = pc
+            .create_data_channel(
+                "input_channel_partially_reliable",
+                Some(
+                    webrtc::data_channel::data_channel_init::RTCDataChannelInit {
+                        ordered: Some(false),          // Unordered for lower latency
+                        max_packet_life_time: Some(8), // 8ms lifetime for low-latency mouse
+                        ..Default::default()
+                    },
+                ),
+            )
+            .await?;
 
-        info!("Created partially reliable mouse channel: {}", mouse_dc.label());
+        info!(
+            "Created partially reliable mouse channel: {}",
+            mouse_dc.label()
+        );
 
         mouse_dc.on_open(Box::new(move || {
             info!("Mouse channel opened (partially reliable)");
@@ -609,7 +643,9 @@ impl WebRtcPeer {
     pub async fn send_mouse_input(&mut self, data: &[u8]) -> Result<()> {
         // Prefer the partially reliable channel for mouse
         if let Some(ref mouse_dc) = self.mouse_channel {
-            if mouse_dc.ready_state() == webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
+            if mouse_dc.ready_state()
+                == webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
+            {
                 mouse_dc.send(&Bytes::copy_from_slice(data)).await?;
                 return Ok(());
             }
@@ -624,8 +660,12 @@ impl WebRtcPeer {
 
     /// Check if mouse channel is ready
     pub fn is_mouse_channel_ready(&self) -> bool {
-        self.mouse_channel.as_ref()
-            .map(|dc| dc.ready_state() == webrtc::data_channel::data_channel_state::RTCDataChannelState::Open)
+        self.mouse_channel
+            .as_ref()
+            .map(|dc| {
+                dc.ready_state()
+                    == webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
+            })
             .unwrap_or(false)
     }
 
@@ -639,8 +679,17 @@ impl WebRtcPeer {
     }
 
     /// Add remote ICE candidate
-    pub async fn add_ice_candidate(&self, candidate: &str, sdp_mid: Option<&str>, sdp_mline_index: Option<u16>, ufrag: Option<String>) -> Result<()> {
-        let pc = self.peer_connection.as_ref().context("No peer connection")?;
+    pub async fn add_ice_candidate(
+        &self,
+        candidate: &str,
+        sdp_mid: Option<&str>,
+        sdp_mline_index: Option<u16>,
+        ufrag: Option<String>,
+    ) -> Result<()> {
+        let pc = self
+            .peer_connection
+            .as_ref()
+            .context("No peer connection")?;
 
         let candidate = webrtc::ice_transport::ice_candidate::RTCIceCandidateInit {
             candidate: candidate.to_string(),
@@ -688,15 +737,18 @@ impl WebRtcPeer {
         let report = pc.get_stats().await;
 
         // Debug: log candidate pair stats once
-        static LOGGED_STATS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static LOGGED_STATS: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
         let should_log = !LOGGED_STATS.swap(true, std::sync::atomic::Ordering::Relaxed);
 
         for (id, stat) in report.reports.iter() {
             match stat {
                 webrtc::stats::StatsReportType::CandidatePair(pair) => {
                     if should_log {
-                        info!("CandidatePair {}: nominated={}, state={:?}, rtt={}s",
-                              id, pair.nominated, pair.state, pair.current_round_trip_time);
+                        info!(
+                            "CandidatePair {}: nominated={}, state={:?}, rtt={}s",
+                            id, pair.nominated, pair.state, pair.current_round_trip_time
+                        );
                     }
                     // Use any pair with RTT data (not just nominated - ice-lite may behave differently)
                     if pair.current_round_trip_time > 0.0 && stats.rtt_ms == 0.0 {

@@ -3,13 +3,13 @@
 //! OAuth flow and token management for NVIDIA accounts.
 //! Supports multi-region login via Alliance Partners.
 
-use anyhow::{Result, Context};
-use log::{info, debug};
-use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use std::sync::Arc;
+use anyhow::{Context, Result};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use log::{debug, info};
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 /// Service URLs API endpoint
 const SERVICE_URLS_ENDPOINT: &str = "https://pcs.geforcenow.com/v1/serviceUrls";
@@ -127,21 +127,31 @@ pub async fn fetch_login_providers() -> Result<Vec<LoginProvider>> {
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(anyhow::anyhow!("Service URLs request failed: {} - {}", status, body));
+        return Err(anyhow::anyhow!(
+            "Service URLs request failed: {} - {}",
+            status,
+            body
+        ));
     }
 
-    let service_response: ServiceUrlsResponse = response.json().await
+    let service_response: ServiceUrlsResponse = response
+        .json()
+        .await
         .context("Failed to parse service URLs response")?;
 
     if service_response.request_status.status_code != 1 {
-        return Err(anyhow::anyhow!("Service URLs API error: status_code={}",
-            service_response.request_status.status_code));
+        return Err(anyhow::anyhow!(
+            "Service URLs API error: status_code={}",
+            service_response.request_status.status_code
+        ));
     }
 
-    let service_info = service_response.gfn_service_info
+    let service_info = service_response
+        .gfn_service_info
         .ok_or_else(|| anyhow::anyhow!("No service info in response"))?;
 
-    let mut providers: Vec<LoginProvider> = service_info.gfn_service_endpoints
+    let mut providers: Vec<LoginProvider> = service_info
+        .gfn_service_endpoints
         .into_iter()
         .map(|ep| {
             // Rename "Brothers Pictures" to "bro.game"
@@ -167,7 +177,10 @@ pub async fn fetch_login_providers() -> Result<Vec<LoginProvider>> {
 
     info!("Found {} login providers", providers.len());
     for provider in &providers {
-        debug!("  - {} ({})", provider.login_provider_display_name, provider.login_provider_code);
+        debug!(
+            "  - {} ({})",
+            provider.login_provider_display_name, provider.login_provider_code
+        );
     }
 
     // Cache providers
@@ -186,19 +199,22 @@ pub fn get_cached_providers() -> Vec<LoginProvider> {
 
 /// Set the selected login provider
 pub fn set_login_provider(provider: LoginProvider) {
-    info!("Setting login provider to: {} ({})",
-        provider.login_provider_display_name, provider.idp_id);
-    
+    info!(
+        "Setting login provider to: {} ({})",
+        provider.login_provider_display_name, provider.idp_id
+    );
+
     // Save to cache for persistence across restarts
     crate::app::cache::save_login_provider(&provider);
-    
+
     let mut selected = SELECTED_PROVIDER.write();
     *selected = Some(provider);
 }
 
 /// Get the selected login provider (or default NVIDIA)
 pub fn get_selected_provider() -> LoginProvider {
-    SELECTED_PROVIDER.read()
+    SELECTED_PROVIDER
+        .read()
         .clone()
         .unwrap_or_else(LoginProvider::nvidia_default)
 }
@@ -207,7 +223,11 @@ pub fn get_selected_provider() -> LoginProvider {
 pub fn get_streaming_base_url() -> String {
     let provider = get_selected_provider();
     let url = provider.streaming_service_url;
-    if url.ends_with('/') { url } else { format!("{}/", url) }
+    if url.ends_with('/') {
+        url
+    } else {
+        format!("{}/", url)
+    }
 }
 
 /// Clear the selected provider (reset to NVIDIA default)
@@ -266,12 +286,15 @@ impl AuthTokens {
                 3 => format!("{}=", payload_b64),
                 _ => payload_b64.to_string(),
             };
-            if let Ok(payload_bytes) = URL_SAFE_NO_PAD.decode(&padded)
+            if let Ok(payload_bytes) = URL_SAFE_NO_PAD
+                .decode(&padded)
                 .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&padded))
             {
                 if let Ok(payload_str) = String::from_utf8(payload_bytes) {
                     #[derive(Deserialize)]
-                    struct JwtSub { sub: String }
+                    struct JwtSub {
+                        sub: String,
+                    }
                     if let Ok(payload) = serde_json::from_str::<JwtSub>(&payload_str) {
                         return payload.sub;
                     }
@@ -322,7 +345,10 @@ impl PkceChallenge {
         hasher.update(verifier.as_bytes());
         let challenge = URL_SAFE_NO_PAD.encode(hasher.finalize());
 
-        Self { verifier, challenge }
+        Self {
+            verifier,
+            challenge,
+        }
     }
 }
 
@@ -397,7 +423,8 @@ fn generate_nonce() -> String {
         u16::from_le_bytes([hash[4], hash[5]]),
         u16::from_le_bytes([hash[6], hash[7]]),
         u16::from_le_bytes([hash[8], hash[9]]),
-        u64::from_le_bytes([hash[10], hash[11], hash[12], hash[13], hash[14], hash[15], 0, 0]) & 0xffffffffffff
+        u64::from_le_bytes([hash[10], hash[11], hash[12], hash[13], hash[14], hash[15], 0, 0])
+            & 0xffffffffffff
     )
 }
 
@@ -413,9 +440,11 @@ fn get_device_id() -> String {
         if gfn_config.exists() {
             if let Ok(content) = std::fs::read_to_string(&gfn_config) {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(device_id) = json.get("gfnTelemetry")
+                    if let Some(device_id) = json
+                        .get("gfnTelemetry")
                         .and_then(|t| t.get("deviceId"))
-                        .and_then(|d| d.as_str()) {
+                        .and_then(|d| d.as_str())
+                    {
                         return device_id.to_string();
                     }
                 }
@@ -455,7 +484,10 @@ pub async fn exchange_code(code: &str, verifier: &str, port: u16) -> Result<Auth
 
     let response = client
         .post("https://login.nvidia.com/token")
-        .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+        .header(
+            "Content-Type",
+            "application/x-www-form-urlencoded; charset=UTF-8",
+        )
         .header("Origin", CEF_ORIGIN)
         .header("Referer", format!("{}/", CEF_ORIGIN))
         .header("Accept", "application/json, text/plain, */*")
@@ -467,7 +499,11 @@ pub async fn exchange_code(code: &str, verifier: &str, port: u16) -> Result<Auth
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response.text().await.unwrap_or_default();
-        return Err(anyhow::anyhow!("Token exchange failed: {} - {}", status, error_text));
+        return Err(anyhow::anyhow!(
+            "Token exchange failed: {} - {}",
+            status,
+            error_text
+        ));
     }
 
     #[derive(Deserialize)]
@@ -478,11 +514,12 @@ pub async fn exchange_code(code: &str, verifier: &str, port: u16) -> Result<Auth
         expires_in: Option<i64>,
     }
 
-    let token_response: TokenResponse = response.json().await
+    let token_response: TokenResponse = response
+        .json()
+        .await
         .context("Failed to parse token response")?;
 
-    let expires_at = chrono::Utc::now().timestamp()
-        + token_response.expires_in.unwrap_or(86400);
+    let expires_at = chrono::Utc::now().timestamp() + token_response.expires_in.unwrap_or(86400);
 
     info!("Token exchange successful!");
 
@@ -508,7 +545,10 @@ pub async fn refresh_token(refresh_token: &str) -> Result<AuthTokens> {
 
     let response = client
         .post("https://login.nvidia.com/token")
-        .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+        .header(
+            "Content-Type",
+            "application/x-www-form-urlencoded; charset=UTF-8",
+        )
         .header("Origin", CEF_ORIGIN)
         .header("Accept", "application/json, text/plain, */*")
         .form(&params)
@@ -529,11 +569,12 @@ pub async fn refresh_token(refresh_token: &str) -> Result<AuthTokens> {
         expires_in: Option<i64>,
     }
 
-    let token_response: TokenResponse = response.json().await
+    let token_response: TokenResponse = response
+        .json()
+        .await
         .context("Failed to parse refresh response")?;
 
-    let expires_at = chrono::Utc::now().timestamp()
-        + token_response.expires_in.unwrap_or(86400);
+    let expires_at = chrono::Utc::now().timestamp() + token_response.expires_in.unwrap_or(86400);
 
     Ok(AuthTokens {
         access_token: token_response.access_token,
@@ -557,12 +598,12 @@ pub fn decode_jwt_user_info(token: &str) -> Result<UserInfo> {
         _ => payload_b64.to_string(),
     };
 
-    let payload_bytes = URL_SAFE_NO_PAD.decode(&padded)
+    let payload_bytes = URL_SAFE_NO_PAD
+        .decode(&padded)
         .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&padded))
         .context("Failed to decode JWT payload")?;
 
-    let payload_str = String::from_utf8(payload_bytes)
-        .context("Invalid UTF-8 in JWT")?;
+    let payload_str = String::from_utf8(payload_bytes).context("Invalid UTF-8 in JWT")?;
 
     #[derive(Deserialize)]
     struct JwtPayload {
@@ -573,11 +614,17 @@ pub fn decode_jwt_user_info(token: &str) -> Result<UserInfo> {
         picture: Option<String>,
     }
 
-    let payload: JwtPayload = serde_json::from_str(&payload_str)
-        .context("Failed to parse JWT payload")?;
+    let payload: JwtPayload =
+        serde_json::from_str(&payload_str).context("Failed to parse JWT payload")?;
 
-    let display_name = payload.preferred_username
-        .or_else(|| payload.email.as_ref().map(|e| e.split('@').next().unwrap_or("User").to_string()))
+    let display_name = payload
+        .preferred_username
+        .or_else(|| {
+            payload
+                .email
+                .as_ref()
+                .map(|e| e.split('@').next().unwrap_or("User").to_string())
+        })
         .unwrap_or_else(|| "User".to_string());
 
     let membership_tier = payload.gfn_tier.unwrap_or_else(|| "FREE".to_string());
@@ -618,11 +665,16 @@ pub async fn fetch_userinfo(access_token: &str) -> Result<UserInfo> {
         picture: Option<String>,
     }
 
-    let userinfo: UserinfoResponse = response.json().await
-        .context("Failed to parse userinfo")?;
+    let userinfo: UserinfoResponse = response.json().await.context("Failed to parse userinfo")?;
 
-    let display_name = userinfo.preferred_username
-        .or_else(|| userinfo.email.as_ref().map(|e| e.split('@').next().unwrap_or("User").to_string()))
+    let display_name = userinfo
+        .preferred_username
+        .or_else(|| {
+            userinfo
+                .email
+                .as_ref()
+                .map(|e| e.split('@').next().unwrap_or("User").to_string())
+        })
         .unwrap_or_else(|| "User".to_string());
 
     Ok(UserInfo {
@@ -652,12 +704,18 @@ pub async fn start_callback_server(port: u16) -> Result<String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
 
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+        .await
         .context("Failed to bind callback server")?;
 
-    info!("OAuth callback server listening on http://127.0.0.1:{}", port);
+    info!(
+        "OAuth callback server listening on http://127.0.0.1:{}",
+        port
+    );
 
-    let (mut socket, _) = listener.accept().await
+    let (mut socket, _) = listener
+        .accept()
+        .await
         .context("Failed to accept connection")?;
 
     let mut reader = BufReader::new(&mut socket);
@@ -669,13 +727,12 @@ pub async fn start_callback_server(port: u16) -> Result<String> {
         .split_whitespace()
         .nth(1)
         .and_then(|path| {
-            path.split('?')
-                .nth(1)
-                .and_then(|query| {
-                    query.split('&')
-                        .find(|param| param.starts_with("code="))
-                        .map(|param| param.trim_start_matches("code=").to_string())
-                })
+            path.split('?').nth(1).and_then(|query| {
+                query
+                    .split('&')
+                    .find(|param| param.starts_with("code="))
+                    .map(|param| param.trim_start_matches("code=").to_string())
+            })
         })
         .context("No authorization code in callback")?;
 

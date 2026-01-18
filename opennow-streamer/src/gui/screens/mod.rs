@@ -8,7 +8,7 @@ mod session;
 pub use login::render_login_screen;
 pub use session::render_session_screen;
 
-use crate::app::config::{ColorQuality, FPS_OPTIONS, RESOLUTIONS};
+use crate::app::config::{ColorQuality, GameLanguage, FPS_OPTIONS, RESOLUTIONS};
 use crate::app::session::ActiveSessionInfo;
 use crate::app::{GameInfo, ServerInfo, SettingChange, Settings, UiAction};
 
@@ -377,6 +377,37 @@ pub fn render_settings_modal(
                             if ui.checkbox(&mut clipboard_enabled, "Enable clipboard paste (Ctrl+V)").changed() {
                                 actions.push(UiAction::UpdateSetting(SettingChange::ClipboardPasteEnabled(clipboard_enabled)));
                             }
+                        });
+                        ui.end_row();
+                    });
+
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // === Game Settings Section ===
+                ui.heading(egui::RichText::new("Game").color(egui::Color32::from_rgb(118, 185, 0)));
+                ui.add_space(8.0);
+
+                egui::Grid::new("game_settings_grid")
+                    .num_columns(2)
+                    .spacing([24.0, 16.0])
+                    .show(ui, |ui| {
+                        // Game Language
+                        ui.label("In-Game Language")
+                            .on_hover_text("Language used within games for menus, subtitles, and audio.\nThis is sent to GeForce NOW when launching a game.\nNote: Not all games support all languages.");
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            egui::ComboBox::from_id_salt("game_language_combo")
+                                .selected_text(settings.game_language.display_name())
+                                .width(200.0)
+                                .show_ui(ui, |ui| {
+                                    for &lang in GameLanguage::all() {
+                                        let label = format!("{} ({})", lang.display_name(), lang.as_code());
+                                        if ui.selectable_label(settings.game_language == lang, &label).clicked() {
+                                            actions.push(UiAction::UpdateSetting(SettingChange::GameLanguage(lang)));
+                                        }
+                                    }
+                                });
                         });
                         ui.end_row();
                     });

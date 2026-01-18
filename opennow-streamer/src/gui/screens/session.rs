@@ -10,7 +10,7 @@ pub fn render_session_screen(
     selected_game: &Option<GameInfo>,
     status_message: &str,
     error_message: &Option<String>,
-    actions: &mut Vec<UiAction>
+    actions: &mut Vec<UiAction>,
 ) {
     egui::CentralPanel::default().show(ctx, |ui| {
         ui.vertical_centered(|ui| {
@@ -22,7 +22,7 @@ pub fn render_session_screen(
                     egui::RichText::new(&game.title)
                         .size(28.0)
                         .strong()
-                        .color(egui::Color32::WHITE)
+                        .color(egui::Color32::WHITE),
                 );
             }
 
@@ -37,7 +37,7 @@ pub fn render_session_screen(
             ui.label(
                 egui::RichText::new(status_message)
                     .size(16.0)
-                    .color(egui::Color32::LIGHT_GRAY)
+                    .color(egui::Color32::LIGHT_GRAY),
             );
 
             // Error message
@@ -46,7 +46,7 @@ pub fn render_session_screen(
                 ui.label(
                     egui::RichText::new(error)
                         .size(14.0)
-                        .color(egui::Color32::from_rgb(255, 100, 100))
+                        .color(egui::Color32::from_rgb(255, 100, 100)),
                 );
             }
 

@@ -382,8 +382,8 @@ pub fn inject_provisional_ssrcs(sdp: &str) -> String {
 
     // Handle edge case: video section at end of file with no ssrc lines
     if !injected && video_section_start_idx.is_some() {
-        let (stream_id, track_id) = video_msid
-            .unwrap_or_else(|| ("odrerir".to_string(), "video".to_string()));
+        let (stream_id, track_id) =
+            video_msid.unwrap_or_else(|| ("odrerir".to_string(), "video".to_string()));
 
         for ssrc in &ssrcs_to_inject {
             result.push(format!("a=ssrc:{} msid:{} {}", ssrc, stream_id, track_id));

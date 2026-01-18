@@ -4,10 +4,10 @@ script:
   - rm -rf AppDir || true
   - mkdir -p AppDir/usr/bin
   - mkdir -p AppDir/usr/share/applications
-  - mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+  - mkdir -p AppDir/usr/share/icons/hicolor/scalable/apps
   - cp opennow-streamer/target/release/opennow-streamer AppDir/usr/bin/opennow
   - cp packaging/com.zortos.opennow.desktop AppDir/usr/share/applications/
-  - cp img.png AppDir/usr/share/icons/hicolor/256x256/apps/com.zortos.opennow.png
+  - cp packaging/com.zortos.opennow.svg AppDir/usr/share/icons/hicolor/scalable/apps/com.zortos.opennow.svg
 
 AppDir:
   path: ./AppDir

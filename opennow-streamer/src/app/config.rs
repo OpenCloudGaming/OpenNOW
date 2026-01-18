@@ -82,6 +82,10 @@ pub struct Settings {
     /// Stats panel position
     pub stats_position: StatsPosition,
 
+    // === Game Settings ===
+    /// In-game language (affects game menus, subtitles, audio)
+    pub game_language: GameLanguage,
+
     // === Network ===
     /// Preferred server region
     pub preferred_region: Option<String>,
@@ -133,6 +137,9 @@ impl Default for Settings {
             window_height: 0, // 0 = use default
             show_stats: true,
             stats_position: StatsPosition::BottomLeft,
+
+            // Game
+            game_language: GameLanguage::EnglishUS,
 
             // Network
             preferred_region: None,
@@ -564,4 +571,156 @@ pub enum StatsPosition {
     #[default]
     BottomLeft,
     BottomRight,
+}
+
+/// Game language for in-game localization
+/// Controls the language used within games (menus, subtitles, audio)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GameLanguage {
+    #[default]
+    EnglishUS,
+    EnglishGB,
+    German,
+    French,
+    Spanish,
+    SpanishMX,
+    Italian,
+    Portuguese,
+    PortugueseBR,
+    Russian,
+    Polish,
+    Turkish,
+    Arabic,
+    Japanese,
+    Korean,
+    ChineseSimplified,
+    ChineseTraditional,
+    Thai,
+    Vietnamese,
+    Indonesian,
+    Czech,
+    Greek,
+    Hungarian,
+    Romanian,
+    Ukrainian,
+    Dutch,
+    Swedish,
+    Danish,
+    Finnish,
+    Norwegian,
+}
+
+impl GameLanguage {
+    /// Get the API language code (e.g., "en_US", "de_DE")
+    pub fn as_code(&self) -> &'static str {
+        match self {
+            GameLanguage::EnglishUS => "en_US",
+            GameLanguage::EnglishGB => "en_GB",
+            GameLanguage::German => "de_DE",
+            GameLanguage::French => "fr_FR",
+            GameLanguage::Spanish => "es_ES",
+            GameLanguage::SpanishMX => "es_MX",
+            GameLanguage::Italian => "it_IT",
+            GameLanguage::Portuguese => "pt_PT",
+            GameLanguage::PortugueseBR => "pt_BR",
+            GameLanguage::Russian => "ru_RU",
+            GameLanguage::Polish => "pl_PL",
+            GameLanguage::Turkish => "tr_TR",
+            GameLanguage::Arabic => "ar_SA",
+            GameLanguage::Japanese => "ja_JP",
+            GameLanguage::Korean => "ko_KR",
+            GameLanguage::ChineseSimplified => "zh_CN",
+            GameLanguage::ChineseTraditional => "zh_TW",
+            GameLanguage::Thai => "th_TH",
+            GameLanguage::Vietnamese => "vi_VN",
+            GameLanguage::Indonesian => "id_ID",
+            GameLanguage::Czech => "cs_CZ",
+            GameLanguage::Greek => "el_GR",
+            GameLanguage::Hungarian => "hu_HU",
+            GameLanguage::Romanian => "ro_RO",
+            GameLanguage::Ukrainian => "uk_UA",
+            GameLanguage::Dutch => "nl_NL",
+            GameLanguage::Swedish => "sv_SE",
+            GameLanguage::Danish => "da_DK",
+            GameLanguage::Finnish => "fi_FI",
+            GameLanguage::Norwegian => "nb_NO",
+        }
+    }
+
+    /// Get the display name for UI
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            GameLanguage::EnglishUS => "English (US)",
+            GameLanguage::EnglishGB => "English (UK)",
+            GameLanguage::German => "Deutsch",
+            GameLanguage::French => "Fran\u{00e7}ais",
+            GameLanguage::Spanish => "Espa\u{00f1}ol (ES)",
+            GameLanguage::SpanishMX => "Espa\u{00f1}ol (MX)",
+            GameLanguage::Italian => "Italiano",
+            GameLanguage::Portuguese => "Portugu\u{00ea}s (PT)",
+            GameLanguage::PortugueseBR => "Portugu\u{00ea}s (BR)",
+            GameLanguage::Russian => "\u{0420}\u{0443}\u{0441}\u{0441}\u{043a}\u{0438}\u{0439}",
+            GameLanguage::Polish => "Polski",
+            GameLanguage::Turkish => "T\u{00fc}rk\u{00e7}e",
+            GameLanguage::Arabic => "\u{0627}\u{0644}\u{0639}\u{0631}\u{0628}\u{064a}\u{0629}",
+            GameLanguage::Japanese => "\u{65e5}\u{672c}\u{8a9e}",
+            GameLanguage::Korean => "\u{d55c}\u{ad6d}\u{c5b4}",
+            GameLanguage::ChineseSimplified => "\u{7b80}\u{4f53}\u{4e2d}\u{6587}",
+            GameLanguage::ChineseTraditional => "\u{7e41}\u{9ad4}\u{4e2d}\u{6587}",
+            GameLanguage::Thai => "\u{0e44}\u{0e17}\u{0e22}",
+            GameLanguage::Vietnamese => "Ti\u{1ebf}ng Vi\u{1ec7}t",
+            GameLanguage::Indonesian => "Bahasa Indonesia",
+            GameLanguage::Czech => "\u{010c}e\u{0161}tina",
+            GameLanguage::Greek => {
+                "\u{0395}\u{03bb}\u{03bb}\u{03b7}\u{03bd}\u{03b9}\u{03ba}\u{03ac}"
+            }
+            GameLanguage::Hungarian => "Magyar",
+            GameLanguage::Romanian => "Rom\u{00e2}n\u{0103}",
+            GameLanguage::Ukrainian => {
+                "\u{0423}\u{043a}\u{0440}\u{0430}\u{0457}\u{043d}\u{0441}\u{044c}\u{043a}\u{0430}"
+            }
+            GameLanguage::Dutch => "Nederlands",
+            GameLanguage::Swedish => "Svenska",
+            GameLanguage::Danish => "Dansk",
+            GameLanguage::Finnish => "Suomi",
+            GameLanguage::Norwegian => "Norsk",
+        }
+    }
+
+    /// Get all available languages
+    pub fn all() -> &'static [GameLanguage] {
+        &[
+            GameLanguage::EnglishUS,
+            GameLanguage::EnglishGB,
+            GameLanguage::German,
+            GameLanguage::French,
+            GameLanguage::Spanish,
+            GameLanguage::SpanishMX,
+            GameLanguage::Italian,
+            GameLanguage::Portuguese,
+            GameLanguage::PortugueseBR,
+            GameLanguage::Russian,
+            GameLanguage::Polish,
+            GameLanguage::Turkish,
+            GameLanguage::Arabic,
+            GameLanguage::Japanese,
+            GameLanguage::Korean,
+            GameLanguage::ChineseSimplified,
+            GameLanguage::ChineseTraditional,
+            GameLanguage::Thai,
+            GameLanguage::Vietnamese,
+            GameLanguage::Indonesian,
+            GameLanguage::Czech,
+            GameLanguage::Greek,
+            GameLanguage::Hungarian,
+            GameLanguage::Romanian,
+            GameLanguage::Ukrainian,
+            GameLanguage::Dutch,
+            GameLanguage::Swedish,
+            GameLanguage::Danish,
+            GameLanguage::Finnish,
+            GameLanguage::Norwegian,
+        ]
+    }
 }

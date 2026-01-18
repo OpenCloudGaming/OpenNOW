@@ -2,15 +2,15 @@
 //!
 //! WebSocket-based signaling for WebRTC connection setup.
 
+use anyhow::{Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use futures_util::{SinkExt, StreamExt};
+use log::{debug, error, info, warn};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::Message;
-use futures_util::{StreamExt, SinkExt};
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use anyhow::{Result, Context};
-use log::{info, debug, warn, error};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 /// Generate WebSocket key for handshake
 fn generate_ws_key() -> String {
@@ -126,7 +126,8 @@ impl GfnSignaling {
         let addr = format!("{}:{}", host, port);
 
         info!("Connecting TCP to: {}", addr);
-        let tcp_stream = tokio::net::TcpStream::connect(&addr).await
+        let tcp_stream = tokio::net::TcpStream::connect(&addr)
+            .await
             .context("TCP connection failed")?;
 
         info!("TCP connected, starting TLS handshake...");
@@ -148,7 +149,10 @@ impl GfnSignaling {
             .header("Sec-WebSocket-Key", &ws_key)
             .header("Sec-WebSocket-Protocol", &subprotocol)
             .header("Origin", "https://play.geforcenow.com")
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0",
+            )
             .body(())
             .context("Failed to build request")?;
 
@@ -159,16 +163,13 @@ impl GfnSignaling {
             ..Default::default()
         };
 
-        let (ws_stream, response) = tokio_tungstenite::client_async_with_config(
-            request,
-            tls_stream,
-            Some(ws_config),
-        )
-        .await
-        .map_err(|e| {
-            error!("WebSocket handshake error: {:?}", e);
-            anyhow::anyhow!("WebSocket handshake failed: {}", e)
-        })?;
+        let (ws_stream, response) =
+            tokio_tungstenite::client_async_with_config(request, tls_stream, Some(ws_config))
+                .await
+                .map_err(|e| {
+                    error!("WebSocket handshake error: {:?}", e);
+                    anyhow::anyhow!("WebSocket handshake failed: {}", e)
+                })?;
 
         info!("Connected! Response: {:?}", response.status());
 
@@ -230,20 +231,30 @@ impl GfnSignaling {
                                 if let Ok(inner) = serde_json::from_str::<Value>(&peer_msg.msg) {
                                     // SDP Offer
                                     if inner.get("type").and_then(|t| t.as_str()) == Some("offer") {
-                                        if let Some(sdp) = inner.get("sdp").and_then(|s| s.as_str()) {
+                                        if let Some(sdp) = inner.get("sdp").and_then(|s| s.as_str())
+                                        {
                                             info!("Received SDP offer, length: {}", sdp.len());
                                             // Log full SDP for debugging (color space info, codec params)
                                             for line in sdp.lines() {
                                                 debug!("SDP: {}", line);
                                             }
-                                            let _ = event_tx_clone.send(SignalingEvent::SdpOffer(sdp.to_string())).await;
+                                            let _ = event_tx_clone
+                                                .send(SignalingEvent::SdpOffer(sdp.to_string()))
+                                                .await;
                                         }
                                     }
                                     // ICE Candidate
                                     else if inner.get("candidate").is_some() {
-                                        if let Ok(candidate) = serde_json::from_value::<IceCandidate>(inner) {
-                                            info!("Received ICE candidate: {}", candidate.candidate);
-                                            let _ = event_tx_clone.send(SignalingEvent::IceCandidate(candidate)).await;
+                                        if let Ok(candidate) =
+                                            serde_json::from_value::<IceCandidate>(inner)
+                                        {
+                                            info!(
+                                                "Received ICE candidate: {}",
+                                                candidate.candidate
+                                            );
+                                            let _ = event_tx_clone
+                                                .send(SignalingEvent::IceCandidate(candidate))
+                                                .await;
                                         }
                                     }
                                 }
@@ -252,14 +263,18 @@ impl GfnSignaling {
                     }
                     Ok(Message::Close(frame)) => {
                         warn!("WebSocket closed: {:?}", frame);
-                        let _ = event_tx_clone.send(SignalingEvent::Disconnected(
-                            frame.map(|f| f.reason.to_string()).unwrap_or_default()
-                        )).await;
+                        let _ = event_tx_clone
+                            .send(SignalingEvent::Disconnected(
+                                frame.map(|f| f.reason.to_string()).unwrap_or_default(),
+                            ))
+                            .await;
                         break;
                     }
                     Err(e) => {
                         error!("WebSocket error: {}", e);
-                        let _ = event_tx_clone.send(SignalingEvent::Error(e.to_string())).await;
+                        let _ = event_tx_clone
+                            .send(SignalingEvent::Error(e.to_string()))
+                            .await;
                         break;
                     }
                     _ => {}
@@ -319,7 +334,12 @@ impl GfnSignaling {
     }
 
     /// Send ICE candidate to server
-    pub async fn send_ice_candidate(&self, candidate: &str, sdp_mid: Option<&str>, sdp_mline_index: Option<u32>) -> Result<()> {
+    pub async fn send_ice_candidate(
+        &self,
+        candidate: &str,
+        sdp_mid: Option<&str>,
+        sdp_mline_index: Option<u32>,
+    ) -> Result<()> {
         let msg_tx = self.message_tx.as_ref().context("Not connected")?;
 
         let ice = json!({

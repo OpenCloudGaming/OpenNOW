@@ -5,7 +5,7 @@
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::config::{ColorQuality, VideoCodec, VideoDecoderBackend};
+use super::config::{ColorQuality, GameLanguage, VideoCodec, VideoDecoderBackend};
 use crate::media::VideoFrame;
 
 /// Shared frame holder for zero-latency frame delivery
@@ -296,6 +296,7 @@ pub enum SettingChange {
     Hdr(bool),
     ClipboardPasteEnabled(bool),
     Borderless(bool),
+    GameLanguage(GameLanguage),
 }
 
 /// Application state enum
