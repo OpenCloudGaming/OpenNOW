@@ -113,9 +113,10 @@ OpenNOW is a custom GeForce NOW client rewritten entirely in **Native Rust** for
 | WebRTC Streaming | ✅ | Stats Overlay | ✅ |
 | Hardware Decoding | ✅ | Anti-AFK | ✅ |
 | Zero-Copy Rendering | ✅ | Alliance Partners | ✅ |
-| Mouse/Keyboard | ✅ | Clipboard Paste | 🚧 |
+| Mouse/Keyboard | ✅ | Clipboard Paste | ✅ |
+| AV1 Codec | ✅ | H.264/H.265 | ✅ |
 
-**Coming Soon:** Microphone, Instant Replay, Screenshots, AV1, Plugin System, Theming
+**Coming Soon:** Microphone, Instant Replay, Screenshots, Plugin System, Theming
 
 ---
 
