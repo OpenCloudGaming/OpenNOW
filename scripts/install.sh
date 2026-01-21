@@ -197,10 +197,18 @@ install_gstreamer() {
 get_latest_release() {
     log_info "Fetching latest release from GitHub..."
     
+    # First try /releases/latest (stable releases only)
     LATEST_RELEASE=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
     
+    # If no stable release, get the most recent release (including prereleases)
     if [[ -z "$LATEST_RELEASE" ]]; then
-        log_error "Failed to fetch latest release"
+        log_info "No stable release found, checking prereleases..."
+        LATEST_RELEASE=$(curl -s "https://api.github.com/repos/$REPO/releases" | grep '"tag_name"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+    fi
+    
+    if [[ -z "$LATEST_RELEASE" ]]; then
+        log_error "Failed to fetch latest release. No releases found."
+        log_error "Please check: https://github.com/$REPO/releases"
         exit 1
     fi
     
