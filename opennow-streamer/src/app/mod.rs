@@ -12,7 +12,7 @@ pub use session::{ActiveSessionInfo, SessionInfo, SessionState};
 pub use types::{
     parse_resolution, AppState, GameInfo, GameSection, GameVariant, GamesTab, QueueRegionFilter,
     QueueSortMode, ServerInfo, ServerStatus, SettingChange, SharedFrame, SubscriptionInfo,
-    UiAction,
+    UiAction, UserEvent,
 };
 
 use log::{error, info, warn};
@@ -20,6 +20,7 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
+use winit::event_loop::EventLoopProxy;
 
 use crate::api::{self, DynamicServerRegion, GfnApiClient};
 use crate::auth::{self, AuthTokens, LoginProvider, PkceChallenge, UserInfo};
@@ -66,6 +67,10 @@ pub struct App {
 
     /// Shared frame holder for zero-latency frame delivery
     pub shared_frame: Option<Arc<SharedFrame>>,
+
+    /// Event loop proxy for waking the renderer when frames are ready
+    /// This enables push-based frame delivery instead of polling
+    event_loop_proxy: Option<EventLoopProxy<UserEvent>>,
 
     /// Stream statistics
     pub stats: StreamStats,
@@ -216,6 +221,12 @@ pub struct App {
 
     /// Ads total duration in seconds
     pub ads_total_secs: u32,
+
+    /// Whether we've logged the first video frame (to avoid spam)
+    first_frame_logged: bool,
+
+    /// Current decoder backend being used (for stats display)
+    pub active_decoder_backend: String,
 }
 
 /// Poll interval for session status (2 seconds)
@@ -316,6 +327,7 @@ impl App {
             cursor_captured: false,
             current_frame: None,
             shared_frame: None,
+            event_loop_proxy: None,
             stats: StreamStats::default(),
             show_stats: true,
             status_message: "Welcome to OpenNOW".to_string(),
@@ -368,7 +380,16 @@ impl App {
             ads_required: false,
             ads_remaining_secs: 0,
             ads_total_secs: 0,
+            first_frame_logged: false,
+            active_decoder_backend: String::new(),
         }
+    }
+
+    /// Set the event loop proxy for push-based frame delivery
+    /// This should be called after the event loop is created
+    pub fn set_event_loop_proxy(&mut self, proxy: EventLoopProxy<UserEvent>) {
+        self.event_loop_proxy = Some(proxy);
+        info!("Event loop proxy set - push-based frame delivery enabled");
     }
 
     /// Toggle anti-AFK mode
@@ -836,13 +857,14 @@ impl App {
         // Check for new video frames from shared frame holder
         if let Some(ref shared) = self.shared_frame {
             if let Some(frame) = shared.read() {
-                // Only log the first frame (when current_frame is None)
-                if self.current_frame.is_none() {
+                // Only log the first frame once (use flag since current_frame gets .take()'n each render)
+                if !self.first_frame_logged {
                     log::info!(
                         "First video frame received: {}x{}",
                         frame.width,
                         frame.height
                     );
+                    self.first_frame_logged = true;
                 }
 
                 // Update HDR status in stats from frame's transfer function
@@ -2002,6 +2024,10 @@ impl App {
         self.state = AppState::Streaming;
         self.cursor_captured = true;
         self.is_loading = false;
+        
+        // Set active decoder backend for stats display
+        self.active_decoder_backend = self.settings.decoder_backend.as_str().to_string();
+        self.first_frame_logged = false; // Reset for new stream
 
         // Reset session ready poll count for this new session
         self.session_ready_poll_count = 0;
@@ -2027,7 +2053,13 @@ impl App {
 
         // Create shared frame holder for zero-latency frame delivery
         // No buffering - decoder writes latest frame, renderer reads it immediately
-        let shared_frame = Arc::new(SharedFrame::new());
+        // Use event loop proxy for push-based delivery (wakes renderer immediately on new frame)
+        let shared_frame = if let Some(ref proxy) = self.event_loop_proxy {
+            Arc::new(SharedFrame::with_proxy(proxy.clone()))
+        } else {
+            warn!("No event loop proxy set - falling back to polling mode");
+            Arc::new(SharedFrame::new())
+        };
         self.shared_frame = Some(shared_frame.clone());
 
         // Stats channel (small buffer is fine for stats)

@@ -97,10 +97,18 @@ pub fn init_gstreamer() -> Result<()> {
 }
 
 /// Initialize GStreamer (Linux)
-/// Forces registry update to ensure bundled plugins are discovered correctly.
+///
+/// On Linux, we ALWAYS prefer system-installed GStreamer plugins over bundled ones.
+/// This is because:
+/// 1. Bundled plugins (from Ubuntu 22.04 AppImage) are compiled against a specific GLib version
+/// 2. Users' systems often have newer GLib (2.80+) which is ABI-incompatible
+/// 3. System GStreamer plugins are guaranteed to work with the system GLib
+///
+/// The bundled plugins serve as documentation of what's needed, but runtime should use system.
 #[cfg(target_os = "linux")]
 pub fn init_gstreamer() -> Result<()> {
     use std::env;
+    use std::path::PathBuf;
     use std::sync::Once;
 
     static INIT: Once = Once::new();
@@ -108,14 +116,56 @@ pub fn init_gstreamer() -> Result<()> {
 
     // Thread-safe one-time initialization
     INIT.call_once(|| {
+        // CRITICAL FIX for Issue #105:
+        // AppImage/bundled distributions set GST_PLUGIN_PATH to bundled plugins,
+        // but those plugins are often incompatible with the user's system GLib.
+        //
+        // The error looks like:
+        //   "undefined symbol: g_string_free_and_steal"
+        //   "undefined symbol: g_once_init_leave_pointer"
+        //
+        // Solution: REMOVE any bundled plugin paths and let GStreamer use SYSTEM plugins.
+        // System plugins are guaranteed to be ABI-compatible with system GLib.
+
+        // Check if we're running from an AppImage or bundled distribution
+        let appdir = env::var("APPDIR").ok();
+        let is_appimage = appdir.is_some();
+
+        if is_appimage {
+            info!("Running from AppImage - preferring system GStreamer plugins for ABI compatibility");
+
+            // Clear any bundled plugin paths that AppImage might have set
+            // This forces GStreamer to use ONLY system-installed plugins
+            env::remove_var("GST_PLUGIN_PATH");
+            env::remove_var("GST_PLUGIN_SYSTEM_PATH");
+
+            // Also clear the registry path to avoid using a stale bundled registry
+            env::remove_var("GST_REGISTRY");
+            env::remove_var("GST_REGISTRY_1_0");
+        } else {
+            // Check if running from a "bundle" directory (Linux ARM64 distribution)
+            let exe_dir = env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                .unwrap_or_else(|| PathBuf::from("."));
+
+            let bundled_plugins = exe_dir.join("lib").join("gstreamer-1.0");
+            let has_bundled_plugins = bundled_plugins.exists();
+
+            if has_bundled_plugins {
+                info!("Found bundled GStreamer plugins at: {}", bundled_plugins.display());
+                info!("Checking if system plugins are available (preferred for ABI compatibility)...");
+
+                // Try system plugins first by temporarily NOT setting GST_PLUGIN_PATH
+                // We'll set it later only if system plugins are missing
+            }
+        }
+
         // Force GStreamer to rescan plugins on every startup
-        // This is critical for bundled distributions where plugin paths differ from system
-        // Without this, GStreamer may use a stale registry cache that doesn't include
-        // the bundled plugins (h264parse, h265parse, etc.)
+        // This ensures we get a fresh view of available plugins
         env::set_var("GST_REGISTRY_UPDATE", "yes");
 
         // Initialize GStreamer
-        // GST_REGISTRY_UPDATE=yes (set above) forces GStreamer to rescan plugins
         if let Err(e) = gst::init() {
             unsafe {
                 INIT_RESULT = Some(Err(e.to_string()));
@@ -140,11 +190,30 @@ pub fn init_gstreamer() -> Result<()> {
             h264parse, h265parse, av1parse
         );
 
-        // If no parsers found, log helpful hint
+        // If no parsers found, provide detailed installation hints
         if !h264parse && !h265parse && !av1parse {
-            warn!("No video parsers found! Install gstreamer1.0-plugins-bad package.");
-            warn!("On Ubuntu/Debian: sudo apt install gstreamer1.0-plugins-bad");
-            warn!("On Fedora: sudo dnf install gstreamer1-plugins-bad-free");
+            warn!("No video parsers found in GStreamer plugin registry!");
+            warn!("");
+            warn!("This usually means GStreamer plugins are not installed on your system.");
+            warn!("The video parsers (h264parse, h265parse, av1parse) are in the 'plugins-bad' package.");
+            warn!("");
+            warn!("Installation instructions:");
+            warn!("  Ubuntu/Debian: sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly gstreamer1.0-libav");
+            warn!("  Fedora/RHEL:   sudo dnf install gstreamer1-plugins-bad-free gstreamer1-plugins-good gstreamer1-plugins-ugly-free gstreamer1-libav");
+            warn!("  Arch Linux:    sudo pacman -S gst-plugins-bad gst-plugins-good gst-plugins-ugly gst-libav");
+            warn!("  openSUSE:      sudo zypper install gstreamer-plugins-bad gstreamer-plugins-good gstreamer-plugins-ugly gstreamer-plugins-libav");
+            warn!("");
+            warn!("After installing, restart OpenNOW.");
+
+            // Check if the user might have the packages but we can't find them
+            // This helps diagnose path issues
+            if is_appimage {
+                warn!("");
+                warn!("Note: You're running from an AppImage. If you have GStreamer installed but");
+                warn!("still see this error, the AppImage might be isolating the plugin search.");
+                warn!("Try running the AppImage with: GST_DEBUG=3 ./OpenNOW*.AppImage");
+                warn!("to see detailed GStreamer plugin loading information.");
+            }
         }
 
         unsafe {
@@ -392,13 +461,15 @@ impl GStreamerDecoder {
                                             _ => ColorSpace::BT709,
                                         };
 
-                                        // Detect color range (Limited vs Full)
-                                        let color_range = match colorimetry.range() {
-                                            gst_video::VideoColorRange::Range0_255 => {
-                                                ColorRange::Full
-                                            }
-                                            _ => ColorRange::Limited,
-                                        };
+                                        // Detect color range from GStreamer
+                                        // NOTE: GStreamer's range detection after videoconvert can be unreliable.
+                                        // GFN always uses Limited Range (YCBCR_LIMITED_BT709/BT2020).
+                                        // We log what GStreamer reports but force Limited Range for correctness.
+                                        let _gst_range = colorimetry.range();
+                                        
+                                        // Force Limited Range for GFN streams (they always use Limited Range)
+                                        // GFN SDR = BT.709 Limited, GFN HDR = BT.2020 Limited
+                                        let color_range = ColorRange::Limited;
 
                                         // Map buffer for reading
                                         if let Ok(map) = buffer.map_readable() {

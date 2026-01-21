@@ -37,16 +37,20 @@ cpal = "0.15"
 # Gamepad/Controller support (cross-platform)
 gilrs = "0.11"
 
-# Window & Graphics
-winit = "0.30"
+# Window & Graphics - using iced's winit fork for compatibility
+winit = { git = "https://github.com/iced-rs/winit.git", rev = "05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed", default-features = false, features = ["rwh_06", "x11", "wayland"] }
 wgpu = { version = "28", features = ["wgpu-core", "metal"] }
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 
-# GUI overlay
-egui = "0.33"
-egui-wgpu = "0.33"
-egui-winit = "0.33"
+# GUI - iced (GPU-accelerated, retained mode)
+iced_winit = { git = "https://github.com/iced-rs/iced.git", branch = "master", default-features = false }
+iced_wgpu = { git = "https://github.com/iced-rs/iced.git", branch = "master", default-features = true }
+iced_widget = { git = "https://github.com/iced-rs/iced.git", branch = "master", features = ["wgpu", "image", "lazy"] }
+iced_runtime = { git = "https://github.com/iced-rs/iced.git", branch = "master" }
+iced_core = { git = "https://github.com/iced-rs/iced.git", branch = "master" }
+iced_futures = { git = "https://github.com/iced-rs/iced.git", branch = "master" }
+futures = { version = "0.3", default-features = false, features = ["std", "async-await", "thread-pool"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -187,14 +191,12 @@ strip = true
 [profile.dev]
 opt-level = 1
 
-# Force all dependencies to use wgpu 28 (needed for External Texture support)
-# Using forked egui with wgpu 28 support
+# Force all dependencies to use wgpu 28 and iced's winit fork
 [patch.crates-io]
 wgpu = { git = "https://github.com/gfx-rs/wgpu", tag = "v28.0.0" }
 wgpu-core = { git = "https://github.com/gfx-rs/wgpu", tag = "v28.0.0" }
 wgpu-types = { git = "https://github.com/gfx-rs/wgpu", tag = "v28.0.0" }
 wgpu-hal = { git = "https://github.com/gfx-rs/wgpu", tag = "v28.0.0" }
 naga = { git = "https://github.com/gfx-rs/wgpu", tag = "v28.0.0" }
-egui-wgpu = { git = "https://github.com/zortos293/egui", branch = "wgpu-28" }
-egui-winit = { git = "https://github.com/zortos293/egui", branch = "wgpu-28" }
-egui = { git = "https://github.com/zortos293/egui", branch = "wgpu-28" }
+# Use iced's winit fork everywhere for compatibility
+winit = { git = "https://github.com/iced-rs/winit.git", rev = "05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed" }

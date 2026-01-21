@@ -196,3 +196,17 @@ pub fn request_image(url: &str, runtime: &tokio::runtime::Handle) {
 pub fn update_cache() {
     IMAGE_CACHE.update();
 }
+
+/// Check if there are any images that just finished loading
+/// Returns true if new images were loaded since last call (triggers UI repaint)
+pub fn has_newly_loaded_images() -> bool {
+    let loaded = LOADED_IMAGES.read();
+    !loaded.is_empty()
+}
+
+/// Clear the loaded images flag after processing
+/// Call this after updating the UI to prevent continuous repaints
+pub fn clear_loaded_flag() {
+    let mut loaded = LOADED_IMAGES.write();
+    loaded.clear();
+}

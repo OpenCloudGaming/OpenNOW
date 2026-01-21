@@ -913,12 +913,18 @@ jobs:
           echo "Bundled $LIB_COUNT libraries and $PLUGIN_COUNT plugins"
 
           # Create wrapper script that sets library paths
-          # Note: We prepend bundled plugins to GST_PLUGIN_PATH but still allow system plugins
-          # as fallback. GST_REGISTRY_UPDATE=yes forces GStreamer to rescan plugins on startup.
+          # NOTE: We intentionally do NOT set GST_PLUGIN_PATH to bundled plugins.
+          # The bundled GStreamer plugins may be ABI-incompatible with the user's system GLib.
+          # Instead, we rely on system-installed GStreamer plugins which are guaranteed compatible.
+          # The Rust code (init_gstreamer) handles this by clearing any bundled paths.
+          #
+          # Users must install GStreamer plugins via their package manager:
+          #   Ubuntu/Debian: sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-plugins-good gstreamer1.0-libav
+          #   Fedora: sudo dnf install gstreamer1-plugins-bad-free gstreamer1-plugins-good gstreamer1-libav
           echo '#!/bin/bash' > "$BUNDLE_DIR/run.sh"
           echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' >> "$BUNDLE_DIR/run.sh"
+          echo '# Only set LD_LIBRARY_PATH for core libs, NOT GStreamer plugins (use system plugins)' >> "$BUNDLE_DIR/run.sh"
           echo 'export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"' >> "$BUNDLE_DIR/run.sh"
-          echo 'export GST_PLUGIN_PATH="$SCRIPT_DIR/lib/gstreamer-1.0${GST_PLUGIN_PATH:+:$GST_PLUGIN_PATH}"' >> "$BUNDLE_DIR/run.sh"
           echo 'export GST_REGISTRY_UPDATE=yes' >> "$BUNDLE_DIR/run.sh"
           echo 'exec "$SCRIPT_DIR/opennow-streamer" "$@"' >> "$BUNDLE_DIR/run.sh"
           chmod +x "$BUNDLE_DIR/run.sh"

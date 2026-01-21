@@ -73,7 +73,20 @@ AppDir:
 
   runtime:
     env:
-      GST_PLUGIN_PATH: "${APPDIR}/usr/lib/x86_64-linux-gnu/gstreamer-1.0"
+      # NOTE: We intentionally do NOT set GST_PLUGIN_PATH here.
+      # The bundled GStreamer plugins from Ubuntu 22.04 are often ABI-incompatible
+      # with users' newer GLib versions (causing "undefined symbol" errors).
+      #
+      # Instead, the Rust code (init_gstreamer in gstreamer_decoder.rs) will:
+      # 1. Detect we're in an AppImage (via APPDIR env var)
+      # 2. Clear any GST_PLUGIN_PATH to force use of SYSTEM plugins
+      # 3. System plugins are guaranteed ABI-compatible with system GLib
+      #
+      # Users must install GStreamer plugins via their package manager:
+      #   Ubuntu/Debian: sudo apt install gstreamer1.0-plugins-bad
+      #   Fedora: sudo dnf install gstreamer1-plugins-bad-free
+      #
+      # The bundled plugins serve as documentation of what's needed, not runtime.
       GST_REGISTRY_UPDATE: "yes"
 
   test:
