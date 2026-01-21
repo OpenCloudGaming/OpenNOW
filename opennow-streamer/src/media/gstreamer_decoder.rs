@@ -417,7 +417,7 @@ impl GStreamerDecoder {
         appsink.set_sync(false);
 
         // Set up frame storage
-        let last_frame = Arc::new(Mutex::new(None));
+        let last_frame: Arc<Mutex<Option<DecodedFrame>>> = Arc::new(Mutex::new(None));
         let last_frame_clone = last_frame.clone();
 
         // Set up new-sample callback
@@ -482,9 +482,24 @@ impl GStreamerDecoder {
                                             let uv_size = (uv_stride * height / 2) as usize;
 
                                             if data.len() >= y_size + uv_size {
-                                                let y_plane = data[..y_size].to_vec();
-                                                let uv_plane =
-                                                    data[y_size..y_size + uv_size].to_vec();
+                                                // Reuse buffers from previous frame if possible to reduce allocations
+                                                // This avoids ~5MB of allocations per frame at 1440p @ 120fps = 600MB/s saved
+                                                let mut guard = last_frame_clone.lock().unwrap();
+                                                
+                                                let (mut y_plane, mut uv_plane) = if let Some(old_frame) = guard.take() {
+                                                    // Reuse existing buffers
+                                                    (old_frame.y_plane, old_frame.uv_plane)
+                                                } else {
+                                                    // First frame - allocate with capacity
+                                                    (Vec::with_capacity(y_size), Vec::with_capacity(uv_size))
+                                                };
+                                                
+                                                // Clear and copy - reuses existing allocation if capacity is sufficient
+                                                y_plane.clear();
+                                                y_plane.extend_from_slice(&data[..y_size]);
+                                                
+                                                uv_plane.clear();
+                                                uv_plane.extend_from_slice(&data[y_size..y_size + uv_size]);
 
                                                 let frame = DecodedFrame {
                                                     width,
@@ -499,7 +514,7 @@ impl GStreamerDecoder {
                                                     color_range,
                                                 };
 
-                                                *last_frame_clone.lock().unwrap() = Some(frame);
+                                                *guard = Some(frame);
                                             }
                                         }
                                     }
