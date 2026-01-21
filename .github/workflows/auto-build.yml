@@ -26,7 +26,7 @@ jobs:
       !contains(github.event.head_commit.message, '[skip ci]') &&
       !contains(github.event.head_commit.message, '[no build]') &&
       !contains(github.event.head_commit.message, '[skip build]')
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       version: ${{ steps.get_version.outputs.version }}
       version_number: ${{ steps.get_version.outputs.version_number }}
@@ -165,7 +165,7 @@ jobs:
           - platform: ubuntu-22.04
             target: linux-arm64
             arch: aarch64
-            rust_target: aarch64-unknown-linux-gnu
+            rust_target: blacksmith-4vcpu-ubuntu-2404-arm
           - platform: macos-latest
             target: macos
             arch: arm64
