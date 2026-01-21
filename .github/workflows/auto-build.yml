@@ -26,7 +26,7 @@ jobs:
       !contains(github.event.head_commit.message, '[skip ci]') &&
       !contains(github.event.head_commit.message, '[no build]') &&
       !contains(github.event.head_commit.message, '[skip build]')
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     outputs:
       version: ${{ steps.get_version.outputs.version }}
       version_number: ${{ steps.get_version.outputs.version_number }}
@@ -158,11 +158,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: ubuntu-22.04
+          - platform: blacksmith-4vcpu-ubuntu-2204
             target: linux
             arch: x86_64
             rust_target: x86_64-unknown-linux-gnu
-          - platform: ubuntu-22.04
+          - platform: blacksmith-4vcpu-ubuntu-2204
             target: linux-arm64
             arch: aarch64
             rust_target: aarch64-unknown-linux-gnu
@@ -177,11 +177,11 @@ jobs:
           #   arch: x86_64
           #   rust_target: x86_64-apple-darwin
           #   features: legacy-macos
-          - platform: windows-latest
+          - platform: blacksmith-4vcpu-windows-2025
             target: windows
             arch: x86_64
             rust_target: x86_64-pc-windows-msvc
-          - platform: windows-latest
+          - platform: blacksmith-4vcpu-windows-2025
             target: windows-arm64
             arch: aarch64
             rust_target: aarch64-pc-windows-msvc
