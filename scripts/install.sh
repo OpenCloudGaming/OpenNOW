@@ -137,51 +137,76 @@ install_gstreamer() {
                 fi
             fi
             
+            # Full GStreamer installation as per official docs
+            # https://gstreamer.freedesktop.org/documentation/installing/on-linux.html
             sudo apt-get update
             sudo apt-get install -y \
+                libgstreamer1.0-dev \
+                libgstreamer-plugins-base1.0-dev \
+                libgstreamer-plugins-bad1.0-dev \
                 gstreamer1.0-plugins-base \
                 gstreamer1.0-plugins-good \
                 gstreamer1.0-plugins-bad \
                 gstreamer1.0-plugins-ugly \
                 gstreamer1.0-libav \
-                gstreamer1.0-vaapi \
-                gstreamer1.0-tools
+                gstreamer1.0-tools \
+                gstreamer1.0-x \
+                gstreamer1.0-alsa \
+                gstreamer1.0-gl \
+                gstreamer1.0-gtk3 \
+                gstreamer1.0-qt5 \
+                gstreamer1.0-pulseaudio \
+                gstreamer1.0-vaapi
             ;;
         dnf)
             log_info "Installing GStreamer via dnf..."
+            # Full Fedora installation as per official docs
             sudo dnf install -y \
-                gstreamer1-plugins-base \
+                gstreamer1-devel \
+                gstreamer1-plugins-base-tools \
+                gstreamer1-plugins-base-devel \
                 gstreamer1-plugins-good \
+                gstreamer1-plugins-good-extras \
+                gstreamer1-plugins-ugly \
                 gstreamer1-plugins-bad-free \
-                gstreamer1-plugins-ugly-free \
-                gstreamer1-libav
+                gstreamer1-plugins-bad-free-devel \
+                gstreamer1-plugins-bad-free-extras
             ;;
         pacman)
             log_info "Installing GStreamer via pacman..."
             sudo pacman -S --noconfirm \
                 gstreamer \
                 gst-plugins-base \
+                gst-plugins-base-libs \
                 gst-plugins-good \
                 gst-plugins-bad \
+                gst-plugins-bad-libs \
                 gst-plugins-ugly \
                 gst-libav
             ;;
         zypper)
             log_info "Installing GStreamer via zypper..."
             sudo zypper install -y \
+                gstreamer-devel \
                 gstreamer-plugins-base \
+                gstreamer-plugins-base-devel \
                 gstreamer-plugins-good \
                 gstreamer-plugins-bad \
                 gstreamer-plugins-ugly \
                 gstreamer-plugins-libav
             ;;
         *)
-            log_warn "Please install GStreamer manually for your distribution:"
-            echo "  - gstreamer1.0-plugins-base"
-            echo "  - gstreamer1.0-plugins-good"
-            echo "  - gstreamer1.0-plugins-bad"
-            echo "  - gstreamer1.0-plugins-ugly"
-            echo "  - gstreamer1.0-libav"
+            log_warn "Please install GStreamer manually for your distribution."
+            log_warn "See: https://gstreamer.freedesktop.org/documentation/installing/on-linux.html"
+            echo ""
+            echo "Ubuntu/Debian:"
+            echo "  sudo apt-get install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \\"
+            echo "    libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good \\"
+            echo "    gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools"
+            echo ""
+            echo "Fedora:"
+            echo "  sudo dnf install gstreamer1-devel gstreamer1-plugins-base-devel \\"
+            echo "    gstreamer1-plugins-good gstreamer1-plugins-bad-free gstreamer1-plugins-ugly"
             ;;
     esac
     
