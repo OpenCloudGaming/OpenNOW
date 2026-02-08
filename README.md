@@ -154,6 +154,8 @@ cargo build --release
 
 See the [full build guide](https://opennow.zortos.me/guides/getting-started/) for platform-specific requirements.
 
+For the new rewrite bootstrap, see [`opennow-rewrite/README.md`](opennow-rewrite/README.md).
+
 ---
 
 ## Documentation
@@ -164,6 +166,7 @@ Full documentation available at **[opennow.zortos.me](https://opennow.zortos.me)
 - [Architecture Overview](https://opennow.zortos.me/architecture/overview/)
 - [Configuration Reference](https://opennow.zortos.me/reference/configuration/)
 - [WebRTC Protocol](https://opennow.zortos.me/reference/webrtc/)
+- [Cross-Platform Rebuild Strategy](docs/cross-platform-roadmap.md)
 
 ---
 
