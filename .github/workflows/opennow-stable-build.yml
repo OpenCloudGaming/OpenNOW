@@ -1,0 +1,111 @@
+name: opennow-stable-build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "opennow-stable/**"
+      - ".github/workflows/opennow-stable-build.yml"
+  pull_request:
+    paths:
+      - "opennow-stable/**"
+      - ".github/workflows/opennow-stable-build.yml"
+
+jobs:
+  desktop:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows
+            os: windows-latest
+            builder_args: --win nsis portable
+          - label: macos
+            os: macos-latest
+            builder_args: --mac dmg zip --x64 --arm64
+          - label: linux-x64
+            os: ubuntu-latest
+            builder_args: --linux AppImage deb --x64
+
+    defaults:
+      run:
+        working-directory: opennow-stable
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: opennow-stable/package-lock.json
+
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app bundles
+        run: npm run build
+
+      - name: Package installers
+        run: npx electron-builder --publish never ${{ matrix.builder_args }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-stable-${{ matrix.label }}
+          path: opennow-stable/dist-release/*
+          if-no-files-found: warn
+
+  linux-arm64:
+    name: linux-arm64
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: opennow-stable
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: opennow-stable/package-lock.json
+
+      - name: Install Linux packaging tools
+        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app bundles
+        run: npm run build
+
+      - name: Package ARM64 installers
+        run: npx electron-builder --publish never --linux AppImage deb --arm64
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-stable-linux-arm64
+          path: opennow-stable/dist-release/*
+          if-no-files-found: warn
