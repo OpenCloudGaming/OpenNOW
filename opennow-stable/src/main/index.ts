@@ -1,0 +1,362 @@
+import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+
+// Keyboard shortcuts reference (matching Rust implementation):
+// F11 - Toggle fullscreen (handled in main process)
+// F3  - Toggle stats overlay (handled in renderer)
+// Ctrl+Shift+Q - Stop streaming (handled in renderer)
+// F8  - Toggle mouse/pointer lock (handled in main process via IPC)
+
+import { IPC_CHANNELS } from "@shared/ipc";
+import type {
+  MainToRendererSignalingEvent,
+  AuthLoginRequest,
+  GamesFetchRequest,
+  ResolveLaunchIdRequest,
+  RegionsFetchRequest,
+  SessionCreateRequest,
+  SessionPollRequest,
+  SessionStopRequest,
+  SessionClaimRequest,
+  SignalingConnectRequest,
+  SendAnswerRequest,
+  IceCandidatePayload,
+  Settings,
+  SubscriptionFetchRequest,
+  SessionConflictChoice,
+} from "@shared/gfn";
+
+import { getSettingsManager, type SettingsManager } from "./settings";
+
+import { createSession, pollSession, stopSession, getActiveSessions, claimSession } from "./gfn/cloudmatch";
+import { AuthService } from "./gfn/auth";
+import {
+  fetchLibraryGames,
+  fetchMainGames,
+  fetchPublicGames,
+  resolveLaunchAppId,
+} from "./gfn/games";
+import { fetchSubscription, fetchDynamicRegions } from "./gfn/subscription";
+import { GfnSignalingClient } from "./gfn/signaling";
+import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Enable H265/HEVC and AV1 WebRTC support in Chromium.
+// Electron 33 ships Chromium ~M130 where H265 WebRTC is behind flags.
+// These must be set before app.whenReady().
+app.commandLine.appendSwitch("enable-features",
+  "WebRtcAllowH265Receive,WebRtcAllowH265Send,PlatformHEVCEncoderSupport,PlatformHEVCDecoderSupport",
+);
+app.commandLine.appendSwitch("force-fieldtrials", "WebRTC-Video-H26xPacketBuffer/Enabled");
+
+let mainWindow: BrowserWindow | null = null;
+let signalingClient: GfnSignalingClient | null = null;
+let authService: AuthService;
+let settingsManager: SettingsManager;
+
+function emitToRenderer(event: MainToRendererSignalingEvent): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(IPC_CHANNELS.SIGNALING_EVENT, event);
+  }
+}
+
+async function createMainWindow(): Promise<void> {
+  const preloadMjsPath = join(__dirname, "../preload/index.mjs");
+  const preloadJsPath = join(__dirname, "../preload/index.js");
+  const preloadPath = existsSync(preloadMjsPath) ? preloadMjsPath : preloadJsPath;
+
+  const settings = settingsManager.getAll();
+
+  mainWindow = new BrowserWindow({
+    width: settings.windowWidth || 1400,
+    height: settings.windowHeight || 900,
+    minWidth: 1024,
+    minHeight: 680,
+    autoHideMenuBar: true,
+    backgroundColor: "#0f172a",
+    webPreferences: {
+      preload: preloadPath,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+
+  // Handle F11 fullscreen toggle — send to renderer so it uses W3C Fullscreen API
+  // (which enables navigator.keyboard.lock for Escape key capture)
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (input.key === "F11" && input.type === "keyDown") {
+      event.preventDefault();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("app:toggle-fullscreen");
+      }
+    }
+  });
+
+  if (process.env.ELECTRON_RENDERER_URL) {
+    await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
+  } else {
+    await mainWindow.loadFile(join(__dirname, "../../dist/index.html"));
+  }
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
+}
+
+async function resolveJwt(token?: string): Promise<string> {
+  return authService.resolveJwtToken(token);
+}
+
+/**
+ * Show a dialog asking the user how to handle a session conflict
+ * Returns the user's choice: "resume", "new", or "cancel"
+ */
+async function showSessionConflictDialog(): Promise<SessionConflictChoice> {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return "cancel";
+  }
+
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: "question",
+    buttons: ["Resume", "Start New", "Cancel"],
+    defaultId: 0,
+    cancelId: 2,
+    title: "Active Session Detected",
+    message: "You have an active session running.",
+    detail: "Resume it or start a new one?",
+  });
+
+  switch (result.response) {
+    case 0:
+      return "resume";
+    case 1:
+      return "new";
+    default:
+      return "cancel";
+  }
+}
+
+/**
+ * Check if an error indicates a session conflict
+ */
+function isSessionConflictError(error: unknown): boolean {
+  if (isSessionError(error)) {
+    return error.isSessionConflict();
+  }
+  return false;
+}
+
+function registerIpcHandlers(): void {
+  ipcMain.handle(IPC_CHANNELS.AUTH_GET_SESSION, async () => {
+    return authService.ensureValidSession();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AUTH_GET_PROVIDERS, async () => {
+    return authService.getProviders();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AUTH_GET_REGIONS, async (_event, payload: RegionsFetchRequest) => {
+    return authService.getRegions(payload?.token);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AUTH_LOGIN, async (_event, payload: AuthLoginRequest) => {
+    return authService.login(payload);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AUTH_LOGOUT, async () => {
+    await authService.logout();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SUBSCRIPTION_FETCH, async (_event, payload: SubscriptionFetchRequest) => {
+    const token = await resolveJwt(payload?.token);
+    const streamingBaseUrl =
+      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+    const userId = payload.userId;
+
+    // Fetch dynamic regions to get the VPC ID (handles Alliance partners correctly)
+    const { vpcId } = await fetchDynamicRegions(token, streamingBaseUrl);
+
+    return fetchSubscription(token, userId, vpcId ?? undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GAMES_FETCH_MAIN, async (_event, payload: GamesFetchRequest) => {
+    const token = await resolveJwt(payload?.token);
+    const streamingBaseUrl =
+      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+    return fetchMainGames(token, streamingBaseUrl);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GAMES_FETCH_LIBRARY, async (_event, payload: GamesFetchRequest) => {
+    const token = await resolveJwt(payload?.token);
+    const streamingBaseUrl =
+      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+    return fetchLibraryGames(token, streamingBaseUrl);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GAMES_FETCH_PUBLIC, async () => {
+    return fetchPublicGames();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, async (_event, payload: ResolveLaunchIdRequest) => {
+    const token = await resolveJwt(payload?.token);
+    const streamingBaseUrl =
+      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+    return resolveLaunchAppId(token, payload.appIdOrUuid, streamingBaseUrl);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.CREATE_SESSION, async (_event, payload: SessionCreateRequest) => {
+    const token = await resolveJwt(payload.token);
+    const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+    return createSession({
+      ...payload,
+      token,
+      streamingBaseUrl,
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.POLL_SESSION, async (_event, payload: SessionPollRequest) => {
+    const token = await resolveJwt(payload.token);
+    return pollSession({
+      ...payload,
+      token,
+      streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.STOP_SESSION, async (_event, payload: SessionStopRequest) => {
+    const token = await resolveJwt(payload.token);
+    return stopSession({
+      ...payload,
+      token,
+      streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GET_ACTIVE_SESSIONS, async (_event, token?: string, streamingBaseUrl?: string) => {
+    const jwt = await resolveJwt(token);
+    const baseUrl = streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+    return getActiveSessions(jwt, baseUrl);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.CLAIM_SESSION, async (_event, payload: SessionClaimRequest) => {
+    const token = await resolveJwt(payload.token);
+    const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+    return claimSession({
+      ...payload,
+      token,
+      streamingBaseUrl,
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SESSION_CONFLICT_DIALOG, async (): Promise<SessionConflictChoice> => {
+    return showSessionConflictDialog();
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.CONNECT_SIGNALING,
+    async (_event, payload: SignalingConnectRequest): Promise<void> => {
+      if (signalingClient) {
+        signalingClient.disconnect();
+      }
+
+      signalingClient = new GfnSignalingClient(
+        payload.signalingServer,
+        payload.sessionId,
+        payload.signalingUrl,
+      );
+      signalingClient.onEvent(emitToRenderer);
+      await signalingClient.connect();
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.DISCONNECT_SIGNALING, async (): Promise<void> => {
+    signalingClient?.disconnect();
+    signalingClient = null;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SEND_ANSWER, async (_event, payload: SendAnswerRequest) => {
+    if (!signalingClient) {
+      throw new Error("Signaling is not connected");
+    }
+    return signalingClient.sendAnswer(payload);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SEND_ICE_CANDIDATE, async (_event, payload: IceCandidatePayload) => {
+    if (!signalingClient) {
+      throw new Error("Signaling is not connected");
+    }
+    return signalingClient.sendIceCandidate(payload);
+  });
+
+  // Toggle fullscreen via IPC (for completeness)
+  ipcMain.handle(IPC_CHANNELS.TOGGLE_FULLSCREEN, async () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const isFullScreen = mainWindow.isFullScreen();
+      mainWindow.setFullScreen(!isFullScreen);
+    }
+  });
+
+  // Toggle pointer lock via IPC (F8 shortcut)
+  ipcMain.handle(IPC_CHANNELS.TOGGLE_POINTER_LOCK, async () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("app:toggle-pointer-lock");
+    }
+  });
+
+  // Settings IPC handlers
+  ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async (): Promise<Settings> => {
+    return settingsManager.getAll();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SETTINGS_SET, async <K extends keyof Settings>(_event: Electron.IpcMainInvokeEvent, key: K, value: Settings[K]) => {
+    settingsManager.set(key, value);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
+    return settingsManager.reset();
+  });
+
+  // Save window size when it changes
+  mainWindow?.on("resize", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const [width, height] = mainWindow.getSize();
+      settingsManager.set("windowWidth", width);
+      settingsManager.set("windowHeight", height);
+    }
+  });
+}
+
+app.whenReady().then(async () => {
+  authService = new AuthService(join(app.getPath("userData"), "auth-state.json"));
+  await authService.initialize();
+
+  settingsManager = getSettingsManager();
+
+  registerIpcHandlers();
+  await createMainWindow();
+
+  app.on("activate", async () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      await createMainWindow();
+    }
+  });
+});
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
+});
+
+app.on("before-quit", () => {
+  signalingClient?.disconnect();
+  signalingClient = null;
+});
+
+// Export for use by other modules
+export { showSessionConflictDialog, isSessionConflictError };
