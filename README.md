@@ -81,19 +81,26 @@ OpenNOW exists to give the community a transparent, high-quality alternative cli
 | Game Library + Catalog | ✅ | Stats Overlay | ✅ |
 | WebRTC Streaming (Chromium) | ✅ | Anti-AFK | ✅ |
 | Keyboard + Mouse Input | ✅ | Clipboard Paste | ✅ |
-| Alliance Provider Support | ✅ | Audio Playback | ✅ |
+| Alliance Partners | ✅ | Audio Playback | ✅ |
 | AV1 Codec | ✅ | H.264 Codec | ✅ |
 | H.265 Codec | 🚧 In progress | Gamepad Support | ✅ |
 
-**Ongoing Work & Maintenance:** H.265 tuning, microphone support, instant replay, screenshots, continued latency/performance optimizations, and stability fixes across all supported platforms.
+## To Do
 
-## Platform Targets
+- H.265 tuning and compatibility improvements
+- Microphone support
+- Instant replay and screenshots
+- Continued latency/performance optimizations
+- Stability improvements across all platforms
 
-| Platform | Output |
-|----------|--------|
-| Windows | NSIS installer + portable EXE |
-| macOS | DMG + ZIP (x64 + arm64) |
-| Linux | AppImage + DEB (x64 + arm64) |
+## Platform Support
+
+| Platform | Status | Notes |
+|----------|:------:|-------|
+| Windows | ✅ Working | Installer + portable builds available |
+| macOS | ✅ Working | x64 + arm64 builds available |
+| Linux | ❓ Not tested | Packaging works in CI; broader runtime testing pending |
+| Raspberry Pi | ❓ Not tested | ARM64 package path exists; no full validation yet |
 
 ## Quick Start
 
