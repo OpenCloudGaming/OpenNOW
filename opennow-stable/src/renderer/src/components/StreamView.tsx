@@ -4,10 +4,15 @@ import { Maximize, Minimize, Gamepad2, Loader2, LogOut } from "lucide-react";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
 
 interface StreamViewProps {
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-  audioRef: React.RefObject<HTMLAudioElement | null>;
+  videoRef: React.Ref<HTMLVideoElement>;
+  audioRef: React.Ref<HTMLAudioElement>;
   stats: StreamDiagnostics;
   showStats: boolean;
+  shortcuts: {
+    toggleStats: string;
+    togglePointerLock: string;
+    stopStream: string;
+  };
   serverRegion?: string;
   connectedControllers: number;
   isConnecting: boolean;
@@ -34,6 +39,7 @@ export function StreamView({
   audioRef,
   stats,
   showStats,
+  shortcuts,
   serverRegion,
   connectedControllers,
   isConnecting,
@@ -191,9 +197,9 @@ export function StreamView({
       {/* Keyboard hints */}
       {showHints && !isConnecting && (
         <div className="sv-hints">
-          <div className="sv-hint"><kbd>F3</kbd><span>Stats</span></div>
-          <div className="sv-hint"><kbd>F8</kbd><span>Mouse lock</span></div>
-          <div className="sv-hint"><kbd>Ctrl+Shift+Q</kbd><span>Stop</span></div>
+          <div className="sv-hint"><kbd>{shortcuts.toggleStats}</kbd><span>Stats</span></div>
+          <div className="sv-hint"><kbd>{shortcuts.togglePointerLock}</kbd><span>Mouse lock</span></div>
+          <div className="sv-hint"><kbd>{shortcuts.stopStream}</kbd><span>Stop</span></div>
         </div>
       )}
 

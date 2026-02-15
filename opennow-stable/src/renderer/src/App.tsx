@@ -16,6 +16,7 @@ import type {
 
 import { GfnWebRtcClient, type StreamDiagnostics } from "./gfn/webrtcClient";
 import { InputEncoder } from "./gfn/inputProtocol";
+import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
@@ -33,6 +34,15 @@ const fpsOptions = [30, 60, 120, 144, 240];
 type GameSource = "main" | "library" | "public";
 type AppPage = "home" | "library" | "settings";
 type StreamStatus = "idle" | "queue" | "setup" | "starting" | "connecting" | "streaming";
+
+const isMac = navigator.platform.toLowerCase().includes("mac");
+
+const DEFAULT_SHORTCUTS = {
+  shortcutToggleStats: "F3",
+  shortcutTogglePointerLock: "F8",
+  shortcutStopStream: isMac ? "Meta+Shift+Q" : "Ctrl+Shift+Q",
+  shortcutToggleAntiAfk: isMac ? "Meta+Shift+F10" : "Ctrl+Shift+F10",
+} as const;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -64,13 +74,13 @@ function defaultDiagnostics(): StreamDiagnostics {
     packetsReceived: 0,
     packetLossPercent: 0,
     jitterMs: 0,
-    jitterBufferDelayMs: 0,
     rttMs: 0,
     framesReceived: 0,
     framesDecoded: 0,
     framesDropped: 0,
     decodeTimeMs: 0,
     renderTimeMs: 0,
+    jitterBufferDelayMs: 0,
     gpuType: "",
     serverRegion: "",
   };
@@ -117,6 +127,13 @@ export function App(): JSX.Element {
     decoderPreference: "auto",
     encoderPreference: "auto",
     colorQuality: "10bit_420",
+    region: "",
+    clipboardPaste: false,
+    mouseSensitivity: 1,
+    shortcutToggleStats: DEFAULT_SHORTCUTS.shortcutToggleStats,
+    shortcutTogglePointerLock: DEFAULT_SHORTCUTS.shortcutTogglePointerLock,
+    shortcutStopStream: DEFAULT_SHORTCUTS.shortcutStopStream,
+    shortcutToggleAntiAfk: DEFAULT_SHORTCUTS.shortcutToggleAntiAfk,
     windowWidth: 1400,
     windowHeight: 900,
   });
@@ -232,51 +249,22 @@ export function App(): JSX.Element {
     void initialize();
   }, []);
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // F3 - Toggle stats
-      if (e.key === "F3") {
-        e.preventDefault();
-        setShowStatsOverlay((prev) => !prev);
-      }
-
-      // F8 - Toggle mouse lock
-      if (e.key === "F8") {
-        e.preventDefault();
-        if (streamStatus === "streaming" && videoRef.current) {
-          if (document.pointerLockElement === videoRef.current) {
-            document.exitPointerLock();
-          } else {
-            videoRef.current.requestPointerLock({ unadjustedMovement: true } as any).catch((err: DOMException) => {
-              if (err.name === "NotSupportedError") {
-                videoRef.current?.requestPointerLock().catch(() => {});
-              }
-            });
-          }
-        }
-      }
-
-      // Ctrl+Shift+Q - Stop stream
-      if (e.key === "q" && e.ctrlKey && e.shiftKey) {
-        e.preventDefault();
-        if (streamStatus !== "idle") {
-          void handleStopStream();
-        }
-      }
-
-      // Ctrl+Shift+F10 - Toggle Anti-AFK
-      if (e.key === "F10" && e.ctrlKey && e.shiftKey) {
-        e.preventDefault();
-        if (streamStatus === "streaming") {
-          setAntiAfkEnabled((prev) => !prev);
-        }
-      }
+  const shortcuts = useMemo(() => {
+    const parseWithFallback = (value: string, fallback: string) => {
+      const parsed = normalizeShortcut(value);
+      return parsed.valid ? parsed : normalizeShortcut(fallback);
     };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [streamStatus]);
+    const toggleStats = parseWithFallback(settings.shortcutToggleStats, DEFAULT_SHORTCUTS.shortcutToggleStats);
+    const togglePointerLock = parseWithFallback(settings.shortcutTogglePointerLock, DEFAULT_SHORTCUTS.shortcutTogglePointerLock);
+    const stopStream = parseWithFallback(settings.shortcutStopStream, DEFAULT_SHORTCUTS.shortcutStopStream);
+    const toggleAntiAfk = parseWithFallback(settings.shortcutToggleAntiAfk, DEFAULT_SHORTCUTS.shortcutToggleAntiAfk);
+    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk };
+  }, [
+    settings.shortcutToggleStats,
+    settings.shortcutTogglePointerLock,
+    settings.shortcutStopStream,
+    settings.shortcutToggleAntiAfk,
+  ]);
 
   // Listen for F11 fullscreen toggle from main process (uses W3C Fullscreen API
   // so navigator.keyboard.lock() can capture Escape in fullscreen)
@@ -381,10 +369,10 @@ export function App(): JSX.Element {
   }, [settings]);
 
   // Save settings when changed
-  const updateSetting = useCallback(async (key: keyof Settings, value: unknown) => {
+  const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
     if (settingsLoaded) {
-      await window.openNow.setSetting(key, value as string | number);
+      await window.openNow.setSetting(key, value);
     }
   }, [settingsLoaded]);
 
@@ -668,6 +656,61 @@ export function App(): JSX.Element {
     }
   }, [authSession]);
 
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isTyping = !!target && (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable
+      );
+      if (isTyping) {
+        return;
+      }
+
+      if (isShortcutMatch(e, shortcuts.toggleStats)) {
+        e.preventDefault();
+        setShowStatsOverlay((prev) => !prev);
+        return;
+      }
+
+      if (isShortcutMatch(e, shortcuts.togglePointerLock)) {
+        e.preventDefault();
+        if (streamStatus === "streaming" && videoRef.current) {
+          if (document.pointerLockElement === videoRef.current) {
+            document.exitPointerLock();
+          } else {
+            videoRef.current.requestPointerLock({ unadjustedMovement: true } as any).catch((err: DOMException) => {
+              if (err.name === "NotSupportedError") {
+                videoRef.current?.requestPointerLock().catch(() => {});
+              }
+            });
+          }
+        }
+        return;
+      }
+
+      if (isShortcutMatch(e, shortcuts.stopStream)) {
+        e.preventDefault();
+        if (streamStatus !== "idle") {
+          void handleStopStream();
+        }
+        return;
+      }
+
+      if (isShortcutMatch(e, shortcuts.toggleAntiAfk)) {
+        e.preventDefault();
+        if (streamStatus === "streaming") {
+          setAntiAfkEnabled((prev) => !prev);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleStopStream, shortcuts, streamStatus]);
+
   // Filter games by search
   const filteredGames = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -705,6 +748,11 @@ export function App(): JSX.Element {
           audioRef={audioRef}
           stats={diagnostics}
           showStats={showStatsOverlay}
+          shortcuts={{
+            toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
+            togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),
+            stopStream: formatShortcutForDisplay(settings.shortcutStopStream, isMac),
+          }}
           serverRegion={session?.serverIp}
           connectedControllers={diagnostics.connectedGamepads}
           isConnecting={streamStatus === "connecting"}
@@ -769,13 +817,9 @@ export function App(): JSX.Element {
 
         {currentPage === "settings" && (
           <SettingsPage
-            settings={{
-              ...settings,
-              region: "",
-              clipboardPaste: false,
-            }}
+            settings={settings}
             regions={regions}
-            onSettingChange={(key, value) => updateSetting(key as keyof Settings, value)}
+            onSettingChange={updateSetting}
           />
         )}
       </main>

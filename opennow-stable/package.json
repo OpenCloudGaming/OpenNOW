@@ -2,6 +2,7 @@
   "name": "opennow-stable",
   "version": "0.1.0",
   "description": "Electron-based OpenNOW stable client",
+  "author": "zortos293",
   "private": true,
   "type": "module",
   "main": "dist-electron/main/index.js",
@@ -9,7 +10,8 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "dist": "npm run build && electron-builder",
+    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
+    "dist:signed": "npm run build && electron-builder",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
@@ -24,6 +26,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.3.4",
+    "cross-env": "^7.0.3",
     "electron": "^40.4.1",
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
@@ -33,6 +36,10 @@
   "build": {
     "appId": "com.zortos.opennow.stable",
     "productName": "OpenNOW Stable",
+    "icon": "../img.png",
+    "npmRebuild": false,
+    "nodeGypRebuild": false,
+    "buildDependenciesFromSource": false,
     "directories": {
       "output": "dist-release"
     },

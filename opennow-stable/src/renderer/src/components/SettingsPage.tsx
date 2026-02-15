@@ -3,6 +3,7 @@ import { useState, useCallback, useMemo, useEffect } from "react";
 import type { JSX } from "react";
 
 import type {
+  Settings,
   StreamRegion,
   VideoCodec,
   ColorQuality,
@@ -10,24 +11,12 @@ import type {
   VideoAccelerationPreference,
 } from "@shared/gfn";
 import { colorQualityRequiresHevc } from "@shared/gfn";
-
-interface Settings {
-  resolution: string;
-  fps: number;
-  codec: VideoCodec;
-  decoderPreference: VideoAccelerationPreference;
-  encoderPreference: VideoAccelerationPreference;
-  colorQuality: ColorQuality;
-  maxBitrateMbps: number;
-  region: string;
-  clipboardPaste: boolean;
-  mouseSensitivity?: number;
-}
+import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
 
 interface SettingsPageProps {
   settings: Settings;
   regions: StreamRegion[];
-  onSettingChange: (key: string, value: unknown) => void;
+  onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
 }
 
 const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
@@ -76,6 +65,11 @@ const STATIC_FPS_PRESETS: FpsPreset[] = [
   { value: 240 },
   { value: 360 },
 ];
+
+const isMac = navigator.platform.toLowerCase().includes("mac");
+const shortcutExamples = isMac
+  ? "Examples: F3, Cmd+Shift+Q, Cmd+Shift+F10"
+  : "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+F10";
 
 /* ── Aspect ratio helpers ─────────────────────────────────────────── */
 
@@ -457,9 +451,34 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     }
   }, [codecResults]);
 
+  const [toggleStatsInput, setToggleStatsInput] = useState(settings.shortcutToggleStats);
+  const [togglePointerLockInput, setTogglePointerLockInput] = useState(settings.shortcutTogglePointerLock);
+  const [stopStreamInput, setStopStreamInput] = useState(settings.shortcutStopStream);
+  const [toggleAntiAfkInput, setToggleAntiAfkInput] = useState(settings.shortcutToggleAntiAfk);
+  const [toggleStatsError, setToggleStatsError] = useState(false);
+  const [togglePointerLockError, setTogglePointerLockError] = useState(false);
+  const [stopStreamError, setStopStreamError] = useState(false);
+  const [toggleAntiAfkError, setToggleAntiAfkError] = useState(false);
+
   // Dynamic entitled resolutions from MES API
   const [entitledResolutions, setEntitledResolutions] = useState<EntitledResolution[]>([]);
   const [subscriptionLoading, setSubscriptionLoading] = useState(true);
+
+  useEffect(() => {
+    setToggleStatsInput(settings.shortcutToggleStats);
+  }, [settings.shortcutToggleStats]);
+
+  useEffect(() => {
+    setTogglePointerLockInput(settings.shortcutTogglePointerLock);
+  }, [settings.shortcutTogglePointerLock]);
+
+  useEffect(() => {
+    setStopStreamInput(settings.shortcutStopStream);
+  }, [settings.shortcutStopStream]);
+
+  useEffect(() => {
+    setToggleAntiAfkInput(settings.shortcutToggleAntiAfk);
+  }, [settings.shortcutToggleAntiAfk]);
 
   // Fetch subscription data (cached per account; reload only when account changes)
   useEffect(() => {
@@ -519,7 +538,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   );
 
   const handleChange = useCallback(
-    (key: string, value: unknown) => {
+    <K extends keyof Settings>(key: K, value: Settings[K]) => {
       onSettingChange(key, value);
       setSavedIndicator(true);
       setTimeout(() => setSavedIndicator(false), 1500);
@@ -550,6 +569,29 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     return found?.name ?? settings.region;
   }, [settings.region, regions]);
 
+  const handleShortcutBlur = <K extends keyof Settings>(
+    key: K,
+    rawValue: string,
+    setInput: (value: string) => void,
+    setError: (value: boolean) => void
+  ): void => {
+    const normalized = normalizeShortcut(rawValue.trim());
+    if (!normalized.valid) {
+      setError(true);
+      return;
+    }
+    setError(false);
+    setInput(normalized.canonical);
+    if (settings[key] !== normalized.canonical) {
+      handleChange(key, normalized.canonical as Settings[K]);
+    }
+  };
+
+  const handleShortcutKeyDown = (e: React.KeyboardEvent): void => {
+    if (e.key === "Enter") {
+      (e.target as HTMLInputElement).blur();
+    }
+  };
   return (
     <div className="settings-page">
       <header className="settings-header">
@@ -838,7 +880,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             <div className="settings-row settings-row--column">
               <div className="settings-row-top">
                 <label className="settings-label">Mouse Sensitivity</label>
-                <span className="settings-value-badge">{(settings.mouseSensitivity ?? 1).toFixed(1)}x</span>
+                <span className="settings-value-badge">{settings.mouseSensitivity.toFixed(1)}x</span>
               </div>
               <input
                 type="range"
@@ -846,7 +888,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 min={0.1}
                 max={3}
                 step={0.1}
-                value={settings.mouseSensitivity ?? 1}
+                value={settings.mouseSensitivity}
                 onChange={(e) => handleChange("mouseSensitivity", parseFloat(e.target.value))}
               />
             </div>
@@ -861,6 +903,83 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 />
                 <span className="settings-toggle-track" />
               </label>
+            </div>
+
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Shortcuts</label>
+                <span className="settings-value-badge">Editable</span>
+              </div>
+
+              <div className="settings-shortcut-grid">
+                <label className="settings-shortcut-row">
+                  <span className="settings-shortcut-label">Toggle Stats</span>
+                  <input
+                    type="text"
+                    className={`settings-text-input settings-shortcut-input ${toggleStatsError ? "error" : ""}`}
+                    value={toggleStatsInput}
+                    onChange={(e) => setToggleStatsInput(e.target.value)}
+                    onBlur={() => handleShortcutBlur("shortcutToggleStats", toggleStatsInput, setToggleStatsInput, setToggleStatsError)}
+                    onKeyDown={handleShortcutKeyDown}
+                    placeholder="F3"
+                    spellCheck={false}
+                  />
+                </label>
+
+                <label className="settings-shortcut-row">
+                  <span className="settings-shortcut-label">Mouse Lock</span>
+                  <input
+                    type="text"
+                    className={`settings-text-input settings-shortcut-input ${togglePointerLockError ? "error" : ""}`}
+                    value={togglePointerLockInput}
+                    onChange={(e) => setTogglePointerLockInput(e.target.value)}
+                    onBlur={() => handleShortcutBlur("shortcutTogglePointerLock", togglePointerLockInput, setTogglePointerLockInput, setTogglePointerLockError)}
+                    onKeyDown={handleShortcutKeyDown}
+                    placeholder="F8"
+                    spellCheck={false}
+                  />
+                </label>
+
+                <label className="settings-shortcut-row">
+                  <span className="settings-shortcut-label">Stop Stream</span>
+                  <input
+                    type="text"
+                    className={`settings-text-input settings-shortcut-input ${stopStreamError ? "error" : ""}`}
+                    value={stopStreamInput}
+                    onChange={(e) => setStopStreamInput(e.target.value)}
+                    onBlur={() => handleShortcutBlur("shortcutStopStream", stopStreamInput, setStopStreamInput, setStopStreamError)}
+                    onKeyDown={handleShortcutKeyDown}
+                    placeholder={isMac ? "Meta+Shift+Q" : "Ctrl+Shift+Q"}
+                    spellCheck={false}
+                  />
+                </label>
+
+                <label className="settings-shortcut-row">
+                  <span className="settings-shortcut-label">Toggle Anti-AFK</span>
+                  <input
+                    type="text"
+                    className={`settings-text-input settings-shortcut-input ${toggleAntiAfkError ? "error" : ""}`}
+                    value={toggleAntiAfkInput}
+                    onChange={(e) => setToggleAntiAfkInput(e.target.value)}
+                    onBlur={() => handleShortcutBlur("shortcutToggleAntiAfk", toggleAntiAfkInput, setToggleAntiAfkInput, setToggleAntiAfkError)}
+                    onKeyDown={handleShortcutKeyDown}
+                    placeholder={isMac ? "Meta+Shift+F10" : "Ctrl+Shift+F10"}
+                    spellCheck={false}
+                  />
+                </label>
+              </div>
+
+              {(toggleStatsError || togglePointerLockError || stopStreamError || toggleAntiAfkError) && (
+                <span className="settings-input-hint">
+                  Invalid shortcut. Use {shortcutExamples}
+                </span>
+              )}
+
+              {!toggleStatsError && !togglePointerLockError && !stopStreamError && !toggleAntiAfkError && (
+                <span className="settings-shortcut-hint">
+                  {shortcutExamples}. Current stop shortcut: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}.
+                </span>
+              )}
             </div>
           </div>
         </section>

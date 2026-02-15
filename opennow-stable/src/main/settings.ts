@@ -18,11 +18,28 @@ export interface Settings {
   encoderPreference: VideoAccelerationPreference;
   /** Color quality (bit depth + chroma subsampling) */
   colorQuality: ColorQuality;
+  /** Preferred region URL (empty = auto) */
+  region: string;
+  /** Enable clipboard paste into stream */
+  clipboardPaste: boolean;
+  /** Mouse sensitivity multiplier */
+  mouseSensitivity: number;
+  /** Toggle stats overlay shortcut */
+  shortcutToggleStats: string;
+  /** Toggle pointer lock shortcut */
+  shortcutTogglePointerLock: string;
+  /** Stop stream shortcut */
+  shortcutStopStream: string;
+  /** Toggle anti-AFK shortcut */
+  shortcutToggleAntiAfk: string;
   /** Window width */
   windowWidth: number;
   /** Window height */
   windowHeight: number;
 }
+
+const defaultStopShortcut = process.platform === "darwin" ? "Meta+Shift+Q" : "Ctrl+Shift+Q";
+const defaultAntiAfkShortcut = process.platform === "darwin" ? "Meta+Shift+F10" : "Ctrl+Shift+F10";
 
 const DEFAULT_SETTINGS: Settings = {
   resolution: "1920x1080",
@@ -32,6 +49,13 @@ const DEFAULT_SETTINGS: Settings = {
   decoderPreference: "auto",
   encoderPreference: "auto",
   colorQuality: "10bit_420",
+  region: "",
+  clipboardPaste: false,
+  mouseSensitivity: 1,
+  shortcutToggleStats: "F3",
+  shortcutTogglePointerLock: "F8",
+  shortcutStopStream: defaultStopShortcut,
+  shortcutToggleAntiAfk: defaultAntiAfkShortcut,
   windowWidth: 1400,
   windowHeight: 900,
 };

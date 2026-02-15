@@ -32,6 +32,13 @@ export interface Settings {
   decoderPreference: VideoAccelerationPreference;
   encoderPreference: VideoAccelerationPreference;
   colorQuality: ColorQuality;
+  region: string;
+  clipboardPaste: boolean;
+  mouseSensitivity: number;
+  shortcutToggleStats: string;
+  shortcutTogglePointerLock: string;
+  shortcutStopStream: string;
+  shortcutToggleAntiAfk: string;
   windowWidth: number;
   windowHeight: number;
 }
