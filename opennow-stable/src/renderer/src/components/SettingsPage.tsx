@@ -67,9 +67,13 @@ const STATIC_FPS_PRESETS: FpsPreset[] = [
 ];
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
-const shortcutExamples = isMac
-  ? "Examples: F3, Cmd+Shift+Q, Cmd+Shift+F10"
-  : "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+F10";
+const shortcutExamples = "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K";
+const shortcutDefaults = {
+  shortcutToggleStats: "F3",
+  shortcutTogglePointerLock: "F8",
+  shortcutStopStream: "Ctrl+Shift+Q",
+  shortcutToggleAntiAfk: "Ctrl+Shift+K",
+} as const;
 
 /* ── Aspect ratio helpers ─────────────────────────────────────────── */
 
@@ -592,6 +596,46 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       (e.target as HTMLInputElement).blur();
     }
   };
+
+  const areShortcutsDefault = useMemo(
+    () =>
+      settings.shortcutToggleStats === shortcutDefaults.shortcutToggleStats
+      && settings.shortcutTogglePointerLock === shortcutDefaults.shortcutTogglePointerLock
+      && settings.shortcutStopStream === shortcutDefaults.shortcutStopStream
+      && settings.shortcutToggleAntiAfk === shortcutDefaults.shortcutToggleAntiAfk,
+    [
+      settings.shortcutToggleStats,
+      settings.shortcutTogglePointerLock,
+      settings.shortcutStopStream,
+      settings.shortcutToggleAntiAfk,
+    ]
+  );
+
+  const handleResetShortcuts = useCallback(() => {
+    setToggleStatsInput(shortcutDefaults.shortcutToggleStats);
+    setTogglePointerLockInput(shortcutDefaults.shortcutTogglePointerLock);
+    setStopStreamInput(shortcutDefaults.shortcutStopStream);
+    setToggleAntiAfkInput(shortcutDefaults.shortcutToggleAntiAfk);
+    setToggleStatsError(false);
+    setTogglePointerLockError(false);
+    setStopStreamError(false);
+    setToggleAntiAfkError(false);
+
+    const shortcutKeys = [
+      "shortcutToggleStats",
+      "shortcutTogglePointerLock",
+      "shortcutStopStream",
+      "shortcutToggleAntiAfk",
+    ] as const;
+
+    for (const key of shortcutKeys) {
+      const value = shortcutDefaults[key];
+      if (settings[key] !== value) {
+        handleChange(key, value);
+      }
+    }
+  }, [handleChange, settings]);
+
   return (
     <div className="settings-page">
       <header className="settings-header">
@@ -908,7 +952,17 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             <div className="settings-row settings-row--column">
               <div className="settings-row-top">
                 <label className="settings-label">Shortcuts</label>
-                <span className="settings-value-badge">Editable</span>
+                <div className="settings-shortcut-actions">
+                  <span className="settings-value-badge">Editable</span>
+                  <button
+                    type="button"
+                    className="settings-shortcut-reset-btn"
+                    onClick={handleResetShortcuts}
+                    disabled={areShortcutsDefault}
+                  >
+                    Reset to defaults
+                  </button>
+                </div>
               </div>
 
               <div className="settings-shortcut-grid">
@@ -949,7 +1003,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                     onChange={(e) => setStopStreamInput(e.target.value)}
                     onBlur={() => handleShortcutBlur("shortcutStopStream", stopStreamInput, setStopStreamInput, setStopStreamError)}
                     onKeyDown={handleShortcutKeyDown}
-                    placeholder={isMac ? "Meta+Shift+Q" : "Ctrl+Shift+Q"}
+                    placeholder="Ctrl+Shift+Q"
                     spellCheck={false}
                   />
                 </label>
@@ -963,7 +1017,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                     onChange={(e) => setToggleAntiAfkInput(e.target.value)}
                     onBlur={() => handleShortcutBlur("shortcutToggleAntiAfk", toggleAntiAfkInput, setToggleAntiAfkInput, setToggleAntiAfkError)}
                     onKeyDown={handleShortcutKeyDown}
-                    placeholder={isMac ? "Meta+Shift+F10" : "Ctrl+Shift+F10"}
+                    placeholder="Ctrl+Shift+K"
                     spellCheck={false}
                   />
                 </label>

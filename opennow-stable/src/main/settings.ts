@@ -38,8 +38,10 @@ export interface Settings {
   windowHeight: number;
 }
 
-const defaultStopShortcut = process.platform === "darwin" ? "Meta+Shift+Q" : "Ctrl+Shift+Q";
-const defaultAntiAfkShortcut = process.platform === "darwin" ? "Meta+Shift+F10" : "Ctrl+Shift+F10";
+const defaultStopShortcut = "Ctrl+Shift+Q";
+const defaultAntiAfkShortcut = "Ctrl+Shift+K";
+const LEGACY_STOP_SHORTCUTS = new Set(["META+SHIFT+Q", "CMD+SHIFT+Q"]);
+const LEGACY_ANTI_AFK_SHORTCUTS = new Set(["META+SHIFT+F10", "CMD+SHIFT+F10", "CTRL+SHIFT+F10"]);
 
 const DEFAULT_SETTINGS: Settings = {
   resolution: "1920x1080",
@@ -82,14 +84,41 @@ export class SettingsManager {
       const parsed = JSON.parse(content) as Partial<Settings>;
 
       // Merge with defaults to ensure all fields exist
-      return {
+      const merged: Settings = {
         ...DEFAULT_SETTINGS,
         ...parsed,
       };
+
+      const migrated = this.migrateLegacyShortcutDefaults(merged);
+      if (migrated) {
+        writeFileSync(this.settingsPath, JSON.stringify(merged, null, 2), "utf-8");
+      }
+
+      return merged;
     } catch (error) {
       console.error("Failed to load settings, using defaults:", error);
       return { ...DEFAULT_SETTINGS };
     }
+  }
+
+  private migrateLegacyShortcutDefaults(settings: Settings): boolean {
+    let migrated = false;
+
+    const normalizeShortcut = (value: string): string => value.replace(/\s+/g, "").toUpperCase();
+    const stopShortcut = normalizeShortcut(settings.shortcutStopStream);
+    const antiAfkShortcut = normalizeShortcut(settings.shortcutToggleAntiAfk);
+
+    if (LEGACY_STOP_SHORTCUTS.has(stopShortcut)) {
+      settings.shortcutStopStream = defaultStopShortcut;
+      migrated = true;
+    }
+
+    if (LEGACY_ANTI_AFK_SHORTCUTS.has(antiAfkShortcut)) {
+      settings.shortcutToggleAntiAfk = defaultAntiAfkShortcut;
+      migrated = true;
+    }
+
+    return migrated;
   }
 
   /**

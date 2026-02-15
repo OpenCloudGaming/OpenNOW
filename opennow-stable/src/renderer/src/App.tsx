@@ -39,8 +39,8 @@ const isMac = navigator.platform.toLowerCase().includes("mac");
 const DEFAULT_SHORTCUTS = {
   shortcutToggleStats: "F3",
   shortcutTogglePointerLock: "F8",
-  shortcutStopStream: isMac ? "Meta+Shift+Q" : "Ctrl+Shift+Q",
-  shortcutToggleAntiAfk: isMac ? "Meta+Shift+F10" : "Ctrl+Shift+F10",
+  shortcutStopStream: "Ctrl+Shift+Q",
+  shortcutToggleAntiAfk: "Ctrl+Shift+K",
 } as const;
 
 function sleep(ms: number): Promise<void> {
@@ -145,6 +145,10 @@ export function App(): JSX.Element {
   const [diagnostics, setDiagnostics] = useState<StreamDiagnostics>(defaultDiagnostics());
   const [showStatsOverlay, setShowStatsOverlay] = useState(true);
   const [antiAfkEnabled, setAntiAfkEnabled] = useState(false);
+  const [escHoldReleaseIndicator, setEscHoldReleaseIndicator] = useState<{ visible: boolean; progress: number }>({
+    visible: false,
+    progress: 0,
+  });
   const [streamingGame, setStreamingGame] = useState<GameInfo | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | undefined>();
 
@@ -264,6 +268,28 @@ export function App(): JSX.Element {
     settings.shortcutToggleAntiAfk,
   ]);
 
+  const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen().catch(() => {});
+    }
+
+    const nav = navigator as any;
+    if (document.fullscreenElement && nav.keyboard?.lock) {
+      await nav.keyboard.lock([
+        "Escape", "F11", "BrowserBack", "BrowserForward", "BrowserRefresh",
+      ]).catch(() => {});
+    }
+
+    await (target.requestPointerLock({ unadjustedMovement: true } as any) as unknown as Promise<void>)
+      .catch((err: DOMException) => {
+        if (err.name === "NotSupportedError") {
+          return target.requestPointerLock();
+        }
+        throw err;
+      })
+      .catch(() => {});
+  }, []);
+
   // Listen for F11 fullscreen toggle from main process (uses W3C Fullscreen API
   // so navigator.keyboard.lock() can capture Escape in fullscreen)
   useEffect(() => {
@@ -313,6 +339,9 @@ export function App(): JSX.Element {
               audioElement: audioRef.current,
               onLog: (line: string) => console.log(`[WebRTC] ${line}`),
               onStats: (stats) => setDiagnostics(stats),
+              onEscHoldProgress: (visible, progress) => {
+                setEscHoldReleaseIndicator({ visible, progress });
+              },
             });
           }
 
@@ -335,6 +364,7 @@ export function App(): JSX.Element {
           setStreamStatus("idle");
           setSession(null);
           setStreamingGame(null);
+          setEscHoldReleaseIndicator({ visible: false, progress: 0 });
           setDiagnostics(defaultDiagnostics());
           launchInFlightRef.current = false;
         } else if (event.type === "error") {
@@ -630,11 +660,36 @@ export function App(): JSX.Element {
       setSession(null);
       setStreamStatus("idle");
       setStreamingGame(null);
+      setEscHoldReleaseIndicator({ visible: false, progress: 0 });
       setDiagnostics(defaultDiagnostics());
     } catch (error) {
       console.error("Stop failed:", error);
     }
   }, [authSession]);
+
+  const releasePointerLockIfNeeded = useCallback(async () => {
+    if (document.pointerLockElement) {
+      document.exitPointerLock();
+      setEscHoldReleaseIndicator({ visible: false, progress: 0 });
+      await sleep(75);
+    }
+  }, []);
+
+  const handlePromptedStopStream = useCallback(async () => {
+    if (streamStatus === "idle") {
+      return;
+    }
+
+    await releasePointerLockIfNeeded();
+
+    const gameName = (streamingGame?.title || "this game").trim();
+    const shouldExit = window.confirm(`Do you really want to exit ${gameName}?`);
+    if (!shouldExit) {
+      return;
+    }
+
+    await handleStopStream();
+  }, [handleStopStream, releasePointerLockIfNeeded, streamStatus, streamingGame?.title]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -693,11 +748,7 @@ export function App(): JSX.Element {
           if (document.pointerLockElement === videoRef.current) {
             document.exitPointerLock();
           } else {
-            videoRef.current.requestPointerLock({ unadjustedMovement: true } as any).catch((err: DOMException) => {
-              if (err.name === "NotSupportedError") {
-                videoRef.current?.requestPointerLock().catch(() => {});
-              }
-            });
+            void requestEscLockedPointerCapture(videoRef.current);
           }
         }
         return;
@@ -707,9 +758,7 @@ export function App(): JSX.Element {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
-        if (streamStatus !== "idle") {
-          void handleStopStream();
-        }
+        void handlePromptedStopStream();
         return;
       }
 
@@ -726,7 +775,7 @@ export function App(): JSX.Element {
     // Use capture phase so app shortcuts run before stream input capture listeners.
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [handleStopStream, settings.clipboardPaste, shortcuts, streamStatus]);
+  }, [handlePromptedStopStream, requestEscLockedPointerCapture, settings.clipboardPaste, shortcuts, streamStatus]);
 
   // Filter games by search
   const filteredGames = useMemo(() => {
@@ -773,6 +822,7 @@ export function App(): JSX.Element {
           serverRegion={session?.serverIp}
           connectedControllers={diagnostics.connectedGamepads}
           antiAfkEnabled={antiAfkEnabled}
+          escHoldReleaseIndicator={escHoldReleaseIndicator}
           isConnecting={streamStatus === "connecting"}
           gameTitle={streamingGame?.title ?? "Game"}
           onToggleFullscreen={() => {
@@ -782,14 +832,18 @@ export function App(): JSX.Element {
               document.documentElement.requestFullscreen().catch(() => {});
             }
           }}
-          onEndSession={handleStopStream}
+          onEndSession={() => {
+            void handlePromptedStopStream();
+          }}
         />
         {streamStatus !== "streaming" && (
           <StreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
             status={streamStatus}
             queuePosition={queuePosition}
-            onCancel={handleStopStream}
+            onCancel={() => {
+              void handlePromptedStopStream();
+            }}
           />
         )}
       </>

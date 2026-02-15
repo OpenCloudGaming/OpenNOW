@@ -164,6 +164,7 @@ interface ClientOptions {
   audioElement: HTMLAudioElement;
   onLog: (line: string) => void;
   onStats?: (stats: StreamDiagnostics) => void;
+  onEscHoldProgress?: (visible: boolean, progress: number) => void;
 }
 
 function timestampUs(): bigint {
@@ -331,6 +332,11 @@ export class GfnWebRtcClient {
   private videoElement: HTMLVideoElement | null = null;
   // Timer for synthetic Escape on pointer lock loss
   private pointerLockEscapeTimer: number | null = null;
+  // Hold Escape for 4 seconds to intentionally release mouse lock
+  private escapeHoldReleaseTimer: number | null = null;
+  private escapeHoldIndicatorDelayTimer: number | null = null;
+  private escapeHoldProgressTimer: number | null = null;
+  private escapeHoldStartedAtMs: number | null = null;
 
   // Stream info
   private currentCodec = "";
@@ -1159,6 +1165,105 @@ export class GfnWebRtcClient {
     }
   }
 
+  private async lockEscapeInFullscreen(): Promise<void> {
+    const nav = navigator as any;
+    if (!document.fullscreenElement) {
+      return;
+    }
+    if (!nav.keyboard?.lock) {
+      return;
+    }
+
+    try {
+      await nav.keyboard.lock([
+        "Escape", "F11", "BrowserBack", "BrowserForward", "BrowserRefresh",
+      ]);
+      this.log("Keyboard lock acquired (Escape captured in fullscreen)");
+    } catch (error) {
+      this.log(`Keyboard lock failed: ${String(error)}`);
+    }
+  }
+
+  private async requestPointerLockWithEscGuard(
+    videoElement: HTMLVideoElement,
+    ensureFullscreen: boolean,
+  ): Promise<void> {
+    if (ensureFullscreen && !document.fullscreenElement) {
+      try {
+        await document.documentElement.requestFullscreen();
+      } catch (error) {
+        this.log(`Fullscreen request failed: ${String(error)}`);
+      }
+    }
+
+    await this.lockEscapeInFullscreen();
+
+    try {
+      await (videoElement.requestPointerLock({ unadjustedMovement: true } as any) as unknown as Promise<void>);
+      this.log("Pointer lock acquired with unadjustedMovement=true (raw/unaccelerated)");
+    } catch (err) {
+      const domErr = err as DOMException;
+      if (domErr?.name === "NotSupportedError") {
+        this.log("unadjustedMovement not supported, falling back to standard pointer lock (accelerated)");
+        await videoElement.requestPointerLock();
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  private clearEscapeHoldTimer(): void {
+    if (this.escapeHoldReleaseTimer !== null) {
+      window.clearTimeout(this.escapeHoldReleaseTimer);
+      this.escapeHoldReleaseTimer = null;
+    }
+    if (this.escapeHoldIndicatorDelayTimer !== null) {
+      window.clearTimeout(this.escapeHoldIndicatorDelayTimer);
+      this.escapeHoldIndicatorDelayTimer = null;
+    }
+    if (this.escapeHoldProgressTimer !== null) {
+      window.clearInterval(this.escapeHoldProgressTimer);
+      this.escapeHoldProgressTimer = null;
+    }
+    this.escapeHoldStartedAtMs = null;
+    this.options.onEscHoldProgress?.(false, 0);
+  }
+
+  private startEscapeHoldRelease(videoElement: HTMLVideoElement): void {
+    if (this.escapeHoldReleaseTimer !== null) {
+      return;
+    }
+
+    this.escapeHoldStartedAtMs = performance.now();
+    this.options.onEscHoldProgress?.(false, 0);
+
+    // Show indicator only after 100ms hold, then fill for remaining 4.9s.
+    this.escapeHoldIndicatorDelayTimer = window.setTimeout(() => {
+      this.escapeHoldIndicatorDelayTimer = null;
+    }, 100);
+
+    this.escapeHoldProgressTimer = window.setInterval(() => {
+      if (this.escapeHoldStartedAtMs === null) {
+        return;
+      }
+      const elapsedMs = performance.now() - this.escapeHoldStartedAtMs;
+      if (elapsedMs < 100) {
+        return;
+      }
+      const progress = Math.min(1, (elapsedMs - 100) / 4900);
+      this.options.onEscHoldProgress?.(true, progress);
+    }, 50);
+
+    this.escapeHoldReleaseTimer = window.setTimeout(() => {
+      this.escapeHoldReleaseTimer = null;
+      this.clearEscapeHoldTimer();
+      if (document.pointerLockElement === videoElement) {
+        this.log("Escape held for 5s, releasing pointer lock");
+        document.exitPointerLock();
+      }
+    }, 5000);
+  }
+
   private sendKeyPacket(vk: number, scancode: number, modifiers: number, isDown: boolean): void {
     const payload = isDown
       ? this.inputEncoder.encodeKeyDown({
@@ -1295,6 +1400,10 @@ export class GfnWebRtcClient {
         return;
       }
 
+      if (document.pointerLockElement === videoElement) {
+        event.preventDefault();
+      }
+
       const mapped = mapKeyboardEvent(event);
       if (!mapped) {
         return;
@@ -1316,6 +1425,15 @@ export class GfnWebRtcClient {
 
       event.preventDefault();
       this.pressedKeys.add(mapped.vk);
+
+      if (
+        mapped.vk === 0x1B &&
+        document.pointerLockElement === videoElement &&
+        this.escapeHoldReleaseTimer === null
+      ) {
+        this.startEscapeHoldRelease(videoElement);
+      }
+
       const payload = this.inputEncoder.encodeKeyDown({
         keycode: mapped.vk,
         scancode: mapped.scancode,
@@ -1336,6 +1454,9 @@ export class GfnWebRtcClient {
       }
 
       event.preventDefault();
+      if (mapped.vk === 0x1B) {
+        this.clearEscapeHoldTimer();
+      }
       this.pressedKeys.delete(mapped.vk);
       const payload = this.inputEncoder.encodeKeyUp({
         keycode: mapped.vk,
@@ -1412,21 +1533,10 @@ export class GfnWebRtcClient {
     };
 
     const onClick = () => {
-      // Request pointer lock with unadjustedMovement for raw, unaccelerated input.
-      // This bypasses the OS mouse acceleration curve, matching the official GFN client.
-      // Falls back to standard pointer lock if unadjustedMovement is not supported.
-      this.log("Requesting pointer lock with unadjustedMovement=true");
-      (videoElement.requestPointerLock({ unadjustedMovement: true } as any) as unknown as Promise<void>)
-        .then(() => {
-          this.log("Pointer lock acquired with unadjustedMovement=true (raw/unaccelerated)");
-        })
-        .catch((err: DOMException) => {
-          if (err.name === "NotSupportedError") {
-            this.log("unadjustedMovement not supported, falling back to standard pointer lock (accelerated)");
-            return videoElement.requestPointerLock();
-          }
-          this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
-        });
+      // GFN-style sequence: fullscreen -> keyboard lock (Escape) -> pointer lock.
+      void this.requestPointerLockWithEscGuard(videoElement, true).catch((err: DOMException) => {
+        this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
+      });
       videoElement.focus();
     };
 
@@ -1442,8 +1552,11 @@ export class GfnWebRtcClient {
           window.clearTimeout(this.pointerLockEscapeTimer);
           this.pointerLockEscapeTimer = null;
         }
+        this.clearEscapeHoldTimer();
         return;
       }
+
+      this.clearEscapeHoldTimer();
 
       // Pointer lock was lost
       if (!this.inputReady) return;
@@ -1497,13 +1610,7 @@ export class GfnWebRtcClient {
 
         // Re-acquire pointer lock so the user stays in the game
         if (this.videoElement && this.activeInputMode !== "gamepad") {
-          this.videoElement.requestPointerLock({ unadjustedMovement: true } as any)
-            .catch((err: DOMException) => {
-              if (err.name === "NotSupportedError") {
-                return this.videoElement?.requestPointerLock();
-              }
-              // Pointer lock re-acquire may fail if user intentionally exited — that's ok
-            })
+          void this.requestPointerLockWithEscGuard(this.videoElement, false)
             .catch(() => {});
         }
       }, 50);
@@ -1515,15 +1622,7 @@ export class GfnWebRtcClient {
     const onFullscreenChange = () => {
       const nav = navigator as any;
       if (document.fullscreenElement) {
-        if (nav.keyboard?.lock) {
-          nav.keyboard.lock([
-            "Escape", "F11", "BrowserBack", "BrowserForward", "BrowserRefresh",
-          ]).then(() => {
-            this.log("Keyboard lock acquired (Escape captured in fullscreen)");
-          }).catch((err: Error) => {
-            this.log(`Keyboard lock failed: ${err.message}`);
-          });
-        }
+        void this.lockEscapeInFullscreen();
       } else {
         if (nav.keyboard?.unlock) {
           nav.keyboard.unlock();
@@ -1566,6 +1665,7 @@ export class GfnWebRtcClient {
         window.clearTimeout(this.pointerLockEscapeTimer);
         this.pointerLockEscapeTimer = null;
       }
+      this.clearEscapeHoldTimer();
       this.pressedKeys.clear();
       this.videoElement = null;
       // Unlock keyboard on cleanup
