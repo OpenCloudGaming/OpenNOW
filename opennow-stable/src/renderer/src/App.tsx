@@ -908,6 +908,7 @@ export function App(): JSX.Element {
         {streamStatus !== "streaming" && (
           <StreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
+            gameCover={streamingGame?.imageUrl}
             status={streamStatus}
             queuePosition={queuePosition}
             onCancel={() => {
