@@ -22,9 +22,12 @@ jobs:
           - label: windows
             os: windows-latest
             builder_args: --win nsis portable
-          - label: macos
+          - label: macos-x64
             os: macos-latest
-            builder_args: --mac dmg zip --x64 --arm64
+            builder_args: --mac dmg zip --x64
+          - label: macos-arm64
+            os: macos-latest
+            builder_args: --mac dmg zip --arm64
           - label: linux-x64
             os: ubuntu-latest
             builder_args: --linux AppImage deb --x64
@@ -36,6 +39,10 @@ jobs:
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      npm_config_audit: "false"
+      npm_config_fund: "false"
 
     steps:
       - name: Checkout
@@ -48,12 +55,22 @@ jobs:
           cache: npm
           cache-dependency-path: opennow-stable/package-lock.json
 
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.cache/electron
+            ${{ github.workspace }}/.cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('opennow-stable/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
       - name: Install Linux packaging tools
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --progress=false
 
       - name: Build app bundles
         run: npm run build
@@ -79,6 +96,10 @@ jobs:
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      npm_config_audit: "false"
+      npm_config_fund: "false"
 
     steps:
       - name: Checkout
@@ -91,11 +112,21 @@ jobs:
           cache: npm
           cache-dependency-path: opennow-stable/package-lock.json
 
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.cache/electron
+            ${{ github.workspace }}/.cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('opennow-stable/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
       - name: Install Linux packaging tools
         run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --progress=false
 
       - name: Build app bundles
         run: npm run build

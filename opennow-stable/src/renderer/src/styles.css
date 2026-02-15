@@ -879,6 +879,28 @@ body,
   color: var(--ink-muted);
   font-weight: 500;
 }
+.settings-shortcut-hint {
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+}
+.settings-shortcut-grid {
+  display: grid;
+  gap: 8px;
+}
+.settings-shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.settings-shortcut-label {
+  font-size: 0.77rem;
+  color: var(--ink-soft);
+}
+.settings-shortcut-input {
+  min-width: 185px;
+  text-align: right;
+}
 
 /* Chip row (presets) */
 .settings-chip-row {
@@ -1553,5 +1575,13 @@ body,
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /* Keep loading indicator visibly active even with reduced motion. */
+  .sload-spin {
+    animation-name: spin !important;
+    animation-duration: 1s !important;
+    animation-timing-function: linear !important;
+    animation-iteration-count: infinite !important;
   }
 }

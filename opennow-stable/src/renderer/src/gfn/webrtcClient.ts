@@ -1676,7 +1676,10 @@ export class GfnWebRtcClient {
 
     pc.onicecandidateerror = (event: Event) => {
       const e = event as RTCPeerConnectionIceErrorEvent;
-      this.log(`ICE candidate error: ${e.errorCode} ${e.errorText} (${e.url ?? "no url"}) hostCandidate=${(e as unknown as Record<string, unknown>).hostCandidate ?? "?"}`);
+      const hostCandidate = "hostCandidate" in e
+        ? (e as RTCPeerConnectionIceErrorEvent & { hostCandidate?: string }).hostCandidate
+        : undefined;
+      this.log(`ICE candidate error: ${e.errorCode} ${e.errorText} (${e.url ?? "no url"}) hostCandidate=${hostCandidate ?? "?"}`);
     };
 
     pc.oniceconnectionstatechange = () => {
