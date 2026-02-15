@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 // Keyboard shortcuts reference (matching Rust implementation):
 // F11 - Toggle fullscreen (handled in main process)
@@ -24,6 +24,7 @@ import type {
   SendAnswerRequest,
   IceCandidatePayload,
   Settings,
+  VideoAccelerationPreference,
   SubscriptionFetchRequest,
   SessionConflictChoice,
 } from "@shared/gfn";
@@ -45,16 +46,132 @@ import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Enable H265/HEVC and AV1 WebRTC support in Chromium.
-// Electron 33 ships Chromium ~M130 where H265 WebRTC is behind flags.
-// These must be set before app.whenReady().
-app.commandLine.appendSwitch("enable-features",
-  "WebRtcAllowH265Receive,WebRtcAllowH265Send,PlatformHEVCEncoderSupport,PlatformHEVCDecoderSupport",
+// Configure Chromium video and WebRTC behavior before app.whenReady().
+
+interface BootstrapVideoPreferences {
+  decoderPreference: VideoAccelerationPreference;
+  encoderPreference: VideoAccelerationPreference;
+}
+
+function isAccelerationPreference(value: unknown): value is VideoAccelerationPreference {
+  return value === "auto" || value === "hardware" || value === "software";
+}
+
+function loadBootstrapVideoPreferences(): BootstrapVideoPreferences {
+  const defaults: BootstrapVideoPreferences = {
+    decoderPreference: "auto",
+    encoderPreference: "auto",
+  };
+  try {
+    const settingsPath = join(app.getPath("userData"), "settings.json");
+    if (!existsSync(settingsPath)) {
+      return defaults;
+    }
+    const parsed = JSON.parse(readFileSync(settingsPath, "utf-8")) as Partial<BootstrapVideoPreferences>;
+    return {
+      decoderPreference: isAccelerationPreference(parsed.decoderPreference)
+        ? parsed.decoderPreference
+        : defaults.decoderPreference,
+      encoderPreference: isAccelerationPreference(parsed.encoderPreference)
+        ? parsed.encoderPreference
+        : defaults.encoderPreference,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+const bootstrapVideoPrefs = loadBootstrapVideoPreferences();
+console.log(
+  `[Main] Video acceleration preference: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
 );
-app.commandLine.appendSwitch("force-fieldtrials", "WebRTC-Video-H26xPacketBuffer/Enabled");
+
+// --- Platform-specific HW video decode features ---
+const platformFeatures: string[] = [];
+
+if (process.platform === "win32") {
+  // Windows: D3D11 + Media Foundation path for HW decode/encode acceleration
+  if (bootstrapVideoPrefs.decoderPreference !== "software") {
+    platformFeatures.push("D3D11VideoDecoder");
+  }
+  if (
+    bootstrapVideoPrefs.decoderPreference !== "software" ||
+    bootstrapVideoPrefs.encoderPreference !== "software"
+  ) {
+    platformFeatures.push("MediaFoundationD3D11VideoCapture");
+  }
+} else if (process.platform === "linux") {
+  // Linux: VA-API path for HW decode/encode (Intel/AMD GPUs)
+  if (bootstrapVideoPrefs.decoderPreference !== "software") {
+    platformFeatures.push("VaapiVideoDecoder");
+  }
+  if (bootstrapVideoPrefs.encoderPreference !== "software") {
+    platformFeatures.push("VaapiVideoEncoder");
+  }
+  if (
+    bootstrapVideoPrefs.decoderPreference !== "software" ||
+    bootstrapVideoPrefs.encoderPreference !== "software"
+  ) {
+    platformFeatures.push("VaapiIgnoreDriverChecks");
+  }
+}
+// macOS: VideoToolbox handles HW acceleration natively, no extra feature flags needed
+
+app.commandLine.appendSwitch("enable-features",
+  [
+    // --- AV1 support (cross-platform) ---
+    "Dav1dVideoDecoder", // Fast AV1 software fallback via dav1d (if no HW decoder)
+    // --- Additional (cross-platform) ---
+    "HardwareMediaKeyHandling",
+    // --- Platform-specific HW decode/encode ---
+    ...platformFeatures,
+  ].join(","),
+);
+
+const disableFeatures: string[] = [
+  // Prevents mDNS candidate generation — faster ICE connectivity
+  "WebRtcHideLocalIpsWithMdns",
+];
+if (process.platform === "linux") {
+  // ChromeOS-only direct video decoder path interferes on regular Linux
+  disableFeatures.push("UseChromeOSDirectVideoDecoder");
+}
+app.commandLine.appendSwitch("disable-features", disableFeatures.join(","));
+
+app.commandLine.appendSwitch("force-fieldtrials",
+  [
+    // Disable send-side pacing — we are receive-only, pacing adds latency to RTCP feedback
+    "WebRTC-Video-Pacing/Disabled/",
+  ].join("/"),
+);
+
+if (bootstrapVideoPrefs.decoderPreference === "hardware") {
+  app.commandLine.appendSwitch("enable-accelerated-video-decode");
+} else if (bootstrapVideoPrefs.decoderPreference === "software") {
+  app.commandLine.appendSwitch("disable-accelerated-video-decode");
+}
+
+if (bootstrapVideoPrefs.encoderPreference === "hardware") {
+  app.commandLine.appendSwitch("enable-accelerated-video-encode");
+} else if (bootstrapVideoPrefs.encoderPreference === "software") {
+  app.commandLine.appendSwitch("disable-accelerated-video-encode");
+}
+
+// Ensure the GPU process doesn't blocklist our GPU for video decode
+app.commandLine.appendSwitch("ignore-gpu-blocklist");
+
+// --- Responsiveness flags ---
+// Keep default compositor frame pacing (vsync + frame cap) to avoid runaway
+// CPU usage from uncapped UI animations.
+// Prevent renderer throttling when the window is backgrounded or occluded.
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+// Remove getUserMedia FPS cap (not strictly needed for receive-only but avoids potential limits)
+app.commandLine.appendSwitch("max-gum-fps", "999");
 
 let mainWindow: BrowserWindow | null = null;
 let signalingClient: GfnSignalingClient | null = null;
+let signalingClientKey: string | null = null;
 let authService: AuthService;
 let settingsManager: SettingsManager;
 
@@ -260,6 +377,12 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC_CHANNELS.CONNECT_SIGNALING,
     async (_event, payload: SignalingConnectRequest): Promise<void> => {
+      const nextKey = `${payload.sessionId}|${payload.signalingServer}|${payload.signalingUrl ?? ""}`;
+      if (signalingClient && signalingClientKey === nextKey) {
+        console.log("[Signaling] Reuse existing signaling connection (duplicate connect request ignored)");
+        return;
+      }
+
       if (signalingClient) {
         signalingClient.disconnect();
       }
@@ -269,6 +392,7 @@ function registerIpcHandlers(): void {
         payload.sessionId,
         payload.signalingUrl,
       );
+      signalingClientKey = nextKey;
       signalingClient.onEvent(emitToRenderer);
       await signalingClient.connect();
     },
@@ -277,6 +401,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.DISCONNECT_SIGNALING, async (): Promise<void> => {
     signalingClient?.disconnect();
     signalingClient = null;
+    signalingClientKey = null;
   });
 
   ipcMain.handle(IPC_CHANNELS.SEND_ANSWER, async (_event, payload: SendAnswerRequest) => {
@@ -356,6 +481,7 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   signalingClient?.disconnect();
   signalingClient = null;
+  signalingClientKey = null;
 });
 
 // Export for use by other modules

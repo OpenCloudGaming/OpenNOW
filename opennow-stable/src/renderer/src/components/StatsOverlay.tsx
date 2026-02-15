@@ -1,5 +1,6 @@
 import { Monitor, Wifi, Activity, Gamepad2, AlertTriangle } from "lucide-react";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
+import type { JSX } from "react";
 
 interface StatsOverlayProps {
   stats: StreamDiagnostics;

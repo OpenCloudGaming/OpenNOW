@@ -1,4 +1,6 @@
 import { Play, Monitor } from "lucide-react";
+import { memo } from "react";
+import type { JSX } from "react";
 import type { GameInfo, GameVariant } from "@shared/gfn";
 
 interface GameCardProps {
@@ -136,7 +138,7 @@ function getUniqueStores(game: GameInfo): string[] {
   return stores;
 }
 
-export function GameCard({ game, isSelected = false, onPlay, onSelect }: GameCardProps): JSX.Element {
+export const GameCard = memo(function GameCard({ game, isSelected = false, onPlay, onSelect }: GameCardProps): JSX.Element {
   const stores = getUniqueStores(game);
 
   const handlePlayClick = (event: React.MouseEvent): void => {
@@ -204,4 +206,4 @@ export function GameCard({ game, isSelected = false, onPlay, onSelect }: GameCar
       </div>
     </div>
   );
-}
+});
