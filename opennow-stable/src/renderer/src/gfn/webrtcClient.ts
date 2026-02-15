@@ -469,6 +469,8 @@ export class GfnWebRtcClient {
   private videoElement: HTMLVideoElement | null = null;
   // Timer for synthetic Escape on pointer lock loss
   private pointerLockEscapeTimer: number | null = null;
+  // Fallback keyup if browser swallows Escape keyup while keyboard lock is active.
+  private escapeAutoKeyUpTimer: number | null = null;
   // Hold Escape for 4 seconds to intentionally release mouse lock
   private escapeHoldReleaseTimer: number | null = null;
   private escapeHoldIndicatorDelayTimer: number | null = null;
@@ -1431,6 +1433,36 @@ export class GfnWebRtcClient {
     this.options.onEscHoldProgress?.(false, 0);
   }
 
+  private clearEscapeAutoKeyUpTimer(): void {
+    if (this.escapeAutoKeyUpTimer !== null) {
+      window.clearTimeout(this.escapeAutoKeyUpTimer);
+      this.escapeAutoKeyUpTimer = null;
+    }
+  }
+
+  private scheduleEscapeAutoKeyUp(scancode: number): void {
+    this.clearEscapeAutoKeyUpTimer();
+    this.escapeAutoKeyUpTimer = window.setTimeout(() => {
+      this.escapeAutoKeyUpTimer = null;
+      if (!this.inputReady) {
+        return;
+      }
+      if (!this.pressedKeys.has(0x1B)) {
+        return;
+      }
+
+      this.pressedKeys.delete(0x1B);
+      const payload = this.inputEncoder.encodeKeyUp({
+        keycode: 0x1B,
+        scancode,
+        modifiers: 0,
+        timestampUs: timestampUs(),
+      });
+      this.sendReliable(payload);
+      this.log("Sent Escape keyup fallback (browser suppressed keyup)");
+    }, 120);
+  }
+
   private startEscapeHoldRelease(videoElement: HTMLVideoElement): void {
     if (this.escapeHoldReleaseTimer !== null) {
       return;
@@ -1477,6 +1509,7 @@ export class GfnWebRtcClient {
   }
 
   private releasePressedKeys(reason: string): void {
+    this.clearEscapeAutoKeyUpTimer();
     if (this.pressedKeys.size === 0 || !this.inputReady) {
       this.pressedKeys.clear();
       return;
@@ -1761,6 +1794,10 @@ export class GfnWebRtcClient {
         timestampUs: timestampUs(event.timeStamp),
       });
       this.sendReliable(payload);
+
+      if (mapped.vk === 0x1B && document.pointerLockElement === videoElement) {
+        this.scheduleEscapeAutoKeyUp(mapped.scancode);
+      }
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
@@ -1775,6 +1812,7 @@ export class GfnWebRtcClient {
 
       event.preventDefault();
       if (mapped.vk === 0x1B) {
+        this.clearEscapeAutoKeyUpTimer();
         this.clearEscapeHoldTimer();
       }
       this.pressedKeys.delete(mapped.vk);
@@ -2000,6 +2038,7 @@ export class GfnWebRtcClient {
         window.clearTimeout(this.pointerLockEscapeTimer);
         this.pointerLockEscapeTimer = null;
       }
+      this.clearEscapeAutoKeyUpTimer();
       this.clearEscapeHoldTimer();
       this.releasePressedKeys("input cleanup");
       this.pendingMouseDx = 0;
