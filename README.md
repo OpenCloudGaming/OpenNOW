@@ -42,9 +42,36 @@
 
 OpenNOW is an Electron-based GeForce NOW desktop client focused on compatibility and fast iteration across Windows, macOS, and Linux.
 
-- Main app lives in `/Users/zortos/Projects/OpenNOW/opennow-stable`
+- Main app lives in `opennow-stable/`
 - Legacy Rust/Tauri stack has been removed from this repository
-- CI/CD is unified in `/Users/zortos/Projects/OpenNOW/.github/workflows/auto-build.yml`
+- CI/CD is unified in `.github/workflows/auto-build.yml`
+
+## Why OpenNOW?
+
+OpenNOW exists to give the community a transparent, high-quality alternative client with strong platform support and performance goals.
+
+<table>
+<tr>
+<td width="50%">
+
+**Core Reasons**
+- Fully open source and auditable
+- No telemetry collected by OpenNOW
+- Cross-platform support across Windows, macOS, and Linux
+- Faster fixes and community-driven improvements
+
+</td>
+<td width="50%">
+
+**Performance Goals**
+- Match official client performance in real-world play
+- Push for lower latency and smoother frame pacing
+- Keep streaming quality high at stable resource usage
+- Continue optimizing input and render paths over time
+
+</td>
+</tr>
+</table>
 
 ## Key Features
 
