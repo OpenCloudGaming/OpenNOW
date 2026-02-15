@@ -33,6 +33,7 @@ const fpsOptions = [30, 60, 120, 144, 240];
 type GameSource = "main" | "library" | "public";
 type AppPage = "home" | "library" | "settings";
 type StreamStatus = "idle" | "queue" | "setup" | "starting" | "connecting" | "streaming";
+type ExitPromptState = { open: boolean; gameTitle: string };
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
 
@@ -149,6 +150,7 @@ export function App(): JSX.Element {
     visible: false,
     progress: 0,
   });
+  const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: "Game" });
   const [streamingGame, setStreamingGame] = useState<GameInfo | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | undefined>();
 
@@ -160,6 +162,7 @@ export function App(): JSX.Element {
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
+  const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
   // Session ref sync
   useEffect(() => {
@@ -288,6 +291,44 @@ export function App(): JSX.Element {
         throw err;
       })
       .catch(() => {});
+  }, []);
+
+  const resolveExitPrompt = useCallback((confirmed: boolean) => {
+    const resolver = exitPromptResolverRef.current;
+    exitPromptResolverRef.current = null;
+    setExitPrompt((prev) => (prev.open ? { ...prev, open: false } : prev));
+    resolver?.(confirmed);
+  }, []);
+
+  const requestExitPrompt = useCallback((gameTitle: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      if (exitPromptResolverRef.current) {
+        // Close any previous pending prompt to avoid dangling promises.
+        exitPromptResolverRef.current(false);
+      }
+      exitPromptResolverRef.current = resolve;
+      setExitPrompt({
+        open: true,
+        gameTitle: gameTitle || "this game",
+      });
+    });
+  }, []);
+
+  const handleExitPromptConfirm = useCallback(() => {
+    resolveExitPrompt(true);
+  }, [resolveExitPrompt]);
+
+  const handleExitPromptCancel = useCallback(() => {
+    resolveExitPrompt(false);
+  }, [resolveExitPrompt]);
+
+  useEffect(() => {
+    return () => {
+      if (exitPromptResolverRef.current) {
+        exitPromptResolverRef.current(false);
+        exitPromptResolverRef.current = null;
+      }
+    };
   }, []);
 
   // Listen for F11 fullscreen toggle from main process (uses W3C Fullscreen API
@@ -641,6 +682,7 @@ export function App(): JSX.Element {
   // Stop stream handler
   const handleStopStream = useCallback(async () => {
     try {
+      resolveExitPrompt(false);
       await window.openNow.disconnectSignaling();
 
       const current = sessionRef.current;
@@ -665,7 +707,7 @@ export function App(): JSX.Element {
     } catch (error) {
       console.error("Stop failed:", error);
     }
-  }, [authSession]);
+  }, [authSession, resolveExitPrompt]);
 
   const releasePointerLockIfNeeded = useCallback(async () => {
     if (document.pointerLockElement) {
@@ -683,13 +725,13 @@ export function App(): JSX.Element {
     await releasePointerLockIfNeeded();
 
     const gameName = (streamingGame?.title || "this game").trim();
-    const shouldExit = window.confirm(`Do you really want to exit ${gameName}?`);
+    const shouldExit = await requestExitPrompt(gameName);
     if (!shouldExit) {
       return;
     }
 
     await handleStopStream();
-  }, [handleStopStream, releasePointerLockIfNeeded, streamStatus, streamingGame?.title]);
+  }, [handleStopStream, releasePointerLockIfNeeded, requestExitPrompt, streamStatus, streamingGame?.title]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -701,6 +743,21 @@ export function App(): JSX.Element {
         target.isContentEditable
       );
       if (isTyping) {
+        return;
+      }
+
+      if (exitPrompt.open) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          handleExitPromptCancel();
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          handleExitPromptConfirm();
+        }
         return;
       }
 
@@ -775,7 +832,16 @@ export function App(): JSX.Element {
     // Use capture phase so app shortcuts run before stream input capture listeners.
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [handlePromptedStopStream, requestEscLockedPointerCapture, settings.clipboardPaste, shortcuts, streamStatus]);
+  }, [
+    exitPrompt.open,
+    handleExitPromptCancel,
+    handleExitPromptConfirm,
+    handlePromptedStopStream,
+    requestEscLockedPointerCapture,
+    settings.clipboardPaste,
+    shortcuts,
+    streamStatus,
+  ]);
 
   // Filter games by search
   const filteredGames = useMemo(() => {
@@ -823,6 +889,7 @@ export function App(): JSX.Element {
           connectedControllers={diagnostics.connectedGamepads}
           antiAfkEnabled={antiAfkEnabled}
           escHoldReleaseIndicator={escHoldReleaseIndicator}
+          exitPrompt={exitPrompt}
           isConnecting={streamStatus === "connecting"}
           gameTitle={streamingGame?.title ?? "Game"}
           onToggleFullscreen={() => {
@@ -832,6 +899,8 @@ export function App(): JSX.Element {
               document.documentElement.requestFullscreen().catch(() => {});
             }
           }}
+          onConfirmExit={handleExitPromptConfirm}
+          onCancelExit={handleExitPromptCancel}
           onEndSession={() => {
             void handlePromptedStopStream();
           }}

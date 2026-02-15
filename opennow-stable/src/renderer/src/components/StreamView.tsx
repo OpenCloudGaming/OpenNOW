@@ -20,9 +20,15 @@ interface StreamViewProps {
     visible: boolean;
     progress: number;
   };
+  exitPrompt: {
+    open: boolean;
+    gameTitle: string;
+  };
   isConnecting: boolean;
   gameTitle: string;
   onToggleFullscreen: () => void;
+  onConfirmExit: () => void;
+  onCancelExit: () => void;
   onEndSession: () => void;
 }
 
@@ -56,9 +62,12 @@ export function StreamView({
   connectedControllers,
   antiAfkEnabled,
   escHoldReleaseIndicator,
+  exitPrompt,
   isConnecting,
   gameTitle,
   onToggleFullscreen,
+  onConfirmExit,
+  onCancelExit,
   onEndSession,
 }: StreamViewProps): JSX.Element {
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -199,6 +208,36 @@ export function StreamView({
             </div>
           </div>
         </>
+      )}
+
+      {exitPrompt.open && !isConnecting && (
+        <div className="sv-exit" role="dialog" aria-modal="true" aria-label="Exit stream confirmation">
+          <button
+            type="button"
+            className="sv-exit-backdrop"
+            onClick={onCancelExit}
+            aria-label="Cancel exit"
+          />
+          <div className="sv-exit-card">
+            <div className="sv-exit-kicker">Session Control</div>
+            <h3 className="sv-exit-title">Exit Stream?</h3>
+            <p className="sv-exit-text">
+              Do you really want to exit <strong>{exitPrompt.gameTitle}</strong>?
+            </p>
+            <p className="sv-exit-subtext">Your current cloud gaming session will be closed.</p>
+            <div className="sv-exit-actions">
+              <button type="button" className="sv-exit-btn sv-exit-btn-cancel" onClick={onCancelExit}>
+                Keep Playing
+              </button>
+              <button type="button" className="sv-exit-btn sv-exit-btn-confirm" onClick={onConfirmExit}>
+                Exit Stream
+              </button>
+            </div>
+            <div className="sv-exit-hint">
+              <kbd>Enter</kbd> confirm · <kbd>Esc</kbd> cancel
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Fullscreen toggle */}
