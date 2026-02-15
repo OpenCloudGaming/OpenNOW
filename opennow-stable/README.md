@@ -46,7 +46,7 @@ npm run dist
 
 ## CI
 
-GitHub Actions workflow: `.github/workflows/opennow-stable-build.yml`
+GitHub Actions workflow: `.github/workflows/auto-build.yml`
 
 - Windows (NSIS + portable)
 - macOS (dmg + zip, x64 + arm64)
@@ -55,7 +55,7 @@ GitHub Actions workflow: `.github/workflows/opennow-stable-build.yml`
 
 ## Tagged Releases
 
-GitHub release workflow: `.github/workflows/opennow-stable-release.yml`
+Release publishing is handled in `.github/workflows/auto-build.yml` on tag pushes.
 
 - Push a tag like `opennow-stable-v0.2.0`
 - Workflow builds all platform artifacts
