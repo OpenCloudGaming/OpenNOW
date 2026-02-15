@@ -16,6 +16,10 @@ interface StreamViewProps {
   serverRegion?: string;
   connectedControllers: number;
   antiAfkEnabled: boolean;
+  escHoldReleaseIndicator: {
+    visible: boolean;
+    progress: number;
+  };
   isConnecting: boolean;
   gameTitle: string;
   onToggleFullscreen: () => void;
@@ -51,6 +55,7 @@ export function StreamView({
   serverRegion,
   connectedControllers,
   antiAfkEnabled,
+  escHoldReleaseIndicator,
   isConnecting,
   gameTitle,
   onToggleFullscreen,
@@ -88,6 +93,8 @@ export function StreamView({
   const rText = stats.renderTimeMs > 0 ? `${stats.renderTimeMs.toFixed(1)}ms` : "--";
   const jbText = stats.jitterBufferDelayMs > 0 ? `${stats.jitterBufferDelayMs.toFixed(1)}ms` : "--";
   const inputLive = stats.inputReady && stats.connectionState === "connected";
+  const escHoldProgress = Math.max(0, Math.min(1, escHoldReleaseIndicator.progress));
+  const escHoldSecondsLeft = Math.max(0, 5 - Math.floor(escHoldProgress * 5));
 
   return (
     <div className="sv">
@@ -175,6 +182,23 @@ export function StreamView({
           <span className="sv-afk-dot" />
           <span className="sv-afk-label">ANTI-AFK ON</span>
         </div>
+      )}
+
+      {/* Hold-Esc release indicator (appears after 1s hold) */}
+      {escHoldReleaseIndicator.visible && !isConnecting && (
+        <>
+          <div className="sv-esc-hold-backdrop" />
+          <div className="sv-esc-hold" title="Keep holding Escape to release mouse lock">
+            <div className="sv-esc-hold-title">Hold Escape to Release Mouse</div>
+            <div className="sv-esc-hold-head">
+              <span>Keep holding…</span>
+              <span>{escHoldSecondsLeft}s</span>
+            </div>
+            <div className="sv-esc-hold-track">
+              <span className="sv-esc-hold-fill" style={{ transform: `scaleX(${escHoldProgress})` }} />
+            </div>
+          </div>
+        </>
       )}
 
       {/* Fullscreen toggle */}
