@@ -921,22 +921,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             <h2>Input</h2>
           </div>
           <div className="settings-rows">
-            <div className="settings-row settings-row--column">
-              <div className="settings-row-top">
-                <label className="settings-label">Mouse Sensitivity</label>
-                <span className="settings-value-badge">{settings.mouseSensitivity.toFixed(1)}x</span>
-              </div>
-              <input
-                type="range"
-                className="settings-slider"
-                min={0.1}
-                max={3}
-                step={0.1}
-                value={settings.mouseSensitivity}
-                onChange={(e) => handleChange("mouseSensitivity", parseFloat(e.target.value))}
-              />
-            </div>
-
             <div className="settings-row">
               <label className="settings-label">Clipboard Paste</label>
               <label className="settings-toggle">
