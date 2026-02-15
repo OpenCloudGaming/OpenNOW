@@ -13,6 +13,10 @@ function normalizeKeyToken(token: string): string | null {
   const alias: Record<string, string> = {
     ESC: "ESCAPE",
     RETURN: "ENTER",
+    DEL: "DELETE",
+    INS: "INSERT",
+    PGUP: "PAGEUP",
+    PGDN: "PAGEDOWN",
     SPACEBAR: "SPACE",
     " ": "SPACE",
   };
@@ -37,10 +41,72 @@ function normalizeKeyToken(token: string): string | null {
 
 function normalizeEventKey(key: string): string {
   const upper = key.toUpperCase();
-  if (upper === " ") {
-    return "SPACE";
+  const alias: Record<string, string> = {
+    ESC: "ESCAPE",
+    " ": "SPACE",
+  };
+  if (alias[upper]) {
+    return alias[upper];
   }
   return upper;
+}
+
+function normalizeEventCode(code: string): string | null {
+  if (!code) return null;
+  const upper = code.toUpperCase();
+
+  if (upper.startsWith("KEY") && upper.length === 4) {
+    return upper.slice(3);
+  }
+  if (upper.startsWith("DIGIT") && upper.length === 6) {
+    return upper.slice(5);
+  }
+  if (upper.startsWith("NUMPAD")) {
+    return upper;
+  }
+  if (/^F\d{1,2}$/.test(upper)) {
+    return upper;
+  }
+  if (upper.startsWith("ARROW")) {
+    return upper;
+  }
+  if (upper === "SPACE") {
+    return "SPACE";
+  }
+  if (upper === "ENTER" || upper === "NUMPADENTER") {
+    return "ENTER";
+  }
+  if (/^[A-Z0-9_]+$/.test(upper)) {
+    return upper;
+  }
+  return null;
+}
+
+function isKeyMatch(event: KeyboardEvent, shortcutKey: string): boolean {
+  const byKey = normalizeEventKey(event.key) === shortcutKey;
+  if (byKey) return true;
+
+  const code = normalizeEventCode(event.code);
+  if (!code) return false;
+
+  if (code === shortcutKey) return true;
+  if (shortcutKey.length === 1 && (code === `KEY${shortcutKey}` || code === `DIGIT${shortcutKey}`)) {
+    return true;
+  }
+  if (shortcutKey === "ENTER" && code === "NUMPADENTER") {
+    return true;
+  }
+
+  return false;
+}
+
+export function isShortcutMatch(event: KeyboardEvent, shortcut: ParsedShortcut): boolean {
+  if (!shortcut.valid) return false;
+  if (event.ctrlKey !== shortcut.ctrl) return false;
+  if (event.altKey !== shortcut.alt) return false;
+  if (event.shiftKey !== shortcut.shift) return false;
+  if (event.metaKey !== shortcut.meta) return false;
+  return isKeyMatch(event, shortcut.key);
 }
 
 export function normalizeShortcut(raw: string): ParsedShortcut {
@@ -128,15 +194,6 @@ export function normalizeShortcut(raw: string): ParsedShortcut {
     valid: true,
     canonical: parts.join("+"),
   };
-}
-
-export function isShortcutMatch(event: KeyboardEvent, shortcut: ParsedShortcut): boolean {
-  if (!shortcut.valid) return false;
-  if (event.ctrlKey !== shortcut.ctrl) return false;
-  if (event.altKey !== shortcut.alt) return false;
-  if (event.shiftKey !== shortcut.shift) return false;
-  if (event.metaKey !== shortcut.meta) return false;
-  return normalizeEventKey(event.key) === shortcut.key;
 }
 
 export function formatShortcutForDisplay(raw: string, isMac: boolean): string {

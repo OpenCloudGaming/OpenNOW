@@ -15,7 +15,6 @@ import type {
 } from "@shared/gfn";
 
 import { GfnWebRtcClient, type StreamDiagnostics } from "./gfn/webrtcClient";
-import { InputEncoder } from "./gfn/inputProtocol";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 
 // UI Components
@@ -154,7 +153,6 @@ export function App(): JSX.Element {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clientRef = useRef<GfnWebRtcClient | null>(null);
   const sessionRef = useRef<SessionInfo | null>(null);
-  const inputEncoderRef = useRef<InputEncoder | null>(null);
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
@@ -284,25 +282,7 @@ export function App(): JSX.Element {
     if (!antiAfkEnabled || streamStatus !== "streaming") return;
 
     const interval = window.setInterval(() => {
-      // Send F13 keypress
-      const encoder = inputEncoderRef.current ?? new InputEncoder();
-      inputEncoderRef.current = encoder;
-
-      const keyDown = encoder.encodeKeyDown({
-        keycode: 0x7c, // F13
-        scancode: 0x64,
-        modifiers: 0,
-        timestampUs: BigInt(Math.floor(performance.now() * 1000)),
-      });
-      const keyUp = encoder.encodeKeyUp({
-        keycode: 0x7c,
-        scancode: 0x64,
-        modifiers: 0,
-        timestampUs: BigInt(Math.floor(performance.now() * 1000)),
-      });
-
-      clientRef.current?.sendReliable(keyDown);
-      setTimeout(() => clientRef.current?.sendReliable(keyUp), 50);
+      clientRef.current?.sendAntiAfkPulse();
     }, 240000); // 4 minutes
 
     return () => clearInterval(interval);
@@ -669,14 +649,46 @@ export function App(): JSX.Element {
         return;
       }
 
+      const isPasteShortcut = e.key.toLowerCase() === "v" && !e.altKey && (isMac ? e.metaKey : e.ctrlKey);
+      if (streamStatus === "streaming" && isPasteShortcut) {
+        // Always stop local/browser paste behavior while streaming.
+        // If clipboard paste is enabled, send clipboard text into the stream.
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+
+        if (settings.clipboardPaste) {
+          void (async () => {
+            const client = clientRef.current;
+            if (!client) return;
+
+            try {
+              const text = await navigator.clipboard.readText();
+              if (text && client.sendText(text) > 0) {
+                return;
+              }
+            } catch (error) {
+              console.warn("Clipboard read failed, falling back to paste shortcut:", error);
+            }
+
+            client.sendPasteShortcut(isMac);
+          })();
+        }
+        return;
+      }
+
       if (isShortcutMatch(e, shortcuts.toggleStats)) {
         e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
         setShowStatsOverlay((prev) => !prev);
         return;
       }
 
       if (isShortcutMatch(e, shortcuts.togglePointerLock)) {
         e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
         if (streamStatus === "streaming" && videoRef.current) {
           if (document.pointerLockElement === videoRef.current) {
             document.exitPointerLock();
@@ -693,6 +705,8 @@ export function App(): JSX.Element {
 
       if (isShortcutMatch(e, shortcuts.stopStream)) {
         e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
         if (streamStatus !== "idle") {
           void handleStopStream();
         }
@@ -701,15 +715,18 @@ export function App(): JSX.Element {
 
       if (isShortcutMatch(e, shortcuts.toggleAntiAfk)) {
         e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
         if (streamStatus === "streaming") {
           setAntiAfkEnabled((prev) => !prev);
         }
       }
     };
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleStopStream, shortcuts, streamStatus]);
+    // Use capture phase so app shortcuts run before stream input capture listeners.
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [handleStopStream, settings.clipboardPaste, shortcuts, streamStatus]);
 
   // Filter games by search
   const filteredGames = useMemo(() => {
@@ -755,6 +772,7 @@ export function App(): JSX.Element {
           }}
           serverRegion={session?.serverIp}
           connectedControllers={diagnostics.connectedGamepads}
+          antiAfkEnabled={antiAfkEnabled}
           isConnecting={streamStatus === "connecting"}
           gameTitle={streamingGame?.title ?? "Game"}
           onToggleFullscreen={() => {
