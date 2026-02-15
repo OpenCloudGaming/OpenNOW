@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
+import type { JSX } from "react";
 import { Maximize, Minimize, Gamepad2, Loader2, LogOut } from "lucide-react";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
 
 interface StreamViewProps {
-  videoRef: React.RefObject<HTMLVideoElement>;
-  audioRef: React.RefObject<HTMLAudioElement>;
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  audioRef: React.RefObject<HTMLAudioElement | null>;
   stats: StreamDiagnostics;
   showStats: boolean;
   serverRegion?: string;

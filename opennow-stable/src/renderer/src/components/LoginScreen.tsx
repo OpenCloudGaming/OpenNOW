@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import type { JSX } from "react";
 import { LogIn, ChevronDown, Zap } from "lucide-react";
 import type { LoginProvider } from "@shared/gfn";
 

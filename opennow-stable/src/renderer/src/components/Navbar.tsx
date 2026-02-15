@@ -1,5 +1,6 @@
 import type { AuthUser } from "@shared/gfn";
 import { House, Library, Settings, User, LogOut, Zap } from "lucide-react";
+import type { JSX } from "react";
 
 interface NavbarProps {
   currentPage: "home" | "library" | "settings";

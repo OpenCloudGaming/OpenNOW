@@ -1,4 +1,5 @@
 import { Library, Search, Clock, Gamepad2, Loader2 } from "lucide-react";
+import type { JSX } from "react";
 import type { GameInfo } from "@shared/gfn";
 import { GameCard } from "./GameCard";
 

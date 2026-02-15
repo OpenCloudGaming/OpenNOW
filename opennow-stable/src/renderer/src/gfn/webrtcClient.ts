@@ -1,5 +1,6 @@
 import type {
   IceCandidatePayload,
+  ColorQuality,
   IceServer,
   SessionInfo,
   VideoCodec,
@@ -23,14 +24,23 @@ import {
   extractIceUfragFromOffer,
   extractPublicIp,
   fixServerIp,
+  mungeAnswerSdp,
   preferCodec,
+  rewriteH265LevelIdByProfile,
+  rewriteH265TierFlag,
 } from "./sdp";
 
 interface OfferSettings {
   codec: VideoCodec;
+  colorQuality: ColorQuality;
   resolution: string;
   fps: number;
   maxBitrateKbps: number;
+}
+
+function hevcPreferredProfileId(colorQuality: ColorQuality): 1 | 2 {
+  // 10-bit modes should prefer HEVC Main10 profile-id=2.
+  return colorQuality.startsWith("10bit") ? 2 : 1;
 }
 
 export interface StreamDiagnostics {
@@ -190,6 +200,7 @@ export class GfnWebRtcClient {
   private pc: RTCPeerConnection | null = null;
   private reliableInputChannel: RTCDataChannel | null = null;
   private mouseInputChannel: RTCDataChannel | null = null;
+  private audioContext: AudioContext | null = null;
 
   private inputReady = false;
   private inputProtocolVersion = 2;
@@ -244,6 +255,7 @@ export class GfnWebRtcClient {
   private currentCodec = "";
   private currentResolution = "";
   private isHdr = false;
+  private videoDecodeStallWarningSent = false;
   private serverRegion = "";
   private gpuType = "";
 
@@ -275,6 +287,7 @@ export class GfnWebRtcClient {
   constructor(private readonly options: ClientOptions) {
     options.videoElement.srcObject = this.videoStream;
     options.audioElement.srcObject = this.audioStream;
+    options.audioElement.muted = true;
 
     // Configure video element for lowest latency playback
     this.configureVideoElementForLowLatency(options.videoElement);
@@ -294,6 +307,9 @@ export class GfnWebRtcClient {
     // which can add buffering layers
     video.disableRemotePlayback = true;
 
+    // Disable picture-in-picture to prevent additional compositor layers
+    video.disablePictureInPicture = true;
+
     // Ensure no preload buffering (we get frames via WebRTC, not a URL)
     video.preload = "none";
 
@@ -308,32 +324,24 @@ export class GfnWebRtcClient {
    * Configure an RTCRtpReceiver for minimum jitter buffer delay.
    * 
    * jitterBufferTarget controls how long Chrome holds decoded frames before
-   * displaying them. For cloud gaming we want the smallest possible value.
+   * displaying them. Setting to 0 tells the browser to use the absolute
+   * minimum buffer — effectively "display as soon as decoded". This is
+   * aggressive but correct for cloud gaming where we prioritize latency
+   * over smoothness.
    * 
-   * WARNING: Setting to exactly 0 can cause stutters at high resolutions
-   * (per selkies-project findings). We use a very small non-zero value
-   * that allows the jitter buffer to absorb minimal network variance
-   * while keeping latency extremely low.
+   * The official GFN browser client doesn't set this at all (defaulting to
+   * ~100-200ms). As an Electron app we can be more aggressive.
    * 
-   * The playoutDelayHint property is the older name for jitterBufferTarget
-   * in some Chrome versions — we set both for compatibility.
    */
   private configureReceiverForLowLatency(receiver: RTCRtpReceiver, kind: string): void {
     try {
-      // Video: 20ms — roughly 1-2 frames at 60fps. Small enough for gaming,
-      // large enough to absorb a single packet retransmission.
-      // Audio: 10ms — tighter than video since audio frames are small.
-      const targetMs = kind === "video" ? 20 : 10;
+      // Low-latency profile: keep jitter buffer minimal.
+      // Video gets a tiny safety margin for burst-loss resilience.
+      const targetMs = kind === "video" ? 10 : 0;
 
       if ("jitterBufferTarget" in receiver) {
         (receiver as unknown as Record<string, unknown>).jitterBufferTarget = targetMs;
         this.log(`${kind} receiver: jitterBufferTarget set to ${targetMs}ms`);
-      }
-
-      // Legacy property name (Chrome <M114 approximately)
-      if ("playoutDelayHint" in receiver) {
-        (receiver as unknown as Record<string, unknown>).playoutDelayHint = targetMs / 1000;
-        this.log(`${kind} receiver: playoutDelayHint set to ${targetMs / 1000}s`);
       }
     } catch (error) {
       this.log(`Warning: could not set ${kind} jitter buffer target: ${String(error)}`);
@@ -355,6 +363,7 @@ export class GfnWebRtcClient {
     this.currentCodec = "";
     this.currentResolution = "";
     this.isHdr = false;
+    this.videoDecodeStallWarningSent = false;
     this.diagnostics = {
       connectionState: this.pc?.connectionState ?? "closed",
       inputReady: false,
@@ -423,7 +432,7 @@ export class GfnWebRtcClient {
 
     this.statsTimer = window.setInterval(() => {
       void this.collectStats();
-    }, 1000);
+    }, 96);
   }
 
   private updateRenderFps(): void {
@@ -515,6 +524,15 @@ export class GfnWebRtcClient {
       this.diagnostics.framesReceived = framesReceived;
       this.diagnostics.framesDecoded = framesDecoded;
       this.diagnostics.framesDropped = framesDropped;
+
+      if (
+        !this.videoDecodeStallWarningSent &&
+        framesReceived > 100 &&
+        framesDecoded === 0
+      ) {
+        this.videoDecodeStallWarningSent = true;
+        this.log("Warning: inbound video packets received but 0 frames decoded (decoder stall)");
+      }
 
       // Decode FPS
       this.diagnostics.decodeFps = Math.round(Number(inboundVideo.framesPerSecond ?? 0));
@@ -608,10 +626,28 @@ export class GfnWebRtcClient {
     }
   }
 
+  private replaceTrackInStream(stream: MediaStream, track: MediaStreamTrack): void {
+    const existingTracks = track.kind === "video"
+      ? stream.getVideoTracks()
+      : stream.getAudioTracks();
+
+    for (const existingTrack of existingTracks) {
+      stream.removeTrack(existingTrack);
+    }
+
+    stream.addTrack(track);
+  }
+
   private cleanupPeerConnection(): void {
     this.clearTimers();
     this.detachInputCapture();
     this.closeDataChannels();
+    if (this.audioContext) {
+      void this.audioContext.close();
+      this.audioContext = null;
+    }
+    this.options.audioElement.pause();
+    this.options.audioElement.muted = true;
     if (this.pc) {
       this.pc.onicecandidate = null;
       this.pc.ontrack = null;
@@ -619,6 +655,15 @@ export class GfnWebRtcClient {
       this.pc.close();
       this.pc = null;
     }
+
+    // Remove old tracks so reconnects don't accumulate ended tracks in srcObject streams.
+    for (const track of this.videoStream.getTracks()) {
+      this.videoStream.removeTrack(track);
+    }
+    for (const track of this.audioStream.getTracks()) {
+      this.audioStream.removeTrack(track);
+    }
+
     this.resetInputState();
     this.resetDiagnostics();
     this.connectedGamepads.clear();
@@ -634,7 +679,7 @@ export class GfnWebRtcClient {
 
   private attachTrack(track: MediaStreamTrack): void {
     if (track.kind === "video") {
-      this.videoStream.addTrack(track);
+      this.replaceTrackInStream(this.videoStream, track);
 
       // Set up render FPS tracking using video element
       const video = this.options.videoElement;
@@ -646,20 +691,83 @@ export class GfnWebRtcClient {
       };
       video.requestVideoFrameCallback(frameCallback);
 
+      this.log(
+        `Video element before play: paused=${video.paused}, readyState=${video.readyState}, size=${video.videoWidth}x${video.videoHeight}`,
+      );
+
+      // Explicitly start video playback after track attachment.
+      // Some Chromium/Electron builds keep the video element paused even with autoplay.
+      video
+        .play()
+        .then(() => {
+          this.log("Video element playback started");
+        })
+        .catch((playError) => {
+          this.log(`Video play() failed: ${String(playError)}`);
+        });
+
+      window.setTimeout(() => {
+        this.log(
+          `Video element post-play: paused=${video.paused}, readyState=${video.readyState}, size=${video.videoWidth}x${video.videoHeight}`,
+        );
+      }, 1500);
+
+      track.onunmute = () => {
+        this.log("Video track unmuted");
+      };
+      track.onmute = () => {
+        this.log("Warning: video track muted by sender");
+      };
+      track.onended = () => {
+        this.log("Warning: video track ended");
+      };
+
       this.log("Video track attached");
       return;
     }
 
     if (track.kind === "audio") {
-      this.audioStream.addTrack(track);
-      this.options.audioElement
-        .play()
-        .then(() => {
-          this.log("Audio track attached");
-        })
-        .catch((error) => {
-          this.log(`Audio autoplay blocked: ${String(error)}`);
+      this.replaceTrackInStream(this.audioStream, track);
+
+      if (this.audioContext) {
+        void this.audioContext.close();
+        this.audioContext = null;
+      }
+
+      this.options.audioElement.pause();
+      this.options.audioElement.muted = true;
+
+      // Route audio through an AudioContext with interactive latency hint.
+      // This tells the OS audio subsystem to use the smallest possible buffer,
+      // matching what the official GFN browser client does for low-latency playback.
+      try {
+        const ctx = new AudioContext({
+          latencyHint: "interactive",
+          sampleRate: 48000,
         });
+        this.audioContext = ctx;
+        const source = ctx.createMediaStreamSource(this.audioStream);
+        source.connect(ctx.destination);
+
+        // Resume the context (browsers require user gesture, but Electron is more lenient)
+        if (ctx.state === "suspended") {
+          void ctx.resume();
+        }
+
+        this.log(`Audio routed through AudioContext (latency: ${(ctx.baseLatency * 1000).toFixed(1)}ms, sampleRate: ${ctx.sampleRate}Hz)`);
+      } catch (error) {
+        // Fallback: play directly through the audio element
+        this.log(`AudioContext creation failed, falling back to audio element: ${String(error)}`);
+        this.options.audioElement.muted = false;
+        this.options.audioElement
+          .play()
+          .then(() => {
+            this.log("Audio track attached (fallback)");
+          })
+          .catch((playError) => {
+            this.log(`Audio autoplay blocked: ${String(playError)}`);
+          });
+      }
     }
   }
 
@@ -1134,24 +1242,17 @@ export class GfnWebRtcClient {
       // This bypasses the OS mouse acceleration curve, matching the official GFN client.
       // Falls back to standard pointer lock if unadjustedMovement is not supported.
       this.log("Requesting pointer lock with unadjustedMovement=true");
-      const result = videoElement.requestPointerLock({ unadjustedMovement: true } as any);
-      // Chrome 88+ returns a Promise when options are passed
-      if (result && typeof (result as any).then === "function") {
-        (result as unknown as Promise<void>)
-          .then(() => {
-            this.log("Pointer lock acquired with unadjustedMovement=true (raw/unaccelerated)");
-          })
-          .catch((err: DOMException) => {
-            if (err.name === "NotSupportedError") {
-              this.log("unadjustedMovement not supported, falling back to standard pointer lock (accelerated)");
-              return videoElement.requestPointerLock();
-            }
-            this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
-          });
-      } else {
-        // Older API returned void — pointer lock is acquired but unadjustedMovement may be ignored
-        this.log("Warning: requestPointerLock returned void (not a Promise) — unadjustedMovement may not be applied");
-      }
+      (videoElement.requestPointerLock({ unadjustedMovement: true } as any) as unknown as Promise<void>)
+        .then(() => {
+          this.log("Pointer lock acquired with unadjustedMovement=true (raw/unaccelerated)");
+        })
+        .catch((err: DOMException) => {
+          if (err.name === "NotSupportedError") {
+            this.log("unadjustedMovement not supported, falling back to standard pointer lock (accelerated)");
+            return videoElement.requestPointerLock();
+          }
+          this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
+        });
       videoElement.focus();
     };
 
@@ -1324,6 +1425,178 @@ export class GfnWebRtcClient {
     }
   }
 
+  /** Get supported HEVC profile-id values from RTCRtpReceiver capabilities (e.g. "1", "2"). */
+  private getSupportedHevcProfiles(): Set<string> {
+    const profiles = new Set<string>();
+    try {
+      const capabilities = RTCRtpReceiver.getCapabilities("video");
+      if (!capabilities) return profiles;
+      for (const codec of capabilities.codecs) {
+        const mime = codec.mimeType.toUpperCase();
+        if (!mime.includes("H265") && !mime.includes("HEVC")) {
+          continue;
+        }
+        const fmtp = codec.sdpFmtpLine ?? "";
+        const match = fmtp.match(/(?:^|;)\s*profile-id=(\d+)/i);
+        if (match?.[1]) {
+          profiles.add(match[1]);
+        }
+      }
+    } catch {
+      // Ignore capability failures
+    }
+    return profiles;
+  }
+
+  /** Maximum HEVC level-id by profile-id from receiver capabilities. */
+  private getHevcMaxLevelsByProfile(): Partial<Record<1 | 2, number>> {
+    const result: Partial<Record<1 | 2, number>> = {};
+    try {
+      const capabilities = RTCRtpReceiver.getCapabilities("video");
+      if (!capabilities) return result;
+      for (const codec of capabilities.codecs) {
+        const mime = codec.mimeType.toUpperCase();
+        if (!mime.includes("H265") && !mime.includes("HEVC")) {
+          continue;
+        }
+
+        const fmtp = codec.sdpFmtpLine ?? "";
+        const profileMatch = fmtp.match(/(?:^|;)\s*profile-id=(\d+)/i);
+        const levelMatch = fmtp.match(/(?:^|;)\s*level-id=(\d+)/i);
+        if (!profileMatch?.[1] || !levelMatch?.[1]) {
+          continue;
+        }
+
+        const profile = Number.parseInt(profileMatch[1], 10) as 1 | 2;
+        const level = Number.parseInt(levelMatch[1], 10);
+        if (!Number.isFinite(level) || (profile !== 1 && profile !== 2)) {
+          continue;
+        }
+
+        const current = result[profile];
+        if (!current || level > current) {
+          result[profile] = level;
+        }
+      }
+    } catch {
+      // Ignore capability failures
+    }
+    return result;
+  }
+
+  /** Whether receiver capabilities explicitly expose HEVC tier-flag=1 support. */
+  private supportsHevcTierFlagOne(): boolean {
+    try {
+      const capabilities = RTCRtpReceiver.getCapabilities("video");
+      if (!capabilities) return false;
+      return capabilities.codecs.some((codec) => {
+        const mime = codec.mimeType.toUpperCase();
+        if (!mime.includes("H265") && !mime.includes("HEVC")) {
+          return false;
+        }
+        return /(?:^|;)\s*tier-flag=1/i.test(codec.sdpFmtpLine ?? "");
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Apply setCodecPreferences roughly matching GFN web client behavior:
+   * preferred codec + RTX/FlexFEC only (receiver capabilities first).
+   * On failure, retry with sender capabilities appended.
+   */
+  private applyCodecPreferences(
+    pc: RTCPeerConnection,
+    codec: VideoCodec,
+    preferredHevcProfileId?: 1 | 2,
+  ): void {
+    try {
+      const transceivers = pc.getTransceivers();
+      const videoTransceiver = transceivers.find(
+        (t) => t.receiver.track.kind === "video",
+      );
+      if (!videoTransceiver) {
+        this.log("setCodecPreferences: no video transceiver found, skipping");
+        return;
+      }
+
+      const receiverCaps = RTCRtpReceiver.getCapabilities("video")?.codecs;
+      if (!receiverCaps) {
+        this.log("setCodecPreferences: RTCRtpReceiver.getCapabilities returned null, skipping");
+        return;
+      }
+
+      const senderCaps = RTCRtpSender.getCapabilities?.("video")?.codecs ?? [];
+
+      // Map our codec name to the MIME type used in WebRTC capabilities
+      const codecMimeMap: Record<string, string> = {
+        H264: "video/H264",
+        H265: "video/H265",
+        AV1: "video/AV1",
+        VP9: "video/VP9",
+        VP8: "video/VP8",
+      };
+      const preferredMime = codecMimeMap[codec];
+      if (!preferredMime) {
+        this.log(`setCodecPreferences: unknown codec "${codec}", skipping`);
+        return;
+      }
+
+      const preferred = receiverCaps.filter(
+        (c) => c.mimeType.toLowerCase() === preferredMime.toLowerCase(),
+      );
+
+      const auxiliary = receiverCaps.filter((c) => {
+        const mime = c.mimeType.toLowerCase();
+        return mime.includes("rtx") || mime.includes("flexfec-03");
+      });
+
+      if (preferred.length === 0) {
+        this.log(`setCodecPreferences: ${codec} (${preferredMime}) not in receiver capabilities, skipping`);
+        return;
+      }
+
+      // H265 can be exposed with multiple profiles; prefer profile-id=1 first
+      // for maximum decoder compatibility (reduces macroblocking on some GPUs).
+      if (codec === "H265" && preferredHevcProfileId) {
+        preferred.sort((a, b) => {
+          const getScore = (c: RTCRtpCodec): number => {
+            const fmtp = (c.sdpFmtpLine ?? "").toLowerCase();
+            const match = fmtp.match(/(?:^|;)\s*profile-id=(\d+)/);
+            const profile = match?.[1];
+            if (profile === String(preferredHevcProfileId)) return 0;
+            if (!profile) return 1;
+            return 2;
+          };
+          return getScore(a) - getScore(b);
+        });
+      }
+
+      let codecList = [...preferred, ...auxiliary];
+
+      try {
+        videoTransceiver.setCodecPreferences(codecList);
+        this.log(
+          `setCodecPreferences: set ${codec} (${preferred.length} preferred + ${auxiliary.length} auxiliary receiver codecs)`,
+        );
+      } catch (e) {
+        this.log(`setCodecPreferences: receiver-only failed (${String(e)}), retrying with sender capabilities`);
+        try {
+          codecList = codecList.concat(senderCaps);
+          videoTransceiver.setCodecPreferences(codecList);
+          this.log(
+            `setCodecPreferences: retry succeeded with sender capabilities (+${senderCaps.length})`,
+          );
+        } catch (retryErr) {
+          this.log(`setCodecPreferences: retry failed (${String(retryErr)}), falling back to SDP-only approach`);
+        }
+      }
+    } catch (e) {
+      this.log(`setCodecPreferences: failed (${String(e)}), falling back to SDP-only approach`);
+    }
+  }
+
   async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
     this.cleanupPeerConnection();
 
@@ -1331,7 +1604,9 @@ export class GfnWebRtcClient {
     this.log(`Session: id=${session.sessionId}, status=${session.status}, serverIp=${session.serverIp}`);
     this.log(`Signaling: server=${session.signalingServer}, url=${session.signalingUrl}`);
     this.log(`MediaConnectionInfo: ${session.mediaConnectionInfo ? `ip=${session.mediaConnectionInfo.ip}, port=${session.mediaConnectionInfo.port}` : "NONE"}`);
-    this.log(`Settings: codec=${settings.codec}, resolution=${settings.resolution}, fps=${settings.fps}, maxBitrate=${settings.maxBitrateKbps}kbps`);
+    this.log(
+      `Settings: codec=${settings.codec}, colorQuality=${settings.colorQuality}, resolution=${settings.resolution}, fps=${settings.fps}, maxBitrate=${settings.maxBitrateKbps}kbps`,
+    );
     this.log(`ICE servers: ${session.iceServers.length} (${session.iceServers.map(s => s.urls.join(",")).join(" | ")})`);
     this.log(`Offer SDP length: ${offerSdp.length} chars`);
     // Log full offer SDP for ICE debugging
@@ -1401,7 +1676,7 @@ export class GfnWebRtcClient {
 
     pc.onicecandidateerror = (event: Event) => {
       const e = event as RTCPeerConnectionIceErrorEvent;
-      this.log(`ICE candidate error: ${e.errorCode} ${e.errorText} (${e.url ?? "no url"}) hostCandidate=${e.hostCandidate ?? "?"}`);
+      this.log(`ICE candidate error: ${e.errorCode} ${e.errorText} (${e.url ?? "no url"}) hostCandidate=${(e as unknown as Record<string, unknown>).hostCandidate ?? "?"}`);
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -1444,33 +1719,121 @@ export class GfnWebRtcClient {
     const serverIceUfrag = extractIceUfragFromOffer(processedOffer);
     this.log(`Server ICE ufrag: "${serverIceUfrag}"`);
 
+    const preferredHevcProfileId = hevcPreferredProfileId(settings.colorQuality);
+
     // 3. Filter to preferred codec — but only if the browser actually supports it
     let effectiveCodec = settings.codec;
     const supported = this.getSupportedVideoCodecs();
     this.log(`Browser supported video codecs: ${supported.join(", ") || "unknown"}`);
-    if (supported.length > 0 && !supported.includes(settings.codec)) {
-      // Requested codec not supported — fall back to H264 (universal) or first supported
-      const fallback = supported.includes("H264") ? "H264" : supported[0];
-      this.log(`Warning: ${settings.codec} not supported by browser, falling back to ${fallback}`);
-      effectiveCodec = fallback as VideoCodec;
+
+    if (settings.codec === "H265") {
+      const hevcProfiles = this.getSupportedHevcProfiles();
+      if (hevcProfiles.size > 0) {
+        this.log(`Browser HEVC profile-id support: ${Array.from(hevcProfiles).join(", ")}`);
+      }
+
+      const hevcMaxLevels = this.getHevcMaxLevelsByProfile();
+      if (hevcMaxLevels[1] || hevcMaxLevels[2]) {
+        this.log(
+          `Browser HEVC max level-id by profile: p1=${hevcMaxLevels[1] ?? "?"}, p2=${hevcMaxLevels[2] ?? "?"}`,
+        );
+        const rewrittenLevel = rewriteH265LevelIdByProfile(processedOffer, hevcMaxLevels);
+        if (rewrittenLevel.replacements > 0) {
+          this.log(
+            `HEVC level compatibility: rewrote ${rewrittenLevel.replacements} fmtp lines to receiver max level-id`,
+          );
+          processedOffer = rewrittenLevel.sdp;
+        }
+      }
+
+      const tierFlagOneSupported = this.supportsHevcTierFlagOne();
+      this.log(`Browser HEVC tier-flag=1 support: ${tierFlagOneSupported ? "yes" : "no"}`);
+      if (!tierFlagOneSupported) {
+        const rewritten = rewriteH265TierFlag(processedOffer, 0);
+        if (rewritten.replacements > 0) {
+          this.log(
+            `HEVC tier compatibility: rewrote ${rewritten.replacements} fmtp lines tier-flag=1 -> tier-flag=0`,
+          );
+          processedOffer = rewritten.sdp;
+        }
+      }
+      if (hevcProfiles.size > 0 && !hevcProfiles.has(String(preferredHevcProfileId))) {
+        this.log(
+          `Warning: requested H265 profile-id=${preferredHevcProfileId} not reported in browser capabilities; forcing H265 anyway per user preference`,
+        );
+      }
     }
-    this.log(`Effective codec: ${effectiveCodec}`);
-    const filteredOffer = preferCodec(processedOffer, effectiveCodec);
+
+    if (supported.length > 0 && !supported.includes(settings.codec)) {
+      this.log(`Warning: ${settings.codec} not reported in browser codec list; forcing requested codec anyway`);
+    }
+    this.log(`Effective codec: ${effectiveCodec} (preferred HEVC profile-id=${preferredHevcProfileId})`);
+    const filteredOffer = preferCodec(processedOffer, effectiveCodec, {
+      preferHevcProfileId: preferredHevcProfileId,
+    });
     this.log(`Filtered offer SDP length: ${filteredOffer.length} chars`);
     this.log("Setting remote description (offer)...");
     await pc.setRemoteDescription({ type: "offer", sdp: filteredOffer });
     this.log("Remote description set successfully");
     await this.flushQueuedCandidates();
 
-    // 4. Create answer and set local description
+    // 3b. Apply setCodecPreferences on the video transceiver to reinforce codec choice.
+    //     This is the modern WebRTC API — more reliable than SDP munging alone.
+    //     Must be called after setRemoteDescription (which creates the transceiver)
+    //     but before createAnswer (which generates the answer SDP).
+    this.applyCodecPreferences(pc, effectiveCodec, preferredHevcProfileId);
+
+    // 4. Create answer, munge SDP, and set local description
     this.log("Creating answer...");
     const answer = await pc.createAnswer();
     this.log(`Answer created, SDP length: ${answer.sdp?.length ?? 0} chars`);
+
+    // Munge answer SDP: inject b=AS: bitrate limits and stereo=1 for opus
+    if (answer.sdp) {
+      answer.sdp = mungeAnswerSdp(answer.sdp, settings.maxBitrateKbps);
+      this.log(`Answer SDP munged (b=AS:${settings.maxBitrateKbps}, stereo=1)`);
+    }
+
     await pc.setLocalDescription(answer);
     this.log("Local description set, waiting for ICE gathering...");
 
     const finalSdp = await this.waitForIceGathering(pc, 5000);
     this.log(`ICE gathering done, final SDP length: ${finalSdp.length} chars`);
+
+    // Debug negotiated video codec/fmtp lines from local answer SDP
+    {
+      const lines = finalSdp.split(/\r?\n/);
+      let inVideo = false;
+      const negotiatedVideoLines: string[] = [];
+      let hasNegotiatedH265 = false;
+      for (const line of lines) {
+        if (line.startsWith("m=video")) {
+          inVideo = true;
+          negotiatedVideoLines.push(line);
+          continue;
+        }
+        if (line.startsWith("m=") && inVideo) {
+          break;
+        }
+        if (inVideo && (line.startsWith("a=rtpmap:") || line.startsWith("a=fmtp:") || line.startsWith("a=rtcp-fb:"))) {
+          negotiatedVideoLines.push(line);
+          if (line.startsWith("a=rtpmap:") && /\sH(?:265|EVC)\//i.test(line)) {
+            hasNegotiatedH265 = true;
+          }
+        }
+      }
+      if (negotiatedVideoLines.length > 0) {
+        this.log("Negotiated local video SDP lines:");
+        for (const l of negotiatedVideoLines) {
+          this.log(`  SDP< ${l}`);
+        }
+      }
+
+      if (effectiveCodec === "H265" && !hasNegotiatedH265) {
+        throw new Error("H265 requested but not negotiated in local SDP (no H265 rtpmap in answer)");
+      }
+    }
+
     const credentials = extractIceCredentials(finalSdp);
     this.log(`Extracted ICE credentials: ufrag=${credentials.ufrag}, pwd=${credentials.pwd.slice(0, 8)}...`);
     const { width, height } = parseResolution(settings.resolution);
@@ -1480,6 +1843,8 @@ export class GfnWebRtcClient {
       height,
       fps: settings.fps,
       maxBitrateKbps: settings.maxBitrateKbps,
+      codec: effectiveCodec,
+      colorQuality: settings.colorQuality,
       credentials,
     });
 

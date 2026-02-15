@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { JSX } from "react";
 
 import type {
   ActiveSessionInfo,
@@ -63,6 +64,7 @@ function defaultDiagnostics(): StreamDiagnostics {
     packetsReceived: 0,
     packetLossPercent: 0,
     jitterMs: 0,
+    jitterBufferDelayMs: 0,
     rttMs: 0,
     framesReceived: 0,
     framesDecoded: 0,
@@ -112,6 +114,8 @@ export function App(): JSX.Element {
     fps: 60,
     maxBitrateMbps: 75,
     codec: "H264",
+    decoderPreference: "auto",
+    encoderPreference: "auto",
     colorQuality: "10bit_420",
     windowWidth: 1400,
     windowHeight: 900,
@@ -136,6 +140,7 @@ export function App(): JSX.Element {
   const inputEncoderRef = useRef<InputEncoder | null>(null);
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
+  const launchInFlightRef = useRef(false);
 
   // Session ref sync
   useEffect(() => {
@@ -346,6 +351,7 @@ export function App(): JSX.Element {
           if (clientRef.current) {
             await clientRef.current.handleOffer(event.sdp, activeSession, {
               codec: settings.codec,
+              colorQuality: settings.colorQuality,
               resolution: settings.resolution,
               fps: settings.fps,
               maxBitrateKbps: settings.maxBitrateMbps * 1000,
@@ -354,6 +360,17 @@ export function App(): JSX.Element {
           }
         } else if (event.type === "remote-ice") {
           await clientRef.current?.addRemoteCandidate(event.candidate);
+        } else if (event.type === "disconnected") {
+          console.warn("Signaling disconnected:", event.reason);
+          clientRef.current?.dispose();
+          clientRef.current = null;
+          setStreamStatus("idle");
+          setSession(null);
+          setStreamingGame(null);
+          setDiagnostics(defaultDiagnostics());
+          launchInFlightRef.current = false;
+        } else if (event.type === "error") {
+          console.error("Signaling error:", event.message);
         }
       } catch (error) {
         console.error("Signaling event error:", error);
@@ -451,6 +468,16 @@ export function App(): JSX.Element {
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo) => {
     if (!selectedProvider) return;
+
+    if (launchInFlightRef.current || streamStatus !== "idle") {
+      console.warn("Ignoring play request: launch already in progress or stream not idle", {
+        inFlight: launchInFlightRef.current,
+        streamStatus,
+      });
+      return;
+    }
+
+    launchInFlightRef.current = true;
 
     setStreamingGame(game);
     setStreamStatus("queue");
@@ -608,8 +635,10 @@ export function App(): JSX.Element {
       console.error("Launch failed:", error);
       setStreamStatus("idle");
       setStreamingGame(null);
+    } finally {
+      launchInFlightRef.current = false;
     }
-  }, [authSession, effectiveStreamingBaseUrl, settings, selectedProvider, variantByGameId]);
+  }, [authSession, effectiveStreamingBaseUrl, settings, selectedProvider, streamStatus, variantByGameId]);
 
   // Stop stream handler
   const handleStopStream = useCallback(async () => {

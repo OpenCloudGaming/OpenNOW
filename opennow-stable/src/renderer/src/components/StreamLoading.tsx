@@ -1,4 +1,5 @@
 import { Loader2, Monitor, Cpu, Wifi, X } from "lucide-react";
+import type { JSX } from "react";
 
 export interface StreamLoadingProps {
   gameTitle: string;

@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import type { VideoCodec, ColorQuality } from "@shared/gfn";
+import type { VideoCodec, ColorQuality, VideoAccelerationPreference } from "@shared/gfn";
 
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
@@ -12,6 +12,10 @@ export interface Settings {
   maxBitrateMbps: number;
   /** Preferred video codec */
   codec: VideoCodec;
+  /** Preferred video decode acceleration mode */
+  decoderPreference: VideoAccelerationPreference;
+  /** Preferred video encode acceleration mode */
+  encoderPreference: VideoAccelerationPreference;
   /** Color quality (bit depth + chroma subsampling) */
   colorQuality: ColorQuality;
   /** Window width */
@@ -25,6 +29,8 @@ const DEFAULT_SETTINGS: Settings = {
   fps: 60,
   maxBitrateMbps: 75,
   codec: "H264",
+  decoderPreference: "auto",
+  encoderPreference: "auto",
   colorQuality: "10bit_420",
   windowWidth: 1400,
   windowHeight: 900,

@@ -1,4 +1,5 @@
 export type VideoCodec = "H264" | "H265" | "AV1";
+export type VideoAccelerationPreference = "auto" | "hardware" | "software";
 
 /** Color quality (bit depth + chroma subsampling), matching Rust ColorQuality enum */
 export type ColorQuality = "8bit_420" | "8bit_444" | "10bit_420" | "10bit_444";
@@ -28,6 +29,8 @@ export interface Settings {
   fps: number;
   maxBitrateMbps: number;
   codec: VideoCodec;
+  decoderPreference: VideoAccelerationPreference;
+  encoderPreference: VideoAccelerationPreference;
   colorQuality: ColorQuality;
   windowWidth: number;
   windowHeight: number;
