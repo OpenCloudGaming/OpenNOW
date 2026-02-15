@@ -52,6 +52,12 @@ function getTimingColor(valueMs: number, goodMax: number, warningMax: number): s
   return "var(--error)";
 }
 
+function getInputQueueColor(bufferedBytes: number, dropCount: number): string {
+  if (dropCount > 0 || bufferedBytes >= 65536) return "var(--error)";
+  if (bufferedBytes >= 32768) return "var(--warning)";
+  return "var(--success)";
+}
+
 export function StreamView({
   videoRef,
   audioRef,
@@ -104,6 +110,8 @@ export function StreamView({
   const inputLive = stats.inputReady && stats.connectionState === "connected";
   const escHoldProgress = Math.max(0, Math.min(1, escHoldReleaseIndicator.progress));
   const escHoldSecondsLeft = Math.max(0, 5 - Math.floor(escHoldProgress * 5));
+  const inputQueueColor = getInputQueueColor(stats.inputQueueBufferedBytes, stats.inputQueueDropCount);
+  const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
 
   return (
     <div className="sv">
@@ -167,6 +175,13 @@ export function StreamView({
             <span className="sv-stats-chip" title="Packet loss percentage">
               Loss <span className="sv-stats-chip-val" style={{ color: lossColor }}>{stats.packetLossPercent.toFixed(2)}%</span>
             </span>
+            <span className="sv-stats-chip" title="Input queue pressure (buffered bytes and delayed flush)">
+              IQ <span className="sv-stats-chip-val" style={{ color: inputQueueColor }}>{inputQueueText}</span>
+            </span>
+          </div>
+
+          <div className="sv-stats-foot">
+            Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms
           </div>
 
           {(stats.gpuType || regionLabel) && (

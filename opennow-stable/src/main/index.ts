@@ -214,6 +214,22 @@ async function createMainWindow(): Promise<void> {
     }
   });
 
+  if (process.platform === "win32") {
+    // Keep native window fullscreen in sync with HTML fullscreen so Windows treats
+    // stream playback like a real fullscreen window instead of only DOM fullscreen.
+    mainWindow.webContents.on("enter-html-full-screen", () => {
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFullScreen()) {
+        mainWindow.setFullScreen(true);
+      }
+    });
+
+    mainWindow.webContents.on("leave-html-full-screen", () => {
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()) {
+        mainWindow.setFullScreen(false);
+      }
+    });
+  }
+
   if (process.env.ELECTRON_RENDERER_URL) {
     await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {

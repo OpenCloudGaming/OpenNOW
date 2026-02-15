@@ -81,6 +81,10 @@ function defaultDiagnostics(): StreamDiagnostics {
     decodeTimeMs: 0,
     renderTimeMs: 0,
     jitterBufferDelayMs: 0,
+    inputQueueBufferedBytes: 0,
+    inputQueuePeakBufferedBytes: 0,
+    inputQueueDropCount: 0,
+    inputQueueMaxSchedulingDelayMs: 0,
     gpuType: "",
     serverRegion: "",
   };

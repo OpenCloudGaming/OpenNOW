@@ -399,6 +399,7 @@ interface NvstParams {
   height: number;
   fps: number;
   maxBitrateKbps: number;
+  partialReliableThresholdMs: number;
   codec: VideoCodec;
   colorQuality: ColorQuality;
   credentials: IceCredentials;
@@ -448,9 +449,10 @@ export function mungeAnswerSdp(sdp: string, maxBitrateKbps: number): string {
 export function buildNvstSdp(params: NvstParams): string {
   console.log(`[SDP] buildNvstSdp: ${params.width}x${params.height}@${params.fps}fps, codec=${params.codec}, colorQuality=${params.colorQuality}, maxBitrate=${params.maxBitrateKbps}kbps`);
   console.log(`[SDP] buildNvstSdp: ICE ufrag=${params.credentials.ufrag}, pwd=${params.credentials.pwd.slice(0, 8)}..., fingerprint=${params.credentials.fingerprint.slice(0, 20)}...`);
-  // Aggressive "no-downgrade" profile:
-  // keep minimum bitrate close to maximum so server doesn't drop quality/resolution early.
-  const minBitrate = Math.max(10000, Math.floor(params.maxBitrateKbps * 0.85));
+  // Adaptive profile:
+  // allow bitrate to scale down under congestion to reduce stutter and input lag.
+  const minBitrate = Math.max(5000, Math.floor(params.maxBitrateKbps * 0.35));
+  const initialBitrate = Math.max(minBitrate, Math.floor(params.maxBitrateKbps * 0.7));
   const isHighFps = params.fps >= 90;
   const is120Fps = params.fps === 120;
   const is240Fps = params.fps >= 240;
@@ -578,14 +580,14 @@ export function buildNvstSdp(params: NvstParams): string {
     `a=video.clientViewportWd:${params.width}`,
     `a=video.clientViewportHt:${params.height}`,
     `a=video.maxFPS:${params.fps}`,
-    `a=video.initialBitrateKbps:${params.maxBitrateKbps}`,
+    `a=video.initialBitrateKbps:${initialBitrate}`,
     `a=video.initialPeakBitrateKbps:${params.maxBitrateKbps}`,
     `a=vqos.bw.maximumBitrateKbps:${params.maxBitrateKbps}`,
     `a=vqos.bw.minimumBitrateKbps:${minBitrate}`,
     `a=vqos.bw.peakBitrateKbps:${params.maxBitrateKbps}`,
     `a=vqos.bw.serverPeakBitrateKbps:${params.maxBitrateKbps}`,
-    "a=vqos.bw.enableBandwidthEstimation:0",
-    "a=vqos.bw.disableBitrateLimit:1",
+    "a=vqos.bw.enableBandwidthEstimation:1",
+    "a=vqos.bw.disableBitrateLimit:0",
     // GRC — disabled
     `a=vqos.grc.maximumBitrateKbps:${params.maxBitrateKbps}`,
     "a=vqos.grc.enable:0",
@@ -607,7 +609,7 @@ export function buildNvstSdp(params: NvstParams): string {
     // Input/application track
     "m=application 0 RTP/AVP",
     "a=msid:input_1",
-    "a=ri.partialReliableThresholdMs:300",
+    `a=ri.partialReliableThresholdMs:${params.partialReliableThresholdMs}`,
     "",
   );
 
