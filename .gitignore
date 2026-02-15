@@ -37,6 +37,7 @@ gfn_tokens.json
 test/
 
 package-lock.json
+!opennow-stable/package-lock.json
 
 # AI Agent guidelines (local only)
 AGENTS.md
