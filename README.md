@@ -8,11 +8,26 @@
   <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
     <img src="https://img.shields.io/github/v/tag/OpenCloudGaming/OpenNOW?style=for-the-badge&label=Download&color=brightgreen" alt="Download">
   </a>
+  <a href="https://opennow.zortos.me">
+    <img src="https://img.shields.io/badge/Docs-opennow.zortos.me-blue?style=for-the-badge" alt="Documentation">
+  </a>
   <a href="https://github.com/OpenCloudGaming/OpenNOW/actions/workflows/auto-build.yml">
     <img src="https://img.shields.io/github/actions/workflow/status/OpenCloudGaming/OpenNOW/auto-build.yml?style=for-the-badge&label=Auto%20Build" alt="Auto Build">
   </a>
+  <a href="https://discord.gg/8EJYaJcNfD">
+    <img src="https://img.shields.io/badge/Discord-Join%20Us-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/stargazers">
+    <img src="https://img.shields.io/github/stars/OpenCloudGaming/OpenNOW?style=flat-square" alt="Stars">
+  </a>
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
+    <img src="https://img.shields.io/github/downloads/OpenCloudGaming/OpenNOW/total?style=flat-square" alt="Downloads">
+  </a>
   <a href="https://github.com/OpenCloudGaming/OpenNOW/blob/dev/LICENSE">
-    <img src="https://img.shields.io/github/license/OpenCloudGaming/OpenNOW?style=for-the-badge" alt="License">
+    <img src="https://img.shields.io/github/license/OpenCloudGaming/OpenNOW?style=flat-square" alt="License">
   </a>
 </p>
 
