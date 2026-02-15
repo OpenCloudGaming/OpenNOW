@@ -201,6 +201,11 @@ const codeMap: Record<string, { vk: number; scancode: number }> = {
   NumpadEnter: { vk: 0x0d, scancode: 0x58 },
 };
 
+const keyFallbackMap: Record<string, { vk: number; scancode: number }> = {
+  Escape: { vk: 0x1b, scancode: 0x29 },
+  Esc: { vk: 0x1b, scancode: 0x29 },
+};
+
 /**
  * Write an 8-byte big-endian timestamp (performance.now() * 1000 = microseconds)
  * into a DataView at the given offset. Matches official GFN client's _r() function.
@@ -503,6 +508,11 @@ export function mapKeyboardEvent(event: KeyboardEvent): { vk: number; scancode: 
   const mapped = codeMap[event.code];
   if (mapped) {
     return mapped;
+  }
+
+  const fallbackMapped = keyFallbackMap[event.key];
+  if (fallbackMapped) {
+    return fallbackMapped;
   }
 
   const key = event.key;
