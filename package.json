@@ -1,23 +1,12 @@
 {
-  "name": "opennow",
-  "version": "0.1.0",
-  "description": "OpenNOW - Open source GeForce NOW client",
-  "type": "module",
+  "name": "opennow-workspace",
+  "private": true,
+  "description": "OpenNOW Electron workspace",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri"
-  },
-  "dependencies": {
-    "@tauri-apps/plugin-http": "^2.0.0"
-  },
-  "devDependencies": {
-    "@tauri-apps/api": "^2.9.1",
-    "@tauri-apps/cli": "^2.9.6",
-    "esbuild": "^0.27.2",
-    "sharp": "^0.34.5",
-    "typescript": "^5.9.3",
-    "vite": "npm:rolldown-vite@^7.3.0"
+    "dev": "npm --prefix opennow-stable run dev",
+    "build": "npm --prefix opennow-stable run build",
+    "typecheck": "npm --prefix opennow-stable run typecheck",
+    "dist": "npm --prefix opennow-stable run dist",
+    "dist:signed": "npm --prefix opennow-stable run dist:signed"
   }
 }
