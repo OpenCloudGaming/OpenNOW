@@ -22,5 +22,4 @@ npm run dist
 
 - Legacy Tauri/Rust build files have been removed.
 - CI builds/releases are handled by:
-  - `.github/workflows/opennow-stable-build.yml`
-  - `.github/workflows/opennow-stable-release.yml`
+  - `.github/workflows/auto-build.yml`

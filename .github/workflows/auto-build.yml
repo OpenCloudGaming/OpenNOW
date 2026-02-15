@@ -1,18 +1,27 @@
-name: opennow-stable-build
+name: auto-build
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - "opennow-stable/**"
-      - ".github/workflows/opennow-stable-build.yml"
   pull_request:
     paths:
       - "opennow-stable/**"
-      - ".github/workflows/opennow-stable-build.yml"
+      - ".github/workflows/auto-build.yml"
+  push:
+    branches:
+      - main
+      - dev
+    tags:
+      - "opennow-stable-v*"
+    paths:
+      - "opennow-stable/**"
+      - ".github/workflows/auto-build.yml"
+
+concurrency:
+  group: auto-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  desktop:
+  build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -21,16 +30,19 @@ jobs:
         include:
           - label: windows
             os: windows-latest
-            builder_args: --win nsis portable
+            builder_args: "--win nsis portable"
           - label: macos-x64
             os: macos-latest
-            builder_args: --mac dmg zip --x64
+            builder_args: "--mac dmg zip --x64"
           - label: macos-arm64
             os: macos-latest
-            builder_args: --mac dmg zip --arm64
+            builder_args: "--mac dmg zip --arm64"
           - label: linux-x64
             os: ubuntu-latest
-            builder_args: --linux AppImage deb --x64
+            builder_args: "--linux AppImage deb --x64"
+          - label: linux-arm64
+            os: ubuntu-latest
+            builder_args: "--linux AppImage deb --arm64"
 
     defaults:
       run:
@@ -83,60 +95,27 @@ jobs:
         with:
           name: opennow-stable-${{ matrix.label }}
           path: opennow-stable/dist-release/*
-          if-no-files-found: warn
+          if-no-files-found: error
 
-  linux-arm64:
-    name: linux-arm64
+  release:
+    name: publish-release
     runs-on: ubuntu-latest
-
-    defaults:
-      run:
-        working-directory: opennow-stable
-
-    env:
-      CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
-      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-      npm_config_audit: "false"
-      npm_config_fund: "false"
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/opennow-stable-v')
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: opennow-stable/package-lock.json
+          path: release-artifacts
+          merge-multiple: true
 
-      - name: Cache Electron binaries
-        uses: actions/cache@v4
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
         with:
-          path: |
-            ${{ github.workspace }}/.cache/electron
-            ${{ github.workspace }}/.cache/electron-builder
-          key: ${{ runner.os }}-electron-${{ hashFiles('opennow-stable/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-electron-
-
-      - name: Install Linux packaging tools
-        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
-
-      - name: Install dependencies
-        run: npm ci --prefer-offline --no-audit --progress=false
-
-      - name: Build app bundles
-        run: npm run build
-
-      - name: Package ARM64 installers
-        run: npx electron-builder --publish never --linux AppImage deb --arm64
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: opennow-stable-linux-arm64
-          path: opennow-stable/dist-release/*
-          if-no-files-found: warn
+          tag_name: ${{ github.ref_name }}
+          name: OpenNOW Stable ${{ github.ref_name }}
+          generate_release_notes: true
+          files: release-artifacts/*
