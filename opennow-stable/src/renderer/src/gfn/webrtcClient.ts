@@ -1955,8 +1955,10 @@ export class GfnWebRtcClient {
     window.addEventListener("gamepadconnected", this.onGamepadConnected);
     window.addEventListener("gamepaddisconnected", this.onGamepadDisconnected);
 
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
+    // Use document capture for keyboard events so Escape remains observable
+    // when keyboard lock is active in fullscreen.
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("keyup", onKeyUp, true);
     if (pointerMoveEventName) {
       document.addEventListener(pointerMoveEventName, onPointerMove as EventListener);
     } else {
@@ -1978,8 +1980,8 @@ export class GfnWebRtcClient {
 
     this.inputCleanup.push(() => window.removeEventListener("gamepadconnected", this.onGamepadConnected));
     this.inputCleanup.push(() => window.removeEventListener("gamepaddisconnected", this.onGamepadDisconnected));
-    this.inputCleanup.push(() => window.removeEventListener("keydown", onKeyDown));
-    this.inputCleanup.push(() => window.removeEventListener("keyup", onKeyUp));
+    this.inputCleanup.push(() => document.removeEventListener("keydown", onKeyDown, true));
+    this.inputCleanup.push(() => document.removeEventListener("keyup", onKeyUp, true));
     if (pointerMoveEventName) {
       this.inputCleanup.push(() => document.removeEventListener(pointerMoveEventName, onPointerMove as EventListener));
     } else {
