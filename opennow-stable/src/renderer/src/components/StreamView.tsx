@@ -15,6 +15,7 @@ interface StreamViewProps {
   };
   serverRegion?: string;
   connectedControllers: number;
+  antiAfkEnabled: boolean;
   isConnecting: boolean;
   gameTitle: string;
   onToggleFullscreen: () => void;
@@ -29,8 +30,15 @@ function getRttColor(rttMs: number): string {
 }
 
 function getPacketLossColor(lossPercent: number): string {
-  if (lossPercent <= 0.1) return "var(--ink-muted)";
+  if (lossPercent <= 0.15) return "var(--success)";
   if (lossPercent < 1) return "var(--warning)";
+  return "var(--error)";
+}
+
+function getTimingColor(valueMs: number, goodMax: number, warningMax: number): string {
+  if (valueMs <= 0) return "var(--ink-muted)";
+  if (valueMs <= goodMax) return "var(--success)";
+  if (valueMs <= warningMax) return "var(--warning)";
   return "var(--error)";
 }
 
@@ -42,6 +50,7 @@ export function StreamView({
   shortcuts,
   serverRegion,
   connectedControllers,
+  antiAfkEnabled,
   isConnecting,
   gameTitle,
   onToggleFullscreen,
@@ -70,10 +79,15 @@ export function StreamView({
   const bitrateMbps = (stats.bitrateKbps / 1000).toFixed(1);
   const hasResolution = stats.resolution && stats.resolution !== "";
   const hasCodec = stats.codec && stats.codec !== "";
-  const showPacketLoss = stats.packetLossPercent > 0.1;
-  const showFrameCounters = stats.framesReceived > 0;
-  const showTiming = stats.decodeTimeMs > 0 || stats.renderTimeMs > 0;
   const regionLabel = stats.serverRegion || serverRegion || "";
+  const decodeColor = getTimingColor(stats.decodeTimeMs, 8, 16);
+  const renderColor = getTimingColor(stats.renderTimeMs, 12, 22);
+  const jitterBufferColor = getTimingColor(stats.jitterBufferDelayMs, 10, 24);
+  const lossColor = getPacketLossColor(stats.packetLossPercent);
+  const dText = stats.decodeTimeMs > 0 ? `${stats.decodeTimeMs.toFixed(1)}ms` : "--";
+  const rText = stats.renderTimeMs > 0 ? `${stats.renderTimeMs.toFixed(1)}ms` : "--";
+  const jbText = stats.jitterBufferDelayMs > 0 ? `${stats.jitterBufferDelayMs.toFixed(1)}ms` : "--";
+  const inputLive = stats.inputReady && stats.connectionState === "connected";
 
   return (
     <div className="sv">
@@ -102,67 +116,48 @@ export function StreamView({
       {/* Stats HUD (top-right) */}
       {showStats && !isConnecting && (
         <div className="sv-stats">
-          {/* Primary: Resolution + FPS */}
           <div className="sv-stats-head">
             {hasResolution ? (
-              <span>{stats.resolution} @ {stats.decodeFps} fps</span>
+              <span className="sv-stats-primary">{stats.resolution} · {stats.decodeFps}fps</span>
             ) : (
-              <span className="sv-stats-wait">Connecting...</span>
+              <span className="sv-stats-primary sv-stats-wait">Connecting...</span>
             )}
-          </div>
-
-          {/* Codec + Bitrate */}
-          {hasCodec && (
-            <div className="sv-stats-row sv-stats-codec">
-              <span>{stats.codec} · {bitrateMbps} Mbps</span>
-              {stats.isHdr && <span className="sv-stats-hdr">HDR</span>}
-            </div>
-          )}
-
-          {/* RTT */}
-          <div className="sv-stats-row">
-            <span className="sv-stats-lbl">RTT</span>
-            <span className="sv-stats-val" style={{ color: getRttColor(stats.rttMs) }}>
-              {stats.rttMs > 0 ? `${stats.rttMs.toFixed(0)}ms` : "N/A"}
+            <span className={`sv-stats-live ${inputLive ? "is-live" : "is-pending"}`}>
+              {inputLive ? "Live" : "Sync"}
             </span>
           </div>
 
-          {/* Packet Loss */}
-          {showPacketLoss && (
-            <div className="sv-stats-row">
-              <span className="sv-stats-lbl">Loss</span>
-              <span className="sv-stats-val" style={{ color: getPacketLossColor(stats.packetLossPercent) }}>
-                {stats.packetLossPercent.toFixed(2)}%
-              </span>
-            </div>
-          )}
+          <div className="sv-stats-sub">
+            <span className="sv-stats-sub-left">
+              {hasCodec ? stats.codec : "N/A"}
+              {stats.isHdr && <span className="sv-stats-hdr">HDR</span>}
+            </span>
+            <span className="sv-stats-sub-right">{bitrateMbps} Mbps</span>
+          </div>
 
-          {/* Decode/Render timing */}
-          {showTiming && (
-            <div className="sv-stats-row sv-stats-dim">
-              D: {stats.decodeTimeMs.toFixed(1)}ms · R: {stats.renderTimeMs.toFixed(1)}ms
-              {stats.jitterBufferDelayMs > 0 && ` · JB: ${stats.jitterBufferDelayMs.toFixed(1)}ms`}
-            </div>
-          )}
+          <div className="sv-stats-metrics">
+            <span className="sv-stats-chip" title="Round-trip network latency">
+              RTT <span className="sv-stats-chip-val" style={{ color: getRttColor(stats.rttMs) }}>{stats.rttMs > 0 ? `${stats.rttMs.toFixed(0)}ms` : "--"}</span>
+            </span>
+            <span className="sv-stats-chip" title="D = decode time">
+              D <span className="sv-stats-chip-val" style={{ color: decodeColor }}>{dText}</span>
+            </span>
+            <span className="sv-stats-chip" title="R = render time">
+              R <span className="sv-stats-chip-val" style={{ color: renderColor }}>{rText}</span>
+            </span>
+            <span className="sv-stats-chip" title="JB = jitter buffer delay">
+              JB <span className="sv-stats-chip-val" style={{ color: jitterBufferColor }}>{jbText}</span>
+            </span>
+            <span className="sv-stats-chip" title="Packet loss percentage">
+              Loss <span className="sv-stats-chip-val" style={{ color: lossColor }}>{stats.packetLossPercent.toFixed(2)}%</span>
+            </span>
+          </div>
 
-          {/* Frame counters */}
-          {showFrameCounters && (
-            <div className="sv-stats-row sv-stats-dim">
-              F: {stats.framesDecoded}/{stats.framesReceived} ({stats.framesDropped} drop)
-            </div>
-          )}
-
-          {/* GPU + Region */}
           {(stats.gpuType || regionLabel) && (
-            <div className="sv-stats-row sv-stats-sys">
+            <div className="sv-stats-foot">
               {[stats.gpuType, regionLabel].filter(Boolean).join(" · ")}
             </div>
           )}
-
-          {/* Connection state */}
-          <div className="sv-stats-row sv-stats-state">
-            {stats.connectionState}{stats.inputReady ? " · Input ready" : " · Input pending"}
-          </div>
         </div>
       )}
 
@@ -171,6 +166,14 @@ export function StreamView({
         <div className="sv-ctrl" title={`${connectedControllers} controller(s) connected`}>
           <Gamepad2 size={18} />
           {connectedControllers > 1 && <span className="sv-ctrl-n">{connectedControllers}</span>}
+        </div>
+      )}
+
+      {/* Anti-AFK indicator (top-left, below controller badge when present) */}
+      {antiAfkEnabled && !isConnecting && (
+        <div className={`sv-afk${connectedControllers > 0 ? " sv-afk--stacked" : ""}`} title="Anti-AFK is enabled">
+          <span className="sv-afk-dot" />
+          <span className="sv-afk-label">ANTI-AFK ON</span>
         </div>
       )}
 

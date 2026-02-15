@@ -1309,33 +1309,85 @@ body,
 /* Stats HUD (StreamView inline stats) */
 .sv-stats {
   position: fixed; top: 14px; right: 14px; z-index: 1001;
-  display: flex; flex-direction: column; gap: 2px;
-  padding: 10px 14px;
-  background: rgba(10, 10, 12, 0.92);
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 8px 10px;
+  background: rgba(10, 10, 12, 0.9);
   border: 1px solid var(--panel-border); border-radius: var(--r-md);
-  font-size: 0.73rem; min-width: 185px; font-variant-numeric: tabular-nums;
+  font-size: 0.7rem; min-width: 240px; max-width: 320px; font-variant-numeric: tabular-nums;
+  backdrop-filter: blur(4px);
 }
 .sv-stats-head {
-  font-weight: 700; color: var(--ink); font-size: 0.82rem;
-  padding-bottom: 5px; border-bottom: 1px solid var(--panel-border); margin-bottom: 2px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-weight: 700; color: var(--ink); font-size: 0.75rem;
+  line-height: 1.1;
 }
-.sv-stats-wait { color: var(--ink-muted); font-style: italic; font-weight: 400; }
-.sv-stats-row {
-  display: flex; align-items: center; gap: 8px; padding: 2px 0; color: var(--ink-soft);
+.sv-stats-primary {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.sv-stats-codec { gap: 8px; }
+.sv-stats-wait { color: var(--ink-muted); font-style: italic; font-weight: 500; }
+.sv-stats-live {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 40px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  letter-spacing: 0.03em;
+  border: 1px solid var(--panel-border);
+  color: var(--ink-soft);
+  background: rgba(255, 255, 255, 0.03);
+}
+.sv-stats-live.is-live {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, var(--panel-border));
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+.sv-stats-live.is-pending {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 40%, var(--panel-border));
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+.sv-stats-sub {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding-top: 1px;
+}
+.sv-stats-sub-left {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--ink-soft);
+}
+.sv-stats-sub-right {
+  color: var(--ink);
+  font-weight: 600;
+}
 .sv-stats-hdr {
   padding: 1px 5px; background: var(--accent-surface);
   border-radius: 3px; font-size: 0.6rem; font-weight: 700;
   color: var(--accent); text-transform: uppercase;
 }
-.sv-stats-lbl { color: var(--ink-muted); min-width: 28px; font-weight: 500; }
-.sv-stats-val { font-weight: 600; }
-.sv-stats-dim { font-size: 0.68rem; color: var(--ink-muted); }
-.sv-stats-sys { font-size: 0.68rem; color: var(--ink-muted); }
-.sv-stats-state {
-  padding-top: 4px; border-top: 1px solid var(--panel-border);
-  margin-top: 2px; font-size: 0.68rem; color: var(--ink-muted);
+.sv-stats-metrics {
+  display: flex; align-items: center; gap: 4px;
+  flex-wrap: wrap;
+}
+.sv-stats-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 5px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  font-size: 0.64rem;
+  color: var(--ink-muted);
+}
+.sv-stats-chip-val {
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+.sv-stats-foot {
+  font-size: 0.64rem;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Controller indicator */
@@ -1348,6 +1400,27 @@ body,
   z-index: 1001; color: var(--accent);
 }
 .sv-ctrl-n { font-size: 0.75rem; font-weight: 700; color: var(--ink); }
+
+.sv-afk {
+  position: fixed; top: 14px; left: 14px;
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 11px;
+  background: rgba(10, 10, 12, 0.92);
+  border: 1px solid var(--panel-border); border-radius: var(--r-md);
+  z-index: 1001; color: var(--success);
+}
+.sv-afk--stacked {
+  top: 56px;
+}
+.sv-afk-dot {
+  width: 8px; height: 8px; border-radius: 999px;
+  background: var(--success);
+  box-shadow: 0 0 8px rgba(88, 217, 138, 0.8);
+}
+.sv-afk-label {
+  font-size: 0.72rem; font-weight: 700; color: var(--ink);
+  letter-spacing: 0.03em;
+}
 
 /* Fullscreen button */
 .sv-fs {

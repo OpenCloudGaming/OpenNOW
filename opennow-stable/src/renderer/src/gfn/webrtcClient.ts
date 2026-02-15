@@ -38,6 +38,86 @@ interface OfferSettings {
   maxBitrateKbps: number;
 }
 
+interface KeyStrokeSpec {
+  vk: number;
+  scancode: number;
+  shift?: boolean;
+}
+
+const baseCharKeyMap: Record<string, KeyStrokeSpec> = {
+  " ": { vk: 0x20, scancode: 0x2c },
+  "\n": { vk: 0x0d, scancode: 0x28 },
+  "\r": { vk: 0x0d, scancode: 0x28 },
+  "\t": { vk: 0x09, scancode: 0x2b },
+  "0": { vk: 0x30, scancode: 0x27 },
+  "1": { vk: 0x31, scancode: 0x1e },
+  "2": { vk: 0x32, scancode: 0x1f },
+  "3": { vk: 0x33, scancode: 0x20 },
+  "4": { vk: 0x34, scancode: 0x21 },
+  "5": { vk: 0x35, scancode: 0x22 },
+  "6": { vk: 0x36, scancode: 0x23 },
+  "7": { vk: 0x37, scancode: 0x24 },
+  "8": { vk: 0x38, scancode: 0x25 },
+  "9": { vk: 0x39, scancode: 0x26 },
+  "-": { vk: 0xbd, scancode: 0x2d },
+  "=": { vk: 0xbb, scancode: 0x2e },
+  "[": { vk: 0xdb, scancode: 0x2f },
+  "]": { vk: 0xdd, scancode: 0x30 },
+  "\\": { vk: 0xdc, scancode: 0x31 },
+  ";": { vk: 0xba, scancode: 0x33 },
+  "'": { vk: 0xde, scancode: 0x34 },
+  "`": { vk: 0xc0, scancode: 0x35 },
+  ",": { vk: 0xbc, scancode: 0x36 },
+  ".": { vk: 0xbe, scancode: 0x37 },
+  "/": { vk: 0xbf, scancode: 0x38 },
+};
+
+const shiftedCharKeyMap: Record<string, KeyStrokeSpec> = {
+  "!": { vk: 0x31, scancode: 0x1e, shift: true },
+  "@": { vk: 0x32, scancode: 0x1f, shift: true },
+  "#": { vk: 0x33, scancode: 0x20, shift: true },
+  "$": { vk: 0x34, scancode: 0x21, shift: true },
+  "%": { vk: 0x35, scancode: 0x22, shift: true },
+  "^": { vk: 0x36, scancode: 0x23, shift: true },
+  "&": { vk: 0x37, scancode: 0x24, shift: true },
+  "*": { vk: 0x38, scancode: 0x25, shift: true },
+  "(": { vk: 0x39, scancode: 0x26, shift: true },
+  ")": { vk: 0x30, scancode: 0x27, shift: true },
+  "_": { vk: 0xbd, scancode: 0x2d, shift: true },
+  "+": { vk: 0xbb, scancode: 0x2e, shift: true },
+  "{": { vk: 0xdb, scancode: 0x2f, shift: true },
+  "}": { vk: 0xdd, scancode: 0x30, shift: true },
+  "|": { vk: 0xdc, scancode: 0x31, shift: true },
+  ":": { vk: 0xba, scancode: 0x33, shift: true },
+  "\"": { vk: 0xde, scancode: 0x34, shift: true },
+  "~": { vk: 0xc0, scancode: 0x35, shift: true },
+  "<": { vk: 0xbc, scancode: 0x36, shift: true },
+  ">": { vk: 0xbe, scancode: 0x37, shift: true },
+  "?": { vk: 0xbf, scancode: 0x38, shift: true },
+};
+
+function mapTextCharToKeySpec(char: string): KeyStrokeSpec | null {
+  if (baseCharKeyMap[char]) {
+    return baseCharKeyMap[char];
+  }
+
+  if (shiftedCharKeyMap[char]) {
+    return shiftedCharKeyMap[char];
+  }
+
+  if (char >= "a" && char <= "z") {
+    const code = char.charCodeAt(0);
+    return { vk: code - 32, scancode: 0x04 + (code - 97) };
+  }
+
+  if (char >= "A" && char <= "Z") {
+    const code = char.charCodeAt(0);
+    return { vk: code, scancode: 0x04 + (code - 65), shift: true };
+  }
+
+  return null;
+}
+
 function hevcPreferredProfileId(colorQuality: ColorQuality): 1 | 2 {
   // 10-bit modes should prefer HEVC Main10 profile-id=2.
   return colorQuality.startsWith("10bit") ? 2 : 1;
@@ -207,6 +287,7 @@ export class GfnWebRtcClient {
   private heartbeatTimer: number | null = null;
   private mouseFlushTimer: number | null = null;
   private statsTimer: number | null = null;
+  private statsPollInFlight = false;
   private gamepadPollTimer: number | null = null;
   private pendingMouseDx = 0;
   private pendingMouseDy = 0;
@@ -431,8 +512,14 @@ export class GfnWebRtcClient {
     }
 
     this.statsTimer = window.setInterval(() => {
-      void this.collectStats();
-    }, 96);
+      if (this.statsPollInFlight) {
+        return;
+      }
+      this.statsPollInFlight = true;
+      void this.collectStats().finally(() => {
+        this.statsPollInFlight = false;
+      });
+    }, 500);
   }
 
   private updateRenderFps(): void {
@@ -1070,6 +1157,93 @@ export class GfnWebRtcClient {
       this.reliableDropLogged = true;
       this.log(`Reliable channel not open (state=${this.reliableInputChannel?.readyState ?? "null"}), dropping event (${payload.length} bytes)`);
     }
+  }
+
+  private sendKeyPacket(vk: number, scancode: number, modifiers: number, isDown: boolean): void {
+    const payload = isDown
+      ? this.inputEncoder.encodeKeyDown({
+        keycode: vk,
+        scancode,
+        modifiers,
+        timestampUs: timestampUs(),
+      })
+      : this.inputEncoder.encodeKeyUp({
+        keycode: vk,
+        scancode,
+        modifiers,
+        timestampUs: timestampUs(),
+      });
+    this.sendReliable(payload);
+  }
+
+  private ensureKeyboardInputMode(): boolean {
+    if (this.activeInputMode !== "gamepad") {
+      return true;
+    }
+    const idleMs = performance.now() - this.lastGamepadActivityMs;
+    if (idleMs < GfnWebRtcClient.GAMEPAD_MODE_LOCKOUT_MS) {
+      return false;
+    }
+    this.activeInputMode = "mkb";
+    this.log("Input mode → mouse+keyboard (gamepad idle)");
+    return true;
+  }
+
+  public sendAntiAfkPulse(): boolean {
+    if (!this.inputReady) {
+      return false;
+    }
+
+    this.sendKeyPacket(0x7c, 0x64, 0, true); // F13 down
+    window.setTimeout(() => this.sendKeyPacket(0x7c, 0x64, 0, false), 50); // F13 up
+    return true;
+  }
+
+  public sendPasteShortcut(useMeta: boolean): boolean {
+    if (!this.inputReady || !this.ensureKeyboardInputMode()) {
+      return false;
+    }
+
+    const modifier = useMeta
+      ? { vk: 0x5b, scancode: 0xe3, flag: 0x08 } // Meta/Command
+      : { vk: 0xa2, scancode: 0xe0, flag: 0x02 }; // Ctrl
+
+    this.sendKeyPacket(modifier.vk, modifier.scancode, modifier.flag, true);
+    this.sendKeyPacket(0x56, 0x19, modifier.flag, true); // V down
+    this.sendKeyPacket(0x56, 0x19, modifier.flag, false); // V up
+    this.sendKeyPacket(modifier.vk, modifier.scancode, 0, false);
+    return true;
+  }
+
+  public sendText(text: string): number {
+    if (!this.inputReady || !text || !this.ensureKeyboardInputMode()) {
+      return 0;
+    }
+
+    let sent = 0;
+    const maxChars = 4096;
+    for (const char of text.slice(0, maxChars)) {
+      const key = mapTextCharToKeySpec(char);
+      if (!key) {
+        continue;
+      }
+
+      if (key.shift) {
+        this.sendKeyPacket(0xa0, 0xe1, 0x01, true); // Shift down
+      }
+
+      const mods = key.shift ? 0x01 : 0;
+      this.sendKeyPacket(key.vk, key.scancode, mods, true);
+      this.sendKeyPacket(key.vk, key.scancode, mods, false);
+
+      if (key.shift) {
+        this.sendKeyPacket(0xa0, 0xe1, 0, false); // Shift up
+      }
+
+      sent++;
+    }
+
+    return sent;
   }
 
   /** Send gamepad data on the partially reliable channel (unordered, maxPacketLifeTime).
