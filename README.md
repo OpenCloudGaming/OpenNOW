@@ -75,16 +75,17 @@ OpenNOW exists to give the community a transparent, high-quality alternative cli
 
 ## Key Features
 
-| Feature | Status |
-|---------|:------:|
-| OAuth Login + Session Restore | ✅ |
-| Catalog + Library Browsing | ✅ |
-| WebRTC Streaming (Chromium) | ✅ |
-| Keyboard + Mouse Input Channels | ✅ |
-| Adjustable Shortcuts in Settings | ✅ |
-| H.264 Codec | ✅ |
-| AV1 Codec | ✅ |
-| H.265 Codec | 🚧 In progress |
+| Feature | Status | Feature | Status |
+|---------|:------:|---------|:------:|
+| Authentication + Session Restore | ✅ | Adjustable Shortcuts | ✅ |
+| Game Library + Catalog | ✅ | Stats Overlay | ✅ |
+| WebRTC Streaming (Chromium) | ✅ | Anti-AFK | ✅ |
+| Keyboard + Mouse Input | ✅ | Clipboard Paste | ✅ |
+| Alliance Provider Support | ✅ | Audio Playback | ✅ |
+| AV1 Codec | ✅ | H.264 Codec | ✅ |
+| H.265 Codec | 🚧 In progress | Gamepad Support | ✅ |
+
+**Ongoing Work & Maintenance:** H.265 tuning, microphone support, instant replay, screenshots, continued latency/performance optimizations, and stability fixes across all supported platforms.
 
 ## Platform Targets
 
