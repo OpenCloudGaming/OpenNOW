@@ -2,7 +2,15 @@
   "name": "opennow-stable",
   "version": "0.1.0",
   "description": "Electron-based OpenNOW stable client",
-  "author": "zortos293",
+  "author": {
+    "name": "zortos293",
+    "email": "zortos293@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/OpenCloudGaming/OpenNOW",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OpenCloudGaming/OpenNOW.git"
+  },
   "private": true,
   "type": "module",
   "main": "dist-electron/main/index.js",
@@ -36,6 +44,13 @@
   "build": {
     "appId": "com.zortos.opennow.stable",
     "productName": "OpenNOW Stable",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "OpenCloudGaming",
+        "repo": "OpenNOW"
+      }
+    ],
     "icon": "../img.png",
     "npmRebuild": false,
     "nodeGypRebuild": false,
@@ -75,6 +90,7 @@
         "deb"
       ],
       "category": "Game",
+      "maintainer": "zortos293 <zortos293@users.noreply.github.com>",
       "artifactName": "OpenNOW-Stable-${version}-linux-${arch}.${ext}"
     }
   }
