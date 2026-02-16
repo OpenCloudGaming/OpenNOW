@@ -10,6 +10,7 @@ import { shell } from "electron";
 import type {
   AuthLoginRequest,
   AuthSession,
+  AuthSessionResult,
   AuthTokens,
   AuthUser,
   LoginProvider,
@@ -675,18 +676,43 @@ export class AuthService {
     return tokens.expiresAt - Date.now() < 10 * 60 * 1000;
   }
 
-  async ensureValidSession(): Promise<AuthSession | null> {
+  async ensureValidSessionWithStatus(forceRefresh = false): Promise<AuthSessionResult> {
     if (!this.session) {
-      return null;
+      return {
+        session: null,
+        refresh: {
+          attempted: false,
+          forced: forceRefresh,
+          outcome: "not_attempted",
+          message: "No saved session found.",
+        },
+      };
     }
 
     const tokens = this.session.tokens;
-    if (!this.shouldRefresh(tokens)) {
-      return this.session;
+    const shouldRefreshNow = forceRefresh || this.shouldRefresh(tokens);
+    if (!shouldRefreshNow) {
+      return {
+        session: this.session,
+        refresh: {
+          attempted: false,
+          forced: forceRefresh,
+          outcome: "not_attempted",
+          message: "Session token is still valid.",
+        },
+      };
     }
 
     if (!tokens.refreshToken) {
-      return this.session;
+      return {
+        session: this.session,
+        refresh: {
+          attempted: true,
+          forced: forceRefresh,
+          outcome: "missing_refresh_token",
+          message: "No refresh token available. Using saved session token.",
+        },
+      };
     }
 
     try {
@@ -703,11 +729,36 @@ export class AuthService {
       await this.enrichUserTier();
 
       await this.persist();
-    } catch {
-      return this.session;
+      return {
+        session: this.session,
+        refresh: {
+          attempted: true,
+          forced: forceRefresh,
+          outcome: "refreshed",
+          message: forceRefresh
+            ? "Saved session token refreshed."
+            : "Session token refreshed because it was near expiry.",
+        },
+      };
+    } catch (error) {
+      const refreshError =
+        error instanceof Error ? error.message : "Unknown error while refreshing token";
+      return {
+        session: this.session,
+        refresh: {
+          attempted: true,
+          forced: forceRefresh,
+          outcome: "failed",
+          message: "Token refresh failed. Using saved session token.",
+          error: refreshError,
+        },
+      };
     }
+  }
 
-    return this.session;
+  async ensureValidSession(): Promise<AuthSession | null> {
+    const result = await this.ensureValidSessionWithStatus(false);
+    return result.session;
   }
 
   async resolveJwtToken(explicitToken?: string): Promise<string> {

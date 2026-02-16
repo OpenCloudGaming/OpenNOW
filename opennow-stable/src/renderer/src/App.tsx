@@ -10,6 +10,7 @@ import type {
   MainToRendererSignalingEvent,
   SessionInfo,
   Settings,
+  SubscriptionInfo,
   StreamRegion,
   VideoCodec,
 } from "@shared/gfn";
@@ -109,6 +110,11 @@ export function App(): JSX.Element {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [startupStatusMessage, setStartupStatusMessage] = useState("Restoring saved session...");
+  const [startupRefreshNotice, setStartupRefreshNotice] = useState<{
+    tone: "success" | "warn";
+    text: string;
+  } | null>(null);
 
   // Navigation
   const [currentPage, setCurrentPage] = useState<AppPage>("home");
@@ -143,6 +149,7 @@ export function App(): JSX.Element {
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
+  const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
 
   // Stream State
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -182,6 +189,25 @@ export function App(): JSX.Element {
     return selectedProvider?.streamingServiceUrl ?? "";
   }, [selectedProvider]);
 
+  const loadSubscriptionInfo = useCallback(
+    async (session: AuthSession): Promise<void> => {
+      const token = session.tokens.idToken ?? session.tokens.accessToken;
+      const subscription = await window.openNow.fetchSubscription({
+        token,
+        providerStreamingBaseUrl: session.provider.streamingServiceUrl,
+        userId: session.user.userId,
+      });
+      setSubscriptionInfo(subscription);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!startupRefreshNotice) return;
+    const timer = window.setTimeout(() => setStartupRefreshNotice(null), 7000);
+    return () => window.clearTimeout(timer);
+  }, [startupRefreshNotice]);
+
   // Initialize app
   useEffect(() => {
     if (hasInitializedRef.current) return;
@@ -194,11 +220,33 @@ export function App(): JSX.Element {
         setSettings(loadedSettings);
         setSettingsLoaded(true);
 
-        // Load providers and session
-        const [providerList, persistedSession] = await Promise.all([
+        // Load providers and session (force refresh on startup restore)
+        setStartupStatusMessage("Restoring saved session and refreshing token...");
+        const [providerList, sessionResult] = await Promise.all([
           window.openNow.getLoginProviders(),
-          window.openNow.getAuthSession(),
+          window.openNow.getAuthSession({ forceRefresh: true }),
         ]);
+        const persistedSession = sessionResult.session;
+
+        if (sessionResult.refresh.outcome === "refreshed") {
+          setStartupRefreshNotice({
+            tone: "success",
+            text: "Session restored. Token refreshed.",
+          });
+          setStartupStatusMessage("Token refreshed. Loading your account...");
+        } else if (sessionResult.refresh.outcome === "failed") {
+          setStartupRefreshNotice({
+            tone: "warn",
+            text: "Token refresh failed. Using saved session token.",
+          });
+          setStartupStatusMessage("Token refresh failed. Continuing with saved session...");
+        } else if (sessionResult.refresh.outcome === "missing_refresh_token") {
+          setStartupStatusMessage("Saved session has no refresh token. Continuing...");
+        } else if (persistedSession) {
+          setStartupStatusMessage("Session restored.");
+        } else {
+          setStartupStatusMessage("No saved session found.");
+        }
 
         // Update isInitializing FIRST so UI knows we're done loading
         setIsInitializing(false);
@@ -213,6 +261,13 @@ export function App(): JSX.Element {
           const token = persistedSession.tokens.idToken ?? persistedSession.tokens.accessToken;
           const discovered = await window.openNow.getRegions({ token });
           setRegions(discovered);
+
+          try {
+            await loadSubscriptionInfo(persistedSession);
+          } catch (error) {
+            console.warn("Failed to load subscription info:", error);
+            setSubscriptionInfo(null);
+          }
 
           // Load games
           try {
@@ -247,9 +302,11 @@ export function App(): JSX.Element {
           const publicGames = await window.openNow.fetchPublicGames();
           setGames(publicGames);
           setSource("public");
+          setSubscriptionInfo(null);
         }
       } catch (error) {
         console.error("Initialization failed:", error);
+        setStartupStatusMessage("Session restore failed. Please sign in again.");
         // Always set isInitializing to false even on error
         setIsInitializing(false);
       }
@@ -445,6 +502,13 @@ export function App(): JSX.Element {
       const discovered = await window.openNow.getRegions({ token });
       setRegions(discovered);
 
+      try {
+        await loadSubscriptionInfo(session);
+      } catch (error) {
+        console.warn("Failed to load subscription info:", error);
+        setSubscriptionInfo(null);
+      }
+
       // Load games
       const mainGames = await window.openNow.fetchMainGames({
         token,
@@ -465,7 +529,7 @@ export function App(): JSX.Element {
     } finally {
       setIsLoggingIn(false);
     }
-  }, [providerIdpId]);
+  }, [loadSubscriptionInfo, providerIdpId]);
 
   // Logout handler
   const handleLogout = useCallback(async () => {
@@ -473,6 +537,7 @@ export function App(): JSX.Element {
     setAuthSession(null);
     setGames([]);
     setLibraryGames([]);
+    setSubscriptionInfo(null);
     setCurrentPage("home");
     const publicGames = await window.openNow.fetchPublicGames();
     setGames(publicGames);
@@ -871,6 +936,7 @@ export function App(): JSX.Element {
         isLoading={isLoggingIn}
         error={loginError}
         isInitializing={isInitializing}
+        statusMessage={startupStatusMessage}
       />
     );
   }
@@ -927,10 +993,16 @@ export function App(): JSX.Element {
   // Main app layout
   return (
     <div className="app-container">
+      {startupRefreshNotice && (
+        <div className={`auth-refresh-notice auth-refresh-notice--${startupRefreshNotice.tone}`}>
+          {startupRefreshNotice.text}
+        </div>
+      )}
       <Navbar
         currentPage={currentPage}
         onNavigate={setCurrentPage}
         user={authSession.user}
+        subscription={subscriptionInfo}
         onLogout={handleLogout}
       />
 

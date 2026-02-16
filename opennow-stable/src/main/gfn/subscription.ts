@@ -20,9 +20,24 @@ const LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
 const GFN_CLIENT_VERSION = "2.0.80.173";
 
 interface SubscriptionResponse {
+  firstEntitlementStartDateTime?: string;
+  type?: string;
   membershipTier?: string;
+  allottedTimeInMinutes?: number;
+  purchasedTimeInMinutes?: number;
+  rolledOverTimeInMinutes?: number;
   remainingTimeInMinutes?: number;
   totalTimeInMinutes?: number;
+  notifications?: {
+    notifyUserWhenTimeRemainingInMinutes?: number;
+    notifyUserOnSessionWhenRemainingTimeInMinutes?: number;
+  };
+  currentSpanStartDateTime?: string;
+  currentSpanEndDateTime?: string;
+  currentSubscriptionState?: {
+    state?: string;
+    isGamePlayAllowed?: boolean;
+  };
   subType?: string;
   addons?: SubscriptionAddonResponse[];
   features?: SubscriptionFeatures;
@@ -49,6 +64,34 @@ interface SubscriptionAddonResponse {
 interface AddonAttribute {
   key?: string;
   textValue?: string;
+}
+
+function parseMinutes(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function parseNumberText(value: unknown): number | undefined {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return undefined;
+  }
+  return parsed;
+}
+
+function parseIsoDate(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 /**
@@ -92,13 +135,21 @@ export async function fetchSubscription(
   // Parse membership tier (defaults to FREE)
   const membershipTier = data.membershipTier ?? "FREE";
 
-  // Convert minutes to hours
-  const remainingHours =
-    data.remainingTimeInMinutes !== undefined
-      ? data.remainingTimeInMinutes / 60
-      : 0;
-  const totalHours =
-    data.totalTimeInMinutes !== undefined ? data.totalTimeInMinutes / 60 : 0;
+  // Convert minutes to hours. Use the additive fields as fallback if total is absent.
+  const allottedMinutes = parseMinutes(data.allottedTimeInMinutes) ?? 0;
+  const purchasedMinutes = parseMinutes(data.purchasedTimeInMinutes) ?? 0;
+  const rolledOverMinutes = parseMinutes(data.rolledOverTimeInMinutes) ?? 0;
+  const fallbackTotalMinutes = allottedMinutes + purchasedMinutes + rolledOverMinutes;
+  const totalMinutes = parseMinutes(data.totalTimeInMinutes) ?? fallbackTotalMinutes;
+  const remainingMinutes = parseMinutes(data.remainingTimeInMinutes) ?? 0;
+  const usedMinutes = Math.max(totalMinutes - remainingMinutes, 0);
+
+  const allottedHours = allottedMinutes / 60;
+  const purchasedHours = purchasedMinutes / 60;
+  const rolledOverHours = rolledOverMinutes / 60;
+  const usedHours = usedMinutes / 60;
+  const remainingHours = remainingMinutes / 60;
+  const totalHours = totalMinutes / 60;
 
   // Check if unlimited subscription
   const isUnlimited = data.subType === "UNLIMITED";
@@ -116,13 +167,26 @@ export async function fetchSubscription(
     const sizeAttr = storageAddonResponse.attributes?.find(
       (attr) => attr.key === "TOTAL_STORAGE_SIZE_IN_GB",
     );
-    const sizeGb = sizeAttr?.textValue
-      ? parseInt(sizeAttr.textValue, 10)
-      : undefined;
+    const usedAttr = storageAddonResponse.attributes?.find(
+      (attr) => attr.key === "USED_STORAGE_SIZE_IN_GB",
+    );
+    const regionNameAttr = storageAddonResponse.attributes?.find(
+      (attr) => attr.key === "STORAGE_METRO_REGION_NAME",
+    );
+    const regionCodeAttr = storageAddonResponse.attributes?.find(
+      (attr) => attr.key === "STORAGE_METRO_REGION",
+    );
+    const sizeGb = parseNumberText(sizeAttr?.textValue);
+    const usedGb = parseNumberText(usedAttr?.textValue);
+    const regionName = regionNameAttr?.textValue;
+    const regionCode = regionCodeAttr?.textValue;
 
     storageAddon = {
       type: "PERMANENT_STORAGE",
       sizeGb,
+      usedGb,
+      regionName,
+      regionCode,
     };
   }
 
@@ -148,8 +212,26 @@ export async function fetchSubscription(
 
   return {
     membershipTier,
+    subscriptionType: data.type,
+    subscriptionSubType: data.subType,
+    allottedHours,
+    purchasedHours,
+    rolledOverHours,
+    usedHours,
     remainingHours,
     totalHours,
+    firstEntitlementStartDateTime: parseIsoDate(data.firstEntitlementStartDateTime),
+    serverRegionId: vpcId,
+    currentSpanStartDateTime: parseIsoDate(data.currentSpanStartDateTime),
+    currentSpanEndDateTime: parseIsoDate(data.currentSpanEndDateTime),
+    notifyUserWhenTimeRemainingInMinutes: parseMinutes(
+      data.notifications?.notifyUserWhenTimeRemainingInMinutes,
+    ),
+    notifyUserOnSessionWhenRemainingTimeInMinutes: parseMinutes(
+      data.notifications?.notifyUserOnSessionWhenRemainingTimeInMinutes,
+    ),
+    state: data.currentSubscriptionState?.state,
+    isGamePlayAllowed: data.currentSubscriptionState?.isGamePlayAllowed,
     isUnlimited,
     storageAddon,
     entitledResolutions,

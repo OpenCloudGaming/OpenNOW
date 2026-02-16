@@ -11,6 +11,7 @@ export interface LoginScreenProps {
   isLoading: boolean;
   error: string | null;
   isInitializing?: boolean;
+  statusMessage?: string;
 }
 
 export function LoginScreen({
@@ -21,6 +22,7 @@ export function LoginScreen({
   isLoading,
   error,
   isInitializing = false,
+  statusMessage,
 }: LoginScreenProps): JSX.Element {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -74,6 +76,13 @@ export function LoginScreen({
             </div>
           )}
 
+          {isInitializing && statusMessage && (
+            <div className="login-status" role="status" aria-live="polite">
+              <span className="login-status-dot" />
+              {statusMessage}
+            </div>
+          )}
+
           <div className="login-field" ref={dropdownRef}>
             <label className="login-label">Provider</label>
             <button
@@ -123,7 +132,7 @@ export function LoginScreen({
             {isLoading || isInitializing ? (
               <>
                 <span className="login-spinner" />
-                <span>{isInitializing ? "Loading..." : "Connecting..."}</span>
+                <span>{isInitializing ? "Restoring Session..." : "Connecting..."}</span>
               </>
             ) : (
               <>

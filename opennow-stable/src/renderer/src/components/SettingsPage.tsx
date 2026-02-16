@@ -490,7 +490,8 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
 
     async function load(): Promise<void> {
       try {
-        const session = await window.openNow.getAuthSession();
+        const sessionResult = await window.openNow.getAuthSession();
+        const session = sessionResult.session;
         if (!session || cancelled) {
           setEntitledResolutions([]);
           setSubscriptionLoading(false);
