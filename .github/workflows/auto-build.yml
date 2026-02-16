@@ -56,6 +56,8 @@ jobs:
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       npm_config_audit: "false"
       npm_config_fund: "false"
+      # Use system fpm on arm64 (no prebuilt binaries available)
+      USE_SYSTEM_FPM: ${{ matrix.label == 'linux-arm64' && 'true' || 'false' }}
 
     steps:
       - name: Checkout
@@ -80,7 +82,12 @@ jobs:
 
       - name: Install Linux packaging tools
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fakeroot rpm
+      - name: Install FPM for arm64 deb builds
+        if: matrix.label == 'linux-arm64'
+        run: sudo apt-get install -y ruby ruby-dev build-essential && sudo gem install fpm
 
       - name: Install dependencies
         run: npm ci --prefer-offline --no-audit --progress=false
