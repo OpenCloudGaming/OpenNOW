@@ -471,6 +471,10 @@ export class GfnWebRtcClient {
   private pointerLockEscapeTimer: number | null = null;
   // Fallback keyup if browser swallows Escape keyup while keyboard lock is active.
   private escapeAutoKeyUpTimer: number | null = null;
+  // True when we already sent an immediate Escape tap for the current physical hold.
+  private escapeTapDispatchedForCurrentHold = false;
+  // Skip one synthetic Escape when pointer lock was intentionally released via hold.
+  private suppressNextSyntheticEscape = false;
   // Hold Escape for 4 seconds to intentionally release mouse lock
   private escapeHoldReleaseTimer: number | null = null;
   private escapeHoldIndicatorDelayTimer: number | null = null;
@@ -1493,12 +1497,13 @@ export class GfnWebRtcClient {
       this.clearEscapeHoldTimer();
       if (document.pointerLockElement === videoElement) {
         this.log("Escape held for 5s, releasing pointer lock");
+        this.suppressNextSyntheticEscape = true;
         document.exitPointerLock();
       }
     }, 5000);
   }
 
-  private shouldSendSyntheticEscape(): boolean {
+  private shouldSendSyntheticEscapeOnPointerLockLoss(): boolean {
     if (document.visibilityState !== "visible") {
       return false;
     }
@@ -1757,7 +1762,12 @@ export class GfnWebRtcClient {
         event.preventDefault();
       }
 
-      const mapped = mapKeyboardEvent(event);
+      const isEscapeEvent =
+        event.key === "Escape"
+        || event.key === "Esc"
+        || event.code === "Escape"
+        || event.keyCode === 27;
+      const mapped = mapKeyboardEvent(event) ?? (isEscapeEvent ? { vk: 0x1B, scancode: 0x29 } : null);
       if (!mapped) {
         return;
       }
@@ -1787,17 +1797,24 @@ export class GfnWebRtcClient {
         this.startEscapeHoldRelease(videoElement);
       }
 
+      if (mapped.vk === 0x1B && document.pointerLockElement === videoElement) {
+        // Stream should receive Escape immediately on press.
+        this.sendKeyPacket(0x1B, mapped.scancode || 0x29, 0, true);
+        this.sendKeyPacket(0x1B, mapped.scancode || 0x29, 0, false);
+        this.escapeTapDispatchedForCurrentHold = true;
+        this.clearEscapeAutoKeyUpTimer();
+        return;
+      }
+
       const payload = this.inputEncoder.encodeKeyDown({
         keycode: mapped.vk,
         scancode: mapped.scancode,
         modifiers: modifierFlags(event),
-        timestampUs: timestampUs(event.timeStamp),
+        // Use a fresh monotonic timestamp for keyboard events. In some
+        // fullscreen/keyboard-lock paths, event.timeStamp can be unstable.
+        timestampUs: timestampUs(),
       });
       this.sendReliable(payload);
-
-      if (mapped.vk === 0x1B && document.pointerLockElement === videoElement) {
-        this.scheduleEscapeAutoKeyUp(mapped.scancode);
-      }
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
@@ -1805,7 +1822,12 @@ export class GfnWebRtcClient {
         return;
       }
 
-      const mapped = mapKeyboardEvent(event);
+      const isEscapeEvent =
+        event.key === "Escape"
+        || event.key === "Esc"
+        || event.code === "Escape"
+        || event.keyCode === 27;
+      const mapped = mapKeyboardEvent(event) ?? (isEscapeEvent ? { vk: 0x1B, scancode: 0x29 } : null);
       if (!mapped) {
         return;
       }
@@ -1814,13 +1836,18 @@ export class GfnWebRtcClient {
       if (mapped.vk === 0x1B) {
         this.clearEscapeAutoKeyUpTimer();
         this.clearEscapeHoldTimer();
+        if (this.escapeTapDispatchedForCurrentHold) {
+          this.escapeTapDispatchedForCurrentHold = false;
+          this.pressedKeys.delete(mapped.vk);
+          return;
+        }
       }
       this.pressedKeys.delete(mapped.vk);
       const payload = this.inputEncoder.encodeKeyUp({
         keycode: mapped.vk,
         scancode: mapped.scancode,
         modifiers: modifierFlags(event),
-        timestampUs: timestampUs(event.timeStamp),
+        timestampUs: timestampUs(),
       });
       this.sendReliable(payload);
     };
@@ -1898,6 +1925,8 @@ export class GfnWebRtcClient {
           window.clearTimeout(this.pointerLockEscapeTimer);
           this.pointerLockEscapeTimer = null;
         }
+        this.suppressNextSyntheticEscape = false;
+        this.escapeTapDispatchedForCurrentHold = false;
         this.clearEscapeHoldTimer();
         return;
       }
@@ -1907,7 +1936,13 @@ export class GfnWebRtcClient {
       // Pointer lock was lost
       if (!this.inputReady) return;
 
-      if (!this.shouldSendSyntheticEscape()) {
+      if (this.suppressNextSyntheticEscape) {
+        this.suppressNextSyntheticEscape = false;
+        this.releasePressedKeys("pointer lock intentionally released");
+        return;
+      }
+
+      if (!this.shouldSendSyntheticEscapeOnPointerLockLoss()) {
         this.releasePressedKeys("pointer lock lost while unfocused");
         return;
       }
@@ -1929,7 +1964,7 @@ export class GfnWebRtcClient {
 
         if (!this.inputReady) return;
 
-        if (!this.shouldSendSyntheticEscape()) {
+        if (!this.shouldSendSyntheticEscapeOnPointerLockLoss()) {
           this.releasePressedKeys("focus changed before synthetic Escape");
           return;
         }
@@ -2033,11 +2068,12 @@ export class GfnWebRtcClient {
     this.inputCleanup.push(() => document.removeEventListener("fullscreenchange", onFullscreenChange));
     this.inputCleanup.push(() => window.removeEventListener("blur", onWindowBlur));
     this.inputCleanup.push(() => document.removeEventListener("visibilitychange", onVisibilityChange));
-    this.inputCleanup.push(() => {
-      if (this.pointerLockEscapeTimer !== null) {
-        window.clearTimeout(this.pointerLockEscapeTimer);
-        this.pointerLockEscapeTimer = null;
-      }
+      this.inputCleanup.push(() => {
+        if (this.pointerLockEscapeTimer !== null) {
+          window.clearTimeout(this.pointerLockEscapeTimer);
+          this.pointerLockEscapeTimer = null;
+        }
+      this.escapeTapDispatchedForCurrentHold = false;
       this.clearEscapeAutoKeyUpTimer();
       this.clearEscapeHoldTimer();
       this.releasePressedKeys("input cleanup");
