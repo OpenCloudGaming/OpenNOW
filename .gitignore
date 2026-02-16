@@ -22,11 +22,6 @@ target3/
 Thumbs.db
 nul
 
-# Tauri
-src-tauri/target/
-src-tauri/target2/
-src-tauri/target3/
-
 # Logs
 *.log
 
@@ -37,18 +32,13 @@ src-tauri/target3/
 # Sensitive data
 *.tokens.json
 gfn_tokens.json
-src-tauri/gfn_tokens.json
 
 # Test files
 test/
 
-# Generated schemas
-src-tauri/gen/
-
 package-lock.json
+!opennow-stable/package-lock.json
 
 # AI Agent guidelines (local only)
 AGENTS.md
 release-notes.md
-opennow-streamer/.claude/settings.local.json
-CLAUDE.md

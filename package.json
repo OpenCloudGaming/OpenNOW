@@ -1,16 +1,12 @@
 {
-  "name": "opennow-streamer",
-  "version": "0.1.0",
-  "description": "OpenNOW - Native GeForce NOW streaming client built from the ground up",
+  "name": "opennow-workspace",
+  "private": true,
+  "description": "OpenNOW Electron workspace",
   "scripts": {
-    "build": "cd opennow-streamer && cargo build --release",
-    "dev": "cd opennow-streamer && cargo run",
-    "test": "cd opennow-streamer && cargo test"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/zortos293/GFNClient.git"
-  },
-  "author": "zortos293",
-  "license": "MIT"
+    "dev": "npm --prefix opennow-stable run dev",
+    "build": "npm --prefix opennow-stable run build",
+    "typecheck": "npm --prefix opennow-stable run typecheck",
+    "dist": "npm --prefix opennow-stable run dist",
+    "dist:signed": "npm --prefix opennow-stable run dist:signed"
+  }
 }
