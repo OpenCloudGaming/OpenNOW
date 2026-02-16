@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import { IPC_CHANNELS } from "@shared/ipc";
 import type {
   AuthLoginRequest,
+  AuthSessionRequest,
   GamesFetchRequest,
   ResolveLaunchIdRequest,
   RegionsFetchRequest,
@@ -23,7 +24,7 @@ import type {
 type PreloadApi = OpenNowApi;
 
 const api: PreloadApi = {
-  getAuthSession: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_SESSION),
+  getAuthSession: (input: AuthSessionRequest = {}) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_SESSION, input),
   getLoginProviders: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_PROVIDERS),
   getRegions: (input: RegionsFetchRequest = {}) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_REGIONS, input),
   login: (input: AuthLoginRequest) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGIN, input),

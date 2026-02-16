@@ -13,6 +13,7 @@ import { IPC_CHANNELS } from "@shared/ipc";
 import type {
   MainToRendererSignalingEvent,
   AuthLoginRequest,
+  AuthSessionRequest,
   GamesFetchRequest,
   ResolveLaunchIdRequest,
   RegionsFetchRequest,
@@ -285,8 +286,8 @@ function isSessionConflictError(error: unknown): boolean {
 }
 
 function registerIpcHandlers(): void {
-  ipcMain.handle(IPC_CHANNELS.AUTH_GET_SESSION, async () => {
-    return authService.ensureValidSession();
+  ipcMain.handle(IPC_CHANNELS.AUTH_GET_SESSION, async (_event, payload: AuthSessionRequest = {}) => {
+    return authService.ensureValidSessionWithStatus(Boolean(payload.forceRefresh));
   });
 
   ipcMain.handle(IPC_CHANNELS.AUTH_GET_PROVIDERS, async () => {

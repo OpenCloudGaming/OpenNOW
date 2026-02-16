@@ -75,12 +75,29 @@ export interface EntitledResolution {
 export interface StorageAddon {
   type: "PERMANENT_STORAGE";
   sizeGb?: number;
+  usedGb?: number;
+  regionName?: string;
+  regionCode?: string;
 }
 
 export interface SubscriptionInfo {
   membershipTier: string;
+  subscriptionType?: string;
+  subscriptionSubType?: string;
+  allottedHours: number;
+  purchasedHours: number;
+  rolledOverHours: number;
+  usedHours: number;
   remainingHours: number;
   totalHours: number;
+  firstEntitlementStartDateTime?: string;
+  serverRegionId?: string;
+  currentSpanStartDateTime?: string;
+  currentSpanEndDateTime?: string;
+  notifyUserWhenTimeRemainingInMinutes?: number;
+  notifyUserOnSessionWhenRemainingTimeInMinutes?: number;
+  state?: string;
+  isGamePlayAllowed?: boolean;
   isUnlimited: boolean;
   storageAddon?: StorageAddon;
   entitledResolutions: EntitledResolution[];
@@ -94,6 +111,25 @@ export interface AuthSession {
 
 export interface AuthLoginRequest {
   providerIdpId?: string;
+}
+
+export interface AuthSessionRequest {
+  forceRefresh?: boolean;
+}
+
+export type AuthRefreshOutcome = "not_attempted" | "refreshed" | "failed" | "missing_refresh_token";
+
+export interface AuthRefreshStatus {
+  attempted: boolean;
+  forced: boolean;
+  outcome: AuthRefreshOutcome;
+  message: string;
+  error?: string;
+}
+
+export interface AuthSessionResult {
+  session: AuthSession | null;
+  refresh: AuthRefreshStatus;
 }
 
 export interface RegionsFetchRequest {
@@ -251,7 +287,7 @@ export type MainToRendererSignalingEvent =
 export type SessionConflictChoice = "resume" | "new" | "cancel";
 
 export interface OpenNowApi {
-  getAuthSession(): Promise<AuthSession | null>;
+  getAuthSession(input?: AuthSessionRequest): Promise<AuthSessionResult>;
   getLoginProviders(): Promise<LoginProvider[]>;
   getRegions(input?: RegionsFetchRequest): Promise<StreamRegion[]>;
   login(input: AuthLoginRequest): Promise<AuthSession>;
