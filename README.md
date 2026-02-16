@@ -5,6 +5,10 @@
 </p>
 
 <p align="center">
+  <img src="img.png" alt="OpenNOW" />
+</p>
+
+<p align="center">
   <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
     <img src="https://img.shields.io/github/v/tag/OpenCloudGaming/OpenNOW?style=for-the-badge&label=Download&color=brightgreen" alt="Download">
   </a>
