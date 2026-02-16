@@ -2083,6 +2083,9 @@ body,
   pointer-events: none;
   animation: float-a 16s ease-in-out infinite;
 }
+.sload.sload--error .sload-glow {
+  background: radial-gradient(circle, rgba(248, 113, 113, 0.14) 0%, transparent 72%);
+}
 .sload-content {
   position: relative; z-index: 1;
   display: flex; flex-direction: column; align-items: center; gap: 32px;
@@ -2145,6 +2148,12 @@ body,
   border-color: var(--accent); color: var(--accent);
 }
 .sload-step.pending .sload-step-dot { opacity: 0.35; }
+.sload-step.failed .sload-step-dot {
+  background: linear-gradient(135deg, rgba(248, 113, 113, 0.28), rgba(239, 68, 68, 0.32));
+  border-color: var(--error);
+  color: #ffe3e3;
+  animation: pulse-glow 2s ease-in-out infinite;
+}
 
 .sload-step-name {
   font-size: 0.7rem; font-weight: 600;
@@ -2153,6 +2162,7 @@ body,
 }
 .sload-step.active .sload-step-name { color: var(--ink); }
 .sload-step.completed .sload-step-name { color: var(--accent); }
+.sload-step.failed .sload-step-name { color: var(--error); }
 
 .sload-step-line {
   position: absolute; top: 19px;
@@ -2164,17 +2174,37 @@ body,
   background: linear-gradient(90deg, var(--accent), var(--accent-press));
   transition: width 500ms var(--ease);
 }
+.sload-step-line.failed .sload-step-line-fill {
+  width: 100%;
+  background: linear-gradient(90deg, #f87171, #ef4444);
+}
 .sload-step.completed .sload-step-line-fill { width: 100%; }
 .sload-step.active .sload-step-line-fill { width: 50%; }
 
 /* Status */
 .sload-status { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
 .sload-spin { color: var(--accent); animation: spin 1s linear infinite; }
+.sload-error-icon { color: var(--error); }
 .sload-status-text { display: flex; flex-direction: column; gap: 5px; }
 .sload-message { margin: 0; font-size: 0.95rem; font-weight: 500; color: var(--ink); }
 .sload-queue { margin: 0; font-size: 0.82rem; color: var(--ink-soft); }
 .sload-queue-num { color: var(--accent); font-weight: 700; font-size: 1rem; }
 .sload-wait { color: var(--ink-muted); }
+.sload-status--error .sload-message { color: #ffdada; }
+.sload-error-title { margin: 0; font-size: 0.9rem; font-weight: 700; color: #ffd5d5; }
+.sload-error-desc { margin: 0; font-size: 0.8rem; color: #f8b4b4; max-width: 360px; line-height: 1.4; }
+.sload-error-code {
+  margin: 0;
+  font-size: 0.72rem;
+  color: #fca5a5;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  letter-spacing: 0.01em;
+}
+.sload.sload--error .sload-queue,
+.sload.sload--error .sload-queue-num,
+.sload.sload--error .sload-wait {
+  color: #f8b4b4;
+}
 
 /* Cancel */
 .sload-cancel {

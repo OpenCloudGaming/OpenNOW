@@ -38,12 +38,19 @@ const fpsOptions = [30, 60, 120, 144, 240];
 type GameSource = "main" | "library" | "public";
 type AppPage = "home" | "library" | "settings";
 type StreamStatus = "idle" | "queue" | "setup" | "starting" | "connecting" | "streaming";
+type StreamLoadingStatus = "queue" | "setup" | "starting" | "connecting";
 type ExitPromptState = { open: boolean; gameTitle: string };
 type StreamWarningState = {
   code: StreamTimeWarning["code"];
   message: string;
   tone: "warn" | "critical";
   secondsLeft?: number;
+};
+type LaunchErrorState = {
+  stage: StreamLoadingStatus;
+  title: string;
+  description: string;
+  codeLabel?: string;
 };
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
@@ -103,11 +110,14 @@ function defaultDiagnostics(): StreamDiagnostics {
 
 function isSessionLimitError(error: unknown): boolean {
   if (error && typeof error === "object" && "gfnErrorCode" in error) {
-    return error.gfnErrorCode === 3237093643;
+    const candidate = error.gfnErrorCode;
+    if (typeof candidate === "number") {
+      return candidate === 3237093643 || candidate === 3237093718;
+    }
   }
   if (error instanceof Error) {
     const msg = error.message.toUpperCase();
-    return msg.includes("SESSION LIMIT") || msg.includes("INSUFFICIENT_PLAYABILITY");
+    return msg.includes("SESSION LIMIT") || msg.includes("INSUFFICIENT_PLAYABILITY") || msg.includes("DUPLICATE SESSION");
   }
   return false;
 }
@@ -123,6 +133,89 @@ function warningMessage(code: StreamTimeWarning["code"]): string {
   if (code === 1) return "Session time limit approaching";
   if (code === 2) return "Idle timeout approaching";
   return "Maximum session time approaching";
+}
+
+function toLoadingStatus(status: StreamStatus): StreamLoadingStatus {
+  switch (status) {
+    case "queue":
+    case "setup":
+    case "starting":
+    case "connecting":
+      return status;
+    default:
+      return "queue";
+  }
+}
+
+function toCodeLabel(code: number | undefined): string | undefined {
+  if (code === undefined) return undefined;
+  if (code === 3237093643) return `SessionLimitExceeded (${code})`;
+  if (code === 3237093718) return `SessionInsufficientPlayabilityLevel (${code})`;
+  return `GFN Error ${code}`;
+}
+
+function extractLaunchErrorCode(error: unknown): number | undefined {
+  if (error && typeof error === "object") {
+    if ("gfnErrorCode" in error) {
+      const directCode = error.gfnErrorCode;
+      if (typeof directCode === "number") return directCode;
+    }
+    if ("statusCode" in error) {
+      const statusCode = error.statusCode;
+      if (typeof statusCode === "number" && statusCode > 0 && statusCode < 255) {
+        return 3237093632 + statusCode;
+      }
+    }
+  }
+  if (error instanceof Error) {
+    const match = error.message.match(/\b(3237\d{6,})\b/);
+    if (match) {
+      const code = Number(match[1]);
+      if (Number.isFinite(code)) return code;
+    }
+  }
+  return undefined;
+}
+
+function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchErrorState {
+  const unknownMessage = "The game could not start. Please try again.";
+
+  const titleFromError =
+    error && typeof error === "object" && "title" in error && typeof error.title === "string"
+      ? error.title.trim()
+      : "";
+  const descriptionFromError =
+    error && typeof error === "object" && "description" in error && typeof error.description === "string"
+      ? error.description.trim()
+      : "";
+  const statusDescription =
+    error && typeof error === "object" && "statusDescription" in error && typeof error.statusDescription === "string"
+      ? error.statusDescription.trim()
+      : "";
+  const messageFromError = error instanceof Error ? error.message.trim() : "";
+  const combined = `${statusDescription} ${messageFromError}`.toUpperCase();
+  const code = extractLaunchErrorCode(error);
+
+  if (
+    isSessionLimitError(error) ||
+    combined.includes("INSUFFICIENT_PLAYABILITY") ||
+    combined.includes("SESSION_LIMIT") ||
+    combined.includes("DUPLICATE SESSION")
+  ) {
+    return {
+      stage,
+      title: "Duplicate Session Detected",
+      description: "Another session is already running on your account. Close it first or wait for it to timeout, then launch again.",
+      codeLabel: toCodeLabel(code),
+    };
+  }
+
+  return {
+    stage,
+    title: titleFromError || "Launch Failed",
+    description: descriptionFromError || messageFromError || statusDescription || unknownMessage,
+    codeLabel: toCodeLabel(code),
+  };
 }
 
 export function App(): JSX.Element {
@@ -187,6 +280,7 @@ export function App(): JSX.Element {
   const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: "Game" });
   const [streamingGame, setStreamingGame] = useState<GameInfo | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | undefined>();
+  const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
   const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState(0);
   const [streamWarning, setStreamWarning] = useState<StreamWarningState | null>(null);
@@ -514,6 +608,7 @@ export function App(): JSX.Element {
               fps: settings.fps,
               maxBitrateKbps: settings.maxBitrateMbps * 1000,
             });
+            setLaunchError(null);
             setStreamStatus("streaming");
             setSessionStartedAtMs((current) => current ?? Date.now());
           }
@@ -526,6 +621,7 @@ export function App(): JSX.Element {
           setStreamStatus("idle");
           setSession(null);
           setStreamingGame(null);
+          setLaunchError(null);
           setSessionStartedAtMs(null);
           setSessionElapsedSeconds(0);
           setStreamWarning(null);
@@ -600,6 +696,7 @@ export function App(): JSX.Element {
     setAuthSession(null);
     setGames([]);
     setLibraryGames([]);
+    setLaunchError(null);
     setSubscriptionInfo(null);
     setCurrentPage("home");
     const publicGames = await window.openNow.fetchPublicGames();
@@ -649,12 +746,18 @@ export function App(): JSX.Element {
     }
 
     launchInFlightRef.current = true;
+    let loadingStep: StreamLoadingStatus = "queue";
+    const updateLoadingStep = (next: StreamLoadingStatus): void => {
+      loadingStep = next;
+      setStreamStatus(next);
+    };
 
     setSessionStartedAtMs(Date.now());
     setSessionElapsedSeconds(0);
     setStreamWarning(null);
+    setLaunchError(null);
     setStreamingGame(game);
-    setStreamStatus("queue");
+    updateLoadingStep("queue");
     setQueuePosition(undefined);
 
     try {
@@ -723,7 +826,7 @@ export function App(): JSX.Element {
             // Sync ref immediately — useEffect is async and may not fire
             // before the signaling offer arrives
             sessionRef.current = claimed;
-            setStreamStatus("connecting");
+            updateLoadingStep("connecting");
             await window.openNow.connectSignaling({
               sessionId: claimed.sessionId,
               signalingServer: claimed.signalingServer,
@@ -781,7 +884,7 @@ export function App(): JSX.Element {
 
         // Update status based on session state
         if (polled.status === 1) {
-          setStreamStatus("setup");
+          updateLoadingStep("setup");
         }
       }
 
@@ -789,7 +892,7 @@ export function App(): JSX.Element {
         throw new Error("Session did not become ready in time");
       }
 
-      setStreamStatus("connecting");
+      updateLoadingStep("connecting");
 
       // Use the polled session data which has the latest signaling info
       const finalSession = sessionRef.current ?? newSession;
@@ -807,11 +910,18 @@ export function App(): JSX.Element {
       });
     } catch (error) {
       console.error("Launch failed:", error);
+      setLaunchError(toLaunchErrorState(error, loadingStep));
+      await window.openNow.disconnectSignaling().catch(() => {});
+      clientRef.current?.dispose();
+      clientRef.current = null;
+      setSession(null);
       setStreamStatus("idle");
-      setStreamingGame(null);
+      setQueuePosition(undefined);
       setSessionStartedAtMs(null);
       setSessionElapsedSeconds(0);
       setStreamWarning(null);
+      setEscHoldReleaseIndicator({ visible: false, progress: 0 });
+      setDiagnostics(defaultDiagnostics());
     } finally {
       launchInFlightRef.current = false;
     }
@@ -840,6 +950,7 @@ export function App(): JSX.Element {
       setSession(null);
       setStreamStatus("idle");
       setStreamingGame(null);
+      setLaunchError(null);
       setSessionStartedAtMs(null);
       setSessionElapsedSeconds(0);
       setStreamWarning(null);
@@ -849,6 +960,21 @@ export function App(): JSX.Element {
       console.error("Stop failed:", error);
     }
   }, [authSession, resolveExitPrompt]);
+
+  const handleDismissLaunchError = useCallback(async () => {
+    await window.openNow.disconnectSignaling().catch(() => {});
+    clientRef.current?.dispose();
+    clientRef.current = null;
+    setSession(null);
+    setLaunchError(null);
+    setStreamingGame(null);
+    setQueuePosition(undefined);
+    setSessionStartedAtMs(null);
+    setSessionElapsedSeconds(0);
+    setStreamWarning(null);
+    setEscHoldReleaseIndicator({ visible: false, progress: 0 });
+    setDiagnostics(defaultDiagnostics());
+  }, []);
 
   const releasePointerLockIfNeeded = useCallback(async () => {
     if (document.pointerLockElement) {
@@ -1013,49 +1139,67 @@ export function App(): JSX.Element {
     );
   }
 
-  // Show stream view if streaming
-  if (streamStatus !== "idle") {
+  const showLaunchOverlay = streamStatus !== "idle" || launchError !== null;
+
+  // Show stream lifecycle (waiting/connecting/streaming/failure)
+  if (showLaunchOverlay) {
+    const loadingStatus = launchError ? launchError.stage : toLoadingStatus(streamStatus);
     return (
       <>
-        <StreamView
-          videoRef={videoRef}
-          audioRef={audioRef}
-          stats={diagnostics}
-          showStats={showStatsOverlay}
-          shortcuts={{
-            toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
-            togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),
-            stopStream: formatShortcutForDisplay(settings.shortcutStopStream, isMac),
-          }}
-          serverRegion={session?.serverIp}
-          connectedControllers={diagnostics.connectedGamepads}
-          antiAfkEnabled={antiAfkEnabled}
-          escHoldReleaseIndicator={escHoldReleaseIndicator}
-          exitPrompt={exitPrompt}
-          sessionElapsedSeconds={sessionElapsedSeconds}
-          streamWarning={streamWarning}
-          isConnecting={streamStatus === "connecting"}
-          gameTitle={streamingGame?.title ?? "Game"}
-          onToggleFullscreen={() => {
-            if (document.fullscreenElement) {
-              document.exitFullscreen().catch(() => {});
-            } else {
-              document.documentElement.requestFullscreen().catch(() => {});
-            }
-          }}
-          onConfirmExit={handleExitPromptConfirm}
-          onCancelExit={handleExitPromptCancel}
-          onEndSession={() => {
-            void handlePromptedStopStream();
-          }}
-        />
+        {streamStatus !== "idle" && (
+          <StreamView
+            videoRef={videoRef}
+            audioRef={audioRef}
+            stats={diagnostics}
+            showStats={showStatsOverlay}
+            shortcuts={{
+              toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
+              togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),
+              stopStream: formatShortcutForDisplay(settings.shortcutStopStream, isMac),
+            }}
+            serverRegion={session?.serverIp}
+            connectedControllers={diagnostics.connectedGamepads}
+            antiAfkEnabled={antiAfkEnabled}
+            escHoldReleaseIndicator={escHoldReleaseIndicator}
+            exitPrompt={exitPrompt}
+            sessionElapsedSeconds={sessionElapsedSeconds}
+            streamWarning={streamWarning}
+            isConnecting={streamStatus === "connecting"}
+            gameTitle={streamingGame?.title ?? "Game"}
+            onToggleFullscreen={() => {
+              if (document.fullscreenElement) {
+                document.exitFullscreen().catch(() => {});
+              } else {
+                document.documentElement.requestFullscreen().catch(() => {});
+              }
+            }}
+            onConfirmExit={handleExitPromptConfirm}
+            onCancelExit={handleExitPromptCancel}
+            onEndSession={() => {
+              void handlePromptedStopStream();
+            }}
+          />
+        )}
         {streamStatus !== "streaming" && (
           <StreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
             gameCover={streamingGame?.imageUrl}
-            status={streamStatus}
+            status={loadingStatus}
             queuePosition={queuePosition}
+            error={
+              launchError
+                ? {
+                    title: launchError.title,
+                    description: launchError.description,
+                    code: launchError.codeLabel,
+                  }
+                : undefined
+            }
             onCancel={() => {
+              if (launchError) {
+                void handleDismissLaunchError();
+                return;
+              }
               void handlePromptedStopStream();
             }}
           />
