@@ -62,7 +62,6 @@ OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www
 | 5K Resolution | ✅ | ✅ | Up to 5K@120fps |
 | 120+ FPS | ✅ | ✅ | Configurable: 30/60/120/144/240 |
 | HDR Streaming | 📋 | ✅ | 10-bit color supported, full HDR pipeline planned |
-| DLSS 4 / Multi-Frame Gen | ❌ | ✅ | Server-side NVIDIA feature |
 | AI-Enhanced Stream Mode | ❌ | ✅ | NVIDIA Cinematic Quality — not available |
 | Adjustable Bitrate | ✅ | ✅ | Up to 200 Mbps in OpenNOW |
 | Color Quality (8/10-bit, 4:2:0/4:4:4) | ✅ | ✅ | Full chroma/bit-depth control |
