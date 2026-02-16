@@ -1475,20 +1475,20 @@ export class GfnWebRtcClient {
     this.escapeHoldStartedAtMs = performance.now();
     this.options.onEscHoldProgress?.(false, 0);
 
-    // Show indicator only after 100ms hold, then fill for remaining 4.9s.
+    // Show indicator only after 300ms hold, then fill for remaining 4.7s.
     this.escapeHoldIndicatorDelayTimer = window.setTimeout(() => {
       this.escapeHoldIndicatorDelayTimer = null;
-    }, 100);
+    }, 300);
 
     this.escapeHoldProgressTimer = window.setInterval(() => {
       if (this.escapeHoldStartedAtMs === null) {
         return;
       }
       const elapsedMs = performance.now() - this.escapeHoldStartedAtMs;
-      if (elapsedMs < 100) {
+      if (elapsedMs < 300) {
         return;
       }
-      const progress = Math.min(1, (elapsedMs - 100) / 4900);
+      const progress = Math.min(1, (elapsedMs - 300) / 4700);
       this.options.onEscHoldProgress?.(true, progress);
     }, 50);
 
@@ -1498,6 +1498,8 @@ export class GfnWebRtcClient {
       if (document.pointerLockElement === videoElement) {
         this.log("Escape held for 5s, releasing pointer lock");
         this.suppressNextSyntheticEscape = true;
+        // Remove Escape from pressedKeys so keyup doesn't send it to stream
+        this.pressedKeys.delete(0x1B);
         document.exitPointerLock();
       }
     }, 5000);
@@ -1789,20 +1791,15 @@ export class GfnWebRtcClient {
       event.preventDefault();
       this.pressedKeys.add(mapped.vk);
 
-      if (
-        mapped.vk === 0x1B &&
-        document.pointerLockElement === videoElement &&
-        this.escapeHoldReleaseTimer === null
-      ) {
-        this.startEscapeHoldRelease(videoElement);
-      }
-
       if (mapped.vk === 0x1B && document.pointerLockElement === videoElement) {
-        // Stream should receive Escape immediately on press.
-        this.sendKeyPacket(0x1B, mapped.scancode || 0x29, 0, true);
-        this.sendKeyPacket(0x1B, mapped.scancode || 0x29, 0, false);
-        this.escapeTapDispatchedForCurrentHold = true;
+        // Escape with pointer lock active: we start the hold timer for hold-to-exit.
+        // For a quick tap (< 5s), we send Escape on keyup (not here) so we can distinguish tap vs hold.
+        // For a hold (>= 5s), pointer lock is released and we suppress sending Escape to stream.
+        this.escapeTapDispatchedForCurrentHold = false;
         this.clearEscapeAutoKeyUpTimer();
+        // Start the hold timer (will be cleared on keyup if released before 5s)
+        this.startEscapeHoldRelease(videoElement);
+        // Don't send keydown yet - wait to see if this is a tap or hold
         return;
       }
 
@@ -1835,12 +1832,20 @@ export class GfnWebRtcClient {
       event.preventDefault();
       if (mapped.vk === 0x1B) {
         this.clearEscapeAutoKeyUpTimer();
+        // Check if the hold timer still exists - if so, this was a tap (not a hold)
+        const wasTap = this.escapeHoldReleaseTimer !== null;
         this.clearEscapeHoldTimer();
-        if (this.escapeTapDispatchedForCurrentHold) {
-          this.escapeTapDispatchedForCurrentHold = false;
-          this.pressedKeys.delete(mapped.vk);
-          return;
+
+        if (wasTap && this.pressedKeys.has(0x1B)) {
+          // This was a quick tap - send Escape to the stream now
+          this.log("Escape tap detected - sending to stream");
+          this.sendKeyPacket(0x1B, mapped.scancode || 0x29, 0, true);
+          this.sendKeyPacket(0x1B, mapped.scancode || 0x29, 0, false);
         }
+        // If hold timer was already cleared, hold completed and pointer lock was released.
+        // In that case we don't send Escape to stream.
+        this.pressedKeys.delete(mapped.vk);
+        return;
       }
       this.pressedKeys.delete(mapped.vk);
       const payload = this.inputEncoder.encodeKeyUp({
