@@ -56,6 +56,9 @@ export interface AuthTokens {
   refreshToken?: string;
   idToken?: string;
   expiresAt: number;
+  clientToken?: string;
+  clientTokenExpiresAt?: number;
+  clientTokenLifetimeMs?: number;
 }
 
 export interface AuthUser {
