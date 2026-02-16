@@ -111,6 +111,7 @@ export function StreamView({
 }: StreamViewProps): JSX.Element {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
+  const [showSessionClock, setShowSessionClock] = useState(false);
 
   const handleFullscreenToggle = useCallback(() => {
     onToggleFullscreen();
@@ -128,6 +129,40 @@ export function StreamView({
     document.addEventListener("fullscreenchange", handleFullscreenChange);
     return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
+
+  useEffect(() => {
+    if (isConnecting) {
+      setShowSessionClock(false);
+      return;
+    }
+
+    let hideTimer: number | undefined;
+
+    const showFor = (durationMs: number): void => {
+      setShowSessionClock(true);
+      if (hideTimer !== undefined) {
+        window.clearTimeout(hideTimer);
+      }
+      hideTimer = window.setTimeout(() => {
+        setShowSessionClock(false);
+      }, durationMs);
+    };
+
+    // Show session clock at stream start for 10s.
+    showFor(10_000);
+
+    // Re-show every hour for 30s.
+    const hourlyTimer = window.setInterval(() => {
+      showFor(30_000);
+    }, 60 * 60 * 1000);
+
+    return () => {
+      if (hideTimer !== undefined) {
+        window.clearTimeout(hideTimer);
+      }
+      window.clearInterval(hourlyTimer);
+    };
+  }, [isConnecting]);
 
   const bitrateMbps = (stats.bitrateKbps / 1000).toFixed(1);
   const hasResolution = stats.resolution && stats.resolution !== "";
@@ -173,7 +208,11 @@ export function StreamView({
       )}
 
       {!isConnecting && (
-        <div className="sv-session-clock" title="Current gaming session elapsed time">
+        <div
+          className={`sv-session-clock${showSessionClock ? " is-visible" : ""}`}
+          title="Current gaming session elapsed time"
+          aria-hidden={!showSessionClock}
+        >
           <Clock3 size={14} />
           <span>Session {sessionTimeText}</span>
         </div>
