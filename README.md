@@ -1,6 +1,10 @@
 <h1 align="center">OpenNOW</h1>
 
 <p align="center">
+  <img src="logo.png" alt="OpenNOW logo" width="180" />
+</p>
+
+<p align="center">
   <strong>An open-source GeForce NOW client — play your games, your way.</strong>
 </p>
 
@@ -209,9 +213,14 @@ No. OpenNOW has zero telemetry. Your credentials are stored locally and only sen
 
 Contributions are welcome! Open an issue or PR on [GitHub](https://github.com/OpenCloudGaming/OpenNOW).
 
-## License
+## Support Me
 
-[MIT](./LICENSE) © Zortos
-e
+<p align="center">
+  <a href="https://github.com/sponsors/zortos293">
+    <img src="https://img.shields.io/badge/Support%20Me-GitHub%20Sponsors-ea4aaa?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Support Me">
+  </a>
+</p>
+
+## License
 
 [MIT](./LICENSE) © Zortos
