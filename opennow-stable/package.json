@@ -1,6 +1,6 @@
 {
   "name": "opennow-stable",
-  "version": "0.1.0",
+  "version": "0.2.4",
   "description": "Electron-based OpenNOW stable client",
   "author": {
     "name": "zortos293",
@@ -43,7 +43,7 @@
   },
   "build": {
     "appId": "com.zortos.opennow.stable",
-    "productName": "OpenNOW Stable",
+    "productName": "OpenNOW",
     "publish": [
       {
         "provider": "github",
@@ -71,10 +71,10 @@
       ]
     },
     "nsis": {
-      "artifactName": "OpenNOW-Stable-${version}-setup-${arch}.${ext}"
+      "artifactName": "OpenNOW-v${version}-setup-${arch}.${ext}"
     },
     "portable": {
-      "artifactName": "OpenNOW-Stable-${version}-portable-${arch}.${ext}"
+      "artifactName": "OpenNOW-v${version}-portable-${arch}.${ext}"
     },
     "mac": {
       "target": [
@@ -82,7 +82,7 @@
         "zip"
       ],
       "category": "public.app-category.games",
-      "artifactName": "OpenNOW-Stable-${version}-mac-${arch}.${ext}"
+      "artifactName": "OpenNOW-v${version}-mac-${arch}.${ext}"
     },
     "linux": {
       "target": [
@@ -91,7 +91,7 @@
       ],
       "category": "Game",
       "maintainer": "zortos293 <zortos293@users.noreply.github.com>",
-      "artifactName": "OpenNOW-Stable-${version}-linux-${arch}.${ext}"
+      "artifactName": "OpenNOW-v${version}-linux-${arch}.${ext}"
     }
   }
 }
