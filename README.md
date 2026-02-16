@@ -1,15 +1,26 @@
 <h1 align="center">OpenNOW</h1>
 
 <p align="center">
-  <strong>Open source GeForce NOW client built from the ground up in Native Rust</strong>
+  <img src="logo.png" alt="OpenNOW logo" width="180" />
 </p>
 
 <p align="center">
-  <a href="https://github.com/zortos293/OpenNOW/releases">
-    <img src="https://img.shields.io/github/v/tag/zortos293/OpenNOW?style=for-the-badge&label=Download&color=brightgreen" alt="Download">
+  <strong>An open-source GeForce NOW client — play your games, your way.</strong>
+</p>
+
+<p align="center">
+  <img src="img.png" alt="OpenNOW" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
+    <img src="https://img.shields.io/github/v/tag/OpenCloudGaming/OpenNOW?style=for-the-badge&label=Download&color=brightgreen" alt="Download">
   </a>
   <a href="https://opennow.zortos.me">
     <img src="https://img.shields.io/badge/Docs-opennow.zortos.me-blue?style=for-the-badge" alt="Documentation">
+  </a>
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/actions/workflows/auto-build.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/OpenCloudGaming/OpenNOW/auto-build.yml?style=for-the-badge&label=Auto%20Build" alt="Auto Build">
   </a>
   <a href="https://discord.gg/8EJYaJcNfD">
     <img src="https://img.shields.io/badge/Discord-Join%20Us-7289da?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
@@ -17,180 +28,199 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zortos293/OpenNOW/stargazers">
-    <img src="https://img.shields.io/github/stars/zortos293/OpenNOW?style=flat-square" alt="Stars">
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/stargazers">
+    <img src="https://img.shields.io/github/stars/OpenCloudGaming/OpenNOW?style=flat-square" alt="Stars">
   </a>
-  <a href="https://github.com/zortos293/OpenNOW/releases">
-    <img src="https://img.shields.io/github/downloads/zortos293/OpenNOW/total?style=flat-square" alt="Downloads">
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
+    <img src="https://img.shields.io/github/downloads/OpenCloudGaming/OpenNOW/total?style=flat-square" alt="Downloads">
   </a>
-  <a href="https://github.com/zortos293/OpenNOW/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/zortos293/OpenNOW?style=flat-square" alt="License">
+  <a href="https://github.com/OpenCloudGaming/OpenNOW/blob/dev/LICENSE">
+    <img src="https://img.shields.io/github/license/OpenCloudGaming/OpenNOW?style=flat-square" alt="License">
   </a>
 </p>
 
 ---
 
 > **Warning**  
-> OpenNOW is under **active development**. Expect bugs and performance issues.  
-> Check the [Known Issues](#known-issues) section and [full documentation](https://opennow.zortos.me) for details.
+> OpenNOW is under active development. Bugs and performance issues are expected while features are finalized.
 
 ---
 
-## About
+## What is OpenNOW?
 
-OpenNOW is a custom GeForce NOW client rewritten entirely in **Native Rust** for maximum performance and lower resource usage. Built with `wgpu` and `egui` for a seamless cloud gaming experience.
+OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www.nvidia.com/en-us/geforce-now/), built with Electron and TypeScript. It gives you a fully open-source, cross-platform alternative to the official app — with zero telemetry, full transparency, and features the official client doesn't have.
 
-<table>
-<tr>
-<td width="50%">
+- 🔓 **Fully open source** — audit every line, fork it, improve it
+- 🚫 **No telemetry** — OpenNOW collects nothing
+- 🖥️ **Cross-platform** — Windows, macOS, Linux, and ARM64
+- ⚡ **Community-driven** — faster fixes, transparent development
+- 🎮 **Anti-AFK, Stats Overlay, Adjustable Shortcuts** — power-user features built in
 
-**Why OpenNOW?**
-- Native Performance (Rust + wgpu)
-- No artificial FPS/resolution/bitrate limits
-- No telemetry by default
-- Cross-platform (Windows, macOS, Linux)
+## OpenNOW vs Official GeForce NOW
 
-</td>
-<td width="50%">
+| Feature | OpenNOW | Official GFN | Notes |
+|---------|:-------:|:------------:|-------|
+| **Streaming** | | | |
+| WebRTC Streaming | ✅ | ✅ | Chromium-based in OpenNOW |
+| H.264 Codec | ✅ | ✅ | |
+| H.265 / HEVC Codec | ✅ | ✅ | Full support |
+| AV1 Codec | ✅ | ✅ | |
+| Up to 1080p | ✅ | ✅ | |
+| Up to 4K | ✅ | ✅ | Configurable in settings |
+| 5K Resolution | ✅ | ✅ | Up to 5K@120fps |
+| 120+ FPS | ✅ | ✅ | Configurable: 30/60/120/144/240 |
+| HDR Streaming | 📋 | ✅ | 10-bit color supported, full HDR pipeline planned |
+| AI-Enhanced Stream Mode | ❌ | ✅ | NVIDIA Cinematic Quality — not available |
+| Adjustable Bitrate | ✅ | ✅ | Up to 200 Mbps in OpenNOW |
+| Color Quality (8/10-bit, 4:2:0/4:4:4) | ✅ | ✅ | Full chroma/bit-depth control |
+| **Input** | | | |
+| Keyboard + Mouse | ✅ | ✅ | Full input over GFN data channels |
+| Gamepad Support | ✅ | ✅ | Up to 4 controllers simultaneously |
+| Flight Controls | ❌ | ✅ | Added in official client v2.0.81 |
+| Mouse Sensitivity | ✅ | ❌ | OpenNOW-exclusive setting |
+| Clipboard Paste | ✅ | ❌ | Paste text into cloud session |
+| **Features** | | | |
+| Authentication + Session Restore | ✅ | ✅ | OAuth PKCE, auto-restore on startup |
+| Game Library + Catalog | ✅ | ✅ | Main catalog, library, and public games |
+| Alliance Partners | ✅ | ✅ | NVIDIA + partner providers |
+| Audio Playback | ✅ | ✅ | |
+| Microphone Support | 📋 | ✅ | Planned for future release |
+| Instant Replay | 📋 | ✅ | Planned for future release |
+| Screenshots | 📋 | ✅ | Planned for future release |
+| Stats Overlay | ✅ | ✅ | Detailed: RTT, decode, render, jitter, loss, input queue |
+| Anti-AFK | ✅ | ❌ | OpenNOW-exclusive — prevents idle disconnects |
+| Adjustable Shortcuts | ✅ | 🚧 | Fully customizable in OpenNOW |
+| Session Conflict Resolution | ✅ | ✅ | Resume / New / Cancel existing sessions |
+| Subscription Info | ✅ | ✅ | Hours, tier, entitled resolutions |
+| Region Selection | ✅ | ✅ | Dynamic region discovery |
+| Install-to-Play | ✅ | ✅ | For games not in standard catalog |
+| Discord Integration | ❌ | ✅ | |
+| **Platform Support** | | | |
+| Windows | ✅ | ✅ | NSIS installer + portable |
+| macOS (x64 + ARM) | ✅ | ✅ | Universal builds |
+| Linux | ✅ | 🚧 | Official client has beta native app |
+| ARM64 / Raspberry Pi | ✅ | ❌ | OpenNOW builds for ARM64 Linux |
+| Steam Deck | 📋 | ✅ | |
+| Android / iOS / TV | ❌ | ✅ | Desktop-only for now |
+| **Privacy & Openness** | | | |
+| Open Source | ✅ | ❌ | MIT licensed |
+| No Telemetry | ✅ | ❌ | Zero data collection |
+| Auditable Code | ✅ | ❌ | |
 
-**Key Features**
-- Zero-copy hardware decoding
-- Raw input capture (low latency)
-- Gamepad & racing wheel support
-- Alliance Partner support
+> 💡 **Legend:** ✅ Working  ·  🚧 In Progress  ·  📋 Planned  ·  ❌ Not Available
 
-</td>
-</tr>
-</table>
+## Roadmap
 
-📖 **Full Documentation:** [opennow.zortos.me](https://opennow.zortos.me)
+| Priority | Feature | Status | Description |
+|:--------:|---------|:------:|-------------|
+| 🔴 | ~~H.265 codec tuning~~ | ✅ Completed | Full HEVC support implemented |
+| 🔴 | Microphone support | 📋 Planned | Voice chat in cloud sessions |
+| 🟡 | Instant replay | 📋 Planned | Clip and save gameplay moments |
+| 🟡 | Screenshots | 📋 Planned | Capture in-stream screenshots |
+| 🟡 | HDR streaming pipeline | 📋 Planned | Full HDR end-to-end support |
+| 🟢 | Latency optimizations | 🚧 Ongoing | Input and render path improvements |
+| 🟢 | Platform stability | 🚧 Ongoing | Cross-platform bug fixes |
 
----
-
-## Quick Start
-
-### Download
-
-| Platform | Download | Notes |
-|----------|----------|-------|
-| **Windows x64** | [OpenNOW-windows-x64.zip](https://github.com/zortos293/OpenNOW/releases/latest) | Portable, GStreamer bundled |
-| **Windows ARM64** | [OpenNOW-windows-arm64.zip](https://github.com/zortos293/OpenNOW/releases/latest) | Surface Pro X, etc. |
-| **macOS (Apple Silicon)** | [OpenNOW-macos-arm64.zip](https://github.com/zortos293/OpenNOW/releases/latest) | M1/M2/M3 native |
-| **Linux x64** | [OpenNOW-linux-x64.AppImage](https://github.com/zortos293/OpenNOW/releases/latest) | AppImage, GStreamer bundled |
-| **Linux ARM64** | [OpenNOW-linux-arm64.zip](https://github.com/zortos293/OpenNOW/releases/latest) | Requires system GStreamer |
-
-### Run
-
-1. **Download** the release for your platform
-2. **Extract** and run the executable
-3. **Login** with your NVIDIA GeForce NOW account
-4. **Play!**
-
-> **macOS:** If blocked, run: `xattr -d com.apple.quarantine OpenNOW.app`
-
----
-
-## Platform Support
-
-| Platform | Status | Hardware Decoding |
-|----------|:------:|-------------------|
-| Windows x64 | ✅ Working | D3D11VA (NVIDIA, AMD, Intel) |
-| Windows ARM64 | ❓ Untested | Should work |
-| macOS ARM64 | ✅ Working | VideoToolbox |
-| macOS Intel | ✅ Working | VideoToolbox (Rosetta 2) |
-| Linux x64 | ⚠️ Buggy | Vulkan Video |
-| Linux ARM64 | ⚠️ Buggy | GStreamer |
-| Raspberry Pi | ❌ Broken | Under investigation |
-
----
+> 🔴 High priority · 🟡 Medium priority · 🟢 Ongoing effort
 
 ## Features
 
-| Feature | Status | Feature | Status |
-|---------|:------:|---------|:------:|
-| Authentication | ✅ | Gamepad Support | ✅ |
-| Game Library | ✅ | Audio Playback | ✅ |
-| WebRTC Streaming | ✅ | Stats Overlay | ✅ |
-| Hardware Decoding | ✅ | Anti-AFK | ✅ |
-| Zero-Copy Rendering | ✅ | Alliance Partners | ✅ |
-| Mouse/Keyboard | ✅ | Clipboard Paste | ✅ |
-| AV1 Codec | ✅ | H.264/H.265 | ✅ |
+**Streaming**
+`H.264` `AV1` `H.265 (WIP)` · Up to 4K@240fps · Adjustable bitrate · 8/10-bit color · 4:2:0/4:4:4 chroma
 
-**Coming Soon:** Microphone, Instant Replay, Screenshots, Plugin System, Theming
+**Input**
+`Keyboard` `Mouse` `Gamepad ×4` · Mouse sensitivity · Clipboard paste
 
----
+**Client**
+`Stats Overlay` `Anti-AFK` `Adjustable Shortcuts` · OAuth + session restore · Region selection · Alliance partners
 
-## Keyboard Shortcuts
+**Platforms**
+`Windows` `macOS` `Linux` `ARM64` · Installer, portable, AppImage, deb, dmg
 
-| Key | Action |
-|-----|--------|
-| `F3` | Toggle stats overlay |
-| `F8` | Toggle mouse capture |
-| `F11` | Toggle fullscreen |
-| `Ctrl+Shift+Q` | Quit session |
-| `Ctrl+Shift+F10` | Toggle anti-AFK |
+## Platform Support
 
----
+| Platform | Status | Builds |
+|----------|:------:|--------|
+| Windows | ✅ Working | NSIS installer + portable |
+| macOS | ✅ Working | dmg + zip (x64 and arm64) |
+| Linux x64 | ✅ Working | AppImage + deb |
+| Linux ARM64 | 🚧 Experimental | AppImage + deb (Raspberry Pi 4/5) |
 
-## Known Issues
-
-| Issue | Workaround |
-|-------|------------|
-| High CPU usage | Lower FPS/resolution in settings |
-| Green screen flashes | Switch to H.264 codec |
-| Audio stuttering | Restart stream |
-| Laggy input | Enable `low_latency_mode` |
-| Linux instability | Use Windows/macOS for now |
-
----
-
-## Building from Source
+## Quick Start
 
 ```bash
-git clone https://github.com/zortos293/OpenNOW.git
-cd OpenNOW/opennow-streamer
-cargo build --release
+git clone https://github.com/OpenCloudGaming/OpenNOW.git
+cd OpenNOW/opennow-stable
+npm install
+npm run dev
 ```
 
-See the [full build guide](https://opennow.zortos.me/guides/getting-started/) for platform-specific requirements.
+See [opennow-stable/README.md](./opennow-stable/README.md) for build and packaging details.
 
----
+## Download
 
-## Documentation
+Grab the latest release for your platform:
 
-Full documentation available at **[opennow.zortos.me](https://opennow.zortos.me)**
+👉 **[Download from GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases)**
 
-- [Getting Started](https://opennow.zortos.me/guides/getting-started/)
-- [Architecture Overview](https://opennow.zortos.me/architecture/overview/)
-- [Configuration Reference](https://opennow.zortos.me/reference/configuration/)
-- [WebRTC Protocol](https://opennow.zortos.me/reference/webrtc/)
+| Platform | File |
+|----------|------|
+| Windows (installer) | `OpenNOW-v0.2.4-setup-x64.exe` |
+| Windows (portable) | `OpenNOW-v0.2.4-portable-x64.exe` |
+| macOS (x64) | `OpenNOW-v0.2.4-mac-x64.dmg` |
+| macOS (ARM) | `OpenNOW-v0.2.4-mac-arm64.dmg` |
+| Linux (x64) | `OpenNOW-v0.2.4-linux-x86_64.AppImage` |
+| Linux (ARM64) | `OpenNOW-v0.2.4-linux-arm64.AppImage` |
 
----
+## Architecture
 
-## Support the Project
+OpenNOW is an Electron app with three processes:
 
-OpenNOW is a passion project developed in my free time. If you enjoy using it, please consider sponsoring!
+| Layer | Technology | Role |
+|-------|-----------|------|
+| **Main** | Node.js + Electron | OAuth, CloudMatch API, WebSocket signaling, settings |
+| **Renderer** | React 19 + TypeScript | UI, WebRTC streaming, input encoding, stats |
+| **Preload** | Electron contextBridge | Secure IPC between main and renderer |
+
+```
+opennow-stable/src/
+├── main/           # Electron main process
+│   ├── gfn/        # Auth, CloudMatch, signaling, games, subscription
+│   ├── index.ts    # Entry point, IPC handlers, window management
+│   └── settings.ts # Persistent user settings
+├── renderer/src/   # React UI
+│   ├── components/ # Login, Home, Library, Settings, StreamView
+│   ├── gfn/        # WebRTC client, SDP, input protocol
+│   └── App.tsx     # Root component with routing and state
+├── shared/         # Shared types and IPC channel definitions
+│   ├── gfn.ts      # All TypeScript interfaces
+│   └── ipc.ts      # IPC channel constants
+└── preload/        # Context bridge (safe API exposure)
+```
+
+## FAQ
+
+**Is this the official GeForce NOW client?**
+No. OpenNOW is a community-built alternative. It uses the same NVIDIA streaming infrastructure but is not affiliated with or endorsed by NVIDIA.
+
+**Was this project built in Rust before?**
+Yes. OpenNOW originally used Rust/Tauri but switched to Electron for better cross-platform compatibility and faster development.
+
+**Does OpenNOW collect any data?**
+No. OpenNOW has zero telemetry. Your credentials are stored locally and only sent to NVIDIA's authentication servers.
+
+## Contributing
+
+Contributions are welcome! Open an issue or PR on [GitHub](https://github.com/OpenCloudGaming/OpenNOW).
+
+## Support Me
 
 <p align="center">
   <a href="https://github.com/sponsors/zortos293">
-    <img src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&logo=github-sponsors&logoColor=white" alt="Sponsor">
+    <img src="https://img.shields.io/badge/Support%20Me-GitHub%20Sponsors-ea4aaa?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Support Me">
   </a>
 </p>
 
----
+## License
 
-## Disclaimer
-
-This is an **independent project** not affiliated with NVIDIA Corporation. Created for educational purposes. GeForce NOW is a trademark of NVIDIA. Use at your own risk.
-
----
-
-<p align="center">
-  <a href="https://opennow.zortos.me">Documentation</a> · 
-  <a href="https://discord.gg/8EJYaJcNfD">Discord</a> · 
-  <a href="https://github.com/sponsors/zortos293">Sponsor</a>
-</p>
-
-<p align="center">
-  Made with ❤️ by <a href="https://github.com/zortos293">zortos293</a>
-</p>
+[MIT](./LICENSE) © Zortos
