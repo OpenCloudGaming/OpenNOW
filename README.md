@@ -86,7 +86,7 @@ OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www
 | Session Conflict Resolution | ✅ | ✅ | Resume / New / Cancel existing sessions |
 | Subscription Info | ✅ | ✅ | Hours, tier, entitled resolutions |
 | Region Selection | ✅ | ✅ | Dynamic region discovery |
-| Install-to-Play | ❌ | ✅ | Official-only feature for extra games |
+| Install-to-Play | ✅ | ✅ | For games not in standard catalog |
 | Discord Integration | ❌ | ✅ | |
 | **Platform Support** | | | |
 | Windows | ✅ | ✅ | NSIS installer + portable |
