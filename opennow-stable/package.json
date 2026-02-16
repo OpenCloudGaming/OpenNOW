@@ -1,0 +1,97 @@
+{
+  "name": "opennow-stable",
+  "version": "0.2.4",
+  "description": "Electron-based OpenNOW stable client",
+  "author": {
+    "name": "zortos293",
+    "email": "zortos293@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/OpenCloudGaming/OpenNOW",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OpenCloudGaming/OpenNOW.git"
+  },
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
+    "dist:signed": "npm run build && electron-builder",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "lucide-react": "^0.563.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.5.13",
+    "@vitejs/plugin-react": "^4.3.4",
+    "cross-env": "^7.0.3",
+    "electron": "^40.4.1",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  },
+  "build": {
+    "appId": "com.zortos.opennow.stable",
+    "productName": "OpenNOW",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "OpenCloudGaming",
+        "repo": "OpenNOW"
+      }
+    ],
+    "icon": "../logo.png",
+    "npmRebuild": false,
+    "nodeGypRebuild": false,
+    "buildDependenciesFromSource": false,
+    "directories": {
+      "output": "dist-release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "artifactName": "OpenNOW-v${version}-setup-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "OpenNOW-v${version}-portable-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.games",
+      "artifactName": "OpenNOW-v${version}-mac-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Game",
+      "maintainer": "zortos293 <zortos293@users.noreply.github.com>",
+      "artifactName": "OpenNOW-v${version}-linux-${arch}.${ext}"
+    }
+  }
+}
