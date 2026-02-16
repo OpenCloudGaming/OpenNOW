@@ -51,7 +51,7 @@
         "repo": "OpenNOW"
       }
     ],
-    "icon": "../img.png",
+    "icon": "../logo.png",
     "npmRebuild": false,
     "nodeGypRebuild": false,
     "buildDependenciesFromSource": false,
