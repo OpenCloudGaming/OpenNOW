@@ -285,6 +285,13 @@ function isSessionConflictError(error: unknown): boolean {
   return false;
 }
 
+function rethrowSerializedSessionError(error: unknown): never {
+  if (error instanceof SessionError) {
+    throw error.toJSON();
+  }
+  throw error;
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.AUTH_GET_SESSION, async (_event, payload: AuthSessionRequest = {}) => {
     return authService.ensureValidSessionWithStatus(Boolean(payload.forceRefresh));
@@ -344,31 +351,43 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.CREATE_SESSION, async (_event, payload: SessionCreateRequest) => {
-    const token = await resolveJwt(payload.token);
-    const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    return createSession({
-      ...payload,
-      token,
-      streamingBaseUrl,
-    });
+    try {
+      const token = await resolveJwt(payload.token);
+      const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+      return createSession({
+        ...payload,
+        token,
+        streamingBaseUrl,
+      });
+    } catch (error) {
+      rethrowSerializedSessionError(error);
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.POLL_SESSION, async (_event, payload: SessionPollRequest) => {
-    const token = await resolveJwt(payload.token);
-    return pollSession({
-      ...payload,
-      token,
-      streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
-    });
+    try {
+      const token = await resolveJwt(payload.token);
+      return pollSession({
+        ...payload,
+        token,
+        streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
+      });
+    } catch (error) {
+      rethrowSerializedSessionError(error);
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.STOP_SESSION, async (_event, payload: SessionStopRequest) => {
-    const token = await resolveJwt(payload.token);
-    return stopSession({
-      ...payload,
-      token,
-      streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
-    });
+    try {
+      const token = await resolveJwt(payload.token);
+      return stopSession({
+        ...payload,
+        token,
+        streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
+      });
+    } catch (error) {
+      rethrowSerializedSessionError(error);
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.GET_ACTIVE_SESSIONS, async (_event, token?: string, streamingBaseUrl?: string) => {
@@ -378,13 +397,17 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.CLAIM_SESSION, async (_event, payload: SessionClaimRequest) => {
-    const token = await resolveJwt(payload.token);
-    const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    return claimSession({
-      ...payload,
-      token,
-      streamingBaseUrl,
-    });
+    try {
+      const token = await resolveJwt(payload.token);
+      const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+      return claimSession({
+        ...payload,
+        token,
+        streamingBaseUrl,
+      });
+    } catch (error) {
+      rethrowSerializedSessionError(error);
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.SESSION_CONFLICT_DIALOG, async (): Promise<SessionConflictChoice> => {
