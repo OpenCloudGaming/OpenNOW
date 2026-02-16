@@ -1639,6 +1639,66 @@ body,
 .sv-connect-title { font-size: 1.05rem; font-weight: 600; color: var(--ink); margin: 0; }
 .sv-connect-sub { font-size: 0.82rem; color: var(--ink-soft); margin: 0; }
 
+.sv-session-clock {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1001;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--panel-border);
+  background: rgba(10, 10, 12, 0.9);
+  color: var(--ink);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  backdrop-filter: blur(4px);
+}
+.sv-session-clock svg {
+  color: var(--accent);
+}
+
+.sv-time-warning {
+  position: fixed;
+  top: 54px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1002;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(86vw, 540px);
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--panel-border);
+  background: rgba(10, 10, 12, 0.93);
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  animation: fade-in 140ms var(--ease);
+  backdrop-filter: blur(5px);
+}
+.sv-time-warning--warn {
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--panel-border));
+  color: #f8e5b0;
+}
+.sv-time-warning--warn svg {
+  color: var(--warning);
+}
+.sv-time-warning--critical {
+  border-color: color-mix(in srgb, var(--error) 65%, var(--panel-border));
+  color: #ffd0d0;
+}
+.sv-time-warning--critical svg {
+  color: var(--error);
+}
+
 /* Stats HUD (StreamView inline stats) */
 .sv-stats {
   position: fixed; top: 14px; right: 14px; z-index: 1001;
@@ -1976,6 +2036,17 @@ body,
 }
 
 @media (max-width: 640px) {
+  .sv-session-clock {
+    top: 10px;
+    padding: 6px 10px;
+    font-size: 0.7rem;
+  }
+  .sv-time-warning {
+    top: 46px;
+    max-width: calc(100vw - 24px);
+    padding: 7px 10px;
+    font-size: 0.68rem;
+  }
   .sv-exit {
     align-items: flex-end;
     padding: 14px;
