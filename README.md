@@ -55,15 +55,15 @@ OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www
 | **Streaming** | | | |
 | WebRTC Streaming | ✅ | ✅ | Chromium-based in OpenNOW |
 | H.264 Codec | ✅ | ✅ | |
-| H.265 / HEVC Codec | 🚧 | ✅ | Tuning and compatibility in progress |
+| H.265 / HEVC Codec | ✅ | ✅ | Full support |
 | AV1 Codec | ✅ | ✅ | |
 | Up to 1080p | ✅ | ✅ | |
 | Up to 4K | ✅ | ✅ | Configurable in settings |
-| 5K Resolution | ❌ | ✅ | Requires DLSS 4 |
+| 5K Resolution | ✅ | ✅ | Up to 5K@120fps |
 | 120+ FPS | ✅ | ✅ | Configurable: 30/60/120/144/240 |
 | HDR Streaming | 📋 | ✅ | 10-bit color supported, full HDR pipeline planned |
 | DLSS 4 / Multi-Frame Gen | ❌ | ✅ | Server-side NVIDIA feature |
-| Cinematic Quality Streaming | ❌ | ✅ | NVIDIA's AI-enhanced stream mode |
+| AI-Enhanced Stream Mode | ❌ | ✅ | NVIDIA Cinematic Quality — not available |
 | Adjustable Bitrate | ✅ | ✅ | Up to 200 Mbps in OpenNOW |
 | Color Quality (8/10-bit, 4:2:0/4:4:4) | ✅ | ✅ | Full chroma/bit-depth control |
 | **Input** | | | |
@@ -207,5 +207,8 @@ No. OpenNOW has zero telemetry. Your credentials are stored locally and only sen
 Contributions are welcome! Open an issue or PR on [GitHub](https://github.com/OpenCloudGaming/OpenNOW).
 
 ## License
+
+[MIT](./LICENSE) © Zortos
+e
 
 [MIT](./LICENSE) © Zortos
