@@ -1756,12 +1756,8 @@ export class GfnWebRtcClient {
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!this.inputReady || event.repeat) {
+      if (!this.inputReady) {
         return;
-      }
-
-      if (document.pointerLockElement === videoElement) {
-        event.preventDefault();
       }
 
       const isEscapeEvent =
@@ -1770,6 +1766,20 @@ export class GfnWebRtcClient {
         || event.code === "Escape"
         || event.keyCode === 27;
       const mapped = mapKeyboardEvent(event) ?? (isEscapeEvent ? { vk: 0x1B, scancode: 0x29 } : null);
+
+      // Keep browser from handling held keys (for example Tab focus traversal)
+      // while streaming input is active.
+      if (event.repeat) {
+        if (document.pointerLockElement === videoElement || mapped) {
+          event.preventDefault();
+        }
+        return;
+      }
+
+      if (document.pointerLockElement === videoElement) {
+        event.preventDefault();
+      }
+
       if (!mapped) {
         return;
       }
