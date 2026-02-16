@@ -1,5 +1,5 @@
-import type { AuthUser, SubscriptionInfo } from "@shared/gfn";
-import { House, Library, Settings, User, LogOut, Zap, Timer, HardDrive, X } from "lucide-react";
+import type { ActiveSessionInfo, AuthUser, SubscriptionInfo } from "@shared/gfn";
+import { House, Library, Settings, User, LogOut, Zap, Timer, HardDrive, X, Loader2, PlayCircle } from "lucide-react";
 import { useEffect, useState, type JSX } from "react";
 import { createPortal } from "react-dom";
 
@@ -8,6 +8,10 @@ interface NavbarProps {
   onNavigate: (page: "home" | "library" | "settings") => void;
   user: AuthUser | null;
   subscription: SubscriptionInfo | null;
+  activeSession: ActiveSessionInfo | null;
+  activeSessionGameTitle: string | null;
+  isResumingSession: boolean;
+  onResumeSession: () => void;
   onLogout: () => void;
 }
 
@@ -20,7 +24,17 @@ function getTierDisplay(tier: string): { label: string; className: string } {
   return { label: "Free", className: "tier-free" };
 }
 
-export function Navbar({ currentPage, onNavigate, user, subscription, onLogout }: NavbarProps): JSX.Element {
+export function Navbar({
+  currentPage,
+  onNavigate,
+  user,
+  subscription,
+  activeSession,
+  activeSessionGameTitle,
+  isResumingSession,
+  onResumeSession,
+  onLogout,
+}: NavbarProps): JSX.Element {
   const [modalType, setModalType] = useState<NavbarModalType>(null);
 
   const navItems = [
@@ -99,6 +113,7 @@ export function Navbar({ currentPage, onNavigate, user, subscription, onLogout }
   const spanEnd = formatDateTime(subscription?.currentSpanEndDateTime);
   const firstEntitlementStart = formatDateTime(subscription?.firstEntitlementStartDateTime);
   const modalTitle = modalType === "time" ? "Playtime Details" : "Storage Details";
+  const activeSessionTitle = activeSessionGameTitle?.trim() || null;
 
   useEffect(() => {
     if (!modalType) return;
@@ -257,6 +272,25 @@ export function Navbar({ currentPage, onNavigate, user, subscription, onLogout }
       </div>
 
       <div className="navbar-right">
+        {activeSession && (
+          <button
+            type="button"
+            className={`navbar-session-resume${isResumingSession ? " is-loading" : ""}`}
+            title={
+              activeSession.serverIp
+                ? activeSessionTitle
+                  ? `Resume active cloud session: ${activeSessionTitle}`
+                  : "Resume active cloud session"
+                : "Active session found (missing server address)"
+            }
+            onClick={onResumeSession}
+            disabled={isResumingSession || !activeSession.serverIp}
+          >
+            {isResumingSession ? <Loader2 size={14} className="navbar-session-resume-spin" /> : <PlayCircle size={14} />}
+            <span className="navbar-session-resume-text">Resume</span>
+            {activeSessionTitle && <span className="navbar-session-resume-game">{activeSessionTitle}</span>}
+          </button>
+        )}
         {(timeLabel || storageLabel) && (
           <div className="navbar-subscription" aria-label="Subscription details">
             {timeLabel && (

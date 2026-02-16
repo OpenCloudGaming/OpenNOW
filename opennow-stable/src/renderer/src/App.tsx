@@ -71,6 +71,12 @@ function isNumericId(value: string | undefined): value is string {
   return /^\d+$/.test(value);
 }
 
+function parseNumericId(value: string | undefined): number | null {
+  if (!isNumericId(value)) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function defaultVariantId(game: GameInfo): string {
   const fallback = game.variants[0]?.id;
   const preferred = game.variants[game.selectedVariantIndex]?.id;
@@ -280,6 +286,8 @@ export function App(): JSX.Element {
   const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: "Game" });
   const [streamingGame, setStreamingGame] = useState<GameInfo | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | undefined>();
+  const [navbarActiveSession, setNavbarActiveSession] = useState<ActiveSessionInfo | null>(null);
+  const [isResumingNavbarSession, setIsResumingNavbarSession] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
   const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState(0);
@@ -322,11 +330,41 @@ export function App(): JSX.Element {
     [],
   );
 
+  const refreshNavbarActiveSession = useCallback(async (): Promise<void> => {
+    if (!authSession) {
+      setNavbarActiveSession(null);
+      return;
+    }
+    const token = authSession.tokens.idToken ?? authSession.tokens.accessToken;
+    if (!token || !effectiveStreamingBaseUrl) {
+      setNavbarActiveSession(null);
+      return;
+    }
+    try {
+      const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
+      const candidate = activeSessions.find((entry) => entry.status === 3 || entry.status === 2) ?? null;
+      setNavbarActiveSession(candidate);
+    } catch (error) {
+      console.warn("Failed to refresh active sessions:", error);
+    }
+  }, [authSession, effectiveStreamingBaseUrl]);
+
   useEffect(() => {
     if (!startupRefreshNotice) return;
     const timer = window.setTimeout(() => setStartupRefreshNotice(null), 7000);
     return () => window.clearTimeout(timer);
   }, [startupRefreshNotice]);
+
+  useEffect(() => {
+    if (!authSession || streamStatus !== "idle") {
+      return;
+    }
+    void refreshNavbarActiveSession();
+    const timer = window.setInterval(() => {
+      void refreshNavbarActiveSession();
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [authSession, refreshNavbarActiveSession, streamStatus]);
 
   // Initialize app
   useEffect(() => {
@@ -696,6 +734,8 @@ export function App(): JSX.Element {
     setAuthSession(null);
     setGames([]);
     setLibraryGames([]);
+    setNavbarActiveSession(null);
+    setIsResumingNavbarSession(false);
     setLaunchError(null);
     setSubscriptionInfo(null);
     setCurrentPage("home");
@@ -732,6 +772,49 @@ export function App(): JSX.Element {
       setIsLoadingGames(false);
     }
   }, [authSession, effectiveStreamingBaseUrl]);
+
+  const claimAndConnectSession = useCallback(async (existingSession: ActiveSessionInfo): Promise<void> => {
+    const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
+    if (!token) {
+      throw new Error("Missing token for session resume");
+    }
+    if (!existingSession.serverIp) {
+      throw new Error("Active session is missing server address. Start the game again to create a new session.");
+    }
+
+    const claimed = await window.openNow.claimSession({
+      token,
+      streamingBaseUrl: effectiveStreamingBaseUrl,
+      serverIp: existingSession.serverIp,
+      sessionId: existingSession.sessionId,
+      settings: {
+        resolution: settings.resolution,
+        fps: settings.fps,
+        maxBitrateMbps: settings.maxBitrateMbps,
+        codec: settings.codec,
+        colorQuality: settings.colorQuality,
+      },
+    });
+
+    console.log("Claimed session:", {
+      sessionId: claimed.sessionId,
+      signalingServer: claimed.signalingServer,
+      signalingUrl: claimed.signalingUrl,
+      status: claimed.status,
+    });
+
+    await sleep(1000);
+
+    setSession(claimed);
+    sessionRef.current = claimed;
+    setQueuePosition(undefined);
+    setStreamStatus("connecting");
+    await window.openNow.connectSignaling({
+      sessionId: claimed.sessionId,
+      signalingServer: claimed.signalingServer,
+      signalingUrl: claimed.signalingUrl,
+    });
+  }, [authSession, effectiveStreamingBaseUrl, settings]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo) => {
@@ -796,42 +879,9 @@ export function App(): JSX.Element {
         try {
           const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
           if (activeSessions.length > 0) {
-            // Show conflict dialog - for now just claim the first one
             const existingSession = activeSessions[0];
-            const claimed = await window.openNow.claimSession({
-              token,
-              streamingBaseUrl: effectiveStreamingBaseUrl,
-              serverIp: existingSession.serverIp ?? "",
-              sessionId: existingSession.sessionId,
-              settings: {
-                resolution: settings.resolution,
-                fps: settings.fps,
-                maxBitrateMbps: settings.maxBitrateMbps,
-                codec: settings.codec,
-                colorQuality: settings.colorQuality,
-              },
-            });
-
-            console.log("Claimed session:", {
-              sessionId: claimed.sessionId,
-              signalingServer: claimed.signalingServer,
-              signalingUrl: claimed.signalingUrl,
-              status: claimed.status,
-            });
-
-            // Wait a moment for the server to be ready
-            await sleep(1000);
-
-            setSession(claimed);
-            // Sync ref immediately — useEffect is async and may not fire
-            // before the signaling offer arrives
-            sessionRef.current = claimed;
-            updateLoadingStep("connecting");
-            await window.openNow.connectSignaling({
-              sessionId: claimed.sessionId,
-              signalingServer: claimed.signalingServer,
-              signalingUrl: claimed.signalingUrl,
-            });
+            await claimAndConnectSession(existingSession);
+            setNavbarActiveSession(null);
             return;
           }
         } catch (error) {
@@ -922,10 +972,74 @@ export function App(): JSX.Element {
       setStreamWarning(null);
       setEscHoldReleaseIndicator({ visible: false, progress: 0 });
       setDiagnostics(defaultDiagnostics());
+      void refreshNavbarActiveSession();
     } finally {
       launchInFlightRef.current = false;
     }
-  }, [authSession, effectiveStreamingBaseUrl, settings, selectedProvider, streamStatus, variantByGameId]);
+  }, [
+    authSession,
+    claimAndConnectSession,
+    effectiveStreamingBaseUrl,
+    refreshNavbarActiveSession,
+    selectedProvider,
+    settings,
+    streamStatus,
+    variantByGameId,
+  ]);
+
+  const handleResumeFromNavbar = useCallback(async () => {
+    if (!selectedProvider || !navbarActiveSession || isResumingNavbarSession) {
+      return;
+    }
+    if (launchInFlightRef.current || streamStatus !== "idle") {
+      return;
+    }
+
+    launchInFlightRef.current = true;
+    setIsResumingNavbarSession(true);
+    let loadingStep: StreamLoadingStatus = "setup";
+    const updateLoadingStep = (next: StreamLoadingStatus): void => {
+      loadingStep = next;
+      setStreamStatus(next);
+    };
+
+    setLaunchError(null);
+    setQueuePosition(undefined);
+    setSessionStartedAtMs(Date.now());
+    setSessionElapsedSeconds(0);
+    setStreamWarning(null);
+    updateLoadingStep("setup");
+
+    try {
+      await claimAndConnectSession(navbarActiveSession);
+      setNavbarActiveSession(null);
+    } catch (error) {
+      console.error("Navbar resume failed:", error);
+      setLaunchError(toLaunchErrorState(error, loadingStep));
+      await window.openNow.disconnectSignaling().catch(() => {});
+      clientRef.current?.dispose();
+      clientRef.current = null;
+      setSession(null);
+      setStreamStatus("idle");
+      setQueuePosition(undefined);
+      setSessionStartedAtMs(null);
+      setSessionElapsedSeconds(0);
+      setStreamWarning(null);
+      setEscHoldReleaseIndicator({ visible: false, progress: 0 });
+      setDiagnostics(defaultDiagnostics());
+      void refreshNavbarActiveSession();
+    } finally {
+      launchInFlightRef.current = false;
+      setIsResumingNavbarSession(false);
+    }
+  }, [
+    claimAndConnectSession,
+    isResumingNavbarSession,
+    navbarActiveSession,
+    refreshNavbarActiveSession,
+    selectedProvider,
+    streamStatus,
+  ]);
 
   // Stop stream handler
   const handleStopStream = useCallback(async () => {
@@ -950,16 +1064,18 @@ export function App(): JSX.Element {
       setSession(null);
       setStreamStatus("idle");
       setStreamingGame(null);
+      setNavbarActiveSession(null);
       setLaunchError(null);
       setSessionStartedAtMs(null);
       setSessionElapsedSeconds(0);
       setStreamWarning(null);
       setEscHoldReleaseIndicator({ visible: false, progress: 0 });
       setDiagnostics(defaultDiagnostics());
+      void refreshNavbarActiveSession();
     } catch (error) {
       console.error("Stop failed:", error);
     }
-  }, [authSession, resolveExitPrompt]);
+  }, [authSession, refreshNavbarActiveSession, resolveExitPrompt]);
 
   const handleDismissLaunchError = useCallback(async () => {
     await window.openNow.disconnectSignaling().catch(() => {});
@@ -974,7 +1090,8 @@ export function App(): JSX.Element {
     setStreamWarning(null);
     setEscHoldReleaseIndicator({ visible: false, progress: 0 });
     setDiagnostics(defaultDiagnostics());
-  }, []);
+    void refreshNavbarActiveSession();
+  }, [refreshNavbarActiveSession]);
 
   const releasePointerLockIfNeeded = useCallback(async () => {
     if (document.pointerLockElement) {
@@ -1123,6 +1240,44 @@ export function App(): JSX.Element {
     return libraryGames.filter((g) => g.title.toLowerCase().includes(query));
   }, [libraryGames, searchQuery]);
 
+  const gameTitleByAppId = useMemo(() => {
+    const titles = new Map<number, string>();
+    const allKnownGames = [...games, ...libraryGames];
+
+    for (const game of allKnownGames) {
+      const idsForGame = new Set<number>();
+      const launchId = parseNumericId(game.launchAppId);
+      if (launchId !== null) {
+        idsForGame.add(launchId);
+      }
+      for (const variant of game.variants) {
+        const variantId = parseNumericId(variant.id);
+        if (variantId !== null) {
+          idsForGame.add(variantId);
+        }
+      }
+      for (const appId of idsForGame) {
+        if (!titles.has(appId)) {
+          titles.set(appId, game.title);
+        }
+      }
+    }
+
+    return titles;
+  }, [games, libraryGames]);
+
+  const activeSessionGameTitle = useMemo(() => {
+    if (!navbarActiveSession) return null;
+    const mappedTitle = gameTitleByAppId.get(navbarActiveSession.appId);
+    if (mappedTitle) {
+      return mappedTitle;
+    }
+    if (session?.sessionId === navbarActiveSession.sessionId && streamingGame?.title) {
+      return streamingGame.title;
+    }
+    return null;
+  }, [gameTitleByAppId, navbarActiveSession, session?.sessionId, streamingGame?.title]);
+
   // Show login screen if not authenticated
   if (!authSession) {
     return (
@@ -1221,6 +1376,12 @@ export function App(): JSX.Element {
         onNavigate={setCurrentPage}
         user={authSession.user}
         subscription={subscriptionInfo}
+        activeSession={navbarActiveSession}
+        activeSessionGameTitle={activeSessionGameTitle}
+        isResumingSession={isResumingNavbarSession}
+        onResumeSession={() => {
+          void handleResumeFromNavbar();
+        }}
         onLogout={handleLogout}
       />
 
