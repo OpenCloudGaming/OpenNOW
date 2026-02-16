@@ -15,7 +15,11 @@ import type {
   VideoCodec,
 } from "@shared/gfn";
 
-import { GfnWebRtcClient, type StreamDiagnostics } from "./gfn/webrtcClient";
+import {
+  GfnWebRtcClient,
+  type StreamDiagnostics,
+  type StreamTimeWarning,
+} from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 
 // UI Components
@@ -35,6 +39,12 @@ type GameSource = "main" | "library" | "public";
 type AppPage = "home" | "library" | "settings";
 type StreamStatus = "idle" | "queue" | "setup" | "starting" | "connecting" | "streaming";
 type ExitPromptState = { open: boolean; gameTitle: string };
+type StreamWarningState = {
+  code: StreamTimeWarning["code"];
+  message: string;
+  tone: "warn" | "critical";
+  secondsLeft?: number;
+};
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
 
@@ -102,6 +112,19 @@ function isSessionLimitError(error: unknown): boolean {
   return false;
 }
 
+function warningTone(code: StreamTimeWarning["code"]): "warn" | "critical" {
+  if (code === 3) {
+    return "critical";
+  }
+  return "warn";
+}
+
+function warningMessage(code: StreamTimeWarning["code"]): string {
+  if (code === 1) return "Session time limit approaching";
+  if (code === 2) return "Idle timeout approaching";
+  return "Maximum session time approaching";
+}
+
 export function App(): JSX.Element {
   // Auth State
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
@@ -164,6 +187,9 @@ export function App(): JSX.Element {
   const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: "Game" });
   const [streamingGame, setStreamingGame] = useState<GameInfo | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | undefined>();
+  const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
+  const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState(0);
+  const [streamWarning, setStreamWarning] = useState<StreamWarningState | null>(null);
 
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -416,6 +442,31 @@ export function App(): JSX.Element {
     return () => clearInterval(interval);
   }, [antiAfkEnabled, streamStatus]);
 
+  useEffect(() => {
+    if (streamStatus === "idle" || sessionStartedAtMs === null) {
+      setSessionElapsedSeconds(0);
+      return;
+    }
+
+    const updateElapsed = () => {
+      const elapsed = Math.max(0, Math.floor((Date.now() - sessionStartedAtMs) / 1000));
+      setSessionElapsedSeconds(elapsed);
+    };
+
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [sessionStartedAtMs, streamStatus]);
+
+  useEffect(() => {
+    if (!streamWarning) return;
+    const warning = streamWarning;
+    const timer = window.setTimeout(() => {
+      setStreamWarning((current) => (current === warning ? null : current));
+    }, 12000);
+    return () => window.clearTimeout(timer);
+  }, [streamWarning]);
+
   // Signaling events
   useEffect(() => {
     const unsubscribe = window.openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {
@@ -444,6 +495,14 @@ export function App(): JSX.Element {
               onEscHoldProgress: (visible, progress) => {
                 setEscHoldReleaseIndicator({ visible, progress });
               },
+              onTimeWarning: (warning) => {
+                setStreamWarning({
+                  code: warning.code,
+                  message: warningMessage(warning.code),
+                  tone: warningTone(warning.code),
+                  secondsLeft: warning.secondsLeft,
+                });
+              },
             });
           }
 
@@ -456,6 +515,7 @@ export function App(): JSX.Element {
               maxBitrateKbps: settings.maxBitrateMbps * 1000,
             });
             setStreamStatus("streaming");
+            setSessionStartedAtMs((current) => current ?? Date.now());
           }
         } else if (event.type === "remote-ice") {
           await clientRef.current?.addRemoteCandidate(event.candidate);
@@ -466,6 +526,9 @@ export function App(): JSX.Element {
           setStreamStatus("idle");
           setSession(null);
           setStreamingGame(null);
+          setSessionStartedAtMs(null);
+          setSessionElapsedSeconds(0);
+          setStreamWarning(null);
           setEscHoldReleaseIndicator({ visible: false, progress: 0 });
           setDiagnostics(defaultDiagnostics());
           launchInFlightRef.current = false;
@@ -587,6 +650,9 @@ export function App(): JSX.Element {
 
     launchInFlightRef.current = true;
 
+    setSessionStartedAtMs(Date.now());
+    setSessionElapsedSeconds(0);
+    setStreamWarning(null);
     setStreamingGame(game);
     setStreamStatus("queue");
     setQueuePosition(undefined);
@@ -743,6 +809,9 @@ export function App(): JSX.Element {
       console.error("Launch failed:", error);
       setStreamStatus("idle");
       setStreamingGame(null);
+      setSessionStartedAtMs(null);
+      setSessionElapsedSeconds(0);
+      setStreamWarning(null);
     } finally {
       launchInFlightRef.current = false;
     }
@@ -771,6 +840,9 @@ export function App(): JSX.Element {
       setSession(null);
       setStreamStatus("idle");
       setStreamingGame(null);
+      setSessionStartedAtMs(null);
+      setSessionElapsedSeconds(0);
+      setStreamWarning(null);
       setEscHoldReleaseIndicator({ visible: false, progress: 0 });
       setDiagnostics(defaultDiagnostics());
     } catch (error) {
@@ -960,6 +1032,8 @@ export function App(): JSX.Element {
           antiAfkEnabled={antiAfkEnabled}
           escHoldReleaseIndicator={escHoldReleaseIndicator}
           exitPrompt={exitPrompt}
+          sessionElapsedSeconds={sessionElapsedSeconds}
+          streamWarning={streamWarning}
           isConnecting={streamStatus === "connecting"}
           gameTitle={streamingGame?.title ?? "Game"}
           onToggleFullscreen={() => {

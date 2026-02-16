@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import type { JSX } from "react";
-import { Maximize, Minimize, Gamepad2, Loader2, LogOut } from "lucide-react";
+import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle } from "lucide-react";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
 
 interface StreamViewProps {
@@ -24,6 +24,13 @@ interface StreamViewProps {
     open: boolean;
     gameTitle: string;
   };
+  sessionElapsedSeconds: number;
+  streamWarning: {
+    code: 1 | 2 | 3;
+    message: string;
+    tone: "warn" | "critical";
+    secondsLeft?: number;
+  } | null;
   isConnecting: boolean;
   gameTitle: string;
   onToggleFullscreen: () => void;
@@ -58,6 +65,30 @@ function getInputQueueColor(bufferedBytes: number, dropCount: number): string {
   return "var(--success)";
 }
 
+function formatElapsed(totalSeconds: number): string {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const seconds = safe % 60;
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+  }
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function formatWarningSeconds(value: number | undefined): string | null {
+  if (value === undefined || !Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  const total = Math.floor(value);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (minutes > 0) {
+    return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+  }
+  return `${seconds}s`;
+}
+
 export function StreamView({
   videoRef,
   audioRef,
@@ -69,6 +100,8 @@ export function StreamView({
   antiAfkEnabled,
   escHoldReleaseIndicator,
   exitPrompt,
+  sessionElapsedSeconds,
+  streamWarning,
   isConnecting,
   gameTitle,
   onToggleFullscreen,
@@ -112,6 +145,8 @@ export function StreamView({
   const escHoldSecondsLeft = Math.max(0, 5 - Math.floor(escHoldProgress * 5));
   const inputQueueColor = getInputQueueColor(stats.inputQueueBufferedBytes, stats.inputQueueDropCount);
   const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
+  const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
+  const sessionTimeText = formatElapsed(sessionElapsedSeconds);
 
   return (
     <div className="sv">
@@ -134,6 +169,26 @@ export function StreamView({
             <p className="sv-connect-title">Connecting to {gameTitle}</p>
             <p className="sv-connect-sub">Setting up stream...</p>
           </div>
+        </div>
+      )}
+
+      {!isConnecting && (
+        <div className="sv-session-clock" title="Current gaming session elapsed time">
+          <Clock3 size={14} />
+          <span>Session {sessionTimeText}</span>
+        </div>
+      )}
+
+      {streamWarning && !isConnecting && !exitPrompt.open && (
+        <div
+          className={`sv-time-warning sv-time-warning--${streamWarning.tone}`}
+          title="Session time warning"
+        >
+          <AlertTriangle size={14} />
+          <span>
+            {streamWarning.message}
+            {warningSeconds ? ` · ${warningSeconds} left` : ""}
+          </span>
         </div>
       )}
 

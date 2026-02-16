@@ -165,12 +165,18 @@ export interface StreamDiagnostics {
   serverRegion: string;
 }
 
+export interface StreamTimeWarning {
+  code: 1 | 2 | 3;
+  secondsLeft?: number;
+}
+
 interface ClientOptions {
   videoElement: HTMLVideoElement;
   audioElement: HTMLAudioElement;
   onLog: (line: string) => void;
   onStats?: (stats: StreamDiagnostics) => void;
   onEscHoldProgress?: (visible: boolean, progress: number) => void;
+  onTimeWarning?: (warning: StreamTimeWarning) => void;
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
@@ -412,6 +418,7 @@ export class GfnWebRtcClient {
   private pc: RTCPeerConnection | null = null;
   private reliableInputChannel: RTCDataChannel | null = null;
   private mouseInputChannel: RTCDataChannel | null = null;
+  private controlChannel: RTCDataChannel | null = null;
   private audioContext: AudioContext | null = null;
 
   private inputReady = false;
@@ -658,10 +665,17 @@ export class GfnWebRtcClient {
   }
 
   private closeDataChannels(): void {
+    if (this.controlChannel) {
+      this.controlChannel.onmessage = null;
+      this.controlChannel.onclose = null;
+      this.controlChannel.onerror = null;
+    }
     this.reliableInputChannel?.close();
     this.mouseInputChannel?.close();
+    this.controlChannel?.close();
     this.reliableInputChannel = null;
     this.mouseInputChannel = null;
+    this.controlChannel = null;
   }
 
   private clearTimers(): void {
@@ -945,6 +959,7 @@ export class GfnWebRtcClient {
       this.pc.onicecandidate = null;
       this.pc.ontrack = null;
       this.pc.onconnectionstatechange = null;
+      this.pc.ondatachannel = null;
       this.pc.close();
       this.pc = null;
     }
@@ -1345,6 +1360,66 @@ export class GfnWebRtcClient {
     this.mouseInputChannel.onopen = () => {
       this.log(`Mouse channel open (partially reliable, maxPacketLifeTime=${this.partialReliableThresholdMs}ms)`);
     };
+  }
+
+  private mapTimerNotificationCode(rawCode: number): StreamTimeWarning["code"] | null {
+    // Mirrors official client behavior from timerNotification -> StreamWarningType.
+    if (rawCode === 1 || rawCode === 2) {
+      return 1;
+    }
+    if (rawCode === 4) {
+      return 2;
+    }
+    if (rawCode === 6) {
+      return 3;
+    }
+    return null;
+  }
+
+  private async onControlChannelMessage(data: string | Blob | ArrayBuffer): Promise<void> {
+    let payloadText: string;
+    if (typeof data === "string") {
+      payloadText = data;
+    } else if (data instanceof Blob) {
+      payloadText = await data.text();
+    } else if (data instanceof ArrayBuffer) {
+      payloadText = new TextDecoder().decode(data);
+    } else {
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(payloadText);
+    } catch {
+      return;
+    }
+
+    if (!parsed || typeof parsed !== "object" || !("timerNotification" in parsed)) {
+      return;
+    }
+
+    const timerNotification = (parsed as { timerNotification?: unknown }).timerNotification;
+    if (!timerNotification || typeof timerNotification !== "object") {
+      return;
+    }
+
+    const rawCode = Number((timerNotification as { code?: unknown }).code);
+    const mappedCode = this.mapTimerNotificationCode(rawCode);
+    if (mappedCode === null) {
+      this.log(`Control timer notification ignored: code=${rawCode}`);
+      return;
+    }
+
+    const rawSecondsLeft = Number((timerNotification as { secondsLeft?: unknown }).secondsLeft);
+    const secondsLeft =
+      Number.isFinite(rawSecondsLeft) && rawSecondsLeft >= 0
+        ? Math.floor(rawSecondsLeft)
+        : undefined;
+    this.log(
+      `Control timer warning: rawCode=${rawCode} mappedCode=${mappedCode} secondsLeft=${secondsLeft ?? "n/a"}`,
+    );
+    this.options.onTimeWarning?.({ code: mappedCode, secondsLeft });
   }
 
   private async flushQueuedCandidates(): Promise<void> {
@@ -2381,6 +2456,29 @@ export class GfnWebRtcClient {
       this.diagnostics.connectionState = pc.connectionState;
       this.emitStats();
       this.log(`Peer connection state: ${pc.connectionState}`);
+    };
+
+    pc.ondatachannel = (event) => {
+      const channel = event.channel;
+      this.log(`Remote data channel received: label=${channel.label}, ordered=${channel.ordered}`);
+      if (channel.label !== "control_channel") {
+        return;
+      }
+
+      this.controlChannel = channel;
+      this.controlChannel.binaryType = "arraybuffer";
+      this.controlChannel.onmessage = (msgEvent) => {
+        void this.onControlChannelMessage(msgEvent.data as string | Blob | ArrayBuffer);
+      };
+      this.controlChannel.onclose = () => {
+        this.log("Control channel closed");
+        if (this.controlChannel === channel) {
+          this.controlChannel = null;
+        }
+      };
+      this.controlChannel.onerror = () => {
+        this.log("Control channel error");
+      };
     };
 
     pc.onicecandidateerror = (event: Event) => {
