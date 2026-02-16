@@ -307,6 +307,84 @@ body,
   z-index: 2;
 }
 
+.navbar-session-resume {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  width: 210px;
+  min-width: 210px;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--panel-border));
+  border-radius: var(--r-full);
+  background:
+    linear-gradient(160deg, rgba(88, 217, 138, 0.26), rgba(88, 217, 138, 0.08)),
+    linear-gradient(180deg, rgba(15, 24, 19, 0.95), rgba(10, 12, 11, 0.92));
+  box-shadow:
+    0 6px 20px rgba(88, 217, 138, 0.16),
+    0 0 0 1px rgba(88, 217, 138, 0.14) inset;
+  color: #d7ffe8;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    transform var(--t-fast),
+    border-color var(--t-fast),
+    box-shadow var(--t-fast),
+    filter var(--t-fast);
+  overflow: hidden;
+}
+
+.navbar-session-resume:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 75%, var(--panel-border));
+  box-shadow:
+    0 10px 28px rgba(88, 217, 138, 0.24),
+    0 0 0 1px rgba(88, 217, 138, 0.24) inset;
+}
+
+.navbar-session-resume:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px rgba(88, 217, 138, 0.24),
+    0 10px 28px rgba(88, 217, 138, 0.24);
+}
+
+.navbar-session-resume:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: grayscale(0.1);
+}
+
+.navbar-session-resume-text {
+  color: #e9fff2;
+  min-width: 46px;
+  text-align: left;
+  flex: 0 0 auto;
+}
+
+.navbar-session-resume-game {
+  min-width: 0;
+  flex: 1 1 auto;
+  color: #d9fbe8;
+  font-size: 0.67rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navbar-session-resume-spin {
+  animation: spin 1s linear infinite;
+}
+
+.navbar-session-resume.is-loading {
+  animation: none;
+}
+
 .navbar-user {
   display: flex; align-items: center; gap: 7px;
   padding: 4px 8px;
@@ -522,6 +600,11 @@ body,
     position: static;
     transform: none;
     margin-left: 20px;
+  }
+
+  .navbar-session-resume {
+    width: 170px;
+    min-width: 170px;
   }
 }
 
