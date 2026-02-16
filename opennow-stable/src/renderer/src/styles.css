@@ -1726,7 +1726,7 @@ body,
   position: fixed;
   top: 14px;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translate(-50%, -8px);
   z-index: 1001;
   display: inline-flex;
   align-items: center;
@@ -1741,6 +1741,13 @@ body,
   letter-spacing: 0.01em;
   font-variant-numeric: tabular-nums;
   backdrop-filter: blur(4px);
+  opacity: 0;
+  transition: opacity 420ms var(--ease), transform 420ms var(--ease);
+  pointer-events: none;
+}
+.sv-session-clock.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 .sv-session-clock svg {
   color: var(--accent);
