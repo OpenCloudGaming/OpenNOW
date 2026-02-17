@@ -956,11 +956,12 @@ export function App(): JSX.Element {
       setQueuePosition(newSession.queuePosition);
 
       // Poll for readiness.
-      // Queue mode: no timeout - users wait indefinitely and see position updates.
-      // Setup/Starting mode: 180s timeout applies once queue clears.
+      // Queue mode (>1): no timeout - users wait indefinitely and see position updates.
+      // Setup/Starting mode (0, 1, or undefined): 180s timeout applies - machine is starting.
       let finalSession: SessionInfo | null = null;
-      // In queue mode if queuePosition is defined (0 or 1 are valid "you're next" positions)
-      let isInQueueMode = newSession.queuePosition !== undefined;
+      // Only in queue mode if queuePosition > 1 (actually waiting in line)
+      // queuePosition 0 or 1 means machine is being allocated, not queue wait
+      let isInQueueMode = (newSession.queuePosition ?? 0) > 1;
       let timeoutStartAttempt = 1;
       const maxAttempts = Math.ceil(SESSION_READY_TIMEOUT_MS / SESSION_READY_POLL_INTERVAL_MS);
       let attempt = 0;
@@ -982,8 +983,9 @@ export function App(): JSX.Element {
 
         // Check if queue just cleared - transition from queue mode to setup mode
         const wasInQueueMode = isInQueueMode;
-        // Queue is cleared when queuePosition becomes undefined/null (0 and 1 are still valid positions)
-        isInQueueMode = polled.queuePosition !== undefined && polled.queuePosition !== null;
+        // Queue mode only when position > 1 (actually waiting behind others)
+        // Position 0 or 1 means machine allocation is starting
+        isInQueueMode = (polled.queuePosition ?? 0) > 1;
         if (wasInQueueMode && !isInQueueMode) {
           // Queue just cleared, start timeout counting from now
           timeoutStartAttempt = attempt;
