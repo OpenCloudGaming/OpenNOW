@@ -213,6 +213,12 @@ function activateFocusedElement(): void {
 }
 
 function triggerBackAction(onBackAction?: () => boolean): void {
+  const openNavbarModalClose = document.querySelector<HTMLButtonElement>(".navbar-modal-close");
+  if (openNavbarModalClose) {
+    openNavbarModalClose.click();
+    return;
+  }
+
   const openRegionToggle = document.querySelector<HTMLButtonElement>(".region-selected.open");
   if (openRegionToggle) {
     openRegionToggle.click();
