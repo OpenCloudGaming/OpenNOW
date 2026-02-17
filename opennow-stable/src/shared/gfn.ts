@@ -228,6 +228,7 @@ export interface MediaConnectionInfo {
 export interface SessionInfo {
   sessionId: string;
   status: number;
+  queuePosition?: number;
   zone: string;
   streamingBaseUrl?: string;
   serverIp: string;

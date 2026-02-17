@@ -34,6 +34,8 @@ import { StreamView } from "./components/StreamView";
 const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
 const resolutionOptions = ["1280x720", "1920x1080", "2560x1440", "3840x2160", "2560x1080", "3440x1440"];
 const fpsOptions = [30, 60, 120, 144, 240];
+const SESSION_READY_POLL_INTERVAL_MS = 2000;
+const SESSION_READY_TIMEOUT_MS = 180000;
 
 type GameSource = "main" | "library" | "public";
 type AppPage = "home" | "library" | "settings";
@@ -64,6 +66,10 @@ const DEFAULT_SHORTCUTS = {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function isSessionReadyForConnect(status: number): boolean {
+  return status === 2 || status === 3;
 }
 
 function isNumericId(value: string | undefined): value is string {
@@ -908,11 +914,15 @@ export function App(): JSX.Element {
       });
 
       setSession(newSession);
+      setQueuePosition(newSession.queuePosition);
 
-      // Poll for readiness
-      let readyCount = 0;
-      for (let attempt = 1; attempt <= 30; attempt++) {
-        await sleep(2000);
+      // Poll for readiness.
+      // Some regions/users need longer than 60s; requiring multiple ready polls
+      // caused false timeouts right before the session became claimable.
+      let finalSession: SessionInfo | null = null;
+      const maxAttempts = Math.ceil(SESSION_READY_TIMEOUT_MS / SESSION_READY_POLL_INTERVAL_MS);
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        await sleep(SESSION_READY_POLL_INTERVAL_MS);
 
         const polled = await window.openNow.pollSession({
           token: token || undefined,
@@ -923,40 +933,61 @@ export function App(): JSX.Element {
         });
 
         setSession(polled);
+        setQueuePosition(polled.queuePosition);
 
-        console.log(`Poll attempt ${attempt}: status=${polled.status}, signalingUrl=${polled.signalingUrl}`);
+        console.log(
+          `Poll attempt ${attempt}/${maxAttempts}: status=${polled.status}, serverIp=${polled.serverIp}, signalingUrl=${polled.signalingUrl}`,
+        );
 
-        if (polled.status === 2 || polled.status === 3) {
-          readyCount++;
-          console.log(`Ready count: ${readyCount}/3`);
-          if (readyCount >= 3) break;
+        if (isSessionReadyForConnect(polled.status)) {
+          finalSession = polled;
+          break;
         }
 
         // Update status based on session state
-        if (polled.status === 1) {
+        if ((polled.queuePosition ?? 0) > 0) {
+          updateLoadingStep("queue");
+        } else if (polled.status === 1) {
           updateLoadingStep("setup");
         }
       }
 
-      if (readyCount < 3) {
-        throw new Error("Session did not become ready in time");
+      if (!finalSession) {
+        console.warn(
+          `Launch poll timed out after ${SESSION_READY_TIMEOUT_MS}ms for session ${newSession.sessionId}; attempting claim fallback`,
+        );
+        try {
+          const activeSessions = await window.openNow.getActiveSessions(token || undefined, effectiveStreamingBaseUrl);
+          const fallbackSession =
+            activeSessions.find((entry) => entry.sessionId === newSession.sessionId) ??
+            activeSessions.find((entry) => entry.serverIp === newSession.serverIp) ??
+            null;
+          if (fallbackSession) {
+            await claimAndConnectSession(fallbackSession);
+            return;
+          }
+        } catch (fallbackError) {
+          console.warn("Claim fallback after launch timeout failed:", fallbackError);
+        }
+        throw new Error(`Session did not become ready in time (${Math.round(SESSION_READY_TIMEOUT_MS / 1000)}s)`);
       }
 
+      setQueuePosition(undefined);
       updateLoadingStep("connecting");
 
       // Use the polled session data which has the latest signaling info
-      const finalSession = sessionRef.current ?? newSession;
+      const sessionToConnect = sessionRef.current ?? finalSession ?? newSession;
       console.log("Connecting signaling with:", {
-        sessionId: finalSession.sessionId,
-        signalingServer: finalSession.signalingServer,
-        signalingUrl: finalSession.signalingUrl,
-        status: finalSession.status,
+        sessionId: sessionToConnect.sessionId,
+        signalingServer: sessionToConnect.signalingServer,
+        signalingUrl: sessionToConnect.signalingUrl,
+        status: sessionToConnect.status,
       });
 
       await window.openNow.connectSignaling({
-        sessionId: finalSession.sessionId,
-        signalingServer: finalSession.signalingServer,
-        signalingUrl: finalSession.signalingUrl,
+        sessionId: sessionToConnect.sessionId,
+        signalingServer: sessionToConnect.signalingServer,
+        signalingUrl: sessionToConnect.signalingUrl,
       });
     } catch (error) {
       console.error("Launch failed:", error);
