@@ -956,11 +956,17 @@ export function App(): JSX.Element {
       setQueuePosition(newSession.queuePosition);
 
       // Poll for readiness.
-      // Some regions/users need longer than 60s; requiring multiple ready polls
-      // caused false timeouts right before the session became claimable.
+      // Queue mode: no timeout - users wait indefinitely and see position updates.
+      // Setup/Starting mode: 180s timeout applies once queue clears.
       let finalSession: SessionInfo | null = null;
+      // In queue mode if queuePosition is defined (0 or 1 are valid "you're next" positions)
+      let isInQueueMode = newSession.queuePosition !== undefined;
+      let timeoutStartAttempt = 1;
       const maxAttempts = Math.ceil(SESSION_READY_TIMEOUT_MS / SESSION_READY_POLL_INTERVAL_MS);
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      let attempt = 0;
+
+      while (true) {
+        attempt++;
         await sleep(SESSION_READY_POLL_INTERVAL_MS);
 
         const polled = await window.openNow.pollSession({
@@ -974,8 +980,17 @@ export function App(): JSX.Element {
         setSession(polled);
         setQueuePosition(polled.queuePosition);
 
+        // Check if queue just cleared - transition from queue mode to setup mode
+        const wasInQueueMode = isInQueueMode;
+        // Queue is cleared when queuePosition becomes undefined/null (0 and 1 are still valid positions)
+        isInQueueMode = polled.queuePosition !== undefined && polled.queuePosition !== null;
+        if (wasInQueueMode && !isInQueueMode) {
+          // Queue just cleared, start timeout counting from now
+          timeoutStartAttempt = attempt;
+        }
+
         console.log(
-          `Poll attempt ${attempt}/${maxAttempts}: status=${polled.status}, serverIp=${polled.serverIp}, signalingUrl=${polled.signalingUrl}`,
+          `Poll attempt ${attempt}: status=${polled.status}, queuePosition=${polled.queuePosition ?? "n/a"}, serverIp=${polled.serverIp}, queueMode=${isInQueueMode}`,
         );
 
         if (isSessionReadyForConnect(polled.status)) {
@@ -984,32 +999,20 @@ export function App(): JSX.Element {
         }
 
         // Update status based on session state
-        if ((polled.queuePosition ?? 0) > 0) {
+        if (isInQueueMode) {
           updateLoadingStep("queue");
         } else if (polled.status === 1) {
           updateLoadingStep("setup");
         }
+
+        // Only check timeout when NOT in queue mode (i.e., during setup/starting)
+        if (!isInQueueMode && attempt - timeoutStartAttempt >= maxAttempts) {
+          throw new Error(`Session did not become ready in time (${Math.round(SESSION_READY_TIMEOUT_MS / 1000)}s)`);
+        }
       }
 
-      if (!finalSession) {
-        console.warn(
-          `Launch poll timed out after ${SESSION_READY_TIMEOUT_MS}ms for session ${newSession.sessionId}; attempting claim fallback`,
-        );
-        try {
-          const activeSessions = await window.openNow.getActiveSessions(token || undefined, effectiveStreamingBaseUrl);
-          const fallbackSession =
-            activeSessions.find((entry) => entry.sessionId === newSession.sessionId) ??
-            activeSessions.find((entry) => entry.serverIp === newSession.serverIp) ??
-            null;
-          if (fallbackSession) {
-            await claimAndConnectSession(fallbackSession);
-            return;
-          }
-        } catch (fallbackError) {
-          console.warn("Claim fallback after launch timeout failed:", fallbackError);
-        }
-        throw new Error(`Session did not become ready in time (${Math.round(SESSION_READY_TIMEOUT_MS / 1000)}s)`);
-      }
+      // finalSession is guaranteed to be set here (we only exit the loop via break when session is ready)
+      // Timeout only applies during setup/starting phase, not during queue wait
 
       setQueuePosition(undefined);
       updateLoadingStep("connecting");
