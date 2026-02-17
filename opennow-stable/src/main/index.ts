@@ -89,6 +89,7 @@ console.log(
 
 // --- Platform-specific HW video decode features ---
 const platformFeatures: string[] = [];
+const isLinuxArm = process.platform === "linux" && (process.arch === "arm64" || process.arch === "arm");
 
 if (process.platform === "win32") {
   // Windows: D3D11 + Media Foundation path for HW decode/encode acceleration
@@ -102,18 +103,25 @@ if (process.platform === "win32") {
     platformFeatures.push("MediaFoundationD3D11VideoCapture");
   }
 } else if (process.platform === "linux") {
-  // Linux: VA-API path for HW decode/encode (Intel/AMD GPUs)
-  if (bootstrapVideoPrefs.decoderPreference !== "software") {
-    platformFeatures.push("VaapiVideoDecoder");
-  }
-  if (bootstrapVideoPrefs.encoderPreference !== "software") {
-    platformFeatures.push("VaapiVideoEncoder");
-  }
-  if (
-    bootstrapVideoPrefs.decoderPreference !== "software" ||
-    bootstrapVideoPrefs.encoderPreference !== "software"
-  ) {
-    platformFeatures.push("VaapiIgnoreDriverChecks");
+  if (isLinuxArm) {
+    // Raspberry Pi/Linux ARM: allow Chromium's direct V4L2 decoder path.
+    if (bootstrapVideoPrefs.decoderPreference !== "software") {
+      platformFeatures.push("UseChromeOSDirectVideoDecoder");
+    }
+  } else {
+    // Linux x64 desktop GPUs: VA-API path (Intel/AMD).
+    if (bootstrapVideoPrefs.decoderPreference !== "software") {
+      platformFeatures.push("VaapiVideoDecoder");
+    }
+    if (bootstrapVideoPrefs.encoderPreference !== "software") {
+      platformFeatures.push("VaapiVideoEncoder");
+    }
+    if (
+      bootstrapVideoPrefs.decoderPreference !== "software" ||
+      bootstrapVideoPrefs.encoderPreference !== "software"
+    ) {
+      platformFeatures.push("VaapiIgnoreDriverChecks");
+    }
   }
 }
 // macOS: VideoToolbox handles HW acceleration natively, no extra feature flags needed
@@ -133,7 +141,7 @@ const disableFeatures: string[] = [
   // Prevents mDNS candidate generation — faster ICE connectivity
   "WebRtcHideLocalIpsWithMdns",
 ];
-if (process.platform === "linux") {
+if (process.platform === "linux" && !isLinuxArm) {
   // ChromeOS-only direct video decoder path interferes on regular Linux
   disableFeatures.push("UseChromeOSDirectVideoDecoder");
 }

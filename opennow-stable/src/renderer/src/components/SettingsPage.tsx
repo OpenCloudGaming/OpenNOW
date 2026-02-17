@@ -272,13 +272,23 @@ function saveCachedEntitledResolutions(cache: EntitledResolutionsCache): void {
   }
 }
 
+function isLinuxArmClient(): boolean {
+  const platform = navigator.platform?.toLowerCase() ?? "";
+  const ua = navigator.userAgent?.toLowerCase() ?? "";
+  const linux = platform.includes("linux") || ua.includes("linux");
+  const arm = /(aarch64|arm64|armv\d|arm)/.test(platform) || /(aarch64|arm64|armv\d|arm)/.test(ua);
+  return linux && arm;
+}
+
 function guessDecodeBackend(hwAccelerated: boolean): string {
   if (!hwAccelerated) return "Software (CPU)";
   const platform = navigator.platform?.toLowerCase() ?? "";
   const ua = navigator.userAgent?.toLowerCase() ?? "";
   if (platform.includes("win") || ua.includes("windows")) return "D3D11 (GPU)";
   if (platform.includes("mac") || ua.includes("macintosh")) return "VideoToolbox (GPU)";
-  if (platform.includes("linux") || ua.includes("linux")) return "VA-API (GPU)";
+  if (platform.includes("linux") || ua.includes("linux")) {
+    return isLinuxArmClient() ? "V4L2 (GPU)" : "VA-API (GPU)";
+  }
   return "Hardware (GPU)";
 }
 
@@ -288,7 +298,9 @@ function guessEncodeBackend(hwAccelerated: boolean): string {
   const ua = navigator.userAgent?.toLowerCase() ?? "";
   if (platform.includes("win") || ua.includes("windows")) return "Media Foundation (GPU)";
   if (platform.includes("mac") || ua.includes("macintosh")) return "VideoToolbox (GPU)";
-  if (platform.includes("linux") || ua.includes("linux")) return "VA-API (GPU)";
+  if (platform.includes("linux") || ua.includes("linux")) {
+    return isLinuxArmClient() ? "V4L2 (GPU)" : "VA-API (GPU)";
+  }
   return "Hardware (GPU)";
 }
 
@@ -426,7 +438,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     const platform = navigator.platform.toLowerCase();
     if (platform.includes("win")) return "D3D11 / DXVA";
     if (platform.includes("mac")) return "VideoToolbox";
-    if (platform.includes("linux")) return "VA-API";
+    if (platform.includes("linux")) return isLinuxArmClient() ? "V4L2" : "VA-API";
     return "Hardware";
   }, []);
 
