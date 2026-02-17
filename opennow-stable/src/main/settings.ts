@@ -32,6 +32,10 @@ export interface Settings {
   shortcutStopStream: string;
   /** Toggle anti-AFK shortcut */
   shortcutToggleAntiAfk: string;
+  /** How often to re-show the session timer while streaming (0 = off) */
+  sessionClockShowEveryMinutes: number;
+  /** How long the session timer stays visible when it appears */
+  sessionClockShowDurationSeconds: number;
   /** Window width */
   windowWidth: number;
   /** Window height */
@@ -58,6 +62,8 @@ const DEFAULT_SETTINGS: Settings = {
   shortcutTogglePointerLock: "F8",
   shortcutStopStream: defaultStopShortcut,
   shortcutToggleAntiAfk: defaultAntiAfkShortcut,
+  sessionClockShowEveryMinutes: 60,
+  sessionClockShowDurationSeconds: 30,
   windowWidth: 1400,
   windowHeight: 900,
 };

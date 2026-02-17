@@ -620,6 +620,184 @@ body,
   will-change: scroll-position;
 }
 
+/* ======================================================
+   CONTROLLER MODE
+   ====================================================== */
+body.controller-mode {
+  --navbar-h: 54px;
+}
+
+.controller-mode .controller-focus,
+.controller-mode .controller-focus:focus,
+.controller-mode .controller-focus:focus-visible {
+  outline: none !important;
+  border-color: color-mix(in srgb, var(--accent) 82%, var(--panel-border)) !important;
+  box-shadow:
+    0 0 0 2px rgba(88, 217, 138, 0.38),
+    0 0 0 6px rgba(88, 217, 138, 0.12),
+    0 12px 28px rgba(0, 0, 0, 0.36) !important;
+  transition:
+    transform 110ms ease,
+    border-color 110ms ease,
+    box-shadow 110ms ease !important;
+}
+
+.controller-mode .main-content {
+  padding: 24px;
+}
+
+.controller-mode .home-toolbar,
+.controller-mode .library-toolbar {
+  gap: 14px;
+}
+
+.controller-mode .navbar-link,
+.controller-mode .home-tab,
+.controller-mode .settings-chip,
+.controller-mode .settings-shortcut-reset-btn,
+.controller-mode .region-selected,
+.controller-mode .region-dropdown-item,
+.controller-mode .login-button,
+.controller-mode .login-select,
+.controller-mode .login-dropdown-item,
+.controller-mode .sload-cancel,
+.controller-mode .navbar-subscription-chip,
+.controller-mode .navbar-session-resume {
+  min-height: 42px;
+  font-size: 0.84rem;
+}
+
+.controller-mode .home-tab,
+.controller-mode .navbar-link {
+  padding: 8px 14px;
+}
+
+.controller-mode .home-search,
+.controller-mode .library-search {
+  max-width: 420px;
+}
+
+.controller-mode .game-card {
+  min-height: 276px;
+}
+
+.controller-mode .game-grid {
+  gap: 16px;
+}
+
+.controller-mode .game-card.controller-focus {
+  transform: translateY(-3px) scale(1.015);
+}
+
+.controller-mode .game-card.controller-focus .game-card-overlay {
+  opacity: 1;
+}
+
+.controller-mode .game-card.controller-focus .game-card-image {
+  transform: scale(1.03);
+}
+
+.controller-mode .game-card-play-button {
+  width: 62px;
+  height: 62px;
+}
+
+.controller-mode .settings-slider::-webkit-slider-thumb {
+  width: 22px;
+  height: 22px;
+}
+
+.controller-mode .settings-slider {
+  height: 8px;
+}
+
+.controller-mode .settings-slider.controller-range-editing {
+  box-shadow:
+    0 0 0 2px rgba(88, 217, 138, 0.25),
+    0 0 0 5px rgba(88, 217, 138, 0.1);
+}
+
+.controller-mode .settings-slider.controller-range-editing::-webkit-slider-thumb {
+  background: #8af1ae;
+  box-shadow:
+    0 0 0 2px rgba(88, 217, 138, 0.35),
+    0 0 14px rgba(88, 217, 138, 0.45);
+}
+
+.controller-mode .settings-section {
+  padding: 20px 22px;
+}
+
+.controller-mode .settings-chip-row {
+  gap: 7px;
+}
+
+.controller-mode .settings-chip {
+  padding: 9px 14px;
+  font-size: 0.87rem;
+}
+
+.controller-mode .region-dropdown-item {
+  padding: 12px 14px;
+}
+
+.controller-mode .home-search-input,
+.controller-mode .library-search-input,
+.controller-mode .settings-text-input {
+  min-height: 42px;
+  font-size: 0.86rem;
+}
+
+.controller-hint {
+  position: fixed;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 2200;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 11px;
+  border-radius: var(--r-full);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--panel-border));
+  background:
+    linear-gradient(160deg, rgba(88, 217, 138, 0.13), rgba(88, 217, 138, 0.04)),
+    rgba(10, 10, 12, 0.9);
+  color: #d9e8e0;
+  font-size: 0.69rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  box-shadow:
+    var(--shadow-sm),
+    0 0 0 1px rgba(88, 217, 138, 0.13) inset;
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+}
+
+.controller-hint span {
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.06);
+  color: #effaf4;
+  white-space: nowrap;
+}
+
+.controller-hint--overlay {
+  bottom: 16px;
+  z-index: 1400;
+}
+
+@media (max-width: 760px) {
+  .controller-hint {
+    max-width: calc(100vw - 16px);
+    gap: 4px;
+    padding: 6px 8px;
+    font-size: 0.62rem;
+    overflow-x: auto;
+  }
+}
+
 
 /* ======================================================
    LOGIN SCREEN

@@ -825,6 +825,48 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 onChange={(e) => handleChange("maxBitrateMbps", parseInt(e.target.value, 10))}
               />
             </div>
+
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Session Timer Reappear</label>
+                <span className="settings-value-badge">
+                  {settings.sessionClockShowEveryMinutes === 0
+                    ? "Off"
+                    : `Every ${settings.sessionClockShowEveryMinutes} min`}
+                </span>
+              </div>
+              <input
+                type="range"
+                className="settings-slider"
+                min={0}
+                max={120}
+                step={5}
+                value={settings.sessionClockShowEveryMinutes}
+                onChange={(e) => handleChange("sessionClockShowEveryMinutes", parseInt(e.target.value, 10))}
+              />
+              <span className="settings-subtle-hint">
+                How often the session timer pops back up while streaming (0 disables repeats).
+              </span>
+            </div>
+
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Session Timer Visible Time</label>
+                <span className="settings-value-badge">{settings.sessionClockShowDurationSeconds}s</span>
+              </div>
+              <input
+                type="range"
+                className="settings-slider"
+                min={5}
+                max={120}
+                step={5}
+                value={settings.sessionClockShowDurationSeconds}
+                onChange={(e) => handleChange("sessionClockShowDurationSeconds", parseInt(e.target.value, 10))}
+              />
+              <span className="settings-subtle-hint">
+                How long the session timer stays visible each time it appears.
+              </span>
+            </div>
           </div>
         </section>
 

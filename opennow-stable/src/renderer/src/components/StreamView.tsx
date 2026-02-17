@@ -25,6 +25,8 @@ interface StreamViewProps {
     gameTitle: string;
   };
   sessionElapsedSeconds: number;
+  sessionClockShowEveryMinutes: number;
+  sessionClockShowDurationSeconds: number;
   streamWarning: {
     code: 1 | 2 | 3;
     message: string;
@@ -101,6 +103,8 @@ export function StreamView({
   escHoldReleaseIndicator,
   exitPrompt,
   sessionElapsedSeconds,
+  sessionClockShowEveryMinutes,
+  sessionClockShowDurationSeconds,
   streamWarning,
   isConnecting,
   gameTitle,
@@ -136,7 +140,13 @@ export function StreamView({
       return;
     }
 
+    const intervalMinutes = Math.max(0, Math.floor(sessionClockShowEveryMinutes || 0));
+    const durationSeconds = Math.max(1, Math.floor(sessionClockShowDurationSeconds || 1));
+    const intervalMs = intervalMinutes * 60 * 1000;
+    const durationMs = durationSeconds * 1000;
+
     let hideTimer: number | undefined;
+    let periodicTimer: number | undefined;
 
     const showFor = (durationMs: number): void => {
       setShowSessionClock(true);
@@ -148,21 +158,24 @@ export function StreamView({
       }, durationMs);
     };
 
-    // Show session clock at stream start for 10s.
-    showFor(10_000);
+    // Show session clock at stream start.
+    showFor(durationMs);
 
-    // Re-show every hour for 30s.
-    const hourlyTimer = window.setInterval(() => {
-      showFor(30_000);
-    }, 60 * 60 * 1000);
+    if (intervalMs > 0) {
+      periodicTimer = window.setInterval(() => {
+        showFor(durationMs);
+      }, intervalMs);
+    }
 
     return () => {
       if (hideTimer !== undefined) {
         window.clearTimeout(hideTimer);
       }
-      window.clearInterval(hourlyTimer);
+      if (periodicTimer !== undefined) {
+        window.clearInterval(periodicTimer);
+      }
     };
-  }, [isConnecting]);
+  }, [isConnecting, sessionClockShowDurationSeconds, sessionClockShowEveryMinutes]);
 
   const bitrateMbps = (stats.bitrateKbps / 1000).toFixed(1);
   const hasResolution = stats.resolution && stats.resolution !== "";

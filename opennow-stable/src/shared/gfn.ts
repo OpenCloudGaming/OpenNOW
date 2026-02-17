@@ -39,6 +39,8 @@ export interface Settings {
   shortcutTogglePointerLock: string;
   shortcutStopStream: string;
   shortcutToggleAntiAfk: string;
+  sessionClockShowEveryMinutes: number;
+  sessionClockShowDurationSeconds: number;
   windowWidth: number;
   windowHeight: number;
 }

@@ -21,6 +21,7 @@ import {
   type StreamTimeWarning,
 } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
+import { useControllerNavigation } from "./controllerNavigation";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
@@ -54,6 +55,8 @@ type LaunchErrorState = {
   description: string;
   codeLabel?: string;
 };
+
+const APP_PAGE_ORDER: AppPage[] = ["home", "library", "settings"];
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
 
@@ -272,6 +275,8 @@ export function App(): JSX.Element {
     shortcutTogglePointerLock: DEFAULT_SHORTCUTS.shortcutTogglePointerLock,
     shortcutStopStream: DEFAULT_SHORTCUTS.shortcutStopStream,
     shortcutToggleAntiAfk: DEFAULT_SHORTCUTS.shortcutToggleAntiAfk,
+    sessionClockShowEveryMinutes: 60,
+    sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
   });
@@ -299,6 +304,33 @@ export function App(): JSX.Element {
   const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState(0);
   const [streamWarning, setStreamWarning] = useState<StreamWarningState | null>(null);
 
+  const handleControllerPageNavigate = useCallback((direction: "prev" | "next"): void => {
+    if (!authSession || streamStatus !== "idle") {
+      return;
+    }
+    const currentIndex = APP_PAGE_ORDER.indexOf(currentPage);
+    const step = direction === "next" ? 1 : -1;
+    const nextIndex = (currentIndex + step + APP_PAGE_ORDER.length) % APP_PAGE_ORDER.length;
+    setCurrentPage(APP_PAGE_ORDER[nextIndex]);
+  }, [authSession, currentPage, streamStatus]);
+
+  const handleControllerBackAction = useCallback((): boolean => {
+    if (!authSession || streamStatus !== "idle") {
+      return false;
+    }
+    if (currentPage !== "home") {
+      setCurrentPage("home");
+      return true;
+    }
+    return false;
+  }, [authSession, currentPage, streamStatus]);
+
+  const controllerConnected = useControllerNavigation({
+    enabled: streamStatus !== "streaming" || exitPrompt.open,
+    onNavigatePage: handleControllerPageNavigate,
+    onBackAction: handleControllerBackAction,
+  });
+
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -313,6 +345,13 @@ export function App(): JSX.Element {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    document.body.classList.toggle("controller-mode", controllerConnected);
+    return () => {
+      document.body.classList.remove("controller-mode");
+    };
+  }, [controllerConnected]);
 
   // Derived state
   const selectedProvider = useMemo(() => {
@@ -1312,16 +1351,25 @@ export function App(): JSX.Element {
   // Show login screen if not authenticated
   if (!authSession) {
     return (
-      <LoginScreen
-        providers={providers}
-        selectedProviderId={providerIdpId}
-        onProviderChange={setProviderIdpId}
-        onLogin={handleLogin}
-        isLoading={isLoggingIn}
-        error={loginError}
-        isInitializing={isInitializing}
-        statusMessage={startupStatusMessage}
-      />
+      <>
+        <LoginScreen
+          providers={providers}
+          selectedProviderId={providerIdpId}
+          onProviderChange={setProviderIdpId}
+          onLogin={handleLogin}
+          isLoading={isLoggingIn}
+          error={loginError}
+          isInitializing={isInitializing}
+          statusMessage={startupStatusMessage}
+        />
+        {controllerConnected && (
+          <div className="controller-hint">
+            <span>D-pad Navigate</span>
+            <span>A Select</span>
+            <span>B Back</span>
+          </div>
+        )}
+      </>
     );
   }
 
@@ -1349,6 +1397,8 @@ export function App(): JSX.Element {
             escHoldReleaseIndicator={escHoldReleaseIndicator}
             exitPrompt={exitPrompt}
             sessionElapsedSeconds={sessionElapsedSeconds}
+            sessionClockShowEveryMinutes={settings.sessionClockShowEveryMinutes}
+            sessionClockShowDurationSeconds={settings.sessionClockShowDurationSeconds}
             streamWarning={streamWarning}
             isConnecting={streamStatus === "connecting"}
             gameTitle={streamingGame?.title ?? "Game"}
@@ -1389,6 +1439,13 @@ export function App(): JSX.Element {
               void handlePromptedStopStream();
             }}
           />
+        )}
+        {controllerConnected && streamStatus !== "streaming" && (
+          <div className="controller-hint controller-hint--overlay">
+            <span>D-pad Navigate</span>
+            <span>A Select</span>
+            <span>B Back</span>
+          </div>
         )}
       </>
     );
@@ -1451,6 +1508,14 @@ export function App(): JSX.Element {
           />
         )}
       </main>
+      {controllerConnected && (
+        <div className="controller-hint">
+          <span>D-pad Navigate</span>
+          <span>A Select</span>
+          <span>B Back</span>
+          <span>LB/RB Tabs</span>
+        </div>
+      )}
     </div>
   );
 }
