@@ -13,10 +13,12 @@ export class DiscordPresenceService {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempt = 0;
   private lastPayload: DiscordPresencePayload | null = null;
+  private readonly appStartedAtMs: number;
 
   constructor(enabled: boolean, clientId: string) {
     this.enabled = enabled;
     this.clientId = clientId;
+    this.appStartedAtMs = Date.now();
   }
 
   async initialize(): Promise<void> {
@@ -111,6 +113,8 @@ export class DiscordPresenceService {
       return;
     }
 
+    const appTs = new Date(this.appStartedAtMs);
+
     try {
       if (payload.type === "idle") {
         await this.client.user?.setActivity({
@@ -118,6 +122,7 @@ export class DiscordPresenceService {
           state: "Idle",
           largeImageKey: "opennow",
           largeImageText: "OpenNOW",
+          startTimestamp: appTs,
         });
       } else if (payload.type === "queue") {
         const state = payload.queuePosition
@@ -128,6 +133,7 @@ export class DiscordPresenceService {
           state,
           largeImageKey: "opennow",
           largeImageText: "OpenNOW",
+          startTimestamp: appTs,
         });
       } else if (payload.type === "streaming") {
         const name = payload.gameName?.trim();
@@ -143,13 +149,14 @@ export class DiscordPresenceService {
           stateParts.push(`${payload.bitrateMbps.toFixed(1)} Mbps`);
         }
         const state = stateParts.length > 0 ? stateParts.join(" · ") : undefined;
+        const streamTs = payload.startTimestamp ? new Date(payload.startTimestamp) : appTs;
 
         await this.client.user?.setActivity({
           details,
           ...(state ? { state } : {}),
           largeImageKey: "opennow",
           largeImageText: "OpenNOW",
-          ...(payload.startTimestamp ? { startTimestamp: new Date(payload.startTimestamp) } : {}),
+          startTimestamp: streamTs,
         });
       }
     } catch (error) {
