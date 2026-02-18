@@ -14,7 +14,6 @@ import type {
   StreamRegion,
   VideoCodec,
   DiscordPresencePayload,
-  FlightGamepadState,
 } from "@shared/gfn";
 
 import {
@@ -23,6 +22,7 @@ import {
   type StreamTimeWarning,
 } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
+import { getFlightHidService } from "./flight/FlightHidService";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
@@ -647,14 +647,16 @@ export function App(): JSX.Element {
     }
   }, [authSession]);
 
-  // Flight controls: forward gamepad state from main process to WebRTC client
+  // Flight controls: forward WebHID gamepad state to WebRTC client
   useEffect(() => {
     if (!settings.flightControlsEnabled) return;
-    const unsubscribe = window.openNow.onFlightGamepadState((state: FlightGamepadState) => {
+    const service = getFlightHidService();
+    service.controllerSlot = settings.flightControlsSlot;
+    const unsub = service.onGamepadState((state) => {
       clientRef.current?.injectExternalGamepad(state);
     });
-    return unsubscribe;
-  }, [settings.flightControlsEnabled]);
+    return unsub;
+  }, [settings.flightControlsEnabled, settings.flightControlsSlot]);
 
   useEffect(() => {
     if (!streamWarning) return;

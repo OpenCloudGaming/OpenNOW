@@ -324,16 +324,11 @@ export interface OpenNowApi {
   resetSettings(): Promise<Settings>;
   updateDiscordPresence(state: DiscordPresencePayload): Promise<void>;
   clearDiscordPresence(): Promise<void>;
-  flightGetDevices(): Promise<FlightDeviceInfo[]>;
-  flightStartCapture(devicePath: string): Promise<boolean>;
-  flightStopCapture(): Promise<void>;
   flightGetProfile(vidPid: string, gameId?: string): Promise<FlightProfile | null>;
   flightSetProfile(profile: FlightProfile): Promise<void>;
   flightDeleteProfile(vidPid: string, gameId?: string): Promise<void>;
   flightGetAllProfiles(): Promise<FlightProfile[]>;
   flightResetProfile(vidPid: string): Promise<FlightProfile | null>;
-  onFlightStateUpdate(listener: (state: FlightControlsState) => void): () => void;
-  onFlightGamepadState(listener: (state: FlightGamepadState) => void): () => void;
 }
 
 export type FlightAxisTarget =
@@ -387,19 +382,6 @@ export interface FlightAxisMapping {
 export interface FlightButtonMapping {
   sourceIndex: number;
   targetButton: number;
-}
-
-export interface FlightDeviceInfo {
-  path: string;
-  vendorId: number;
-  productId: number;
-  product: string;
-  manufacturer: string;
-  serialNumber: string;
-  release: number;
-  interface: number;
-  usagePage: number;
-  usage: number;
 }
 
 export interface FlightProfile {

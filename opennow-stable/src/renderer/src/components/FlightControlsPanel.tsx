@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { JSX } from "react";
-import { Joystick, RefreshCw, Save, Trash2, RotateCcw, Check } from "lucide-react";
+import { Joystick, RefreshCw, Save, Trash2, RotateCcw, Check, Plus } from "lucide-react";
 import type {
   Settings,
-  FlightDeviceInfo,
   FlightProfile,
   FlightControlsState,
   FlightAxisTarget,
   FlightSensitivityCurve,
 } from "@shared/gfn";
+import { makeVidPid } from "@shared/flightDefaults";
+import { FlightHidService, getFlightHidService } from "../flight/FlightHidService";
 
 interface FlightControlsPanelProps {
   settings: Settings;
@@ -21,7 +22,7 @@ const AXIS_TARGETS: { value: FlightAxisTarget; label: string }[] = [
   { value: "rightStickX", label: "Right Stick X (Yaw)" },
   { value: "rightStickY", label: "Right Stick Y" },
   { value: "leftTrigger", label: "Left Trigger" },
-  { value: "rightTrigger", label: "Right Trigger (Throttle)" },
+  { value: "rightTrigger", label: "Right Trigger" },
 ];
 
 const CURVE_OPTIONS: { value: FlightSensitivityCurve; label: string }[] = [
@@ -29,395 +30,493 @@ const CURVE_OPTIONS: { value: FlightSensitivityCurve; label: string }[] = [
   { value: "expo", label: "Exponential" },
 ];
 
-const SLOT_OPTIONS = [
-  { value: 0, label: "Slot 0" },
-  { value: 1, label: "Slot 1" },
-  { value: 2, label: "Slot 2" },
-  { value: 3, label: "Slot 3" },
-];
-
-function makeVidPid(vendorId: number, productId: number): string {
-  return `${vendorId.toString(16).toUpperCase().padStart(4, "0")}:${productId.toString(16).toUpperCase().padStart(4, "0")}`;
+interface DeviceEntry {
+  device: HIDDevice;
+  vidPid: string;
+  label: string;
 }
 
 export function FlightControlsPanel({ settings, onSettingChange }: FlightControlsPanelProps): JSX.Element {
-  const [devices, setDevices] = useState<FlightDeviceInfo[]>([]);
-  const [selectedPath, setSelectedPath] = useState<string>("");
-  const [capturing, setCapturing] = useState(false);
-  const [liveState, setLiveState] = useState<FlightControlsState | null>(null);
+  const [devices, setDevices] = useState<DeviceEntry[]>([]);
+  const [selectedIdx, setSelectedIdx] = useState(-1);
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [flightState, setFlightState] = useState<FlightControlsState | null>(null);
   const [profile, setProfile] = useState<FlightProfile | null>(null);
-  const [profiles, setProfiles] = useState<FlightProfile[]>([]);
+  const [allProfiles, setAllProfiles] = useState<FlightProfile[]>([]);
   const [savedIndicator, setSavedIndicator] = useState(false);
-  const [isScanning, setIsScanning] = useState(false);
-  const stateCleanupRef = useRef<(() => void) | null>(null);
+  const stateUnsubRef = useRef<(() => void) | null>(null);
+  const webHidSupported = FlightHidService.isSupported();
 
-  const scanDevices = useCallback(async () => {
-    setIsScanning(true);
-    try {
-      const found = await window.openNow.flightGetDevices();
-      setDevices(found);
-      if (found.length > 0 && !selectedPath) {
-        setSelectedPath(found[0]!.path);
-      }
-    } catch (error) {
-      console.warn("[Flight UI] Failed to scan devices:", error);
-    } finally {
-      setIsScanning(false);
-    }
-  }, [selectedPath]);
+  const enabled = settings.flightControlsEnabled;
+  const slot = settings.flightControlsSlot;
 
-  const loadProfiles = useCallback(async () => {
-    try {
-      const all = await window.openNow.flightGetAllProfiles();
-      setProfiles(all);
-    } catch (error) {
-      console.warn("[Flight UI] Failed to load profiles:", error);
-    }
+  const loadDevices = useCallback(async () => {
+    const service = getFlightHidService();
+    const devs = await service.getDevices();
+    const entries: DeviceEntry[] = devs.map((d) => ({
+      device: d,
+      vidPid: makeVidPid(d.vendorId, d.productId),
+      label: d.productName || makeVidPid(d.vendorId, d.productId),
+    }));
+    setDevices(entries);
   }, []);
 
-  useEffect(() => {
-    if (settings.flightControlsEnabled) {
-      void scanDevices();
-      void loadProfiles();
-    }
-  }, [settings.flightControlsEnabled, scanDevices, loadProfiles]);
+  const loadAllProfiles = useCallback(async () => {
+    const api = window.openNow;
+    const profiles = await api.flightGetAllProfiles();
+    setAllProfiles(profiles);
+  }, []);
+
+  const handleRefresh = useCallback(async () => {
+    await loadDevices();
+    await loadAllProfiles();
+  }, [loadDevices, loadAllProfiles]);
 
   useEffect(() => {
-    if (!settings.flightControlsEnabled) return;
-    const cleanup = window.openNow.onFlightStateUpdate((state: FlightControlsState) => {
-      setLiveState(state);
-    });
-    stateCleanupRef.current = cleanup;
+    if (enabled && webHidSupported) {
+      void handleRefresh();
+    }
+  }, [enabled, webHidSupported, handleRefresh]);
+
+  useEffect(() => {
+    const service = getFlightHidService();
+    service.controllerSlot = slot;
+  }, [slot]);
+
+  useEffect(() => {
     return () => {
-      cleanup();
-      stateCleanupRef.current = null;
+      if (stateUnsubRef.current) {
+        stateUnsubRef.current();
+        stateUnsubRef.current = null;
+      }
     };
-  }, [settings.flightControlsEnabled]);
+  }, []);
+
+  const handleRequestDevice = useCallback(async () => {
+    const service = getFlightHidService();
+    const device = await service.requestDevice();
+    if (device) {
+      await loadDevices();
+    }
+  }, [loadDevices]);
 
   const handleStartCapture = useCallback(async () => {
-    if (!selectedPath) return;
-    try {
-      const success = await window.openNow.flightStartCapture(selectedPath);
-      setCapturing(success);
-      if (success) {
-        const device = devices.find((d) => d.path === selectedPath);
-        if (device) {
-          const vidPid = makeVidPid(device.vendorId, device.productId);
-          const p = await window.openNow.flightGetProfile(vidPid);
-          setProfile(p);
-        }
-      }
-    } catch (error) {
-      console.warn("[Flight UI] Failed to start capture:", error);
-    }
-  }, [selectedPath, devices]);
+    if (selectedIdx < 0 || selectedIdx >= devices.length) return;
+    const entry = devices[selectedIdx]!;
 
-  const handleStopCapture = useCallback(async () => {
-    try {
-      await window.openNow.flightStopCapture();
-      setCapturing(false);
-      setLiveState(null);
-    } catch (error) {
-      console.warn("[Flight UI] Failed to stop capture:", error);
+    const api = window.openNow;
+    let p = await api.flightGetProfile(entry.vidPid);
+    if (!p) {
+      p = await api.flightResetProfile(entry.vidPid);
+    }
+    setProfile(p);
+
+    const service = getFlightHidService();
+    service.controllerSlot = slot;
+
+    if (stateUnsubRef.current) {
+      stateUnsubRef.current();
+    }
+    stateUnsubRef.current = service.onStateUpdate((state) => {
+      setFlightState(state);
+    });
+
+    const ok = p ? await service.startCapture(entry.device, p) : false;
+    setIsCapturing(ok);
+  }, [selectedIdx, devices, slot]);
+
+  const handleStopCapture = useCallback(() => {
+    const service = getFlightHidService();
+    service.stopCapture();
+    setIsCapturing(false);
+    setFlightState(null);
+    if (stateUnsubRef.current) {
+      stateUnsubRef.current();
+      stateUnsubRef.current = null;
     }
   }, []);
+
+  const handleAxisMappingChange = useCallback(
+    (index: number, field: string, value: unknown) => {
+      if (!profile) return;
+      const updated = { ...profile };
+      updated.axisMappings = updated.axisMappings.map((m, i) => {
+        if (i !== index) return m;
+        return { ...m, [field]: value };
+      });
+      setProfile(updated);
+    },
+    [profile],
+  );
+
+  const handleButtonMappingChange = useCallback(
+    (index: number, field: string, value: unknown) => {
+      if (!profile) return;
+      const updated = { ...profile };
+      updated.buttonMappings = updated.buttonMappings.map((m, i) => {
+        if (i !== index) return m;
+        return { ...m, [field]: value };
+      });
+      setProfile(updated);
+    },
+    [profile],
+  );
 
   const handleSaveProfile = useCallback(async () => {
     if (!profile) return;
-    try {
-      await window.openNow.flightSetProfile(profile);
-      setSavedIndicator(true);
-      setTimeout(() => setSavedIndicator(false), 1500);
-      void loadProfiles();
-    } catch (error) {
-      console.warn("[Flight UI] Failed to save profile:", error);
+    const api = window.openNow;
+    await api.flightSetProfile(profile);
+    setSavedIndicator(true);
+    setTimeout(() => setSavedIndicator(false), 1500);
+    await loadAllProfiles();
+
+    if (isCapturing) {
+      const service = getFlightHidService();
+      const activeDevice = service.getActiveDevice();
+      if (activeDevice) {
+        await service.startCapture(activeDevice, profile);
+      }
     }
-  }, [profile, loadProfiles]);
+  }, [profile, isCapturing, loadAllProfiles]);
 
   const handleResetProfile = useCallback(async () => {
-    if (!profile) return;
-    try {
-      const reset = await window.openNow.flightResetProfile(profile.vidPid);
-      if (reset) setProfile(reset);
-      void loadProfiles();
-    } catch (error) {
-      console.warn("[Flight UI] Failed to reset profile:", error);
+    if (selectedIdx < 0 || selectedIdx >= devices.length) return;
+    const entry = devices[selectedIdx]!;
+    const api = window.openNow;
+    const p = await api.flightResetProfile(entry.vidPid);
+    if (p) {
+      setProfile(p);
+      if (isCapturing) {
+        const service = getFlightHidService();
+        const activeDevice = service.getActiveDevice();
+        if (activeDevice) {
+          await service.startCapture(activeDevice, p);
+        }
+      }
     }
-  }, [profile, loadProfiles]);
+    await loadAllProfiles();
+  }, [selectedIdx, devices, isCapturing, loadAllProfiles]);
 
-  const handleDeleteProfile = useCallback(async (vidPid: string, gameId?: string) => {
-    try {
-      await window.openNow.flightDeleteProfile(vidPid, gameId);
-      void loadProfiles();
-    } catch (error) {
-      console.warn("[Flight UI] Failed to delete profile:", error);
-    }
-  }, [loadProfiles]);
-
-  const updateAxisMapping = useCallback((sourceIndex: number, field: string, value: unknown) => {
-    if (!profile) return;
-    const updated = { ...profile };
-    updated.axisMappings = updated.axisMappings.map((m) => {
-      if (m.sourceIndex !== sourceIndex) return m;
-      return { ...m, [field]: value };
-    });
-    setProfile(updated);
-  }, [profile]);
-
-  const _selectedDevice = devices.find((d) => d.path === selectedPath);
+  const handleDeleteProfile = useCallback(
+    async (vidPid: string, gameId?: string) => {
+      const api = window.openNow;
+      await api.flightDeleteProfile(vidPid, gameId);
+      await loadAllProfiles();
+    },
+    [loadAllProfiles],
+  );
 
   return (
-    <div className="flight-controls-panel">
-      <div className="settings-row">
-        <label className="settings-label">Enable Flight Controls</label>
-        <label className="settings-toggle">
+    <div className="flight-panel">
+      {/* Enable toggle */}
+      <div className="flight-row">
+        <label className="flight-label">Enable Flight Controls</label>
+        <label className="flight-toggle">
           <input
             type="checkbox"
-            checked={settings.flightControlsEnabled}
+            checked={enabled}
             onChange={(e) => onSettingChange("flightControlsEnabled", e.target.checked)}
           />
-          <span className="settings-toggle-track" />
+          <span className="flight-toggle-slider" />
         </label>
       </div>
 
-      {settings.flightControlsEnabled && (
+      {enabled && !webHidSupported && (
+        <div className="flight-info" style={{ color: "var(--error)" }}>
+          WebHID is not available in this browser/Electron version.
+        </div>
+      )}
+
+      {enabled && webHidSupported && (
         <>
-          <div className="settings-row">
-            <label className="settings-label">Controller Slot</label>
+          {/* Controller slot */}
+          <div className="flight-row">
+            <label className="flight-label">Controller Slot</label>
             <select
-              className="settings-select"
-              value={settings.flightControlsSlot}
+              className="flight-select"
+              value={slot}
               onChange={(e) => onSettingChange("flightControlsSlot", Number(e.target.value))}
             >
-              {SLOT_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              {[0, 1, 2, 3].map((s) => (
+                <option key={s} value={s}>Slot {s}</option>
               ))}
             </select>
           </div>
 
-          <div className="flight-device-section">
-            <div className="flight-device-header">
-              <h3>Detected Devices</h3>
-              <button
-                type="button"
-                className="flight-btn flight-btn--small"
-                onClick={() => void scanDevices()}
-                disabled={isScanning}
-                title="Rescan devices"
-              >
-                <RefreshCw size={14} className={isScanning ? "flight-spin" : ""} />
-                Scan
-              </button>
-            </div>
-
-            {devices.length === 0 ? (
-              <div className="flight-empty">
-                No flight controllers detected. Connect a device and click Scan.
-              </div>
-            ) : (
-              <div className="flight-device-list">
-                {devices.map((device) => (
-                  <label
-                    key={device.path}
-                    className={`flight-device-item ${selectedPath === device.path ? "active" : ""}`}
-                  >
-                    <input
-                      type="radio"
-                      name="flight-device"
-                      value={device.path}
-                      checked={selectedPath === device.path}
-                      onChange={() => setSelectedPath(device.path)}
-                    />
-                    <div className="flight-device-info">
-                      <span className="flight-device-name">
-                        {device.product || "Unknown Device"}
-                      </span>
-                      <span className="flight-device-meta">
-                        {makeVidPid(device.vendorId, device.productId)}
-                        {device.manufacturer ? ` · ${device.manufacturer}` : ""}
-                      </span>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            )}
-
-            <div className="flight-capture-controls">
-              {!capturing ? (
-                <button
-                  type="button"
-                  className="flight-btn flight-btn--primary"
-                  onClick={() => void handleStartCapture()}
-                  disabled={!selectedPath}
-                >
-                  <Joystick size={14} />
-                  Start Capture
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="flight-btn flight-btn--danger"
-                  onClick={() => void handleStopCapture()}
-                >
-                  Stop Capture
-                </button>
-              )}
-            </div>
+          {/* Device management */}
+          <div className="flight-row flight-row--actions">
+            <button type="button" className="flight-btn" onClick={() => void handleRefresh()} title="Refresh paired devices">
+              <RefreshCw size={14} /> Refresh
+            </button>
+            <button type="button" className="flight-btn" onClick={() => void handleRequestDevice()} title="Pair a new HID device">
+              <Plus size={14} /> Add Device
+            </button>
           </div>
 
-          {capturing && liveState && (
+          {/* Device dropdown */}
+          {devices.length > 0 && (
+            <div className="flight-row">
+              <label className="flight-label">Device</label>
+              <select
+                className="flight-select"
+                value={selectedIdx}
+                onChange={(e) => setSelectedIdx(Number(e.target.value))}
+                disabled={isCapturing}
+              >
+                <option value={-1}>Select device...</option>
+                {devices.map((entry, i) => (
+                  <option key={`${entry.vidPid}-${i}`} value={i}>
+                    {entry.label} ({entry.vidPid})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {devices.length === 0 && (
+            <div className="flight-info">
+              No paired devices. Click <strong>Add Device</strong> to pair a joystick or HOTAS.
+            </div>
+          )}
+
+          {/* Start / Stop capture */}
+          <div className="flight-row flight-row--actions">
+            {!isCapturing ? (
+              <button
+                type="button"
+                className="flight-btn flight-btn--primary"
+                onClick={() => void handleStartCapture()}
+                disabled={selectedIdx < 0}
+              >
+                <Joystick size={14} /> Start Capture
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="flight-btn flight-btn--danger"
+                onClick={handleStopCapture}
+              >
+                Stop Capture
+              </button>
+            )}
+          </div>
+
+          {/* Live tester */}
+          {isCapturing && flightState && (
             <div className="flight-tester">
-              <h3>Live Input Tester</h3>
-              <div className="flight-tester-status">
-                <span className={`flight-status-dot ${liveState.connected ? "connected" : ""}`} />
-                <span>{liveState.connected ? liveState.deviceName : "Disconnected"}</span>
+              <div className="flight-tester-header">
+                <Joystick size={14} />
+                <span>Live Input — {flightState.deviceName}</span>
               </div>
-
-              {liveState.axes.length > 0 && (
-                <div className="flight-axes-grid">
-                  {liveState.axes.map((value, i) => (
-                    <div key={i} className="flight-axis-bar">
-                      <span className="flight-axis-label">Axis {i}</span>
-                      <div className="flight-axis-track">
-                        <div
-                          className="flight-axis-fill"
-                          style={{ width: `${Math.max(0, Math.min(100, value * 100))}%` }}
-                        />
+              {flightState.axes.length > 0 && (
+                <div className="flight-tester-section">
+                  <div className="flight-tester-label">Axes</div>
+                  <div className="flight-tester-bars">
+                    {flightState.axes.map((val, i) => (
+                      <div key={i} className="flight-bar-row">
+                        <span className="flight-bar-label">A{i}</span>
+                        <div className="flight-bar-track">
+                          <div className="flight-bar-fill" style={{ width: `${(val * 100).toFixed(1)}%` }} />
+                        </div>
+                        <span className="flight-bar-val">{val.toFixed(3)}</span>
                       </div>
-                      <span className="flight-axis-value">{(value * 100).toFixed(0)}%</span>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               )}
-
-              {liveState.buttons.length > 0 && (
-                <div className="flight-buttons-grid">
-                  {liveState.buttons.map((pressed, i) => (
-                    <div key={i} className={`flight-button-indicator ${pressed ? "pressed" : ""}`}>
-                      {i}
-                    </div>
-                  ))}
+              {flightState.buttons.length > 0 && (
+                <div className="flight-tester-section">
+                  <div className="flight-tester-label">Buttons</div>
+                  <div className="flight-tester-buttons">
+                    {flightState.buttons.map((pressed, i) => (
+                      <span key={i} className={`flight-btn-dot${pressed ? " active" : ""}`} title={`B${i}`}>
+                        {i}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
-
-              {liveState.hatSwitch >= 0 && (
-                <div className="flight-hat-indicator">
-                  Hat: {liveState.hatSwitch}
+              {flightState.hatSwitch >= 0 && (
+                <div className="flight-tester-section">
+                  <div className="flight-tester-label">Hat Switch: {flightState.hatSwitch}</div>
                 </div>
               )}
-
-              {liveState.rawBytes.length > 0 && (
-                <details className="flight-raw-bytes">
-                  <summary>Raw Bytes ({liveState.rawBytes.length})</summary>
-                  <code className="flight-raw-bytes-data">
-                    {liveState.rawBytes.map((b) => b.toString(16).padStart(2, "0")).join(" ")}
-                  </code>
-                </details>
+              {flightState.rawBytes.length > 0 && (
+                <div className="flight-tester-section">
+                  <div className="flight-tester-label">Raw Bytes ({flightState.rawBytes.length})</div>
+                  <div className="flight-raw-bytes">
+                    {flightState.rawBytes.map((b, i) => (
+                      <span key={i} className="flight-raw-byte">{b.toString(16).padStart(2, "0").toUpperCase()}</span>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           )}
 
+          {/* Axis Mappings */}
           {profile && (
-            <div className="flight-mapping-section">
-              <div className="flight-mapping-header">
-                <h3>Axis Mapping — {profile.name}</h3>
-                <div className="flight-mapping-actions">
-                  <button
-                    type="button"
-                    className="flight-btn flight-btn--small"
-                    onClick={() => void handleResetProfile()}
-                    title="Reset to defaults"
-                  >
-                    <RotateCcw size={14} />
-                    Reset
-                  </button>
-                  <button
-                    type="button"
-                    className="flight-btn flight-btn--small flight-btn--primary"
-                    onClick={() => void handleSaveProfile()}
-                  >
-                    {savedIndicator ? <Check size={14} /> : <Save size={14} />}
-                    {savedIndicator ? "Saved" : "Save"}
-                  </button>
-                </div>
-              </div>
-
-              <div className="flight-mappings-list">
-                {profile.axisMappings.map((mapping) => (
-                  <div key={mapping.sourceIndex} className="flight-mapping-row">
-                    <div className="flight-mapping-source">
-                      <span>Axis {mapping.sourceIndex}</span>
-                    </div>
-                    <div className="flight-mapping-fields">
-                      <label className="flight-mapping-field">
-                        <span>Target</span>
+            <div className="flight-mappings">
+              <div className="flight-mappings-header">Axis Mappings</div>
+              <table className="flight-mappings-table">
+                <thead>
+                  <tr>
+                    <th>Source</th>
+                    <th>Target</th>
+                    <th>Inv</th>
+                    <th>Deadzone</th>
+                    <th>Sens</th>
+                    <th>Curve</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {profile.axisMappings.map((m, i) => (
+                    <tr key={i}>
+                      <td>Axis {m.sourceIndex}</td>
+                      <td>
                         <select
-                          className="settings-select"
-                          value={mapping.target}
-                          onChange={(e) => updateAxisMapping(mapping.sourceIndex, "target", e.target.value)}
+                          className="flight-select flight-select--small"
+                          value={m.target}
+                          onChange={(e) => handleAxisMappingChange(i, "target", e.target.value)}
                         >
                           {AXIS_TARGETS.map((t) => (
                             <option key={t.value} value={t.value}>{t.label}</option>
                           ))}
                         </select>
-                      </label>
-                      <label className="flight-mapping-field flight-mapping-field--checkbox">
+                      </td>
+                      <td>
                         <input
                           type="checkbox"
-                          checked={mapping.inverted}
-                          onChange={(e) => updateAxisMapping(mapping.sourceIndex, "inverted", e.target.checked)}
+                          checked={m.inverted}
+                          onChange={(e) => handleAxisMappingChange(i, "inverted", e.target.checked)}
                         />
-                        <span>Invert</span>
-                      </label>
-                      <label className="flight-mapping-field">
-                        <span>Deadzone</span>
+                      </td>
+                      <td>
                         <input
-                          type="range"
-                          min="0"
-                          max="0.5"
-                          step="0.01"
-                          value={mapping.deadzone}
-                          onChange={(e) => updateAxisMapping(mapping.sourceIndex, "deadzone", parseFloat(e.target.value))}
+                          type="number"
+                          className="flight-input flight-input--small"
+                          value={m.deadzone}
+                          min={0}
+                          max={0.5}
+                          step={0.01}
+                          onChange={(e) => handleAxisMappingChange(i, "deadzone", parseFloat(e.target.value) || 0)}
                         />
-                        <span className="flight-mapping-value">{(mapping.deadzone * 100).toFixed(0)}%</span>
-                      </label>
-                      <label className="flight-mapping-field">
-                        <span>Sensitivity</span>
+                      </td>
+                      <td>
                         <input
-                          type="range"
-                          min="0.1"
-                          max="3.0"
-                          step="0.1"
-                          value={mapping.sensitivity}
-                          onChange={(e) => updateAxisMapping(mapping.sourceIndex, "sensitivity", parseFloat(e.target.value))}
+                          type="number"
+                          className="flight-input flight-input--small"
+                          value={m.sensitivity}
+                          min={0.1}
+                          max={3}
+                          step={0.1}
+                          onChange={(e) => handleAxisMappingChange(i, "sensitivity", parseFloat(e.target.value) || 1)}
                         />
-                        <span className="flight-mapping-value">{mapping.sensitivity.toFixed(1)}</span>
-                      </label>
-                      <label className="flight-mapping-field">
-                        <span>Curve</span>
+                      </td>
+                      <td>
                         <select
-                          className="settings-select"
-                          value={mapping.curve}
-                          onChange={(e) => updateAxisMapping(mapping.sourceIndex, "curve", e.target.value)}
+                          className="flight-select flight-select--small"
+                          value={m.curve}
+                          onChange={(e) => handleAxisMappingChange(i, "curve", e.target.value)}
                         >
                           {CURVE_OPTIONS.map((c) => (
                             <option key={c.value} value={c.value}>{c.label}</option>
                           ))}
                         </select>
-                      </label>
-                    </div>
-                  </div>
-                ))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div className="flight-mappings-header" style={{ marginTop: "12px" }}>Button Mappings</div>
+              <table className="flight-mappings-table">
+                <thead>
+                  <tr>
+                    <th>Source Btn</th>
+                    <th>Target (XInput)</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {profile.buttonMappings.map((m, i) => (
+                    <tr key={i}>
+                      <td>
+                        <input
+                          type="number"
+                          className="flight-input flight-input--small"
+                          value={m.sourceIndex}
+                          min={0}
+                          onChange={(e) => handleButtonMappingChange(i, "sourceIndex", parseInt(e.target.value, 10) || 0)}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="text"
+                          className="flight-input flight-input--small"
+                          value={`0x${m.targetButton.toString(16).toUpperCase().padStart(4, "0")}`}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value.replace(/^0x/i, ""), 16);
+                            if (!Number.isNaN(val)) handleButtonMappingChange(i, "targetButton", val);
+                          }}
+                        />
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="flight-btn flight-btn--small flight-btn--danger"
+                          onClick={() => {
+                            if (!profile) return;
+                            const updated = { ...profile };
+                            updated.buttonMappings = updated.buttonMappings.filter((_, idx) => idx !== i);
+                            setProfile(updated);
+                          }}
+                          title="Remove"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button
+                type="button"
+                className="flight-btn flight-btn--small"
+                style={{ marginTop: "6px" }}
+                onClick={() => {
+                  if (!profile) return;
+                  const updated = { ...profile };
+                  updated.buttonMappings = [
+                    ...updated.buttonMappings,
+                    { sourceIndex: updated.buttonMappings.length, targetButton: 0x1000 },
+                  ];
+                  setProfile(updated);
+                }}
+              >
+                + Add Button
+              </button>
+
+              {/* Save / Reset */}
+              <div className="flight-row flight-row--actions" style={{ marginTop: "12px" }}>
+                <button type="button" className="flight-btn flight-btn--primary" onClick={() => void handleSaveProfile()}>
+                  {savedIndicator ? <Check size={14} /> : <Save size={14} />}
+                  {savedIndicator ? "Saved" : "Save Profile"}
+                </button>
+                <button type="button" className="flight-btn" onClick={() => void handleResetProfile()}>
+                  <RotateCcw size={14} /> Reset to Default
+                </button>
               </div>
             </div>
           )}
 
-          {profiles.length > 0 && (
-            <div className="flight-profiles-section">
-              <h3>Saved Profiles</h3>
+          {/* All profiles */}
+          {allProfiles.length > 0 && (
+            <div className="flight-profiles">
+              <div className="flight-mappings-header">Saved Profiles</div>
               <div className="flight-profiles-list">
-                {profiles.map((p) => (
-                  <div key={`${p.vidPid}:${p.gameId ?? "global"}`} className="flight-profile-row">
+                {allProfiles.map((p, i) => (
+                  <div key={`${p.vidPid}-${p.gameId ?? "global"}-${i}`} className="flight-profile-row">
                     <div className="flight-profile-info">
                       <span className="flight-profile-name">{p.name}</span>
                       <span className="flight-profile-meta">

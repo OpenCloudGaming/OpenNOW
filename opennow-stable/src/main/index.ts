@@ -1,13 +1,7 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, session } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-
-// Keyboard shortcuts reference (matching Rust implementation):
-// F11 - Toggle fullscreen (handled in main process)
-// F3  - Toggle stats overlay (handled in renderer)
-// Ctrl+Shift+Q - Stop streaming (handled in renderer)
-// F8  - Toggle mouse/pointer lock (handled in main process via IPC)
 
 import { IPC_CHANNELS } from "@shared/ipc";
 import type {
@@ -44,14 +38,12 @@ import {
 } from "./gfn/games";
 import { fetchSubscription, fetchDynamicRegions } from "./gfn/subscription";
 import { GfnSignalingClient } from "./gfn/signaling";
-import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
+import { isSessionError, SessionError } from "./gfn/errorCodes";
 import { DiscordPresenceService } from "./discord/DiscordPresenceService";
-import { FlightControlsService } from "./flight/FlightControlsService";
+import { FlightProfileManager } from "./flight/FlightProfiles";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-// Configure Chromium video and WebRTC behavior before app.whenReady().
 
 interface BootstrapVideoPreferences {
   decoderPreference: VideoAccelerationPreference;
@@ -91,11 +83,9 @@ console.log(
   `[Main] Video acceleration preference: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
 );
 
-// --- Platform-specific HW video decode features ---
 const platformFeatures: string[] = [];
 
 if (process.platform === "win32") {
-  // Windows: D3D11 + Media Foundation path for HW decode/encode acceleration
   if (bootstrapVideoPrefs.decoderPreference !== "software") {
     platformFeatures.push("D3D11VideoDecoder");
   }
@@ -106,7 +96,6 @@ if (process.platform === "win32") {
     platformFeatures.push("MediaFoundationD3D11VideoCapture");
   }
 } else if (process.platform === "linux") {
-  // Linux: VA-API path for HW decode/encode (Intel/AMD GPUs)
   if (bootstrapVideoPrefs.decoderPreference !== "software") {
     platformFeatures.push("VaapiVideoDecoder");
   }
@@ -120,32 +109,25 @@ if (process.platform === "win32") {
     platformFeatures.push("VaapiIgnoreDriverChecks");
   }
 }
-// macOS: VideoToolbox handles HW acceleration natively, no extra feature flags needed
 
 app.commandLine.appendSwitch("enable-features",
   [
-    // --- AV1 support (cross-platform) ---
-    "Dav1dVideoDecoder", // Fast AV1 software fallback via dav1d (if no HW decoder)
-    // --- Additional (cross-platform) ---
+    "Dav1dVideoDecoder",
     "HardwareMediaKeyHandling",
-    // --- Platform-specific HW decode/encode ---
     ...platformFeatures,
   ].join(","),
 );
 
 const disableFeatures: string[] = [
-  // Prevents mDNS candidate generation — faster ICE connectivity
   "WebRtcHideLocalIpsWithMdns",
 ];
 if (process.platform === "linux") {
-  // ChromeOS-only direct video decoder path interferes on regular Linux
   disableFeatures.push("UseChromeOSDirectVideoDecoder");
 }
 app.commandLine.appendSwitch("disable-features", disableFeatures.join(","));
 
 app.commandLine.appendSwitch("force-fieldtrials",
   [
-    // Disable send-side pacing — we are receive-only, pacing adds latency to RTCP feedback
     "WebRTC-Video-Pacing/Disabled/",
   ].join("/"),
 );
@@ -162,16 +144,10 @@ if (bootstrapVideoPrefs.encoderPreference === "hardware") {
   app.commandLine.appendSwitch("disable-accelerated-video-encode");
 }
 
-// Ensure the GPU process doesn't blocklist our GPU for video decode
 app.commandLine.appendSwitch("ignore-gpu-blocklist");
 
-// --- Responsiveness flags ---
-// Keep default compositor frame pacing (vsync + frame cap) to avoid runaway
-// CPU usage from uncapped UI animations.
-// Prevent renderer throttling when the window is backgrounded or occluded.
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
-// Remove getUserMedia FPS cap (not strictly needed for receive-only but avoids potential limits)
 app.commandLine.appendSwitch("max-gum-fps", "999");
 
 let mainWindow: BrowserWindow | null = null;
@@ -180,12 +156,52 @@ let signalingClientKey: string | null = null;
 let authService: AuthService;
 let settingsManager: SettingsManager;
 let discordService: DiscordPresenceService;
-let flightService: FlightControlsService;
+let flightProfileManager: FlightProfileManager;
+
+const grantedHidDeviceIds = new Set<string>();
 
 function emitToRenderer(event: MainToRendererSignalingEvent): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(IPC_CHANNELS.SIGNALING_EVENT, event);
   }
+}
+
+function setupWebHidPermissions(): void {
+  const ses = session.defaultSession;
+
+  ses.setDevicePermissionHandler((details) => {
+    if (details.deviceType === "hid") {
+      return true;
+    }
+    return true;
+  });
+
+  ses.setPermissionCheckHandler((_webContents, permission) => {
+    if (permission === "hid") {
+      return true;
+    }
+    return true;
+  });
+
+  ses.on("select-hid-device", (event, details, callback) => {
+    event.preventDefault();
+    const ungranted = details.deviceList.find((d) => !grantedHidDeviceIds.has(d.deviceId));
+    const selected = ungranted ?? details.deviceList[0];
+    if (selected) {
+      grantedHidDeviceIds.add(selected.deviceId);
+      callback(selected.deviceId);
+    } else {
+      callback("");
+    }
+  });
+
+  ses.on("hid-device-added", (_event, _details) => {
+    // WebHID connect event handled in renderer via navigator.hid
+  });
+
+  ses.on("hid-device-removed", (_event, _details) => {
+    // WebHID disconnect event handled in renderer via navigator.hid
+  });
 }
 
 async function createMainWindow(): Promise<void> {
@@ -210,8 +226,6 @@ async function createMainWindow(): Promise<void> {
     },
   });
 
-  // Handle F11 fullscreen toggle — send to renderer so it uses W3C Fullscreen API
-  // (which enables navigator.keyboard.lock for Escape key capture)
   mainWindow.webContents.on("before-input-event", (event, input) => {
     if (input.key === "F11" && input.type === "keyDown") {
       event.preventDefault();
@@ -222,8 +236,6 @@ async function createMainWindow(): Promise<void> {
   });
 
   if (process.platform === "win32") {
-    // Keep native window fullscreen in sync with HTML fullscreen so Windows treats
-    // stream playback like a real fullscreen window instead of only DOM fullscreen.
     mainWindow.webContents.on("enter-html-full-screen", () => {
       if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFullScreen()) {
         mainWindow.setFullScreen(true);
@@ -252,10 +264,6 @@ async function resolveJwt(token?: string): Promise<string> {
   return authService.resolveJwtToken(token);
 }
 
-/**
- * Show a dialog asking the user how to handle a session conflict
- * Returns the user's choice: "resume", "new", or "cancel"
- */
 async function showSessionConflictDialog(): Promise<SessionConflictChoice> {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return "cancel";
@@ -281,9 +289,6 @@ async function showSessionConflictDialog(): Promise<SessionConflictChoice> {
   }
 }
 
-/**
- * Check if an error indicates a session conflict
- */
 function isSessionConflictError(error: unknown): boolean {
   if (isSessionError(error)) {
     return error.isSessionConflict();
@@ -324,10 +329,7 @@ function registerIpcHandlers(): void {
     const streamingBaseUrl =
       payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
     const userId = payload.userId;
-
-    // Fetch dynamic regions to get the VPC ID (handles Alliance partners correctly)
     const { vpcId } = await fetchDynamicRegions(token, streamingBaseUrl);
-
     return fetchSubscription(token, userId, vpcId ?? undefined);
   });
 
@@ -464,7 +466,6 @@ function registerIpcHandlers(): void {
     return signalingClient.sendIceCandidate(payload);
   });
 
-  // Toggle fullscreen via IPC (for completeness)
   ipcMain.handle(IPC_CHANNELS.TOGGLE_FULLSCREEN, async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       const isFullScreen = mainWindow.isFullScreen();
@@ -472,14 +473,12 @@ function registerIpcHandlers(): void {
     }
   });
 
-  // Toggle pointer lock via IPC (F8 shortcut)
   ipcMain.handle(IPC_CHANNELS.TOGGLE_POINTER_LOCK, async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("app:toggle-pointer-lock");
     }
   });
 
-  // Settings IPC handlers
   ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async (): Promise<Settings> => {
     return settingsManager.getAll();
   });
@@ -490,17 +489,12 @@ function registerIpcHandlers(): void {
       const all = settingsManager.getAll();
       void discordService.updateConfig(all.discordPresenceEnabled, all.discordClientId);
     }
-    if (key === "flightControlsEnabled" || key === "flightControlsSlot") {
-      const all = settingsManager.getAll();
-      flightService.updateConfig(all.flightControlsEnabled, all.flightControlsSlot);
-    }
   });
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
     return settingsManager.reset();
   });
 
-  // Discord Rich Presence IPC handlers
   ipcMain.handle(IPC_CHANNELS.DISCORD_UPDATE_PRESENCE, async (_event, payload: DiscordPresencePayload) => {
     await discordService.updatePresence(payload);
   });
@@ -509,40 +503,26 @@ function registerIpcHandlers(): void {
     await discordService.clearPresence();
   });
 
-  // Flight Controls IPC handlers
-  ipcMain.handle(IPC_CHANNELS.FLIGHT_GET_DEVICES, () => {
-    return flightService.getDevices();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.FLIGHT_START_CAPTURE, (_event, devicePath: string) => {
-    return flightService.startCapture(devicePath);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.FLIGHT_STOP_CAPTURE, () => {
-    flightService.stopCapture();
-  });
-
   ipcMain.handle(IPC_CHANNELS.FLIGHT_GET_PROFILE, (_event, vidPid: string, gameId?: string) => {
-    return flightService.profileManager.getProfile(vidPid, gameId);
+    return flightProfileManager.getProfile(vidPid, gameId);
   });
 
   ipcMain.handle(IPC_CHANNELS.FLIGHT_SET_PROFILE, (_event, profile: FlightProfile) => {
-    flightService.profileManager.setProfile(profile);
+    flightProfileManager.setProfile(profile);
   });
 
   ipcMain.handle(IPC_CHANNELS.FLIGHT_DELETE_PROFILE, (_event, vidPid: string, gameId?: string) => {
-    flightService.profileManager.deleteProfile(vidPid, gameId);
+    flightProfileManager.deleteProfile(vidPid, gameId);
   });
 
   ipcMain.handle(IPC_CHANNELS.FLIGHT_GET_ALL_PROFILES, () => {
-    return flightService.profileManager.getAllProfiles();
+    return flightProfileManager.getAllProfiles();
   });
 
   ipcMain.handle(IPC_CHANNELS.FLIGHT_RESET_PROFILE, (_event, vidPid: string) => {
-    return flightService.profileManager.resetProfile(vidPid);
+    return flightProfileManager.resetProfile(vidPid);
   });
 
-  // Save window size when it changes
   mainWindow?.on("resize", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       const [width, height] = mainWindow.getSize();
@@ -565,17 +545,11 @@ app.whenReady().then(async () => {
   );
   void discordService.initialize();
 
-  flightService = new FlightControlsService(
-    allSettings.flightControlsEnabled,
-    allSettings.flightControlsSlot,
-  );
-  flightService.initialize();
+  flightProfileManager = new FlightProfileManager();
 
+  setupWebHidPermissions();
   registerIpcHandlers();
   await createMainWindow();
-  if (mainWindow) {
-    flightService.setMainWindow(mainWindow);
-  }
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -595,8 +569,6 @@ app.on("before-quit", () => {
   signalingClient = null;
   signalingClientKey = null;
   void discordService.dispose();
-  flightService.dispose();
 });
 
-// Export for use by other modules
 export { showSessionConflictDialog, isSessionConflictError };

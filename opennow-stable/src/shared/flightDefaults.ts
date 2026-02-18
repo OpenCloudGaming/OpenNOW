@@ -3,7 +3,7 @@ import type {
   FlightAxisMapping,
   FlightButtonMapping,
   FlightProfile,
-} from "@shared/gfn";
+} from "./gfn";
 
 import {
   GAMEPAD_A,
@@ -14,7 +14,7 @@ import {
   GAMEPAD_BACK,
   GAMEPAD_LSHOULDER,
   GAMEPAD_RSHOULDER,
-} from "./inputConstants";
+} from "./flightConstants";
 
 export interface KnownDeviceConfig {
   name: string;
