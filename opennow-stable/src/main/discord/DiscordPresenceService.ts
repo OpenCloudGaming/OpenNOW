@@ -131,9 +131,8 @@ export class DiscordPresenceService {
           ...(payload.startTimestamp ? { startTimestamp: new Date(payload.startTimestamp) } : {}),
         });
       } else if (payload.type === "streaming") {
-        const details = payload.gameName
-          ? `Streaming ${payload.gameName}`
-          : "Streaming";
+        const name = payload.gameName?.trim();
+        const details = name ? `Streaming ${name}` : "Streaming";
 
         const stateParts: string[] = [];
         if (payload.resolution && payload.fps) {

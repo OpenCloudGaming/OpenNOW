@@ -612,9 +612,10 @@ export function App(): JSX.Element {
       };
     } else {
       const hasDiag = diagnostics.resolution !== "" || diagnostics.bitrateKbps > 0;
+      const gameTitle = streamingGame?.title?.trim() || undefined;
       payload = {
         type: "streaming",
-        gameName: streamingGame?.title,
+        gameName: gameTitle,
         startTimestamp: sessionStartedAtMs ?? undefined,
         ...(hasDiag && diagnostics.resolution ? { resolution: diagnostics.resolution } : {}),
         ...(hasDiag && diagnostics.decodeFps > 0 ? { fps: diagnostics.decodeFps } : {}),
