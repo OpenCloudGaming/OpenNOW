@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { JSX } from "react";
 import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff } from "lucide-react";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
@@ -204,10 +204,51 @@ export function StreamView({
   const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
   const sessionTimeText = formatElapsed(sessionElapsedSeconds);
 
+  // Local ref for video element to manage focus
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Combined ref callback that sets both local and forwarded ref
+  const setVideoRef = useCallback((element: HTMLVideoElement | null) => {
+    localVideoRef.current = element;
+    // Forward to parent ref
+    if (typeof videoRef === "function") {
+      videoRef(element);
+    } else if (videoRef && "current" in videoRef) {
+      (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = element;
+    }
+  }, [videoRef]);
+
+  // Focus video element when stream is ready (not connecting anymore)
+  useEffect(() => {
+    if (!isConnecting && localVideoRef.current && hasResolution) {
+      // Small delay to ensure DOM is ready
+      const timer = window.setTimeout(() => {
+        if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
+          localVideoRef.current.focus();
+          console.log("[StreamView] Focused video element");
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [isConnecting, hasResolution]);
+
   return (
     <div className="sv">
       {/* Video element */}
-      <video ref={videoRef} autoPlay playsInline muted tabIndex={0} className="sv-video" />
+      <video 
+        ref={setVideoRef} 
+        autoPlay 
+        playsInline 
+        muted 
+        tabIndex={0} 
+        className="sv-video"
+        onClick={() => {
+          // Ensure video has focus when clicked for pointer lock to work
+          if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
+            localVideoRef.current.focus();
+          }
+        }}
+      />
       <audio ref={audioRef} autoPlay playsInline />
 
       {/* Gradient background when no video */}
