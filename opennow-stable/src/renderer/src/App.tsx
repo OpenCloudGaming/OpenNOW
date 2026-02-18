@@ -619,6 +619,20 @@ export function App(): JSX.Element {
     return () => clearInterval(interval);
   }, [antiAfkEnabled, streamStatus]);
 
+  // Restore focus to video element when navigating away from Settings during streaming
+  useEffect(() => {
+    if (streamStatus === "streaming" && currentPage !== "settings" && videoRef.current) {
+      // Small delay to let React finish rendering the new page
+      const timer = window.setTimeout(() => {
+        if (videoRef.current && document.activeElement !== videoRef.current) {
+          videoRef.current.focus();
+          console.log("[App] Restored focus to video element after leaving Settings");
+        }
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [currentPage, streamStatus]);
+
   useEffect(() => {
     if (streamStatus === "idle" || sessionStartedAtMs === null) {
       setSessionElapsedSeconds(0);
