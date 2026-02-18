@@ -128,7 +128,6 @@ export class DiscordPresenceService {
           state,
           largeImageKey: "opennow",
           largeImageText: "OpenNOW",
-          ...(payload.startTimestamp ? { startTimestamp: new Date(payload.startTimestamp) } : {}),
         });
       } else if (payload.type === "streaming") {
         const name = payload.gameName?.trim();
@@ -142,9 +141,6 @@ export class DiscordPresenceService {
         }
         if (payload.bitrateMbps && payload.bitrateMbps > 0) {
           stateParts.push(`${payload.bitrateMbps.toFixed(1)} Mbps`);
-        }
-        if (payload.region) {
-          stateParts.push(payload.region);
         }
         const state = stateParts.length > 0 ? stateParts.join(" · ") : undefined;
 

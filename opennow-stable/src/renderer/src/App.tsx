@@ -606,9 +606,8 @@ export function App(): JSX.Element {
     } else if (streamStatus === "queue" || streamStatus === "setup") {
       payload = {
         type: "queue",
-        gameName: streamingGame?.title,
+        gameName: streamingGame?.title?.trim() || undefined,
         queuePosition,
-        startTimestamp: sessionStartedAtMs ?? undefined,
       };
     } else {
       const hasDiag = diagnostics.resolution !== "" || diagnostics.bitrateKbps > 0;
@@ -620,7 +619,6 @@ export function App(): JSX.Element {
         ...(hasDiag && diagnostics.resolution ? { resolution: diagnostics.resolution } : {}),
         ...(hasDiag && diagnostics.decodeFps > 0 ? { fps: diagnostics.decodeFps } : {}),
         ...(hasDiag && diagnostics.bitrateKbps > 0 ? { bitrateMbps: Math.round(diagnostics.bitrateKbps / 100) / 10 } : {}),
-        ...(diagnostics.serverRegion ? { region: diagnostics.serverRegion } : {}),
       };
     }
 
@@ -633,7 +631,6 @@ export function App(): JSX.Element {
     diagnostics.resolution,
     diagnostics.decodeFps,
     diagnostics.bitrateKbps,
-    diagnostics.serverRegion,
     settings.discordPresenceEnabled,
     settings.discordClientId,
   ]);
