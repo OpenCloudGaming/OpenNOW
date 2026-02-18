@@ -667,6 +667,8 @@ export function App(): JSX.Element {
             clientRef.current = new GfnWebRtcClient({
               videoElement: videoRef.current,
               audioElement: audioRef.current,
+              microphoneMode: settings.microphoneMode,
+              microphoneDeviceId: settings.microphoneDeviceId || undefined,
               onLog: (line: string) => console.log(`[WebRTC] ${line}`),
               onStats: (stats) => setDiagnostics(stats),
               onEscHoldProgress: (visible, progress) => {
@@ -680,7 +682,14 @@ export function App(): JSX.Element {
                   secondsLeft: warning.secondsLeft,
                 });
               },
+              onMicStateChange: (state) => {
+                console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
+              },
             });
+            // Auto-start microphone if mode is enabled
+            if (settings.microphoneMode !== "disabled") {
+              void clientRef.current.startMicrophone();
+            }
           }
 
           if (clientRef.current) {
@@ -1418,6 +1427,9 @@ export function App(): JSX.Element {
             onCancelExit={handleExitPromptCancel}
             onEndSession={() => {
               void handlePromptedStopStream();
+            }}
+            onToggleMicrophone={() => {
+              clientRef.current?.toggleMicrophone();
             }}
           />
         )}

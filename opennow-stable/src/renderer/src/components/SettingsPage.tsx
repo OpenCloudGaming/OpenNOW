@@ -9,6 +9,7 @@ import type {
   ColorQuality,
   EntitledResolution,
   VideoAccelerationPreference,
+  MicrophoneMode,
 } from "@shared/gfn";
 import { colorQualityRequiresHevc } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
@@ -958,14 +959,46 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
           </div>
         </section>
 
-        {/* ── Audio ──────────────────────────────────────── */}
+        {/* ── Audio / Microphone ───────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
             <Volume2 size={18} />
             <h2>Audio</h2>
           </div>
           <div className="settings-rows">
-            <div className="settings-placeholder">Audio configuration coming soon</div>
+            {/* Microphone Mode */}
+            <div className="settings-row">
+              <label className="settings-label">
+                Microphone
+                <span className="settings-hint">Enable voice chat during streaming</span>
+              </label>
+              <select
+                className="settings-select"
+                value={settings.microphoneMode}
+                onChange={(e) => handleChange("microphoneMode", e.target.value as MicrophoneMode)}
+              >
+                <option value="disabled">Disabled</option>
+                <option value="push-to-talk">Push-to-Talk</option>
+                <option value="voice-activity">Voice Activity</option>
+              </select>
+            </div>
+
+            {/* Microphone Device (only shown when mic is enabled) */}
+            {settings.microphoneMode !== "disabled" && (
+              <div className="settings-row">
+                <label className="settings-label">
+                  Microphone Device
+                  <span className="settings-hint">Select input device for voice chat</span>
+                </label>
+                <select
+                  className="settings-select"
+                  value={settings.microphoneDeviceId}
+                  onChange={(e) => handleChange("microphoneDeviceId", e.target.value)}
+                >
+                  <option value="">Default Device</option>
+                </select>
+              </div>
+            )}
           </div>
         </section>
 

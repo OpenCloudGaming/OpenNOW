@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import type { VideoCodec, ColorQuality, VideoAccelerationPreference } from "@shared/gfn";
+import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode } from "@shared/gfn";
 
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
@@ -36,6 +36,10 @@ export interface Settings {
   sessionClockShowEveryMinutes: number;
   /** How long the session timer stays visible when it appears */
   sessionClockShowDurationSeconds: number;
+  /** Microphone mode: disabled, push-to-talk, or voice-activity */
+  microphoneMode: MicrophoneMode;
+  /** Preferred microphone device ID (empty = default) */
+  microphoneDeviceId: string;
   /** Window width */
   windowWidth: number;
   /** Window height */
@@ -62,6 +66,8 @@ const DEFAULT_SETTINGS: Settings = {
   shortcutTogglePointerLock: "F8",
   shortcutStopStream: defaultStopShortcut,
   shortcutToggleAntiAfk: defaultAntiAfkShortcut,
+  microphoneMode: "disabled",
+  microphoneDeviceId: "",
   sessionClockShowEveryMinutes: 60,
   sessionClockShowDurationSeconds: 30,
   windowWidth: 1400,

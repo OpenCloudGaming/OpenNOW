@@ -24,6 +24,8 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
   return cq.startsWith("10bit");
 }
 
+export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
+
 export interface Settings {
   resolution: string;
   fps: number;
@@ -39,6 +41,8 @@ export interface Settings {
   shortcutTogglePointerLock: string;
   shortcutStopStream: string;
   shortcutToggleAntiAfk: string;
+  microphoneMode: MicrophoneMode;
+  microphoneDeviceId: string;
   sessionClockShowEveryMinutes: number;
   sessionClockShowDurationSeconds: number;
   windowWidth: number;

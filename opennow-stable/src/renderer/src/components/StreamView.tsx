@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import type { JSX } from "react";
-import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle } from "lucide-react";
+import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff } from "lucide-react";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
 
 interface StreamViewProps {
@@ -39,6 +39,7 @@ interface StreamViewProps {
   onConfirmExit: () => void;
   onCancelExit: () => void;
   onEndSession: () => void;
+  onToggleMicrophone?: () => void;
 }
 
 function getRttColor(rttMs: number): string {
@@ -112,10 +113,17 @@ export function StreamView({
   onConfirmExit,
   onCancelExit,
   onEndSession,
+  onToggleMicrophone,
 }: StreamViewProps): JSX.Element {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
+
+  // Microphone state
+  const micState = stats.micState ?? "uninitialized";
+  const micEnabled = stats.micEnabled ?? false;
+  const hasMicrophone = micState === "started" || micState === "stopped";
+  const showMicIndicator = hasMicrophone && !isConnecting;
 
   const handleFullscreenToggle = useCallback(() => {
     onToggleFullscreen();
@@ -305,6 +313,21 @@ export function StreamView({
           <Gamepad2 size={18} />
           {connectedControllers > 1 && <span className="sv-ctrl-n">{connectedControllers}</span>}
         </div>
+      )}
+
+      {/* Microphone toggle button (top-left, below controller badge when present) */}
+      {showMicIndicator && onToggleMicrophone && (
+        <button
+          type="button"
+          className={`sv-mic${connectedControllers > 0 || antiAfkEnabled ? " sv-mic--stacked" : ""}`}
+          onClick={onToggleMicrophone}
+          data-enabled={micEnabled}
+          title={micEnabled ? "Mute microphone" : "Unmute microphone"}
+          aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
+          aria-pressed={micEnabled}
+        >
+          {micEnabled ? <Mic size={18} /> : <MicOff size={18} />}
+        </button>
       )}
 
       {/* Anti-AFK indicator (top-left, below controller badge when present) */}

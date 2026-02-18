@@ -2083,6 +2083,51 @@ body.controller-mode {
   letter-spacing: 0.03em;
 }
 
+.sv-mic {
+  position: fixed; top: 14px; left: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px;
+  padding: 0;
+  background: rgba(10, 10, 12, 0.92);
+  border: 1px solid var(--panel-border); border-radius: var(--r-md);
+  z-index: 1001; color: var(--error);
+  cursor: pointer; transition: all 0.15s ease;
+}
+.sv-mic:hover {
+  background: rgba(20, 20, 24, 0.95);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.sv-mic:active {
+  transform: scale(0.96);
+}
+.sv-mic svg {
+  color: var(--error);
+  transition: color 0.15s ease;
+}
+/* When mic is enabled (unmuted), show accent color */
+.sv-mic[data-enabled="true"] svg {
+  color: var(--accent);
+}
+.sv-mic[data-enabled="true"] {
+  border-color: rgba(88, 217, 138, 0.3);
+  box-shadow: 0 0 12px rgba(88, 217, 138, 0.15);
+}
+/* Position below controller indicator */
+.sv-mic--stacked {
+  top: 56px;
+}
+/* Position below anti-AFK when both are present */
+.sv-ctrl + .sv-afk + .sv-mic,
+.sv-afk + .sv-mic:not(.sv-mic--stacked) {
+  top: 98px;
+}
+.sv-ctrl + .sv-mic:not(.sv-mic--stacked) {
+  top: 56px;
+}
+.sv-ctrl + .sv-afk--stacked + .sv-mic {
+  top: 98px;
+}
+
 .sv-esc-hold-backdrop {
   position: fixed; inset: 0;
   z-index: 1200;
