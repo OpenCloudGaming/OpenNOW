@@ -520,31 +520,42 @@ app.whenReady().then(async () => {
     }
   }
 
-  // Set up permission handlers for getUserMedia
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+  // Set up permission handlers for getUserMedia, fullscreen, pointer lock
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
     const url = webContents.getURL();
     console.log(`[Main] Permission request: ${permission} from ${url}`);
-    
-    // Allow media (microphone/camera) permissions for our own app
-    if (permission === "media" || permission === "microphone") {
-      console.log("[Main] Granting microphone permission");
+
+    const allowedPermissions = new Set([
+      "media",
+      "microphone",
+      "fullscreen",
+      "automatic-fullscreen",
+      "pointerLock",
+      "speaker-selection",
+    ]);
+
+    if (allowedPermissions.has(permission)) {
+      console.log(`[Main] Granting permission: ${permission}`);
       callback(true);
       return;
     }
-    
-    // Deny other permissions by default
+
     callback(false);
   });
 
-  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
     console.log(`[Main] Permission check: ${permission} from ${requestingOrigin}`);
-    
-    // Allow media permissions
-    if (permission === "media" || permission === "microphone") {
-      return true;
-    }
-    
-    return false;
+
+    const allowedPermissions = new Set([
+      "media",
+      "microphone",
+      "fullscreen",
+      "automatic-fullscreen",
+      "pointerLock",
+      "speaker-selection",
+    ]);
+
+    return allowedPermissions.has(permission);
   });
 
   registerIpcHandlers();
