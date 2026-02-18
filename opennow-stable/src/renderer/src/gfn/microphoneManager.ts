@@ -78,6 +78,20 @@ export class MicrophoneManager {
   }
 
   /**
+   * Attach current microphone track to the peer connection (if available)
+   */
+  async attachTrackToPeerConnection(): Promise<void> {
+    if (!this.pc || !this.micStream) {
+      return;
+    }
+    const track = this.micStream.getAudioTracks()[0];
+    if (!track) {
+      return;
+    }
+    await this.addTrackToPeerConnection(track);
+  }
+
+  /**
    * Set device ID to use (empty = default)
    */
   setDeviceId(deviceId: string): void {
@@ -264,19 +278,34 @@ export class MicrophoneManager {
       return;
     }
 
-    // Check if we already have a sender for this track type
+    // Prefer attaching to the dedicated mic transceiver (mid=3, recvonly in offer)
+    const transceivers = this.pc.getTransceivers();
+    const micTransceiver = transceivers.find((t) => t.mid === "3")
+      ?? transceivers.find(
+        (t) => t.receiver?.track?.kind === "audio" && (t.direction === "recvonly" || t.direction === "inactive"),
+      );
+
+    if (micTransceiver) {
+      if (micTransceiver.direction !== "sendonly") {
+        micTransceiver.direction = "sendonly";
+      }
+      console.log("[Microphone] Attaching track to mic transceiver", micTransceiver.mid ?? "(no mid)");
+      await micTransceiver.sender.replaceTrack(track);
+      this.micSender = micTransceiver.sender;
+      return;
+    }
+
+    // Fallback: replace any existing audio sender
     const senders = this.pc.getSenders();
     const existingAudioSender = senders.find(s =>
       s.track?.kind === "audio" && s.track?.id !== track.id
     );
 
     if (existingAudioSender) {
-      // Replace the track
       console.log("[Microphone] Replacing existing audio track");
       await existingAudioSender.replaceTrack(track);
       this.micSender = existingAudioSender;
     } else {
-      // Add new track
       console.log("[Microphone] Adding new audio track to peer connection");
       this.micSender = this.pc.addTrack(track, new MediaStream([track]));
     }

@@ -2626,6 +2626,12 @@ export class GfnWebRtcClient {
     this.log("Remote description set successfully");
     await this.flushQueuedCandidates();
 
+    // Attach microphone track to the correct transceiver after remote description is set
+    if (this.micManager) {
+      this.micManager.setPeerConnection(pc);
+      await this.micManager.attachTrackToPeerConnection();
+    }
+
     // 3b. Apply setCodecPreferences on the video transceiver to reinforce codec choice.
     //     This is the modern WebRTC API — more reliable than SDP munging alone.
     //     Must be called after setRemoteDescription (which creates the transceiver)

@@ -531,6 +531,7 @@ app.whenReady().then(async () => {
       "fullscreen",
       "automatic-fullscreen",
       "pointerLock",
+      "keyboardLock",
       "speaker-selection",
     ]);
 
@@ -552,6 +553,7 @@ app.whenReady().then(async () => {
       "fullscreen",
       "automatic-fullscreen",
       "pointerLock",
+      "keyboardLock",
       "speaker-selection",
     ]);
 
