@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, systemPreferences, session } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -509,6 +509,43 @@ app.whenReady().then(async () => {
   await authService.initialize();
 
   settingsManager = getSettingsManager();
+
+  // Request microphone permission on macOS at startup
+  if (process.platform === "darwin") {
+    const micStatus = systemPreferences.getMediaAccessStatus("microphone");
+    console.log("[Main] macOS microphone permission status:", micStatus);
+    if (micStatus !== "granted") {
+      const granted = await systemPreferences.askForMediaAccess("microphone");
+      console.log("[Main] Requested microphone permission:", granted);
+    }
+  }
+
+  // Set up permission handlers for getUserMedia
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const url = webContents.getURL();
+    console.log(`[Main] Permission request: ${permission} from ${url}`);
+    
+    // Allow media (microphone/camera) permissions for our own app
+    if (permission === "media" || permission === "microphone") {
+      console.log("[Main] Granting microphone permission");
+      callback(true);
+      return;
+    }
+    
+    // Deny other permissions by default
+    callback(false);
+  });
+
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    console.log(`[Main] Permission check: ${permission} from ${requestingOrigin}`);
+    
+    // Allow media permissions
+    if (permission === "media" || permission === "microphone") {
+      return true;
+    }
+    
+    return false;
+  });
 
   registerIpcHandlers();
   await createMainWindow();

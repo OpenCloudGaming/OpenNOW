@@ -1,4 +1,4 @@
-import { Monitor, Volume2, Mouse, Settings2, Globe, Save, Check, Search, X, Loader, Cpu, Zap } from "lucide-react";
+import { Monitor, Volume2, Mouse, Settings2, Globe, Save, Check, Search, X, Loader, Cpu, Zap, Mic } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect } from "react";
 import type { JSX } from "react";
 
@@ -575,6 +575,44 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     [handleChange, settings.codec]
   );
 
+  // Microphone devices
+  const [microphoneDevices, setMicrophoneDevices] = useState<MediaDeviceInfo[]>([]);
+  const [microphonePermissionError, setMicrophonePermissionError] = useState<string | null>(null);
+
+  // Enumerate microphone devices when mic mode is enabled
+  useEffect(() => {
+    if (settings.microphoneMode === "disabled") {
+      setMicrophoneDevices([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function enumerateDevices(): Promise<void> {
+      try {
+        // Request permission first to get device labels
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(t => t.stop()); // Release the stream immediately
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        if (!cancelled) {
+          const audioInputs = devices.filter(d => d.kind === "audioinput");
+          setMicrophoneDevices(audioInputs);
+          setMicrophonePermissionError(null);
+        }
+      } catch (err) {
+        console.error("[SettingsPage] Failed to enumerate microphone devices:", err);
+        if (!cancelled) {
+          setMicrophonePermissionError("Microphone access denied. Please allow microphone permission in your system settings.");
+          setMicrophoneDevices([]);
+        }
+      }
+    }
+
+    enumerateDevices();
+    return () => { cancelled = true; };
+  }, [settings.microphoneMode]);
+
   const filteredRegions = useMemo(() => {
     if (!regionSearch.trim()) return regions;
     const q = regionSearch.trim().toLowerCase();
@@ -987,16 +1025,33 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             {settings.microphoneMode !== "disabled" && (
               <div className="settings-row">
                 <label className="settings-label">
-                  Microphone Device
+                  <div className="flex items-center gap-2">
+                    <Mic size={14} />
+                    Microphone Device
+                  </div>
                   <span className="settings-hint">Select input device for voice chat</span>
                 </label>
-                <select
-                  className="settings-select"
-                  value={settings.microphoneDeviceId}
-                  onChange={(e) => handleChange("microphoneDeviceId", e.target.value)}
-                >
-                  <option value="">Default Device</option>
-                </select>
+                <div className="flex flex-col gap-1">
+                  <select
+                    className="settings-select"
+                    value={settings.microphoneDeviceId}
+                    onChange={(e) => handleChange("microphoneDeviceId", e.target.value)}
+                    disabled={microphoneDevices.length === 0}
+                  >
+                    <option value="">Default Device</option>
+                    {microphoneDevices.map((device) => (
+                      <option key={device.deviceId} value={device.deviceId}>
+                        {device.label || `Microphone ${microphoneDevices.indexOf(device) + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                  {microphonePermissionError && (
+                    <span className="text-red-400 text-xs mt-1">{microphonePermissionError}</span>
+                  )}
+                  {microphoneDevices.length === 0 && !microphonePermissionError && (
+                    <span className="text-yellow-400 text-xs mt-1">No microphone devices found</span>
+                  )}
+                </div>
               </div>
             )}
           </div>
