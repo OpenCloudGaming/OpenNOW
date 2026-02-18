@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, systemPreferences, session } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -509,6 +509,56 @@ app.whenReady().then(async () => {
   await authService.initialize();
 
   settingsManager = getSettingsManager();
+
+  // Request microphone permission on macOS at startup
+  if (process.platform === "darwin") {
+    const micStatus = systemPreferences.getMediaAccessStatus("microphone");
+    console.log("[Main] macOS microphone permission status:", micStatus);
+    if (micStatus !== "granted") {
+      const granted = await systemPreferences.askForMediaAccess("microphone");
+      console.log("[Main] Requested microphone permission:", granted);
+    }
+  }
+
+  // Set up permission handlers for getUserMedia, fullscreen, pointer lock
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    const url = webContents.getURL();
+    console.log(`[Main] Permission request: ${permission} from ${url}`);
+
+    const allowedPermissions = new Set([
+      "media",
+      "microphone",
+      "fullscreen",
+      "automatic-fullscreen",
+      "pointerLock",
+      "keyboardLock",
+      "speaker-selection",
+    ]);
+
+    if (allowedPermissions.has(permission)) {
+      console.log(`[Main] Granting permission: ${permission}`);
+      callback(true);
+      return;
+    }
+
+    callback(false);
+  });
+
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    console.log(`[Main] Permission check: ${permission} from ${requestingOrigin}`);
+
+    const allowedPermissions = new Set([
+      "media",
+      "microphone",
+      "fullscreen",
+      "automatic-fullscreen",
+      "pointerLock",
+      "keyboardLock",
+      "speaker-selection",
+    ]);
+
+    return allowedPermissions.has(permission);
+  });
 
   registerIpcHandlers();
   await createMainWindow();

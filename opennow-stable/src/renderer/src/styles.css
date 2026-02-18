@@ -1436,6 +1436,13 @@ body.controller-mode {
   font-size: 0.92rem; color: var(--ink-soft); font-weight: 500;
   flex-shrink: 0; cursor: default;
 }
+.settings-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+  font-weight: 500;
+}
 
 /* Text input for resolution / FPS */
 .settings-text-input {
@@ -1603,6 +1610,81 @@ body.controller-mode {
 .settings-placeholder {
   padding: 14px; text-align: center;
   font-size: 0.92rem; color: var(--ink-muted); font-style: italic;
+}
+
+/* Custom settings dropdown */
+.settings-dropdown {
+  position: relative;
+  width: 100%;
+}
+.settings-dropdown-selected {
+  width: 100%;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+  padding: 11px 14px;
+  background: var(--bg-a);
+  border: 1px solid var(--panel-border-solid);
+  border-radius: var(--r-sm);
+  color: var(--ink); font-size: 0.92rem; font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), opacity var(--t-fast);
+  outline: none;
+}
+.settings-dropdown-selected:hover { border-color: #444; }
+.settings-dropdown-selected.open { border-color: var(--accent); border-radius: var(--r-sm) var(--r-sm) 0 0; }
+.settings-dropdown-selected:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.settings-dropdown-selected-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-dropdown-chevron {
+  color: var(--ink-muted);
+  transition: transform var(--t-fast), color var(--t-fast);
+  flex-shrink: 0;
+}
+.settings-dropdown-chevron.flipped {
+  transform: rotate(180deg);
+  color: var(--accent);
+}
+.settings-dropdown-menu {
+  position: absolute; top: 100%; left: 0; right: 0;
+  background: var(--bg-a);
+  border: 1px solid var(--accent); border-top: none;
+  border-radius: 0 0 var(--r-sm) var(--r-sm);
+  z-index: 22;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+  max-height: 220px;
+  overflow-y: auto;
+  animation: fade-in-down 120ms var(--ease);
+}
+.settings-dropdown-menu--tall {
+  max-height: 260px;
+}
+.settings-dropdown-item {
+  width: 100%;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  background: transparent; border: none;
+  color: var(--ink); font-size: 0.9rem; font-weight: 500;
+  font-family: inherit;
+  cursor: pointer; text-align: left;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.settings-dropdown-item:hover { background: var(--accent-surface); }
+.settings-dropdown-item.active { background: var(--accent-surface-strong); color: var(--accent); }
+.settings-dropdown-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-dropdown-check { color: var(--accent); flex-shrink: 0; }
+
+.settings-mic-device-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
 }
 
 /* Region selector */
@@ -2081,6 +2163,51 @@ body.controller-mode {
 .sv-afk-label {
   font-size: 0.72rem; font-weight: 700; color: var(--ink);
   letter-spacing: 0.03em;
+}
+
+.sv-mic {
+  position: fixed; top: 14px; left: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px;
+  padding: 0;
+  background: rgba(10, 10, 12, 0.92);
+  border: 1px solid var(--panel-border); border-radius: var(--r-md);
+  z-index: 1001; color: var(--error);
+  cursor: pointer; transition: all 0.15s ease;
+}
+.sv-mic:hover {
+  background: rgba(20, 20, 24, 0.95);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.sv-mic:active {
+  transform: scale(0.96);
+}
+.sv-mic svg {
+  color: var(--error);
+  transition: color 0.15s ease;
+}
+/* When mic is enabled (unmuted), show accent color */
+.sv-mic[data-enabled="true"] svg {
+  color: var(--accent);
+}
+.sv-mic[data-enabled="true"] {
+  border-color: rgba(88, 217, 138, 0.3);
+  box-shadow: 0 0 12px rgba(88, 217, 138, 0.15);
+}
+/* Position below controller indicator */
+.sv-mic--stacked {
+  top: 56px;
+}
+/* Position below anti-AFK when both are present */
+.sv-ctrl + .sv-afk + .sv-mic,
+.sv-afk + .sv-mic:not(.sv-mic--stacked) {
+  top: 98px;
+}
+.sv-ctrl + .sv-mic:not(.sv-mic--stacked) {
+  top: 56px;
+}
+.sv-ctrl + .sv-afk--stacked + .sv-mic {
+  top: 98px;
 }
 
 .sv-esc-hold-backdrop {

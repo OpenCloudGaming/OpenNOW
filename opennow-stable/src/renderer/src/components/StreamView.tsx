@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { JSX } from "react";
-import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle } from "lucide-react";
+import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff } from "lucide-react";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
 
 interface StreamViewProps {
@@ -12,7 +12,9 @@ interface StreamViewProps {
     toggleStats: string;
     togglePointerLock: string;
     stopStream: string;
+    toggleMicrophone?: string;
   };
+  hideStreamButtons?: boolean;
   serverRegion?: string;
   connectedControllers: number;
   antiAfkEnabled: boolean;
@@ -39,6 +41,7 @@ interface StreamViewProps {
   onConfirmExit: () => void;
   onCancelExit: () => void;
   onEndSession: () => void;
+  onToggleMicrophone?: () => void;
 }
 
 function getRttColor(rttMs: number): string {
@@ -112,10 +115,18 @@ export function StreamView({
   onConfirmExit,
   onCancelExit,
   onEndSession,
+  onToggleMicrophone,
+  hideStreamButtons = false,
 }: StreamViewProps): JSX.Element {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
+
+  // Microphone state
+  const micState = stats.micState ?? "uninitialized";
+  const micEnabled = stats.micEnabled ?? false;
+  const hasMicrophone = micState === "started" || micState === "stopped";
+  const showMicIndicator = hasMicrophone && !isConnecting && !hideStreamButtons;
 
   const handleFullscreenToggle = useCallback(() => {
     onToggleFullscreen();
@@ -196,10 +207,51 @@ export function StreamView({
   const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
   const sessionTimeText = formatElapsed(sessionElapsedSeconds);
 
+  // Local ref for video element to manage focus
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Combined ref callback that sets both local and forwarded ref
+  const setVideoRef = useCallback((element: HTMLVideoElement | null) => {
+    localVideoRef.current = element;
+    // Forward to parent ref
+    if (typeof videoRef === "function") {
+      videoRef(element);
+    } else if (videoRef && "current" in videoRef) {
+      (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = element;
+    }
+  }, [videoRef]);
+
+  // Focus video element when stream is ready (not connecting anymore)
+  useEffect(() => {
+    if (!isConnecting && localVideoRef.current && hasResolution) {
+      // Small delay to ensure DOM is ready
+      const timer = window.setTimeout(() => {
+        if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
+          localVideoRef.current.focus();
+          console.log("[StreamView] Focused video element");
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [isConnecting, hasResolution]);
+
   return (
     <div className="sv">
       {/* Video element */}
-      <video ref={videoRef} autoPlay playsInline muted tabIndex={0} className="sv-video" />
+      <video 
+        ref={setVideoRef} 
+        autoPlay 
+        playsInline 
+        muted 
+        tabIndex={0} 
+        className="sv-video"
+        onClick={() => {
+          // Ensure video has focus when clicked for pointer lock to work
+          if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
+            localVideoRef.current.focus();
+          }
+        }}
+      />
       <audio ref={audioRef} autoPlay playsInline />
 
       {/* Gradient background when no video */}
@@ -307,6 +359,21 @@ export function StreamView({
         </div>
       )}
 
+      {/* Microphone toggle button (top-left, below controller badge when present) */}
+      {showMicIndicator && onToggleMicrophone && (
+        <button
+          type="button"
+          className={`sv-mic${connectedControllers > 0 || antiAfkEnabled ? " sv-mic--stacked" : ""}`}
+          onClick={onToggleMicrophone}
+          data-enabled={micEnabled}
+          title={micEnabled ? "Mute microphone" : "Unmute microphone"}
+          aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
+          aria-pressed={micEnabled}
+        >
+          {micEnabled ? <Mic size={18} /> : <MicOff size={18} />}
+        </button>
+      )}
+
       {/* Anti-AFK indicator (top-left, below controller badge when present) */}
       {antiAfkEnabled && !isConnecting && (
         <div className={`sv-afk${connectedControllers > 0 ? " sv-afk--stacked" : ""}`} title="Anti-AFK is enabled">
@@ -363,24 +430,28 @@ export function StreamView({
       )}
 
       {/* Fullscreen toggle */}
-      <button
-        className="sv-fs"
-        onClick={handleFullscreenToggle}
-        title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-        aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-      >
-        {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
-      </button>
+      {!hideStreamButtons && (
+        <button
+          className="sv-fs"
+          onClick={handleFullscreenToggle}
+          title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+        >
+          {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+        </button>
+      )}
 
       {/* End session button */}
-      <button
-        className="sv-end"
-        onClick={onEndSession}
-        title="End session"
-        aria-label="End session"
-      >
-        <LogOut size={18} />
-      </button>
+      {!hideStreamButtons && (
+        <button
+          className="sv-end"
+          onClick={onEndSession}
+          title="End session"
+          aria-label="End session"
+        >
+          <LogOut size={18} />
+        </button>
+      )}
 
       {/* Keyboard hints */}
       {showHints && !isConnecting && (
@@ -388,6 +459,7 @@ export function StreamView({
           <div className="sv-hint"><kbd>{shortcuts.toggleStats}</kbd><span>Stats</span></div>
           <div className="sv-hint"><kbd>{shortcuts.togglePointerLock}</kbd><span>Mouse lock</span></div>
           <div className="sv-hint"><kbd>{shortcuts.stopStream}</kbd><span>Stop</span></div>
+          {shortcuts.toggleMicrophone && <div className="sv-hint"><kbd>{shortcuts.toggleMicrophone}</kbd><span>Mic</span></div>}
         </div>
       )}
 

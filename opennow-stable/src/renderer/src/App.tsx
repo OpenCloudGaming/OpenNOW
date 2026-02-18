@@ -65,6 +65,7 @@ const DEFAULT_SHORTCUTS = {
   shortcutTogglePointerLock: "F8",
   shortcutStopStream: "Ctrl+Shift+Q",
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
+  shortcutToggleMicrophone: "Ctrl+Shift+M",
 } as const;
 
 function sleep(ms: number): Promise<void> {
@@ -120,6 +121,8 @@ function defaultDiagnostics(): StreamDiagnostics {
     inputQueueMaxSchedulingDelayMs: 0,
     gpuType: "",
     serverRegion: "",
+    micState: "uninitialized",
+    micEnabled: false,
   };
 }
 
@@ -275,6 +278,10 @@ export function App(): JSX.Element {
     shortcutTogglePointerLock: DEFAULT_SHORTCUTS.shortcutTogglePointerLock,
     shortcutStopStream: DEFAULT_SHORTCUTS.shortcutStopStream,
     shortcutToggleAntiAfk: DEFAULT_SHORTCUTS.shortcutToggleAntiAfk,
+    shortcutToggleMicrophone: DEFAULT_SHORTCUTS.shortcutToggleMicrophone,
+    microphoneMode: "disabled",
+    microphoneDeviceId: "",
+    hideStreamButtons: false,
     sessionClockShowEveryMinutes: 60,
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
@@ -527,12 +534,14 @@ export function App(): JSX.Element {
     const togglePointerLock = parseWithFallback(settings.shortcutTogglePointerLock, DEFAULT_SHORTCUTS.shortcutTogglePointerLock);
     const stopStream = parseWithFallback(settings.shortcutStopStream, DEFAULT_SHORTCUTS.shortcutStopStream);
     const toggleAntiAfk = parseWithFallback(settings.shortcutToggleAntiAfk, DEFAULT_SHORTCUTS.shortcutToggleAntiAfk);
-    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk };
+    const toggleMicrophone = parseWithFallback(settings.shortcutToggleMicrophone, DEFAULT_SHORTCUTS.shortcutToggleMicrophone);
+    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk, toggleMicrophone };
   }, [
     settings.shortcutToggleStats,
     settings.shortcutTogglePointerLock,
     settings.shortcutStopStream,
     settings.shortcutToggleAntiAfk,
+    settings.shortcutToggleMicrophone,
   ]);
 
   const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
@@ -619,6 +628,20 @@ export function App(): JSX.Element {
     return () => clearInterval(interval);
   }, [antiAfkEnabled, streamStatus]);
 
+  // Restore focus to video element when navigating away from Settings during streaming
+  useEffect(() => {
+    if (streamStatus === "streaming" && currentPage !== "settings" && videoRef.current) {
+      // Small delay to let React finish rendering the new page
+      const timer = window.setTimeout(() => {
+        if (videoRef.current && document.activeElement !== videoRef.current) {
+          videoRef.current.focus();
+          console.log("[App] Restored focus to video element after leaving Settings");
+        }
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [currentPage, streamStatus]);
+
   useEffect(() => {
     if (streamStatus === "idle" || sessionStartedAtMs === null) {
       setSessionElapsedSeconds(0);
@@ -667,6 +690,8 @@ export function App(): JSX.Element {
             clientRef.current = new GfnWebRtcClient({
               videoElement: videoRef.current,
               audioElement: audioRef.current,
+              microphoneMode: settings.microphoneMode,
+              microphoneDeviceId: settings.microphoneDeviceId || undefined,
               onLog: (line: string) => console.log(`[WebRTC] ${line}`),
               onStats: (stats) => setDiagnostics(stats),
               onEscHoldProgress: (visible, progress) => {
@@ -680,7 +705,14 @@ export function App(): JSX.Element {
                   secondsLeft: warning.secondsLeft,
                 });
               },
+              onMicStateChange: (state) => {
+                console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
+              },
             });
+            // Auto-start microphone if mode is enabled
+            if (settings.microphoneMode !== "disabled") {
+              void clientRef.current.startMicrophone();
+            }
           }
 
           if (clientRef.current) {
@@ -1285,6 +1317,16 @@ export function App(): JSX.Element {
         if (streamStatus === "streaming") {
           setAntiAfkEnabled((prev) => !prev);
         }
+        return;
+      }
+
+      if (isShortcutMatch(e, shortcuts.toggleMicrophone)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        if (streamStatus === "streaming") {
+          clientRef.current?.toggleMicrophone();
+        }
       }
     };
 
@@ -1395,7 +1437,9 @@ export function App(): JSX.Element {
               toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
               togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),
               stopStream: formatShortcutForDisplay(settings.shortcutStopStream, isMac),
+              toggleMicrophone: formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac),
             }}
+            hideStreamButtons={settings.hideStreamButtons}
             serverRegion={session?.serverIp}
             connectedControllers={diagnostics.connectedGamepads}
             antiAfkEnabled={antiAfkEnabled}
@@ -1418,6 +1462,9 @@ export function App(): JSX.Element {
             onCancelExit={handleExitPromptCancel}
             onEndSession={() => {
               void handlePromptedStopStream();
+            }}
+            onToggleMicrophone={() => {
+              clientRef.current?.toggleMicrophone();
             }}
           />
         )}

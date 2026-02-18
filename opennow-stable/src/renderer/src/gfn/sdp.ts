@@ -600,12 +600,13 @@ export function buildNvstSdp(params: NvstParams): string {
     // Disable server-side scaling and prefilter (prevents resolution downgrade)
     `a=video.scalingFeature1:${isAv1 ? 1 : 0}`,
     "a=video.prefilterParams.prefilterModel:0",
-    // Audio track
+    // Audio track (receive-only from server)
     "m=audio 0 RTP/AVP",
     "a=msid:audio",
-    // Mic track
+    // Mic track (send to server)
     "m=mic 0 RTP/AVP",
     "a=msid:mic",
+    "a=rtpmap:0 PCMU/8000",
     // Input/application track
     "m=application 0 RTP/AVP",
     "a=msid:input_1",
