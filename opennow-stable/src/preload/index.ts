@@ -22,8 +22,7 @@ import type {
   FlightProfile,
   FlightControlsState,
   FlightGamepadState,} from "@shared/gfn";
-
-// Extend the OpenNowApi interface for internal preload use
+} from "@shared/gfn";
 type PreloadApi = OpenNowApi;
 
 const api: PreloadApi = {
@@ -80,9 +79,6 @@ const api: PreloadApi = {
   updateDiscordPresence: (state: DiscordPresencePayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.DISCORD_UPDATE_PRESENCE, state),
   clearDiscordPresence: () => ipcRenderer.invoke(IPC_CHANNELS.DISCORD_CLEAR_PRESENCE),
-  flightGetDevices: () => ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_GET_DEVICES),
-  flightStartCapture: (devicePath: string) => ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_START_CAPTURE, devicePath),
-  flightStopCapture: () => ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_STOP_CAPTURE),
   flightGetProfile: (vidPid: string, gameId?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_GET_PROFILE, vidPid, gameId),
   flightSetProfile: (profile: FlightProfile) =>
@@ -109,5 +105,5 @@ const api: PreloadApi = {
       ipcRenderer.off(IPC_CHANNELS.FLIGHT_GAMEPAD_STATE, wrapped);
     };
   },};
-
+};
 contextBridge.exposeInMainWorld("openNow", api);

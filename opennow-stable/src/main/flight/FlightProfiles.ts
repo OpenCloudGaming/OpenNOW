@@ -2,7 +2,7 @@ import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import type { FlightProfile } from "@shared/gfn";
-import { buildDefaultProfile } from "./FlightDeviceDefaults";
+import { buildDefaultProfile } from "@shared/flightDefaults";
 
 const PROFILES_FILENAME = "flight-profiles.json";
 
