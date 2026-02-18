@@ -2122,6 +2122,12 @@ export class GfnWebRtcClient {
     };
 
     const onWindowBlur = () => {
+      // Don't release keys during microphone permission request
+      // as getUserMedia() may cause brief window focus loss
+      if (this.micState === "permission_pending") {
+        this.log("Window blur during mic permission - keeping keys pressed");
+        return;
+      }
       this.clearEscapeHoldTimer();
       this.releasePressedKeys("window blur");
     };
