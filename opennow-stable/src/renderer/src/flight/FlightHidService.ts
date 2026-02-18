@@ -12,9 +12,15 @@ import {
   GAMEPAD_DPAD_RIGHT,
 } from "@shared/flightConstants";
 
-const JOYSTICK_USAGE_PAGE = 0x01;
-const JOYSTICK_USAGE = 0x04;
-const GAMEPAD_USAGE = 0x05;
+const GENERIC_INPUT_PAGE = 0x01;
+const USAGE_JOYSTICK = 0x04;
+const USAGE_GAMEPAD = 0x05;
+const USAGE_MULTIAXIS = 0x08;
+const USAGE_KEYBOARD = 0x06;
+const USAGE_MOUSE = 0x02;
+
+const FLIGHT_USAGES = new Set([USAGE_JOYSTICK, USAGE_GAMEPAD, USAGE_MULTIAXIS]);
+const EXCLUDED_USAGES = new Set([USAGE_KEYBOARD, USAGE_MOUSE]);
 
 interface ParsedReport {
   axes: number[];
@@ -22,12 +28,36 @@ interface ParsedReport {
   hatSwitch: number;
 }
 
-function isFlightDevice(device: HIDDevice): boolean {
-  return device.collections.some(
-    (c) =>
-      c.usagePage === JOYSTICK_USAGE_PAGE &&
-      (c.usage === JOYSTICK_USAGE || c.usage === GAMEPAD_USAGE),
+function logDevice(device: HIDDevice, tag: string): void {
+  const collections = device.collections.map((c) => ({
+    usagePage: `0x${c.usagePage.toString(16).padStart(2, "0")}`,
+    usage: `0x${c.usage.toString(16).padStart(2, "0")}`,
+  }));
+  console.log(
+    `[Flight:${tag}] ${device.productName || "(no name)"}  VID=0x${device.vendorId.toString(16).padStart(4, "0")} PID=0x${device.productId.toString(16).padStart(4, "0")}  collections=`,
+    collections,
   );
+}
+
+export function isFlightDevice(device: HIDDevice): boolean {
+  return device.collections.some(
+    (c) => c.usagePage === GENERIC_INPUT_PAGE && FLIGHT_USAGES.has(c.usage),
+  );
+}
+
+function isExcludedDevice(device: HIDDevice): boolean {
+  if (device.collections.length === 0) return false;
+  return device.collections.every(
+    (c) => c.usagePage === GENERIC_INPUT_PAGE && EXCLUDED_USAGES.has(c.usage),
+  );
+}
+
+export function classifyDevice(device: HIDDevice, showAll: boolean): boolean {
+  if (showAll) return true;
+  if (isExcludedDevice(device)) return false;
+  if (isFlightDevice(device)) return true;
+  if (device.collections.length === 0) return true;
+  return false;
 }
 
 export class FlightHidService {
@@ -53,30 +83,34 @@ export class FlightHidService {
     this._controllerSlot = Math.max(0, Math.min(3, slot));
   }
 
-  async getDevices(): Promise<HIDDevice[]> {
+  async getDevices(showAll = false): Promise<HIDDevice[]> {
     if (!FlightHidService.isSupported()) return [];
     try {
       const all = await navigator.hid.getDevices();
-      return all.filter(isFlightDevice);
+      for (const d of all) logDevice(d, "enum");
+      return all.filter((d) => classifyDevice(d, showAll));
     } catch (e) {
       console.warn("[Flight] getDevices failed:", e);
       return [];
     }
   }
 
-  async requestDevice(): Promise<HIDDevice | null> {
-    if (!FlightHidService.isSupported()) return null;
+  async requestDevice(): Promise<HIDDevice[]> {
+    if (!FlightHidService.isSupported()) return [];
     try {
       const devices = await navigator.hid.requestDevice({
         filters: [
-          { usagePage: JOYSTICK_USAGE_PAGE, usage: JOYSTICK_USAGE },
-          { usagePage: JOYSTICK_USAGE_PAGE, usage: GAMEPAD_USAGE },
+          { usagePage: GENERIC_INPUT_PAGE, usage: USAGE_JOYSTICK },
+          { usagePage: GENERIC_INPUT_PAGE, usage: USAGE_GAMEPAD },
+          { usagePage: GENERIC_INPUT_PAGE, usage: USAGE_MULTIAXIS },
+          {},
         ],
       });
-      return devices[0] ?? null;
+      for (const d of devices) logDevice(d, "request");
+      return devices;
     } catch (e) {
-      console.warn("[Flight] requestDevice failed:", e);
-      return null;
+      console.warn("[Flight] requestDevice cancelled or failed:", e);
+      return [];
     }
   }
 
