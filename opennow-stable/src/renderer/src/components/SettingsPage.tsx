@@ -1,5 +1,5 @@
-import { Monitor, Volume2, Mouse, Settings2, Globe, Save, Check, Search, X, Loader, Cpu, Zap, Mic } from "lucide-react";
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { Globe, Save, Check, Search, X, Loader, Zap, Mic } from "lucide-react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
 import type {
@@ -74,7 +74,14 @@ const shortcutDefaults = {
   shortcutTogglePointerLock: "F8",
   shortcutStopStream: "Ctrl+Shift+Q",
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
+  shortcutToggleMicrophone: "Ctrl+Shift+M",
 } as const;
+
+const microphoneModeOptions: Array<{ value: MicrophoneMode; label: string }> = [
+  { value: "disabled", label: "Disabled" },
+  { value: "push-to-talk", label: "Push-to-Talk" },
+  { value: "voice-activity", label: "Voice Activity" },
+];
 
 /* ── Aspect ratio helpers ─────────────────────────────────────────── */
 
@@ -472,10 +479,12 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [togglePointerLockInput, setTogglePointerLockInput] = useState(settings.shortcutTogglePointerLock);
   const [stopStreamInput, setStopStreamInput] = useState(settings.shortcutStopStream);
   const [toggleAntiAfkInput, setToggleAntiAfkInput] = useState(settings.shortcutToggleAntiAfk);
+  const [toggleMicrophoneInput, setToggleMicrophoneInput] = useState(settings.shortcutToggleMicrophone);
   const [toggleStatsError, setToggleStatsError] = useState(false);
   const [togglePointerLockError, setTogglePointerLockError] = useState(false);
   const [stopStreamError, setStopStreamError] = useState(false);
   const [toggleAntiAfkError, setToggleAntiAfkError] = useState(false);
+  const [toggleMicrophoneError, setToggleMicrophoneError] = useState(false);
 
   // Dynamic entitled resolutions from MES API
   const [entitledResolutions, setEntitledResolutions] = useState<EntitledResolution[]>([]);
@@ -496,6 +505,10 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   useEffect(() => {
     setToggleAntiAfkInput(settings.shortcutToggleAntiAfk);
   }, [settings.shortcutToggleAntiAfk]);
+
+  useEffect(() => {
+    setToggleMicrophoneInput(settings.shortcutToggleMicrophone);
+  }, [settings.shortcutToggleMicrophone]);
 
   // Fetch subscription data (cached per account; reload only when account changes)
   useEffect(() => {
@@ -578,6 +591,10 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   // Microphone devices
   const [microphoneDevices, setMicrophoneDevices] = useState<MediaDeviceInfo[]>([]);
   const [microphonePermissionError, setMicrophonePermissionError] = useState<string | null>(null);
+  const [microphoneModeDropdownOpen, setMicrophoneModeDropdownOpen] = useState(false);
+  const [microphoneDeviceDropdownOpen, setMicrophoneDeviceDropdownOpen] = useState(false);
+  const microphoneModeDropdownRef = useRef<HTMLDivElement | null>(null);
+  const microphoneDeviceDropdownRef = useRef<HTMLDivElement | null>(null);
 
   // Enumerate microphone devices when mic mode is enabled
   useEffect(() => {
@@ -625,6 +642,37 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     return found?.name ?? settings.region;
   }, [settings.region, regions]);
 
+  const selectedMicrophoneModeName = useMemo(() => {
+    return microphoneModeOptions.find((option) => option.value === settings.microphoneMode)?.label ?? "Disabled";
+  }, [settings.microphoneMode]);
+
+  const selectedMicrophoneDeviceName = useMemo(() => {
+    if (!settings.microphoneDeviceId) return "Default Device";
+    const found = microphoneDevices.find((device) => device.deviceId === settings.microphoneDeviceId);
+    return found?.label || "Selected Device";
+  }, [settings.microphoneDeviceId, microphoneDevices]);
+
+  useEffect(() => {
+    if (settings.microphoneMode === "disabled") {
+      setMicrophoneDeviceDropdownOpen(false);
+    }
+  }, [settings.microphoneMode]);
+
+  useEffect(() => {
+    const handlePointerDown = (event: MouseEvent): void => {
+      const target = event.target as Node;
+      if (microphoneModeDropdownRef.current && !microphoneModeDropdownRef.current.contains(target)) {
+        setMicrophoneModeDropdownOpen(false);
+      }
+      if (microphoneDeviceDropdownRef.current && !microphoneDeviceDropdownRef.current.contains(target)) {
+        setMicrophoneDeviceDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, []);
+
   const handleShortcutBlur = <K extends keyof Settings>(
     key: K,
     rawValue: string,
@@ -654,12 +702,14 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       settings.shortcutToggleStats === shortcutDefaults.shortcutToggleStats
       && settings.shortcutTogglePointerLock === shortcutDefaults.shortcutTogglePointerLock
       && settings.shortcutStopStream === shortcutDefaults.shortcutStopStream
-      && settings.shortcutToggleAntiAfk === shortcutDefaults.shortcutToggleAntiAfk,
+      && settings.shortcutToggleAntiAfk === shortcutDefaults.shortcutToggleAntiAfk
+      && settings.shortcutToggleMicrophone === shortcutDefaults.shortcutToggleMicrophone,
     [
       settings.shortcutToggleStats,
       settings.shortcutTogglePointerLock,
       settings.shortcutStopStream,
       settings.shortcutToggleAntiAfk,
+      settings.shortcutToggleMicrophone,
     ]
   );
 
@@ -668,16 +718,19 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     setTogglePointerLockInput(shortcutDefaults.shortcutTogglePointerLock);
     setStopStreamInput(shortcutDefaults.shortcutStopStream);
     setToggleAntiAfkInput(shortcutDefaults.shortcutToggleAntiAfk);
+    setToggleMicrophoneInput(shortcutDefaults.shortcutToggleMicrophone);
     setToggleStatsError(false);
     setTogglePointerLockError(false);
     setStopStreamError(false);
     setToggleAntiAfkError(false);
+    setToggleMicrophoneError(false);
 
     const shortcutKeys = [
       "shortcutToggleStats",
       "shortcutTogglePointerLock",
       "shortcutStopStream",
       "shortcutToggleAntiAfk",
+      "shortcutToggleMicrophone",
     ] as const;
 
     for (const key of shortcutKeys) {
@@ -691,7 +744,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   return (
     <div className="settings-page">
       <header className="settings-header">
-        <Settings2 size={22} />
         <h1>Settings</h1>
         <div className={`settings-saved ${savedIndicator ? "visible" : ""}`}>
           <Check size={14} />
@@ -703,7 +755,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
         {/* ── Video ──────────────────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
-            <Monitor size={18} />
             <h2>Video</h2>
           </div>
 
@@ -912,7 +963,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
         {/* ── Codec Diagnostics ──────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
-            <Cpu size={20} />
             <h2>Codec Diagnostics</h2>
           </div>
           <div className="settings-rows">
@@ -1000,7 +1050,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
         {/* ── Audio / Microphone ───────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
-            <Volume2 size={18} />
             <h2>Audio</h2>
           </div>
           <div className="settings-rows">
@@ -1010,15 +1059,39 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 Microphone
                 <span className="settings-hint">Enable voice chat during streaming</span>
               </label>
-              <select
-                className="settings-select"
-                value={settings.microphoneMode}
-                onChange={(e) => handleChange("microphoneMode", e.target.value as MicrophoneMode)}
-              >
-                <option value="disabled">Disabled</option>
-                <option value="push-to-talk">Push-to-Talk</option>
-                <option value="voice-activity">Voice Activity</option>
-              </select>
+              <div className="settings-dropdown" ref={microphoneModeDropdownRef}>
+                <button
+                  type="button"
+                  className={`settings-dropdown-selected ${microphoneModeDropdownOpen ? "open" : ""}`}
+                  onClick={() => {
+                    setMicrophoneModeDropdownOpen((open) => !open);
+                    setMicrophoneDeviceDropdownOpen(false);
+                  }}
+                >
+                  <span className="settings-dropdown-selected-name">{selectedMicrophoneModeName}</span>
+                  <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${microphoneModeDropdownOpen ? "flipped" : ""}`}>
+                    <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
+                  </svg>
+                </button>
+                {microphoneModeDropdownOpen && (
+                  <div className="settings-dropdown-menu">
+                    {microphoneModeOptions.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={`settings-dropdown-item ${settings.microphoneMode === option.value ? "active" : ""}`}
+                        onClick={() => {
+                          handleChange("microphoneMode", option.value);
+                          setMicrophoneModeDropdownOpen(false);
+                        }}
+                      >
+                        <span>{option.label}</span>
+                        {settings.microphoneMode === option.value && <Check size={14} className="settings-dropdown-check" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Microphone Device (only shown when mic is enabled) */}
@@ -1031,20 +1104,53 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                   </div>
                   <span className="settings-hint">Select input device for voice chat</span>
                 </label>
-                <div className="flex flex-col gap-1">
-                  <select
-                    className="settings-select"
-                    value={settings.microphoneDeviceId}
-                    onChange={(e) => handleChange("microphoneDeviceId", e.target.value)}
-                    disabled={microphoneDevices.length === 0}
-                  >
-                    <option value="">Default Device</option>
-                    {microphoneDevices.map((device) => (
-                      <option key={device.deviceId} value={device.deviceId}>
-                        {device.label || `Microphone ${microphoneDevices.indexOf(device) + 1}`}
-                      </option>
-                    ))}
-                  </select>
+                <div className="settings-mic-device-wrap">
+                  <div className="settings-dropdown" ref={microphoneDeviceDropdownRef}>
+                    <button
+                      type="button"
+                      className={`settings-dropdown-selected ${microphoneDeviceDropdownOpen ? "open" : ""}`}
+                      onClick={() => {
+                        if (microphoneDevices.length === 0) return;
+                        setMicrophoneDeviceDropdownOpen((open) => !open);
+                        setMicrophoneModeDropdownOpen(false);
+                      }}
+                      disabled={microphoneDevices.length === 0}
+                    >
+                      <span className="settings-dropdown-selected-name">{selectedMicrophoneDeviceName}</span>
+                      <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${microphoneDeviceDropdownOpen ? "flipped" : ""}`}>
+                        <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
+                      </svg>
+                    </button>
+                    {microphoneDeviceDropdownOpen && (
+                      <div className="settings-dropdown-menu settings-dropdown-menu--tall">
+                        <button
+                          type="button"
+                          className={`settings-dropdown-item ${settings.microphoneDeviceId === "" ? "active" : ""}`}
+                          onClick={() => {
+                            handleChange("microphoneDeviceId", "");
+                            setMicrophoneDeviceDropdownOpen(false);
+                          }}
+                        >
+                          <span>Default Device</span>
+                          {settings.microphoneDeviceId === "" && <Check size={14} className="settings-dropdown-check" />}
+                        </button>
+                        {microphoneDevices.map((device, index) => (
+                          <button
+                            key={device.deviceId}
+                            type="button"
+                            className={`settings-dropdown-item ${settings.microphoneDeviceId === device.deviceId ? "active" : ""}`}
+                            onClick={() => {
+                              handleChange("microphoneDeviceId", device.deviceId);
+                              setMicrophoneDeviceDropdownOpen(false);
+                            }}
+                          >
+                            <span>{device.label || `Microphone ${index + 1}`}</span>
+                            {settings.microphoneDeviceId === device.deviceId && <Check size={14} className="settings-dropdown-check" />}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   {microphonePermissionError && (
                     <span className="text-red-400 text-xs mt-1">{microphonePermissionError}</span>
                   )}
@@ -1060,7 +1166,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
         {/* ── Input ──────────────────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
-            <Mouse size={18} />
             <h2>Input</h2>
           </div>
           <div className="settings-rows">
@@ -1071,6 +1176,21 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                   type="checkbox"
                   checked={settings.clipboardPaste}
                   onChange={(e) => handleChange("clipboardPaste", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
+                Hide Stream Overlay Buttons
+                <span className="settings-hint">Hide microphone, fullscreen, and end-session buttons while streaming.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.hideStreamButtons}
+                  onChange={(e) => handleChange("hideStreamButtons", e.target.checked)}
                 />
                 <span className="settings-toggle-track" />
               </label>
@@ -1148,17 +1268,31 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                     spellCheck={false}
                   />
                 </label>
+
+                <label className="settings-shortcut-row">
+                  <span className="settings-shortcut-label">Toggle Microphone</span>
+                  <input
+                    type="text"
+                    className={`settings-text-input settings-shortcut-input ${toggleMicrophoneError ? "error" : ""}`}
+                    value={toggleMicrophoneInput}
+                    onChange={(e) => setToggleMicrophoneInput(e.target.value)}
+                    onBlur={() => handleShortcutBlur("shortcutToggleMicrophone", toggleMicrophoneInput, setToggleMicrophoneInput, setToggleMicrophoneError)}
+                    onKeyDown={handleShortcutKeyDown}
+                    placeholder="Ctrl+Shift+M"
+                    spellCheck={false}
+                  />
+                </label>
               </div>
 
-              {(toggleStatsError || togglePointerLockError || stopStreamError || toggleAntiAfkError) && (
+              {(toggleStatsError || togglePointerLockError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError) && (
                 <span className="settings-input-hint">
                   Invalid shortcut. Use {shortcutExamples}
                 </span>
               )}
 
-              {!toggleStatsError && !togglePointerLockError && !stopStreamError && !toggleAntiAfkError && (
+              {!toggleStatsError && !togglePointerLockError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && (
                 <span className="settings-shortcut-hint">
-                  {shortcutExamples}. Current stop shortcut: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}.
+                  {shortcutExamples}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}.
                 </span>
               )}
             </div>
@@ -1168,7 +1302,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
         {/* ── Region ────────────────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
-            <Globe size={18} />
             <h2>Region</h2>
           </div>
           <div className="settings-rows">

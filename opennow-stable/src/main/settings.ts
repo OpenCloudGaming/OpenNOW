@@ -32,6 +32,8 @@ export interface Settings {
   shortcutStopStream: string;
   /** Toggle anti-AFK shortcut */
   shortcutToggleAntiAfk: string;
+  /** Toggle microphone shortcut */
+  shortcutToggleMicrophone: string;
   /** How often to re-show the session timer while streaming (0 = off) */
   sessionClockShowEveryMinutes: number;
   /** How long the session timer stays visible when it appears */
@@ -40,6 +42,8 @@ export interface Settings {
   microphoneMode: MicrophoneMode;
   /** Preferred microphone device ID (empty = default) */
   microphoneDeviceId: string;
+  /** Hide stream buttons (mic/fullscreen/end-session) while streaming */
+  hideStreamButtons: boolean;
   /** Window width */
   windowWidth: number;
   /** Window height */
@@ -48,6 +52,7 @@ export interface Settings {
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
 const defaultAntiAfkShortcut = "Ctrl+Shift+K";
+const defaultMicShortcut = "Ctrl+Shift+M";
 const LEGACY_STOP_SHORTCUTS = new Set(["META+SHIFT+Q", "CMD+SHIFT+Q"]);
 const LEGACY_ANTI_AFK_SHORTCUTS = new Set(["META+SHIFT+F10", "CMD+SHIFT+F10", "CTRL+SHIFT+F10"]);
 
@@ -66,8 +71,10 @@ const DEFAULT_SETTINGS: Settings = {
   shortcutTogglePointerLock: "F8",
   shortcutStopStream: defaultStopShortcut,
   shortcutToggleAntiAfk: defaultAntiAfkShortcut,
+  shortcutToggleMicrophone: defaultMicShortcut,
   microphoneMode: "disabled",
   microphoneDeviceId: "",
+  hideStreamButtons: false,
   sessionClockShowEveryMinutes: 60,
   sessionClockShowDurationSeconds: 30,
   windowWidth: 1400,

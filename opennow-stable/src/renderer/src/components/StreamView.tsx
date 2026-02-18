@@ -12,7 +12,9 @@ interface StreamViewProps {
     toggleStats: string;
     togglePointerLock: string;
     stopStream: string;
+    toggleMicrophone?: string;
   };
+  hideStreamButtons?: boolean;
   serverRegion?: string;
   connectedControllers: number;
   antiAfkEnabled: boolean;
@@ -114,6 +116,7 @@ export function StreamView({
   onCancelExit,
   onEndSession,
   onToggleMicrophone,
+  hideStreamButtons = false,
 }: StreamViewProps): JSX.Element {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
@@ -123,7 +126,7 @@ export function StreamView({
   const micState = stats.micState ?? "uninitialized";
   const micEnabled = stats.micEnabled ?? false;
   const hasMicrophone = micState === "started" || micState === "stopped";
-  const showMicIndicator = hasMicrophone && !isConnecting;
+  const showMicIndicator = hasMicrophone && !isConnecting && !hideStreamButtons;
 
   const handleFullscreenToggle = useCallback(() => {
     onToggleFullscreen();
@@ -427,24 +430,28 @@ export function StreamView({
       )}
 
       {/* Fullscreen toggle */}
-      <button
-        className="sv-fs"
-        onClick={handleFullscreenToggle}
-        title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-        aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-      >
-        {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
-      </button>
+      {!hideStreamButtons && (
+        <button
+          className="sv-fs"
+          onClick={handleFullscreenToggle}
+          title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+        >
+          {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+        </button>
+      )}
 
       {/* End session button */}
-      <button
-        className="sv-end"
-        onClick={onEndSession}
-        title="End session"
-        aria-label="End session"
-      >
-        <LogOut size={18} />
-      </button>
+      {!hideStreamButtons && (
+        <button
+          className="sv-end"
+          onClick={onEndSession}
+          title="End session"
+          aria-label="End session"
+        >
+          <LogOut size={18} />
+        </button>
+      )}
 
       {/* Keyboard hints */}
       {showHints && !isConnecting && (
@@ -452,6 +459,7 @@ export function StreamView({
           <div className="sv-hint"><kbd>{shortcuts.toggleStats}</kbd><span>Stats</span></div>
           <div className="sv-hint"><kbd>{shortcuts.togglePointerLock}</kbd><span>Mouse lock</span></div>
           <div className="sv-hint"><kbd>{shortcuts.stopStream}</kbd><span>Stop</span></div>
+          {shortcuts.toggleMicrophone && <div className="sv-hint"><kbd>{shortcuts.toggleMicrophone}</kbd><span>Mic</span></div>}
         </div>
       )}
 

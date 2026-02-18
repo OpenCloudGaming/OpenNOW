@@ -685,6 +685,8 @@ export class GfnWebRtcClient {
       inputQueueMaxSchedulingDelayMs: 0,
       gpuType: this.gpuType,
       serverRegion: this.serverRegion,
+      micState: this.micState,
+      micEnabled: this.micManager?.isEnabled() ?? false,
     };
     this.emitStats();
   }

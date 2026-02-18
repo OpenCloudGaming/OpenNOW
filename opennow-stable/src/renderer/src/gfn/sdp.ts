@@ -603,8 +603,8 @@ export function buildNvstSdp(params: NvstParams): string {
     // Audio track (receive-only from server)
     "m=audio 0 RTP/AVP",
     "a=msid:audio",
-    // Mic track (send to server) - port 9 means inactive, will be enabled when mic is added
-    "m=mic 9 RTP/AVP",
+    // Mic track (send to server)
+    "m=mic 0 RTP/AVP",
     "a=msid:mic",
     "a=rtpmap:0 PCMU/8000",
     // Input/application track

@@ -20,6 +20,7 @@ export interface MicStateChange {
 
 export class MicrophoneManager {
   private micStream: MediaStream | null = null;
+  private placeholderStream: MediaStream | null = null;
   private currentState: MicState = "uninitialized";
   private pc: RTCPeerConnection | null = null;
   private micSender: RTCRtpSender | null = null;
@@ -78,14 +79,17 @@ export class MicrophoneManager {
   }
 
   /**
-   * Attach current microphone track to the peer connection (if available)
+   * Attach microphone sender to the peer connection.
+   * If real mic is not ready yet, arm a silent placeholder so m=audio(mid=3)
+   * negotiates as sendrecv/sendonly in the initial answer.
    */
   async attachTrackToPeerConnection(): Promise<void> {
-    if (!this.pc || !this.micStream) {
+    if (!this.pc) {
       return;
     }
-    const track = this.micStream.getAudioTracks()[0];
+    const track = this.micStream?.getAudioTracks()[0];
     if (!track) {
+      await this.ensurePlaceholderSender();
       return;
     }
     await this.addTrackToPeerConnection(track);
@@ -182,11 +186,11 @@ export class MicrophoneManager {
       };
 
       // Handle stream inactive
-      this.micStream.oninactive = () => {
+      this.micStream.addEventListener("inactive", () => {
         console.log("[Microphone] Stream inactive");
         this.attemptedDevices.clear();
         this.micStream = null;
-      };
+      });
 
       // Add track to peer connection if available
       if (this.pc) {
@@ -278,15 +282,26 @@ export class MicrophoneManager {
       return;
     }
 
-    // Prefer attaching to the dedicated mic transceiver (mid=3, recvonly in offer)
     const transceivers = this.pc.getTransceivers();
-    const micTransceiver = transceivers.find((t) => t.mid === "3")
-      ?? transceivers.find(
-        (t) => t.receiver?.track?.kind === "audio" && (t.direction === "recvonly" || t.direction === "inactive"),
+    const audioTransceivers = transceivers.filter((t) => {
+      const receiverKind = t.receiver?.track?.kind;
+      const senderKind = t.sender?.track?.kind;
+      return receiverKind === "audio" || senderKind === "audio";
+    });
+
+    // Prefer the dedicated mic m-line if present; otherwise pick an already-negotiated
+    // audio transceiver with an empty sender so we don't create a new unnegotiated one.
+    const micTransceiver =
+      audioTransceivers.find((t) => t.mid === "3")
+      ?? audioTransceivers.find((t) => !t.sender.track)
+      ?? audioTransceivers.find(
+        (t) => t.direction === "sendrecv" || t.direction === "recvonly" || t.direction === "inactive",
       );
 
     if (micTransceiver) {
-      if (micTransceiver.direction !== "sendonly") {
+      if (micTransceiver.direction === "recvonly") {
+        micTransceiver.direction = "sendrecv";
+      } else if (micTransceiver.direction === "inactive") {
         micTransceiver.direction = "sendonly";
       }
       console.log("[Microphone] Attaching track to mic transceiver", micTransceiver.mid ?? "(no mid)");
@@ -295,19 +310,63 @@ export class MicrophoneManager {
       return;
     }
 
-    // Fallback: replace any existing audio sender
+    // Fallback: replace any existing audio sender before creating a new one.
     const senders = this.pc.getSenders();
-    const existingAudioSender = senders.find(s =>
-      s.track?.kind === "audio" && s.track?.id !== track.id
-    );
+    const existingAudioSender = senders.find((s) => s.track?.kind === "audio");
 
     if (existingAudioSender) {
       console.log("[Microphone] Replacing existing audio track");
       await existingAudioSender.replaceTrack(track);
       this.micSender = existingAudioSender;
     } else {
-      console.log("[Microphone] Adding new audio track to peer connection");
+      console.warn("[Microphone] No negotiated audio sender found; adding new track (may require renegotiation)");
       this.micSender = this.pc.addTrack(track, new MediaStream([track]));
+    }
+  }
+
+  /**
+   * Ensure a negotiated sender exists even before mic permission/capture succeeds.
+   * This mirrors official behavior: seed sender with a silent track, then replaceTrack(realMic).
+   */
+  private async ensurePlaceholderSender(): Promise<void> {
+    if (!this.pc) {
+      return;
+    }
+
+    const placeholderTrack = this.getOrCreatePlaceholderTrack();
+    if (!placeholderTrack) {
+      console.warn("[Microphone] Failed to create placeholder mic track");
+      return;
+    }
+    await this.addTrackToPeerConnection(placeholderTrack);
+  }
+
+  private getOrCreatePlaceholderTrack(): MediaStreamTrack | null {
+    let track = this.placeholderStream?.getAudioTracks()[0] ?? null;
+    if (track) {
+      return track;
+    }
+
+    const AudioCtx = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) {
+      return null;
+    }
+
+    try {
+      const ctx = new AudioCtx({ sampleRate: this.sampleRate });
+      const destination = ctx.createMediaStreamDestination();
+      track = destination.stream.getAudioTracks()[0] ?? null;
+      void ctx.close();
+
+      if (!track) {
+        return null;
+      }
+      track.enabled = true;
+      this.placeholderStream = new MediaStream([track]);
+      return track;
+    } catch (error) {
+      console.warn("[Microphone] Placeholder stream creation failed:", error);
+      return null;
     }
   }
 
@@ -352,8 +411,13 @@ export class MicrophoneManager {
 
     if (this.micSender && this.pc) {
       try {
-        // Don't remove the sender, just replace with null track
-        this.micSender.replaceTrack(null).catch(() => {});
+        // Keep sender negotiated by falling back to a silent track.
+        const placeholderTrack = this.getOrCreatePlaceholderTrack();
+        if (placeholderTrack) {
+          this.micSender.replaceTrack(placeholderTrack).catch(() => {});
+        } else {
+          this.micSender.replaceTrack(null).catch(() => {});
+        }
       } catch {
         // Ignore errors
       }
@@ -364,11 +428,9 @@ export class MicrophoneManager {
         track.onended = null;
         track.stop();
       });
-      this.micStream.oninactive = null;
       this.micStream = null;
     }
 
-    this.micSender = null;
     this.attemptedDevices.clear();
     this.setState("stopped");
   }
@@ -378,6 +440,11 @@ export class MicrophoneManager {
    */
   dispose(): void {
     this.stop();
+    if (this.placeholderStream) {
+      this.placeholderStream.getTracks().forEach((track) => track.stop());
+      this.placeholderStream = null;
+    }
+    this.micSender = null;
     this.pc = null;
     this.onStateChangeCallback = null;
   }

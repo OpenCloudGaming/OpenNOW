@@ -41,8 +41,10 @@ export interface Settings {
   shortcutTogglePointerLock: string;
   shortcutStopStream: string;
   shortcutToggleAntiAfk: string;
+  shortcutToggleMicrophone: string;
   microphoneMode: MicrophoneMode;
   microphoneDeviceId: string;
+  hideStreamButtons: boolean;
   sessionClockShowEveryMinutes: number;
   sessionClockShowDurationSeconds: number;
   windowWidth: number;
