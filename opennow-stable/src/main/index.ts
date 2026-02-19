@@ -209,6 +209,8 @@ async function createMainWindow(): Promise<void> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // ULTRA LOW LATENCY: Prevent background throttling which adds 16ms+ input delay
+      backgroundThrottling: false,
     },
   });
 
