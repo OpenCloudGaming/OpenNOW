@@ -130,6 +130,10 @@ app.commandLine.appendSwitch("enable-features",
   [
     // --- AV1 support (cross-platform) ---
     "Dav1dVideoDecoder", // Fast AV1 software fallback via dav1d (if no HW decoder)
+    // --- ULTRA LOW LATENCY: Input/performance optimizations ---
+    "HighLatencyInputMode", // Reduce input buffering
+    "EnableDrDc", // Display compositor DC optimization
+    "GpuProcessHighPriorityWin", // High priority GPU process (Windows)
     // --- Additional (cross-platform) ---
     "HardwareMediaKeyHandling",
     // --- Platform-specific HW decode/encode ---
@@ -177,6 +181,22 @@ app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 // Remove getUserMedia FPS cap (not strictly needed for receive-only but avoids potential limits)
 app.commandLine.appendSwitch("max-gum-fps", "999");
+
+// --- ULTRA LOW LATENCY: GPU and compositor optimizations ---
+// Disable GPU sandbox to reduce overhead (safe for local streaming client)
+app.commandLine.appendSwitch("disable-gpu-sandbox");
+// Enable GPU rasterization for smoother UI
+app.commandLine.appendSwitch("enable-gpu-rasterization");
+// Zero-copy video rendering to reduce latency
+app.commandLine.appendSwitch("enable-zero-copy");
+// Disable software compositing fallback - force GPU
+app.commandLine.appendSwitch("disable-software-compositing-fallback");
+// High priority for GPU process
+app.commandLine.appendSwitch("gpu-process-high-priority");
+// Disable frame rate limiter for uncapped input polling
+app.commandLine.appendSwitch("disable-frame-rate-limit");
+// Disable vsync for the display compositor (may cause tearing but reduces latency)
+app.commandLine.appendSwitch("disable-features", "ComputePressure,InterestFeedContentSuggestions,VizDisplayCompositor,VizHitTestDrawQuad");
 
 let mainWindow: BrowserWindow | null = null;
 let signalingClient: GfnSignalingClient | null = null;

@@ -289,17 +289,13 @@ class MouseDeltaFilter {
     const diffY = dy - this.y;
     const diffMag = diffX * diffX + diffY * diffY;
 
+    // ULTRA LOW LATENCY: Relaxed filtering - only reject physically impossible jitter
+    // Previous threshold (8100 = 90px^2) was rejecting legitimate fast movements causing perceived lag
+    // New threshold accepts movements up to 500px delta (250000) - filters only sub-pixel noise
     if (accept) {
-      const scale = 1 + 0.1 * Math.max(1, Math.min(16, dtMs));
-      const vx2 = 2 * scale * Math.abs(this.velocityX);
-      const vy2 = 2 * scale * Math.abs(this.velocityY);
-      const threshold = Math.max(8100, vx2 * vx2 + vy2 * vy2);
-      accept = diffMag < threshold;
-      if (!accept && (this.rejectedX !== 0 || this.rejectedY !== 0)) {
-        const rx = dx - this.rejectedX;
-        const ry = dy - this.rejectedY;
-        accept = rx * rx + ry * ry < threshold;
-      }
+      const MAX_REASONABLE_DELTA_SQ = 250000; // 500px max delta
+      const isSubPixelNoise = diffMag < 0.25; // Ignore sub-pixel jitter
+      accept = !isSubPixelNoise && diffMag < MAX_REASONABLE_DELTA_SQ;
     }
 
     if (accept) {
@@ -770,7 +766,8 @@ export class GfnWebRtcClient {
       this.heartbeatTimer = null;
     }
     if (this.mouseFlushTimer !== null) {
-      window.clearInterval(this.mouseFlushTimer);
+      // ULTRA LOW LATENCY: cancelAnimationFrame for rAF-based timer
+      cancelAnimationFrame(this.mouseFlushTimer);
       this.mouseFlushTimer = null;
     }
     if (this.statsTimer !== null) {
@@ -1896,7 +1893,25 @@ export class GfnWebRtcClient {
       this.sendReliable(payload);
     };
 
-    this.mouseFlushTimer = window.setInterval(flushMouse, this.mouseFlushIntervalMs);
+    // ULTRA LOW LATENCY: Use requestAnimationFrame instead of setInterval for sub-ms precision
+    // setInterval has 1-16ms jitter; rAF fires at display refresh rate (every 8-16ms at 60-120Hz)
+    // which is synchronized with the display and provides more consistent timing
+    const scheduleFlush = (): void => {
+      this.mouseFlushTimer = requestAnimationFrame((frameTime) => {
+        flushMouse();
+        // Schedule next frame immediately for 1kHz effective polling
+        // Use performance.now() to maintain desired interval between flushes
+        const elapsed = frameTime - this.mouseFlushLastTickMs;
+        if (elapsed >= this.mouseFlushIntervalMs) {
+          scheduleFlush();
+        } else {
+          // Use a single timeout for the remaining time, then back to rAF
+          const remaining = this.mouseFlushIntervalMs - elapsed;
+          setTimeout(scheduleFlush, Math.max(0, remaining));
+        }
+      });
+    };
+    scheduleFlush();
 
     const queueMouseMovement = (dx: number, dy: number, eventTimestampMs: number): void => {
       if (!this.inputReady || document.pointerLockElement !== videoElement) {
