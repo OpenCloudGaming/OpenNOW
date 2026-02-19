@@ -33,6 +33,8 @@ export const IPC_CHANNELS = {
   FLIGHT_GET_ALL_PROFILES: "flight:get-all-profiles",
   FLIGHT_RESET_PROFILE: "flight:reset-profile",
   HDR_GET_OS_INFO: "hdr:get-os-info",
+  MIC_ENUMERATE_DEVICES: "mic:enumerate-devices",
+  MIC_DEVICES_CHANGED: "mic:devices-changed",
   APP_RELAUNCH: "app:relaunch",
 } as const;
 

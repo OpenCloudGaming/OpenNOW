@@ -178,7 +178,7 @@ function setupWebHidPermissions(): void {
   });
 
   ses.setPermissionCheckHandler((_webContents, permission) => {
-    if (permission === "hid") {
+    if (permission === "hid" || permission === "media") {
       return true;
     }
     return true;
@@ -526,6 +526,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.HDR_GET_OS_INFO, () => {
     return getOsHdrInfo();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.MIC_ENUMERATE_DEVICES, async () => {
+    return [];
   });
 
   ipcMain.handle(IPC_CHANNELS.APP_RELAUNCH, () => {

@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import type { VideoCodec, ColorQuality, VideoAccelerationPreference, FlightSlotConfig, HdrStreamingMode } from "@shared/gfn";
+import type { VideoCodec, ColorQuality, VideoAccelerationPreference, FlightSlotConfig, HdrStreamingMode, MicMode } from "@shared/gfn";
 import { defaultFlightSlots } from "@shared/gfn";
 
 export interface Settings {
@@ -49,6 +49,20 @@ export interface Settings {
   flightSlots: FlightSlotConfig[];
   /** HDR streaming mode: off, auto, on */
   hdrStreaming: HdrStreamingMode;
+  /** Microphone mode: off, on, push-to-talk */
+  micMode: MicMode;
+  /** Selected microphone device ID (empty = default) */
+  micDeviceId: string;
+  /** Microphone input gain 0.0 - 2.0 */
+  micGain: number;
+  /** Enable noise suppression */
+  micNoiseSuppression: boolean;
+  /** Enable automatic gain control */
+  micAutoGainControl: boolean;
+  /** Enable echo cancellation */
+  micEchoCancellation: boolean;
+  /** Toggle mic on/off shortcut (works in-stream) */
+  shortcutToggleMic: string;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -79,6 +93,13 @@ const DEFAULT_SETTINGS: Settings = {
   flightControlsSlot: 3,
   flightSlots: defaultFlightSlots(),
   hdrStreaming: "off",
+  micMode: "off",
+  micDeviceId: "",
+  micGain: 1.0,
+  micNoiseSuppression: true,
+  micAutoGainControl: true,
+  micEchoCancellation: true,
+  shortcutToggleMic: "Ctrl+Shift+M",
 };
 
 export class SettingsManager {

@@ -32,6 +32,8 @@ import {
   rewriteH265TierFlag,
 } from "./sdp";
 
+import type { MicAudioService } from "./micAudioService";
+
 interface OfferSettings {
   codec: VideoCodec;
   colorQuality: ColorQuality;
@@ -499,6 +501,7 @@ export class GfnWebRtcClient {
   private mouseFlushLastTickMs = 0;
   private pendingMouseTimestampUs: bigint | null = null;
   private mouseDeltaFilter = new MouseDeltaFilter();
+  private micService: MicAudioService | null = null;
 
   private partialReliableThresholdMs = GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
   private inputQueuePeakBufferedBytesWindow = 0;
@@ -2596,6 +2599,17 @@ export class GfnWebRtcClient {
     }
   }
 
+  setMicService(service: MicAudioService | null): void {
+    this.micService = service;
+    if (service) {
+      service.setPeerConnection(this.pc);
+    }
+  }
+
+  getPeerConnection(): RTCPeerConnection | null {
+    return this.pc;
+  }
+
   async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
     this.cleanupPeerConnection();
 
@@ -2654,6 +2668,10 @@ export class GfnWebRtcClient {
     this.createDataChannels(pc);
     this.installInputCapture(this.options.videoElement);
     this.setupStatsPolling();
+
+    if (this.micService) {
+      this.micService.setPeerConnection(pc);
+    }
 
     pc.onicecandidate = (event) => {
       if (!event.candidate) {
@@ -2964,6 +2982,10 @@ export class GfnWebRtcClient {
   }
 
   dispose(): void {
+    if (this.micService) {
+      this.micService.setPeerConnection(null);
+    }
+
     this.cleanupPeerConnection();
 
     for (const track of this.videoStream.getTracks()) {

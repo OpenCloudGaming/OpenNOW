@@ -25,6 +25,7 @@ import {
   type StreamDiagnostics,
   type StreamTimeWarning,
 } from "./gfn/webrtcClient";
+import { MicAudioService } from "./gfn/micAudioService";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { getFlightHidService } from "./flight/FlightHidService";
 import {
@@ -71,6 +72,7 @@ const DEFAULT_SHORTCUTS = {
   shortcutTogglePointerLock: "F8",
   shortcutStopStream: "Ctrl+Shift+Q",
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
+  shortcutToggleMic: "Ctrl+Shift+M",
 } as const;
 
 function sleep(ms: number): Promise<void> {
@@ -286,6 +288,13 @@ export function App(): JSX.Element {
     flightControlsSlot: 3,
     flightSlots: defaultFlightSlots(),
     hdrStreaming: "off",
+    micMode: "off",
+    micDeviceId: "",
+    micGain: 1.0,
+    micNoiseSuppression: true,
+    micAutoGainControl: true,
+    micEchoCancellation: true,
+    shortcutToggleMic: DEFAULT_SHORTCUTS.shortcutToggleMic,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
@@ -323,6 +332,7 @@ export function App(): JSX.Element {
   const lastStreamGameTitleRef = useRef<string | null>(null);
   const launchInFlightRef = useRef(false);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const micServiceRef = useRef<MicAudioService | null>(null);
 
   // Session ref sync
   useEffect(() => {
@@ -510,12 +520,14 @@ export function App(): JSX.Element {
     const togglePointerLock = parseWithFallback(settings.shortcutTogglePointerLock, DEFAULT_SHORTCUTS.shortcutTogglePointerLock);
     const stopStream = parseWithFallback(settings.shortcutStopStream, DEFAULT_SHORTCUTS.shortcutStopStream);
     const toggleAntiAfk = parseWithFallback(settings.shortcutToggleAntiAfk, DEFAULT_SHORTCUTS.shortcutToggleAntiAfk);
-    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk };
+    const toggleMic = parseWithFallback(settings.shortcutToggleMic, DEFAULT_SHORTCUTS.shortcutToggleMic);
+    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk, toggleMic };
   }, [
     settings.shortcutToggleStats,
     settings.shortcutTogglePointerLock,
     settings.shortcutStopStream,
     settings.shortcutToggleAntiAfk,
+    settings.shortcutToggleMic,
   ]);
 
   const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
@@ -1355,11 +1367,39 @@ export function App(): JSX.Element {
           setAntiAfkEnabled((prev) => !prev);
         }
       }
+
+      if (isShortcutMatch(e, shortcuts.toggleMic)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        if (streamStatus === "streaming" && micServiceRef.current) {
+          const svc = micServiceRef.current;
+          if (svc.getMode() === "push-to-talk") {
+            svc.setPttActive(true);
+          } else {
+            svc.toggleMute();
+          }
+        }
+      }
     };
 
     // Use capture phase so app shortcuts run before stream input capture listeners.
     window.addEventListener("keydown", handleKeyDown, true);
-    return () => window.removeEventListener("keydown", handleKeyDown, true);
+
+    const handleKeyUp = (e: KeyboardEvent): void => {
+      if (streamStatus !== "streaming") return;
+      if (!micServiceRef.current) return;
+      const svc = micServiceRef.current;
+      if (svc.getMode() === "push-to-talk" && isShortcutMatch(e, shortcuts.toggleMic)) {
+        svc.setPttActive(false);
+      }
+    };
+    window.addEventListener("keyup", handleKeyUp, true);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("keyup", handleKeyUp, true);
+    };
   }, [
     exitPrompt.open,
     handleExitPromptCancel,
@@ -1370,6 +1410,50 @@ export function App(): JSX.Element {
     shortcuts,
     streamStatus,
   ]);
+
+  useEffect(() => {
+    if (streamStatus === "streaming") {
+      if (!micServiceRef.current) {
+        micServiceRef.current = new MicAudioService();
+      }
+      const svc = micServiceRef.current;
+
+      if (clientRef.current) {
+        clientRef.current.setMicService(svc);
+      }
+
+      void svc.configure({
+        mode: settings.micMode,
+        deviceId: settings.micDeviceId,
+        gain: settings.micGain,
+        noiseSuppression: settings.micNoiseSuppression,
+        autoGainControl: settings.micAutoGainControl,
+        echoCancellation: settings.micEchoCancellation,
+      });
+    } else {
+      if (micServiceRef.current) {
+        micServiceRef.current.dispose();
+        micServiceRef.current = null;
+      }
+    }
+  }, [
+    streamStatus,
+    settings.micMode,
+    settings.micDeviceId,
+    settings.micGain,
+    settings.micNoiseSuppression,
+    settings.micAutoGainControl,
+    settings.micEchoCancellation,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (micServiceRef.current) {
+        micServiceRef.current.dispose();
+        micServiceRef.current = null;
+      }
+    };
+  }, []);
 
   // Filter games by search
   const filteredGames = useMemo(() => {

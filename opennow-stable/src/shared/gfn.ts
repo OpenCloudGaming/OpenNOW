@@ -3,6 +3,26 @@ export type VideoAccelerationPreference = "auto" | "hardware" | "software";
 
 export type HdrStreamingMode = "off" | "auto" | "on";
 
+export type MicMode = "off" | "on" | "push-to-talk";
+
+export interface MicSettings {
+  micMode: MicMode;
+  micDeviceId: string;
+  micGain: number;
+  micNoiseSuppression: boolean;
+  micAutoGainControl: boolean;
+  micEchoCancellation: boolean;
+  shortcutToggleMic: string;
+}
+
+export interface MicDeviceInfo {
+  deviceId: string;
+  label: string;
+  isDefault: boolean;
+}
+
+export type MicStatus = "off" | "active" | "muted" | "no-device" | "permission-denied" | "error";
+
 export type HdrPlatformSupport = "supported" | "best_effort" | "unsupported" | "unknown";
 
 export type HdrActiveStatus = "active" | "inactive" | "unsupported" | "fallback_sdr";
@@ -74,6 +94,13 @@ export interface Settings {
   flightControlsSlot: number;
   flightSlots: FlightSlotConfig[];
   hdrStreaming: HdrStreamingMode;
+  micMode: MicMode;
+  micDeviceId: string;
+  micGain: number;
+  micNoiseSuppression: boolean;
+  micAutoGainControl: boolean;
+  micEchoCancellation: boolean;
+  shortcutToggleMic: string;
 }
 
 export interface LoginProvider {
@@ -361,6 +388,8 @@ export interface OpenNowApi {
   flightResetProfile(vidPid: string): Promise<FlightProfile | null>;
   getOsHdrInfo(): Promise<{ osHdrEnabled: boolean; platform: string }>;
   relaunchApp(): Promise<void>;
+  micEnumerateDevices(): Promise<MicDeviceInfo[]>;
+  onMicDevicesChanged(listener: (devices: MicDeviceInfo[]) => void): () => void;
 }
 
 export type FlightAxisTarget =

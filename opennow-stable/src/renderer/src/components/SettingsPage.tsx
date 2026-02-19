@@ -1,5 +1,5 @@
-import { Monitor, Volume2, Mouse, Settings2, Globe, Save, Check, Search, X, Loader, Cpu, Zap, MessageSquare, Joystick, Sun, RefreshCw, RotateCcw } from "lucide-react";
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { Monitor, Volume2, Mouse, Settings2, Globe, Save, Check, Search, X, Loader, Cpu, Zap, MessageSquare, Joystick, Sun, RefreshCw, RotateCcw, Mic, MicOff } from "lucide-react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
 import type {
@@ -11,6 +11,8 @@ import type {
   VideoAccelerationPreference,
   HdrStreamingMode,
   HdrCapability,
+  MicMode,
+  MicDeviceInfo,
 } from "@shared/gfn";
 import { colorQualityRequiresHevc } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
@@ -507,6 +509,122 @@ export function SettingsPage({ settings, regions, onSettingChange, hdrCapability
   const [togglePointerLockError, setTogglePointerLockError] = useState(false);
   const [stopStreamError, setStopStreamError] = useState(false);
   const [toggleAntiAfkError, setToggleAntiAfkError] = useState(false);
+
+  const [micDevices, setMicDevices] = useState<MicDeviceInfo[]>([]);
+  const [micDevicesLoading, setMicDevicesLoading] = useState(false);
+  const [micToggleShortcutInput, setMicToggleShortcutInput] = useState(settings.shortcutToggleMic);
+  const [micToggleShortcutError, setMicToggleShortcutError] = useState(false);
+  const micLevelRef = useRef<HTMLDivElement>(null);
+  const [micTestLevel, setMicTestLevel] = useState(0);
+  const micTestStreamRef = useRef<MediaStream | null>(null);
+  const micTestContextRef = useRef<AudioContext | null>(null);
+  const micTestTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const micTestAnalyserRef = useRef<AnalyserNode | null>(null);
+  const micTestBufferRef = useRef<Float32Array<ArrayBuffer> | null>(null);
+
+  const refreshMicDevices = useCallback(async () => {
+    setMicDevicesLoading(true);
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioInputs = devices.filter((d) => d.kind === "audioinput" && d.deviceId !== "");
+      const defaultDev = audioInputs.find((d) => d.deviceId === "default");
+      const defaultGroupId = defaultDev?.groupId;
+      const mapped: MicDeviceInfo[] = audioInputs.map((d) => ({
+        deviceId: d.deviceId,
+        label: d.label || `Microphone (${d.deviceId.slice(0, 8)})`,
+        isDefault: d.deviceId === "default" || (!!defaultGroupId && d.groupId === defaultGroupId && d.deviceId !== "default"),
+      }));
+      setMicDevices(mapped);
+    } catch {
+      setMicDevices([]);
+    } finally {
+      setMicDevicesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshMicDevices();
+    const handler = (): void => { void refreshMicDevices(); };
+    navigator.mediaDevices.addEventListener("devicechange", handler);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", handler);
+  }, [refreshMicDevices]);
+
+  useEffect(() => {
+    setMicToggleShortcutInput(settings.shortcutToggleMic);
+  }, [settings.shortcutToggleMic]);
+
+  const startMicTest = useCallback(async () => {
+    try {
+      const constraints: MediaStreamConstraints = {
+        audio: {
+          deviceId: settings.micDeviceId ? { exact: settings.micDeviceId } : undefined,
+          noiseSuppression: { ideal: settings.micNoiseSuppression },
+          autoGainControl: { ideal: settings.micAutoGainControl },
+          echoCancellation: { ideal: settings.micEchoCancellation },
+        },
+        video: false,
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      micTestStreamRef.current = stream;
+
+      const ctx = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
+      micTestContextRef.current = ctx;
+
+      const src = ctx.createMediaStreamSource(stream);
+      const gain = ctx.createGain();
+      gain.gain.value = settings.micGain;
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.3;
+      micTestAnalyserRef.current = analyser;
+      micTestBufferRef.current = new Float32Array(analyser.fftSize) as Float32Array<ArrayBuffer>;
+
+      src.connect(gain);
+      gain.connect(analyser);
+
+      micTestTimerRef.current = setInterval(() => {
+        if (!micTestAnalyserRef.current || !micTestBufferRef.current) return;
+        micTestAnalyserRef.current.getFloatTimeDomainData(micTestBufferRef.current);
+        let sum = 0;
+        for (let i = 0; i < micTestBufferRef.current.length; i++) {
+          const v = micTestBufferRef.current[i];
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / micTestBufferRef.current.length);
+        const db = 20 * Math.log10(Math.max(rms, 1e-10));
+        setMicTestLevel(Math.max(0, Math.min(1, (db + 60) / 60)));
+      }, 50);
+    } catch {
+      setMicTestLevel(0);
+    }
+  }, [settings.micDeviceId, settings.micGain, settings.micNoiseSuppression, settings.micAutoGainControl, settings.micEchoCancellation]);
+
+  const stopMicTest = useCallback(() => {
+    if (micTestTimerRef.current) {
+      clearInterval(micTestTimerRef.current);
+      micTestTimerRef.current = null;
+    }
+    if (micTestContextRef.current) {
+      void micTestContextRef.current.close().catch(() => {});
+      micTestContextRef.current = null;
+    }
+    if (micTestStreamRef.current) {
+      for (const track of micTestStreamRef.current.getTracks()) track.stop();
+      micTestStreamRef.current = null;
+    }
+    micTestAnalyserRef.current = null;
+    micTestBufferRef.current = null;
+    setMicTestLevel(0);
+  }, []);
+
+  useEffect(() => {
+    if (settings.micMode !== "off") {
+      void startMicTest();
+    } else {
+      stopMicTest();
+    }
+    return () => stopMicTest();
+  }, [settings.micMode, settings.micDeviceId, settings.micNoiseSuppression, settings.micAutoGainControl, settings.micEchoCancellation, startMicTest, stopMicTest]);
 
   // Dynamic entitled resolutions from MES API
   const [entitledResolutions, setEntitledResolutions] = useState<EntitledResolution[]>([]);
@@ -1155,6 +1273,142 @@ export function SettingsPage({ settings, regions, onSettingChange, hdrCapability
                 />
                 <span className="settings-toggle-track" />
               </label>
+            </div>
+
+            <div className="settings-row settings-row--column">
+              <label className="settings-label">Microphone</label>
+
+              <div className="settings-seg mic-mode-seg">
+                {(["off", "on", "push-to-talk"] as MicMode[]).map((m) => (
+                  <button
+                    key={m}
+                    className={`settings-seg-btn ${settings.micMode === m ? "active" : ""}`}
+                    onClick={() => handleChange("micMode", m)}
+                  >
+                    {m === "off" ? "Off" : m === "on" ? "On" : "Push-to-Talk"}
+                  </button>
+                ))}
+              </div>
+
+              {settings.micMode !== "off" && (
+                <>
+                  <div className="settings-row" style={{ marginTop: 10 }}>
+                    <label className="settings-label">Device</label>
+                    <div className="mic-device-select-wrap">
+                      <select
+                        className="settings-text-input mic-device-select"
+                        value={settings.micDeviceId || "default"}
+                        onChange={(e) => handleChange("micDeviceId", e.target.value === "default" ? "" : e.target.value)}
+                        disabled={micDevicesLoading}
+                      >
+                        <option value="default">Default Microphone</option>
+                        {micDevices
+                          .filter((d) => d.deviceId !== "default")
+                          .map((d) => (
+                            <option key={d.deviceId} value={d.deviceId}>
+                              {d.label}
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="settings-shortcut-reset-btn mic-refresh-btn"
+                        onClick={() => void refreshMicDevices()}
+                        disabled={micDevicesLoading}
+                        title="Refresh devices"
+                      >
+                        <RefreshCw size={12} />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="settings-row" style={{ marginTop: 6 }}>
+                    <label className="settings-label">Input Level</label>
+                    <div className="mic-level-meter">
+                      <div
+                        className="mic-level-meter-fill"
+                        ref={micLevelRef}
+                        style={{ transform: `scaleX(${micTestLevel})` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="settings-row" style={{ marginTop: 6 }}>
+                    <label className="settings-label">Gain</label>
+                    <div className="settings-input-group">
+                      <input
+                        type="range"
+                        className="settings-slider"
+                        min={0}
+                        max={200}
+                        step={1}
+                        value={Math.round(settings.micGain * 100)}
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value, 10) / 100;
+                          handleChange("micGain", v);
+                          if (micTestContextRef.current) {
+                            const nodes = micTestContextRef.current.destination;
+                            void nodes;
+                          }
+                        }}
+                      />
+                      <span className="settings-value-badge">{Math.round(settings.micGain * 100)}%</span>
+                    </div>
+                  </div>
+
+                  <div className="settings-row" style={{ marginTop: 6 }}>
+                    <label className="settings-label">Noise Suppression</label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.micNoiseSuppression}
+                        onChange={(e) => handleChange("micNoiseSuppression", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
+                  <div className="settings-row">
+                    <label className="settings-label">Echo Cancellation</label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.micEchoCancellation}
+                        onChange={(e) => handleChange("micEchoCancellation", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
+                  <div className="settings-row">
+                    <label className="settings-label">Auto Gain Control</label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.micAutoGainControl}
+                        onChange={(e) => handleChange("micAutoGainControl", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
+                  <label className="settings-shortcut-row" style={{ marginTop: 6 }}>
+                    <span className="settings-shortcut-label">
+                      {settings.micMode === "push-to-talk" ? "Push-to-Talk Key" : "Toggle Mic"}
+                    </span>
+                    <input
+                      type="text"
+                      className={`settings-text-input settings-shortcut-input ${micToggleShortcutError ? "error" : ""}`}
+                      value={micToggleShortcutInput}
+                      onChange={(e) => setMicToggleShortcutInput(e.target.value)}
+                      onBlur={() => handleShortcutBlur("shortcutToggleMic", micToggleShortcutInput, setMicToggleShortcutInput, setMicToggleShortcutError)}
+                      onKeyDown={handleShortcutKeyDown}
+                      placeholder="Ctrl+Shift+M"
+                      spellCheck={false}
+                    />
+                  </label>
+                </>
+              )}
             </div>
 
             <div className="settings-row settings-row--column">
