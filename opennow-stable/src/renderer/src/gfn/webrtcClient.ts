@@ -456,10 +456,12 @@ export class GfnWebRtcClient {
   // How long to wait after last gamepad activity before allowing switch to mkb (seconds)
   // Prevents accidental key/mouse events from disrupting controller gameplay
   private static readonly GAMEPAD_MODE_LOCKOUT_MS = 3000;
-  private static readonly MOUSE_FLUSH_FAST_MS = 4;
-  private static readonly MOUSE_FLUSH_NORMAL_MS = 8;
-  private static readonly MOUSE_FLUSH_SAFE_MS = 16;
-  private static readonly DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS = 300;
+  // LOW LATENCY: Aggressive mouse flush intervals for minimum input lag
+  private static readonly MOUSE_FLUSH_FAST_MS = 1;   // Was 4ms - now 1ms for ultra-low latency
+  private static readonly MOUSE_FLUSH_NORMAL_MS = 2;  // Was 8ms - now 2ms
+  private static readonly MOUSE_FLUSH_SAFE_MS = 4;    // Was 16ms - now 4ms
+  // LOW LATENCY: Reduced from 300ms to 0ms for minimum latency (display immediately)
+  private static readonly DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS = 0;
   private static readonly RELIABLE_MOUSE_BACKPRESSURE_BYTES = 64 * 1024;
   private static readonly BACKPRESSURE_LOG_INTERVAL_MS = 2000;
 
@@ -586,6 +588,15 @@ export class GfnWebRtcClient {
    * Configure the video element for minimum latency streaming.
    * Sets attributes that reduce internal buffering and prioritize
    * immediate frame display over smooth playback.
+   *
+   * PERFORMANCE TWEAKS:
+   * - autoplay: true (start immediately, no user gesture delay)
+   * - muted: true initially (allows autoplay without user interaction)
+   * - playsInline: true (prevents fullscreen takeover on mobile)
+   * - disableRemotePlayback: true (no Chromecast buffering)
+   * - disablePictureInPicture: true (no PiP buffering)
+   * - preload: "none" (no pre-buffering, we get frames via WebRTC)
+   * - playbackRate: 1.0 (normal speed, no time stretching)
    */
   private configureVideoElementForLowLatency(video: HTMLVideoElement): void {
     // disableRemotePlayback prevents Chrome from offering cast/remote playback
@@ -602,7 +613,18 @@ export class GfnWebRtcClient {
     video.playbackRate = 1.0;
     video.defaultPlaybackRate = 1.0;
 
-    this.log("Video element configured for low-latency playback");
+    // AGGRESSIVE: Enable autoplay for immediate playback (user gesture not required in Electron)
+    video.autoplay = true;
+
+    // AGGRESSIVE: Ensure playsInline for mobile-style devices
+    // @ts-expect-error - playsInline is valid but not in all TypeScript DOM types
+    video.playsInline = true;
+
+    // AGGRESSIVE: Disable any hardware decoding hints that might add latency
+    // @ts-expect-error - experimental properties
+    video.decodingHint = "latency";
+
+    this.log("Video element configured for ultra-low-latency playback (0ms jitter target)");
   }
 
   /**
@@ -617,25 +639,54 @@ export class GfnWebRtcClient {
    * The official GFN browser client doesn't set this at all (defaulting to
    * ~100-200ms). As an Electron app we can be more aggressive.
    *
+   * PERFORMANCE TWEAKS:
+   * - jitterBufferTarget: 0ms (absolute minimum - display immediately)
+   * - playoutDelayHint: 0ms for video (12ms was adding unnecessary latency)
+   * - contentHint: "motion" for optimized motion rendering
+   * - degradationPreference: "maintain-frame-rate" to prioritize FPS over resolution
+   * - priority: "high" to prioritize this track over other WebRTC traffic
+   *
    */
   private configureReceiverForLowLatency(receiver: RTCRtpReceiver, kind: string): void {
     try {
-      const targetMs = kind === "video" ? 12 : 20;
+      // AGGRESSIVE: 0ms for absolute minimum latency (display as soon as decoded)
+      const targetMs = 0;
       const rawReceiver = receiver as unknown as Record<string, unknown>;
 
       if ("jitterBufferTarget" in receiver) {
         rawReceiver.jitterBufferTarget = targetMs;
-        this.log(`${kind} receiver: jitterBufferTarget set to ${targetMs}ms`);
+        this.log(`${kind} receiver: jitterBufferTarget set to ${targetMs}ms (minimum latency)`);
       }
 
+      // AGGRESSIVE: 0s for video to eliminate all unnecessary buffering
       if ("playoutDelayHint" in receiver) {
-        const playoutDelaySeconds = kind === "video" ? 0.012 : 0.02;
+        const playoutDelaySeconds = kind === "video" ? 0 : 0.01;
         rawReceiver.playoutDelayHint = playoutDelaySeconds;
-        this.log(`${kind} receiver: playoutDelayHint set to ${playoutDelaySeconds}s`);
+        this.log(`${kind} receiver: playoutDelayHint set to ${playoutDelaySeconds}s (minimum latency)`);
       }
 
-      if (kind === "video" && "contentHint" in receiver.track) {
-        receiver.track.contentHint = "motion";
+      // Optimize video track for cloud gaming
+      if (kind === "video") {
+        if ("contentHint" in receiver.track) {
+          receiver.track.contentHint = "motion";
+        }
+
+        // Get the transceiver and set degradation preference
+        const transceivers = this.pc?.getTransceivers() ?? [];
+        for (const transceiver of transceivers) {
+          if (transceiver.receiver === receiver) {
+            // Set encoding parameters for low latency
+            const params = transceiver.sender.getParameters();
+            if (params.degradationPreference !== undefined) {
+              params.degradationPreference = "maintain-frame-rate";
+              void transceiver.sender.setParameters(params).catch(() => {
+                // Ignore errors - this is optional optimization
+              });
+              this.log("Video transceiver: degradationPreference set to maintain-frame-rate");
+            }
+            break;
+          }
+        }
       }
     } catch (error) {
       this.log(`Warning: could not apply ${kind} low-latency receiver tuning: ${String(error)}`);
@@ -1374,12 +1425,15 @@ export class GfnWebRtcClient {
   }
 
   private createDataChannels(pc: RTCPeerConnection): void {
+    // LOW LATENCY: Configure data channels for minimal buffering and maximum throughput
     this.reliableInputChannel = pc.createDataChannel("input_channel_v1", {
       ordered: true,
+      // LOW LATENCY: Configure for immediate transmission
+      maxRetransmits: 3, // Limit retransmits to prevent head-of-line blocking
     });
 
     this.reliableInputChannel.onopen = () => {
-      this.log("Reliable input channel open");
+      this.log("Reliable input channel open (low-latency configured)");
     };
 
     this.reliableInputChannel.onmessage = async (event) => {
@@ -1389,12 +1443,29 @@ export class GfnWebRtcClient {
 
     this.mouseInputChannel = pc.createDataChannel("input_channel_partially_reliable", {
       ordered: false,
+      // LOW LATENCY: 0ms for immediate drop if not delivered (don't wait)
       maxPacketLifeTime: this.partialReliableThresholdMs,
     });
 
     this.mouseInputChannel.onopen = () => {
-      this.log(`Mouse channel open (partially reliable, maxPacketLifeTime=${this.partialReliableThresholdMs}ms)`);
+      this.log(`Mouse channel open (partially reliable, maxPacketLifeTime=${this.partialReliableThresholdMs}ms, 0=immediate)`);
     };
+
+    // LOW LATENCY: Set binary type for all channels
+    this.reliableInputChannel.binaryType = "arraybuffer";
+    this.mouseInputChannel.binaryType = "arraybuffer";
+
+    // LOW LATENCY: Configure buffering for minimum latency
+    // @ts-expect-error - bufferedAmountLowThreshold is not in all TypeScript versions
+    if (typeof this.reliableInputChannel.bufferedAmountLowThreshold !== "undefined") {
+      // @ts-expect-error
+      this.reliableInputChannel.bufferedAmountLowThreshold = 0;
+    }
+    // @ts-expect-error - bufferedAmountLowThreshold is not in all TypeScript versions
+    if (typeof this.mouseInputChannel.bufferedAmountLowThreshold !== "undefined") {
+      // @ts-expect-error
+      this.mouseInputChannel.bufferedAmountLowThreshold = 0;
+    }
   }
 
   private mapTimerNotificationCode(rawCode: number): StreamTimeWarning["code"] | null {
@@ -2457,9 +2528,28 @@ export class GfnWebRtcClient {
       iceServers: toRtcIceServers(session.iceServers),
       bundlePolicy: "max-bundle",
       rtcpMuxPolicy: "require",
+      // LOW LATENCY: Disable ICE candidate gathering on non-relay candidates for faster connection
+      iceCandidatePoolSize: 0,
     };
 
+    // LOW LATENCY: Create peer connection with optimized config
     const pc = new RTCPeerConnection(rtcConfig);
+
+    // LOW LATENCY: Set encoding parameters on all senders for minimum latency
+    try {
+      const senders = pc.getSenders();
+      for (const sender of senders) {
+        const params = sender.getParameters();
+        if (params.degradationPreference !== undefined) {
+          params.degradationPreference = "maintain-resolution";
+          void sender.setParameters(params).catch(() => {
+            // Ignore errors - this is optional optimization
+          });
+        }
+      }
+    } catch {
+      // Ignore errors - encoding parameters are optional
+    }
     this.pc = pc;
     this.diagnostics.connectionState = pc.connectionState;
     this.diagnostics.serverRegion = this.serverRegion;

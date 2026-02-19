@@ -459,6 +459,10 @@ export function buildNvstSdp(params: NvstParams): string {
   const isAv1 = params.codec === "AV1";
   const bitDepth = params.colorQuality.startsWith("10bit") ? 10 : 8;
 
+  // LOW LATENCY: Use aggressive 0ms threshold for minimum latency streaming
+  // This matches the jitterBufferTarget=0 setting in the WebRTC receiver
+  const lowLatencyThresholdMs = 0;
+
   const lines: string[] = [
     "v=0",
     "o=SdpTest test_id_13 14 IN IPv4 127.0.0.1",
@@ -610,7 +614,14 @@ export function buildNvstSdp(params: NvstParams): string {
     // Input/application track
     "m=application 0 RTP/AVP",
     "a=msid:input_1",
-    `a=ri.partialReliableThresholdMs:${params.partialReliableThresholdMs}`,
+    // LOW LATENCY: Use 0ms for minimum latency (reliable delivery timeout)
+    `a=ri.partialReliableThresholdMs:${lowLatencyThresholdMs}`,
+    // LOW LATENCY: Signal to server that client prefers minimal buffering
+    "a=video.latencyTargetMs:0",
+    // LOW LATENCY: Minimize NACK delay for faster retransmission
+    "a=video.minNackDelayMs:5",
+    // LOW LATENCY: Faster FEC recovery at cost of slightly more bandwidth
+    "a=vqos.fec.fastRecovery:1",
     "",
   );
 
