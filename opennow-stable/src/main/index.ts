@@ -212,6 +212,10 @@ async function createMainWindow(): Promise<void> {
     minHeight: 680,
     autoHideMenuBar: true,
     backgroundColor: "#0f172a",
+    // ULTRA LOW LATENCY: Presentation mode for gaming (disables vsync in windowed)
+    vibrancy: "under-window",
+    // ULTRA LOW LATENCY: Disable window shadow for reduced compositor overhead
+    hasShadow: false,
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,

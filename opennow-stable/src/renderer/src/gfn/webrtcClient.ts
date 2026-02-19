@@ -593,6 +593,10 @@ export class GfnWebRtcClient {
       if ("jitterBufferTarget" in receiver) {
         rawReceiver.jitterBufferTarget = targetMs;
         this.log(`${kind} receiver: jitterBufferTarget set to ${targetMs}ms (minimum latency)`);
+        // ULTRA LOW LATENCY DEBUG: Verify the value was set
+        console.log(`[Latency Debug] ${kind} jitterBufferTarget:`, rawReceiver.jitterBufferTarget);
+      } else {
+        this.log(`${kind} receiver: jitterBufferTarget not supported (using default)`);
       }
 
       // AGGRESSIVE: 0s for video to eliminate all unnecessary buffering

@@ -66,6 +66,17 @@ export function StatsOverlay({
           </span>
         </div>
 
+        {/* Detailed Latency Breakdown (shows where latency is hiding) */}
+        {(stats.jitterBufferDelayMs > 0 || stats.decodeTimeMs > 0 || stats.renderTimeMs > 0) && (
+          <div className="sovl-pill">
+            <span className="sovl-badge">
+              jb:{stats.jitterBufferDelayMs.toFixed(0)}ms 
+              d:{stats.decodeTimeMs.toFixed(0)}ms 
+              r:{stats.renderTimeMs.toFixed(0)}ms
+            </span>
+          </div>
+        )}
+
         {/* Codec */}
         {stats.codec && (
           <div className="sovl-pill">
