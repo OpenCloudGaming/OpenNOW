@@ -35,5 +35,7 @@ export const IPC_CHANNELS = {
   FLIGHT_GET_ALL_PROFILES: "flight:get-all-profiles",
   FLIGHT_RESET_PROFILE: "flight:reset-profile",
   HDR_GET_OS_INFO: "hdr:get-os-info",} as const;
-
+  HDR_GET_OS_INFO: "hdr:get-os-info",
+  APP_RELAUNCH: "app:relaunch",
+} as const;
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

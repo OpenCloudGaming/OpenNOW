@@ -507,7 +507,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.HDR_GET_OS_INFO, () => {
     return getOsHdrInfo();
   });  mainWindow?.on("resize", () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_RELAUNCH, () => {
+    app.relaunch();
+    app.exit(0);
+  });
+
+  mainWindow?.on("resize", () => {    if (mainWindow && !mainWindow.isDestroyed()) {
       const [width, height] = mainWindow.getSize();
       settingsManager.set("windowWidth", width);
       settingsManager.set("windowHeight", height);
