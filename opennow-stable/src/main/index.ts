@@ -191,7 +191,43 @@ function emitToRenderer(event: MainToRendererSignalingEvent): void {
   }
 }
 
-async function createMainWindow(): Promise<void> {
+function setupWebHidPermissions(): void {
+  const ses = session.defaultSession;
+
+  ses.setDevicePermissionHandler((details) => {
+    if (details.deviceType === "hid") {
+      return true;
+    }
+    return true;
+  });
+
+  ses.setPermissionCheckHandler((_webContents, permission) => {
+    if (permission === "hid" || permission === "media") {
+      return true;
+    }
+    return true;
+  });
+
+  ses.on("select-hid-device", (event, details, callback) => {
+    event.preventDefault();
+    const ungranted = details.deviceList.find((d) => !grantedHidDeviceIds.has(d.deviceId));
+    const selected = ungranted ?? details.deviceList[0];
+    if (selected) {
+      grantedHidDeviceIds.add(selected.deviceId);
+      callback(selected.deviceId);
+    } else {
+      callback("");
+    }
+  });
+
+  ses.on("hid-device-added", (_event, _details) => {
+    // WebHID connect event handled in renderer via navigator.hid
+  });
+
+  ses.on("hid-device-removed", (_event, _details) => {
+    // WebHID disconnect event handled in renderer via navigator.hid
+  });
+}async function createMainWindow(): Promise<void> {
   const preloadMjsPath = join(__dirname, "../preload/index.mjs");
   const preloadJsPath = join(__dirname, "../preload/index.js");
   const preloadPath = existsSync(preloadMjsPath) ? preloadMjsPath : preloadJsPath;
@@ -498,7 +534,45 @@ function registerIpcHandlers(): void {
   // Logs export IPC handler
   ipcMain.handle(IPC_CHANNELS.LOGS_EXPORT, async (_event, format: "text" | "json" = "text"): Promise<string> => {
     return exportLogs(format);
+  ipcMain.handle(IPC_CHANNELS.DISCORD_UPDATE_PRESENCE, async (_event, payload: DiscordPresencePayload) => {
+    await discordService.updatePresence(payload);
   });
+
+  ipcMain.handle(IPC_CHANNELS.DISCORD_CLEAR_PRESENCE, async () => {
+    await discordService.clearPresence();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.FLIGHT_GET_PROFILE, (_event, vidPid: string, gameId?: string) => {
+    return flightProfileManager.getProfile(vidPid, gameId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.FLIGHT_SET_PROFILE, (_event, profile: FlightProfile) => {
+    flightProfileManager.setProfile(profile);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.FLIGHT_DELETE_PROFILE, (_event, vidPid: string, gameId?: string) => {
+    flightProfileManager.deleteProfile(vidPid, gameId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.FLIGHT_GET_ALL_PROFILES, () => {
+    return flightProfileManager.getAllProfiles();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.FLIGHT_RESET_PROFILE, (_event, vidPid: string) => {
+    return flightProfileManager.resetProfile(vidPid);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.HDR_GET_OS_INFO, () => {
+    return getOsHdrInfo();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.MIC_ENUMERATE_DEVICES, async () => {
+    return [];
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_RELAUNCH, () => {
+    app.relaunch();
+    app.exit(0);  });
 
   // Save window size when it changes
   mainWindow?.on("resize", () => {
