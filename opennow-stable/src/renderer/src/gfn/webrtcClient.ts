@@ -1521,18 +1521,11 @@ export class GfnWebRtcClient {
 
     await this.lockEscapeInFullscreen();
 
-    try {
-      await (videoElement.requestPointerLock({ unadjustedMovement: true } as any) as unknown as Promise<void>);
-      this.log("Pointer lock acquired with unadjustedMovement=true (raw/unaccelerated)");
-    } catch (err) {
-      const domErr = err as DOMException;
-      if (domErr?.name === "NotSupportedError") {
-        this.log("unadjustedMovement not supported, falling back to standard pointer lock (accelerated)");
-        await videoElement.requestPointerLock();
-      } else {
-        throw err;
-      }
-    }
+    // ULTRA LOW LATENCY: Use standard pointer lock for native Windows sensitivity feel
+    // unadjustedMovement=true gives raw input but changes sensitivity vs desktop
+    // Standard pointer lock respects OS mouse acceleration for consistent feel
+    await videoElement.requestPointerLock();
+    this.log("Pointer lock acquired (standard - matches OS sensitivity)");
   }
 
   private clearEscapeHoldTimer(): void {
@@ -1901,15 +1894,22 @@ export class GfnWebRtcClient {
       }
 
       const samples = hasCoalescedEvents ? event.getCoalescedEvents() : [];
-      if (samples.length > 0) {
-        // Queue coalesced samples for batch flush (they're historical)
-        for (const sample of samples) {
+      if (samples.length > 1) {
+        // Queue historical samples (all except the last one which is the current movement)
+        for (let i = 0; i < samples.length - 1; i++) {
+          const sample = samples[i];
           queueMouseMovement(sample.movementX, sample.movementY, sample.timeStamp);
         }
+        // Send the latest coalesced sample (represents current position)
+        const latest = samples[samples.length - 1];
+        sendMouseImmediate(latest.movementX, latest.movementY, latest.timeStamp);
+      } else if (samples.length === 1) {
+        // Only one sample - send it directly (same as main event)
+        sendMouseImmediate(samples[0].movementX, samples[0].movementY, samples[0].timeStamp);
+      } else {
+        // No coalesced events - send main event
+        sendMouseImmediate(event.movementX, event.movementY, event.timeStamp);
       }
-      // ULTRA LOW LATENCY: Send current movement immediately for snappiest response
-      // The main event represents the latest pointer position - don't batch it
-      sendMouseImmediate(event.movementX, event.movementY, event.timeStamp);
     };
 
     const onMouseMove = (event: MouseEvent) => {
