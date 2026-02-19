@@ -47,6 +47,7 @@ export class MicAudioService {
 
   private rtcSender: RTCRtpSender | null = null;
   private peerConnection: RTCPeerConnection | null = null;
+  private micTransceiver: RTCRtpTransceiver | null = null;
   private micTxActive = false;
   private lastMicBytesSent = 0;
   private micTxPollId: ReturnType<typeof setInterval> | null = null;
@@ -231,7 +232,7 @@ export class MicAudioService {
 
       if (this.outputTrack) {
         this.updateMuteState();
-        this.attachToPeerConnection();
+        this.attachTrackToTransceiver();
       }
 
       this.startLevelMonitor();
@@ -312,79 +313,36 @@ export class MicAudioService {
       this.rtcSender = null;
     }
     this.stopMicTxPoll();
+    this.micTransceiver = null;
 
     this.peerConnection = pc;
+  }
 
-    if (pc && this.outputTrack) {
-      this.attachToPeerConnection();
+  setMicTransceiver(transceiver: RTCRtpTransceiver): void {
+    this.micTransceiver = transceiver;
+    this.rtcSender = transceiver.sender;
+
+    console.log(
+      `[Mic] Transceiver assigned: mid=${transceiver.mid} direction=${transceiver.direction}` +
+      ` currentDirection=${transceiver.currentDirection}` +
+      ` sender.track=${transceiver.sender.track?.kind ?? "null"}`,
+    );
+
+    if (this.outputTrack) {
+      this.attachTrackToTransceiver();
     }
   }
 
-  bindMicTransceiver(): void {
-    if (this.peerConnection && this.outputTrack && !this.rtcSender) {
-      this.attachToPeerConnection();
-    }
-  }
+  private attachTrackToTransceiver(): void {
+    if (!this.outputTrack) return;
 
-  private attachToPeerConnection(): void {
-    if (!this.peerConnection || !this.outputTrack) return;
-
-    if (this.rtcSender) {
-      try {
-        void this.rtcSender.replaceTrack(this.outputTrack);
-        console.log("[Mic] Replaced track on existing sender");
-        this.startMicTxPoll();
-        return;
-      } catch { /* ignore */ }
-    }
-
-    const transceivers = this.peerConnection.getTransceivers();
-    this.logTransceiverState(transceivers);
-
-    if (transceivers.length === 0) {
-      console.log("[Mic] No transceivers available yet (SDP not negotiated)");
-      return;
-    }
-
-    let micTransceiver: RTCRtpTransceiver | null = null;
-
-    for (const t of transceivers) {
-      const kind = t.receiver.track?.kind ?? t.sender.track?.kind;
-      if (kind === "audio" && (t.direction === "sendonly" || t.direction === "sendrecv")) {
-        micTransceiver = t;
-        console.log(`[Mic] Found mic transceiver by direction: mid=${t.mid}, direction=${t.direction}`);
-        break;
-      }
-    }
-
-    if (!micTransceiver && transceivers.length > 2) {
-      const t = transceivers[2];
-      const kind = t.receiver.track?.kind ?? t.sender.track?.kind;
-      if (kind === "audio") {
-        micTransceiver = t;
-        console.log(`[Mic] Found mic transceiver by index 2 fallback: mid=${t.mid}, direction=${t.direction}`);
-      }
-    }
-
-    if (!micTransceiver) {
-      for (const t of transceivers) {
-        const kind = t.receiver.track?.kind ?? t.sender.track?.kind;
-        if (kind === "audio" && !t.sender.track && t.direction !== "recvonly") {
-          micTransceiver = t;
-          console.log(`[Mic] Found mic transceiver by no-track fallback: mid=${t.mid}, direction=${t.direction}`);
-          break;
-        }
-      }
-    }
-
-    if (!micTransceiver) {
-      console.warn("[Mic] Could not find mic transceiver - mic audio will NOT transmit upstream");
+    if (!this.micTransceiver || !this.rtcSender) {
+      console.log("[Mic] No mic transceiver assigned yet — track will attach when transceiver is provided");
       return;
     }
 
     try {
-      void micTransceiver.sender.replaceTrack(this.outputTrack);
-      this.rtcSender = micTransceiver.sender;
+      void this.rtcSender.replaceTrack(this.outputTrack);
 
       const params = this.rtcSender.getParameters();
       if (!params.encodings || params.encodings.length === 0) {
@@ -395,22 +353,15 @@ export class MicAudioService {
       params.encodings[0].priority = "high";
       void this.rtcSender.setParameters(params).catch(() => { /* ignore */ });
 
-      console.log(`[Mic] Track attached to negotiated transceiver mid=${micTransceiver.mid}, direction=${micTransceiver.direction}`);
+      console.log(
+        `[Mic] Track attached to transceiver mid=${this.micTransceiver.mid}` +
+        ` direction=${this.micTransceiver.direction}` +
+        ` track.enabled=${this.outputTrack.enabled}`,
+      );
+
       this.startMicTxPoll();
     } catch (err) {
       console.error("[Mic] Failed to attach track to mic transceiver:", err);
-    }
-  }
-
-  private logTransceiverState(transceivers: RTCRtpTransceiver[]): void {
-    console.log(`[Mic] === Transceiver diagnostics (${transceivers.length} transceivers) ===`);
-    for (let i = 0; i < transceivers.length; i++) {
-      const t = transceivers[i];
-      console.log(
-        `[Mic]   [${i}] mid=${t.mid} direction=${t.direction} currentDirection=${t.currentDirection}` +
-        ` sender.track=${t.sender.track ? `${t.sender.track.kind}(enabled=${t.sender.track.enabled})` : "null"}` +
-        ` receiver.track=${t.receiver.track ? `${t.receiver.track.kind}(enabled=${t.receiver.track.enabled})` : "null"}`
-      );
     }
   }
 
@@ -447,7 +398,10 @@ export class MicAudioService {
           this.micTxActive = bytesSent > this.lastMicBytesSent;
 
           if (this.micTxActive !== wasActive) {
-            console.log(`[Mic] TX ${this.micTxActive ? "Active" : "Idle"} — bytesSent=${bytesSent} packetsSent=${packetsSent} mid=${mid}`);
+            console.log(
+              `[Mic] TX ${this.micTxActive ? "Active" : "Idle"}` +
+              ` — bytesSent=${bytesSent} packetsSent=${packetsSent} mid=${mid}`,
+            );
             this.emit();
           }
 
@@ -559,6 +513,7 @@ export class MicAudioService {
     this.removeDeviceChangeListener();
     this.listeners.clear();
     this.rtcSender = null;
+    this.micTransceiver = null;
     this.peerConnection = null;
   }
 }

@@ -511,6 +511,7 @@ export class GfnWebRtcClient {
   private pendingMouseTimestampUs: bigint | null = null;
   private mouseDeltaFilter = new MouseDeltaFilter();
   private micService: MicAudioService | null = null;
+  private micTransceiver: RTCRtpTransceiver | null = null;
 
   private partialReliableThresholdMs = GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
   private inputQueuePeakBufferedBytesWindow = 0;
@@ -992,8 +993,15 @@ export class GfnWebRtcClient {
     for (const entry of report.values()) {
       const stats = entry as unknown as Record<string, unknown>;
       if (entry.type === "outbound-rtp" && stats.kind === "audio") {
-        this.diagnostics.micBytesSent = Number(stats.bytesSent ?? 0);
-        this.diagnostics.micPacketsSent = Number(stats.packetsSent ?? 0);
+        const bytesSent = Number(stats.bytesSent ?? 0);
+        const packetsSent = Number(stats.packetsSent ?? 0);
+        const mid = String(stats.mid ?? "");
+        const prevBytes = this.diagnostics.micBytesSent;
+        this.diagnostics.micBytesSent = bytesSent;
+        this.diagnostics.micPacketsSent = packetsSent;
+        if (bytesSent > 0 && bytesSent !== prevBytes) {
+          this.log(`Outbound audio RTP: mid=${mid} bytesSent=${bytesSent} packetsSent=${packetsSent}`);
+        }
         break;
       }
     }
@@ -2459,7 +2467,129 @@ export class GfnWebRtcClient {
     this.micService = service;
     if (service) {
       service.setPeerConnection(this.pc);
+      if (this.micTransceiver) {
+        service.setMicTransceiver(this.micTransceiver);
+      }
     }
+  }
+
+  private bindMicTransceiverFromOffer(pc: RTCPeerConnection, offerSdp: string): void {
+    const transceivers = pc.getTransceivers();
+
+    this.log(`=== Mic transceiver binding: ${transceivers.length} transceivers ===`);
+    for (let i = 0; i < transceivers.length; i++) {
+      const t = transceivers[i];
+      this.log(
+        `  [${i}] mid=${t.mid} direction=${t.direction} currentDirection=${t.currentDirection}` +
+        ` sender.track=${t.sender.track ? `${t.sender.track.kind}(enabled=${t.sender.track.enabled})` : "null"}` +
+        ` receiver.track=${t.receiver.track ? t.receiver.track.kind : "null"}`,
+      );
+    }
+
+    let micT: RTCRtpTransceiver | null = null;
+
+    const mid3 = transceivers.find(
+      (t) => t.mid === "3" && (t.receiver.track?.kind === "audio" || t.sender.track?.kind === "audio"),
+    );
+    if (mid3) {
+      micT = mid3;
+      this.log(`Mic transceiver: matched mid=3 (direction=${mid3.direction})`);
+    }
+
+    if (!micT) {
+      const micMid = this.deriveMicMidFromOfferSdp(offerSdp);
+      if (micMid !== null) {
+        const byMid = transceivers.find(
+          (t) => t.mid === micMid && (t.receiver.track?.kind === "audio" || t.sender.track?.kind === "audio"),
+        );
+        if (byMid) {
+          micT = byMid;
+          this.log(`Mic transceiver: matched via SDP m-line mapping mid=${micMid} (direction=${byMid.direction})`);
+        } else {
+          this.log(`Mic transceiver: SDP says mid=${micMid} but no matching audio transceiver found`);
+        }
+      } else {
+        this.log("Mic transceiver: could not derive mic mid from offer SDP");
+      }
+    }
+
+    if (!micT) {
+      this.log("WARNING: No mic transceiver found — mic audio will NOT transmit upstream");
+      return;
+    }
+
+    if (micT.direction === "recvonly" || micT.direction === "inactive") {
+      const wasDirec = micT.direction;
+      try {
+        micT.direction = "sendrecv";
+        this.log(`Mic transceiver direction changed: ${wasDirec} → sendrecv`);
+      } catch (err) {
+        this.log(`Failed to change mic transceiver direction: ${String(err)}`);
+      }
+    }
+
+    this.micTransceiver = micT;
+
+    if (this.micService) {
+      this.micService.setMicTransceiver(micT);
+    }
+  }
+
+  private deriveMicMidFromOfferSdp(sdp: string): string | null {
+    const lines = sdp.split(/\r?\n/);
+    let mLineIndex = -1;
+    let currentMid: string | null = null;
+    let currentType = "";
+    let currentDirection = "";
+    const mLineSections: { index: number; type: string; mid: string | null; direction: string }[] = [];
+
+    for (const line of lines) {
+      if (line.startsWith("m=")) {
+        if (mLineIndex >= 0) {
+          mLineSections.push({ index: mLineIndex, type: currentType, mid: currentMid, direction: currentDirection });
+        }
+        mLineIndex++;
+        currentType = line.split(" ")[0].replace("m=", "");
+        currentMid = null;
+        currentDirection = "";
+      } else if (line.startsWith("a=mid:")) {
+        currentMid = line.replace("a=mid:", "").trim();
+      } else if (
+        line === "a=recvonly" || line === "a=sendonly" ||
+        line === "a=sendrecv" || line === "a=inactive"
+      ) {
+        currentDirection = line.replace("a=", "");
+      }
+    }
+    if (mLineIndex >= 0) {
+      mLineSections.push({ index: mLineIndex, type: currentType, mid: currentMid, direction: currentDirection });
+    }
+
+    this.log(`Offer SDP m-line map: ${mLineSections.map((s) => `[${s.index}] m=${s.type} mid=${s.mid} dir=${s.direction}`).join(" | ")}`);
+
+    if (mLineSections.length >= 4) {
+      const micSection = mLineSections[3];
+      if (micSection.mid) {
+        this.log(`SDP fallback: m-line index 3 (m=${micSection.type}) has mid=${micSection.mid}`);
+        return micSection.mid;
+      }
+    }
+
+    const audioSections = mLineSections.filter((s) => s.type === "audio");
+    if (audioSections.length >= 2) {
+      const micCandidate = audioSections.find((s) => s.direction === "recvonly" || s.direction === "inactive");
+      if (micCandidate?.mid) {
+        this.log(`SDP fallback: recvonly/inactive audio m-line at index ${micCandidate.index} has mid=${micCandidate.mid}`);
+        return micCandidate.mid;
+      }
+      const second = audioSections[1];
+      if (second?.mid) {
+        this.log(`SDP fallback: second audio m-line at index ${second.index} has mid=${second.mid}`);
+        return second.mid;
+      }
+    }
+
+    return null;
   }
 
   getPeerConnection(): RTCPeerConnection | null {
@@ -2525,6 +2655,7 @@ export class GfnWebRtcClient {
     if (this.micService) {
       this.micService.setPeerConnection(pc);
     }
+    this.micTransceiver = null;
 
     pc.onicecandidate = (event) => {
       if (!event.candidate) {
@@ -2696,8 +2827,8 @@ export class GfnWebRtcClient {
 
     if (this.micService) {
       this.log("Binding mic transceiver after setRemoteDescription");
-      this.micService.bindMicTransceiver();
     }
+    this.bindMicTransceiverFromOffer(pc, filteredOffer);
 
     // 4. Create answer, munge SDP, and set local description
     this.log("Creating answer...");
@@ -2834,6 +2965,7 @@ export class GfnWebRtcClient {
     if (this.micService) {
       this.micService.setPeerConnection(null);
     }
+    this.micTransceiver = null;
 
     this.cleanupPeerConnection();
 

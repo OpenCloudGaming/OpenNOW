@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, systemPreferences, session } from "electron";
-import { fileURLToPath } from "node:url";
+import { app, BrowserWindow, ipcMain, dialog, session, systemPreferences } from "electron";import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
@@ -202,10 +202,18 @@ function setupWebHidPermissions(): void {
   });
 
   ses.setPermissionCheckHandler((_webContents, permission) => {
-    if (permission === "hid" || permission === "media") {
+    if (permission === "hid" || permission === "media" || permission === "keyboardLock") {
       return true;
     }
     return true;
+  });
+
+  ses.setPermissionRequestHandler((_webContents, permission, callback) => {
+    if (permission === "media" || permission === "keyboardLock") {
+      callback(true);
+      return;
+    }
+    callback(true);
   });
 
   ses.on("select-hid-device", (event, details, callback) => {
@@ -643,7 +651,16 @@ app.whenReady().then(async () => {
     return allowedPermissions.has(permission);
   });
 
-  registerIpcHandlers();
+  if (process.platform === "darwin") {
+    const micAccess = systemPreferences.getMediaAccessStatus("microphone");
+    console.log(`[Main] macOS microphone access status: ${micAccess}`);
+    if (micAccess !== "granted") {
+      const granted = await systemPreferences.askForMediaAccess("microphone");
+      console.log(`[Main] macOS microphone access prompt result: ${granted}`);
+    }
+  }
+
+  setupWebHidPermissions();  registerIpcHandlers();
   await createMainWindow();
 
   app.on("activate", async () => {
