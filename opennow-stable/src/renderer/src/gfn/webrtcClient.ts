@@ -210,108 +210,50 @@ function parsePartialReliableThresholdMs(sdp: string): number | null {
   return Math.max(1, Math.min(5000, parsed));
 }
 
+/**
+ * ULTRA LOW LATENCY: Raw mouse delta passthrough with minimal noise filtering.
+ * 
+ * The previous filter caused "gliding" feel by maintaining velocity state and
+ * smoothing deltas. This version passes raw deltas immediately for snappy response.
+ * Only filters: 1) sub-pixel noise, 2) timestamp ordering issues
+ */
 class MouseDeltaFilter {
-  private x = 0;
-  private y = 0;
+  private lastDx = 0;
+  private lastDy = 0;
   private lastTsMs = 0;
-  private velocityX = 0;
-  private velocityY = 0;
-  private rejectedX = 0;
-  private rejectedY = 0;
-  private pendingX = 0;
-  private pendingY = 0;
-  private sawZero = false;
 
   public getX(): number {
-    return this.x;
+    return this.lastDx;
   }
 
   public getY(): number {
-    return this.y;
+    return this.lastDy;
   }
 
   public reset(): void {
-    this.x = 0;
-    this.y = 0;
+    this.lastDx = 0;
+    this.lastDy = 0;
     this.lastTsMs = 0;
-    this.velocityX = 0;
-    this.velocityY = 0;
-    this.rejectedX = 0;
-    this.rejectedY = 0;
-    this.pendingX = 0;
-    this.pendingY = 0;
-    this.sawZero = false;
   }
 
   public update(dx: number, dy: number, tsMs: number): boolean {
+    // Reject zero movement
     if (dx === 0 && dy === 0) {
-      if (this.sawZero) {
-        this.pendingX = 0;
-        this.pendingY = 0;
-      } else {
-        this.sawZero = true;
-      }
       return false;
     }
 
-    this.sawZero = false;
-    if (this.pendingX === 0 && this.pendingY === 0) {
-      if (tsMs < this.lastTsMs) {
-        this.pendingX = dx;
-        this.pendingY = dy;
-        return false;
-      }
-    } else {
-      dx += this.pendingX;
-      dy += this.pendingY;
-      this.pendingX = 0;
-      this.pendingY = 0;
+    // Handle out-of-order timestamps (rare, but possible with high-poll devices)
+    if (tsMs < this.lastTsMs) {
+      return false;
     }
 
-    const dot = dx * this.x + dy * this.y;
-    const magIncoming = dx * dx + dy * dy;
-    const magPrev = this.x * this.x + this.y * this.y;
-    let accept = true;
-
-    const dtMs = tsMs - this.lastTsMs;
-    if (dtMs < 0.95 && dot < 0 && magPrev !== 0 && dot * dot > 0.81 * magIncoming * magPrev) {
-      const ratio = Math.sqrt(magIncoming) / Math.sqrt(magPrev);
-      let distToInt = Math.abs(ratio - Math.trunc(ratio));
-      if (distToInt > 0.5) {
-        distToInt = 1 - distToInt;
-      }
-      if (distToInt < 0.1) {
-        accept = false;
-      }
-    }
-
-    const diffX = dx - this.x;
-    const diffY = dy - this.y;
-    const diffMag = diffX * diffX + diffY * diffY;
-
-    // ULTRA LOW LATENCY: Relaxed filtering - only reject physically impossible jitter
-    // Previous threshold (8100 = 90px^2) was rejecting legitimate fast movements causing perceived lag
-    // New threshold accepts movements up to 500px delta (250000) - filters only sub-pixel noise
-    if (accept) {
-      const MAX_REASONABLE_DELTA_SQ = 250000; // 500px max delta
-      const isSubPixelNoise = diffMag < 0.25; // Ignore sub-pixel jitter
-      accept = !isSubPixelNoise && diffMag < MAX_REASONABLE_DELTA_SQ;
-    }
-
-    if (accept) {
-      this.velocityX = 0.4 * this.velocityX + 0.6 * diffX;
-      this.velocityY = 0.4 * this.velocityY + 0.6 * diffY;
-      this.x = dx;
-      this.y = dy;
-      this.lastTsMs = tsMs;
-      this.rejectedX = 0;
-      this.rejectedY = 0;
-      return true;
-    }
-
-    this.rejectedX = dx;
-    this.rejectedY = dy;
-    return false;
+    // ULTRA LOW LATENCY: Accept raw deltas immediately - NO velocity smoothing
+    // Previous filter caused "gliding" by blending: velocity = 0.4*old + 0.6*new
+    // This version stores raw deltas for immediate transmission
+    this.lastDx = Math.round(dx);
+    this.lastDy = Math.round(dy);
+    this.lastTsMs = tsMs;
+    return true;
   }
 }
 
@@ -1908,6 +1850,32 @@ export class GfnWebRtcClient {
     };
     scheduleFlush();
 
+    // ULTRA LOW LATENCY: Send mouse immediately for snappy response
+    // Previous implementation batched deltas and flushed on timer causing "gliding" feel
+    const sendMouseImmediate = (dx: number, dy: number, eventTimestampMs: number): void => {
+      if (!this.inputReady || document.pointerLockElement !== videoElement) {
+        return;
+      }
+
+      if (this.activeInputMode === "gamepad") {
+        return;
+      }
+
+      // Skip sub-pixel noise but send everything else immediately
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
+        return;
+      }
+
+      const payload = this.inputEncoder.encodeMouseMove({
+        dx: Math.max(-32768, Math.min(32767, Math.round(dx))),
+        dy: Math.max(-32768, Math.min(32767, Math.round(dy))),
+        timestampUs: timestampUs(eventTimestampMs),
+      });
+
+      this.sendReliable(payload);
+    };
+
+    // Legacy batching queue for coalesced events (processes multiple samples per frame)
     const queueMouseMovement = (dx: number, dy: number, eventTimestampMs: number): void => {
       if (!this.inputReady || document.pointerLockElement !== videoElement) {
         return;
@@ -1917,12 +1885,13 @@ export class GfnWebRtcClient {
         return;
       }
 
-      if (!this.mouseDeltaFilter.update(dx, dy, eventTimestampMs)) {
+      // Filter noise only, no velocity smoothing
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
         return;
       }
 
-      this.pendingMouseDx += Math.round(this.mouseDeltaFilter.getX());
-      this.pendingMouseDy += Math.round(this.mouseDeltaFilter.getY());
+      this.pendingMouseDx += Math.round(dx);
+      this.pendingMouseDy += Math.round(dy);
       this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
     };
 
@@ -1933,17 +1902,19 @@ export class GfnWebRtcClient {
 
       const samples = hasCoalescedEvents ? event.getCoalescedEvents() : [];
       if (samples.length > 0) {
+        // Queue coalesced samples for batch flush (they're historical)
         for (const sample of samples) {
           queueMouseMovement(sample.movementX, sample.movementY, sample.timeStamp);
         }
-        return;
       }
-
-      queueMouseMovement(event.movementX, event.movementY, event.timeStamp);
+      // ULTRA LOW LATENCY: Send current movement immediately for snappiest response
+      // The main event represents the latest pointer position - don't batch it
+      sendMouseImmediate(event.movementX, event.movementY, event.timeStamp);
     };
 
     const onMouseMove = (event: MouseEvent) => {
-      queueMouseMovement(event.movementX, event.movementY, event.timeStamp);
+      // ULTRA LOW LATENCY: Send immediately, no batching
+      sendMouseImmediate(event.movementX, event.movementY, event.timeStamp);
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
