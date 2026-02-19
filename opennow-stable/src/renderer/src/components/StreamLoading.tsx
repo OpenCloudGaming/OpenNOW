@@ -7,6 +7,7 @@ export interface StreamLoadingProps {
   status: "queue" | "setup" | "starting" | "connecting";
   queuePosition?: number;
   estimatedWait?: string;
+  provisioningElapsed?: number;
   error?: {
     title: string;
     description: string;
@@ -25,6 +26,7 @@ function getStatusMessage(
   status: StreamLoadingProps["status"],
   queuePosition?: number,
   isError = false,
+  provisioningElapsed = 0,
 ): string {
   if (isError) {
     return "Game launch failed";
@@ -33,6 +35,9 @@ function getStatusMessage(
     case "queue":
       return queuePosition ? `Position #${queuePosition} in queue` : "Waiting in queue...";
     case "setup":
+      if (provisioningElapsed >= 30) {
+        return `Still starting… (${provisioningElapsed}s)`;
+      }
       return "Setting up your gaming rig...";
     case "starting":
       return "Starting stream...";
@@ -63,12 +68,13 @@ export function StreamLoading({
   status,
   queuePosition,
   estimatedWait,
+  provisioningElapsed,
   error,
   onCancel,
 }: StreamLoadingProps): JSX.Element {
   const hasError = Boolean(error);
   const activeStepIndex = getActiveStepIndex(status);
-  const statusMessage = getStatusMessage(status, queuePosition, hasError);
+  const statusMessage = getStatusMessage(status, queuePosition, hasError, provisioningElapsed);
 
   return (
     <div className={`sload${hasError ? " sload--error" : ""}`}>

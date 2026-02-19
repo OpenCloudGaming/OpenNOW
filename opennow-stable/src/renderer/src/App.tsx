@@ -75,8 +75,22 @@ const DEFAULT_SHORTCUTS = {
   shortcutToggleMic: "Ctrl+Shift+M",
 } as const;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = window.setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(timer);
+        reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      },
+      { once: true },
+    );
+  });
 }
 
 function isNumericId(value: string | undefined): value is string {
@@ -321,6 +335,7 @@ export function App(): JSX.Element {
   const [streamWarning, setStreamWarning] = useState<StreamWarningState | null>(null);
   const [hdrCapability, setHdrCapability] = useState<HdrCapability | null>(null);
   const [hdrWarningShown, setHdrWarningShown] = useState(false);
+  const [provisioningElapsed, setProvisioningElapsed] = useState(0);
 
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -331,6 +346,7 @@ export function App(): JSX.Element {
   const regionsRequestRef = useRef(0);
   const lastStreamGameTitleRef = useRef<string | null>(null);
   const launchInFlightRef = useRef(false);
+  const pollAbortRef = useRef<AbortController | null>(null);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const micServiceRef = useRef<MicAudioService | null>(null);
 
@@ -1062,37 +1078,83 @@ export function App(): JSX.Element {
 
       setSession(newSession);
 
-      // Poll for readiness
+      // Poll for readiness with exponential backoff and hard timeout.
+      // status=1 means "provisioning" — keep waiting.
+      // Only fail on terminal backend errors or hard timeout (180s).
+      const HARD_TIMEOUT_MS = 180_000;
+      const BACKOFF_INITIAL_MS = 1000;
+      const BACKOFF_MAX_MS = 5000;
+      const READY_CONFIRMS_NEEDED = 3;
+
+      const pollAbort = new AbortController();
+      pollAbortRef.current = pollAbort;
+      const pollSignal = pollAbort.signal;
+
       let readyCount = 0;
-      for (let attempt = 1; attempt <= 30; attempt++) {
-        await sleep(2000);
+      let attempt = 0;
+      let delay = BACKOFF_INITIAL_MS;
+      const pollStart = Date.now();
 
-        const polled = await window.openNow.pollSession({
-          token: token || undefined,
-          streamingBaseUrl: newSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
-          serverIp: newSession.serverIp,
-          zone: newSession.zone,
-          sessionId: newSession.sessionId,
-        });
+      try {
+        while (readyCount < READY_CONFIRMS_NEEDED) {
+          if (pollSignal.aborted) {
+            throw new DOMException("Polling cancelled", "AbortError");
+          }
 
-        setSession(polled);
+          const elapsed = Date.now() - pollStart;
+          if (elapsed >= HARD_TIMEOUT_MS) {
+            throw new Error(
+              "Session provisioning timed out after 3 minutes. The server may be under heavy load — please try again.",
+            );
+          }
 
-        console.log(`Poll attempt ${attempt}: status=${polled.status}, signalingUrl=${polled.signalingUrl}`);
+          await sleep(delay, pollSignal);
+          attempt++;
 
-        if (polled.status === 2 || polled.status === 3) {
-          readyCount++;
-          console.log(`Ready count: ${readyCount}/3`);
-          if (readyCount >= 3) break;
+          const polled = await window.openNow.pollSession({
+            token: token || undefined,
+            streamingBaseUrl: newSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
+            serverIp: newSession.serverIp,
+            zone: newSession.zone,
+            sessionId: newSession.sessionId,
+          });
+
+          if (pollSignal.aborted) {
+            throw new DOMException("Polling cancelled", "AbortError");
+          }
+
+          setSession(polled);
+
+          console.log(
+            `Poll attempt ${attempt}: status=${polled.status}, signalingUrl=${polled.signalingUrl}, elapsed=${Math.round(elapsed / 1000)}s`,
+          );
+
+          if (polled.status === 2 || polled.status === 3) {
+            readyCount++;
+            console.log(`Ready count: ${readyCount}/${READY_CONFIRMS_NEEDED}`);
+            delay = BACKOFF_INITIAL_MS;
+          } else if (polled.status === 1) {
+            // Session is still provisioning — not an error.
+            readyCount = 0;
+            updateLoadingStep("setup");
+            setProvisioningElapsed(Math.round(elapsed / 1000));
+            // Exponential backoff capped at BACKOFF_MAX_MS
+            delay = Math.min(delay * 1.5, BACKOFF_MAX_MS);
+          } else if (polled.status === 6) {
+            // Cleaning up — terminal failure
+            throw new Error("Session is being cleaned up. Please try launching again.");
+          } else {
+            // Unknown status — keep polling but reset ready count
+            readyCount = 0;
+            console.warn(`Unexpected session status: ${polled.status}, continuing to poll`);
+            delay = Math.min(delay * 1.5, BACKOFF_MAX_MS);
+          }
         }
-
-        // Update status based on session state
-        if (polled.status === 1) {
-          updateLoadingStep("setup");
+      } finally {
+        if (pollAbortRef.current === pollAbort) {
+          pollAbortRef.current = null;
         }
-      }
-
-      if (readyCount < 3) {
-        throw new Error("Session did not become ready in time");
+        setProvisioningElapsed(0);
       }
 
       updateLoadingStep("connecting");
@@ -1112,8 +1174,16 @@ export function App(): JSX.Element {
         signalingUrl: finalSession.signalingUrl,
       });
     } catch (error) {
-      console.error("Launch failed:", error);
-      setLaunchError(toLaunchErrorState(error, loadingStep));
+      const isAbort =
+        error instanceof DOMException && error.name === "AbortError";
+
+      if (isAbort) {
+        console.log("Launch cancelled by user");
+      } else {
+        console.error("Launch failed:", error);
+        setLaunchError(toLaunchErrorState(error, loadingStep));
+      }
+
       await window.openNow.disconnectSignaling().catch(() => {});
       clientRef.current?.dispose();
       clientRef.current = null;
@@ -1125,6 +1195,7 @@ export function App(): JSX.Element {
       setStreamWarning(null);
       setEscHoldReleaseIndicator({ visible: false, progress: 0 });
       setDiagnostics(defaultDiagnostics());
+      setProvisioningElapsed(0);
       void refreshNavbarActiveSession();
     } finally {
       launchInFlightRef.current = false;
@@ -1199,6 +1270,7 @@ export function App(): JSX.Element {
   const handleStopStream = useCallback(async () => {
     try {
       resolveExitPrompt(false);
+      pollAbortRef.current?.abort();
       await window.openNow.disconnectSignaling();
 
       const current = sessionRef.current;
@@ -1233,6 +1305,7 @@ export function App(): JSX.Element {
   }, [authSession, refreshNavbarActiveSession, resolveExitPrompt]);
 
   const handleDismissLaunchError = useCallback(async () => {
+    pollAbortRef.current?.abort();
     await window.openNow.disconnectSignaling().catch(() => {});
     clientRef.current?.dispose();
     clientRef.current = null;
@@ -1569,6 +1642,7 @@ export function App(): JSX.Element {
             gameCover={streamingGame?.imageUrl}
             status={loadingStatus}
             queuePosition={queuePosition}
+            provisioningElapsed={provisioningElapsed}
             error={
               launchError
                 ? {
