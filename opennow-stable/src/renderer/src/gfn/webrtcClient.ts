@@ -613,7 +613,6 @@ export class GfnWebRtcClient {
     video.autoplay = true;
 
     // AGGRESSIVE: Ensure playsInline for mobile-style devices
-    // @ts-expect-error - playsInline is valid but not in all TypeScript DOM types
     video.playsInline = true;
 
     // AGGRESSIVE: Disable any hardware decoding hints that might add latency
@@ -673,13 +672,13 @@ export class GfnWebRtcClient {
           if (transceiver.receiver === receiver) {
             // Set encoding parameters for low latency
             const params = transceiver.sender.getParameters();
-            if (params.degradationPreference !== undefined) {
-              params.degradationPreference = "maintain-frame-rate";
-              void transceiver.sender.setParameters(params).catch(() => {
-                // Ignore errors - this is optional optimization
-              });
-              this.log("Video transceiver: degradationPreference set to maintain-frame-rate");
-            }
+            // Force framerate over resolution for lowest latency
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            params.degradationPreference = "maintain-framerate";
+            void transceiver.sender.setParameters(params).catch(() => {
+              // Ignore errors - this is optional optimization
+            });
+            this.log("Video transceiver: degradationPreference set to maintain-framerate");
             break;
           }
         }
@@ -1453,14 +1452,10 @@ export class GfnWebRtcClient {
     this.mouseInputChannel.binaryType = "arraybuffer";
 
     // LOW LATENCY: Configure buffering for minimum latency
-    // @ts-expect-error - bufferedAmountLowThreshold is not in all TypeScript versions
     if (typeof this.reliableInputChannel.bufferedAmountLowThreshold !== "undefined") {
-      // @ts-expect-error
       this.reliableInputChannel.bufferedAmountLowThreshold = 0;
     }
-    // @ts-expect-error - bufferedAmountLowThreshold is not in all TypeScript versions
     if (typeof this.mouseInputChannel.bufferedAmountLowThreshold !== "undefined") {
-      // @ts-expect-error
       this.mouseInputChannel.bufferedAmountLowThreshold = 0;
     }
   }
