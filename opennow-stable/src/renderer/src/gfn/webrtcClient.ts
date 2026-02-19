@@ -591,6 +591,44 @@ export class GfnWebRtcClient {
   }
 
   /**
+   * Configure the video element for HDR passthrough rendering.
+   *
+   * Chromium/Electron will pass through HDR10 PQ content when:
+   *  - The OS compositor has HDR enabled (Windows HDR toggle, macOS EDR)
+   *  - The decoded stream carries 10-bit PQ/BT.2020 metadata
+   *  - No CSS filter/transform clamps the output to sRGB
+   *
+   * This method ensures the video element does not interfere with the
+   * native HDR rendering path. It also sets the `colorSpace` attribute
+   * on the element when supported (Chromium 104+).
+   */
+  private configureVideoElementForHdr(video: HTMLVideoElement, hdrEnabled: boolean): void {
+    if (hdrEnabled) {
+      video.style.removeProperty("filter");
+      video.style.removeProperty("-webkit-filter");
+      const anyVideo = video as unknown as Record<string, unknown>;
+      if (typeof anyVideo.colorSpace === "string" || anyVideo.colorSpace === undefined) {
+        try {
+          anyVideo.colorSpace = "rec2100-pq";
+          this.log("Video element colorSpace set to rec2100-pq");
+        } catch {
+          this.log("Video element colorSpace attribute not supported, relying on OS HDR passthrough");
+        }
+      }
+      this.log("Video element configured for HDR passthrough");
+    } else {
+      const anyVideo = video as unknown as Record<string, unknown>;
+      if (typeof anyVideo.colorSpace === "string" && anyVideo.colorSpace !== "") {
+        try {
+          anyVideo.colorSpace = "";
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  /**
    * Configure an RTCRtpReceiver for minimum jitter buffer delay.
    *
    * jitterBufferTarget controls how long Chrome holds decoded frames before
@@ -883,11 +921,12 @@ export class GfnWebRtcClient {
           this.currentCodec = normalizeCodecName(codecId);
         }
 
-        // Check for HDR in SDP fmtp line
-        this.isHdr = sdpFmtpLine.includes("transfer-characteristics=16") ||
-          sdpFmtpLine.includes("profile-id=2") ||
-          sdpFmtpLine.includes("hdr") ||
-          sdpFmtpLine.includes("HDR");
+        // Check for HDR indicators in SDP fmtp line
+        const has10BitProfile = sdpFmtpLine.includes("profile-id=2") || sdpFmtpLine.includes("profile=2");
+        const hasPqTransfer = sdpFmtpLine.includes("transfer-characteristics=16");
+        const hasBt2020Primaries = sdpFmtpLine.includes("colour-primaries=9") || sdpFmtpLine.includes("color-primaries=9");
+        const hasHdrFlag = sdpFmtpLine.includes("hdr") || sdpFmtpLine.includes("HDR");
+        this.isHdr = has10BitProfile && (hasPqTransfer || hasBt2020Primaries || hasHdrFlag);
 
         this.diagnostics.codec = this.currentCodec;
         this.diagnostics.isHdr = this.isHdr;
@@ -908,6 +947,17 @@ export class GfnWebRtcClient {
             overlayForcesSdr: false,
             fallbackReason: null,
           };
+        } else if (this.hdrEnabledForSession && has10BitProfile && !this.isHdr) {
+          this.diagnostics.hdrState = {
+            status: "fallback_sdr",
+            bitDepth: 10,
+            colorPrimaries: "BT.709",
+            transferFunction: "SDR",
+            matrixCoefficients: "BT.709",
+            codecProfile: `${this.currentCodec} Main10`,
+            overlayForcesSdr: false,
+            fallbackReason: "10-bit profile active but PQ/BT.2020 not negotiated (SDR 10-bit)",
+          };
         } else if (this.hdrEnabledForSession && !this.isHdr) {
           this.diagnostics.hdrState = {
             status: "fallback_sdr",
@@ -922,7 +972,7 @@ export class GfnWebRtcClient {
         } else {
           this.diagnostics.hdrState = {
             status: "inactive",
-            bitDepth: sdpFmtpLine.includes("profile-id=2") ? 10 : 8,
+            bitDepth: has10BitProfile ? 10 : 8,
             colorPrimaries: "BT.709",
             transferFunction: "SDR",
             matrixCoefficients: "BT.709",
@@ -2558,6 +2608,7 @@ export class GfnWebRtcClient {
     );
 
     this.hdrEnabledForSession = settings.hdrEnabled;
+    this.configureVideoElementForHdr(this.options.videoElement, settings.hdrEnabled);
     this.log(`ICE servers: ${session.iceServers.length} (${session.iceServers.map(s => s.urls.join(",")).join(" | ")})`);
     this.log(`Offer SDP length: ${offerSdp.length} chars`);
     // Log full offer SDP for ICE debugging
@@ -2709,7 +2760,21 @@ export class GfnWebRtcClient {
     const supported = this.getSupportedVideoCodecs();
     this.log(`Browser supported video codecs: ${supported.join(", ") || "unknown"}`);
 
-    if (settings.codec === "H265") {
+    // HDR requires a 10-bit capable codec. H264 cannot carry 10-bit HDR.
+    // Upgrade to H265 (or AV1) when HDR is enabled and user selected H264.
+    if (settings.hdrEnabled && effectiveCodec === "H264") {
+      if (supported.includes("H265")) {
+        effectiveCodec = "H265";
+        this.log("HDR: Upgraded codec H264 → H265 (H264 cannot carry 10-bit HDR)");
+      } else if (supported.includes("AV1")) {
+        effectiveCodec = "AV1";
+        this.log("HDR: Upgraded codec H264 → AV1 (H264 cannot carry 10-bit HDR, H265 unsupported)");
+      } else {
+        this.log("HDR: Warning — H264 selected but no 10-bit capable codec available; HDR may not activate");
+      }
+    }
+
+    if (effectiveCodec === "H265") {
       const hevcProfiles = this.getSupportedHevcProfiles();
       if (hevcProfiles.size > 0) {
         this.log(`Browser HEVC profile-id support: ${Array.from(hevcProfiles).join(", ")}`);

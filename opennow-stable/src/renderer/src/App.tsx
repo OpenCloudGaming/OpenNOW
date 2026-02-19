@@ -906,6 +906,12 @@ export function App(): JSX.Element {
       throw new Error("Active session is missing server address. Start the game again to create a new session.");
     }
 
+    let hdrEnabledForClaim = false;
+    if (hdrCapability && settings.hdrStreaming !== "off") {
+      const decision = shouldEnableHdr(settings.hdrStreaming, hdrCapability, settings.colorQuality);
+      hdrEnabledForClaim = decision.enable;
+    }
+
     const claimed = await window.openNow.claimSession({
       token,
       streamingBaseUrl: effectiveStreamingBaseUrl,
@@ -917,6 +923,7 @@ export function App(): JSX.Element {
         maxBitrateMbps: settings.maxBitrateMbps,
         codec: settings.codec,
         colorQuality: settings.colorQuality,
+        hdrEnabled: hdrEnabledForClaim,
       },
     });
 
@@ -1015,6 +1022,14 @@ export function App(): JSX.Element {
         }
       }
 
+      // Determine HDR for session creation (server must set up HDR pipeline)
+      let hdrEnabledForCreate = false;
+      if (hdrCapability && settings.hdrStreaming !== "off") {
+        const decision = shouldEnableHdr(settings.hdrStreaming, hdrCapability, settings.colorQuality);
+        hdrEnabledForCreate = decision.enable;
+        console.log(`[HDR] Create-session decision: enable=${decision.enable}, reason=${decision.reason}`);
+      }
+
       // Create new session
       const newSession = await window.openNow.createSession({
         token: token || undefined,
@@ -1029,6 +1044,7 @@ export function App(): JSX.Element {
           maxBitrateMbps: settings.maxBitrateMbps,
           codec: settings.codec,
           colorQuality: settings.colorQuality,
+          hdrEnabled: hdrEnabledForCreate,
         },
       });
 

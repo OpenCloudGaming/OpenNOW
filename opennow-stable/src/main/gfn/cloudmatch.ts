@@ -325,12 +325,7 @@ function timezoneOffsetMs(): number {
 function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest {
   const { width, height } = parseResolution(input.settings.resolution);
   const cq = input.settings.colorQuality;
-  // IMPORTANT: hdrEnabled is a SEPARATE toggle from color quality.
-  // The Rust reference (cloudmatch.rs) uses settings.hdr_enabled independently.
-  // 10-bit color depth does NOT mean HDR — you can have 10-bit SDR.
-  // Conflating them caused the server to set up an HDR pipeline, which
-  // dynamically downscaled resolution to ~540p.
-  const hdrEnabled = false; // No HDR toggle implemented yet; hardcode off like claim body
+  const hdrEnabled = input.settings.hdrEnabled === true && cq.startsWith("10bit");
   const bitDepth = colorQualityBitDepth(cq);
   const chromaFormat = colorQualityChromaFormat(cq);
   const accountLinked = input.accountLinked ?? true;
@@ -704,9 +699,7 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
   const { width, height } = parseResolution(settings.resolution);
   const cq = settings.colorQuality;
   const chromaFormat = colorQualityChromaFormat(cq);
-  // Claim/resume uses SDR mode (matching Rust: hdr_enabled defaults false for claims).
-  // HDR is only negotiated on the initial session create.
-  const hdrEnabled = false;
+  const hdrEnabled = settings.hdrEnabled === true && cq.startsWith("10bit");
   const deviceId = crypto.randomUUID();
   const subSessionId = crypto.randomUUID();
   const timezoneMs = timezoneOffsetMs();
@@ -782,14 +775,18 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
       userAge: 26,
       requestedStreamingFeatures: {
         reflex: settings.fps >= 120,
-        bitDepth: 0,
+        bitDepth: hdrEnabled ? colorQualityBitDepth(cq) : 0,
         cloudGsync: false,
         enabledL4S: false,
+        mouseMovementFlags: 0,
+        trueHdr: hdrEnabled,
         profile: 0,
         fallbackToLogicalResolution: false,
         chromaFormat,
         prefilterMode: 0,
         hudStreamingMode: 0,
+        sdrColorSpace: 2,
+        hdrColorSpace: hdrEnabled ? 4 : 0,
       },
     },
     metaData: [],

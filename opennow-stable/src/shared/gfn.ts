@@ -216,6 +216,7 @@ export interface StreamSettings {
   maxBitrateMbps: number;
   codec: VideoCodec;
   colorQuality: ColorQuality;
+  hdrEnabled?: boolean;
 }
 
 export interface SessionCreateRequest {
