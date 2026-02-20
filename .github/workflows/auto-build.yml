@@ -112,7 +112,7 @@ jobs:
 
   release:
     name: publish-release
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: build
     if: |
       github.ref == 'refs/heads/main' ||

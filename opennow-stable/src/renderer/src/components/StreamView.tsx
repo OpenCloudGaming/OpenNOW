@@ -29,7 +29,7 @@ interface StreamViewProps {
   sessionElapsedSeconds: number;
   sessionClockShowEveryMinutes: number;
   sessionClockShowDurationSeconds: number;
-  streamWarning: {
+  sessionClockVisible: boolean;  streamWarning: {
     code: 1 | 2 | 3;
     message: string;
     tone: "warn" | "critical";
@@ -108,7 +108,7 @@ export function StreamView({
   sessionElapsedSeconds,
   sessionClockShowEveryMinutes,
   sessionClockShowDurationSeconds,
-  streamWarning,
+  sessionClockVisible,  streamWarning,
   isConnecting,
   gameTitle,
   onToggleFullscreen,
@@ -278,7 +278,8 @@ export function StreamView({
           title="Current gaming session elapsed time"
           aria-hidden={!showSessionClock}
         >
-          <Clock3 size={14} />
+      {!isConnecting && sessionClockVisible && (
+        <div className="sv-session-clock" title="Current gaming session elapsed time">          <Clock3 size={14} />
           <span>Session {sessionTimeText}</span>
         </div>
       )}

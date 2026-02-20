@@ -300,7 +300,22 @@ export function App(): JSX.Element {
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
-  });
+    discordPresenceEnabled: false,
+    discordClientId: "",
+    flightControlsEnabled: false,
+    flightControlsSlot: 3,
+    flightSlots: defaultFlightSlots(),
+    hdrStreaming: "off",
+    micMode: "off",
+    micDeviceId: "",
+    micGain: 1.0,
+    micNoiseSuppression: true,
+    micAutoGainControl: true,
+    micEchoCancellation: true,
+    shortcutToggleMic: DEFAULT_SHORTCUTS.shortcutToggleMic,
+    hevcCompatMode: "auto",
+    sessionClockShowEveryMinutes: 60,
+    sessionClockShowDurationSeconds: 30,  });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
@@ -354,7 +369,8 @@ export function App(): JSX.Element {
   const [hdrCapability, setHdrCapability] = useState<HdrCapability | null>(null);
   const [hdrWarningShown, setHdrWarningShown] = useState(false);
   const [provisioningElapsed, setProvisioningElapsed] = useState(0);
-  // Refs
+  const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string | null>(null);
+  const [sessionClockVisible, setSessionClockVisible] = useState(true);  // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clientRef = useRef<GfnWebRtcClient | null>(null);
@@ -434,6 +450,32 @@ export function App(): JSX.Element {
     }, 10000);
     return () => window.clearInterval(timer);
   }, [authSession, refreshNavbarActiveSession, streamStatus]);
+
+  useEffect(() => {
+    const unsubscribe = window.openNow.onSessionExpired((reason: string) => {
+      console.warn("[App] Session expired:", reason);
+      setSessionExpiredMessage(reason);
+      setAuthSession(null);
+      setGames([]);
+      setLibraryGames([]);
+      setNavbarActiveSession(null);
+      setIsResumingNavbarSession(false);
+      setLaunchError(null);
+      setSubscriptionInfo(null);
+      setCurrentPage("home");
+      window.openNow.fetchPublicGames().then((publicGames) => {
+        setGames(publicGames);
+        setSource("public");
+      }).catch(() => {});
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (!sessionExpiredMessage) return;
+    const timer = window.setTimeout(() => setSessionExpiredMessage(null), 10000);
+    return () => window.clearTimeout(timer);
+  }, [sessionExpiredMessage]);
 
   // Initialize app
   useEffect(() => {
@@ -676,6 +718,119 @@ export function App(): JSX.Element {
   }, [sessionStartedAtMs, streamStatus]);
 
   useEffect(() => {
+    if (streamStatus === "idle" || sessionStartedAtMs === null) {
+      setSessionClockVisible(true);
+      return;
+    }
+
+    const everyMinutes = settings.sessionClockShowEveryMinutes;
+    const durationSeconds = settings.sessionClockShowDurationSeconds;
+
+    if (everyMinutes <= 0) {
+      setSessionClockVisible(true);
+      return;
+    }
+
+    setSessionClockVisible(true);
+    const hideTimer = window.setTimeout(() => {
+      setSessionClockVisible(false);
+    }, durationSeconds * 1000);
+
+    const revealInterval = window.setInterval(() => {
+      setSessionClockVisible(true);
+      window.setTimeout(() => {
+        setSessionClockVisible(false);
+      }, durationSeconds * 1000);
+    }, everyMinutes * 60 * 1000);
+
+    return () => {
+      window.clearTimeout(hideTimer);
+      window.clearInterval(revealInterval);
+    };
+  }, [streamStatus, sessionStartedAtMs, settings.sessionClockShowEveryMinutes, settings.sessionClockShowDurationSeconds]);
+
+  // Discord Rich Presence updates
+  useEffect(() => {
+    if (!settings.discordPresenceEnabled || !settings.discordClientId) {
+      return;
+    }
+
+    let payload: DiscordPresencePayload;
+
+    if (streamStatus === "idle") {
+      payload = { type: "idle" };
+    } else if (streamStatus === "queue" || streamStatus === "setup") {
+      const queueTitle = streamingGame?.title?.trim() || lastStreamGameTitleRef.current || undefined;
+      payload = {
+        type: "queue",
+        gameName: queueTitle,
+        queuePosition,
+      };
+    } else {
+      const hasDiag = diagnostics.resolution !== "" || diagnostics.bitrateKbps > 0;
+      const gameTitle = streamingGame?.title?.trim() || lastStreamGameTitleRef.current || undefined;
+      payload = {
+        type: "streaming",
+        gameName: gameTitle,
+        startTimestamp: sessionStartedAtMs ?? undefined,
+        ...(hasDiag && diagnostics.resolution ? { resolution: diagnostics.resolution } : {}),
+        ...(hasDiag && diagnostics.decodeFps > 0 ? { fps: diagnostics.decodeFps } : {}),
+        ...(hasDiag && diagnostics.bitrateKbps > 0 ? { bitrateMbps: Math.round(diagnostics.bitrateKbps / 100) / 10 } : {}),
+      };
+    }
+
+    window.openNow.updateDiscordPresence(payload).catch(() => {});
+  }, [
+    streamStatus,
+    streamingGame?.title,
+    sessionStartedAtMs,
+    queuePosition,
+    diagnostics.resolution,
+    diagnostics.decodeFps,
+    diagnostics.bitrateKbps,
+    settings.discordPresenceEnabled,
+    settings.discordClientId,
+  ]);
+
+  // Clear Discord presence on logout
+  useEffect(() => {
+    if (!authSession) {
+      window.openNow.clearDiscordPresence().catch(() => {});
+    }
+  }, [authSession]);
+
+  // Flight controls: forward WebHID gamepad state to WebRTC client (multi-slot)
+  const activeFlightSlotsRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!settings.flightControlsEnabled) {
+      for (const s of activeFlightSlotsRef.current) {
+        clientRef.current?.releaseExternalGamepad(s);
+      }
+      activeFlightSlotsRef.current.clear();
+      return;
+    }
+
+    const slots: FlightSlotConfig[] = Array.isArray(settings.flightSlots) && settings.flightSlots.length === 4
+      ? settings.flightSlots : defaultFlightSlots();
+
+    const wantedSlots = new Set<number>();
+    for (let i = 0; i < 4; i++) {
+      if (slots[i]!.enabled && slots[i]!.deviceKey) wantedSlots.add(i);
+    }
+
+    for (const s of activeFlightSlotsRef.current) {
+      if (!wantedSlots.has(s)) {
+        clientRef.current?.releaseExternalGamepad(s);
+      }
+    }
+    activeFlightSlotsRef.current = wantedSlots;
+
+    const service = getFlightHidService();
+    const unsub = service.onGamepadState((state) => {
+      clientRef.current?.injectExternalGamepad(state);
+    });
+    return unsub;
+  }, [settings.flightControlsEnabled, settings.flightSlots]);  useEffect(() => {
     if (!streamWarning) return;
     const warning = streamWarning;
     const timer = window.setTimeout(() => {
@@ -1555,7 +1710,16 @@ export function App(): JSX.Element {
           </div>
         )}
       </>
-    );
+      <LoginScreen
+        providers={providers}
+        selectedProviderId={providerIdpId}
+        onProviderChange={setProviderIdpId}
+        onLogin={handleLogin}
+        isLoading={isLoggingIn}
+        error={sessionExpiredMessage ?? loginError}
+        isInitializing={isInitializing}
+        statusMessage={startupStatusMessage}
+      />    );
   }
 
   const showLaunchOverlay = streamStatus !== "idle" || launchError !== null;
@@ -1586,7 +1750,7 @@ export function App(): JSX.Element {
             sessionElapsedSeconds={sessionElapsedSeconds}
             sessionClockShowEveryMinutes={settings.sessionClockShowEveryMinutes}
             sessionClockShowDurationSeconds={settings.sessionClockShowDurationSeconds}
-            streamWarning={streamWarning}
+            sessionClockVisible={sessionClockVisible}            streamWarning={streamWarning}
             isConnecting={streamStatus === "connecting"}
             gameTitle={streamingGame?.title ?? "Game"}
             onToggleFullscreen={() => {
