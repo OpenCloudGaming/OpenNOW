@@ -286,7 +286,20 @@ export function App(): JSX.Element {
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
-  });
+    discordPresenceEnabled: false,
+    discordClientId: "",
+    flightControlsEnabled: false,
+    flightControlsSlot: 3,
+    flightSlots: defaultFlightSlots(),
+    hdrStreaming: "off",
+    micMode: "off",
+    micDeviceId: "",
+    micGain: 1.0,
+    micNoiseSuppression: true,
+    micAutoGainControl: true,
+    micEchoCancellation: true,
+    shortcutToggleMic: DEFAULT_SHORTCUTS.shortcutToggleMic,
+    hevcCompatMode: "auto",  });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
@@ -722,7 +735,8 @@ export function App(): JSX.Element {
               resolution: settings.resolution,
               fps: settings.fps,
               maxBitrateKbps: settings.maxBitrateMbps * 1000,
-            });
+              hdrEnabled: hdrEnabledForStream,
+              hevcCompatMode: settings.hevcCompatMode,            });
             setLaunchError(null);
             setStreamStatus("streaming");
             setSessionStartedAtMs((current) => current ?? Date.now());
