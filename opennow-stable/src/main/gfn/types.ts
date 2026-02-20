@@ -90,6 +90,7 @@ export interface CloudMatchResponse {
     };
     errorCode?: number;
     gpuType?: string;
+    queuePosition?: number;
     connectionInfo?: Array<{
       ip?: string;
       port: number;

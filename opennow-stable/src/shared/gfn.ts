@@ -243,6 +243,7 @@ export interface SessionInfo {
   signalingServer: string;
   signalingUrl: string;
   gpuType?: string;
+  queuePosition?: number;
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
 }

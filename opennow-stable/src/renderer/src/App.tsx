@@ -1022,8 +1022,18 @@ export function App(): JSX.Element {
       // status=1 means "provisioning" — keep waiting.
       // Only fail on terminal backend errors or hard timeout (180s).
       const HARD_TIMEOUT_MS = 180_000;
-      const BACKOFF_INITIAL_MS = 1000;
+      // Poll for readiness with queue-aware timeout logic.
+      //
+      // "True queue" = queuePosition > 1 → no timeout, poll indefinitely.
+      // "Allocation" = queuePosition 0 or 1 (or absent) → machine is being
+      //   allocated / starting.  Apply ALLOCATION_TIMEOUT_MS from the moment
+      //   we enter (or start in) allocation mode.  On timeout we do NOT throw;
+      //   instead we show "Still starting…" and continue polling with backoff.
+      //
+      // status codes: 1 = provisioning, 2/3 = ready, 6 = cleaning up (terminal).
+      const ALLOCATION_TIMEOUT_MS = 180_000;      const BACKOFF_INITIAL_MS = 1000;
       const BACKOFF_MAX_MS = 5000;
+      const BACKOFF_EXTENDED_MAX_MS = 10_000;
       const READY_CONFIRMS_NEEDED = 3;
 
       const pollAbort = new AbortController();
@@ -1034,7 +1044,9 @@ export function App(): JSX.Element {
       let attempt = 0;
       let delay = BACKOFF_INITIAL_MS;
       const pollStart = Date.now();
-      try {
+      let allocationStartMs: number | null = null;
+      let allocationTimedOut = false;
+      const pollStartMs = Date.now();      try {
         while (readyCount < READY_CONFIRMS_NEEDED) {
           if (pollSignal.aborted) {
             throw new DOMException("Polling cancelled", "AbortError");
@@ -1082,9 +1094,7 @@ export function App(): JSX.Element {
             throw new Error(
               "Session provisioning timed out after 3 minutes. The server may be under heavy load — please try again.",
             );
-          }
-
-          await sleep(delay, pollSignal);
+          }          await sleep(delay, pollSignal);
           attempt++;
 
           const polled = await window.openNow.pollSession({
@@ -1101,8 +1111,13 @@ export function App(): JSX.Element {
 
           setSession(polled);
 
+          const polledQueuePos = polled.queuePosition ?? 0;
+          const isInQueueMode = polledQueuePos > 1;
+
+          const pollStartElapsed = Date.now() - pollStartMs;
           console.log(
-            `Poll attempt ${attempt}: status=${polled.status}, signalingUrl=${polled.signalingUrl}, elapsed=${Math.round(elapsed / 1000)}s`,
+            `Poll attempt ${attempt}: status=${polled.status}, queuePosition=${polledQueuePos}, ` +
+            `signalingUrl=${polled.signalingUrl}, elapsed=${Math.round(pollStartElapsed / 1000)}s`,
           );
 
           if (polled.status === 2 || polled.status === 3) {
@@ -1110,17 +1125,44 @@ export function App(): JSX.Element {
             console.log(`Ready count: ${readyCount}/${READY_CONFIRMS_NEEDED}`);
             delay = BACKOFF_INITIAL_MS;
           } else if (polled.status === 1) {
-            // Session is still provisioning — not an error.
             readyCount = 0;
-            updateLoadingStep("setup");
-            setProvisioningElapsed(Math.round(elapsed / 1000));
-            // Exponential backoff capped at BACKOFF_MAX_MS
-            delay = Math.min(delay * 1.5, BACKOFF_MAX_MS);
+
+            if (isInQueueMode) {
+              // True queue: show queue position, no timeout, reset allocation clock.
+              updateLoadingStep("queue");
+              setQueuePosition(polledQueuePos);
+              allocationStartMs = null;
+              allocationTimedOut = false;
+              delay = Math.min(delay * 1.5, BACKOFF_MAX_MS);
+            } else {
+              // Allocation phase (queuePosition 0 or 1): machine starting.
+              setQueuePosition(undefined);
+
+              if (allocationStartMs === null) {
+                allocationStartMs = Date.now();
+              }
+
+              const allocationElapsed = Date.now() - allocationStartMs;
+
+              if (!allocationTimedOut && allocationElapsed >= ALLOCATION_TIMEOUT_MS) {
+                allocationTimedOut = true;
+                console.warn(
+                  `Allocation exceeded ${ALLOCATION_TIMEOUT_MS / 1000}s — continuing with extended backoff`,
+                );
+              }
+
+              updateLoadingStep("setup");
+              setProvisioningElapsed(Math.round(allocationElapsed / 1000));
+
+              if (allocationTimedOut) {
+                delay = Math.min(delay * 1.5, BACKOFF_EXTENDED_MAX_MS);
+              } else {
+                delay = Math.min(delay * 1.5, BACKOFF_MAX_MS);
+              }
+            }
           } else if (polled.status === 6) {
-            // Cleaning up — terminal failure
             throw new Error("Session is being cleaned up. Please try launching again.");
           } else {
-            // Unknown status — keep polling but reset ready count
             readyCount = 0;
             console.warn(`Unexpected session status: ${polled.status}, continuing to poll`);
             delay = Math.min(delay * 1.5, BACKOFF_MAX_MS);
@@ -1130,6 +1172,7 @@ export function App(): JSX.Element {
         if (pollAbortRef.current === pollAbort) {
           pollAbortRef.current = null;
         }
+        setQueuePosition(undefined);
         setProvisioningElapsed(0);
       }
       setQueuePosition(undefined);
