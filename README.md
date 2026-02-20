@@ -63,7 +63,7 @@ OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www
 | **Streaming** | | | |
 | WebRTC Streaming | ✅ | ✅ | Chromium-based in OpenNOW |
 | H.264 Codec | ✅ | ✅ | |
-| H.265 / HEVC Codec | ✅ | ✅ | Full support |
+| H.265 / HEVC Codec | ✅ | ✅ | Full support + compatibility mode for AMD Polaris/Vega GPUs |
 | AV1 Codec | ✅ | ✅ | |
 | Up to 1080p | ✅ | ✅ | |
 | Up to 4K | ✅ | ✅ | Configurable in settings |
@@ -76,15 +76,15 @@ OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www
 | **Input** | | | |
 | Keyboard + Mouse | ✅ | ✅ | Full input over GFN data channels |
 | Gamepad Support | ✅ | ✅ | Up to 4 controllers simultaneously |
-| Flight Controls | ❌ | ✅ | Added in official client v2.0.81 |
+| Flight Controls | ✅ | ✅ | Up to 4 flight controller devices |
 | Mouse Sensitivity | ✅ | ❌ | OpenNOW-exclusive setting |
 | Clipboard Paste | ✅ | ❌ | Paste text into cloud session |
 | **Features** | | | |
-| Authentication + Session Restore | ✅ | ✅ | OAuth PKCE, auto-restore on startup |
+| Authentication + Session Restore | ✅ | ✅ | OAuth PKCE, auto-restore on startup + offline_access + automatic token refresh/401 handling |
 | Game Library + Catalog | ✅ | ✅ | Main catalog, library, and public games |
 | Alliance Partners | ✅ | ✅ | NVIDIA + partner providers |
 | Audio Playback | ✅ | ✅ | |
-| Microphone Support | 📋 | ✅ | Planned for future release |
+| Microphone Support | ✅ | ✅ | Full WebRTC negotiated microphone support |
 | Instant Replay | 📋 | ✅ | Planned for future release |
 | Screenshots | 📋 | ✅ | Planned for future release |
 | Stats Overlay | ✅ | ✅ | Detailed: RTT, decode, render, jitter, loss, input queue |
@@ -94,7 +94,7 @@ OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www
 | Subscription Info | ✅ | ✅ | Hours, tier, entitled resolutions |
 | Region Selection | ✅ | ✅ | Dynamic region discovery |
 | Install-to-Play | ✅ | ✅ | For games not in standard catalog |
-| Discord Integration | ❌ | ✅ | |
+| Discord Integration | ✅ | ✅ | Discord Rich Presence |
 | **Platform Support** | | | |
 | Windows | ✅ | ✅ | NSIS installer + portable |
 | macOS (x64 + ARM) | ✅ | ✅ | Universal builds |
@@ -113,8 +113,8 @@ OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www
 
 | Priority | Feature | Status | Description |
 |:--------:|---------|:------:|-------------|
-| 🔴 | ~~H.265 codec tuning~~ | ✅ Completed | Full HEVC support implemented |
-| 🔴 | Microphone support | 📋 Planned | Voice chat in cloud sessions |
+| 🔴 | ~~H.265 codec tuning~~ | ✅ Completed | Full HEVC support implemented (+ compatibility mode) |
+| 🔴 | ~~Microphone support~~ | ✅ Completed | Fully negotiated WebRTC mic pipeline |
 | 🟡 | Instant replay | 📋 Planned | Clip and save gameplay moments |
 | 🟡 | Screenshots | 📋 Planned | Capture in-stream screenshots |
 | 🟡 | ~~HDR streaming pipeline~~ | ✅ Completed | HDR10 PQ/BT.2020 on Windows; best-effort macOS; auto-fallback |
@@ -125,16 +125,16 @@ OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www
 
 ## Features
 
-**Streaming**
-`H.264` `AV1` `H.265 (WIP)` · Up to 4K@240fps · Adjustable bitrate · 8/10-bit color · 4:2:0/4:4:4 chroma · HDR10 (PQ/BT.2020)
+**Streaming**  
+`H.264` `AV1` `H.265` · Up to 4K@240fps · Adjustable bitrate · 8/10-bit color · 4:2:0/4:4:4 chroma · HDR10 (PQ/BT.2020)
 
-**Input**
-`Keyboard` `Mouse` `Gamepad ×4` · Mouse sensitivity · Clipboard paste
+**Input**  
+`Keyboard` `Mouse` `Gamepad ×4` `Flight Controllers ×4` · Mouse sensitivity · Clipboard paste
 
-**Client**
-`Stats Overlay` `Anti-AFK` `Adjustable Shortcuts` · OAuth + session restore · Region selection · Alliance partners
+**Client**  
+`Stats Overlay` `Anti-AFK` `Adjustable Shortcuts` · OAuth + session restore + automatic token refresh · Region selection · Alliance partners · Discord Rich Presence
 
-**Platforms**
+**Platforms**  
 `Windows` `macOS` `Linux` `ARM64` · Installer, portable, AppImage, deb, dmg
 
 ## Platform Support
