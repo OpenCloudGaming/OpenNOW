@@ -17,6 +17,7 @@ import type {
   FlightSlotConfig,
   HdrCapability,
   HdrStreamState,
+  PlatformInfo,
 } from "@shared/gfn";
 import { defaultFlightSlots } from "@shared/gfn";
 
@@ -310,12 +311,16 @@ export function App(): JSX.Element {
     micEchoCancellation: true,
     shortcutToggleMic: DEFAULT_SHORTCUTS.shortcutToggleMic,
     hevcCompatMode: "auto",
+    videoDecodeBackend: "auto",
     sessionClockShowEveryMinutes: 60,
     sessionClockShowDurationSeconds: 30,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
+
+  // Platform info (from main process)
+  const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
 
   // Stream State
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -359,6 +364,10 @@ export function App(): JSX.Element {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    void window.openNow.getPlatformInfo().then(setPlatformInfo).catch(() => {});
+  }, []);
 
   // Derived state
   const selectedProvider = useMemo(() => {
@@ -860,6 +869,8 @@ export function App(): JSX.Element {
               maxBitrateKbps: settings.maxBitrateMbps * 1000,
               hdrEnabled: hdrEnabledForStream,
               hevcCompatMode: settings.hevcCompatMode,
+              platformInfo,
+              videoDecodeBackend: settings.videoDecodeBackend,
             });
             setLaunchError(null);
             setStreamStatus("streaming");

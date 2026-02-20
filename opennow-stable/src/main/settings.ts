@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import type { VideoCodec, ColorQuality, VideoAccelerationPreference, FlightSlotConfig, HdrStreamingMode, MicMode, HevcCompatMode } from "@shared/gfn";
+import type { VideoCodec, ColorQuality, VideoAccelerationPreference, FlightSlotConfig, HdrStreamingMode, MicMode, HevcCompatMode, VideoDecodeBackend } from "@shared/gfn";
 import { defaultFlightSlots } from "@shared/gfn";
 
 export interface Settings {
@@ -65,6 +65,8 @@ export interface Settings {
   shortcutToggleMic: string;
   /** HEVC compatibility mode: auto, force_h264, force_hevc, hevc_software */
   hevcCompatMode: HevcCompatMode;
+  /** Linux video decode backend override: auto, vaapi, v4l2, software */
+  videoDecodeBackend: VideoDecodeBackend;
   /** Show session clock every N minutes (0 = always visible) */
   sessionClockShowEveryMinutes: number;
   /** Duration in seconds to show session clock when periodically revealed */
@@ -107,6 +109,7 @@ const DEFAULT_SETTINGS: Settings = {
   micEchoCancellation: true,
   shortcutToggleMic: "Ctrl+Shift+M",
   hevcCompatMode: "auto",
+  videoDecodeBackend: "auto",
   sessionClockShowEveryMinutes: 60,
   sessionClockShowDurationSeconds: 30,
 };

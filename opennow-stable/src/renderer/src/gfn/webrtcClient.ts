@@ -7,6 +7,8 @@ import type {
   FlightGamepadState,
   HdrStreamState,
   HevcCompatMode,
+  PlatformInfo,
+  VideoDecodeBackend,
 } from "@shared/gfn";
 
 import {
@@ -44,6 +46,8 @@ interface OfferSettings {
   maxBitrateKbps: number;
   hdrEnabled: boolean;
   hevcCompatMode: HevcCompatMode;
+  platformInfo: PlatformInfo | null;
+  videoDecodeBackend: VideoDecodeBackend;
 }
 
 interface KeyStrokeSpec {
@@ -3013,6 +3017,21 @@ export class GfnWebRtcClient {
     const useSoftwareDecode = shouldRequestSoftwareDecode(settings.hevcCompatMode, effectiveCodec);
     if (useSoftwareDecode) {
       this.log("[HEVC Compat] Software decode requested for HEVC");
+    }
+
+    // 3b. Linux ARM V4L2 codec safety — fallback unsupported codecs to H.264
+    const isLinuxArm = settings.platformInfo?.platform === "linux" &&
+      (settings.platformInfo.arch === "arm64" || settings.platformInfo.arch === "arm");
+    const v4l2Active = isLinuxArm && (settings.videoDecodeBackend === "auto" || settings.videoDecodeBackend === "v4l2");
+    if (v4l2Active) {
+      if (effectiveCodec === "AV1" && !supported.includes("AV1")) {
+        this.log(`[Linux ARM] AV1 not in browser codec list, falling back to H.264`);
+        effectiveCodec = "H264";
+      }
+      if (effectiveCodec === "H265" && !supported.includes("H265")) {
+        this.log(`[Linux ARM] HEVC not in browser codec list, falling back to H.264`);
+        effectiveCodec = "H264";
+      }
     }
 
     // HDR requires a 10-bit capable codec. H264 cannot carry 10-bit HDR.

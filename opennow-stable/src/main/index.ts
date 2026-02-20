@@ -20,6 +20,7 @@ import type {
   IceCandidatePayload,
   Settings,
   VideoAccelerationPreference,
+  VideoDecodeBackend,
   SubscriptionFetchRequest,
   SessionConflictChoice,
   DiscordPresencePayload,
@@ -49,16 +50,22 @@ const __dirname = dirname(__filename);
 interface BootstrapVideoPreferences {
   decoderPreference: VideoAccelerationPreference;
   encoderPreference: VideoAccelerationPreference;
+  videoDecodeBackend: VideoDecodeBackend;
 }
 
 function isAccelerationPreference(value: unknown): value is VideoAccelerationPreference {
   return value === "auto" || value === "hardware" || value === "software";
 }
 
+function isVideoDecodeBackend(value: unknown): value is VideoDecodeBackend {
+  return value === "auto" || value === "vaapi" || value === "v4l2" || value === "software";
+}
+
 function loadBootstrapVideoPreferences(): BootstrapVideoPreferences {
   const defaults: BootstrapVideoPreferences = {
     decoderPreference: "auto",
     encoderPreference: "auto",
+    videoDecodeBackend: "auto",
   };
   try {
     const settingsPath = join(app.getPath("userData"), "settings.json");
@@ -73,6 +80,9 @@ function loadBootstrapVideoPreferences(): BootstrapVideoPreferences {
       encoderPreference: isAccelerationPreference(parsed.encoderPreference)
         ? parsed.encoderPreference
         : defaults.encoderPreference,
+      videoDecodeBackend: isVideoDecodeBackend(parsed.videoDecodeBackend)
+        ? parsed.videoDecodeBackend
+        : defaults.videoDecodeBackend,
     };
   } catch {
     return defaults;
@@ -81,10 +91,15 @@ function loadBootstrapVideoPreferences(): BootstrapVideoPreferences {
 
 const bootstrapVideoPrefs = loadBootstrapVideoPreferences();
 console.log(
-  `[Main] Video acceleration preference: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
+  `[Main] Video acceleration preference: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}, videoDecodeBackend=${bootstrapVideoPrefs.videoDecodeBackend}`,
 );
 
+const isLinuxArm = process.platform === "linux" && (process.arch === "arm64" || process.arch === "arm");
+
 const platformFeatures: string[] = [];
+const disableFeatures: string[] = [
+  "WebRtcHideLocalIpsWithMdns",
+];
 
 if (process.platform === "win32") {
   if (bootstrapVideoPrefs.decoderPreference !== "software") {
@@ -97,17 +112,33 @@ if (process.platform === "win32") {
     platformFeatures.push("MediaFoundationD3D11VideoCapture");
   }
 } else if (process.platform === "linux") {
-  if (bootstrapVideoPrefs.decoderPreference !== "software") {
-    platformFeatures.push("VaapiVideoDecoder");
+  const pref = bootstrapVideoPrefs.videoDecodeBackend;
+
+  if (pref === "software") {
+    disableFeatures.push("UseChromeOSDirectVideoDecoder");
+  } else if (pref === "vaapi") {
+    if (bootstrapVideoPrefs.decoderPreference !== "software") {
+      platformFeatures.push("VaapiVideoDecoder");
+      platformFeatures.push("VaapiIgnoreDriverChecks");
+    }
+    disableFeatures.push("UseChromeOSDirectVideoDecoder");
+  } else if (pref === "v4l2") {
+    platformFeatures.push("UseChromeOSDirectVideoDecoder");
+  } else {
+    // auto: select based on architecture
+    if (isLinuxArm) {
+      platformFeatures.push("UseChromeOSDirectVideoDecoder");
+    } else {
+      if (bootstrapVideoPrefs.decoderPreference !== "software") {
+        platformFeatures.push("VaapiVideoDecoder");
+        platformFeatures.push("VaapiIgnoreDriverChecks");
+      }
+      disableFeatures.push("UseChromeOSDirectVideoDecoder");
+    }
   }
+
   if (bootstrapVideoPrefs.encoderPreference !== "software") {
     platformFeatures.push("VaapiVideoEncoder");
-  }
-  if (
-    bootstrapVideoPrefs.decoderPreference !== "software" ||
-    bootstrapVideoPrefs.encoderPreference !== "software"
-  ) {
-    platformFeatures.push("VaapiIgnoreDriverChecks");
   }
 }
 
@@ -119,12 +150,6 @@ app.commandLine.appendSwitch("enable-features",
   ].join(","),
 );
 
-const disableFeatures: string[] = [
-  "WebRtcHideLocalIpsWithMdns",
-];
-if (process.platform === "linux") {
-  disableFeatures.push("UseChromeOSDirectVideoDecoder");
-}
 app.commandLine.appendSwitch("disable-features", disableFeatures.join(","));
 
 app.commandLine.appendSwitch("force-fieldtrials",
@@ -574,6 +599,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.APP_RELAUNCH, () => {
     app.relaunch();
     app.exit(0);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GET_PLATFORM_INFO, () => {
+    return { platform: process.platform, arch: process.arch };
   });
 
   mainWindow?.on("resize", () => {

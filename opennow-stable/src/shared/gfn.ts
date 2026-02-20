@@ -7,6 +7,13 @@ export type MicMode = "off" | "on" | "push-to-talk";
 
 export type HevcCompatMode = "auto" | "force_h264" | "force_hevc" | "hevc_software";
 
+export type VideoDecodeBackend = "auto" | "vaapi" | "v4l2" | "software";
+
+export interface PlatformInfo {
+  platform: string;
+  arch: string;
+}
+
 export interface MicSettings {
   micMode: MicMode;
   micDeviceId: string;
@@ -104,6 +111,7 @@ export interface Settings {
   micEchoCancellation: boolean;
   shortcutToggleMic: string;
   hevcCompatMode: HevcCompatMode;
+  videoDecodeBackend: VideoDecodeBackend;
   sessionClockShowEveryMinutes: number;
   sessionClockShowDurationSeconds: number;
 }
@@ -397,6 +405,7 @@ export interface OpenNowApi {
   micEnumerateDevices(): Promise<MicDeviceInfo[]>;
   onMicDevicesChanged(listener: (devices: MicDeviceInfo[]) => void): () => void;
   onSessionExpired(listener: (reason: string) => void): () => void;
+  getPlatformInfo(): Promise<PlatformInfo>;
 }
 
 export type FlightAxisTarget =

@@ -21,6 +21,7 @@ import type {
   DiscordPresencePayload,
   FlightProfile,
   MicDeviceInfo,
+  PlatformInfo,
 } from "@shared/gfn";
 
 type PreloadApi = OpenNowApi;
@@ -107,6 +108,7 @@ const api: PreloadApi = {
       ipcRenderer.off(IPC_CHANNELS.AUTH_SESSION_EXPIRED, wrapped);
     };
   },
+  getPlatformInfo: (): Promise<PlatformInfo> => ipcRenderer.invoke(IPC_CHANNELS.GET_PLATFORM_INFO),
 };
 
 contextBridge.exposeInMainWorld("openNow", api);
