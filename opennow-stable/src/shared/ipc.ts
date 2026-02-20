@@ -36,6 +36,7 @@ export const IPC_CHANNELS = {
   MIC_ENUMERATE_DEVICES: "mic:enumerate-devices",
   MIC_DEVICES_CHANGED: "mic:devices-changed",
   APP_RELAUNCH: "app:relaunch",
+  AUTH_SESSION_EXPIRED: "auth:session-expired",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

@@ -30,7 +30,7 @@ jobs:
       matrix:
         include:
           - label: windows
-            os: blacksmith-2vcpu-windows-2025
+            os: blacksmith-4vcpu-windows-2025
             builder_args: "--win nsis portable"
           - label: macos-x64
             os: macos-latest
@@ -39,10 +39,10 @@ jobs:
             os: macos-latest
             builder_args: "--mac dmg zip --arm64"
           - label: linux-x64
-            os: blacksmith-2vcpu-ubuntu-2404
+            os: blacksmith-4vcpu-ubuntu-2404
             builder_args: "--linux AppImage deb --x64"
           - label: linux-arm64
-            os: blacksmith-2vcpu-ubuntu-2404-arm
+            os: blacksmith-4vcpu-ubuntu-2404-arm
             builder_args: "--linux AppImage deb --arm64"
 
     defaults:
@@ -112,7 +112,7 @@ jobs:
 
   release:
     name: publish-release
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: build
     if: |
       github.ref == 'refs/heads/main' ||

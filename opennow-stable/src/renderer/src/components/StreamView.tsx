@@ -25,6 +25,7 @@ interface StreamViewProps {
     gameTitle: string;
   };
   sessionElapsedSeconds: number;
+  sessionClockVisible: boolean;
   streamWarning: {
     code: 1 | 2 | 3;
     message: string;
@@ -101,6 +102,7 @@ export function StreamView({
   escHoldReleaseIndicator,
   exitPrompt,
   sessionElapsedSeconds,
+  sessionClockVisible,
   streamWarning,
   isConnecting,
   gameTitle,
@@ -172,7 +174,7 @@ export function StreamView({
         </div>
       )}
 
-      {!isConnecting && (
+      {!isConnecting && sessionClockVisible && (
         <div className="sv-session-clock" title="Current gaming session elapsed time">
           <Clock3 size={14} />
           <span>Session {sessionTimeText}</span>

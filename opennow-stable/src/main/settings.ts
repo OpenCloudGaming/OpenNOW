@@ -65,6 +65,10 @@ export interface Settings {
   shortcutToggleMic: string;
   /** HEVC compatibility mode: auto, force_h264, force_hevc, hevc_software */
   hevcCompatMode: HevcCompatMode;
+  /** Show session clock every N minutes (0 = always visible) */
+  sessionClockShowEveryMinutes: number;
+  /** Duration in seconds to show session clock when periodically revealed */
+  sessionClockShowDurationSeconds: number;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -103,6 +107,8 @@ const DEFAULT_SETTINGS: Settings = {
   micEchoCancellation: true,
   shortcutToggleMic: "Ctrl+Shift+M",
   hevcCompatMode: "auto",
+  sessionClockShowEveryMinutes: 60,
+  sessionClockShowDurationSeconds: 30,
 };
 
 export class SettingsManager {

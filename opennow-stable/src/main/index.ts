@@ -167,6 +167,28 @@ function emitToRenderer(event: MainToRendererSignalingEvent): void {
   }
 }
 
+function emitSessionExpired(reason: string): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(IPC_CHANNELS.AUTH_SESSION_EXPIRED, reason);
+  }
+}
+
+async function withRetryOn401<T>(
+  fn: (token: string) => Promise<T>,
+  explicitToken?: string,
+): Promise<T> {
+  const token = await resolveJwt(explicitToken);
+  try {
+    return await fn(token);
+  } catch (error) {
+    const { shouldRetry, token: newToken } = await authService.handleApiError(error);
+    if (shouldRetry && newToken) {
+      return fn(newToken);
+    }
+    throw error;
+  }
+}
+
 function setupWebHidPermissions(): void {
   const ses = session.defaultSession;
 
@@ -334,26 +356,29 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.SUBSCRIPTION_FETCH, async (_event, payload: SubscriptionFetchRequest) => {
-    const token = await resolveJwt(payload?.token);
-    const streamingBaseUrl =
-      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    const userId = payload.userId;
-    const { vpcId } = await fetchDynamicRegions(token, streamingBaseUrl);
-    return fetchSubscription(token, userId, vpcId ?? undefined);
+    return withRetryOn401(async (token) => {
+      const streamingBaseUrl =
+        payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+      const userId = payload.userId;
+      const { vpcId } = await fetchDynamicRegions(token, streamingBaseUrl);
+      return fetchSubscription(token, userId, vpcId ?? undefined);
+    }, payload?.token);
   });
 
   ipcMain.handle(IPC_CHANNELS.GAMES_FETCH_MAIN, async (_event, payload: GamesFetchRequest) => {
-    const token = await resolveJwt(payload?.token);
-    const streamingBaseUrl =
-      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    return fetchMainGames(token, streamingBaseUrl);
+    return withRetryOn401(async (token) => {
+      const streamingBaseUrl =
+        payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+      return fetchMainGames(token, streamingBaseUrl);
+    }, payload?.token);
   });
 
   ipcMain.handle(IPC_CHANNELS.GAMES_FETCH_LIBRARY, async (_event, payload: GamesFetchRequest) => {
-    const token = await resolveJwt(payload?.token);
-    const streamingBaseUrl =
-      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    return fetchLibraryGames(token, streamingBaseUrl);
+    return withRetryOn401(async (token) => {
+      const streamingBaseUrl =
+        payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+      return fetchLibraryGames(token, streamingBaseUrl);
+    }, payload?.token);
   });
 
   ipcMain.handle(IPC_CHANNELS.GAMES_FETCH_PUBLIC, async () => {
@@ -361,21 +386,23 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, async (_event, payload: ResolveLaunchIdRequest) => {
-    const token = await resolveJwt(payload?.token);
-    const streamingBaseUrl =
-      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    return resolveLaunchAppId(token, payload.appIdOrUuid, streamingBaseUrl);
+    return withRetryOn401(async (token) => {
+      const streamingBaseUrl =
+        payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+      return resolveLaunchAppId(token, payload.appIdOrUuid, streamingBaseUrl);
+    }, payload?.token);
   });
 
   ipcMain.handle(IPC_CHANNELS.CREATE_SESSION, async (_event, payload: SessionCreateRequest) => {
     try {
-      const token = await resolveJwt(payload.token);
-      const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-      return createSession({
-        ...payload,
-        token,
-        streamingBaseUrl,
-      });
+      return await withRetryOn401(async (token) => {
+        const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+        return createSession({
+          ...payload,
+          token,
+          streamingBaseUrl,
+        });
+      }, payload.token);
     } catch (error) {
       rethrowSerializedSessionError(error);
     }
@@ -383,12 +410,13 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.POLL_SESSION, async (_event, payload: SessionPollRequest) => {
     try {
-      const token = await resolveJwt(payload.token);
-      return pollSession({
-        ...payload,
-        token,
-        streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
-      });
+      return await withRetryOn401(async (token) => {
+        return pollSession({
+          ...payload,
+          token,
+          streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
+        });
+      }, payload.token);
     } catch (error) {
       rethrowSerializedSessionError(error);
     }
@@ -396,32 +424,35 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.STOP_SESSION, async (_event, payload: SessionStopRequest) => {
     try {
-      const token = await resolveJwt(payload.token);
-      return stopSession({
-        ...payload,
-        token,
-        streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
-      });
+      return await withRetryOn401(async (token) => {
+        return stopSession({
+          ...payload,
+          token,
+          streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
+        });
+      }, payload.token);
     } catch (error) {
       rethrowSerializedSessionError(error);
     }
   });
 
   ipcMain.handle(IPC_CHANNELS.GET_ACTIVE_SESSIONS, async (_event, token?: string, streamingBaseUrl?: string) => {
-    const jwt = await resolveJwt(token);
-    const baseUrl = streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    return getActiveSessions(jwt, baseUrl);
+    return withRetryOn401(async (jwt) => {
+      const baseUrl = streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+      return getActiveSessions(jwt, baseUrl);
+    }, token);
   });
 
   ipcMain.handle(IPC_CHANNELS.CLAIM_SESSION, async (_event, payload: SessionClaimRequest) => {
     try {
-      const token = await resolveJwt(payload.token);
-      const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-      return claimSession({
-        ...payload,
-        token,
-        streamingBaseUrl,
-      });
+      return await withRetryOn401(async (token) => {
+        const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+        return claimSession({
+          ...payload,
+          token,
+          streamingBaseUrl,
+        });
+      }, payload.token);
     } catch (error) {
       rethrowSerializedSessionError(error);
     }
@@ -557,6 +588,8 @@ function registerIpcHandlers(): void {
 app.whenReady().then(async () => {
   authService = new AuthService(join(app.getPath("userData"), "auth-state.json"));
   await authService.initialize();
+
+  authService.onSessionExpired(emitSessionExpired);
 
   settingsManager = getSettingsManager();
 

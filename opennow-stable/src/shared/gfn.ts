@@ -104,6 +104,8 @@ export interface Settings {
   micEchoCancellation: boolean;
   shortcutToggleMic: string;
   hevcCompatMode: HevcCompatMode;
+  sessionClockShowEveryMinutes: number;
+  sessionClockShowDurationSeconds: number;
 }
 
 export interface LoginProvider {
@@ -394,6 +396,7 @@ export interface OpenNowApi {
   relaunchApp(): Promise<void>;
   micEnumerateDevices(): Promise<MicDeviceInfo[]>;
   onMicDevicesChanged(listener: (devices: MicDeviceInfo[]) => void): () => void;
+  onSessionExpired(listener: (reason: string) => void): () => void;
 }
 
 export type FlightAxisTarget =

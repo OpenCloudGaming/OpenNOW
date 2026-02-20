@@ -25,7 +25,7 @@ const USERINFO_ENDPOINT = "https://login.nvidia.com/userinfo";
 const AUTH_ENDPOINT = "https://login.nvidia.com/authorize";
 
 const CLIENT_ID = "ZU7sPN-miLujMD95LfOQ453IB0AtjM8sMyvgJ9wCXEQ";
-const SCOPES = "openid consent email tk_client age";
+const SCOPES = "openid consent email tk_client age offline_access";
 const DEFAULT_IDP_ID = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg";
 
 const GFN_USER_AGENT =
@@ -248,6 +248,7 @@ async function refreshAuthTokens(refreshToken: string): Promise<AuthTokens> {
     grant_type: "refresh_token",
     refresh_token: refreshToken,
     client_id: CLIENT_ID,
+    scope: SCOPES,
   });
 
   const response = await fetch(TOKEN_ENDPOINT, {
@@ -267,6 +268,51 @@ async function refreshAuthTokens(refreshToken: string): Promise<AuthTokens> {
   }
 
   const payload = (await response.json()) as TokenResponse;
+
+  if (!payload.access_token) {
+    throw new Error("Token refresh returned empty access_token");
+  }
+
+  return {
+    accessToken: payload.access_token,
+    refreshToken: payload.refresh_token ?? refreshToken,
+    idToken: payload.id_token,
+    expiresAt: Date.now() + (payload.expires_in ?? 86400) * 1000,
+  };
+}
+
+async function refreshViaClientToken(refreshToken: string): Promise<AuthTokens> {
+  const body = new URLSearchParams({
+    grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+    subject_token: refreshToken,
+    subject_token_type: "urn:ietf:params:oauth:token-type:refresh_token",
+    requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
+    client_id: CLIENT_ID,
+    scope: SCOPES,
+  });
+
+  const response = await fetch(TOKEN_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      Origin: "https://nvfile",
+      Accept: "application/json, text/plain, */*",
+      "User-Agent": GFN_USER_AGENT,
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`client_token refresh failed (${response.status}): ${text.slice(0, 400)}`);
+  }
+
+  const payload = (await response.json()) as TokenResponse;
+
+  if (!payload.access_token) {
+    throw new Error("client_token refresh returned empty access_token");
+  }
+
   return {
     accessToken: payload.access_token,
     refreshToken: payload.refresh_token ?? refreshToken,
@@ -330,6 +376,8 @@ export class AuthService {
   private selectedProvider: LoginProvider = defaultProvider();
   private cachedSubscription: SubscriptionInfo | null = null;
   private cachedVpcId: string | null = null;
+  private refreshLock: Promise<AuthTokens | null> | null = null;
+  private sessionExpiredListeners = new Set<(reason: string) => void>();
 
   constructor(private readonly statePath: string) {}
 
@@ -716,7 +764,19 @@ export class AuthService {
     }
 
     try {
-      const refreshed = await refreshAuthTokens(tokens.refreshToken);
+      const refreshed = await this.lockedRefresh();
+      if (!refreshed) {
+        return {
+          session: this.session,
+          refresh: {
+            attempted: true,
+            forced: forceRefresh,
+            outcome: "failed",
+            message: "Token refresh failed (all strategies exhausted). Using saved session token.",
+          },
+        };
+      }
+
       const user = await fetchUserInfo(refreshed);
       this.session = {
         provider: this.session.provider,
@@ -724,7 +784,6 @@ export class AuthService {
         user,
       };
 
-      // Re-fetch real tier after token refresh
       this.clearSubscriptionCache();
       await this.enrichUserTier();
 
@@ -772,5 +831,101 @@ export class AuthService {
     }
 
     return session.tokens.idToken ?? session.tokens.accessToken;
+  }
+
+  onSessionExpired(listener: (reason: string) => void): () => void {
+    this.sessionExpiredListeners.add(listener);
+    return () => {
+      this.sessionExpiredListeners.delete(listener);
+    };
+  }
+
+  private emitSessionExpired(reason: string): void {
+    for (const listener of this.sessionExpiredListeners) {
+      listener(reason);
+    }
+  }
+
+  private async performTokenRefresh(): Promise<AuthTokens | null> {
+    if (!this.session?.tokens.refreshToken) {
+      return null;
+    }
+
+    const refreshToken = this.session.tokens.refreshToken;
+
+    try {
+      const refreshed = await refreshAuthTokens(refreshToken);
+      return refreshed;
+    } catch (standardError) {
+      console.warn("[Auth] Standard refresh_token flow failed, trying client_token exchange:", standardError);
+      try {
+        const refreshed = await refreshViaClientToken(refreshToken);
+        return refreshed;
+      } catch (clientTokenError) {
+        console.error("[Auth] client_token exchange also failed:", clientTokenError);
+        return null;
+      }
+    }
+  }
+
+  private async lockedRefresh(): Promise<AuthTokens | null> {
+    if (this.refreshLock) {
+      return this.refreshLock;
+    }
+
+    this.refreshLock = this.performTokenRefresh().finally(() => {
+      this.refreshLock = null;
+    });
+
+    return this.refreshLock;
+  }
+
+  async handleApiError(error: unknown): Promise<{ shouldRetry: boolean; token: string | null }> {
+    const is401 =
+      error instanceof Error &&
+      (error.message.includes("(401)") ||
+        error.message.includes("status 401") ||
+        error.message.includes("Unauthorized"));
+
+    if (!is401) {
+      return { shouldRetry: false, token: null };
+    }
+
+    if (!this.session?.tokens.refreshToken) {
+      console.warn("[Auth] 401 received but no refresh token available, triggering logout");
+      await this.logout();
+      this.emitSessionExpired("Session expired. No refresh token available.");
+      return { shouldRetry: false, token: null };
+    }
+
+    const refreshed = await this.lockedRefresh();
+    if (!refreshed) {
+      console.warn("[Auth] 401 received and token refresh failed, triggering logout");
+      await this.logout();
+      this.emitSessionExpired("Session expired. Token refresh failed.");
+      return { shouldRetry: false, token: null };
+    }
+
+    try {
+      const user = await fetchUserInfo(refreshed);
+      this.session = {
+        provider: this.session.provider,
+        tokens: refreshed,
+        user,
+      };
+
+      this.clearSubscriptionCache();
+      await this.enrichUserTier();
+      await this.persist();
+    } catch {
+      this.session = {
+        ...this.session,
+        tokens: refreshed,
+      };
+      await this.persist();
+    }
+
+    const newToken = refreshed.idToken ?? refreshed.accessToken;
+    return { shouldRetry: true, token: newToken };
   }
 }

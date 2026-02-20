@@ -98,6 +98,15 @@ const api: PreloadApi = {
       ipcRenderer.off(IPC_CHANNELS.MIC_DEVICES_CHANGED, wrapped);
     };
   },
+  onSessionExpired: (listener: (reason: string) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, reason: string) => {
+      listener(reason);
+    };
+    ipcRenderer.on(IPC_CHANNELS.AUTH_SESSION_EXPIRED, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.AUTH_SESSION_EXPIRED, wrapped);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld("openNow", api);

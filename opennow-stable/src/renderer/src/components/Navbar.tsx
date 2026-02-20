@@ -125,8 +125,18 @@ export function Navbar({
     window.addEventListener("keydown", onKeyDown);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+
+    window.history.pushState({ navbarModal: true }, "");
+    const onPopState = (event: PopStateEvent) => {
+      if (event.state?.navbarModal !== true) {
+        setModalType(null);
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+
     return () => {
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("popstate", onPopState);
       document.body.style.overflow = previousOverflow;
     };
   }, [modalType]);

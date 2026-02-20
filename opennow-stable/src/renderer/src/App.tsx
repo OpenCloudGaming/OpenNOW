@@ -310,6 +310,8 @@ export function App(): JSX.Element {
     micEchoCancellation: true,
     shortcutToggleMic: DEFAULT_SHORTCUTS.shortcutToggleMic,
     hevcCompatMode: "auto",
+    sessionClockShowEveryMinutes: 60,
+    sessionClockShowDurationSeconds: 30,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
@@ -337,6 +339,8 @@ export function App(): JSX.Element {
   const [hdrCapability, setHdrCapability] = useState<HdrCapability | null>(null);
   const [hdrWarningShown, setHdrWarningShown] = useState(false);
   const [provisioningElapsed, setProvisioningElapsed] = useState(0);
+  const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string | null>(null);
+  const [sessionClockVisible, setSessionClockVisible] = useState(true);
 
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -413,6 +417,32 @@ export function App(): JSX.Element {
     }, 10000);
     return () => window.clearInterval(timer);
   }, [authSession, refreshNavbarActiveSession, streamStatus]);
+
+  useEffect(() => {
+    const unsubscribe = window.openNow.onSessionExpired((reason: string) => {
+      console.warn("[App] Session expired:", reason);
+      setSessionExpiredMessage(reason);
+      setAuthSession(null);
+      setGames([]);
+      setLibraryGames([]);
+      setNavbarActiveSession(null);
+      setIsResumingNavbarSession(false);
+      setLaunchError(null);
+      setSubscriptionInfo(null);
+      setCurrentPage("home");
+      window.openNow.fetchPublicGames().then((publicGames) => {
+        setGames(publicGames);
+        setSource("public");
+      }).catch(() => {});
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (!sessionExpiredMessage) return;
+    const timer = window.setTimeout(() => setSessionExpiredMessage(null), 10000);
+    return () => window.clearTimeout(timer);
+  }, [sessionExpiredMessage]);
 
   // Initialize app
   useEffect(() => {
@@ -646,6 +676,38 @@ export function App(): JSX.Element {
     const timer = window.setInterval(updateElapsed, 1000);
     return () => window.clearInterval(timer);
   }, [sessionStartedAtMs, streamStatus]);
+
+  useEffect(() => {
+    if (streamStatus === "idle" || sessionStartedAtMs === null) {
+      setSessionClockVisible(true);
+      return;
+    }
+
+    const everyMinutes = settings.sessionClockShowEveryMinutes;
+    const durationSeconds = settings.sessionClockShowDurationSeconds;
+
+    if (everyMinutes <= 0) {
+      setSessionClockVisible(true);
+      return;
+    }
+
+    setSessionClockVisible(true);
+    const hideTimer = window.setTimeout(() => {
+      setSessionClockVisible(false);
+    }, durationSeconds * 1000);
+
+    const revealInterval = window.setInterval(() => {
+      setSessionClockVisible(true);
+      window.setTimeout(() => {
+        setSessionClockVisible(false);
+      }, durationSeconds * 1000);
+    }, everyMinutes * 60 * 1000);
+
+    return () => {
+      window.clearTimeout(hideTimer);
+      window.clearInterval(revealInterval);
+    };
+  }, [streamStatus, sessionStartedAtMs, settings.sessionClockShowEveryMinutes, settings.sessionClockShowDurationSeconds]);
 
   // Discord Rich Presence updates
   useEffect(() => {
@@ -1625,7 +1687,7 @@ export function App(): JSX.Element {
         onProviderChange={setProviderIdpId}
         onLogin={handleLogin}
         isLoading={isLoggingIn}
-        error={loginError}
+        error={sessionExpiredMessage ?? loginError}
         isInitializing={isInitializing}
         statusMessage={startupStatusMessage}
       />
@@ -1656,6 +1718,7 @@ export function App(): JSX.Element {
             escHoldReleaseIndicator={escHoldReleaseIndicator}
             exitPrompt={exitPrompt}
             sessionElapsedSeconds={sessionElapsedSeconds}
+            sessionClockVisible={sessionClockVisible}
             streamWarning={streamWarning}
             isConnecting={streamStatus === "connecting"}
             gameTitle={streamingGame?.title ?? "Game"}
