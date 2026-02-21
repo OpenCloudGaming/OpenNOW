@@ -4,6 +4,7 @@ import type {
   IceServer,
   SessionInfo,
   VideoCodec,
+  MicrophoneMode,
 } from "@shared/gfn";
 
 import {
@@ -29,6 +30,7 @@ import {
   rewriteH265LevelIdByProfile,
   rewriteH265TierFlag,
 } from "./sdp";
+import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
 
 interface OfferSettings {
   codec: VideoCodec;
@@ -163,6 +165,10 @@ export interface StreamDiagnostics {
   // System info
   gpuType: string;
   serverRegion: string;
+
+  // Microphone state
+  micState: MicState;
+  micEnabled: boolean;
 }
 
 export interface StreamTimeWarning {
@@ -173,10 +179,15 @@ export interface StreamTimeWarning {
 interface ClientOptions {
   videoElement: HTMLVideoElement;
   audioElement: HTMLAudioElement;
+  /** Microphone mode preference */
+  microphoneMode?: MicrophoneMode;
+  /** Preferred microphone device ID */
+  microphoneDeviceId?: string;
   onLog: (line: string) => void;
   onStats?: (stats: StreamDiagnostics) => void;
   onEscHoldProgress?: (visible: boolean, progress: number) => void;
   onTimeWarning?: (warning: StreamTimeWarning) => void;
+  onMicStateChange?: (state: MicStateChange) => void;
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
@@ -499,6 +510,10 @@ export class GfnWebRtcClient {
   private inputQueuePressureLoggedAtMs = 0;
   private inputQueueDropCount = 0;
 
+  // Microphone
+  private micManager: MicrophoneManager | null = null;
+  private micState: MicState = "uninitialized";
+
   // Stream info
   private currentCodec = "";
   private currentResolution = "";
@@ -534,6 +549,8 @@ export class GfnWebRtcClient {
     inputQueueMaxSchedulingDelayMs: 0,
     gpuType: "",
     serverRegion: "",
+    micState: "uninitialized",
+    micEnabled: false,
   };
 
   constructor(private readonly options: ClientOptions) {
@@ -547,6 +564,22 @@ export class GfnWebRtcClient {
     // Detect GPU once on construction
     this.gpuType = detectGpuType();
     this.diagnostics.gpuType = this.gpuType;
+
+    // Initialize microphone manager if mode is enabled
+    const micMode = options.microphoneMode ?? "disabled";
+    if (micMode !== "disabled" && MicrophoneManager.isSupported()) {
+      this.micManager = new MicrophoneManager();
+      this.micManager.setOnStateChange((state) => {
+        this.micState = state.state;
+        this.diagnostics.micState = state.state;
+        this.diagnostics.micEnabled = this.micManager?.isEnabled() ?? false;
+        this.emitStats();
+        this.options.onMicStateChange?.(state);
+      });
+      if (options.microphoneDeviceId) {
+        this.micManager.setDeviceId(options.microphoneDeviceId);
+      }
+    }
   }
 
   /**
@@ -652,6 +685,8 @@ export class GfnWebRtcClient {
       inputQueueMaxSchedulingDelayMs: 0,
       gpuType: this.gpuType,
       serverRegion: this.serverRegion,
+      micState: this.micState,
+      micEnabled: this.micManager?.isEnabled() ?? false,
     };
     this.emitStats();
   }
@@ -2089,6 +2124,12 @@ export class GfnWebRtcClient {
     };
 
     const onWindowBlur = () => {
+      // Don't release keys during microphone permission request
+      // as getUserMedia() may cause brief window focus loss
+      if (this.micState === "permission_pending") {
+        this.log("Window blur during mic permission - keeping keys pressed");
+        return;
+      }
       this.clearEscapeHoldTimer();
       this.releasePressedKeys("window blur");
     };
@@ -2587,6 +2628,12 @@ export class GfnWebRtcClient {
     this.log("Remote description set successfully");
     await this.flushQueuedCandidates();
 
+    // Attach microphone track to the correct transceiver after remote description is set
+    if (this.micManager) {
+      this.micManager.setPeerConnection(pc);
+      await this.micManager.attachTrackToPeerConnection();
+    }
+
     // 3b. Apply setCodecPreferences on the video transceiver to reinforce codec choice.
     //     This is the modern WebRTC API — more reliable than SDP munging alone.
     //     Must be called after setRemoteDescription (which creates the transceiver)
@@ -2727,11 +2774,97 @@ export class GfnWebRtcClient {
   dispose(): void {
     this.cleanupPeerConnection();
 
+    // Cleanup microphone
+    if (this.micManager) {
+      this.micManager.dispose();
+      this.micManager = null;
+    }
+
     for (const track of this.videoStream.getTracks()) {
       this.videoStream.removeTrack(track);
     }
     for (const track of this.audioStream.getTracks()) {
       this.audioStream.removeTrack(track);
     }
+  }
+
+  /**
+   * Initialize and start microphone capture
+   */
+  async startMicrophone(): Promise<boolean> {
+    if (!this.micManager) {
+      this.log("Microphone not available (mode disabled or not supported)");
+      return false;
+    }
+
+    // Set peer connection for mic track
+    if (this.pc) {
+      this.micManager.setPeerConnection(this.pc);
+    }
+
+    const result = await this.micManager.initialize();
+    if (result) {
+      this.log("Microphone initialized successfully");
+    } else {
+      this.log("Microphone initialization failed");
+    }
+    return result;
+  }
+
+  /**
+   * Stop microphone capture
+   */
+  stopMicrophone(): void {
+    if (!this.micManager) return;
+
+    this.micManager.stop();
+    this.log("Microphone stopped");
+  }
+
+  /**
+   * Toggle microphone mute/unmute
+   */
+  toggleMicrophone(): void {
+    if (!this.micManager) return;
+
+    const isEnabled = this.micManager.isEnabled();
+    this.micManager.setEnabled(!isEnabled);
+    this.log(`Microphone ${!isEnabled ? "unmuted" : "muted"}`);
+  }
+
+  /**
+   * Set microphone enabled state
+   */
+  setMicrophoneEnabled(enabled: boolean): void {
+    if (!this.micManager) return;
+
+    this.micManager.setEnabled(enabled);
+    this.log(`Microphone ${enabled ? "enabled" : "disabled"}`);
+  }
+
+  /**
+   * Check if microphone is currently enabled (unmuted)
+   */
+  isMicrophoneEnabled(): boolean {
+    return this.micManager?.isEnabled() ?? false;
+  }
+
+  /**
+   * Get current microphone state
+   */
+  getMicrophoneState(): MicState {
+    return this.micState;
+  }
+
+  /**
+   * Enumerate available microphone devices
+   */
+  async enumerateMicrophones(): Promise<MediaDeviceInfo[]> {
+    if (!MicrophoneManager.isSupported()) {
+      return [];
+    }
+    // Ensure permission first to get labels
+    const manager = new MicrophoneManager();
+    return await manager.enumerateDevices();
   }
 }

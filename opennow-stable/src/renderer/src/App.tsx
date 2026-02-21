@@ -21,6 +21,7 @@ import {
   type StreamTimeWarning,
 } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
+import { useControllerNavigation } from "./controllerNavigation";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
@@ -34,6 +35,8 @@ import { StreamView } from "./components/StreamView";
 const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
 const resolutionOptions = ["1280x720", "1920x1080", "2560x1440", "3840x2160", "2560x1080", "3440x1440"];
 const fpsOptions = [30, 60, 120, 144, 240];
+const SESSION_READY_POLL_INTERVAL_MS = 2000;
+const SESSION_READY_TIMEOUT_MS = 180000;
 
 type GameSource = "main" | "library" | "public";
 type AppPage = "home" | "library" | "settings";
@@ -53,6 +56,8 @@ type LaunchErrorState = {
   codeLabel?: string;
 };
 
+const APP_PAGE_ORDER: AppPage[] = ["home", "library", "settings"];
+
 const isMac = navigator.platform.toLowerCase().includes("mac");
 
 const DEFAULT_SHORTCUTS = {
@@ -60,10 +65,15 @@ const DEFAULT_SHORTCUTS = {
   shortcutTogglePointerLock: "F8",
   shortcutStopStream: "Ctrl+Shift+Q",
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
+  shortcutToggleMicrophone: "Ctrl+Shift+M",
 } as const;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function isSessionReadyForConnect(status: number): boolean {
+  return status === 2 || status === 3;
 }
 
 function isNumericId(value: string | undefined): value is string {
@@ -111,6 +121,8 @@ function defaultDiagnostics(): StreamDiagnostics {
     inputQueueMaxSchedulingDelayMs: 0,
     gpuType: "",
     serverRegion: "",
+    micState: "uninitialized",
+    micEnabled: false,
   };
 }
 
@@ -266,6 +278,12 @@ export function App(): JSX.Element {
     shortcutTogglePointerLock: DEFAULT_SHORTCUTS.shortcutTogglePointerLock,
     shortcutStopStream: DEFAULT_SHORTCUTS.shortcutStopStream,
     shortcutToggleAntiAfk: DEFAULT_SHORTCUTS.shortcutToggleAntiAfk,
+    shortcutToggleMicrophone: DEFAULT_SHORTCUTS.shortcutToggleMicrophone,
+    microphoneMode: "disabled",
+    microphoneDeviceId: "",
+    hideStreamButtons: false,
+    sessionClockShowEveryMinutes: 60,
+    sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
   });
@@ -293,6 +311,33 @@ export function App(): JSX.Element {
   const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState(0);
   const [streamWarning, setStreamWarning] = useState<StreamWarningState | null>(null);
 
+  const handleControllerPageNavigate = useCallback((direction: "prev" | "next"): void => {
+    if (!authSession || streamStatus !== "idle") {
+      return;
+    }
+    const currentIndex = APP_PAGE_ORDER.indexOf(currentPage);
+    const step = direction === "next" ? 1 : -1;
+    const nextIndex = (currentIndex + step + APP_PAGE_ORDER.length) % APP_PAGE_ORDER.length;
+    setCurrentPage(APP_PAGE_ORDER[nextIndex]);
+  }, [authSession, currentPage, streamStatus]);
+
+  const handleControllerBackAction = useCallback((): boolean => {
+    if (!authSession || streamStatus !== "idle") {
+      return false;
+    }
+    if (currentPage !== "home") {
+      setCurrentPage("home");
+      return true;
+    }
+    return false;
+  }, [authSession, currentPage, streamStatus]);
+
+  const controllerConnected = useControllerNavigation({
+    enabled: streamStatus !== "streaming" || exitPrompt.open,
+    onNavigatePage: handleControllerPageNavigate,
+    onBackAction: handleControllerBackAction,
+  });
+
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -307,6 +352,13 @@ export function App(): JSX.Element {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    document.body.classList.toggle("controller-mode", controllerConnected);
+    return () => {
+      document.body.classList.remove("controller-mode");
+    };
+  }, [controllerConnected]);
 
   // Derived state
   const selectedProvider = useMemo(() => {
@@ -482,12 +534,14 @@ export function App(): JSX.Element {
     const togglePointerLock = parseWithFallback(settings.shortcutTogglePointerLock, DEFAULT_SHORTCUTS.shortcutTogglePointerLock);
     const stopStream = parseWithFallback(settings.shortcutStopStream, DEFAULT_SHORTCUTS.shortcutStopStream);
     const toggleAntiAfk = parseWithFallback(settings.shortcutToggleAntiAfk, DEFAULT_SHORTCUTS.shortcutToggleAntiAfk);
-    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk };
+    const toggleMicrophone = parseWithFallback(settings.shortcutToggleMicrophone, DEFAULT_SHORTCUTS.shortcutToggleMicrophone);
+    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk, toggleMicrophone };
   }, [
     settings.shortcutToggleStats,
     settings.shortcutTogglePointerLock,
     settings.shortcutStopStream,
     settings.shortcutToggleAntiAfk,
+    settings.shortcutToggleMicrophone,
   ]);
 
   const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
@@ -574,6 +628,20 @@ export function App(): JSX.Element {
     return () => clearInterval(interval);
   }, [antiAfkEnabled, streamStatus]);
 
+  // Restore focus to video element when navigating away from Settings during streaming
+  useEffect(() => {
+    if (streamStatus === "streaming" && currentPage !== "settings" && videoRef.current) {
+      // Small delay to let React finish rendering the new page
+      const timer = window.setTimeout(() => {
+        if (videoRef.current && document.activeElement !== videoRef.current) {
+          videoRef.current.focus();
+          console.log("[App] Restored focus to video element after leaving Settings");
+        }
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [currentPage, streamStatus]);
+
   useEffect(() => {
     if (streamStatus === "idle" || sessionStartedAtMs === null) {
       setSessionElapsedSeconds(0);
@@ -622,6 +690,8 @@ export function App(): JSX.Element {
             clientRef.current = new GfnWebRtcClient({
               videoElement: videoRef.current,
               audioElement: audioRef.current,
+              microphoneMode: settings.microphoneMode,
+              microphoneDeviceId: settings.microphoneDeviceId || undefined,
               onLog: (line: string) => console.log(`[WebRTC] ${line}`),
               onStats: (stats) => setDiagnostics(stats),
               onEscHoldProgress: (visible, progress) => {
@@ -635,7 +705,14 @@ export function App(): JSX.Element {
                   secondsLeft: warning.secondsLeft,
                 });
               },
+              onMicStateChange: (state) => {
+                console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
+              },
             });
+            // Auto-start microphone if mode is enabled
+            if (settings.microphoneMode !== "disabled") {
+              void clientRef.current.startMicrophone();
+            }
           }
 
           if (clientRef.current) {
@@ -908,11 +985,22 @@ export function App(): JSX.Element {
       });
 
       setSession(newSession);
+      setQueuePosition(newSession.queuePosition);
 
-      // Poll for readiness
-      let readyCount = 0;
-      for (let attempt = 1; attempt <= 30; attempt++) {
-        await sleep(2000);
+      // Poll for readiness.
+      // Queue mode (>1): no timeout - users wait indefinitely and see position updates.
+      // Setup/Starting mode (0, 1, or undefined): 180s timeout applies - machine is starting.
+      let finalSession: SessionInfo | null = null;
+      // Only in queue mode if queuePosition > 1 (actually waiting in line)
+      // queuePosition 0 or 1 means machine is being allocated, not queue wait
+      let isInQueueMode = (newSession.queuePosition ?? 0) > 1;
+      let timeoutStartAttempt = 1;
+      const maxAttempts = Math.ceil(SESSION_READY_TIMEOUT_MS / SESSION_READY_POLL_INTERVAL_MS);
+      let attempt = 0;
+
+      while (true) {
+        attempt++;
+        await sleep(SESSION_READY_POLL_INTERVAL_MS);
 
         const polled = await window.openNow.pollSession({
           token: token || undefined,
@@ -923,40 +1011,59 @@ export function App(): JSX.Element {
         });
 
         setSession(polled);
+        setQueuePosition(polled.queuePosition);
 
-        console.log(`Poll attempt ${attempt}: status=${polled.status}, signalingUrl=${polled.signalingUrl}`);
+        // Check if queue just cleared - transition from queue mode to setup mode
+        const wasInQueueMode = isInQueueMode;
+        // Queue mode only when position > 1 (actually waiting behind others)
+        // Position 0 or 1 means machine allocation is starting
+        isInQueueMode = (polled.queuePosition ?? 0) > 1;
+        if (wasInQueueMode && !isInQueueMode) {
+          // Queue just cleared, start timeout counting from now
+          timeoutStartAttempt = attempt;
+        }
 
-        if (polled.status === 2 || polled.status === 3) {
-          readyCount++;
-          console.log(`Ready count: ${readyCount}/3`);
-          if (readyCount >= 3) break;
+        console.log(
+          `Poll attempt ${attempt}: status=${polled.status}, queuePosition=${polled.queuePosition ?? "n/a"}, serverIp=${polled.serverIp}, queueMode=${isInQueueMode}`,
+        );
+
+        if (isSessionReadyForConnect(polled.status)) {
+          finalSession = polled;
+          break;
         }
 
         // Update status based on session state
-        if (polled.status === 1) {
+        if (isInQueueMode) {
+          updateLoadingStep("queue");
+        } else if (polled.status === 1) {
           updateLoadingStep("setup");
+        }
+
+        // Only check timeout when NOT in queue mode (i.e., during setup/starting)
+        if (!isInQueueMode && attempt - timeoutStartAttempt >= maxAttempts) {
+          throw new Error(`Session did not become ready in time (${Math.round(SESSION_READY_TIMEOUT_MS / 1000)}s)`);
         }
       }
 
-      if (readyCount < 3) {
-        throw new Error("Session did not become ready in time");
-      }
+      // finalSession is guaranteed to be set here (we only exit the loop via break when session is ready)
+      // Timeout only applies during setup/starting phase, not during queue wait
 
+      setQueuePosition(undefined);
       updateLoadingStep("connecting");
 
       // Use the polled session data which has the latest signaling info
-      const finalSession = sessionRef.current ?? newSession;
+      const sessionToConnect = sessionRef.current ?? finalSession ?? newSession;
       console.log("Connecting signaling with:", {
-        sessionId: finalSession.sessionId,
-        signalingServer: finalSession.signalingServer,
-        signalingUrl: finalSession.signalingUrl,
-        status: finalSession.status,
+        sessionId: sessionToConnect.sessionId,
+        signalingServer: sessionToConnect.signalingServer,
+        signalingUrl: sessionToConnect.signalingUrl,
+        status: sessionToConnect.status,
       });
 
       await window.openNow.connectSignaling({
-        sessionId: finalSession.sessionId,
-        signalingServer: finalSession.signalingServer,
-        signalingUrl: finalSession.signalingUrl,
+        sessionId: sessionToConnect.sessionId,
+        signalingServer: sessionToConnect.signalingServer,
+        signalingUrl: sessionToConnect.signalingUrl,
       });
     } catch (error) {
       console.error("Launch failed:", error);
@@ -1210,6 +1317,16 @@ export function App(): JSX.Element {
         if (streamStatus === "streaming") {
           setAntiAfkEnabled((prev) => !prev);
         }
+        return;
+      }
+
+      if (isShortcutMatch(e, shortcuts.toggleMicrophone)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        if (streamStatus === "streaming") {
+          clientRef.current?.toggleMicrophone();
+        }
       }
     };
 
@@ -1281,16 +1398,25 @@ export function App(): JSX.Element {
   // Show login screen if not authenticated
   if (!authSession) {
     return (
-      <LoginScreen
-        providers={providers}
-        selectedProviderId={providerIdpId}
-        onProviderChange={setProviderIdpId}
-        onLogin={handleLogin}
-        isLoading={isLoggingIn}
-        error={loginError}
-        isInitializing={isInitializing}
-        statusMessage={startupStatusMessage}
-      />
+      <>
+        <LoginScreen
+          providers={providers}
+          selectedProviderId={providerIdpId}
+          onProviderChange={setProviderIdpId}
+          onLogin={handleLogin}
+          isLoading={isLoggingIn}
+          error={loginError}
+          isInitializing={isInitializing}
+          statusMessage={startupStatusMessage}
+        />
+        {controllerConnected && (
+          <div className="controller-hint">
+            <span>D-pad Navigate</span>
+            <span>A Select</span>
+            <span>B Back</span>
+          </div>
+        )}
+      </>
     );
   }
 
@@ -1311,13 +1437,17 @@ export function App(): JSX.Element {
               toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
               togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),
               stopStream: formatShortcutForDisplay(settings.shortcutStopStream, isMac),
+              toggleMicrophone: formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac),
             }}
+            hideStreamButtons={settings.hideStreamButtons}
             serverRegion={session?.serverIp}
             connectedControllers={diagnostics.connectedGamepads}
             antiAfkEnabled={antiAfkEnabled}
             escHoldReleaseIndicator={escHoldReleaseIndicator}
             exitPrompt={exitPrompt}
             sessionElapsedSeconds={sessionElapsedSeconds}
+            sessionClockShowEveryMinutes={settings.sessionClockShowEveryMinutes}
+            sessionClockShowDurationSeconds={settings.sessionClockShowDurationSeconds}
             streamWarning={streamWarning}
             isConnecting={streamStatus === "connecting"}
             gameTitle={streamingGame?.title ?? "Game"}
@@ -1332,6 +1462,9 @@ export function App(): JSX.Element {
             onCancelExit={handleExitPromptCancel}
             onEndSession={() => {
               void handlePromptedStopStream();
+            }}
+            onToggleMicrophone={() => {
+              clientRef.current?.toggleMicrophone();
             }}
           />
         )}
@@ -1358,6 +1491,13 @@ export function App(): JSX.Element {
               void handlePromptedStopStream();
             }}
           />
+        )}
+        {controllerConnected && streamStatus !== "streaming" && (
+          <div className="controller-hint controller-hint--overlay">
+            <span>D-pad Navigate</span>
+            <span>A Select</span>
+            <span>B Back</span>
+          </div>
         )}
       </>
     );
@@ -1420,6 +1560,14 @@ export function App(): JSX.Element {
           />
         )}
       </main>
+      {controllerConnected && (
+        <div className="controller-hint">
+          <span>D-pad Navigate</span>
+          <span>A Select</span>
+          <span>B Back</span>
+          <span>LB/RB Tabs</span>
+        </div>
+      )}
     </div>
   );
 }

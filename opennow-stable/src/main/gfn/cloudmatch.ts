@@ -445,6 +445,43 @@ function resolvePollStopBase(zone: string, provided?: string, serverIp?: string)
   return base;
 }
 
+function toPositiveInt(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const normalized = Math.trunc(value);
+    return normalized > 0 ? normalized : undefined;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function extractQueuePosition(payload: CloudMatchResponse): number | undefined {
+  const direct = toPositiveInt(payload.session.queuePosition);
+  if (direct !== undefined) {
+    return direct;
+  }
+
+  const nestedSessionProgress = payload.session.sessionProgress;
+  if (nestedSessionProgress) {
+    const nested = toPositiveInt(nestedSessionProgress.queuePosition);
+    if (nested !== undefined) {
+      return nested;
+    }
+  }
+
+  const nestedProgressInfo = payload.session.progressInfo;
+  if (nestedProgressInfo) {
+    const nested = toPositiveInt(nestedProgressInfo.queuePosition);
+    if (nested !== undefined) {
+      return nested;
+    }
+  }
+
+  return undefined;
+}
+
 function toSessionInfo(zone: string, streamingBaseUrl: string, payload: CloudMatchResponse): SessionInfo {
   if (payload.requestStatus.statusCode !== 1) {
     // Use SessionError for parsing error responses
@@ -453,11 +490,13 @@ function toSessionInfo(zone: string, streamingBaseUrl: string, payload: CloudMat
   }
 
   const signaling = resolveSignaling(payload);
+  const queuePosition = extractQueuePosition(payload);
 
   // Debug logging to trace signaling resolution
   const connections = payload.session.connectionInfo ?? [];
   console.log(
     `[CloudMatch] toSessionInfo: status=${payload.session.status}, ` +
+    `queuePosition=${queuePosition ?? "n/a"}, ` +
     `connectionInfo=${connections.length} entries, ` +
     `serverIp=${signaling.serverIp}, ` +
     `signalingServer=${signaling.signalingServer}, ` +
@@ -473,6 +512,7 @@ function toSessionInfo(zone: string, streamingBaseUrl: string, payload: CloudMat
   return {
     sessionId: payload.session.sessionId,
     status: payload.session.status,
+    queuePosition,
     zone,
     streamingBaseUrl,
     serverIp: signaling.serverIp,
@@ -893,10 +933,12 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     if (sessionData.status === 2 || sessionData.status === 3) {
       // Session is ready
       const signaling = resolveSignaling(pollApiResponse);
+      const queuePosition = extractQueuePosition(pollApiResponse);
 
       return {
         sessionId: sessionData.sessionId,
         status: sessionData.status,
+        queuePosition,
         zone: "", // Zone not applicable for claimed sessions
         streamingBaseUrl: `https://${input.serverIp}`,
         serverIp: signaling.serverIp,

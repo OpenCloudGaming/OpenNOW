@@ -84,7 +84,7 @@ OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www
 | Game Library + Catalog | ✅ | ✅ | Main catalog, library, and public games |
 | Alliance Partners | ✅ | ✅ | NVIDIA + partner providers |
 | Audio Playback | ✅ | ✅ | |
-| Microphone Support | 📋 | ✅ | Planned for future release |
+| Microphone Support | ✅ | ✅ | Voice chat with mute/unmute toggle |
 | Instant Replay | 📋 | ✅ | Planned for future release |
 | Screenshots | 📋 | ✅ | Planned for future release |
 | Stats Overlay | ✅ | ✅ | Detailed: RTT, decode, render, jitter, loss, input queue |
@@ -114,7 +114,7 @@ OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www
 | Priority | Feature | Status | Description |
 |:--------:|---------|:------:|-------------|
 | 🔴 | ~~H.265 codec tuning~~ | ✅ Completed | Full HEVC support implemented |
-| 🔴 | Microphone support | 📋 Planned | Voice chat in cloud sessions |
+| 🔴 | ~~Microphone support~~ | ✅ Completed | Voice chat with mute/unmute toggle |
 | 🟡 | Instant replay | 📋 Planned | Clip and save gameplay moments |
 | 🟡 | Screenshots | 📋 Planned | Capture in-stream screenshots |
 | 🟡 | HDR streaming pipeline | 📋 Planned | Full HDR end-to-end support |
