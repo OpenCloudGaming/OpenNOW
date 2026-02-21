@@ -19,8 +19,7 @@ import {
   GAMEPAD_MAX_CONTROLLERS,
   type GamepadInput,
 } from "./inputProtocol";
-import { remapVkForLayout } from "./keyboardLayout";
-import { charToUsKeystroke } from "./keyboardCharMap";
+
 import {
   buildNvstSdp,
   extractIceCredentials,
@@ -175,6 +174,7 @@ export interface StreamDiagnostics {
   keyboardLayout: string;
   detectedKeyboardLayout: string;}
 
+}
 export interface StreamTimeWarning {
   code: 1 | 2 | 3;
   secondsLeft?: number;
@@ -487,14 +487,7 @@ export class GfnWebRtcClient {
 
   // Track currently pressed keys (VK codes) for synthetic Escape detection
   private pressedKeys: Set<number> = new Set();
-  // Keys handled via character-level translation — track held state for proper keydown/keyup
-  private heldTranslatedKeys = new Map<string, {
-    vk: number;
-    scancode: number;
-    mods: number;
-    pressedShift: boolean;
-    pressedAltGr: boolean;
-  }>();
+
   // Video element reference for pointer lock re-acquisition
   private videoElement: HTMLVideoElement | null = null;
   // Timer for synthetic Escape on pointer lock loss
@@ -516,8 +509,7 @@ export class GfnWebRtcClient {
   private pendingMouseTimestampUs: bigint | null = null;
   private mouseDeltaFilter = new MouseDeltaFilter();
 
-  // Effective keyboard layout for VK remapping (default: qwerty = no remap)
-  private effectiveKeyboardLayout: "qwerty" | "azerty" | "qwertz" = "qwerty";
+
 
   private partialReliableThresholdMs = GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
   private inputQueuePeakBufferedBytesWindow = 0;
@@ -569,6 +561,7 @@ export class GfnWebRtcClient {
     keyboardLayout: "qwerty",
     detectedKeyboardLayout: "unknown",  };
 
+  };
   constructor(private readonly options: ClientOptions) {
     options.videoElement.srcObject = this.videoStream;
     options.audioElement.srcObject = this.audioStream;
@@ -705,7 +698,8 @@ export class GfnWebRtcClient {
       micEnabled: this.micManager?.isEnabled() ?? false,
       keyboardLayout: this.effectiveKeyboardLayout,
       detectedKeyboardLayout: this.diagnostics.detectedKeyboardLayout,    };
-    this.emitStats();
+
+    };    this.emitStats();
   }
 
   private resetInputState(): void {
@@ -1644,14 +1638,12 @@ export class GfnWebRtcClient {
 
   private releasePressedKeys(reason: string): void {
     this.clearEscapeAutoKeyUpTimer();
-    const totalKeys = this.pressedKeys.size + this.heldTranslatedKeys.size;
-    if (totalKeys === 0 || !this.inputReady) {
+    if (this.pressedKeys.size === 0 || !this.inputReady) {
       this.pressedKeys.clear();
-      this.heldTranslatedKeys.clear();
       return;
     }
 
-    this.log(`Releasing ${totalKeys} key(s): ${reason}`);
+    this.log(`Releasing ${this.pressedKeys.size} key(s): ${reason}`);
     for (const vk of this.pressedKeys) {
       const payload = this.inputEncoder.encodeKeyUp({
         keycode: vk,
@@ -1662,18 +1654,6 @@ export class GfnWebRtcClient {
       this.sendReliable(payload);
     }
     this.pressedKeys.clear();
-
-    for (const [, held] of this.heldTranslatedKeys) {
-      this.sendKeyPacket(held.vk, held.scancode, 0, false);
-      if (held.pressedAltGr) {
-        this.sendKeyPacket(0xa4, 0xe2, 0, false);
-        this.sendKeyPacket(0xa2, 0xe0, 0, false);
-      }
-      if (held.pressedShift) {
-        this.sendKeyPacket(0xa0, 0xe1, 0, false);
-      }
-    }
-    this.heldTranslatedKeys.clear();
   }
 
   private sendKeyPacket(vk: number, scancode: number, modifiers: number, isDown: boolean): void {
@@ -1954,69 +1934,8 @@ export class GfnWebRtcClient {
         return;
       }
 
-      // ── Character-level translation for non-QWERTY layouts ──────────
-      // When the local layout isn't QWERTY, the physical scancode maps to
-      // the wrong character on the US-QWERTY remote VM.  For printable
-      // characters we look up which US key + modifiers produce that char
-      // and send those instead.  Ctrl/Meta combos (shortcuts) bypass this
-      // so Ctrl+C / Ctrl+V etc. stay scancode-based and work correctly.
-      if (
-        this.effectiveKeyboardLayout !== "qwerty"
-        && event.key.length === 1
-        && !event.ctrlKey
-        && !event.metaKey
-      ) {
-        if (this.heldTranslatedKeys.has(event.code)) {
-          return;
-        }
-        const usKey = charToUsKeystroke(event.key);
-        if (usKey) {
-          const usMapped = mapKeyboardEvent({ code: usKey.code } as KeyboardEvent);
-          if (usMapped) {
-            const needShift = usKey.shift;
-            const needAltGr = false;
-            const pressedShift = needShift && !event.shiftKey;
-            const pressedAltGr = needAltGr
-              && !event.getModifierState?.("AltGraph")
-              && !(event.ctrlKey && event.altKey);
-
-            const lockMods =
-              (event.getModifierState("CapsLock") ? 0x10 : 0)
-              | (event.getModifierState("NumLock") ? 0x20 : 0);
-
-            if (pressedShift) {
-              this.sendKeyPacket(0xa0, 0xe1, lockMods, true);
-            }
-            if (pressedAltGr) {
-              this.sendKeyPacket(0xa2, 0xe0, lockMods, true);
-              this.sendKeyPacket(0xa4, 0xe2, lockMods | 0x02, true);
-            }
-
-            let mods = lockMods;
-            if (needShift) mods |= 0x01;
-            if (pressedAltGr) mods |= 0x02 | 0x04;
-
-            this.sendKeyPacket(usMapped.vk, usMapped.scancode, mods, true);
-
-            this.pressedKeys.delete(mapped.vk);
-            this.heldTranslatedKeys.set(event.code, {
-              vk: usMapped.vk,
-              scancode: usMapped.scancode,
-              mods,
-              pressedShift,
-              pressedAltGr,
-            });
-            event.stopPropagation();
-            return;
-          }
-        }
-      }
-
-      // ── Default path: physical scancode + VK remap ──────────────────
-      const remappedVk = remapVkForLayout(mapped.vk, this.effectiveKeyboardLayout);
-
       const payload = this.inputEncoder.encodeKeyDown({
-        keycode: remappedVk,
+        keycode: mapped.vk,
         scancode: mapped.scancode,
         modifiers: modifierFlags(event),
         // Use a fresh monotonic timestamp for keyboard events. In some
@@ -2028,24 +1947,6 @@ export class GfnWebRtcClient {
 
     const onKeyUp = (event: KeyboardEvent) => {
       if (!this.inputReady || this.activeInputMode === "gamepad") {
-        return;
-      }
-
-      const heldEntry = this.heldTranslatedKeys.get(event.code);
-      if (heldEntry) {
-        this.sendKeyPacket(heldEntry.vk, heldEntry.scancode, heldEntry.mods, false);
-        if (heldEntry.pressedAltGr) {
-          const lm = heldEntry.mods & 0x30;
-          this.sendKeyPacket(0xa4, 0xe2, lm | 0x02, false);
-          this.sendKeyPacket(0xa2, 0xe0, lm, false);
-        }
-        if (heldEntry.pressedShift) {
-          const lm = heldEntry.mods & 0x30;
-          this.sendKeyPacket(0xa0, 0xe1, lm, false);
-        }
-        this.heldTranslatedKeys.delete(event.code);
-        event.preventDefault();
-        event.stopPropagation();
         return;
       }
 
@@ -2078,9 +1979,8 @@ export class GfnWebRtcClient {
         return;
       }
       this.pressedKeys.delete(mapped.vk);
-      const remappedVkUp = remapVkForLayout(mapped.vk, this.effectiveKeyboardLayout);
       const payload = this.inputEncoder.encodeKeyUp({
-        keycode: remappedVkUp,
+        keycode: mapped.vk,
         scancode: mapped.scancode,
         modifiers: modifierFlags(event),
         timestampUs: timestampUs(),
@@ -2527,16 +2427,7 @@ export class GfnWebRtcClient {
     }
   }
 
-  /** Update the effective keyboard layout for VK code remapping. */
-  setKeyboardLayout(layout: "qwerty" | "azerty" | "qwertz"): void {
-    this.effectiveKeyboardLayout = layout;
-    this.diagnostics.keyboardLayout = layout;
-  }
 
-  /** Update the detected keyboard layout (for diagnostics display). */
-  setDetectedKeyboardLayout(detected: string): void {
-    this.diagnostics.detectedKeyboardLayout = detected;
-  }
 
   setMicService(service: MicAudioService | null): void {
     this.micService = service;

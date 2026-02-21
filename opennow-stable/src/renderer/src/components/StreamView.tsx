@@ -380,7 +380,8 @@ export function StreamView({
               <> · detected {stats.detectedKeyboardLayout}</>
             )}
           </div>        </div>
-      )}
+
+        </div>      )}
 
       {/* Controller indicator (top-left) */}
       {connectedControllers > 0 && !isConnecting && (

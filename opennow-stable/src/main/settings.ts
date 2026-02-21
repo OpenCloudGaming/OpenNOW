@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode } from "@shared/gfn";
 import type { VideoCodec, ColorQuality, VideoAccelerationPreference, FlightSlotConfig, HdrStreamingMode, MicMode, HevcCompatMode, VideoDecodeBackend, KeyboardLayout } from "@shared/gfn";
-import { defaultFlightSlots } from "@shared/gfn";
+import type { VideoCodec, ColorQuality, VideoAccelerationPreference, FlightSlotConfig, HdrStreamingMode, MicMode, HevcCompatMode, VideoDecodeBackend } from "@shared/gfn";import { defaultFlightSlots } from "@shared/gfn";
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
   resolution: string;
@@ -86,6 +86,7 @@ export interface Settings {
   /** Keyboard layout: auto, qwerty, azerty, qwertz */
   keyboardLayout: KeyboardLayout;}
 
+}
 const defaultStopShortcut = "Ctrl+Shift+Q";
 const defaultAntiAfkShortcut = "Ctrl+Shift+K";
 const defaultMicShortcut = "Ctrl+Shift+M";
@@ -116,7 +117,7 @@ const DEFAULT_SETTINGS: Settings = {
   windowWidth: 1400,
   windowHeight: 900,
   keyboardLayout: "auto",};
-
+};
 export class SettingsManager {
   private settings: Settings;
   private readonly settingsPath: string;

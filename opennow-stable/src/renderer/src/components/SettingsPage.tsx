@@ -1,6 +1,7 @@
 import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown } from "lucide-react";
 import { Monitor, Volume2, Mouse, Keyboard, Settings2, Globe, Save, Check, Search, X, Loader, Cpu, Zap, MessageSquare, Joystick, Sun, RefreshCw, RotateCcw, Mic, MicOff } from "lucide-react";import { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import type { JSX } from "react";
+import { Monitor, Volume2, Mouse, Settings2, Globe, Save, Check, Search, X, Loader, Cpu, Zap, MessageSquare, Joystick, Sun, RefreshCw, RotateCcw, Mic, MicOff } from "lucide-react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";import type { JSX } from "react";
 
 import type {
   Settings,
@@ -17,7 +18,7 @@ import type {
   PlatformInfo,
   VideoDecodeBackend,
   KeyboardLayout,} from "@shared/gfn";
-import { colorQualityRequiresHevc } from "@shared/gfn";
+} from "@shared/gfn";import { colorQualityRequiresHevc } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
 
 interface SettingsPageProps {
@@ -1220,7 +1221,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               </div>
               <span className="settings-hint">Auto uses the OS layout; override only if keys are wrong in the stream.</span>
             </div>
-
             <div className="settings-row settings-row--column">
               <label className="settings-label">Microphone</label>
 

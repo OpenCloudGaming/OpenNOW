@@ -27,12 +27,6 @@ import type { MicAudioState } from "./gfn/micAudioService";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { getFlightHidService } from "./flight/FlightHidService";
 import {
-  detectKeyboardLayout,
-  resolveEffectiveLayout,
-  getCachedDetection,
-  type DetectedLayout,
-} from "./gfn/keyboardLayout";
-import {
   probeHdrCapability,
   shouldEnableHdr,
   buildInitialHdrState,
@@ -139,7 +133,7 @@ function defaultDiagnostics(): StreamDiagnostics {
     micEnabled: false,
     keyboardLayout: "qwerty",
     detectedKeyboardLayout: "unknown",  };
-}
+  };}
 
 function isSessionLimitError(error: unknown): boolean {
   if (error && typeof error === "object" && "gfnErrorCode" in error) {
@@ -302,7 +296,7 @@ export function App(): JSX.Element {
     windowWidth: 1400,
     windowHeight: 900,
     keyboardLayout: "auto",  });
-  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  });  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
 
@@ -353,8 +347,6 @@ export function App(): JSX.Element {
     onBackAction: handleControllerBackAction,
   });
 
-  // Keyboard layout detection state
-  const [detectedLayout, setDetectedLayout] = useState<DetectedLayout>("unknown");
 
   // Mic state for StreamView indicator
   const [micAudioState, setMicAudioState] = useState<MicAudioState | null>(null);
@@ -742,7 +734,7 @@ export function App(): JSX.Element {
             );
             clientRef.current.setKeyboardLayout(effective);
             clientRef.current.setDetectedKeyboardLayout(cached?.detected ?? "unknown");          }
-
+          }
           if (clientRef.current) {
             await clientRef.current.handleOffer(event.sdp, activeSession, {
               codec: settings.codec,
@@ -1416,21 +1408,6 @@ export function App(): JSX.Element {
     };
   }, []);
 
-  // Detect keyboard layout on mount and when setting changes
-  useEffect(() => {
-    void detectKeyboardLayout().then((result) => {
-      setDetectedLayout(result.detected);
-    });
-  }, []);
-
-  // Update client keyboard layout when setting or detection changes
-  useEffect(() => {
-    const effective = resolveEffectiveLayout(settings.keyboardLayout, detectedLayout);
-    if (clientRef.current) {
-      clientRef.current.setKeyboardLayout(effective);
-      clientRef.current.setDetectedKeyboardLayout(detectedLayout);
-    }
-  }, [settings.keyboardLayout, detectedLayout]);
 
   // Subscribe to mic audio state for StreamView indicator
   useEffect(() => {
