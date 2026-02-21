@@ -487,8 +487,14 @@ export class GfnWebRtcClient {
 
   // Track currently pressed keys (VK codes) for synthetic Escape detection
   private pressedKeys: Set<number> = new Set();
-  // Keys handled via character-level translation — skip their keyup in the normal path
-  private charTranslatedCodes: Set<string> = new Set();
+  // Keys handled via character-level translation — track held state for proper keydown/keyup
+  private heldTranslatedKeys = new Map<string, {
+    vk: number;
+    scancode: number;
+    mods: number;
+    pressedShift: boolean;
+    pressedAltGr: boolean;
+  }>();
   // Video element reference for pointer lock re-acquisition
   private videoElement: HTMLVideoElement | null = null;
   // Timer for synthetic Escape on pointer lock loss
@@ -1638,12 +1644,14 @@ export class GfnWebRtcClient {
 
   private releasePressedKeys(reason: string): void {
     this.clearEscapeAutoKeyUpTimer();
-    if (this.pressedKeys.size === 0 || !this.inputReady) {
+    const totalKeys = this.pressedKeys.size + this.heldTranslatedKeys.size;
+    if (totalKeys === 0 || !this.inputReady) {
       this.pressedKeys.clear();
+      this.heldTranslatedKeys.clear();
       return;
     }
 
-    this.log(`Releasing ${this.pressedKeys.size} key(s): ${reason}`);
+    this.log(`Releasing ${totalKeys} key(s): ${reason}`);
     for (const vk of this.pressedKeys) {
       const payload = this.inputEncoder.encodeKeyUp({
         keycode: vk,
@@ -1654,6 +1662,18 @@ export class GfnWebRtcClient {
       this.sendReliable(payload);
     }
     this.pressedKeys.clear();
+
+    for (const [, held] of this.heldTranslatedKeys) {
+      this.sendKeyPacket(held.vk, held.scancode, 0, false);
+      if (held.pressedAltGr) {
+        this.sendKeyPacket(0xa4, 0xe2, 0, false);
+        this.sendKeyPacket(0xa2, 0xe0, 0, false);
+      }
+      if (held.pressedShift) {
+        this.sendKeyPacket(0xa0, 0xe1, 0, false);
+      }
+    }
+    this.heldTranslatedKeys.clear();
   }
 
   private sendKeyPacket(vk: number, scancode: number, modifiers: number, isDown: boolean): void {
@@ -1946,26 +1966,46 @@ export class GfnWebRtcClient {
         && !event.ctrlKey
         && !event.metaKey
       ) {
+        if (this.heldTranslatedKeys.has(event.code)) {
+          return;
+        }
         const usKey = charToUsKeystroke(event.key);
         if (usKey) {
           const usMapped = mapKeyboardEvent({ code: usKey.code } as KeyboardEvent);
           if (usMapped) {
-            // Build modifier flags: carry over Alt from the real event (AltGr
-            // may be active on the local side), then set/clear Shift to match
-            // what the US layout requires for this character.
-            let mods = 0;
-            if (usKey.shift) mods |= 0x01;
-            if (event.altKey && !usKey.shift) mods |= 0x04;
-            if (event.getModifierState("CapsLock")) mods |= 0x10;
-            if (event.getModifierState("NumLock")) mods |= 0x20;
+            const needShift = usKey.shift;
+            const needAltGr = false;
+            const pressedShift = needShift && !event.shiftKey;
+            const pressedAltGr = needAltGr
+              && !event.getModifierState?.("AltGraph")
+              && !(event.ctrlKey && event.altKey);
 
-            // Send the key using the US-QWERTY VK + scancode.
-            // We send both keydown and keyup immediately so the remote side
-            // sees a clean press/release for this character.  The real keyup
-            // will be ignored via charTranslatedCodes.
+            const lockMods =
+              (event.getModifierState("CapsLock") ? 0x10 : 0)
+              | (event.getModifierState("NumLock") ? 0x20 : 0);
+
+            if (pressedShift) {
+              this.sendKeyPacket(0xa0, 0xe1, lockMods, true);
+            }
+            if (pressedAltGr) {
+              this.sendKeyPacket(0xa2, 0xe0, lockMods, true);
+              this.sendKeyPacket(0xa4, 0xe2, lockMods | 0x02, true);
+            }
+
+            let mods = lockMods;
+            if (needShift) mods |= 0x01;
+            if (pressedAltGr) mods |= 0x02 | 0x04;
+
             this.sendKeyPacket(usMapped.vk, usMapped.scancode, mods, true);
-            this.sendKeyPacket(usMapped.vk, usMapped.scancode, mods, false);
-            this.charTranslatedCodes.add(event.code);
+
+            this.pressedKeys.delete(mapped.vk);
+            this.heldTranslatedKeys.set(event.code, {
+              vk: usMapped.vk,
+              scancode: usMapped.scancode,
+              mods,
+              pressedShift,
+              pressedAltGr,
+            });
             return;
           }
         }
@@ -1990,9 +2030,19 @@ export class GfnWebRtcClient {
         return;
       }
 
-      // If this key was handled via character-level translation on keydown,
-      // we already sent both keydown+keyup there — skip the real keyup.
-      if (this.charTranslatedCodes.delete(event.code)) {
+      const heldEntry = this.heldTranslatedKeys.get(event.code);
+      if (heldEntry) {
+        this.sendKeyPacket(heldEntry.vk, heldEntry.scancode, heldEntry.mods, false);
+        if (heldEntry.pressedAltGr) {
+          const lm = heldEntry.mods & 0x30;
+          this.sendKeyPacket(0xa4, 0xe2, lm | 0x02, false);
+          this.sendKeyPacket(0xa2, 0xe0, lm, false);
+        }
+        if (heldEntry.pressedShift) {
+          const lm = heldEntry.mods & 0x30;
+          this.sendKeyPacket(0xa0, 0xe1, lm, false);
+        }
+        this.heldTranslatedKeys.delete(event.code);
         event.preventDefault();
         return;
       }
