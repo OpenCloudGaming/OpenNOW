@@ -153,7 +153,7 @@ export const GameCard = memo(function GameCard({ game, isSelected = false, onPla
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          onSelect();
+          onPlay();
         }
       }}
       role="button"
@@ -180,6 +180,7 @@ export const GameCard = memo(function GameCard({ game, isSelected = false, onPla
             className="game-card-play-button"
             onClick={handlePlayClick}
             aria-label={`Play ${game.title}`}
+            tabIndex={-1}
           >
             <Play size={24} fill="currentColor" />
           </button>

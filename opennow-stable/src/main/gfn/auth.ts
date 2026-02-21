@@ -21,6 +21,7 @@ import { fetchSubscription, fetchDynamicRegions } from "./subscription";
 
 const SERVICE_URLS_ENDPOINT = "https://pcs.geforcenow.com/v1/serviceUrls";
 const TOKEN_ENDPOINT = "https://login.nvidia.com/token";
+const CLIENT_TOKEN_ENDPOINT = "https://login.nvidia.com/client_token";
 const USERINFO_ENDPOINT = "https://login.nvidia.com/userinfo";
 const AUTH_ENDPOINT = "https://login.nvidia.com/authorize";
 
@@ -32,6 +33,8 @@ const GFN_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
 
 const REDIRECT_PORTS = [2259, 6460, 7119, 8870, 9096];
+const TOKEN_REFRESH_WINDOW_MS = 10 * 60 * 1000;
+const CLIENT_TOKEN_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 
 interface PersistedAuthState {
   session: AuthSession | null;
@@ -57,6 +60,12 @@ interface TokenResponse {
   access_token: string;
   refresh_token?: string;
   id_token?: string;
+  client_token?: string;
+  expires_in?: number;
+}
+
+interface ClientTokenResponse {
+  client_token: string;
   expires_in?: number;
 }
 
@@ -107,6 +116,24 @@ function parseJwtPayload<T>(token: string): T | null {
   } catch {
     return null;
   }
+}
+
+function toExpiresAt(expiresInSeconds: number | undefined, defaultSeconds = 86400): number {
+  return Date.now() + (expiresInSeconds ?? defaultSeconds) * 1000;
+}
+
+function isExpired(expiresAt: number | undefined): boolean {
+  if (!expiresAt) {
+    return true;
+  }
+  return expiresAt <= Date.now();
+}
+
+function isNearExpiry(expiresAt: number | undefined, windowMs: number): boolean {
+  if (!expiresAt) {
+    return true;
+  }
+  return expiresAt - Date.now() < windowMs;
 }
 
 function generateDeviceId(): string {
@@ -239,7 +266,7 @@ async function exchangeAuthorizationCode(code: string, verifier: string, port: n
     accessToken: payload.access_token,
     refreshToken: payload.refresh_token,
     idToken: payload.id_token,
-    expiresAt: Date.now() + (payload.expires_in ?? 86400) * 1000,
+    expiresAt: toExpiresAt(payload.expires_in),
   };
 }
 
@@ -271,7 +298,74 @@ async function refreshAuthTokens(refreshToken: string): Promise<AuthTokens> {
     accessToken: payload.access_token,
     refreshToken: payload.refresh_token ?? refreshToken,
     idToken: payload.id_token,
-    expiresAt: Date.now() + (payload.expires_in ?? 86400) * 1000,
+    expiresAt: toExpiresAt(payload.expires_in),
+  };
+}
+
+async function requestClientToken(accessToken: string): Promise<{
+  token: string;
+  expiresAt: number;
+  lifetimeMs: number;
+}> {
+  const response = await fetch(CLIENT_TOKEN_ENDPOINT, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Origin: "https://nvfile",
+      Accept: "application/json, text/plain, */*",
+      "User-Agent": GFN_USER_AGENT,
+    },
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Client token request failed (${response.status}): ${text.slice(0, 400)}`);
+  }
+
+  const payload = (await response.json()) as ClientTokenResponse;
+  const expiresAt = toExpiresAt(payload.expires_in);
+  return {
+    token: payload.client_token,
+    expiresAt,
+    lifetimeMs: Math.max(0, expiresAt - Date.now()),
+  };
+}
+
+async function refreshWithClientToken(clientToken: string, userId: string): Promise<TokenResponse> {
+  const body = new URLSearchParams({
+    grant_type: "urn:ietf:params:oauth:grant-type:client_token",
+    client_token: clientToken,
+    client_id: CLIENT_ID,
+    sub: userId,
+  });
+
+  const response = await fetch(TOKEN_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      Origin: "https://nvfile",
+      Accept: "application/json, text/plain, */*",
+      "User-Agent": GFN_USER_AGENT,
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Client-token refresh failed (${response.status}): ${text.slice(0, 400)}`);
+  }
+
+  return (await response.json()) as TokenResponse;
+}
+
+function mergeTokenSnapshot(base: AuthTokens, refreshed: TokenResponse): AuthTokens {
+  return {
+    accessToken: refreshed.access_token,
+    refreshToken: refreshed.refresh_token ?? base.refreshToken,
+    idToken: refreshed.id_token,
+    expiresAt: toExpiresAt(refreshed.expires_in),
+    clientToken: refreshed.client_token ?? base.clientToken,
+    clientTokenExpiresAt: base.clientTokenExpiresAt,
+    clientTokenLifetimeMs: base.clientTokenLifetimeMs,
   };
 }
 
@@ -374,6 +468,27 @@ export class AuthService {
 
     await mkdir(dirname(this.statePath), { recursive: true });
     await writeFile(this.statePath, JSON.stringify(payload, null, 2), "utf8");
+  }
+
+  private async ensureClientToken(tokens: AuthTokens, userId: string): Promise<AuthTokens> {
+    const hasUsableClientToken =
+      Boolean(tokens.clientToken) &&
+      !isNearExpiry(tokens.clientTokenExpiresAt, CLIENT_TOKEN_REFRESH_WINDOW_MS);
+    if (hasUsableClientToken) {
+      return tokens;
+    }
+
+    if (isExpired(tokens.expiresAt)) {
+      return tokens;
+    }
+
+    const clientToken = await requestClientToken(tokens.accessToken);
+    return {
+      ...tokens,
+      clientToken: clientToken.token,
+      clientTokenExpiresAt: clientToken.expiresAt,
+      clientTokenLifetimeMs: clientToken.lifetimeMs,
+    };
   }
 
   async getProviders(): Promise<LoginProvider[]> {
@@ -506,8 +621,14 @@ export class AuthService {
     await shell.openExternal(authUrl);
     const code = await codePromise;
 
-    const tokens = await exchangeAuthorizationCode(code, verifier, port);
-    const user = await fetchUserInfo(tokens);
+    const initialTokens = await exchangeAuthorizationCode(code, verifier, port);
+    const user = await fetchUserInfo(initialTokens);
+    let tokens = initialTokens;
+    try {
+      tokens = await this.ensureClientToken(initialTokens, user.userId);
+    } catch (error) {
+      console.warn("Unable to fetch client token after login. Falling back to OAuth token only:", error);
+    }
 
     this.session = {
       provider: this.selectedProvider,
@@ -673,7 +794,7 @@ export class AuthService {
   }
 
   private shouldRefresh(tokens: AuthTokens): boolean {
-    return tokens.expiresAt - Date.now() < 10 * 60 * 1000;
+    return isNearExpiry(tokens.expiresAt, TOKEN_REFRESH_WINDOW_MS);
   }
 
   async ensureValidSessionWithStatus(forceRefresh = false): Promise<AuthSessionResult> {
@@ -689,7 +810,27 @@ export class AuthService {
       };
     }
 
-    const tokens = this.session.tokens;
+    const userId = this.session.user.userId;
+    let tokens = this.session.tokens;
+
+    // Official GFN client flow relies on client_token-based refresh. Bootstrap it
+    // for older sessions that were saved before we persisted client tokens.
+    if (!tokens.clientToken && !isExpired(tokens.expiresAt)) {
+      try {
+        const withClientToken = await this.ensureClientToken(tokens, userId);
+        if (withClientToken.clientToken && withClientToken.clientToken !== tokens.clientToken) {
+          this.session = {
+            ...this.session,
+            tokens: withClientToken,
+          };
+          tokens = withClientToken;
+          await this.persist();
+        }
+      } catch (error) {
+        console.warn("Unable to bootstrap client token from saved session:", error);
+      }
+    }
+
     const shouldRefreshNow = forceRefresh || this.shouldRefresh(tokens);
     if (!shouldRefreshNow) {
       return {
@@ -703,7 +844,94 @@ export class AuthService {
       };
     }
 
-    if (!tokens.refreshToken) {
+    const applyRefreshedTokens = async (
+      refreshedTokens: AuthTokens,
+      source: "client_token" | "refresh_token",
+    ): Promise<AuthSessionResult> => {
+      let user = this.session?.user;
+      try {
+        user = await fetchUserInfo(refreshedTokens);
+      } catch (error) {
+        console.warn("Token refresh succeeded but user info refresh failed. Keeping cached user:", error);
+      }
+
+      this.session = {
+        provider: this.session!.provider,
+        tokens: refreshedTokens,
+        user: user ?? this.session!.user,
+      };
+
+      // Re-fetch real tier after token refresh
+      this.clearSubscriptionCache();
+      await this.enrichUserTier();
+      await this.persist();
+
+      const sourceText = source === "client_token" ? "client token" : "refresh token";
+      return {
+        session: this.session,
+        refresh: {
+          attempted: true,
+          forced: forceRefresh,
+          outcome: "refreshed",
+          message: forceRefresh
+            ? `Saved session token refreshed via ${sourceText}.`
+            : `Session token refreshed via ${sourceText} because it was near expiry.`,
+        },
+      };
+    };
+
+    const refreshErrors: string[] = [];
+
+    if (tokens.clientToken) {
+      try {
+        const refreshedFromClientToken = await refreshWithClientToken(tokens.clientToken, userId);
+        let refreshedTokens = mergeTokenSnapshot(tokens, refreshedFromClientToken);
+        refreshedTokens = await this.ensureClientToken(refreshedTokens, userId);
+        return applyRefreshedTokens(refreshedTokens, "client_token");
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error while refreshing with client token";
+        refreshErrors.push(`client_token: ${message}`);
+      }
+    }
+
+    if (tokens.refreshToken) {
+      try {
+        const refreshedOAuth = await refreshAuthTokens(tokens.refreshToken);
+        let refreshedTokens: AuthTokens = {
+          ...tokens,
+          ...refreshedOAuth,
+          // OAuth refresh does not always return a new client token.
+          clientToken: tokens.clientToken,
+          clientTokenExpiresAt: tokens.clientTokenExpiresAt,
+          clientTokenLifetimeMs: tokens.clientTokenLifetimeMs,
+        };
+        refreshedTokens = await this.ensureClientToken(refreshedTokens, userId);
+        return applyRefreshedTokens(refreshedTokens, "refresh_token");
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error while refreshing token";
+        refreshErrors.push(`refresh_token: ${message}`);
+      }
+    }
+
+    const errorText = refreshErrors.length > 0 ? refreshErrors.join(" | ") : undefined;
+    const expired = isExpired(tokens.expiresAt);
+
+    if (!tokens.clientToken && !tokens.refreshToken) {
+      if (expired) {
+        await this.logout();
+        return {
+          session: null,
+          refresh: {
+            attempted: true,
+            forced: forceRefresh,
+            outcome: "missing_refresh_token",
+            message: "Saved session expired and has no refresh mechanism. Please log in again.",
+          },
+        };
+      }
+
       return {
         session: this.session,
         refresh: {
@@ -715,45 +943,30 @@ export class AuthService {
       };
     }
 
-    try {
-      const refreshed = await refreshAuthTokens(tokens.refreshToken);
-      const user = await fetchUserInfo(refreshed);
-      this.session = {
-        provider: this.session.provider,
-        tokens: refreshed,
-        user,
-      };
-
-      // Re-fetch real tier after token refresh
-      this.clearSubscriptionCache();
-      await this.enrichUserTier();
-
-      await this.persist();
+    if (expired) {
+      await this.logout();
       return {
-        session: this.session,
-        refresh: {
-          attempted: true,
-          forced: forceRefresh,
-          outcome: "refreshed",
-          message: forceRefresh
-            ? "Saved session token refreshed."
-            : "Session token refreshed because it was near expiry.",
-        },
-      };
-    } catch (error) {
-      const refreshError =
-        error instanceof Error ? error.message : "Unknown error while refreshing token";
-      return {
-        session: this.session,
+        session: null,
         refresh: {
           attempted: true,
           forced: forceRefresh,
           outcome: "failed",
-          message: "Token refresh failed. Using saved session token.",
-          error: refreshError,
+          message: "Token refresh failed and the saved session expired. Please log in again.",
+          error: errorText,
         },
       };
     }
+
+    return {
+      session: this.session,
+      refresh: {
+        attempted: true,
+        forced: forceRefresh,
+        outcome: "failed",
+        message: "Token refresh failed. Using saved session token.",
+        error: errorText,
+      },
+    };
   }
 
   async ensureValidSession(): Promise<AuthSession | null> {
@@ -762,8 +975,18 @@ export class AuthService {
   }
 
   async resolveJwtToken(explicitToken?: string): Promise<string> {
+    // Prefer the managed auth session whenever it exists so renderer-side cached
+    // tokens cannot bypass refresh logic.
+    if (this.session) {
+      const session = await this.ensureValidSession();
+      if (!session) {
+        throw new Error("No authenticated session available");
+      }
+      return session.tokens.idToken ?? session.tokens.accessToken;
+    }
+
     if (explicitToken && explicitToken.trim()) {
-      return explicitToken;
+      return explicitToken.trim();
     }
 
     const session = await this.ensureValidSession();

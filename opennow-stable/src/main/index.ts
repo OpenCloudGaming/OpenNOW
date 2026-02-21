@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, systemPreferences, session } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "node:fs";
 // F8  - Toggle mouse/pointer lock (handled in main process via IPC)
 
 import { IPC_CHANNELS } from "@shared/ipc";
+import { initLogCapture, exportLogs } from "@shared/logger";
 import type {
   MainToRendererSignalingEvent,
   AuthLoginRequest,
@@ -89,6 +90,7 @@ console.log(
 
 // --- Platform-specific HW video decode features ---
 const platformFeatures: string[] = [];
+const isLinuxArm = process.platform === "linux" && (process.arch === "arm64" || process.arch === "arm");
 
 if (process.platform === "win32") {
   // Windows: D3D11 + Media Foundation path for HW decode/encode acceleration
@@ -102,18 +104,25 @@ if (process.platform === "win32") {
     platformFeatures.push("MediaFoundationD3D11VideoCapture");
   }
 } else if (process.platform === "linux") {
-  // Linux: VA-API path for HW decode/encode (Intel/AMD GPUs)
-  if (bootstrapVideoPrefs.decoderPreference !== "software") {
-    platformFeatures.push("VaapiVideoDecoder");
-  }
-  if (bootstrapVideoPrefs.encoderPreference !== "software") {
-    platformFeatures.push("VaapiVideoEncoder");
-  }
-  if (
-    bootstrapVideoPrefs.decoderPreference !== "software" ||
-    bootstrapVideoPrefs.encoderPreference !== "software"
-  ) {
-    platformFeatures.push("VaapiIgnoreDriverChecks");
+  if (isLinuxArm) {
+    // Raspberry Pi/Linux ARM: allow Chromium's direct V4L2 decoder path.
+    if (bootstrapVideoPrefs.decoderPreference !== "software") {
+      platformFeatures.push("UseChromeOSDirectVideoDecoder");
+    }
+  } else {
+    // Linux x64 desktop GPUs: VA-API path (Intel/AMD).
+    if (bootstrapVideoPrefs.decoderPreference !== "software") {
+      platformFeatures.push("VaapiVideoDecoder");
+    }
+    if (bootstrapVideoPrefs.encoderPreference !== "software") {
+      platformFeatures.push("VaapiVideoEncoder");
+    }
+    if (
+      bootstrapVideoPrefs.decoderPreference !== "software" ||
+      bootstrapVideoPrefs.encoderPreference !== "software"
+    ) {
+      platformFeatures.push("VaapiIgnoreDriverChecks");
+    }
   }
 }
 // macOS: VideoToolbox handles HW acceleration natively, no extra feature flags needed
@@ -133,7 +142,7 @@ const disableFeatures: string[] = [
   // Prevents mDNS candidate generation — faster ICE connectivity
   "WebRtcHideLocalIpsWithMdns",
 ];
-if (process.platform === "linux") {
+if (process.platform === "linux" && !isLinuxArm) {
   // ChromeOS-only direct video decoder path interferes on regular Linux
   disableFeatures.push("UseChromeOSDirectVideoDecoder");
 }
@@ -486,6 +495,11 @@ function registerIpcHandlers(): void {
     return settingsManager.reset();
   });
 
+  // Logs export IPC handler
+  ipcMain.handle(IPC_CHANNELS.LOGS_EXPORT, async (_event, format: "text" | "json" = "text"): Promise<string> => {
+    return exportLogs(format);
+  });
+
   // Save window size when it changes
   mainWindow?.on("resize", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -497,10 +511,63 @@ function registerIpcHandlers(): void {
 }
 
 app.whenReady().then(async () => {
+  // Initialize log capture first to capture all console output
+  initLogCapture("main");
+
   authService = new AuthService(join(app.getPath("userData"), "auth-state.json"));
   await authService.initialize();
 
   settingsManager = getSettingsManager();
+
+  // Request microphone permission on macOS at startup
+  if (process.platform === "darwin") {
+    const micStatus = systemPreferences.getMediaAccessStatus("microphone");
+    console.log("[Main] macOS microphone permission status:", micStatus);
+    if (micStatus !== "granted") {
+      const granted = await systemPreferences.askForMediaAccess("microphone");
+      console.log("[Main] Requested microphone permission:", granted);
+    }
+  }
+
+  // Set up permission handlers for getUserMedia, fullscreen, pointer lock
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    const url = webContents.getURL();
+    console.log(`[Main] Permission request: ${permission} from ${url}`);
+
+    const allowedPermissions = new Set([
+      "media",
+      "microphone",
+      "fullscreen",
+      "automatic-fullscreen",
+      "pointerLock",
+      "keyboardLock",
+      "speaker-selection",
+    ]);
+
+    if (allowedPermissions.has(permission)) {
+      console.log(`[Main] Granting permission: ${permission}`);
+      callback(true);
+      return;
+    }
+
+    callback(false);
+  });
+
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    console.log(`[Main] Permission check: ${permission} from ${requestingOrigin}`);
+
+    const allowedPermissions = new Set([
+      "media",
+      "microphone",
+      "fullscreen",
+      "automatic-fullscreen",
+      "pointerLock",
+      "keyboardLock",
+      "speaker-selection",
+    ]);
+
+    return allowedPermissions.has(permission);
+  });
 
   registerIpcHandlers();
   await createMainWindow();

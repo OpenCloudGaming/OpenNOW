@@ -75,6 +75,19 @@ export interface CloudMatchResponse {
   session: {
     sessionId: string;
     status: number;
+    queuePosition?: number;
+    progressState?: number;
+    eta?: number;
+    sessionProgress?: {
+      queuePosition?: number;
+      progressState?: number;
+      eta?: number;
+    };
+    progressInfo?: {
+      queuePosition?: number;
+      progressState?: number;
+      eta?: number;
+    };
     errorCode?: number;
     gpuType?: string;
     connectionInfo?: Array<{

@@ -1,5 +1,5 @@
-import { Monitor, Volume2, Mouse, Settings2, Globe, Save, Check, Search, X, Loader, Cpu, Zap } from "lucide-react";
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown } from "lucide-react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
 import type {
@@ -9,6 +9,7 @@ import type {
   ColorQuality,
   EntitledResolution,
   VideoAccelerationPreference,
+  MicrophoneMode,
 } from "@shared/gfn";
 import { colorQualityRequiresHevc } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
@@ -73,7 +74,14 @@ const shortcutDefaults = {
   shortcutTogglePointerLock: "F8",
   shortcutStopStream: "Ctrl+Shift+Q",
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
+  shortcutToggleMicrophone: "Ctrl+Shift+M",
 } as const;
+
+const microphoneModeOptions: Array<{ value: MicrophoneMode; label: string }> = [
+  { value: "disabled", label: "Disabled" },
+  { value: "push-to-talk", label: "Push-to-Talk" },
+  { value: "voice-activity", label: "Voice Activity" },
+];
 
 /* ── Aspect ratio helpers ─────────────────────────────────────────── */
 
@@ -272,13 +280,23 @@ function saveCachedEntitledResolutions(cache: EntitledResolutionsCache): void {
   }
 }
 
+function isLinuxArmClient(): boolean {
+  const platform = navigator.platform?.toLowerCase() ?? "";
+  const ua = navigator.userAgent?.toLowerCase() ?? "";
+  const linux = platform.includes("linux") || ua.includes("linux");
+  const arm = /(aarch64|arm64|armv\d|arm)/.test(platform) || /(aarch64|arm64|armv\d|arm)/.test(ua);
+  return linux && arm;
+}
+
 function guessDecodeBackend(hwAccelerated: boolean): string {
   if (!hwAccelerated) return "Software (CPU)";
   const platform = navigator.platform?.toLowerCase() ?? "";
   const ua = navigator.userAgent?.toLowerCase() ?? "";
   if (platform.includes("win") || ua.includes("windows")) return "D3D11 (GPU)";
   if (platform.includes("mac") || ua.includes("macintosh")) return "VideoToolbox (GPU)";
-  if (platform.includes("linux") || ua.includes("linux")) return "VA-API (GPU)";
+  if (platform.includes("linux") || ua.includes("linux")) {
+    return isLinuxArmClient() ? "V4L2 (GPU)" : "VA-API (GPU)";
+  }
   return "Hardware (GPU)";
 }
 
@@ -288,7 +306,9 @@ function guessEncodeBackend(hwAccelerated: boolean): string {
   const ua = navigator.userAgent?.toLowerCase() ?? "";
   if (platform.includes("win") || ua.includes("windows")) return "Media Foundation (GPU)";
   if (platform.includes("mac") || ua.includes("macintosh")) return "VideoToolbox (GPU)";
-  if (platform.includes("linux") || ua.includes("linux")) return "VA-API (GPU)";
+  if (platform.includes("linux") || ua.includes("linux")) {
+    return isLinuxArmClient() ? "V4L2 (GPU)" : "VA-API (GPU)";
+  }
   return "Hardware (GPU)";
 }
 
@@ -426,7 +446,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     const platform = navigator.platform.toLowerCase();
     if (platform.includes("win")) return "D3D11 / DXVA";
     if (platform.includes("mac")) return "VideoToolbox";
-    if (platform.includes("linux")) return "VA-API";
+    if (platform.includes("linux")) return isLinuxArmClient() ? "V4L2" : "VA-API";
     return "Hardware";
   }, []);
 
@@ -459,10 +479,12 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [togglePointerLockInput, setTogglePointerLockInput] = useState(settings.shortcutTogglePointerLock);
   const [stopStreamInput, setStopStreamInput] = useState(settings.shortcutStopStream);
   const [toggleAntiAfkInput, setToggleAntiAfkInput] = useState(settings.shortcutToggleAntiAfk);
+  const [toggleMicrophoneInput, setToggleMicrophoneInput] = useState(settings.shortcutToggleMicrophone);
   const [toggleStatsError, setToggleStatsError] = useState(false);
   const [togglePointerLockError, setTogglePointerLockError] = useState(false);
   const [stopStreamError, setStopStreamError] = useState(false);
   const [toggleAntiAfkError, setToggleAntiAfkError] = useState(false);
+  const [toggleMicrophoneError, setToggleMicrophoneError] = useState(false);
 
   // Dynamic entitled resolutions from MES API
   const [entitledResolutions, setEntitledResolutions] = useState<EntitledResolution[]>([]);
@@ -483,6 +505,10 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   useEffect(() => {
     setToggleAntiAfkInput(settings.shortcutToggleAntiAfk);
   }, [settings.shortcutToggleAntiAfk]);
+
+  useEffect(() => {
+    setToggleMicrophoneInput(settings.shortcutToggleMicrophone);
+  }, [settings.shortcutToggleMicrophone]);
 
   // Fetch subscription data (cached per account; reload only when account changes)
   useEffect(() => {
@@ -562,6 +588,48 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     [handleChange, settings.codec]
   );
 
+  // Microphone devices
+  const [microphoneDevices, setMicrophoneDevices] = useState<MediaDeviceInfo[]>([]);
+  const [microphonePermissionError, setMicrophonePermissionError] = useState<string | null>(null);
+  const [microphoneModeDropdownOpen, setMicrophoneModeDropdownOpen] = useState(false);
+  const [microphoneDeviceDropdownOpen, setMicrophoneDeviceDropdownOpen] = useState(false);
+  const microphoneModeDropdownRef = useRef<HTMLDivElement | null>(null);
+  const microphoneDeviceDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  // Enumerate microphone devices when mic mode is enabled
+  useEffect(() => {
+    if (settings.microphoneMode === "disabled") {
+      setMicrophoneDevices([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function enumerateDevices(): Promise<void> {
+      try {
+        // Request permission first to get device labels
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(t => t.stop()); // Release the stream immediately
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        if (!cancelled) {
+          const audioInputs = devices.filter(d => d.kind === "audioinput");
+          setMicrophoneDevices(audioInputs);
+          setMicrophonePermissionError(null);
+        }
+      } catch (err) {
+        console.error("[SettingsPage] Failed to enumerate microphone devices:", err);
+        if (!cancelled) {
+          setMicrophonePermissionError("Microphone access denied. Please allow microphone permission in your system settings.");
+          setMicrophoneDevices([]);
+        }
+      }
+    }
+
+    enumerateDevices();
+    return () => { cancelled = true; };
+  }, [settings.microphoneMode]);
+
   const filteredRegions = useMemo(() => {
     if (!regionSearch.trim()) return regions;
     const q = regionSearch.trim().toLowerCase();
@@ -573,6 +641,37 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     const found = regions.find((r) => r.url === settings.region);
     return found?.name ?? settings.region;
   }, [settings.region, regions]);
+
+  const selectedMicrophoneModeName = useMemo(() => {
+    return microphoneModeOptions.find((option) => option.value === settings.microphoneMode)?.label ?? "Disabled";
+  }, [settings.microphoneMode]);
+
+  const selectedMicrophoneDeviceName = useMemo(() => {
+    if (!settings.microphoneDeviceId) return "Default Device";
+    const found = microphoneDevices.find((device) => device.deviceId === settings.microphoneDeviceId);
+    return found?.label || "Selected Device";
+  }, [settings.microphoneDeviceId, microphoneDevices]);
+
+  useEffect(() => {
+    if (settings.microphoneMode === "disabled") {
+      setMicrophoneDeviceDropdownOpen(false);
+    }
+  }, [settings.microphoneMode]);
+
+  useEffect(() => {
+    const handlePointerDown = (event: MouseEvent): void => {
+      const target = event.target as Node;
+      if (microphoneModeDropdownRef.current && !microphoneModeDropdownRef.current.contains(target)) {
+        setMicrophoneModeDropdownOpen(false);
+      }
+      if (microphoneDeviceDropdownRef.current && !microphoneDeviceDropdownRef.current.contains(target)) {
+        setMicrophoneDeviceDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, []);
 
   const handleShortcutBlur = <K extends keyof Settings>(
     key: K,
@@ -603,12 +702,14 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       settings.shortcutToggleStats === shortcutDefaults.shortcutToggleStats
       && settings.shortcutTogglePointerLock === shortcutDefaults.shortcutTogglePointerLock
       && settings.shortcutStopStream === shortcutDefaults.shortcutStopStream
-      && settings.shortcutToggleAntiAfk === shortcutDefaults.shortcutToggleAntiAfk,
+      && settings.shortcutToggleAntiAfk === shortcutDefaults.shortcutToggleAntiAfk
+      && settings.shortcutToggleMicrophone === shortcutDefaults.shortcutToggleMicrophone,
     [
       settings.shortcutToggleStats,
       settings.shortcutTogglePointerLock,
       settings.shortcutStopStream,
       settings.shortcutToggleAntiAfk,
+      settings.shortcutToggleMicrophone,
     ]
   );
 
@@ -617,16 +718,19 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     setTogglePointerLockInput(shortcutDefaults.shortcutTogglePointerLock);
     setStopStreamInput(shortcutDefaults.shortcutStopStream);
     setToggleAntiAfkInput(shortcutDefaults.shortcutToggleAntiAfk);
+    setToggleMicrophoneInput(shortcutDefaults.shortcutToggleMicrophone);
     setToggleStatsError(false);
     setTogglePointerLockError(false);
     setStopStreamError(false);
     setToggleAntiAfkError(false);
+    setToggleMicrophoneError(false);
 
     const shortcutKeys = [
       "shortcutToggleStats",
       "shortcutTogglePointerLock",
       "shortcutStopStream",
       "shortcutToggleAntiAfk",
+      "shortcutToggleMicrophone",
     ] as const;
 
     for (const key of shortcutKeys) {
@@ -640,7 +744,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   return (
     <div className="settings-page">
       <header className="settings-header">
-        <Settings2 size={22} />
         <h1>Settings</h1>
         <div className={`settings-saved ${savedIndicator ? "visible" : ""}`}>
           <Check size={14} />
@@ -652,7 +755,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
         {/* ── Video ──────────────────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
-            <Monitor size={18} />
             <h2>Video</h2>
           </div>
 
@@ -813,13 +915,54 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 onChange={(e) => handleChange("maxBitrateMbps", parseInt(e.target.value, 10))}
               />
             </div>
+
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Session Timer Reappear</label>
+                <span className="settings-value-badge">
+                  {settings.sessionClockShowEveryMinutes === 0
+                    ? "Off"
+                    : `Every ${settings.sessionClockShowEveryMinutes} min`}
+                </span>
+              </div>
+              <input
+                type="range"
+                className="settings-slider"
+                min={0}
+                max={120}
+                step={5}
+                value={settings.sessionClockShowEveryMinutes}
+                onChange={(e) => handleChange("sessionClockShowEveryMinutes", parseInt(e.target.value, 10))}
+              />
+              <span className="settings-subtle-hint">
+                How often the session timer pops back up while streaming (0 disables repeats).
+              </span>
+            </div>
+
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Session Timer Visible Time</label>
+                <span className="settings-value-badge">{settings.sessionClockShowDurationSeconds}s</span>
+              </div>
+              <input
+                type="range"
+                className="settings-slider"
+                min={5}
+                max={120}
+                step={5}
+                value={settings.sessionClockShowDurationSeconds}
+                onChange={(e) => handleChange("sessionClockShowDurationSeconds", parseInt(e.target.value, 10))}
+              />
+              <span className="settings-subtle-hint">
+                How long the session timer stays visible each time it appears.
+              </span>
+            </div>
           </div>
         </section>
 
         {/* ── Codec Diagnostics ──────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
-            <Cpu size={20} />
             <h2>Codec Diagnostics</h2>
           </div>
           <div className="settings-rows">
@@ -904,21 +1047,125 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
           </div>
         </section>
 
-        {/* ── Audio ──────────────────────────────────────── */}
+        {/* ── Audio / Microphone ───────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
-            <Volume2 size={18} />
             <h2>Audio</h2>
           </div>
           <div className="settings-rows">
-            <div className="settings-placeholder">Audio configuration coming soon</div>
+            {/* Microphone Mode */}
+            <div className="settings-row">
+              <label className="settings-label">
+                Microphone
+                <span className="settings-hint">Enable voice chat during streaming</span>
+              </label>
+              <div className="settings-dropdown" ref={microphoneModeDropdownRef}>
+                <button
+                  type="button"
+                  className={`settings-dropdown-selected ${microphoneModeDropdownOpen ? "open" : ""}`}
+                  onClick={() => {
+                    setMicrophoneModeDropdownOpen((open) => !open);
+                    setMicrophoneDeviceDropdownOpen(false);
+                  }}
+                >
+                  <span className="settings-dropdown-selected-name">{selectedMicrophoneModeName}</span>
+                  <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${microphoneModeDropdownOpen ? "flipped" : ""}`}>
+                    <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
+                  </svg>
+                </button>
+                {microphoneModeDropdownOpen && (
+                  <div className="settings-dropdown-menu">
+                    {microphoneModeOptions.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={`settings-dropdown-item ${settings.microphoneMode === option.value ? "active" : ""}`}
+                        onClick={() => {
+                          handleChange("microphoneMode", option.value);
+                          setMicrophoneModeDropdownOpen(false);
+                        }}
+                      >
+                        <span>{option.label}</span>
+                        {settings.microphoneMode === option.value && <Check size={14} className="settings-dropdown-check" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Microphone Device (only shown when mic is enabled) */}
+            {settings.microphoneMode !== "disabled" && (
+              <div className="settings-row">
+                <label className="settings-label">
+                  <div className="flex items-center gap-2">
+                    <Mic size={14} />
+                    Microphone Device
+                  </div>
+                  <span className="settings-hint">Select input device for voice chat</span>
+                </label>
+                <div className="settings-mic-device-wrap">
+                  <div className="settings-dropdown" ref={microphoneDeviceDropdownRef}>
+                    <button
+                      type="button"
+                      className={`settings-dropdown-selected ${microphoneDeviceDropdownOpen ? "open" : ""}`}
+                      onClick={() => {
+                        if (microphoneDevices.length === 0) return;
+                        setMicrophoneDeviceDropdownOpen((open) => !open);
+                        setMicrophoneModeDropdownOpen(false);
+                      }}
+                      disabled={microphoneDevices.length === 0}
+                    >
+                      <span className="settings-dropdown-selected-name">{selectedMicrophoneDeviceName}</span>
+                      <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${microphoneDeviceDropdownOpen ? "flipped" : ""}`}>
+                        <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
+                      </svg>
+                    </button>
+                    {microphoneDeviceDropdownOpen && (
+                      <div className="settings-dropdown-menu settings-dropdown-menu--tall">
+                        <button
+                          type="button"
+                          className={`settings-dropdown-item ${settings.microphoneDeviceId === "" ? "active" : ""}`}
+                          onClick={() => {
+                            handleChange("microphoneDeviceId", "");
+                            setMicrophoneDeviceDropdownOpen(false);
+                          }}
+                        >
+                          <span>Default Device</span>
+                          {settings.microphoneDeviceId === "" && <Check size={14} className="settings-dropdown-check" />}
+                        </button>
+                        {microphoneDevices.map((device, index) => (
+                          <button
+                            key={device.deviceId}
+                            type="button"
+                            className={`settings-dropdown-item ${settings.microphoneDeviceId === device.deviceId ? "active" : ""}`}
+                            onClick={() => {
+                              handleChange("microphoneDeviceId", device.deviceId);
+                              setMicrophoneDeviceDropdownOpen(false);
+                            }}
+                          >
+                            <span>{device.label || `Microphone ${index + 1}`}</span>
+                            {settings.microphoneDeviceId === device.deviceId && <Check size={14} className="settings-dropdown-check" />}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {microphonePermissionError && (
+                    <span className="text-red-400 text-xs mt-1">{microphonePermissionError}</span>
+                  )}
+                  {microphoneDevices.length === 0 && !microphonePermissionError && (
+                    <span className="text-yellow-400 text-xs mt-1">No microphone devices found</span>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </section>
 
         {/* ── Input ──────────────────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
-            <Mouse size={18} />
             <h2>Input</h2>
           </div>
           <div className="settings-rows">
@@ -929,6 +1176,21 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                   type="checkbox"
                   checked={settings.clipboardPaste}
                   onChange={(e) => handleChange("clipboardPaste", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
+                Hide Stream Overlay Buttons
+                <span className="settings-hint">Hide microphone, fullscreen, and end-session buttons while streaming.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.hideStreamButtons}
+                  onChange={(e) => handleChange("hideStreamButtons", e.target.checked)}
                 />
                 <span className="settings-toggle-track" />
               </label>
@@ -1006,17 +1268,31 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                     spellCheck={false}
                   />
                 </label>
+
+                <label className="settings-shortcut-row">
+                  <span className="settings-shortcut-label">Toggle Microphone</span>
+                  <input
+                    type="text"
+                    className={`settings-text-input settings-shortcut-input ${toggleMicrophoneError ? "error" : ""}`}
+                    value={toggleMicrophoneInput}
+                    onChange={(e) => setToggleMicrophoneInput(e.target.value)}
+                    onBlur={() => handleShortcutBlur("shortcutToggleMicrophone", toggleMicrophoneInput, setToggleMicrophoneInput, setToggleMicrophoneError)}
+                    onKeyDown={handleShortcutKeyDown}
+                    placeholder="Ctrl+Shift+M"
+                    spellCheck={false}
+                  />
+                </label>
               </div>
 
-              {(toggleStatsError || togglePointerLockError || stopStreamError || toggleAntiAfkError) && (
+              {(toggleStatsError || togglePointerLockError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError) && (
                 <span className="settings-input-hint">
                   Invalid shortcut. Use {shortcutExamples}
                 </span>
               )}
 
-              {!toggleStatsError && !togglePointerLockError && !stopStreamError && !toggleAntiAfkError && (
+              {!toggleStatsError && !togglePointerLockError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && (
                 <span className="settings-shortcut-hint">
-                  {shortcutExamples}. Current stop shortcut: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}.
+                  {shortcutExamples}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}.
                 </span>
               )}
             </div>
@@ -1026,7 +1302,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
         {/* ── Region ────────────────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
-            <Globe size={18} />
             <h2>Region</h2>
           </div>
           <div className="settings-rows">
@@ -1100,6 +1375,46 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </section>
+
+        {/* ── Miscellaneous ──────────────────────────────── */}
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h2>Miscellaneous</h2>
+          </div>
+          <div className="settings-rows">
+            {/* Export Logs */}
+            <div className="settings-row">
+              <label className="settings-label">
+                Export Logs
+                <span className="settings-hint">Download debug logs with sensitive data redacted for privacy</span>
+              </label>
+              <button
+                type="button"
+                className="settings-export-logs-btn"
+                onClick={async () => {
+                  try {
+                    const logs = await window.openNow.exportLogs("text");
+                    const blob = new Blob([logs], { type: "text/plain" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `opennow-logs-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                  } catch (err) {
+                    console.error("[Settings] Failed to export logs:", err);
+                    alert("Failed to export logs. Please try again.");
+                  }
+                }}
+              >
+                <FileDown size={16} />
+                Export Logs
+              </button>
             </div>
           </div>
         </section>

@@ -24,6 +24,8 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
   return cq.startsWith("10bit");
 }
 
+export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
+
 export interface Settings {
   resolution: string;
   fps: number;
@@ -39,6 +41,12 @@ export interface Settings {
   shortcutTogglePointerLock: string;
   shortcutStopStream: string;
   shortcutToggleAntiAfk: string;
+  shortcutToggleMicrophone: string;
+  microphoneMode: MicrophoneMode;
+  microphoneDeviceId: string;
+  hideStreamButtons: boolean;
+  sessionClockShowEveryMinutes: number;
+  sessionClockShowDurationSeconds: number;
   windowWidth: number;
   windowHeight: number;
 }
@@ -56,6 +64,9 @@ export interface AuthTokens {
   refreshToken?: string;
   idToken?: string;
   expiresAt: number;
+  clientToken?: string;
+  clientTokenExpiresAt?: number;
+  clientTokenLifetimeMs?: number;
 }
 
 export interface AuthUser {
@@ -225,6 +236,7 @@ export interface MediaConnectionInfo {
 export interface SessionInfo {
   sessionId: string;
   status: number;
+  queuePosition?: number;
   zone: string;
   streamingBaseUrl?: string;
   serverIp: string;
@@ -318,4 +330,6 @@ export interface OpenNowApi {
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
   resetSettings(): Promise<Settings>;
+  /** Export logs in redacted format */
+  exportLogs(format?: "text" | "json"): Promise<string>;
 }
