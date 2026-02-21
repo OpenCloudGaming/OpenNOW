@@ -1790,6 +1790,28 @@ body.controller-mode {
 .settings-save-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 20px var(--accent-glow); }
 .settings-save-btn:active { transform: translateY(0); }
 
+/* Export Logs Button */
+.settings-export-logs-btn {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 18px;
+  background: var(--bg-c);
+  border: 1px solid var(--panel-border-solid);
+  border-radius: var(--r-sm);
+  color: var(--ink-soft);
+  font-size: 0.9rem; font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color var(--t-fast), background var(--t-fast), border-color var(--t-fast), transform var(--t-fast);
+  white-space: nowrap;
+}
+.settings-export-logs-btn:hover {
+  color: var(--ink);
+  background: var(--card-hover);
+  border-color: rgba(255,255,255,0.12);
+  transform: translateY(-1px);
+}
+.settings-export-logs-btn:active { transform: translateY(0); }
+
 /* Codec Diagnostics */
 .codec-test-btn {
   display: flex; align-items: center; gap: 8px;

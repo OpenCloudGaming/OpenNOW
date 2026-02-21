@@ -1,4 +1,4 @@
-import { Globe, Save, Check, Search, X, Loader, Zap, Mic } from "lucide-react";
+import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -1375,6 +1375,46 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </section>
+
+        {/* ── Miscellaneous ──────────────────────────────── */}
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h2>Miscellaneous</h2>
+          </div>
+          <div className="settings-rows">
+            {/* Export Logs */}
+            <div className="settings-row">
+              <label className="settings-label">
+                Export Logs
+                <span className="settings-hint">Download debug logs with sensitive data redacted for privacy</span>
+              </label>
+              <button
+                type="button"
+                className="settings-export-logs-btn"
+                onClick={async () => {
+                  try {
+                    const logs = await window.openNow.exportLogs("text");
+                    const blob = new Blob([logs], { type: "text/plain" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `opennow-logs-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                  } catch (err) {
+                    console.error("[Settings] Failed to export logs:", err);
+                    alert("Failed to export logs. Please try again.");
+                  }
+                }}
+              >
+                <FileDown size={16} />
+                Export Logs
+              </button>
             </div>
           </div>
         </section>

@@ -330,4 +330,6 @@ export interface OpenNowApi {
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
   resetSettings(): Promise<Settings>;
+  /** Export logs in redacted format */
+  exportLogs(format?: "text" | "json"): Promise<string>;
 }

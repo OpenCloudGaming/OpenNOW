@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "node:fs";
 // F8  - Toggle mouse/pointer lock (handled in main process via IPC)
 
 import { IPC_CHANNELS } from "@shared/ipc";
+import { initLogCapture, exportLogs } from "@shared/logger";
 import type {
   MainToRendererSignalingEvent,
   AuthLoginRequest,
@@ -494,6 +495,11 @@ function registerIpcHandlers(): void {
     return settingsManager.reset();
   });
 
+  // Logs export IPC handler
+  ipcMain.handle(IPC_CHANNELS.LOGS_EXPORT, async (_event, format: "text" | "json" = "text"): Promise<string> => {
+    return exportLogs(format);
+  });
+
   // Save window size when it changes
   mainWindow?.on("resize", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -505,6 +511,9 @@ function registerIpcHandlers(): void {
 }
 
 app.whenReady().then(async () => {
+  // Initialize log capture first to capture all console output
+  initLogCapture("main");
+
   authService = new AuthService(join(app.getPath("userData"), "auth-state.json"));
   await authService.initialize();
 
