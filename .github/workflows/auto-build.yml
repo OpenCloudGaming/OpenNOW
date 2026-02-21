@@ -19,7 +19,7 @@ on:
 
 concurrency:
   group: auto-build-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -30,25 +30,20 @@ jobs:
       matrix:
         include:
           - label: windows
-            os: windows-latest
+            os: blacksmith-2vcpu-windows-2025
             builder_args: "--win nsis portable"
-
           - label: macos-x64
             os: macos-latest
             builder_args: "--mac dmg zip --x64"
-
           - label: macos-arm64
             os: macos-latest
             builder_args: "--mac dmg zip --arm64"
-
           - label: linux-x64
-            os: ubuntu-latest
+            os: blacksmith-2vcpu-ubuntu-2404
             builder_args: "--linux AppImage deb --x64"
-
           - label: linux-arm64
-            os: ubuntu-latest
+            os: blacksmith-2vcpu-ubuntu-2404-arm
             builder_args: "--linux AppImage deb --arm64"
-            emulate_arm64: true
 
     defaults:
       run:
@@ -61,6 +56,8 @@ jobs:
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       npm_config_audit: "false"
       npm_config_fund: "false"
+      # Use system fpm on arm64 (no prebuilt binaries available)
+      USE_SYSTEM_FPM: ${{ matrix.label == 'linux-arm64' && 'true' || 'false' }}
 
     steps:
       - name: Checkout
@@ -83,61 +80,23 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-electron-
 
-      - name: Set up QEMU
-        if: matrix.emulate_arm64
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Set up Docker Buildx
-        if: matrix.emulate_arm64
-        uses: docker/setup-buildx-action@v3
-
       - name: Install Linux packaging tools
-        if: runner.os == 'Linux' && !matrix.emulate_arm64
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y fakeroot rpm ruby ruby-dev build-essential
-          sudo gem install --no-document fpm
-          echo "/var/lib/gems/3.1.0/bin" >> $GITHUB_PATH
-          echo "$HOME/.local/share/gem/ruby/3.1.0/bin" >> $GITHUB_PATH
-          command -v fpm
-          fpm --version
+          sudo apt-get install -y fakeroot rpm
+      - name: Install FPM for arm64 deb builds
+        if: matrix.label == 'linux-arm64'
+        run: sudo apt-get install -y ruby ruby-dev build-essential && sudo gem install fpm
 
       - name: Install dependencies
-        if: '!matrix.emulate_arm64'
         run: npm ci --prefer-offline --no-audit --progress=false
 
       - name: Build app bundles
-        if: '!matrix.emulate_arm64'
         run: npm run build
 
       - name: Package installers
-        if: '!matrix.emulate_arm64'
         run: npx electron-builder --publish never ${{ matrix.builder_args }}
-
-      - name: Build + package (linux-arm64 via container)
-        if: matrix.emulate_arm64
-        run: |
-          docker run --rm --platform linux/arm64 \
-            -e USE_SYSTEM_FPM=true \
-            -e ELECTRON_CACHE=/work/.cache/electron \
-            -e ELECTRON_BUILDER_CACHE=/work/.cache/electron-builder \
-            -e PATH=/root/.local/share/gem/ruby/3.1.0/bin:/var/lib/gems/3.1.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-            -v "${{ github.workspace }}:/work" \
-            -w /work/opennow-stable \
-            node:22-bookworm bash -lc '
-              set -e
-              apt-get update
-              apt-get install -y fakeroot rpm ruby ruby-dev build-essential
-              gem install --no-document fpm
-              command -v fpm
-              fpm --version
-              rm -rf /root/.cache/electron-builder/fpm
-              npm ci --prefer-offline --no-audit --progress=false
-              npm run build
-              npx electron-builder --publish never --linux AppImage deb --arm64
-            '
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -153,7 +112,7 @@ jobs:
 
   release:
     name: publish-release
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     needs: build
     if: |
       github.ref == 'refs/heads/main' ||
