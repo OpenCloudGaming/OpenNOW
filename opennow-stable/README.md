@@ -37,11 +37,11 @@ Workflow: `.github/workflows/auto-build.yml`
 
 ## Tagged Releases
 
-Format: `opennow-stable-vX.Y.Z` (e.g., `opennow-stable-v0.2.4`)
+Format: `opennow-stable-vX.Y.Z-B` (e.g., `opennow-stable-v0.2.4-4`)
 
 ```bash
-git tag opennow-stable-v0.2.4
-git push origin opennow-stable-v0.2.4
+git tag opennow-stable-v0.2.4-4
+git push origin opennow-stable-v0.2.4-4
 ```
 
 The workflow automatically builds all platforms and creates/updates the GitHub Release.

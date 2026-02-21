@@ -167,12 +167,12 @@ Grab the latest release for your platform:
 
 | Platform | File |
 |----------|------|
-| Windows (installer) | `OpenNOW-v0.2.4-setup-x64.exe` |
-| Windows (portable) | `OpenNOW-v0.2.4-portable-x64.exe` |
-| macOS (x64) | `OpenNOW-v0.2.4-mac-x64.dmg` |
-| macOS (ARM) | `OpenNOW-v0.2.4-mac-arm64.dmg` |
-| Linux (x64) | `OpenNOW-v0.2.4-linux-x86_64.AppImage` |
-| Linux (ARM64) | `OpenNOW-v0.2.4-linux-arm64.AppImage` |
+| Windows (installer) | `OpenNOW-v0.2.4-4-setup-x64.exe` |
+| Windows (portable) | `OpenNOW-v0.2.4-4-portable-x64.exe` |
+| macOS (x64) | `OpenNOW-v0.2.4-4-mac-x64.dmg` |
+| macOS (ARM) | `OpenNOW-v0.2.4-4-mac-arm64.dmg` |
+| Linux (x64) | `OpenNOW-v0.2.4-4-linux-x86_64.AppImage` |
+| Linux (ARM64) | `OpenNOW-v0.2.4-4-linux-arm64.AppImage` |
 
 ## Architecture
 

@@ -1,6 +1,6 @@
 {
   "name": "opennow-stable",
-  "version": "0.2.4",
+  "version": "0.2.4-4",
   "description": "Electron-based OpenNOW stable client",
   "author": {
     "name": "zortos293",
