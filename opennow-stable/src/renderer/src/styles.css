@@ -2442,19 +2442,19 @@ body.controller-mode {
   font-size: 0.65rem; font-family: inherit; color: var(--ink-soft);
 }
 
-/* Microphone status indicator */
+/* Microphone status indicator — positioned left of sv-end (right:64px + 38px width + 8px gap = 110px) */
 .sv-mic {
-  position: fixed; bottom: 18px; right: 80px; z-index: 1001;
-  display: flex; align-items: center; gap: 5px;
-  padding: 5px 10px;
+  position: fixed; bottom: 18px; right: 110px; z-index: 1001;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  height: 38px; padding: 0 10px;
   background: rgba(10, 10, 12, 0.9);
   border: 1px solid var(--panel-border); border-radius: var(--r-sm);
-  font-size: 0.7rem; color: var(--ink-muted);
+  font-size: 0.7rem; line-height: 1; color: var(--ink-muted);
   animation: fade-in 300ms var(--ease);
 }
 .sv-mic--on { color: var(--success); border-color: rgba(74, 222, 128, 0.25); }
 .sv-mic--off { color: var(--ink-muted); opacity: 0.7; }
-.sv-mic-label { white-space: nowrap; }
+.sv-mic-label { white-space: nowrap; line-height: 1; }
 
 /* Game title toast */
 .sv-title-bar {
