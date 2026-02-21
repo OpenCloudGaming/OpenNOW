@@ -2442,6 +2442,20 @@ body.controller-mode {
   font-size: 0.65rem; font-family: inherit; color: var(--ink-soft);
 }
 
+/* Microphone status indicator */
+.sv-mic {
+  position: fixed; bottom: 18px; right: 80px; z-index: 1001;
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 10px;
+  background: rgba(10, 10, 12, 0.9);
+  border: 1px solid var(--panel-border); border-radius: var(--r-sm);
+  font-size: 0.7rem; color: var(--ink-muted);
+  animation: fade-in 300ms var(--ease);
+}
+.sv-mic--on { color: var(--success); border-color: rgba(74, 222, 128, 0.25); }
+.sv-mic--off { color: var(--ink-muted); opacity: 0.7; }
+.sv-mic-label { white-space: nowrap; }
+
 /* Game title toast */
 .sv-title-bar {
   position: fixed; bottom: 68px; left: 50%; transform: translateX(-50%); z-index: 1001;

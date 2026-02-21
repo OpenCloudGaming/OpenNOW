@@ -1,5 +1,5 @@
 import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown } from "lucide-react";
-import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { Monitor, Volume2, Mouse, Keyboard, Settings2, Globe, Save, Check, Search, X, Loader, Cpu, Zap, MessageSquare, Joystick, Sun, RefreshCw, RotateCcw, Mic, MicOff } from "lucide-react";import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
 import type {
@@ -10,7 +10,13 @@ import type {
   EntitledResolution,
   VideoAccelerationPreference,
   MicrophoneMode,
-} from "@shared/gfn";
+  HdrStreamingMode,
+  HdrCapability,
+  MicMode,
+  MicDeviceInfo,
+  PlatformInfo,
+  VideoDecodeBackend,
+  KeyboardLayout,} from "@shared/gfn";
 import { colorQualityRequiresHevc } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
 
@@ -1194,7 +1200,146 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 />
                 <span className="settings-toggle-track" />
               </label>
+            <div className="settings-row settings-row--column">
+              <div className="settings-row">
+                <label className="settings-label">
+                  <Keyboard size={14} style={{ marginRight: 6, opacity: 0.6 }} />
+                  Keyboard Layout
+                </label>
+              </div>
+              <div className="settings-seg">
+                {(["auto", "qwerty", "azerty", "qwertz"] as KeyboardLayout[]).map((l) => (
+                  <button
+                    key={l}
+                    className={`settings-seg-btn ${settings.keyboardLayout === l ? "active" : ""}`}
+                    onClick={() => handleChange("keyboardLayout", l)}
+                  >
+                    {l === "auto" ? "Auto" : l.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+              <span className="settings-hint">Auto uses the OS layout; override only if keys are wrong in the stream.</span>
             </div>
+
+            <div className="settings-row settings-row--column">
+              <label className="settings-label">Microphone</label>
+
+              <div className="settings-seg mic-mode-seg">
+                {(["off", "on", "push-to-talk"] as MicMode[]).map((m) => (
+                  <button
+                    key={m}
+                    className={`settings-seg-btn ${settings.micMode === m ? "active" : ""}`}
+                    onClick={() => handleChange("micMode", m)}
+                  >
+                    {m === "off" ? "Off" : m === "on" ? "On" : "Push-to-Talk"}
+                  </button>
+                ))}
+              </div>
+
+              {settings.micMode !== "off" && (
+                <>
+                  <div className="settings-row" style={{ marginTop: 10 }}>
+                    <label className="settings-label">Device</label>
+                    <div className="mic-device-select-wrap">
+                      <select
+                        className="settings-text-input mic-device-select"
+                        value={settings.micDeviceId || "default"}
+                        onChange={(e) => handleChange("micDeviceId", e.target.value === "default" ? "" : e.target.value)}
+                        disabled={micDevicesLoading}
+                      >
+                        <option value="default">Default Microphone</option>
+                        {micDevices
+                          .filter((d) => d.deviceId !== "default")
+                          .map((d) => (
+                            <option key={d.deviceId} value={d.deviceId}>
+                              {d.label}
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="settings-shortcut-reset-btn mic-refresh-btn"
+                        onClick={() => void refreshMicDevices()}
+                        disabled={micDevicesLoading}
+                        title="Refresh devices"
+                      >
+                        <RefreshCw size={12} />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="settings-row" style={{ marginTop: 6 }}>
+                    <label className="settings-label">Input Level</label>
+                    <div className="mic-level-meter">
+                      <div
+                        className="mic-level-meter-fill"
+                        ref={micLevelRef}
+                        style={{ transform: `scaleX(${micTestLevel})` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="settings-row" style={{ marginTop: 6 }}>
+                    <label className="settings-label">Gain</label>
+                    <div className="settings-input-group">
+                      <input
+                        type="range"
+                        className="settings-slider"
+                        min={0}
+                        max={200}
+                        step={1}
+                        value={Math.round(settings.micGain * 100)}
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value, 10) / 100;
+                          handleChange("micGain", v);
+                          if (micTestContextRef.current) {
+                            const nodes = micTestContextRef.current.destination;
+                            void nodes;
+                          }
+                        }}
+                      />
+                      <span className="settings-value-badge">{Math.round(settings.micGain * 100)}%</span>
+                    </div>
+                  </div>
+
+                  <div className="settings-row" style={{ marginTop: 6 }}>
+                    <label className="settings-label">Noise Suppression</label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.micNoiseSuppression}
+                        onChange={(e) => handleChange("micNoiseSuppression", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
+                  <div className="settings-row">
+                    <label className="settings-label">Echo Cancellation</label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.micEchoCancellation}
+                        onChange={(e) => handleChange("micEchoCancellation", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
+                  <div className="settings-row">
+                    <label className="settings-label">Auto Gain Control</label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.micAutoGainControl}
+                        onChange={(e) => handleChange("micAutoGainControl", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
+                </>
+              )}            </div>
 
             <div className="settings-row settings-row--column">
               <div className="settings-row-top">

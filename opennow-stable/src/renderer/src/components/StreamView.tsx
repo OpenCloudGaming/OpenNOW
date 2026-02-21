@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { JSX } from "react";
 import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff } from "lucide-react";
-import type { StreamDiagnostics } from "../gfn/webrtcClient";
+import type { MicStatus } from "@shared/gfn";import type { StreamDiagnostics } from "../gfn/webrtcClient";
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -37,11 +37,23 @@ interface StreamViewProps {
   } | null;
   isConnecting: boolean;
   gameTitle: string;
+  micStatus: MicStatus | null;
   onToggleFullscreen: () => void;
   onConfirmExit: () => void;
   onCancelExit: () => void;
   onEndSession: () => void;
   onToggleMicrophone?: () => void;
+}
+
+function micLabel(status: MicStatus): string {
+  switch (status) {
+    case "active": return "Mic On";
+    case "muted": return "Mic Muted";
+    case "no-device": return "No Mic";
+    case "permission-denied": return "Mic Denied";
+    case "error": return "Mic Error";
+    default: return "";
+  }
 }
 
 function getRttColor(rttMs: number): string {
@@ -111,6 +123,7 @@ export function StreamView({
   streamWarning,
   isConnecting,
   gameTitle,
+  micStatus,
   onToggleFullscreen,
   onConfirmExit,
   onCancelExit,
@@ -348,7 +361,25 @@ export function StreamView({
               {[stats.gpuType, regionLabel].filter(Boolean).join(" · ")}
             </div>
           )}
-        </div>
+
+          {/* HDR Debug Panel */}
+          <div className="sv-stats-foot" style={{ borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: "4px", marginTop: "2px" }}>
+            HDR: <strong style={{ color: stats.hdrState.status === "active" ? "var(--success)" : stats.hdrState.status === "fallback_sdr" ? "var(--warning)" : stats.hdrState.status === "unsupported" ? "var(--error)" : "var(--ink-muted)" }}>
+              {stats.hdrState.status === "active" ? "On" : stats.hdrState.status === "fallback_sdr" ? "Fallback SDR" : stats.hdrState.status === "unsupported" ? "Unsupported" : "Off"}
+            </strong>
+            {" · "}{stats.hdrState.bitDepth}-bit
+            {" · "}{stats.hdrState.colorPrimaries}/{stats.hdrState.transferFunction}
+            {stats.hdrState.codecProfile && <> · {stats.hdrState.codecProfile}</>}
+            {stats.hdrState.overlayForcesSdr && <> · <span style={{ color: "var(--warning)" }}>Overlay forces SDR</span></>}
+            {stats.hdrState.fallbackReason && <> · <span style={{ color: "var(--warning)" }}>{stats.hdrState.fallbackReason}</span></>}
+          </div>
+
+          <div className="sv-stats-foot">
+            Keyboard: <strong>{stats.keyboardLayout.toUpperCase()}</strong>
+            {stats.detectedKeyboardLayout !== "unknown" && (
+              <> · detected {stats.detectedKeyboardLayout}</>
+            )}
+          </div>        </div>
       )}
 
       {/* Controller indicator (top-left) */}
@@ -460,6 +491,17 @@ export function StreamView({
           <div className="sv-hint"><kbd>{shortcuts.togglePointerLock}</kbd><span>Mouse lock</span></div>
           <div className="sv-hint"><kbd>{shortcuts.stopStream}</kbd><span>Stop</span></div>
           {shortcuts.toggleMicrophone && <div className="sv-hint"><kbd>{shortcuts.toggleMicrophone}</kbd><span>Mic</span></div>}
+        </div>
+      )}
+
+      {/* Microphone status indicator — shown whenever mic is active or muted */}
+      {micStatus && micStatus !== "off" && !isConnecting && (
+        <div
+          className={`sv-mic ${micStatus === "active" ? "sv-mic--on" : "sv-mic--off"}`}
+          title={micLabel(micStatus)}
+        >
+          {micStatus === "active" ? <Mic size={14} /> : <MicOff size={14} />}
+          <span className="sv-mic-label">{micLabel(micStatus)}</span>
         </div>
       )}
 

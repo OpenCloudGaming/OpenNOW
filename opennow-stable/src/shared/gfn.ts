@@ -1,7 +1,63 @@
 export type VideoCodec = "H264" | "H265" | "AV1";
 export type VideoAccelerationPreference = "auto" | "hardware" | "software";
 
-/** Color quality (bit depth + chroma subsampling), matching Rust ColorQuality enum */
+export type HdrStreamingMode = "off" | "auto" | "on";
+
+export type MicMode = "off" | "on" | "push-to-talk";
+
+export type HevcCompatMode = "auto" | "force_h264" | "force_hevc" | "hevc_software";
+
+export type VideoDecodeBackend = "auto" | "vaapi" | "v4l2" | "software";
+
+export type KeyboardLayout = "auto" | "qwerty" | "azerty" | "qwertz";
+
+export interface PlatformInfo {
+  platform: string;
+  arch: string;
+}
+
+export interface MicSettings {
+  micMode: MicMode;
+  micDeviceId: string;
+  micGain: number;
+  micNoiseSuppression: boolean;
+  micAutoGainControl: boolean;
+  micEchoCancellation: boolean;
+  shortcutToggleMic: string;
+}
+
+export interface MicDeviceInfo {
+  deviceId: string;
+  label: string;
+  isDefault: boolean;
+}
+
+export type MicStatus = "off" | "active" | "muted" | "no-device" | "permission-denied" | "error";
+
+export type HdrPlatformSupport = "supported" | "best_effort" | "unsupported" | "unknown";
+
+export type HdrActiveStatus = "active" | "inactive" | "unsupported" | "fallback_sdr";
+
+export interface HdrCapability {
+  platform: "windows" | "macos" | "linux" | "unknown";
+  platformSupport: HdrPlatformSupport;
+  osHdrEnabled: boolean;
+  displayHdrCapable: boolean;
+  decoder10BitCapable: boolean;
+  hdrColorSpaceSupported: boolean;
+  notes: string[];
+}
+
+export interface HdrStreamState {
+  status: HdrActiveStatus;
+  bitDepth: 8 | 10;
+  colorPrimaries: "BT.709" | "BT.2020" | "unknown";
+  transferFunction: "SDR" | "PQ" | "HLG" | "unknown";
+  matrixCoefficients: "BT.709" | "BT.2020" | "unknown";
+  codecProfile: string;
+  overlayForcesSdr: boolean;
+  fallbackReason: string | null;
+}/** Color quality (bit depth + chroma subsampling), matching Rust ColorQuality enum */
 export type ColorQuality = "8bit_420" | "8bit_444" | "10bit_420" | "10bit_444";
 
 /** Helper: get CloudMatch bitDepth value (0 = 8-bit SDR, 10 = 10-bit HDR capable) */
@@ -49,7 +105,7 @@ export interface Settings {
   sessionClockShowDurationSeconds: number;
   windowWidth: number;
   windowHeight: number;
-}
+  keyboardLayout: KeyboardLayout;}
 
 export interface LoginProvider {
   idpId: string;
