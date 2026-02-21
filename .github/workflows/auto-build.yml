@@ -25,7 +25,6 @@ jobs:
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
-
     strategy:
       fail-fast: false
       matrix:
@@ -84,30 +83,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-electron-
 
-      # ---------------------------
-      # Linux ARM64 emulation setup
-      # ---------------------------
-
-      - name: Set up QEMU (linux-arm64)
+      - name: Set up QEMU
         if: matrix.emulate_arm64
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
 
-      - name: Set up Docker Buildx (linux-arm64)
+      - name: Set up Docker Buildx
         if: matrix.emulate_arm64
         uses: docker/setup-buildx-action@v3
-
-      # ---------------------------
-      # Native builds (non-arm64)
-      # ---------------------------
 
       - name: Install Linux packaging tools
         if: runner.os == 'Linux' && !matrix.emulate_arm64
         run: |
           sudo apt-get update
           sudo apt-get install -y fakeroot rpm ruby ruby-dev build-essential
-          sudo gem install fpm
+          sudo gem install --no-document fpm
 
       - name: Install dependencies
         if: '!matrix.emulate_arm64'
@@ -121,15 +112,13 @@ jobs:
         if: '!matrix.emulate_arm64'
         run: npx electron-builder --publish never ${{ matrix.builder_args }}
 
-      # ---------------------------
-      # ARM64 container build
-      # ---------------------------
-
       - name: Build + package (linux-arm64 via container)
         if: matrix.emulate_arm64
         run: |
           docker run --rm --platform linux/arm64 \
             -e USE_SYSTEM_FPM=true \
+            -e GEM_HOME=/root/.gem \
+            -e PATH=/root/.gem/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
             -e ELECTRON_CACHE=/work/.cache/electron \
             -e ELECTRON_BUILDER_CACHE=/work/.cache/electron-builder \
             -v "${{ github.workspace }}:/work" \
@@ -138,16 +127,12 @@ jobs:
               set -e
               apt-get update
               apt-get install -y fakeroot rpm ruby ruby-dev build-essential
-              gem install fpm
+              gem install --no-document fpm
               rm -rf /root/.cache/electron-builder/fpm
               npm ci --prefer-offline --no-audit --progress=false
               npm run build
               npx electron-builder --publish never --linux AppImage deb --arm64
             '
-
-      # ---------------------------
-      # Upload artifacts
-      # ---------------------------
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
