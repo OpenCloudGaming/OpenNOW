@@ -97,8 +97,7 @@ jobs:
         if: runner.os == 'Linux' && !matrix.emulate_arm64
         run: |
           sudo apt-get update
-          sudo apt-get install -y fakeroot rpm ruby ruby-dev build-essential
-          sudo gem install --no-document fpm
+          sudo apt-get install -y fakeroot rpm fpm
 
       - name: Install dependencies
         if: '!matrix.emulate_arm64'
@@ -117,8 +116,6 @@ jobs:
         run: |
           docker run --rm --platform linux/arm64 \
             -e USE_SYSTEM_FPM=true \
-            -e GEM_HOME=/root/.gem \
-            -e PATH=/root/.gem/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
             -e ELECTRON_CACHE=/work/.cache/electron \
             -e ELECTRON_BUILDER_CACHE=/work/.cache/electron-builder \
             -v "${{ github.workspace }}:/work" \
@@ -126,9 +123,10 @@ jobs:
             node:22-bookworm bash -lc '
               set -e
               apt-get update
-              apt-get install -y fakeroot rpm ruby ruby-dev build-essential
-              gem install --no-document fpm
+              apt-get install -y fakeroot rpm fpm
               rm -rf /root/.cache/electron-builder/fpm
+              command -v fpm
+              fpm --version
               npm ci --prefer-offline --no-audit --progress=false
               npm run build
               npx electron-builder --publish never --linux AppImage deb --arm64
