@@ -53,7 +53,7 @@
       }
     ],
     "icon": "../logo.png",
-    "npmRebuild": true,
+    "npmRebuild": false,
     "nodeGypRebuild": false,
     "buildDependenciesFromSource": false,
     "directories": {
@@ -92,7 +92,8 @@
       ],
       "category": "Game",
       "maintainer": "zortos293 <zortos293@users.noreply.github.com>",
-      "artifactName": "OpenNOW-v${version}-linux-${arch}.${ext}"
+      "artifactName": "OpenNOW-v${version}-linux-${arch}.${ext}",
+      "fpm": "fpm"
     }
   }
 }
