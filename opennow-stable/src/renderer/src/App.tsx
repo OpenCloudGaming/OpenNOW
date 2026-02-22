@@ -13,7 +13,11 @@ import type {
   SubscriptionInfo,
   StreamRegion,
   VideoCodec,
-} from "@shared/gfn";
+  DiscordPresencePayload,
+  FlightSlotConfig,
+  HdrCapability,
+  HdrStreamState,
+  PlatformInfo,} from "@shared/gfn";
 
 import {
   GfnWebRtcClient,
@@ -282,7 +286,23 @@ export function App(): JSX.Element {
     microphoneMode: "disabled",
     microphoneDeviceId: "",
     hideStreamButtons: false,
-    sessionClockShowEveryMinutes: 60,
+    windowWidth: 1400,
+    windowHeight: 900,
+    discordPresenceEnabled: false,
+    discordClientId: "",
+    flightControlsEnabled: false,
+    flightControlsSlot: 3,
+    flightSlots: defaultFlightSlots(),
+    hdrStreaming: "off",
+    micMode: "off",
+    micDeviceId: "",
+    micGain: 1.0,
+    micNoiseSuppression: true,
+    micAutoGainControl: true,
+    micEchoCancellation: true,
+    shortcutToggleMic: DEFAULT_SHORTCUTS.shortcutToggleMic,
+    hevcCompatMode: "auto",
+    videoDecodeBackend: "auto",    sessionClockShowEveryMinutes: 60,
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
@@ -290,6 +310,9 @@ export function App(): JSX.Element {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
+
+  // Platform info (from main process)
+  const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
 
   // Stream State
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -359,7 +382,8 @@ export function App(): JSX.Element {
       document.body.classList.remove("controller-mode");
     };
   }, [controllerConnected]);
-
+    void window.openNow.getPlatformInfo().then(setPlatformInfo).catch(() => {});
+  }, []);
   // Derived state
   const selectedProvider = useMemo(() => {
     return providers.find((p) => p.idpId === providerIdpId) ?? authSession?.provider ?? null;
@@ -722,7 +746,10 @@ export function App(): JSX.Element {
               resolution: settings.resolution,
               fps: settings.fps,
               maxBitrateKbps: settings.maxBitrateMbps * 1000,
-            });
+              hdrEnabled: hdrEnabledForStream,
+              hevcCompatMode: settings.hevcCompatMode,
+              platformInfo,
+              videoDecodeBackend: settings.videoDecodeBackend,            });
             setLaunchError(null);
             setStreamStatus("streaming");
             setSessionStartedAtMs((current) => current ?? Date.now());

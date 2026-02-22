@@ -10,7 +10,12 @@ import type {
   EntitledResolution,
   VideoAccelerationPreference,
   MicrophoneMode,
-} from "@shared/gfn";
+  HdrStreamingMode,
+  HdrCapability,
+  MicMode,
+  MicDeviceInfo,
+  PlatformInfo,
+  VideoDecodeBackend,} from "@shared/gfn";
 import { colorQualityRequiresHevc } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
 
@@ -296,11 +301,19 @@ function guessDecodeBackend(hwAccelerated: boolean): string {
   if (platform.includes("mac") || ua.includes("macintosh")) return "VideoToolbox (GPU)";
   if (platform.includes("linux") || ua.includes("linux")) {
     return isLinuxArmClient() ? "V4L2 (GPU)" : "VA-API (GPU)";
-  }
+function guessDecodeBackend(hwAccelerated: boolean, platformInfo: PlatformInfo | null): string {
+  if (!hwAccelerated) return "Software (CPU)";
+  if (platformInfo) {
+    if (platformInfo.platform === "win32") return "D3D11 (GPU)";
+    if (platformInfo.platform === "darwin") return "VideoToolbox (GPU)";
+    if (platformInfo.platform === "linux") {
+      if (platformInfo.arch === "arm64" || platformInfo.arch === "arm") return "V4L2 (GPU)";
+      return "VA-API (GPU)";
+    }  }
   return "Hardware (GPU)";
 }
 
-function guessEncodeBackend(hwAccelerated: boolean): string {
+function guessEncodeBackend(hwAccelerated: boolean, platformInfo: PlatformInfo | null): string {
   if (!hwAccelerated) return "Software (CPU)";
   const platform = navigator.platform?.toLowerCase() ?? "";
   const ua = navigator.userAgent?.toLowerCase() ?? "";
@@ -308,11 +321,14 @@ function guessEncodeBackend(hwAccelerated: boolean): string {
   if (platform.includes("mac") || ua.includes("macintosh")) return "VideoToolbox (GPU)";
   if (platform.includes("linux") || ua.includes("linux")) {
     return isLinuxArmClient() ? "V4L2 (GPU)" : "VA-API (GPU)";
-  }
+  if (platformInfo) {
+    if (platformInfo.platform === "win32") return "Media Foundation (GPU)";
+    if (platformInfo.platform === "darwin") return "VideoToolbox (GPU)";
+    if (platformInfo.platform === "linux") return "VA-API (GPU)";  }
   return "Hardware (GPU)";
 }
 
-async function testCodecSupport(): Promise<CodecTestResult[]> {
+async function testCodecSupport(platformInfo: PlatformInfo | null): Promise<CodecTestResult[]> {
   const results: CodecTestResult[] = [];
 
   // Get WebRTC receiver capabilities once
@@ -418,10 +434,10 @@ async function testCodecSupport(): Promise<CodecTestResult[]> {
       encodeSupported,
       encodeHwAccelerated,
       decodeVia: (decodeSupported || webrtcSupported)
-        ? guessDecodeBackend(hwAccelerated)
+        ? guessDecodeBackend(hwAccelerated, platformInfo)
         : "Unsupported",
       encodeVia: encodeSupported
-        ? guessEncodeBackend(encodeHwAccelerated)
+        ? guessEncodeBackend(encodeHwAccelerated, platformInfo)
         : "Unsupported",
       profiles,
     });
@@ -448,20 +464,45 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     if (platform.includes("mac")) return "VideoToolbox";
     if (platform.includes("linux")) return isLinuxArmClient() ? "V4L2" : "VA-API";
     return "Hardware";
-  }, []);
+
+  // HDR diagnostics (on-demand like codec diagnostics)
+  const [hdrDiagResult, setHdrDiagResult] = useState<HdrCapability | null>(hdrCapability);
+  const [hdrDiagTesting, setHdrDiagTesting] = useState(false);
+  const [hdrDiagOpen, setHdrDiagOpen] = useState(false);
+  const [hdrRefreshing, setHdrRefreshing] = useState(false);
+  const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
+
+  useEffect(() => {
+    const api = (window as unknown as { openNow: { getPlatformInfo: () => Promise<PlatformInfo> } }).openNow;
+    void api.getPlatformInfo().then(setPlatformInfo).catch(() => {});  }, []);
+
+  const isLinux = platformInfo?.platform === "linux";
+  const isLinuxArm = isLinux && (platformInfo?.arch === "arm64" || platformInfo?.arch === "arm");
+
+  const platformHardwareLabel = useMemo(() => {
+    if (platformInfo) {
+      if (platformInfo.platform === "win32") return "D3D11 / DXVA";
+      if (platformInfo.platform === "darwin") return "VideoToolbox";
+      if (platformInfo.platform === "linux") {
+        if (platformInfo.arch === "arm64" || platformInfo.arch === "arm") return "V4L2";
+        return "VA-API";
+      }
+    }
+    return "Hardware";
+  }, [platformInfo]);
 
   const runCodecTest = useCallback(async () => {
     setCodecTesting(true);
     setCodecTestOpen(true);
     try {
-      const results = await testCodecSupport();
+      const results = await testCodecSupport(platformInfo);
       setCodecResults(results);
     } catch (err) {
       console.error("Codec test failed:", err);
     } finally {
       setCodecTesting(false);
     }
-  }, []);
+  }, [platformInfo]);
 
   useEffect(() => {
     try {
@@ -840,7 +881,55 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               </div>
             </div>
 
-            {/* Decoder preference */}
+            {/* HEVC Compatibility Mode */}
+            <div className="settings-row settings-row--column">
+              <label className="settings-label">HEVC Compatibility</label>
+              <div className="settings-chip-row">
+                {([
+                  { value: "auto" as const, label: "Auto" },
+                  { value: "force_h264" as const, label: "Force H.264" },
+                  { value: "force_hevc" as const, label: "Force HEVC" },
+                  { value: "hevc_software" as const, label: "HEVC Software" },
+                ] as const).map((option) => (
+                  <button
+                    key={`hevc-compat-${option.value}`}
+                    className={`settings-chip ${settings.hevcCompatMode === option.value ? "active" : ""}`}
+                    onClick={() => handleChange("hevcCompatMode", option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <span className="settings-subtle-hint">
+                Auto disables HEVC on AMD Polaris/Vega GPUs (RX 550, Vega iGPU) to prevent green screen.
+              </span>
+            </div>
+
+            {/* Linux-only Hardware Decode Backend */}
+            {isLinux && (
+              <div className="settings-row settings-row--column">
+                <label className="settings-label">Hardware Decode Backend</label>
+                <div className="settings-chip-row">
+                  {([
+                    { value: "auto" as const, label: "Auto (recommended)" },
+                    { value: "vaapi" as const, label: "VA-API (force)" },
+                    { value: "v4l2" as const, label: "V4L2 (force)" },
+                    { value: "software" as const, label: "Software (force)" },
+                  ] as const).map((option) => (
+                    <button
+                      key={`vdb-${option.value}`}
+                      className={`settings-chip ${settings.videoDecodeBackend === option.value ? "active" : ""}`}
+                      onClick={() => handleChange("videoDecodeBackend", option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <span className="settings-subtle-hint">
+                  Auto chooses VA-API on x64 Linux and V4L2 on Linux ARM. Applies after app restart.
+                </span>
+              </div>
+            )}            {/* Decoder preference */}
             <div className="settings-row settings-row--column">
               <label className="settings-label">Decoder</label>
               <div className="settings-chip-row">

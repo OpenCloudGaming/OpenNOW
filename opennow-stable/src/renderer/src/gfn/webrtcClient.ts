@@ -5,7 +5,11 @@ import type {
   SessionInfo,
   VideoCodec,
   MicrophoneMode,
-} from "@shared/gfn";
+  FlightGamepadState,
+  HdrStreamState,
+  HevcCompatMode,
+  PlatformInfo,
+  VideoDecodeBackend,} from "@shared/gfn";
 
 import {
   InputEncoder,
@@ -38,7 +42,10 @@ interface OfferSettings {
   resolution: string;
   fps: number;
   maxBitrateKbps: number;
-}
+  hdrEnabled: boolean;
+  hevcCompatMode: HevcCompatMode;
+  platformInfo: PlatformInfo | null;
+  videoDecodeBackend: VideoDecodeBackend;}
 
 interface KeyStrokeSpec {
   vk: number;
@@ -2578,7 +2585,55 @@ export class GfnWebRtcClient {
     this.log(`Browser supported video codecs: ${supported.join(", ") || "unknown"}`);
 
     if (settings.codec === "H265") {
-      const hevcProfiles = this.getSupportedHevcProfiles();
+    // 3a. HEVC Compatibility Mode — detect AMD Polaris/Vega GPU and fallback if needed
+    const hevcCompat = resolveHevcCompat(effectiveCodec, settings.hevcCompatMode);
+    this.log(
+      `[HEVC Compat] mode=${settings.hevcCompatMode}, vendor=${hevcCompat.gpuInfo.vendor}, ` +
+      `renderer="${hevcCompat.gpuInfo.unmaskedRenderer || hevcCompat.gpuInfo.renderer}", ` +
+      `isAmdPolarisOrVega=${hevcCompat.gpuInfo.isAmdPolarisOrVega}, ` +
+      `decision=${hevcCompat.effectiveCodec}, overridden=${hevcCompat.wasOverridden}`,
+    );
+    this.log(`[HEVC Compat] reason: ${hevcCompat.reason}`);
+    if (hevcCompat.wasOverridden) {
+      effectiveCodec = hevcCompat.effectiveCodec;
+      this.log(`[HEVC Compat] Codec overridden: ${settings.codec} → ${effectiveCodec}`);
+    }
+
+    const useSoftwareDecode = shouldRequestSoftwareDecode(settings.hevcCompatMode, effectiveCodec);
+    if (useSoftwareDecode) {
+      this.log("[HEVC Compat] Software decode requested for HEVC");
+    }
+
+    // 3b. Linux ARM V4L2 codec safety — fallback unsupported codecs to H.264
+    const isLinuxArm = settings.platformInfo?.platform === "linux" &&
+      (settings.platformInfo.arch === "arm64" || settings.platformInfo.arch === "arm");
+    const v4l2Active = isLinuxArm && (settings.videoDecodeBackend === "auto" || settings.videoDecodeBackend === "v4l2");
+    if (v4l2Active) {
+      if (effectiveCodec === "AV1" && !supported.includes("AV1")) {
+        this.log(`[Linux ARM] AV1 not in browser codec list, falling back to H.264`);
+        effectiveCodec = "H264";
+      }
+      if (effectiveCodec === "H265" && !supported.includes("H265")) {
+        this.log(`[Linux ARM] HEVC not in browser codec list, falling back to H.264`);
+        effectiveCodec = "H264";
+      }
+    }
+
+    // HDR requires a 10-bit capable codec. H264 cannot carry 10-bit HDR.
+    // Upgrade to H265 (or AV1) when HDR is enabled and user selected H264.
+    if (settings.hdrEnabled && effectiveCodec === "H264") {
+      if (supported.includes("H265")) {
+        effectiveCodec = "H265";
+        this.log("HDR: Upgraded codec H264 → H265 (H264 cannot carry 10-bit HDR)");
+      } else if (supported.includes("AV1")) {
+        effectiveCodec = "AV1";
+        this.log("HDR: Upgraded codec H264 → AV1 (H264 cannot carry 10-bit HDR, H265 unsupported)");
+      } else {
+        this.log("HDR: Warning — H264 selected but no 10-bit capable codec available; HDR may not activate");
+      }
+    }
+
+    if (effectiveCodec === "H265") {      const hevcProfiles = this.getSupportedHevcProfiles();
       if (hevcProfiles.size > 0) {
         this.log(`Browser HEVC profile-id support: ${Array.from(hevcProfiles).join(", ")}`);
       }

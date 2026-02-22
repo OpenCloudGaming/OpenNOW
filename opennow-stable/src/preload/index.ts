@@ -18,7 +18,10 @@ import type {
   IceCandidatePayload,
   Settings,
   SubscriptionFetchRequest,
-} from "@shared/gfn";
+  DiscordPresencePayload,
+  FlightProfile,
+  MicDeviceInfo,
+  PlatformInfo,} from "@shared/gfn";
 
 // Extend the OpenNowApi interface for internal preload use
 type PreloadApi = OpenNowApi;
@@ -74,6 +77,38 @@ const api: PreloadApi = {
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, key, value),
   resetSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_RESET),
   exportLogs: (format?: "text" | "json") => ipcRenderer.invoke(IPC_CHANNELS.LOGS_EXPORT, format),
-};
+  updateDiscordPresence: (state: DiscordPresencePayload) =>
+    ipcRenderer.invoke(IPC_CHANNELS.DISCORD_UPDATE_PRESENCE, state),
+  clearDiscordPresence: () => ipcRenderer.invoke(IPC_CHANNELS.DISCORD_CLEAR_PRESENCE),
+  flightGetProfile: (vidPid: string, gameId?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_GET_PROFILE, vidPid, gameId),
+  flightSetProfile: (profile: FlightProfile) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_SET_PROFILE, profile),
+  flightDeleteProfile: (vidPid: string, gameId?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_DELETE_PROFILE, vidPid, gameId),
+  flightGetAllProfiles: () => ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_GET_ALL_PROFILES),
+  flightResetProfile: (vidPid: string) => ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_RESET_PROFILE, vidPid),
+  getOsHdrInfo: () => ipcRenderer.invoke(IPC_CHANNELS.HDR_GET_OS_INFO),
+  relaunchApp: () => ipcRenderer.invoke(IPC_CHANNELS.APP_RELAUNCH),
+  micEnumerateDevices: () => ipcRenderer.invoke(IPC_CHANNELS.MIC_ENUMERATE_DEVICES),
+  onMicDevicesChanged: (listener: (devices: MicDeviceInfo[]) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, devices: MicDeviceInfo[]) => {
+      listener(devices);
+    };
+    ipcRenderer.on(IPC_CHANNELS.MIC_DEVICES_CHANGED, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.MIC_DEVICES_CHANGED, wrapped);
+    };
+  },
+  onSessionExpired: (listener: (reason: string) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, reason: string) => {
+      listener(reason);
+    };
+    ipcRenderer.on(IPC_CHANNELS.AUTH_SESSION_EXPIRED, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.AUTH_SESSION_EXPIRED, wrapped);
+    };
+  },
+  getPlatformInfo: (): Promise<PlatformInfo> => ipcRenderer.invoke(IPC_CHANNELS.GET_PLATFORM_INFO),};
 
 contextBridge.exposeInMainWorld("openNow", api);
