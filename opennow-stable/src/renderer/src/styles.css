@@ -1809,8 +1809,54 @@ body.controller-mode {
   background: var(--card-hover);
   border-color: rgba(255,255,255,0.12);
   transform: translateY(-1px);
+
+.mic-device-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-surface);
 }
+
+.mic-refresh-btn {
+  flex-shrink: 0;
+  padding: 6px 8px !important;
+}
+
+.mic-test-meter-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.mic-level-meter {
+  flex: 1;
+  height: 8px;
+  background: var(--chip);
+  border-radius: 4px;
+  overflow: hidden;
+  min-width: 120px;
+  max-width: 260px;
+}
+
+.mic-level-meter-fill {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--warning));
+  border-radius: 4px;
+  transform-origin: left;
+  transition: transform 60ms linear;}
 .settings-export-logs-btn:active { transform: translateY(0); }
+
+.mic-test-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.mic-test-error {
+  font-size: 0.72rem;
+  color: var(--error);
+  margin-top: 2px;
+}
 
 /* Codec Diagnostics */
 .codec-test-btn {
@@ -2441,6 +2487,20 @@ body.controller-mode {
   border: 1px solid var(--panel-border-solid); border-radius: 3px;
   font-size: 0.65rem; font-family: inherit; color: var(--ink-soft);
 }
+
+/* Microphone status indicator — positioned left of sv-end (right:64px + 38px width + 8px gap = 110px) */
+.sv-mic {
+  position: fixed; bottom: 18px; right: 110px; z-index: 1001;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  height: 38px; padding: 0 10px;
+  background: rgba(10, 10, 12, 0.9);
+  border: 1px solid var(--panel-border); border-radius: var(--r-sm);
+  font-size: 0.7rem; line-height: 1; color: var(--ink-muted);
+  animation: fade-in 300ms var(--ease);
+}
+.sv-mic--on { color: var(--success); border-color: rgba(74, 222, 128, 0.25); }
+.sv-mic--off { color: var(--ink-muted); opacity: 0.7; }
+.sv-mic-label { white-space: nowrap; line-height: 1; }
 
 /* Game title toast */
 .sv-title-bar {

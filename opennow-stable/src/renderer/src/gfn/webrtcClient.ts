@@ -19,6 +19,7 @@ import {
   GAMEPAD_MAX_CONTROLLERS,
   type GamepadInput,
 } from "./inputProtocol";
+
 import {
   buildNvstSdp,
   extractIceCredentials,
@@ -169,8 +170,11 @@ export interface StreamDiagnostics {
   // Microphone state
   micState: MicState;
   micEnabled: boolean;
-}
+  // Keyboard layout diagnostics
+  keyboardLayout: string;
+  detectedKeyboardLayout: string;}
 
+}
 export interface StreamTimeWarning {
   code: 1 | 2 | 3;
   secondsLeft?: number;
@@ -483,6 +487,7 @@ export class GfnWebRtcClient {
 
   // Track currently pressed keys (VK codes) for synthetic Escape detection
   private pressedKeys: Set<number> = new Set();
+
   // Video element reference for pointer lock re-acquisition
   private videoElement: HTMLVideoElement | null = null;
   // Timer for synthetic Escape on pointer lock loss
@@ -503,6 +508,8 @@ export class GfnWebRtcClient {
   private mouseFlushLastTickMs = 0;
   private pendingMouseTimestampUs: bigint | null = null;
   private mouseDeltaFilter = new MouseDeltaFilter();
+
+
 
   private partialReliableThresholdMs = GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
   private inputQueuePeakBufferedBytesWindow = 0;
@@ -551,8 +558,10 @@ export class GfnWebRtcClient {
     serverRegion: "",
     micState: "uninitialized",
     micEnabled: false,
-  };
+    keyboardLayout: "qwerty",
+    detectedKeyboardLayout: "unknown",  };
 
+  };
   constructor(private readonly options: ClientOptions) {
     options.videoElement.srcObject = this.videoStream;
     options.audioElement.srcObject = this.audioStream;
@@ -687,8 +696,10 @@ export class GfnWebRtcClient {
       serverRegion: this.serverRegion,
       micState: this.micState,
       micEnabled: this.micManager?.isEnabled() ?? false,
-    };
-    this.emitStats();
+      keyboardLayout: this.effectiveKeyboardLayout,
+      detectedKeyboardLayout: this.diagnostics.detectedKeyboardLayout,    };
+
+    };    this.emitStats();
   }
 
   private resetInputState(): void {
@@ -2416,7 +2427,140 @@ export class GfnWebRtcClient {
     }
   }
 
-  async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
+
+
+  setMicService(service: MicAudioService | null): void {
+    this.micService = service;
+    if (service) {
+      service.setPeerConnection(this.pc);
+      if (this.micTransceiver) {
+        service.setMicTransceiver(this.micTransceiver);
+      }
+    }
+  }
+
+  private bindMicTransceiverFromOffer(pc: RTCPeerConnection, offerSdp: string): void {
+    const transceivers = pc.getTransceivers();
+
+    this.log(`=== Mic transceiver binding: ${transceivers.length} transceivers ===`);
+    for (let i = 0; i < transceivers.length; i++) {
+      const t = transceivers[i];
+      this.log(
+        `  [${i}] mid=${t.mid} direction=${t.direction} currentDirection=${t.currentDirection}` +
+        ` sender.track=${t.sender.track ? `${t.sender.track.kind}(enabled=${t.sender.track.enabled})` : "null"}` +
+        ` receiver.track=${t.receiver.track ? t.receiver.track.kind : "null"}`,
+      );
+    }
+
+    let micT: RTCRtpTransceiver | null = null;
+
+    const mid3 = transceivers.find(
+      (t) => t.mid === "3" && (t.receiver.track?.kind === "audio" || t.sender.track?.kind === "audio"),
+    );
+    if (mid3) {
+      micT = mid3;
+      this.log(`Mic transceiver: matched mid=3 (direction=${mid3.direction})`);
+    }
+
+    if (!micT) {
+      const micMid = this.deriveMicMidFromOfferSdp(offerSdp);
+      if (micMid !== null) {
+        const byMid = transceivers.find(
+          (t) => t.mid === micMid && (t.receiver.track?.kind === "audio" || t.sender.track?.kind === "audio"),
+        );
+        if (byMid) {
+          micT = byMid;
+          this.log(`Mic transceiver: matched via SDP m-line mapping mid=${micMid} (direction=${byMid.direction})`);
+        } else {
+          this.log(`Mic transceiver: SDP says mid=${micMid} but no matching audio transceiver found`);
+        }
+      } else {
+        this.log("Mic transceiver: could not derive mic mid from offer SDP");
+      }
+    }
+
+    if (!micT) {
+      this.log("WARNING: No mic transceiver found — mic audio will NOT transmit upstream");
+      return;
+    }
+
+    if (micT.direction === "recvonly" || micT.direction === "inactive") {
+      const wasDirec = micT.direction;
+      try {
+        micT.direction = "sendrecv";
+        this.log(`Mic transceiver direction changed: ${wasDirec} → sendrecv`);
+      } catch (err) {
+        this.log(`Failed to change mic transceiver direction: ${String(err)}`);
+      }
+    }
+
+    this.micTransceiver = micT;
+
+    if (this.micService) {
+      this.micService.setMicTransceiver(micT);
+    }
+  }
+
+  private deriveMicMidFromOfferSdp(sdp: string): string | null {
+    const lines = sdp.split(/\r?\n/);
+    let mLineIndex = -1;
+    let currentMid: string | null = null;
+    let currentType = "";
+    let currentDirection = "";
+    const mLineSections: { index: number; type: string; mid: string | null; direction: string }[] = [];
+
+    for (const line of lines) {
+      if (line.startsWith("m=")) {
+        if (mLineIndex >= 0) {
+          mLineSections.push({ index: mLineIndex, type: currentType, mid: currentMid, direction: currentDirection });
+        }
+        mLineIndex++;
+        currentType = line.split(" ")[0].replace("m=", "");
+        currentMid = null;
+        currentDirection = "";
+      } else if (line.startsWith("a=mid:")) {
+        currentMid = line.replace("a=mid:", "").trim();
+      } else if (
+        line === "a=recvonly" || line === "a=sendonly" ||
+        line === "a=sendrecv" || line === "a=inactive"
+      ) {
+        currentDirection = line.replace("a=", "");
+      }
+    }
+    if (mLineIndex >= 0) {
+      mLineSections.push({ index: mLineIndex, type: currentType, mid: currentMid, direction: currentDirection });
+    }
+
+    this.log(`Offer SDP m-line map: ${mLineSections.map((s) => `[${s.index}] m=${s.type} mid=${s.mid} dir=${s.direction}`).join(" | ")}`);
+
+    if (mLineSections.length >= 4) {
+      const micSection = mLineSections[3];
+      if (micSection.mid) {
+        this.log(`SDP fallback: m-line index 3 (m=${micSection.type}) has mid=${micSection.mid}`);
+        return micSection.mid;
+      }
+    }
+
+    const audioSections = mLineSections.filter((s) => s.type === "audio");
+    if (audioSections.length >= 2) {
+      const micCandidate = audioSections.find((s) => s.direction === "recvonly" || s.direction === "inactive");
+      if (micCandidate?.mid) {
+        this.log(`SDP fallback: recvonly/inactive audio m-line at index ${micCandidate.index} has mid=${micCandidate.mid}`);
+        return micCandidate.mid;
+      }
+      const second = audioSections[1];
+      if (second?.mid) {
+        this.log(`SDP fallback: second audio m-line at index ${second.index} has mid=${second.mid}`);
+        return second.mid;
+      }
+    }
+
+    return null;
+  }
+
+  getPeerConnection(): RTCPeerConnection | null {
+    return this.pc;
+  }  async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
     this.cleanupPeerConnection();
 
     this.log("=== handleOffer START ===");

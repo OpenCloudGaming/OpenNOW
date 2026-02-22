@@ -22,7 +22,15 @@ import {
 } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { useControllerNavigation } from "./controllerNavigation";
-
+import { MicAudioService } from "./gfn/micAudioService";
+import type { MicAudioState } from "./gfn/micAudioService";
+import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
+import { getFlightHidService } from "./flight/FlightHidService";
+import {
+  probeHdrCapability,
+  shouldEnableHdr,
+  buildInitialHdrState,
+} from "./gfn/hdrCapability";
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
 import { Navbar } from "./components/Navbar";
@@ -123,8 +131,9 @@ function defaultDiagnostics(): StreamDiagnostics {
     serverRegion: "",
     micState: "uninitialized",
     micEnabled: false,
-  };
-}
+    keyboardLayout: "qwerty",
+    detectedKeyboardLayout: "unknown",  };
+  };}
 
 function isSessionLimitError(error: unknown): boolean {
   if (error && typeof error === "object" && "gfnErrorCode" in error) {
@@ -286,8 +295,8 @@ export function App(): JSX.Element {
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
-  });
-  const [settingsLoaded, setSettingsLoaded] = useState(false);
+    keyboardLayout: "auto",  });
+  });  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
 
@@ -337,6 +346,10 @@ export function App(): JSX.Element {
     onNavigatePage: handleControllerPageNavigate,
     onBackAction: handleControllerBackAction,
   });
+
+
+  // Mic state for StreamView indicator
+  const [micAudioState, setMicAudioState] = useState<MicAudioState | null>(null);
 
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -713,8 +726,15 @@ export function App(): JSX.Element {
             if (settings.microphoneMode !== "disabled") {
               void clientRef.current.startMicrophone();
             }
+            // Set keyboard layout on freshly created client
+            const cached = getCachedDetection();
+            const effective = resolveEffectiveLayout(
+              settings.keyboardLayout,
+              cached?.detected ?? "unknown",
+            );
+            clientRef.current.setKeyboardLayout(effective);
+            clientRef.current.setDetectedKeyboardLayout(cached?.detected ?? "unknown");          }
           }
-
           if (clientRef.current) {
             await clientRef.current.handleOffer(event.sdp, activeSession, {
               codec: settings.codec,
@@ -1344,7 +1364,64 @@ export function App(): JSX.Element {
     streamStatus,
   ]);
 
-  // Filter games by search
+  useEffect(() => {
+    if (streamStatus === "streaming") {
+      if (!micServiceRef.current) {
+        micServiceRef.current = new MicAudioService();
+      }
+      const svc = micServiceRef.current;
+
+      if (clientRef.current) {
+        clientRef.current.setMicService(svc);
+      }
+
+      void svc.configure({
+        mode: settings.micMode,
+        deviceId: settings.micDeviceId,
+        gain: settings.micGain,
+        noiseSuppression: settings.micNoiseSuppression,
+        autoGainControl: settings.micAutoGainControl,
+        echoCancellation: settings.micEchoCancellation,
+      });
+    } else {
+      if (micServiceRef.current) {
+        micServiceRef.current.dispose();
+        micServiceRef.current = null;
+      }
+    }
+  }, [
+    streamStatus,
+    settings.micMode,
+    settings.micDeviceId,
+    settings.micGain,
+    settings.micNoiseSuppression,
+    settings.micAutoGainControl,
+    settings.micEchoCancellation,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (micServiceRef.current) {
+        micServiceRef.current.dispose();
+        micServiceRef.current = null;
+      }
+    };
+  }, []);
+
+
+  // Subscribe to mic audio state for StreamView indicator
+  useEffect(() => {
+    const svc = micServiceRef.current;
+    if (!svc) {
+      setMicAudioState(null);
+      return;
+    }
+    setMicAudioState(svc.getState());
+    const unsub = svc.onStateChange((state) => {
+      setMicAudioState(state);
+    });
+    return unsub;
+  }, [streamStatus, settings.micMode]);  // Filter games by search
   const filteredGames = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return games;
@@ -1451,6 +1528,7 @@ export function App(): JSX.Element {
             streamWarning={streamWarning}
             isConnecting={streamStatus === "connecting"}
             gameTitle={streamingGame?.title ?? "Game"}
+            micStatus={micAudioState?.status ?? null}
             onToggleFullscreen={() => {
               if (document.fullscreenElement) {
                 document.exitFullscreen().catch(() => {});
