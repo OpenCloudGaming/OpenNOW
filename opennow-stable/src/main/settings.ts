@@ -2,7 +2,8 @@ import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode } from "@shared/gfn";
-
+import type { VideoCodec, ColorQuality, VideoAccelerationPreference, FlightSlotConfig, HdrStreamingMode, MicMode } from "@shared/gfn";
+import { defaultFlightSlots } from "@shared/gfn";
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
   resolution: string;
@@ -48,7 +49,32 @@ export interface Settings {
   windowWidth: number;
   /** Window height */
   windowHeight: number;
-}
+  /** Enable Discord Rich Presence */
+  discordPresenceEnabled: boolean;
+  /** Discord Application Client ID */
+  discordClientId: string;
+  /** Enable flight controls (HOTAS/joystick) */
+  flightControlsEnabled: boolean;
+  /** Controller slot for flight controls (0-3) — legacy, kept for compat */
+  flightControlsSlot: number;
+  /** Per-slot flight configurations */
+  flightSlots: FlightSlotConfig[];
+  /** HDR streaming mode: off, auto, on */
+  hdrStreaming: HdrStreamingMode;
+  /** Microphone mode: off, on, push-to-talk */
+  micMode: MicMode;
+  /** Selected microphone device ID (empty = default) */
+  micDeviceId: string;
+  /** Microphone input gain 0.0 - 2.0 */
+  micGain: number;
+  /** Enable noise suppression */
+  micNoiseSuppression: boolean;
+  /** Enable automatic gain control */
+  micAutoGainControl: boolean;
+  /** Enable echo cancellation */
+  micEchoCancellation: boolean;
+  /** Toggle mic on/off shortcut (works in-stream) */
+  shortcutToggleMic: string;}
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
 const defaultAntiAfkShortcut = "Ctrl+Shift+K";
@@ -79,7 +105,19 @@ const DEFAULT_SETTINGS: Settings = {
   sessionClockShowDurationSeconds: 30,
   windowWidth: 1400,
   windowHeight: 900,
-};
+  discordPresenceEnabled: false,
+  discordClientId: "",
+  flightControlsEnabled: false,
+  flightControlsSlot: 3,
+  flightSlots: defaultFlightSlots(),
+  hdrStreaming: "off",
+  micMode: "off",
+  micDeviceId: "",
+  micGain: 1.0,
+  micNoiseSuppression: true,
+  micAutoGainControl: true,
+  micEchoCancellation: true,
+  shortcutToggleMic: "Ctrl+Shift+M",};
 
 export class SettingsManager {
   private settings: Settings;

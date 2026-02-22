@@ -1811,7 +1811,60 @@ body.controller-mode {
   transform: translateY(-1px);
 }
 .settings-export-logs-btn:active { transform: translateY(0); }
+/* Microphone UI */
+.mic-mode-seg {
+  margin-top: 6px;
+}
 
+.mic-device-select-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.mic-device-select {
+  flex: 1;
+  min-width: 0;
+  max-width: 320px;
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239a9aa3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  cursor: pointer;
+}
+
+.mic-device-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-surface);
+}
+
+.mic-refresh-btn {
+  flex-shrink: 0;
+  padding: 6px 8px !important;
+}
+
+.mic-level-meter {
+  flex: 1;
+  height: 8px;
+  background: var(--chip);
+  border-radius: 4px;
+  overflow: hidden;
+  min-width: 120px;
+  max-width: 260px;
+}
+
+.mic-level-meter-fill {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--warning));
+  border-radius: 4px;
+  transform-origin: left;
+  transition: transform 60ms linear;
+}
 /* Codec Diagnostics */
 .codec-test-btn {
   display: flex; align-items: center; gap: 8px;
