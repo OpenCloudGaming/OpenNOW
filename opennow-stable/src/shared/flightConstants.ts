@@ -1,0 +1,15 @@
+export const GAMEPAD_DPAD_UP = 0x0001;
+export const GAMEPAD_DPAD_DOWN = 0x0002;
+export const GAMEPAD_DPAD_LEFT = 0x0004;
+export const GAMEPAD_DPAD_RIGHT = 0x0008;
+export const GAMEPAD_START = 0x0010;
+export const GAMEPAD_BACK = 0x0020;
+export const GAMEPAD_LTHUMB = 0x0040;
+export const GAMEPAD_RTHUMB = 0x0080;
+export const GAMEPAD_LSHOULDER = 0x0100;
+export const GAMEPAD_RSHOULDER = 0x0200;
+export const GAMEPAD_A = 0x1000;
+export const GAMEPAD_B = 0x2000;
+export const GAMEPAD_X = 0x4000;
+export const GAMEPAD_Y = 0x8000;
+export const GAMEPAD_MAX_CONTROLLERS = 4;

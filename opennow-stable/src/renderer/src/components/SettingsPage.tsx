@@ -1,6 +1,7 @@
 import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import type { JSX } from "react";
+import { Monitor, Volume2, Mouse, Settings2, Globe, Save, Check, Search, X, Loader, Cpu, Zap, MessageSquare, Joystick } from "lucide-react";
+import { useState, useCallback, useMemo, useEffect } from "react";import type { JSX } from "react";
 
 import type {
   Settings,
@@ -13,6 +14,8 @@ import type {
 } from "@shared/gfn";
 import { colorQualityRequiresHevc } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
+import { FlightControlsPanel } from "./FlightControlsPanel";
+import { useToast } from "./Toast";
 
 interface SettingsPageProps {
   settings: Settings;
@@ -434,6 +437,7 @@ async function testCodecSupport(): Promise<CodecTestResult[]> {
 
 export function SettingsPage({ settings, regions, onSettingChange }: SettingsPageProps): JSX.Element {
   const [savedIndicator, setSavedIndicator] = useState(false);
+  const { showToast } = useToast();
   const [regionSearch, setRegionSearch] = useState("");
   const [regionDropdownOpen, setRegionDropdownOpen] = useState(false);
 
@@ -1418,6 +1422,20 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             </div>
           </div>
         </section>
+
+        {/* ── Flight Controls ──────────────────────────────── */}
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <Joystick size={18} />
+            <h2>Flight Controls</h2>
+          </div>
+          <div className="settings-rows">
+            <FlightControlsPanel
+              settings={settings}
+              onSettingChange={handleChange}
+            />
+          </div>
+        </section>
       </div>
 
       {/* Footer */}
@@ -1425,8 +1443,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
         <button
           className="settings-save-btn"
           onClick={() => {
-            setSavedIndicator(true);
-            setTimeout(() => setSavedIndicator(false), 1500);
+            showToast("Settings saved", "success");
           }}
         >
           <Save size={16} />

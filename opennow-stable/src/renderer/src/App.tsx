@@ -13,16 +13,19 @@ import type {
   SubscriptionInfo,
   StreamRegion,
   VideoCodec,
+  DiscordPresencePayload,
+  FlightGamepadState,} from "@shared/gfn";
 } from "@shared/gfn";
-
-import {
+  FlightSlotConfig,
+} from "@shared/gfn";
+import { defaultFlightSlots } from "@shared/gfn";import {
   GfnWebRtcClient,
   type StreamDiagnostics,
   type StreamTimeWarning,
 } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { useControllerNavigation } from "./controllerNavigation";
-
+import { getFlightHidService } from "./flight/FlightHidService";
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
 import { Navbar } from "./components/Navbar";
@@ -286,8 +289,13 @@ export function App(): JSX.Element {
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
-  });
-  const [settingsLoaded, setSettingsLoaded] = useState(false);
+    discordPresenceEnabled: false,
+    discordClientId: "",
+    flightControlsEnabled: false,
+    flightControlsSlot: 3,  });
+    flightControlsSlot: 3,
+    flightSlots: defaultFlightSlots(),
+  });  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
 
@@ -658,8 +666,92 @@ export function App(): JSX.Element {
     return () => window.clearInterval(timer);
   }, [sessionStartedAtMs, streamStatus]);
 
+  // Discord Rich Presence updates
   useEffect(() => {
-    if (!streamWarning) return;
+    if (!settings.discordPresenceEnabled || !settings.discordClientId) {
+      return;
+    }
+
+    let payload: DiscordPresencePayload;
+
+    if (streamStatus === "idle") {
+      payload = { type: "idle" };
+    } else if (streamStatus === "queue" || streamStatus === "setup") {
+      const queueTitle = streamingGame?.title?.trim() || lastStreamGameTitleRef.current || undefined;
+      payload = {
+        type: "queue",
+        gameName: queueTitle,
+        queuePosition,
+      };
+    } else {
+      const hasDiag = diagnostics.resolution !== "" || diagnostics.bitrateKbps > 0;
+      const gameTitle = streamingGame?.title?.trim() || lastStreamGameTitleRef.current || undefined;
+      payload = {
+        type: "streaming",
+        gameName: gameTitle,
+        startTimestamp: sessionStartedAtMs ?? undefined,
+        ...(hasDiag && diagnostics.resolution ? { resolution: diagnostics.resolution } : {}),
+        ...(hasDiag && diagnostics.decodeFps > 0 ? { fps: diagnostics.decodeFps } : {}),
+        ...(hasDiag && diagnostics.bitrateKbps > 0 ? { bitrateMbps: Math.round(diagnostics.bitrateKbps / 100) / 10 } : {}),
+      };
+    }
+
+    window.openNow.updateDiscordPresence(payload).catch(() => {});
+  }, [
+    streamStatus,
+    streamingGame?.title,
+    sessionStartedAtMs,
+    queuePosition,
+    diagnostics.resolution,
+    diagnostics.decodeFps,
+    diagnostics.bitrateKbps,
+    settings.discordPresenceEnabled,
+    settings.discordClientId,
+  ]);
+
+  // Clear Discord presence on logout
+  useEffect(() => {
+    if (!authSession) {
+      window.openNow.clearDiscordPresence().catch(() => {});
+    }
+  }, [authSession]);
+
+  // Flight controls: forward WebHID gamepad state to WebRTC client (multi-slot)
+  const activeFlightSlotsRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!settings.flightControlsEnabled) {
+      for (const s of activeFlightSlotsRef.current) {
+        clientRef.current?.releaseExternalGamepad(s);
+      }
+      activeFlightSlotsRef.current.clear();
+      return;
+    }
+
+    const slots: FlightSlotConfig[] = Array.isArray(settings.flightSlots) && settings.flightSlots.length === 4
+      ? settings.flightSlots : defaultFlightSlots();
+
+    const wantedSlots = new Set<number>();
+    for (let i = 0; i < 4; i++) {
+      if (slots[i]!.enabled && slots[i]!.deviceKey) wantedSlots.add(i);
+    }
+
+    for (const s of activeFlightSlotsRef.current) {
+      if (!wantedSlots.has(s)) {
+        clientRef.current?.releaseExternalGamepad(s);
+      }
+    }
+    activeFlightSlotsRef.current = wantedSlots;
+
+    const service = getFlightHidService();
+    const unsub = service.onGamepadState((state) => {
+      clientRef.current?.injectExternalGamepad(state);
+    });
+    return unsubscribe;
+  }, [settings.flightControlsEnabled]);  useEffect(() => {
+    return unsub;
+  }, [settings.flightControlsEnabled, settings.flightSlots]);
+
+  useEffect(() => {    if (!streamWarning) return;
     const warning = streamWarning;
     const timer = window.setTimeout(() => {
       setStreamWarning((current) => (current === warning ? null : current));

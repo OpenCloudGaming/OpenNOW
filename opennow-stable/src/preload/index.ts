@@ -18,9 +18,11 @@ import type {
   IceCandidatePayload,
   Settings,
   SubscriptionFetchRequest,
+  DiscordPresencePayload,
+  FlightProfile,
+  FlightControlsState,
+  FlightGamepadState,} from "@shared/gfn";
 } from "@shared/gfn";
-
-// Extend the OpenNowApi interface for internal preload use
 type PreloadApi = OpenNowApi;
 
 const api: PreloadApi = {
@@ -74,6 +76,34 @@ const api: PreloadApi = {
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, key, value),
   resetSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_RESET),
   exportLogs: (format?: "text" | "json") => ipcRenderer.invoke(IPC_CHANNELS.LOGS_EXPORT, format),
+  updateDiscordPresence: (state: DiscordPresencePayload) =>
+    ipcRenderer.invoke(IPC_CHANNELS.DISCORD_UPDATE_PRESENCE, state),
+  clearDiscordPresence: () => ipcRenderer.invoke(IPC_CHANNELS.DISCORD_CLEAR_PRESENCE),
+  flightGetProfile: (vidPid: string, gameId?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_GET_PROFILE, vidPid, gameId),
+  flightSetProfile: (profile: FlightProfile) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_SET_PROFILE, profile),
+  flightDeleteProfile: (vidPid: string, gameId?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_DELETE_PROFILE, vidPid, gameId),
+  flightGetAllProfiles: () => ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_GET_ALL_PROFILES),
+  flightResetProfile: (vidPid: string) => ipcRenderer.invoke(IPC_CHANNELS.FLIGHT_RESET_PROFILE, vidPid),
+  onFlightStateUpdate: (listener: (state: FlightControlsState) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: FlightControlsState) => {
+      listener(payload);
+    };
+    ipcRenderer.on(IPC_CHANNELS.FLIGHT_STATE_UPDATE, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.FLIGHT_STATE_UPDATE, wrapped);
+    };
+  },
+  onFlightGamepadState: (listener: (state: FlightGamepadState) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: FlightGamepadState) => {
+      listener(payload);
+    };
+    ipcRenderer.on(IPC_CHANNELS.FLIGHT_GAMEPAD_STATE, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.FLIGHT_GAMEPAD_STATE, wrapped);
+    };
+  },};
 };
-
 contextBridge.exposeInMainWorld("openNow", api);

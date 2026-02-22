@@ -52,7 +52,7 @@
       }
     ],
     "icon": "../logo.png",
-    "npmRebuild": false,
+    "npmRebuild": true,
     "nodeGypRebuild": false,
     "buildDependenciesFromSource": false,
     "directories": {

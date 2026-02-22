@@ -1265,6 +1265,13 @@ body.controller-mode {
   color: var(--ink-soft);
   background: var(--panel-border-solid);
 }
+.game-card-flight-badge {
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  background: rgba(59, 130, 246, 0.15);
+  border-radius: 4px;
+  color: #60a5fa;
+}
 .store-svg { display: block; flex-shrink: 0; }
 
 
@@ -1411,6 +1418,10 @@ body.controller-mode {
   gap: 8px;
 }
 .settings-shortcut-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   padding: 5px 10px;
   border: 1px solid var(--panel-border-solid);
   border-radius: 6px;
@@ -1419,6 +1430,7 @@ body.controller-mode {
   font-size: 0.74rem;
   font-weight: 600;
   font-family: inherit;
+  line-height: 1;
   cursor: pointer;
   transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
 }
@@ -2694,4 +2706,448 @@ body.controller-mode {
     animation-timing-function: linear !important;
     animation-iteration-count: infinite !important;
   }
+}
+
+/* ── Flight Controls ─────────────────────────────── */
+.flight-controls-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.flight-device-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.flight-device-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.flight-device-header h3 {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.flight-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--panel-border-solid);
+  border-radius: 6px;
+  background: var(--chip);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.flight-btn:hover {
+  background: var(--panel-border-solid);
+  color: var(--ink);
+}
+.flight-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.flight-btn--small {
+  padding: 4px 8px;
+  font-size: 0.75rem;
+}
+.flight-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.flight-btn--primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.flight-btn--danger {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+.flight-btn--danger:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.flight-spin {
+  animation: spin 1s linear infinite;
+}
+
+.flight-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+  background: var(--panel);
+  border-radius: 8px;
+  border: 1px dashed var(--panel-border-solid);
+}
+
+.flight-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.flight-device-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--panel-border-solid);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
+.flight-device-item:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.flight-device-item.active {
+  border-color: var(--accent);
+  background: rgba(99, 102, 241, 0.06);
+}
+.flight-device-item input[type="radio"] {
+  accent-color: var(--accent);
+}
+.flight-device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.flight-device-name {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.flight-device-meta {
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+.flight-capture-controls {
+  display: flex;
+  gap: 8px;
+}
+
+/* Live tester */
+.flight-tester {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border-solid);
+  border-radius: 8px;
+  margin-top: 4px;
+}
+.flight-tester h3 {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.flight-tester-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+}
+
+.flight-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  flex-shrink: 0;
+}
+.flight-status-dot.connected {
+  background: #22c55e;
+}
+
+.flight-axes-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.flight-axis-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.flight-axis-label {
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+  min-width: 50px;
+  font-family: var(--font-mono, monospace);
+}
+.flight-axis-track {
+  flex: 1;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.flight-axis-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 50ms linear;
+}
+.flight-axis-value {
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+  min-width: 36px;
+  text-align: right;
+  font-family: var(--font-mono, monospace);
+}
+
+.flight-buttons-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.flight-button-indicator {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: 1px solid var(--panel-border-solid);
+  font-size: 0.7rem;
+  font-family: var(--font-mono, monospace);
+  color: var(--ink-muted);
+  transition: background 80ms, color 80ms;
+}
+.flight-button-indicator.pressed {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.flight-hat-indicator {
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  font-family: var(--font-mono, monospace);
+}
+
+.flight-raw-bytes {
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+}
+.flight-raw-bytes summary {
+  cursor: pointer;
+  user-select: none;
+}
+.flight-raw-bytes-data {
+  display: block;
+  margin-top: 6px;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.7rem;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+/* Mapping section */
+.flight-mapping-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+.flight-mapping-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.flight-mapping-header h3 {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.flight-mapping-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.flight-mappings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.flight-mapping-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border-solid);
+  border-radius: 6px;
+}
+.flight-mapping-source {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.flight-mapping-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.flight-mapping-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+}
+.flight-mapping-field select,
+.flight-mapping-field input[type="range"] {
+  font-size: 0.78rem;
+}
+.flight-mapping-field--checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.flight-mapping-field--checkbox input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+.flight-mapping-value {
+  font-size: 0.7rem;
+  color: var(--ink-muted);
+  font-family: var(--font-mono, monospace);
+  min-width: 32px;
+  text-align: right;
+}
+
+/* Profiles section */
+.flight-profiles-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+.flight-profiles-section h3 {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.flight-profiles-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.flight-profile-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border-solid);
+  border-radius: 6px;
+}
+.flight-profile-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.flight-profile-name {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--ink);
+}
+.flight-profile-meta {
+  font-size: 0.7rem;
+  color: var(--ink-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+/* ── Toast Notifications ─────────────────────────── */
+.toast-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: var(--r-sm);
+  font-size: 0.84rem;
+  font-weight: 600;
+  font-family: inherit;
+  box-shadow: var(--shadow-md);
+  pointer-events: auto;
+  animation: toast-in 250ms var(--ease) both;
+}
+
+.toast--leaving {
+  animation: toast-out 300ms var(--ease) both;
+}
+
+.toast--success {
+  background: color-mix(in srgb, var(--accent) 12%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  color: var(--accent);
+}
+
+.toast--error {
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  color: var(--error);
+}
+
+.toast--warning {
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.2);
+  color: var(--warning);
+}
+
+.toast--info {
+  background: rgba(96, 165, 250, 0.08);
+  border: 1px solid rgba(96, 165, 250, 0.2);
+  color: var(--info);
+}
+
+.toast-message {
+  white-space: nowrap;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(20px) scale(0.96); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; transform: translateX(0) scale(1); }
+  to { opacity: 0; transform: translateX(20px) scale(0.96); }
 }

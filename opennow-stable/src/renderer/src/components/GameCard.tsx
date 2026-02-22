@@ -1,4 +1,4 @@
-import { Play, Monitor } from "lucide-react";
+import { Play, Monitor, Joystick } from "lucide-react";
 import { memo } from "react";
 import type { JSX } from "react";
 import type { GameInfo, GameVariant } from "@shared/gfn";
@@ -138,8 +138,20 @@ function getUniqueStores(game: GameInfo): string[] {
   return stores;
 }
 
+function hasFlightControls(game: GameInfo): boolean {
+  const flightKeywords = ["flight", "hotas", "joystick", "flightstick", "flight_stick"];
+  for (const v of game.variants) {
+    for (const ctrl of v.supportedControls) {
+      const lower = ctrl.toLowerCase();
+      if (flightKeywords.some((kw) => lower.includes(kw))) return true;
+    }
+  }
+  return false;
+}
+
 export const GameCard = memo(function GameCard({ game, isSelected = false, onPlay, onSelect }: GameCardProps): JSX.Element {
   const stores = getUniqueStores(game);
+  const flightSupported = hasFlightControls(game);
 
   const handlePlayClick = (event: React.MouseEvent): void => {
     event.stopPropagation();
@@ -203,6 +215,11 @@ export const GameCard = memo(function GameCard({ game, isSelected = false, onPla
               );
             })}
           </div>
+        )}
+        {flightSupported && (
+          <span className="game-card-flight-badge" title="Flight Controls Supported">
+            <Joystick size={12} />
+          </span>
         )}
       </div>
     </div>
