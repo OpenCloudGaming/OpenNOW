@@ -519,6 +519,7 @@ function toSessionInfo(zone: string, streamingBaseUrl: string, payload: CloudMat
     signalingServer: signaling.signalingServer,
     signalingUrl: signaling.signalingUrl,
     gpuType: payload.session.gpuType,
+    queuePosition: payload.session.queuePosition,
     iceServers: normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,
   };

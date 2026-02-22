@@ -68,8 +68,22 @@ const DEFAULT_SHORTCUTS = {
   shortcutToggleMicrophone: "Ctrl+Shift+M",
 } as const;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = window.setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(timer);
+        reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      },
+      { once: true },
+    );
+  });
 }
 
 function isSessionReadyForConnect(status: number): boolean {
@@ -286,7 +300,22 @@ export function App(): JSX.Element {
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
-  });
+    discordPresenceEnabled: false,
+    discordClientId: "",
+    flightControlsEnabled: false,
+    flightControlsSlot: 3,
+    flightSlots: defaultFlightSlots(),
+    hdrStreaming: "off",
+    micMode: "off",
+    micDeviceId: "",
+    micGain: 1.0,
+    micNoiseSuppression: true,
+    micAutoGainControl: true,
+    micEchoCancellation: true,
+    shortcutToggleMic: DEFAULT_SHORTCUTS.shortcutToggleMic,
+    hevcCompatMode: "auto",
+    sessionClockShowEveryMinutes: 60,
+    sessionClockShowDurationSeconds: 30,  });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
@@ -337,8 +366,11 @@ export function App(): JSX.Element {
     onNavigatePage: handleControllerPageNavigate,
     onBackAction: handleControllerBackAction,
   });
-
-  // Refs
+  const [hdrCapability, setHdrCapability] = useState<HdrCapability | null>(null);
+  const [hdrWarningShown, setHdrWarningShown] = useState(false);
+  const [provisioningElapsed, setProvisioningElapsed] = useState(0);
+  const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string | null>(null);
+  const [sessionClockVisible, setSessionClockVisible] = useState(true);  // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clientRef = useRef<GfnWebRtcClient | null>(null);
@@ -346,6 +378,7 @@ export function App(): JSX.Element {
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
+  const pollAbortRef = useRef<AbortController | null>(null);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
   // Session ref sync
@@ -417,6 +450,32 @@ export function App(): JSX.Element {
     }, 10000);
     return () => window.clearInterval(timer);
   }, [authSession, refreshNavbarActiveSession, streamStatus]);
+
+  useEffect(() => {
+    const unsubscribe = window.openNow.onSessionExpired((reason: string) => {
+      console.warn("[App] Session expired:", reason);
+      setSessionExpiredMessage(reason);
+      setAuthSession(null);
+      setGames([]);
+      setLibraryGames([]);
+      setNavbarActiveSession(null);
+      setIsResumingNavbarSession(false);
+      setLaunchError(null);
+      setSubscriptionInfo(null);
+      setCurrentPage("home");
+      window.openNow.fetchPublicGames().then((publicGames) => {
+        setGames(publicGames);
+        setSource("public");
+      }).catch(() => {});
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (!sessionExpiredMessage) return;
+    const timer = window.setTimeout(() => setSessionExpiredMessage(null), 10000);
+    return () => window.clearTimeout(timer);
+  }, [sessionExpiredMessage]);
 
   // Initialize app
   useEffect(() => {
@@ -659,6 +718,119 @@ export function App(): JSX.Element {
   }, [sessionStartedAtMs, streamStatus]);
 
   useEffect(() => {
+    if (streamStatus === "idle" || sessionStartedAtMs === null) {
+      setSessionClockVisible(true);
+      return;
+    }
+
+    const everyMinutes = settings.sessionClockShowEveryMinutes;
+    const durationSeconds = settings.sessionClockShowDurationSeconds;
+
+    if (everyMinutes <= 0) {
+      setSessionClockVisible(true);
+      return;
+    }
+
+    setSessionClockVisible(true);
+    const hideTimer = window.setTimeout(() => {
+      setSessionClockVisible(false);
+    }, durationSeconds * 1000);
+
+    const revealInterval = window.setInterval(() => {
+      setSessionClockVisible(true);
+      window.setTimeout(() => {
+        setSessionClockVisible(false);
+      }, durationSeconds * 1000);
+    }, everyMinutes * 60 * 1000);
+
+    return () => {
+      window.clearTimeout(hideTimer);
+      window.clearInterval(revealInterval);
+    };
+  }, [streamStatus, sessionStartedAtMs, settings.sessionClockShowEveryMinutes, settings.sessionClockShowDurationSeconds]);
+
+  // Discord Rich Presence updates
+  useEffect(() => {
+    if (!settings.discordPresenceEnabled || !settings.discordClientId) {
+      return;
+    }
+
+    let payload: DiscordPresencePayload;
+
+    if (streamStatus === "idle") {
+      payload = { type: "idle" };
+    } else if (streamStatus === "queue" || streamStatus === "setup") {
+      const queueTitle = streamingGame?.title?.trim() || lastStreamGameTitleRef.current || undefined;
+      payload = {
+        type: "queue",
+        gameName: queueTitle,
+        queuePosition,
+      };
+    } else {
+      const hasDiag = diagnostics.resolution !== "" || diagnostics.bitrateKbps > 0;
+      const gameTitle = streamingGame?.title?.trim() || lastStreamGameTitleRef.current || undefined;
+      payload = {
+        type: "streaming",
+        gameName: gameTitle,
+        startTimestamp: sessionStartedAtMs ?? undefined,
+        ...(hasDiag && diagnostics.resolution ? { resolution: diagnostics.resolution } : {}),
+        ...(hasDiag && diagnostics.decodeFps > 0 ? { fps: diagnostics.decodeFps } : {}),
+        ...(hasDiag && diagnostics.bitrateKbps > 0 ? { bitrateMbps: Math.round(diagnostics.bitrateKbps / 100) / 10 } : {}),
+      };
+    }
+
+    window.openNow.updateDiscordPresence(payload).catch(() => {});
+  }, [
+    streamStatus,
+    streamingGame?.title,
+    sessionStartedAtMs,
+    queuePosition,
+    diagnostics.resolution,
+    diagnostics.decodeFps,
+    diagnostics.bitrateKbps,
+    settings.discordPresenceEnabled,
+    settings.discordClientId,
+  ]);
+
+  // Clear Discord presence on logout
+  useEffect(() => {
+    if (!authSession) {
+      window.openNow.clearDiscordPresence().catch(() => {});
+    }
+  }, [authSession]);
+
+  // Flight controls: forward WebHID gamepad state to WebRTC client (multi-slot)
+  const activeFlightSlotsRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!settings.flightControlsEnabled) {
+      for (const s of activeFlightSlotsRef.current) {
+        clientRef.current?.releaseExternalGamepad(s);
+      }
+      activeFlightSlotsRef.current.clear();
+      return;
+    }
+
+    const slots: FlightSlotConfig[] = Array.isArray(settings.flightSlots) && settings.flightSlots.length === 4
+      ? settings.flightSlots : defaultFlightSlots();
+
+    const wantedSlots = new Set<number>();
+    for (let i = 0; i < 4; i++) {
+      if (slots[i]!.enabled && slots[i]!.deviceKey) wantedSlots.add(i);
+    }
+
+    for (const s of activeFlightSlotsRef.current) {
+      if (!wantedSlots.has(s)) {
+        clientRef.current?.releaseExternalGamepad(s);
+      }
+    }
+    activeFlightSlotsRef.current = wantedSlots;
+
+    const service = getFlightHidService();
+    const unsub = service.onGamepadState((state) => {
+      clientRef.current?.injectExternalGamepad(state);
+    });
+    return unsub;
+  }, [settings.flightControlsEnabled, settings.flightSlots]);  useEffect(() => {
     if (!streamWarning) return;
     const warning = streamWarning;
     const timer = window.setTimeout(() => {
@@ -1001,14 +1173,39 @@ export function App(): JSX.Element {
       while (true) {
         attempt++;
         await sleep(SESSION_READY_POLL_INTERVAL_MS);
+      // Poll for readiness with exponential backoff and hard timeout.
+      // status=1 means "provisioning" — keep waiting.
+      // Only fail on terminal backend errors or hard timeout (180s).
+      const HARD_TIMEOUT_MS = 180_000;
+      // Poll for readiness with queue-aware timeout logic.
+      //
+      // "True queue" = queuePosition > 1 → no timeout, poll indefinitely.
+      // "Allocation" = queuePosition 0 or 1 (or absent) → machine is being
+      //   allocated / starting.  Apply ALLOCATION_TIMEOUT_MS from the moment
+      //   we enter (or start in) allocation mode.  On timeout we do NOT throw;
+      //   instead we show "Still starting…" and continue polling with backoff.
+      //
+      // status codes: 1 = provisioning, 2/3 = ready, 6 = cleaning up (terminal).
+      const ALLOCATION_TIMEOUT_MS = 180_000;      const BACKOFF_INITIAL_MS = 1000;
+      const BACKOFF_MAX_MS = 5000;
+      const BACKOFF_EXTENDED_MAX_MS = 10_000;
+      const READY_CONFIRMS_NEEDED = 3;
 
-        const polled = await window.openNow.pollSession({
-          token: token || undefined,
-          streamingBaseUrl: newSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
-          serverIp: newSession.serverIp,
-          zone: newSession.zone,
-          sessionId: newSession.sessionId,
-        });
+      const pollAbort = new AbortController();
+      pollAbortRef.current = pollAbort;
+      const pollSignal = pollAbort.signal;
+
+      let readyCount = 0;
+      let attempt = 0;
+      let delay = BACKOFF_INITIAL_MS;
+      const pollStart = Date.now();
+      let allocationStartMs: number | null = null;
+      let allocationTimedOut = false;
+      const pollStartMs = Date.now();      try {
+        while (readyCount < READY_CONFIRMS_NEEDED) {
+          if (pollSignal.aborted) {
+            throw new DOMException("Polling cancelled", "AbortError");
+          }
 
         setSession(polled);
         setQueuePosition(polled.queuePosition);
@@ -1047,7 +1244,92 @@ export function App(): JSX.Element {
 
       // finalSession is guaranteed to be set here (we only exit the loop via break when session is ready)
       // Timeout only applies during setup/starting phase, not during queue wait
+          const elapsed = Date.now() - pollStart;
+          if (elapsed >= HARD_TIMEOUT_MS) {
+            throw new Error(
+              "Session provisioning timed out after 3 minutes. The server may be under heavy load — please try again.",
+            );
+          }          await sleep(delay, pollSignal);
+          attempt++;
 
+          const polled = await window.openNow.pollSession({
+            token: token || undefined,
+            streamingBaseUrl: newSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
+            serverIp: newSession.serverIp,
+            zone: newSession.zone,
+            sessionId: newSession.sessionId,
+          });
+
+          if (pollSignal.aborted) {
+            throw new DOMException("Polling cancelled", "AbortError");
+          }
+
+          setSession(polled);
+
+          const polledQueuePos = polled.queuePosition ?? 0;
+          const isInQueueMode = polledQueuePos > 1;
+
+          const pollStartElapsed = Date.now() - pollStartMs;
+          console.log(
+            `Poll attempt ${attempt}: status=${polled.status}, queuePosition=${polledQueuePos}, ` +
+            `signalingUrl=${polled.signalingUrl}, elapsed=${Math.round(pollStartElapsed / 1000)}s`,
+          );
+
+          if (polled.status === 2 || polled.status === 3) {
+            readyCount++;
+            console.log(`Ready count: ${readyCount}/${READY_CONFIRMS_NEEDED}`);
+            delay = BACKOFF_INITIAL_MS;
+          } else if (polled.status === 1) {
+            readyCount = 0;
+
+            if (isInQueueMode) {
+              // True queue: show queue position, no timeout, reset allocation clock.
+              updateLoadingStep("queue");
+              setQueuePosition(polledQueuePos);
+              allocationStartMs = null;
+              allocationTimedOut = false;
+              delay = Math.min(delay * 1.5, BACKOFF_MAX_MS);
+            } else {
+              // Allocation phase (queuePosition 0 or 1): machine starting.
+              setQueuePosition(undefined);
+
+              if (allocationStartMs === null) {
+                allocationStartMs = Date.now();
+              }
+
+              const allocationElapsed = Date.now() - allocationStartMs;
+
+              if (!allocationTimedOut && allocationElapsed >= ALLOCATION_TIMEOUT_MS) {
+                allocationTimedOut = true;
+                console.warn(
+                  `Allocation exceeded ${ALLOCATION_TIMEOUT_MS / 1000}s — continuing with extended backoff`,
+                );
+              }
+
+              updateLoadingStep("setup");
+              setProvisioningElapsed(Math.round(allocationElapsed / 1000));
+
+              if (allocationTimedOut) {
+                delay = Math.min(delay * 1.5, BACKOFF_EXTENDED_MAX_MS);
+              } else {
+                delay = Math.min(delay * 1.5, BACKOFF_MAX_MS);
+              }
+            }
+          } else if (polled.status === 6) {
+            throw new Error("Session is being cleaned up. Please try launching again.");
+          } else {
+            readyCount = 0;
+            console.warn(`Unexpected session status: ${polled.status}, continuing to poll`);
+            delay = Math.min(delay * 1.5, BACKOFF_MAX_MS);
+          }
+        }
+      } finally {
+        if (pollAbortRef.current === pollAbort) {
+          pollAbortRef.current = null;
+        }
+        setQueuePosition(undefined);
+        setProvisioningElapsed(0);
+      }
       setQueuePosition(undefined);
       updateLoadingStep("connecting");
 
@@ -1066,8 +1348,16 @@ export function App(): JSX.Element {
         signalingUrl: sessionToConnect.signalingUrl,
       });
     } catch (error) {
-      console.error("Launch failed:", error);
-      setLaunchError(toLaunchErrorState(error, loadingStep));
+      const isAbort =
+        error instanceof DOMException && error.name === "AbortError";
+
+      if (isAbort) {
+        console.log("Launch cancelled by user");
+      } else {
+        console.error("Launch failed:", error);
+        setLaunchError(toLaunchErrorState(error, loadingStep));
+      }
+
       await window.openNow.disconnectSignaling().catch(() => {});
       clientRef.current?.dispose();
       clientRef.current = null;
@@ -1079,6 +1369,7 @@ export function App(): JSX.Element {
       setStreamWarning(null);
       setEscHoldReleaseIndicator({ visible: false, progress: 0 });
       setDiagnostics(defaultDiagnostics());
+      setProvisioningElapsed(0);
       void refreshNavbarActiveSession();
     } finally {
       launchInFlightRef.current = false;
@@ -1152,6 +1443,7 @@ export function App(): JSX.Element {
   const handleStopStream = useCallback(async () => {
     try {
       resolveExitPrompt(false);
+      pollAbortRef.current?.abort();
       await window.openNow.disconnectSignaling();
 
       const current = sessionRef.current;
@@ -1185,6 +1477,7 @@ export function App(): JSX.Element {
   }, [authSession, refreshNavbarActiveSession, resolveExitPrompt]);
 
   const handleDismissLaunchError = useCallback(async () => {
+    pollAbortRef.current?.abort();
     await window.openNow.disconnectSignaling().catch(() => {});
     clientRef.current?.dispose();
     clientRef.current = null;
@@ -1417,7 +1710,16 @@ export function App(): JSX.Element {
           </div>
         )}
       </>
-    );
+      <LoginScreen
+        providers={providers}
+        selectedProviderId={providerIdpId}
+        onProviderChange={setProviderIdpId}
+        onLogin={handleLogin}
+        isLoading={isLoggingIn}
+        error={sessionExpiredMessage ?? loginError}
+        isInitializing={isInitializing}
+        statusMessage={startupStatusMessage}
+      />    );
   }
 
   const showLaunchOverlay = streamStatus !== "idle" || launchError !== null;
@@ -1448,7 +1750,7 @@ export function App(): JSX.Element {
             sessionElapsedSeconds={sessionElapsedSeconds}
             sessionClockShowEveryMinutes={settings.sessionClockShowEveryMinutes}
             sessionClockShowDurationSeconds={settings.sessionClockShowDurationSeconds}
-            streamWarning={streamWarning}
+            sessionClockVisible={sessionClockVisible}            streamWarning={streamWarning}
             isConnecting={streamStatus === "connecting"}
             gameTitle={streamingGame?.title ?? "Game"}
             onToggleFullscreen={() => {
@@ -1474,6 +1776,7 @@ export function App(): JSX.Element {
             gameCover={streamingGame?.imageUrl}
             status={loadingStatus}
             queuePosition={queuePosition}
+            provisioningElapsed={provisioningElapsed}
             error={
               launchError
                 ? {

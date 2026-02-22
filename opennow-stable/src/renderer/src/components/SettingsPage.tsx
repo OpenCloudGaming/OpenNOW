@@ -1380,7 +1380,56 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
         </section>
 
         {/* ── Miscellaneous ──────────────────────────────── */}
+        {/* ── Discord ────────────────────────────────────── */}
+        {/* ── Session Clock ─────────────────────────────── */}
         <section className="settings-section">
+          <div className="settings-section-header">
+            <Monitor size={18} />
+            <h2>Session Clock</h2>
+          </div>
+          <div className="settings-rows">
+            <div className="settings-row">
+              <label className="settings-label">Show every (minutes)</label>
+              <input
+                type="number"
+                className="settings-text-input"
+                style={{ width: 90 }}
+                min={0}
+                max={480}
+                step={1}
+                value={settings.sessionClockShowEveryMinutes}
+                onChange={(e) => {
+                  const val = Math.max(0, Math.min(480, Math.round(Number(e.target.value) || 0)));
+                  handleChange("sessionClockShowEveryMinutes", val);
+                }}
+              />
+            </div>
+            <span className="settings-subtle-hint">
+              How often to briefly reveal the session clock while streaming. Set to 0 for always visible.
+            </span>
+            <div className="settings-row">
+              <label className="settings-label">Show duration (seconds)</label>
+              <input
+                type="number"
+                className="settings-text-input"
+                style={{ width: 90 }}
+                min={5}
+                max={300}
+                step={1}
+                value={settings.sessionClockShowDurationSeconds}
+                onChange={(e) => {
+                  const val = Math.max(5, Math.min(300, Math.round(Number(e.target.value) || 30)));
+                  handleChange("sessionClockShowDurationSeconds", val);
+                }}
+              />
+            </div>
+            <span className="settings-subtle-hint">
+              How long the clock stays visible each time it appears.
+            </span>
+          </div>
+        </section>
+
+        {/* ── Discord ────────────────────────────────────── */}        <section className="settings-section">
           <div className="settings-section-header">
             <h2>Miscellaneous</h2>
           </div>
