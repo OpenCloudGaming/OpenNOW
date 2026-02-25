@@ -101,6 +101,7 @@ function classifyAspectRatio(width: number, height: number): string {
   if (Math.abs(ratio - 21 / 9) < 0.05) return "21:9 Ultrawide";
   if (Math.abs(ratio - 32 / 9) < 0.05) return "32:9 Super Ultrawide";
   if (Math.abs(ratio - 4 / 3) < 0.05) return "4:3 Legacy";
+  if (ratio > 2 && ratio < 3.5) return "21:9 Ultrawide";
   return "Other";
 }
 
