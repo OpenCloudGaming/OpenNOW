@@ -463,6 +463,14 @@ function extractQueuePosition(payload: CloudMatchResponse): number | undefined {
     return direct;
   }
 
+  const seatSetup = payload.session.seatSetupInfo;
+  if (seatSetup) {
+    const nested = toPositiveInt(seatSetup.queuePosition);
+    if (nested !== undefined) {
+      return nested;
+    }
+  }
+
   const nestedSessionProgress = payload.session.sessionProgress;
   if (nestedSessionProgress) {
     const nested = toPositiveInt(nestedSessionProgress.queuePosition);
@@ -482,6 +490,14 @@ function extractQueuePosition(payload: CloudMatchResponse): number | undefined {
   return undefined;
 }
 
+function extractSeatSetupStep(payload: CloudMatchResponse): number | undefined {
+  const raw = payload.session.seatSetupInfo?.seatSetupStep;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return Math.trunc(raw);
+  }
+  return undefined;
+}
+
 function toSessionInfo(zone: string, streamingBaseUrl: string, payload: CloudMatchResponse): SessionInfo {
   if (payload.requestStatus.statusCode !== 1) {
     // Use SessionError for parsing error responses
@@ -491,11 +507,13 @@ function toSessionInfo(zone: string, streamingBaseUrl: string, payload: CloudMat
 
   const signaling = resolveSignaling(payload);
   const queuePosition = extractQueuePosition(payload);
+  const seatSetupStep = extractSeatSetupStep(payload);
 
   // Debug logging to trace signaling resolution
   const connections = payload.session.connectionInfo ?? [];
   console.log(
     `[CloudMatch] toSessionInfo: status=${payload.session.status}, ` +
+    `seatSetupStep=${seatSetupStep ?? "n/a"}, ` +
     `queuePosition=${queuePosition ?? "n/a"}, ` +
     `connectionInfo=${connections.length} entries, ` +
     `serverIp=${signaling.serverIp}, ` +
@@ -512,6 +530,7 @@ function toSessionInfo(zone: string, streamingBaseUrl: string, payload: CloudMat
   return {
     sessionId: payload.session.sessionId,
     status: payload.session.status,
+    seatSetupStep,
     queuePosition,
     zone,
     streamingBaseUrl,
