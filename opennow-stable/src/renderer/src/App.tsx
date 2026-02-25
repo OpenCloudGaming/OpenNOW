@@ -668,6 +668,25 @@ export function App(): JSX.Element {
   }, [sessionStartedAtMs, streamStatus]);
 
   useEffect(() => {
+    if (streamStatus !== "streaming" || sessionStartedAtMs !== null) {
+      return;
+    }
+
+    const hasLiveFrames = diagnostics.framesDecoded > 0 || diagnostics.framesReceived > 0 || diagnostics.renderFps > 0;
+    if (!hasLiveFrames) {
+      return;
+    }
+
+    setSessionStartedAtMs(Date.now());
+  }, [
+    diagnostics.framesDecoded,
+    diagnostics.framesReceived,
+    diagnostics.renderFps,
+    sessionStartedAtMs,
+    streamStatus,
+  ]);
+
+  useEffect(() => {
     if (!streamWarning) return;
     const warning = streamWarning;
     const timer = window.setTimeout(() => {
@@ -734,7 +753,6 @@ export function App(): JSX.Element {
             });
             setLaunchError(null);
             setStreamStatus("streaming");
-            setSessionStartedAtMs((current) => current ?? Date.now());
           }
         } else if (event.type === "remote-ice") {
           await clientRef.current?.addRemoteCandidate(event.candidate);
@@ -921,7 +939,7 @@ export function App(): JSX.Element {
       setStreamStatus(next);
     };
 
-    setSessionStartedAtMs(Date.now());
+    setSessionStartedAtMs(null);
     setSessionElapsedSeconds(0);
     setStreamWarning(null);
     setLaunchError(null);
@@ -1117,7 +1135,7 @@ export function App(): JSX.Element {
 
     setLaunchError(null);
     setQueuePosition(undefined);
-    setSessionStartedAtMs(Date.now());
+    setSessionStartedAtMs(null);
     setSessionElapsedSeconds(0);
     setStreamWarning(null);
     updateLoadingStep("setup");
