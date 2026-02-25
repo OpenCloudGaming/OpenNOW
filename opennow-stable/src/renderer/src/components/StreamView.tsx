@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { JSX } from "react";
 import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff } from "lucide-react";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
+import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -37,6 +38,7 @@ interface StreamViewProps {
   } | null;
   isConnecting: boolean;
   gameTitle: string;
+  platformStore?: string;
   onToggleFullscreen: () => void;
   onConfirmExit: () => void;
   onCancelExit: () => void;
@@ -111,6 +113,7 @@ export function StreamView({
   streamWarning,
   isConnecting,
   gameTitle,
+  platformStore,
   onToggleFullscreen,
   onConfirmExit,
   onCancelExit,
@@ -206,6 +209,8 @@ export function StreamView({
   const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
   const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
   const sessionTimeText = formatElapsed(sessionElapsedSeconds);
+  const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
+  const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
 
   // Local ref for video element to manage focus
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -267,6 +272,14 @@ export function StreamView({
           <div className="sv-connect-inner">
             <Loader2 className="sv-connect-spin" size={44} />
             <p className="sv-connect-title">Connecting to {gameTitle}</p>
+            {PlatformIcon && (
+              <div className="sv-connect-platform" title={platformName}>
+                <span className="sv-connect-platform-icon">
+                  <PlatformIcon />
+                </span>
+                <span>{platformName}</span>
+              </div>
+            )}
             <p className="sv-connect-sub">Setting up stream...</p>
           </div>
         </div>
@@ -466,7 +479,15 @@ export function StreamView({
       {/* Game title (bottom-center, fades) */}
       {hasResolution && showHints && (
         <div className="sv-title-bar">
-          <span>{gameTitle}</span>
+          <span className="sv-title-game">{gameTitle}</span>
+          {PlatformIcon && (
+            <span className="sv-title-platform" title={platformName}>
+              <span className="sv-title-platform-icon">
+                <PlatformIcon />
+              </span>
+              <span>{platformName}</span>
+            </span>
+          )}
         </div>
       )}
     </div>

@@ -6,6 +6,7 @@ import type {
   AuthSession,
   AuthUser,
   GameInfo,
+  GameVariant,
   LoginProvider,
   MainToRendererSignalingEvent,
   SessionInfo,
@@ -97,9 +98,30 @@ function parseNumericId(value: string | undefined): number | null {
 }
 
 function defaultVariantId(game: GameInfo): string {
-  const fallback = game.variants[0]?.id;
-  const preferred = game.variants[game.selectedVariantIndex]?.id;
-  return preferred ?? fallback ?? game.id;
+  return game.variants[0]?.id ?? game.id;
+}
+
+function getSelectedVariant(game: GameInfo, variantId: string): GameVariant | undefined {
+  return game.variants.find((variant) => variant.id === variantId) ?? game.variants[0];
+}
+
+function mergeVariantSelections(
+  current: Record<string, string>,
+  catalog: GameInfo[],
+): Record<string, string> {
+  if (catalog.length === 0) {
+    return current;
+  }
+
+  const next = { ...current };
+  for (const game of catalog) {
+    const selectedVariantId = next[game.id];
+    const hasSelectedVariant = !!selectedVariantId && game.variants.some((variant) => variant.id === selectedVariantId);
+    if (!hasSelectedVariant) {
+      next[game.id] = defaultVariantId(game);
+    }
+  }
+  return next;
 }
 
 function defaultDiagnostics(): StreamDiagnostics {
@@ -312,6 +334,7 @@ export function App(): JSX.Element {
   });
   const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: "Game" });
   const [streamingGame, setStreamingGame] = useState<GameInfo | null>(null);
+  const [streamingStore, setStreamingStore] = useState<string | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | undefined>();
   const [navbarActiveSession, setNavbarActiveSession] = useState<ActiveSessionInfo | null>(null);
   const [isResumingNavbarSession, setIsResumingNavbarSession] = useState(false);
@@ -356,6 +379,33 @@ export function App(): JSX.Element {
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+
+  const applyVariantSelections = useCallback((catalog: GameInfo[]): void => {
+    setVariantByGameId((prev) => mergeVariantSelections(prev, catalog));
+  }, []);
+
+  const resetLaunchRuntime = useCallback((options?: {
+    keepLaunchError?: boolean;
+    keepStreamingContext?: boolean;
+  }): void => {
+    setSession(null);
+    setStreamStatus("idle");
+    setQueuePosition(undefined);
+    setSessionStartedAtMs(null);
+    setSessionElapsedSeconds(0);
+    setStreamWarning(null);
+    setEscHoldReleaseIndicator({ visible: false, progress: 0 });
+    setDiagnostics(defaultDiagnostics());
+
+    if (!options?.keepStreamingContext) {
+      setStreamingGame(null);
+      setStreamingStore(null);
+    }
+
+    if (!options?.keepLaunchError) {
+      setLaunchError(null);
+    }
+  }, []);
 
   // Session ref sync
   useEffect(() => {
@@ -497,12 +547,7 @@ export function App(): JSX.Element {
             setGames(mainGames);
             setSource("main");
             setSelectedGameId(mainGames[0]?.id ?? "");
-            setVariantByGameId(
-              mainGames.reduce((acc, g) => {
-                acc[g.id] = defaultVariantId(g);
-                return acc;
-              }, {} as Record<string, string>)
-            );
+            applyVariantSelections(mainGames);
 
             // Also load library
             const libGames = await window.openNow.fetchLibraryGames({
@@ -510,17 +555,20 @@ export function App(): JSX.Element {
               providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
             });
             setLibraryGames(libGames);
+            applyVariantSelections(libGames);
           } catch {
             // Fallback to public games
             const publicGames = await window.openNow.fetchPublicGames();
             setGames(publicGames);
             setSource("public");
+            applyVariantSelections(publicGames);
           }
         } else {
           // Load public games for non-logged in users
           const publicGames = await window.openNow.fetchPublicGames();
           setGames(publicGames);
           setSource("public");
+          applyVariantSelections(publicGames);
           setSubscriptionInfo(null);
         }
       } catch (error) {
@@ -760,15 +808,7 @@ export function App(): JSX.Element {
           console.warn("Signaling disconnected:", event.reason);
           clientRef.current?.dispose();
           clientRef.current = null;
-          setStreamStatus("idle");
-          setSession(null);
-          setStreamingGame(null);
-          setLaunchError(null);
-          setSessionStartedAtMs(null);
-          setSessionElapsedSeconds(0);
-          setStreamWarning(null);
-          setEscHoldReleaseIndicator({ visible: false, progress: 0 });
-          setDiagnostics(defaultDiagnostics());
+          resetLaunchRuntime();
           launchInFlightRef.current = false;
         } else if (event.type === "error") {
           console.error("Signaling error:", event.message);
@@ -779,7 +819,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [settings]);
+  }, [resetLaunchRuntime, settings]);
 
   // Save settings when changed
   const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {
@@ -818,6 +858,7 @@ export function App(): JSX.Element {
       setGames(mainGames);
       setSource("main");
       setSelectedGameId(mainGames[0]?.id ?? "");
+      applyVariantSelections(mainGames);
 
       // Load library
       const libGames = await window.openNow.fetchLibraryGames({
@@ -825,12 +866,13 @@ export function App(): JSX.Element {
         providerStreamingBaseUrl: session.provider.streamingServiceUrl,
       });
       setLibraryGames(libGames);
+      applyVariantSelections(libGames);
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "Login failed");
     } finally {
       setIsLoggingIn(false);
     }
-  }, [loadSubscriptionInfo, providerIdpId]);
+  }, [applyVariantSelections, loadSubscriptionInfo, providerIdpId]);
 
   // Logout handler
   const handleLogout = useCallback(async () => {
@@ -838,15 +880,17 @@ export function App(): JSX.Element {
     setAuthSession(null);
     setGames([]);
     setLibraryGames([]);
+    setVariantByGameId({});
+    resetLaunchRuntime();
     setNavbarActiveSession(null);
     setIsResumingNavbarSession(false);
-    setLaunchError(null);
     setSubscriptionInfo(null);
     setCurrentPage("home");
     const publicGames = await window.openNow.fetchPublicGames();
     setGames(publicGames);
     setSource("public");
-  }, []);
+    applyVariantSelections(publicGames);
+  }, [applyVariantSelections, resetLaunchRuntime]);
 
   // Load games handler
   const loadGames = useCallback(async (targetSource: GameSource) => {
@@ -861,6 +905,7 @@ export function App(): JSX.Element {
       } else if (targetSource === "library" && token) {
         result = await window.openNow.fetchLibraryGames({ token, providerStreamingBaseUrl: baseUrl });
         setLibraryGames(result);
+        applyVariantSelections(result);
       } else if (targetSource === "public") {
         result = await window.openNow.fetchPublicGames();
       }
@@ -869,13 +914,23 @@ export function App(): JSX.Element {
         setGames(result);
         setSource(targetSource);
         setSelectedGameId(result[0]?.id ?? "");
+        applyVariantSelections(result);
       }
     } catch (error) {
       console.error("Failed to load games:", error);
     } finally {
       setIsLoadingGames(false);
     }
-  }, [authSession, effectiveStreamingBaseUrl]);
+  }, [applyVariantSelections, authSession, effectiveStreamingBaseUrl]);
+
+  const handleSelectGameVariant = useCallback((gameId: string, variantId: string): void => {
+    setVariantByGameId((prev) => {
+      if (prev[gameId] === variantId) {
+        return prev;
+      }
+      return { ...prev, [gameId]: variantId };
+    });
+  }, []);
 
   const claimAndConnectSession = useCallback(async (existingSession: ActiveSessionInfo): Promise<void> => {
     const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
@@ -943,13 +998,15 @@ export function App(): JSX.Element {
     setSessionElapsedSeconds(0);
     setStreamWarning(null);
     setLaunchError(null);
+    const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
+    const selectedVariant = getSelectedVariant(game, selectedVariantId);
     setStreamingGame(game);
+    setStreamingStore(selectedVariant?.store ?? null);
     updateLoadingStep("queue");
     setQueuePosition(undefined);
 
     try {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
-      const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
 
       // Resolve appId
       let appId: string | null = null;
@@ -1094,14 +1151,7 @@ export function App(): JSX.Element {
       await window.openNow.disconnectSignaling().catch(() => {});
       clientRef.current?.dispose();
       clientRef.current = null;
-      setSession(null);
-      setStreamStatus("idle");
-      setQueuePosition(undefined);
-      setSessionStartedAtMs(null);
-      setSessionElapsedSeconds(0);
-      setStreamWarning(null);
-      setEscHoldReleaseIndicator({ visible: false, progress: 0 });
-      setDiagnostics(defaultDiagnostics());
+      resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
       void refreshNavbarActiveSession();
     } finally {
       launchInFlightRef.current = false;
@@ -1111,6 +1161,7 @@ export function App(): JSX.Element {
     claimAndConnectSession,
     effectiveStreamingBaseUrl,
     refreshNavbarActiveSession,
+    resetLaunchRuntime,
     selectedProvider,
     settings,
     streamStatus,
@@ -1138,6 +1189,7 @@ export function App(): JSX.Element {
     setSessionStartedAtMs(null);
     setSessionElapsedSeconds(0);
     setStreamWarning(null);
+    setStreamingStore(null);
     updateLoadingStep("setup");
 
     try {
@@ -1149,14 +1201,7 @@ export function App(): JSX.Element {
       await window.openNow.disconnectSignaling().catch(() => {});
       clientRef.current?.dispose();
       clientRef.current = null;
-      setSession(null);
-      setStreamStatus("idle");
-      setQueuePosition(undefined);
-      setSessionStartedAtMs(null);
-      setSessionElapsedSeconds(0);
-      setStreamWarning(null);
-      setEscHoldReleaseIndicator({ visible: false, progress: 0 });
-      setDiagnostics(defaultDiagnostics());
+      resetLaunchRuntime({ keepLaunchError: true });
       void refreshNavbarActiveSession();
     } finally {
       launchInFlightRef.current = false;
@@ -1167,6 +1212,7 @@ export function App(): JSX.Element {
     isResumingNavbarSession,
     navbarActiveSession,
     refreshNavbarActiveSession,
+    resetLaunchRuntime,
     selectedProvider,
     streamStatus,
   ]);
@@ -1191,37 +1237,21 @@ export function App(): JSX.Element {
 
       clientRef.current?.dispose();
       clientRef.current = null;
-      setSession(null);
-      setStreamStatus("idle");
-      setStreamingGame(null);
       setNavbarActiveSession(null);
-      setLaunchError(null);
-      setSessionStartedAtMs(null);
-      setSessionElapsedSeconds(0);
-      setStreamWarning(null);
-      setEscHoldReleaseIndicator({ visible: false, progress: 0 });
-      setDiagnostics(defaultDiagnostics());
+      resetLaunchRuntime();
       void refreshNavbarActiveSession();
     } catch (error) {
       console.error("Stop failed:", error);
     }
-  }, [authSession, refreshNavbarActiveSession, resolveExitPrompt]);
+  }, [authSession, refreshNavbarActiveSession, resetLaunchRuntime, resolveExitPrompt]);
 
   const handleDismissLaunchError = useCallback(async () => {
     await window.openNow.disconnectSignaling().catch(() => {});
     clientRef.current?.dispose();
     clientRef.current = null;
-    setSession(null);
-    setLaunchError(null);
-    setStreamingGame(null);
-    setQueuePosition(undefined);
-    setSessionStartedAtMs(null);
-    setSessionElapsedSeconds(0);
-    setStreamWarning(null);
-    setEscHoldReleaseIndicator({ visible: false, progress: 0 });
-    setDiagnostics(defaultDiagnostics());
+    resetLaunchRuntime();
     void refreshNavbarActiveSession();
-  }, [refreshNavbarActiveSession]);
+  }, [refreshNavbarActiveSession, resetLaunchRuntime]);
 
   const releasePointerLockIfNeeded = useCallback(async () => {
     if (document.pointerLockElement) {
@@ -1474,6 +1504,7 @@ export function App(): JSX.Element {
             streamWarning={streamWarning}
             isConnecting={streamStatus === "connecting"}
             gameTitle={streamingGame?.title ?? "Game"}
+            platformStore={streamingStore ?? undefined}
             onToggleFullscreen={() => {
               if (document.fullscreenElement) {
                 document.exitFullscreen().catch(() => {});
@@ -1495,6 +1526,7 @@ export function App(): JSX.Element {
           <StreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
             gameCover={streamingGame?.imageUrl}
+            platformStore={streamingStore ?? undefined}
             status={loadingStatus}
             queuePosition={queuePosition}
             error={
@@ -1560,6 +1592,8 @@ export function App(): JSX.Element {
             isLoading={isLoadingGames}
             selectedGameId={selectedGameId}
             onSelectGame={setSelectedGameId}
+            selectedVariantByGameId={variantByGameId}
+            onSelectGameVariant={handleSelectGameVariant}
           />
         )}
 
