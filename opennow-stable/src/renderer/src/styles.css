@@ -1246,6 +1246,16 @@ body.controller-mode {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   line-height: 1.3;
 }
+.game-card-platform {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
 
 /* Store icon chips */
 .game-card-stores {
@@ -1257,13 +1267,27 @@ body.controller-mode {
   display: flex; align-items: center; justify-content: center;
   width: 22px; height: 22px;
   background: var(--chip);
+  border: none;
+  padding: 0;
   border-radius: 4px;
   color: var(--ink-muted);
   transition: color var(--t-fast), background var(--t-fast);
 }
+button.game-card-store-chip { cursor: pointer; }
 .game-card-store-chip:hover {
   color: var(--ink-soft);
   background: var(--panel-border-solid);
+}
+.game-card-store-chip.active {
+  color: var(--accent-on);
+  background: var(--accent);
+}
+button.game-card-store-chip.active:hover {
+  background: var(--accent-press);
+}
+.game-card-store-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .store-svg { display: block; flex-shrink: 0; }
 
@@ -2002,6 +2026,32 @@ body.controller-mode {
 }
 .sv-connect-spin { color: var(--accent); animation: spin 1s linear infinite; }
 .sv-connect-title { font-size: 1.05rem; font-weight: 600; color: var(--ink); margin: 0; }
+.sv-connect-platform {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  max-width: min(84vw, 360px);
+  border-radius: 999px;
+  background: rgba(24, 24, 28, 0.86);
+  border: 1px solid var(--panel-border-solid);
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+.sv-connect-platform > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sv-connect-platform-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+}
 .sv-connect-sub { font-size: 0.82rem; color: var(--ink-soft); margin: 0; }
 
 .sv-session-clock {
@@ -2445,11 +2495,42 @@ body.controller-mode {
 /* Game title toast */
 .sv-title-bar {
   position: fixed; bottom: 68px; left: 50%; transform: translateX(-50%); z-index: 1001;
-  padding: 7px 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(92vw, 720px);
+  padding: 7px 14px;
   background: rgba(10, 10, 12, 0.9);
   border: 1px solid var(--panel-border); border-radius: var(--r-sm);
   font-size: 0.88rem; font-weight: 600; color: var(--ink);
   white-space: nowrap; animation: fade-in 400ms var(--ease);
+}
+.sv-title-game {
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sv-title-platform {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+.sv-title-platform > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sv-title-platform-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--accent);
 }
 
 @media (max-width: 640px) {
@@ -2463,6 +2544,18 @@ body.controller-mode {
     max-width: calc(100vw - 24px);
     padding: 7px 10px;
     font-size: 0.68rem;
+  }
+  .sv-title-bar {
+    max-width: calc(100vw - 24px);
+    gap: 8px;
+    padding: 6px 10px;
+  }
+  .sv-title-game {
+    max-width: 52vw;
+    font-size: 0.8rem;
+  }
+  .sv-title-platform {
+    font-size: 0.7rem;
   }
   .sv-exit {
     align-items: flex-end;
@@ -2539,6 +2632,28 @@ body.controller-mode {
 .sload-title {
   font-size: 1.3rem; font-weight: 700; color: var(--ink); line-height: 1.25; margin: 0;
   max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sload-platform {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(84vw, 340px);
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+.sload-platform > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sload-platform-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
 }
 
 /* Progress steps */

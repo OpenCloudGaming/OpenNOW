@@ -13,6 +13,8 @@ export interface HomePageProps {
   isLoading: boolean;
   selectedGameId: string;
   onSelectGame: (id: string) => void;
+  selectedVariantByGameId: Record<string, string>;
+  onSelectGameVariant: (gameId: string, variantId: string) => void;
 }
 
 export function HomePage({
@@ -25,6 +27,8 @@ export function HomePage({
   isLoading,
   selectedGameId,
   onSelectGame,
+  selectedVariantByGameId,
+  onSelectGameVariant,
 }: HomePageProps): JSX.Element {
   const hasGames = games.length > 0;
 
@@ -93,6 +97,8 @@ export function HomePage({
                 isSelected={game.id === selectedGameId}
                 onSelect={() => onSelectGame(game.id)}
                 onPlay={() => onPlayGame(game)}
+                selectedVariantId={selectedVariantByGameId[game.id]}
+                onSelectStore={(variantId) => onSelectGameVariant(game.id, variantId)}
               />
             ))}
           </div>
