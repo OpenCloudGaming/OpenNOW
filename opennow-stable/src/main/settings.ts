@@ -2,7 +2,8 @@ import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode } from "@shared/gfn";
-
+import type { VideoCodec, ColorQuality, VideoAccelerationPreference, FlightSlotConfig, HdrStreamingMode } from "@shared/gfn";
+import { defaultFlightSlots } from "@shared/gfn";
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
   resolution: string;
@@ -48,7 +49,18 @@ export interface Settings {
   windowWidth: number;
   /** Window height */
   windowHeight: number;
-}
+  /** Enable Discord Rich Presence */
+  discordPresenceEnabled: boolean;
+  /** Discord Application Client ID */
+  discordClientId: string;
+  /** Enable flight controls (HOTAS/joystick) */
+  flightControlsEnabled: boolean;
+  /** Controller slot for flight controls (0-3) — legacy, kept for compat */
+  flightControlsSlot: number;
+  /** Per-slot flight configurations */
+  flightSlots: FlightSlotConfig[];
+  /** HDR streaming mode: off, auto, on */
+  hdrStreaming: HdrStreamingMode;}
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
 const defaultAntiAfkShortcut = "Ctrl+Shift+K";
@@ -79,7 +91,12 @@ const DEFAULT_SETTINGS: Settings = {
   sessionClockShowDurationSeconds: 30,
   windowWidth: 1400,
   windowHeight: 900,
-};
+  discordPresenceEnabled: false,
+  discordClientId: "",
+  flightControlsEnabled: false,
+  flightControlsSlot: 3,
+  flightSlots: defaultFlightSlots(),
+  hdrStreaming: "off",};
 
 export class SettingsManager {
   private settings: Settings;

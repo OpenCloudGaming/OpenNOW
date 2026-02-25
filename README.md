@@ -69,7 +69,7 @@ OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www
 | Up to 4K | ✅ | ✅ | Configurable in settings |
 | 5K Resolution | ✅ | ✅ | Up to 5K@120fps |
 | 120+ FPS | ✅ | ✅ | Configurable: 30/60/120/144/240 |
-| HDR Streaming | 📋 | ✅ | 10-bit color supported, full HDR pipeline planned |
+| HDR Streaming | ✅ | ✅ | HDR10 (PQ/BT.2020) on Windows; best-effort macOS; SDR fallback Linux |
 | AI-Enhanced Stream Mode | ❌ | ✅ | NVIDIA Cinematic Quality — not available |
 | Adjustable Bitrate | ✅ | ✅ | Up to 200 Mbps in OpenNOW |
 | Color Quality (8/10-bit, 4:2:0/4:4:4) | ✅ | ✅ | Full chroma/bit-depth control |
@@ -117,7 +117,7 @@ OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www
 | 🔴 | ~~Microphone support~~ | ✅ Completed | Voice chat with mute/unmute toggle |
 | 🟡 | Instant replay | 📋 Planned | Clip and save gameplay moments |
 | 🟡 | Screenshots | 📋 Planned | Capture in-stream screenshots |
-| 🟡 | HDR streaming pipeline | 📋 Planned | Full HDR end-to-end support |
+| 🟡 | ~~HDR streaming pipeline~~ | ✅ Completed | HDR10 PQ/BT.2020 on Windows; best-effort macOS; auto-fallback |
 | 🟢 | Latency optimizations | 🚧 Ongoing | Input and render path improvements |
 | 🟢 | Platform stability | 🚧 Ongoing | Cross-platform bug fixes |
 
@@ -126,7 +126,7 @@ OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www
 ## Features
 
 **Streaming**
-`H.264` `AV1` `H.265 (WIP)` · Up to 4K@240fps · Adjustable bitrate · 8/10-bit color · 4:2:0/4:4:4 chroma
+`H.264` `AV1` `H.265 (WIP)` · Up to 4K@240fps · Adjustable bitrate · 8/10-bit color · 4:2:0/4:4:4 chroma · HDR10 (PQ/BT.2020)
 
 **Input**
 `Keyboard` `Mouse` `Gamepad ×4` · Mouse sensitivity · Clipboard paste

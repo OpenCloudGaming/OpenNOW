@@ -14,7 +14,10 @@ import type {
   SubscriptionInfo,
   StreamRegion,
   VideoCodec,
-} from "@shared/gfn";
+  DiscordPresencePayload,
+  FlightSlotConfig,
+  HdrCapability,
+  HdrStreamState,} from "@shared/gfn";
 
 import {
   GfnWebRtcClient,
@@ -23,7 +26,12 @@ import {
 } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { useControllerNavigation } from "./controllerNavigation";
-
+import { getFlightHidService } from "./flight/FlightHidService";
+import {
+  probeHdrCapability,
+  shouldEnableHdr,
+  buildInitialHdrState,
+} from "./gfn/hdrCapability";
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
 import { Navbar } from "./components/Navbar";
@@ -150,6 +158,9 @@ function defaultDiagnostics(): StreamDiagnostics {
     inputQueuePeakBufferedBytes: 0,
     inputQueueDropCount: 0,
     inputQueueMaxSchedulingDelayMs: 0,
+    micBytesSent: 0,
+    micPacketsSent: 0,
+    hdrState: buildInitialHdrState(),
     gpuType: "",
     serverRegion: "",
     micState: "uninitialized",
@@ -317,7 +328,12 @@ export function App(): JSX.Element {
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
-  });
+    discordPresenceEnabled: false,
+    discordClientId: "",
+    flightControlsEnabled: false,
+    flightControlsSlot: 3,
+    flightSlots: defaultFlightSlots(),
+    hdrStreaming: "off",  });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
@@ -342,6 +358,8 @@ export function App(): JSX.Element {
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
   const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState(0);
   const [streamWarning, setStreamWarning] = useState<StreamWarningState | null>(null);
+  const [hdrCapability, setHdrCapability] = useState<HdrCapability | null>(null);
+  const [hdrWarningShown, setHdrWarningShown] = useState(false);
 
   const handleControllerPageNavigate = useCallback((direction: "prev" | "next"): void => {
     if (!authSession || streamStatus !== "idle") {
@@ -488,6 +506,13 @@ export function App(): JSX.Element {
         const loadedSettings = await window.openNow.getSettings();
         setSettings(loadedSettings);
         setSettingsLoaded(true);
+
+        probeHdrCapability().then((cap) => {
+          setHdrCapability(cap);
+          console.log("[HDR] Capability probe:", cap);
+        }).catch((e) => {
+          console.warn("[HDR] Capability probe failed:", e);
+        });
 
         // Load providers and session (force refresh on startup restore)
         setStartupStatusMessage("Restoring saved session and refreshing token...");
@@ -792,12 +817,24 @@ export function App(): JSX.Element {
           }
 
           if (clientRef.current) {
+            let hdrEnabledForStream = false;
+            if (hdrCapability && settings.hdrStreaming !== "off") {
+              const decision = shouldEnableHdr(settings.hdrStreaming, hdrCapability, settings.colorQuality);
+              hdrEnabledForStream = decision.enable;
+              console.log(`[HDR] Stream decision: enable=${decision.enable}, reason=${decision.reason}`);
+              if (!decision.enable && settings.hdrStreaming === "on" && !hdrWarningShown) {
+                setHdrWarningShown(true);
+                console.warn(`[HDR] Falling back to SDR: ${decision.reason}`);
+              }
+            }
+
             await clientRef.current.handleOffer(event.sdp, activeSession, {
               codec: settings.codec,
               colorQuality: settings.colorQuality,
               resolution: settings.resolution,
               fps: settings.fps,
               maxBitrateKbps: settings.maxBitrateMbps * 1000,
+              hdrEnabled: hdrEnabledForStream,
             });
             setLaunchError(null);
             setStreamStatus("streaming");
@@ -941,6 +978,12 @@ export function App(): JSX.Element {
       throw new Error("Active session is missing server address. Start the game again to create a new session.");
     }
 
+    let hdrEnabledForClaim = false;
+    if (hdrCapability && settings.hdrStreaming !== "off") {
+      const decision = shouldEnableHdr(settings.hdrStreaming, hdrCapability, settings.colorQuality);
+      hdrEnabledForClaim = decision.enable;
+    }
+
     const claimed = await window.openNow.claimSession({
       token,
       streamingBaseUrl: effectiveStreamingBaseUrl,
@@ -952,6 +995,7 @@ export function App(): JSX.Element {
         maxBitrateMbps: settings.maxBitrateMbps,
         codec: settings.codec,
         colorQuality: settings.colorQuality,
+        hdrEnabled: hdrEnabledForClaim,
       },
     });
 
@@ -1051,6 +1095,14 @@ export function App(): JSX.Element {
         }
       }
 
+      // Determine HDR for session creation (server must set up HDR pipeline)
+      let hdrEnabledForCreate = false;
+      if (hdrCapability && settings.hdrStreaming !== "off") {
+        const decision = shouldEnableHdr(settings.hdrStreaming, hdrCapability, settings.colorQuality);
+        hdrEnabledForCreate = decision.enable;
+        console.log(`[HDR] Create-session decision: enable=${decision.enable}, reason=${decision.reason}`);
+      }
+
       // Create new session
       const newSession = await window.openNow.createSession({
         token: token || undefined,
@@ -1065,6 +1117,7 @@ export function App(): JSX.Element {
           maxBitrateMbps: settings.maxBitrateMbps,
           codec: settings.codec,
           colorQuality: settings.colorQuality,
+          hdrEnabled: hdrEnabledForCreate,
         },
       });
 
@@ -1614,6 +1667,7 @@ export function App(): JSX.Element {
             settings={settings}
             regions={regions}
             onSettingChange={updateSetting}
+            hdrCapability={hdrCapability}
           />
         )}
       </main>

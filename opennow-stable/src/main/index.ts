@@ -44,7 +44,10 @@ import {
 import { fetchSubscription, fetchDynamicRegions } from "./gfn/subscription";
 import { GfnSignalingClient } from "./gfn/signaling";
 import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
-
+import { isSessionError, SessionError } from "./gfn/errorCodes";
+import { DiscordPresenceService } from "./discord/DiscordPresenceService";
+import { FlightProfileManager } from "./flight/FlightProfiles";
+import { getOsHdrInfo } from "./hdr/hdrDetect";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -191,7 +194,74 @@ function emitToRenderer(event: MainToRendererSignalingEvent): void {
   }
 }
 
-async function createMainWindow(): Promise<void> {
+function emitSessionExpired(reason: string): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(IPC_CHANNELS.AUTH_SESSION_EXPIRED, reason);
+  }
+}
+
+async function withRetryOn401<T>(
+  fn: (token: string) => Promise<T>,
+  explicitToken?: string,
+): Promise<T> {
+  const token = await resolveJwt(explicitToken);
+  try {
+    return await fn(token);
+  } catch (error) {
+    const { shouldRetry, token: newToken } = await authService.handleApiError(error);
+    if (shouldRetry && newToken) {
+      return fn(newToken);
+    }
+    throw error;
+  }
+}
+
+function setupWebHidPermissions(): void {
+  const ses = session.defaultSession;
+
+  ses.setDevicePermissionHandler((details) => {
+    if (details.deviceType === "hid") {
+      return true;
+    }
+    return true;
+  });
+
+  ses.setPermissionCheckHandler((_webContents, permission) => {
+    const granted: ReadonlySet<string> = new Set(["hid", "media", "keyboardLock"]);
+    if (granted.has(permission)) {
+      return true;
+    }
+    return true;
+  });
+
+  ses.setPermissionRequestHandler((_webContents, permission, callback) => {
+    if (permission === "media" || permission === "keyboardLock") {
+      callback(true);
+      return;
+    }
+    callback(true);
+  });
+
+  ses.on("select-hid-device", (event, details, callback) => {
+    event.preventDefault();
+    const ungranted = details.deviceList.find((d) => !grantedHidDeviceIds.has(d.deviceId));
+    const selected = ungranted ?? details.deviceList[0];
+    if (selected) {
+      grantedHidDeviceIds.add(selected.deviceId);
+      callback(selected.deviceId);
+    } else {
+      callback("");
+    }
+  });
+
+  ses.on("hid-device-added", (_event, _details) => {
+    // WebHID connect event handled in renderer via navigator.hid
+  });
+
+  ses.on("hid-device-removed", (_event, _details) => {
+    // WebHID disconnect event handled in renderer via navigator.hid
+  });
+}async function createMainWindow(): Promise<void> {
   const preloadMjsPath = join(__dirname, "../preload/index.mjs");
   const preloadJsPath = join(__dirname, "../preload/index.js");
   const preloadPath = existsSync(preloadMjsPath) ? preloadMjsPath : preloadJsPath;
@@ -501,8 +571,17 @@ function registerIpcHandlers(): void {
   });
 
   // Save window size when it changes
-  mainWindow?.on("resize", () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
+  ipcMain.handle(IPC_CHANNELS.HDR_GET_OS_INFO, () => {
+    return getOsHdrInfo();
+  });  mainWindow?.on("resize", () => {
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_RELAUNCH, () => {
+    app.relaunch();
+    app.exit(0);
+  });
+
+  mainWindow?.on("resize", () => {    if (mainWindow && !mainWindow.isDestroyed()) {
       const [width, height] = mainWindow.getSize();
       settingsManager.set("windowWidth", width);
       settingsManager.set("windowHeight", height);

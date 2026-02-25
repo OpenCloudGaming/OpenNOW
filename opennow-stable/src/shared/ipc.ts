@@ -27,6 +27,15 @@ export const IPC_CHANNELS = {
   SETTINGS_RESET: "settings:reset",
   LOGS_EXPORT: "logs:export",
   LOGS_GET_RENDERER: "logs:get-renderer",
+  DISCORD_UPDATE_PRESENCE: "discord:update-presence",
+  DISCORD_CLEAR_PRESENCE: "discord:clear-presence",
+  FLIGHT_GET_PROFILE: "flight:get-profile",
+  FLIGHT_SET_PROFILE: "flight:set-profile",
+  FLIGHT_DELETE_PROFILE: "flight:delete-profile",
+  FLIGHT_GET_ALL_PROFILES: "flight:get-all-profiles",
+  FLIGHT_RESET_PROFILE: "flight:reset-profile",
+  HDR_GET_OS_INFO: "hdr:get-os-info",} as const;
+  HDR_GET_OS_INFO: "hdr:get-os-info",
+  APP_RELAUNCH: "app:relaunch",
 } as const;
-
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

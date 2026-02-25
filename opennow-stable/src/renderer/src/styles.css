@@ -1542,6 +1542,39 @@ button.game-card-store-chip.active:hover {
   border-color: rgba(88, 217, 138, 0.25);
 }
 
+/* Segmented control (connected toggle group) */
+.settings-seg {
+  display: flex;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--panel-border);
+  overflow: hidden;
+}
+.settings-seg-btn {
+  flex: 1 1 0%;
+  min-width: 0;
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--panel-border);
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+  outline: none;
+  white-space: nowrap;
+  text-align: center;
+}
+.settings-seg-btn:last-child { border-right: none; }
+.settings-seg-btn:hover:not(.active) { background: var(--panel-border-solid); color: var(--ink-soft); }
+.settings-seg-btn:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-glow); }
+.settings-seg-btn.active {
+  background: var(--accent-surface-strong);
+  color: var(--accent);
+  font-weight: 700;
+}
+
 /* Tier indicator on preset chips */
 .settings-chip-tier {
   font-size: 0.62rem; font-weight: 800;

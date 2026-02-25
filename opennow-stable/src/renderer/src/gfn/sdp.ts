@@ -403,6 +403,7 @@ interface NvstParams {
   codec: VideoCodec;
   colorQuality: ColorQuality;
   credentials: IceCredentials;
+  hdrEnabled?: boolean;
 }
 
 /**
@@ -595,9 +596,23 @@ export function buildNvstSdp(params: NvstParams): string {
     "a=video.maxNumReferenceFrames:4",
     "a=video.mapRtpTimestampsToFrames:1",
     "a=video.encoderCscMode:3",
-    "a=video.dynamicRangeMode:0",
+    `a=video.dynamicRangeMode:${params.hdrEnabled ? 1 : 0}`,
     `a=video.bitDepth:${bitDepth}`,
-    // Disable server-side scaling and prefilter (prevents resolution downgrade)
+  );
+
+  if (params.hdrEnabled) {
+    lines.push(
+      "a=video.colorPrimaries:9",
+      "a=video.transferCharacteristics:16",
+      "a=video.matrixCoefficients:9",
+      "a=video.colorRange:0",
+      "a=video.hdrMode:1",
+      "a=video.maxContentLightLevel:1000",
+      "a=video.maxFrameAverageLightLevel:400",
+    );
+  }
+
+  lines.push(
     `a=video.scalingFeature1:${isAv1 ? 1 : 0}`,
     "a=video.prefilterParams.prefilterModel:0",
     // Audio track (receive-only from server)

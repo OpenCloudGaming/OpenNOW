@@ -1,7 +1,10 @@
 import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { Monitor, Volume2, Mouse, Settings2, Globe, Save, Check, Search, X, Loader, Cpu, Zap, MessageSquare, Joystick, Sun } from "lucide-react";
+import { useState, useCallback, useMemo, useEffect } from "react";import type { JSX } from "react";
+import { Monitor, Volume2, Mouse, Settings2, Globe, Save, Check, Search, X, Loader, Cpu, Zap, MessageSquare, Joystick, Sun, RefreshCw, RotateCcw } from "lucide-react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import type { JSX } from "react";
-
 import type {
   Settings,
   StreamRegion,
@@ -10,14 +13,18 @@ import type {
   EntitledResolution,
   VideoAccelerationPreference,
   MicrophoneMode,
-} from "@shared/gfn";
+  HdrStreamingMode,
+  HdrCapability,} from "@shared/gfn";
 import { colorQualityRequiresHevc } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
-
-interface SettingsPageProps {
+import { FlightControlsPanel } from "./FlightControlsPanel";
+import { useToast } from "./Toast";
+import { probeHdrCapability } from "../gfn/hdrCapability";
+import { probeHdrCapability, getHdrDetectionStatus, getHdrStatusLabel, type HdrDetectionStatus } from "../gfn/hdrCapability";interface SettingsPageProps {
   settings: Settings;
   regions: StreamRegion[];
   onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  hdrCapability: HdrCapability | null;
 }
 
 const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
@@ -432,7 +439,7 @@ async function testCodecSupport(): Promise<CodecTestResult[]> {
 
 /* ── Component ────────────────────────────────────────────────────── */
 
-export function SettingsPage({ settings, regions, onSettingChange }: SettingsPageProps): JSX.Element {
+export function SettingsPage({ settings, regions, onSettingChange, hdrCapability }: SettingsPageProps): JSX.Element {
   const [savedIndicator, setSavedIndicator] = useState(false);
   const [regionSearch, setRegionSearch] = useState("");
   const [regionDropdownOpen, setRegionDropdownOpen] = useState(false);
@@ -442,7 +449,23 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [codecResults, setCodecResults] = useState<CodecTestResult[] | null>(initialCodecResults);
   const [codecTesting, setCodecTesting] = useState(false);
   const [codecTestOpen, setCodecTestOpen] = useState(() => initialCodecResults !== null);
-  const platformHardwareLabel = useMemo(() => {
+
+  // HDR diagnostics (on-demand like codec diagnostics)
+  const [hdrDiagResult, setHdrDiagResult] = useState<HdrCapability | null>(hdrCapability);
+  const [hdrDiagTesting, setHdrDiagTesting] = useState(false);
+  const [hdrDiagOpen, setHdrDiagOpen] = useState(false);
+  const [hdrRefreshing, setHdrRefreshing] = useState(false);
+  const [hdrDetectionStatus, setHdrDetectionStatus] = useState<HdrDetectionStatus>(getHdrDetectionStatus);
+  const [hevcWarningShown, setHevcWarningShown] = useState(false);
+  const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
+
+  useEffect(() => {
+    const api = (window as unknown as { openNow: { getPlatformInfo: () => Promise<PlatformInfo> } }).openNow;
+    void api.getPlatformInfo().then(setPlatformInfo).catch(() => {});
+  }, []);
+
+  const isLinux = platformInfo?.platform === "linux";
+  const isLinuxArm = isLinux && (platformInfo?.arch === "arm64" || platformInfo?.arch === "arm");  const platformHardwareLabel = useMemo(() => {
     const platform = navigator.platform.toLowerCase();
     if (platform.includes("win")) return "D3D11 / DXVA";
     if (platform.includes("mac")) return "VideoToolbox";
@@ -462,6 +485,43 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       setCodecTesting(false);
     }
   }, []);
+
+  const runHdrDiagnostics = useCallback(async () => {
+    setHdrDiagTesting(true);
+    setHdrDiagOpen(true);
+    try {
+      const cap = await probeHdrCapability();
+      setHdrDiagResult(cap);
+      setHdrDetectionStatus(getHdrDetectionStatus());
+    } catch (err) {
+      console.error("[HDR] Diagnostics failed:", err);
+      setHdrDetectionStatus(getHdrDetectionStatus());
+    } finally {
+      setHdrDiagTesting(false);
+    }
+  }, []);
+
+  const refreshHdrStatus = useCallback(async () => {
+    setHdrRefreshing(true);
+    setHdrDetectionStatus("probing");
+    try {
+      const cap = await probeHdrCapability();
+      setHdrDiagResult(cap);
+      setHdrDetectionStatus(getHdrDetectionStatus());
+    } catch (err) {
+      console.error("[HDR] Refresh failed:", err);
+      setHdrDetectionStatus(getHdrDetectionStatus());
+    } finally {
+      setHdrRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (hdrCapability) {
+      setHdrDiagResult(hdrCapability);
+      setHdrDetectionStatus(getHdrDetectionStatus());
+    }
+  }, [hdrCapability]);
 
   useEffect(() => {
     try {
@@ -840,7 +900,66 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               </div>
             </div>
 
-            {/* Decoder preference */}
+            {/* HEVC Compatibility Mode */}
+            <div className="settings-row settings-row--column">
+              <label className="settings-label">HEVC Compatibility</label>
+              <div className="settings-chip-row">
+                {([
+                  { value: "auto" as const, label: "Auto" },
+                  { value: "force_h264" as const, label: "Force H.264" },
+                  { value: "force_hevc" as const, label: "Force HEVC" },
+                  { value: "hevc_software" as const, label: "HEVC Software" },
+                ] as const).map((option) => (
+                  <button
+                    key={`hevc-compat-${option.value}`}
+                    className={`settings-chip ${settings.hevcCompatMode === option.value ? "active" : ""}`}
+                    onClick={() => {
+                      handleChange("hevcCompatMode", option.value);
+                      if (!hevcWarningShown) setHevcWarningShown(true);
+                    }}
+                    onFocus={() => {
+                      if (!hevcWarningShown) setHevcWarningShown(true);
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              {hevcWarningShown && (settings.codec === "H265" || settings.codec === "AV1") && (
+                <span className="settings-input-hint" style={{ color: "var(--warning)" }}>
+                  &#9888; HEVC compatibility mode is intended only for AMD Polaris/Vega GPUs (e.g., RX 400/500 series, Vega iGPUs). Other GPUs typically don&apos;t need this.
+                </span>
+              )}
+              <span className="settings-subtle-hint">
+                Auto disables HEVC on AMD Polaris/Vega GPUs (RX 550, Vega iGPU) to prevent green screen.
+              </span>
+            </div>
+
+            {/* Linux-only Hardware Decode Backend */}
+            {isLinux && (
+              <div className="settings-row settings-row--column">
+                <label className="settings-label">Hardware Decode Backend</label>
+                <div className="settings-chip-row">
+                  {([
+                    { value: "auto" as const, label: "Auto (recommended)" },
+                    { value: "vaapi" as const, label: "VA-API (force)" },
+                    { value: "v4l2" as const, label: "V4L2 (force)" },
+                    { value: "software" as const, label: "Software (force)" },
+                  ] as const).map((option) => (
+                    <button
+                      key={`vdb-${option.value}`}
+                      className={`settings-chip ${settings.videoDecodeBackend === option.value ? "active" : ""}`}
+                      onClick={() => handleChange("videoDecodeBackend", option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <span className="settings-subtle-hint">
+                  Auto chooses VA-API on x64 Linux and V4L2 on Linux ARM. Applies after app restart.
+                </span>
+              </div>
+            )}            {/* Decoder preference */}
             <div className="settings-row settings-row--column">
               <label className="settings-label">Decoder</label>
               <div className="settings-chip-row">
@@ -957,6 +1076,187 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 How long the session timer stays visible each time it appears.
               </span>
             </div>
+          </div>
+        </section>
+
+        {/* ── HDR Streaming ──────────────────────────────── */}
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <Sun size={18} />
+            <h2>HDR Streaming</h2>
+          </div>
+          <div className="settings-rows">
+            <div className="settings-row">
+              <label className="settings-label" id="hdr-mode-label">HDR Mode</label>
+              <div className="settings-seg" role="radiogroup" aria-labelledby="hdr-mode-label">
+                {(["off", "auto", "on"] as HdrStreamingMode[]).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`settings-chip ${settings.hdrStreaming === mode ? "active" : ""}`}
+                    onClick={() => handleChange("hdrStreaming", mode)}
+                    role="radio"
+                    aria-checked={settings.hdrStreaming === mode}
+                    className={`settings-seg-btn ${settings.hdrStreaming === mode ? "active" : ""}`}
+                    onClick={() => {
+                      handleChange("hdrStreaming", mode);
+                      if (mode !== "off") void refreshHdrStatus();
+                    }}                  >
+                    onClick={() => {
+                      handleChange("hdrStreaming", mode);
+                      if (mode !== "off") void refreshHdrStatus();
+                    }}
+                  >                    {mode === "off" ? "Off" : mode === "auto" ? "Auto" : "On"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {settings.hdrStreaming === "auto" && (
+              <span className="settings-input-hint">
+                HDR activates only when platform, display, OS, stream, and codec all confirm HDR support.
+              </span>
+            )}
+            {settings.hdrStreaming === "on" && (
+              <span className="settings-input-hint">
+                Forces HDR attempt. Falls back to SDR with a warning if any condition fails.
+              </span>
+            )}
+
+            {settings.hdrStreaming !== "off" && !settings.colorQuality.startsWith("10bit") && (
+              <span className="settings-input-hint" style={{ color: "var(--warning)" }}>
+                HDR requires 10-bit color quality. Switch Color Quality to a 10-bit mode.
+              </span>
+            )}
+
+            {settings.hdrStreaming !== "off" && (
+              (() => {
+                const statusLabel = getHdrStatusLabel(settings.hdrStreaming, hdrDetectionStatus);
+                const statusColor =
+                  hdrDetectionStatus === "active" || hdrDetectionStatus === "supported"
+                    ? "var(--success)"
+                    : hdrDetectionStatus === "os_disabled" || hdrDetectionStatus === "probing" || hdrDetectionStatus === "idle"
+                      ? "var(--warning)"
+                      : "var(--error)";
+
+                return (
+                  <div className="settings-row" style={{ alignItems: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span className="settings-label" style={{ margin: 0 }}>Status</span>
+                      <span style={{ fontSize: "13px", fontWeight: 600, color: statusColor }}>{statusLabel}</span>
+                    </div>
+                    <button
+                      className="codec-test-btn"
+                      onClick={refreshHdrStatus}
+                      disabled={hdrRefreshing}
+                      type="button"
+                      title="Refresh HDR status"
+                      style={{ minWidth: "auto", padding: "6px 10px" }}
+                    >
+                      <RefreshCw size={14} className={hdrRefreshing ? "settings-loading-icon" : ""} />
+                    </button>
+                  </div>
+                );
+              })()
+            )}
+
+            <div className="settings-row codec-test-row">
+              <label className="settings-label codec-test-description">
+                Test HDR display, decoder, and color pipeline capabilities
+              </label>
+              <button
+                className="codec-test-btn"
+                onClick={runHdrDiagnostics}
+                disabled={hdrDiagTesting}
+                type="button"
+              >
+                {hdrDiagTesting ? (
+                  <>
+                    <Loader size={16} className="settings-loading-icon" />
+                    Testing...
+                  </>
+                ) : (
+                  <>
+                    <Zap size={16} />
+                    {hdrDiagResult ? "Retest HDR" : "Run HDR Diagnostics"}
+                  </>
+                )}
+              </button>
+            </div>
+
+            {hdrDiagOpen && hdrDiagResult && (
+              <div className="codec-results">
+                <div className="codec-result-card">
+                  <div className="codec-result-header">
+                    <span className="codec-result-name">Platform</span>
+                    <span className={`codec-result-badge ${hdrDiagResult.platformSupport === "supported" ? "supported" : "unsupported"}`}>
+                      {hdrDiagResult.platform}
+                    </span>
+                  </div>
+                  <div className="codec-result-rows">
+                    <div className="codec-result-row">
+                      <span className="codec-result-direction">OS HDR</span>
+                      <span className={`codec-result-status ${hdrDiagResult.osHdrEnabled ? "hw" : "none"}`}>
+                        {hdrDiagResult.osHdrEnabled ? "On" : "Off"}
+                      </span>
+                      <span className="codec-result-via">
+                        {hdrDiagResult.osHdrEnabled ? "System HDR enabled" : "Enable HDR in OS Display Settings"}
+                      </span>
+                    </div>
+                    <div className="codec-result-row">
+                      <span className="codec-result-direction">Display</span>
+                      <span className={`codec-result-status ${hdrDiagResult.displayHdrCapable ? "hw" : "none"}`}>
+                        {hdrDiagResult.displayHdrCapable ? "HDR" : "SDR"}
+                      </span>
+                      <span className="codec-result-via">
+                        {hdrDiagResult.displayHdrCapable ? "Display reports HDR capability" : "No HDR display detected"}
+                      </span>
+                    </div>
+                    <div className="codec-result-row">
+                      <span className="codec-result-direction">10-bit Decode</span>
+                      <span className={`codec-result-status ${hdrDiagResult.decoder10BitCapable ? "hw" : "none"}`}>
+                        {hdrDiagResult.decoder10BitCapable ? "Yes" : "No"}
+                      </span>
+                      <span className="codec-result-via">
+                        {hdrDiagResult.decoder10BitCapable ? "HEVC Main10 or AV1 10-bit" : "No 10-bit decoder found"}
+                      </span>
+                    </div>
+                    <div className="codec-result-row">
+                      <span className="codec-result-direction">Color Pipeline</span>
+                      <span className={`codec-result-status ${hdrDiagResult.hdrColorSpaceSupported ? "hw" : "sw"}`}>
+                        {hdrDiagResult.hdrColorSpaceSupported ? "Yes" : "Limited"}
+                      </span>
+                      <span className="codec-result-via">
+                        {hdrDiagResult.hdrColorSpaceSupported ? "Wide gamut rendering path" : "Standard gamut only"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {hdrDiagResult.platformSupport === "best_effort" && hdrDiagResult.platform === "windows" && !hdrDiagResult.osHdrEnabled && (
+                  <span className="settings-input-hint" style={{ color: "var(--warning)", marginTop: "4px" }}>
+                    HDR display detected but OS HDR is off. Enable HDR in Windows Display Settings, then click Refresh.
+                  </span>
+                )}
+
+                {(hdrDiagResult.platform === "linux" || hdrDiagResult.platformSupport === "unsupported") && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "6px" }}>
+                    <span className="settings-input-hint" style={{ color: "var(--error)", margin: 0 }}>
+                      Some HDR changes may require a restart.
+                    </span>
+                    <button
+                      className="codec-test-btn"
+                      onClick={() => void window.openNow.relaunchApp()}
+                      type="button"
+                      style={{ minWidth: "auto", padding: "5px 10px", fontSize: "12px" }}
+                    >
+                      <RotateCcw size={12} />
+                      Restart
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </section>
 

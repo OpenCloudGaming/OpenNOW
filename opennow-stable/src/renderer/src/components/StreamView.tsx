@@ -361,6 +361,18 @@ export function StreamView({
               {[stats.gpuType, regionLabel].filter(Boolean).join(" · ")}
             </div>
           )}
+
+          {/* HDR Debug Panel */}
+          <div className="sv-stats-foot" style={{ borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: "4px", marginTop: "2px" }}>
+            HDR: <strong style={{ color: stats.hdrState.status === "active" ? "var(--success)" : stats.hdrState.status === "fallback_sdr" ? "var(--warning)" : stats.hdrState.status === "unsupported" ? "var(--error)" : "var(--ink-muted)" }}>
+              {stats.hdrState.status === "active" ? "On" : stats.hdrState.status === "fallback_sdr" ? "Fallback SDR" : stats.hdrState.status === "unsupported" ? "Unsupported" : "Off"}
+            </strong>
+            {" · "}{stats.hdrState.bitDepth}-bit
+            {" · "}{stats.hdrState.colorPrimaries}/{stats.hdrState.transferFunction}
+            {stats.hdrState.codecProfile && <> · {stats.hdrState.codecProfile}</>}
+            {stats.hdrState.overlayForcesSdr && <> · <span style={{ color: "var(--warning)" }}>Overlay forces SDR</span></>}
+            {stats.hdrState.fallbackReason && <> · <span style={{ color: "var(--warning)" }}>{stats.hdrState.fallbackReason}</span></>}
+          </div>
         </div>
       )}
 
