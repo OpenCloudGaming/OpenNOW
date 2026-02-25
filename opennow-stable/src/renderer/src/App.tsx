@@ -76,6 +76,15 @@ function isSessionReadyForConnect(status: number): boolean {
   return status === 2 || status === 3;
 }
 
+function isSessionInQueue(session: SessionInfo): boolean {
+  // Official client treats seat setup step 1 as queue state even when queuePosition reaches 1.
+  // Fallback to queuePosition-based inference for payloads that do not expose seatSetupStep.
+  if (session.seatSetupStep === 1) {
+    return true;
+  }
+  return (session.queuePosition ?? 0) > 1;
+}
+
 function isNumericId(value: string | undefined): value is string {
   if (!value) return false;
   return /^\d+$/.test(value);
@@ -988,12 +997,10 @@ export function App(): JSX.Element {
       setQueuePosition(newSession.queuePosition);
 
       // Poll for readiness.
-      // Queue mode (>1): no timeout - users wait indefinitely and see position updates.
-      // Setup/Starting mode (0, 1, or undefined): 180s timeout applies - machine is starting.
+      // Queue mode: no timeout - users wait indefinitely and see position updates.
+      // Setup/Starting mode: 180s timeout applies while machine is being allocated.
       let finalSession: SessionInfo | null = null;
-      // Only in queue mode if queuePosition > 1 (actually waiting in line)
-      // queuePosition 0 or 1 means machine is being allocated, not queue wait
-      let isInQueueMode = (newSession.queuePosition ?? 0) > 1;
+      let isInQueueMode = isSessionInQueue(newSession);
       let timeoutStartAttempt = 1;
       const maxAttempts = Math.ceil(SESSION_READY_TIMEOUT_MS / SESSION_READY_POLL_INTERVAL_MS);
       let attempt = 0;
@@ -1015,16 +1022,14 @@ export function App(): JSX.Element {
 
         // Check if queue just cleared - transition from queue mode to setup mode
         const wasInQueueMode = isInQueueMode;
-        // Queue mode only when position > 1 (actually waiting behind others)
-        // Position 0 or 1 means machine allocation is starting
-        isInQueueMode = (polled.queuePosition ?? 0) > 1;
+        isInQueueMode = isSessionInQueue(polled);
         if (wasInQueueMode && !isInQueueMode) {
           // Queue just cleared, start timeout counting from now
           timeoutStartAttempt = attempt;
         }
 
         console.log(
-          `Poll attempt ${attempt}: status=${polled.status}, queuePosition=${polled.queuePosition ?? "n/a"}, serverIp=${polled.serverIp}, queueMode=${isInQueueMode}`,
+          `Poll attempt ${attempt}: status=${polled.status}, seatSetupStep=${polled.seatSetupStep ?? "n/a"}, queuePosition=${polled.queuePosition ?? "n/a"}, serverIp=${polled.serverIp}, queueMode=${isInQueueMode}`,
         );
 
         if (isSessionReadyForConnect(polled.status)) {

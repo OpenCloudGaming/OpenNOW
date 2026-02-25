@@ -237,6 +237,7 @@ export interface SessionInfo {
   sessionId: string;
   status: number;
   queuePosition?: number;
+  seatSetupStep?: number;
   zone: string;
   streamingBaseUrl?: string;
   serverIp: string;
