@@ -1,4 +1,4 @@
-import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown } from "lucide-react";
+import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown, MessageSquare } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -1420,7 +1420,43 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
         </section>
       </div>
 
-      {/* Footer */}
+        {/* ── Discord ────────────────────────────────────── */}
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <MessageSquare size={18} />
+            <h2>Discord</h2>
+          </div>
+          <div className="settings-rows">
+            <div className="settings-row">
+              <label className="settings-label">Rich Presence</label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.discordPresenceEnabled}
+                  onChange={(e) => handleChange("discordPresenceEnabled", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+            <div className="settings-row settings-row--column">
+              <label className="settings-label">Application Client ID</label>
+              <input
+                type="text"
+                className="settings-text-input"
+                placeholder="Enter Discord Application Client ID"
+                value={settings.discordClientId}
+                onChange={(e) => handleChange("discordClientId", e.target.value)}
+                disabled={!settings.discordPresenceEnabled}
+                spellCheck={false}
+                autoComplete="off"
+              />
+              <span className="settings-subtle-hint">
+                Create an application at discord.com/developers and paste its Client ID here.
+              </span>
+            </div>
+          </div>
+        </section>
+      </div>
       <div className="settings-footer">
         <button
           className="settings-save-btn"

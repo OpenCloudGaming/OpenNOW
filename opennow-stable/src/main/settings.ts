@@ -48,6 +48,10 @@ export interface Settings {
   windowWidth: number;
   /** Window height */
   windowHeight: number;
+  /** Enable Discord Rich Presence */
+  discordPresenceEnabled: boolean;
+  /** Discord Application Client ID */
+  discordClientId: string;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -79,6 +83,8 @@ const DEFAULT_SETTINGS: Settings = {
   sessionClockShowDurationSeconds: 30,
   windowWidth: 1400,
   windowHeight: 900,
+  discordPresenceEnabled: false,
+  discordClientId: "",
 };
 
 export class SettingsManager {

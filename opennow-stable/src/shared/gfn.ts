@@ -49,6 +49,8 @@ export interface Settings {
   sessionClockShowDurationSeconds: number;
   windowWidth: number;
   windowHeight: number;
+  discordPresenceEnabled: boolean;
+  discordClientId: string;
 }
 
 export interface LoginProvider {
@@ -333,4 +335,17 @@ export interface OpenNowApi {
   resetSettings(): Promise<Settings>;
   /** Export logs in redacted format */
   exportLogs(format?: "text" | "json"): Promise<string>;
+updateDiscordPresence(state: DiscordPresencePayload): Promise<void>;
+  clearDiscordPresence(): Promise<void>;
+}
+
+export interface DiscordPresencePayload {
+  type: "idle" | "queue" | "streaming";
+  gameName?: string;
+  resolution?: string;
+  fps?: number;
+  bitrateMbps?: number;
+  region?: string;
+  startTimestamp?: number;
+  queuePosition?: number;
 }

@@ -27,6 +27,8 @@ export const IPC_CHANNELS = {
   SETTINGS_RESET: "settings:reset",
   LOGS_EXPORT: "logs:export",
   LOGS_GET_RENDERER: "logs:get-renderer",
+DISCORD_UPDATE_PRESENCE: "discord:update-presence",
+  DISCORD_CLEAR_PRESENCE: "discord:clear-presence",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

@@ -29,6 +29,7 @@ import type {
   VideoAccelerationPreference,
   SubscriptionFetchRequest,
   SessionConflictChoice,
+  DiscordPresencePayload,
 } from "@shared/gfn";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
@@ -44,6 +45,7 @@ import {
 import { fetchSubscription, fetchDynamicRegions } from "./gfn/subscription";
 import { GfnSignalingClient } from "./gfn/signaling";
 import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
+import { DiscordPresenceService } from "./discord/DiscordPresenceService";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -184,6 +186,7 @@ let signalingClient: GfnSignalingClient | null = null;
 let signalingClientKey: string | null = null;
 let authService: AuthService;
 let settingsManager: SettingsManager;
+let discordService: DiscordPresenceService;
 
 function emitToRenderer(event: MainToRendererSignalingEvent): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -489,6 +492,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_SET, async <K extends keyof Settings>(_event: Electron.IpcMainInvokeEvent, key: K, value: Settings[K]) => {
     settingsManager.set(key, value);
+    if (key === "discordPresenceEnabled" || key === "discordClientId") {
+      const all = settingsManager.getAll();
+      void discordService.updateConfig(all.discordPresenceEnabled, all.discordClientId);
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
@@ -498,6 +505,14 @@ function registerIpcHandlers(): void {
   // Logs export IPC handler
   ipcMain.handle(IPC_CHANNELS.LOGS_EXPORT, async (_event, format: "text" | "json" = "text"): Promise<string> => {
     return exportLogs(format);
+
+// Discord Rich Presence IPC handlers
+  ipcMain.handle(IPC_CHANNELS.DISCORD_UPDATE_PRESENCE, async (_event, payload: DiscordPresencePayload) => {
+    await discordService.updatePresence(payload);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.DISCORD_CLEAR_PRESENCE, async () => {
+    await discordService.clearPresence();
   });
 
   // Save window size when it changes
@@ -569,6 +584,13 @@ app.whenReady().then(async () => {
     return allowedPermissions.has(permission);
   });
 
+const allSettings = settingsManager.getAll();
+  discordService = new DiscordPresenceService(
+    allSettings.discordPresenceEnabled,
+    allSettings.discordClientId,
+  );
+  void discordService.initialize();
+
   registerIpcHandlers();
   await createMainWindow();
 
@@ -589,6 +611,7 @@ app.on("before-quit", () => {
   signalingClient?.disconnect();
   signalingClient = null;
   signalingClientKey = null;
+  void discordService.dispose();
 });
 
 // Export for use by other modules

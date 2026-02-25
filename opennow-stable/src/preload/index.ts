@@ -18,6 +18,7 @@ import type {
   IceCandidatePayload,
   Settings,
   SubscriptionFetchRequest,
+  DiscordPresencePayload,
 } from "@shared/gfn";
 
 // Extend the OpenNowApi interface for internal preload use
@@ -74,6 +75,9 @@ const api: PreloadApi = {
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, key, value),
   resetSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_RESET),
   exportLogs: (format?: "text" | "json") => ipcRenderer.invoke(IPC_CHANNELS.LOGS_EXPORT, format),
+updateDiscordPresence: (state: DiscordPresencePayload) =>
+    ipcRenderer.invoke(IPC_CHANNELS.DISCORD_UPDATE_PRESENCE, state),
+  clearDiscordPresence: () => ipcRenderer.invoke(IPC_CHANNELS.DISCORD_CLEAR_PRESENCE),
 };
 
 contextBridge.exposeInMainWorld("openNow", api);

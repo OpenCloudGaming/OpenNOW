@@ -13,6 +13,7 @@ import type {
   SubscriptionInfo,
   StreamRegion,
   VideoCodec,
+  DiscordPresencePayload,
 } from "@shared/gfn";
 
 import {
@@ -295,6 +296,8 @@ export function App(): JSX.Element {
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
+    discordPresenceEnabled: false,
+    discordClientId: "",
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
@@ -354,6 +357,7 @@ export function App(): JSX.Element {
   const sessionRef = useRef<SessionInfo | null>(null);
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
+  const lastStreamGameTitleRef = useRef<string | null>(null);
   const launchInFlightRef = useRef(false);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
@@ -667,6 +671,56 @@ export function App(): JSX.Element {
     return () => window.clearInterval(timer);
   }, [sessionStartedAtMs, streamStatus]);
 
+  // Discord Rich Presence updates
+  useEffect(() => {
+    if (!settings.discordPresenceEnabled || !settings.discordClientId) {
+      return;
+    }
+
+    let payload: DiscordPresencePayload;
+
+    if (streamStatus === "idle") {
+      payload = { type: "idle" };
+    } else if (streamStatus === "queue" || streamStatus === "setup") {
+      const queueTitle = streamingGame?.title?.trim() || lastStreamGameTitleRef.current || undefined;
+      payload = {
+        type: "queue",
+        gameName: queueTitle,
+        queuePosition,
+      };
+    } else {
+      const hasDiag = diagnostics.resolution !== "" || diagnostics.bitrateKbps > 0;
+      const gameTitle = streamingGame?.title?.trim() || lastStreamGameTitleRef.current || undefined;
+      payload = {
+        type: "streaming",
+        gameName: gameTitle,
+        startTimestamp: sessionStartedAtMs ?? undefined,
+        ...(hasDiag && diagnostics.resolution ? { resolution: diagnostics.resolution } : {}),
+        ...(hasDiag && diagnostics.decodeFps > 0 ? { fps: diagnostics.decodeFps } : {}),
+        ...(hasDiag && diagnostics.bitrateKbps > 0 ? { bitrateMbps: Math.round(diagnostics.bitrateKbps / 100) / 10 } : {}),
+      };
+    }
+
+    window.openNow.updateDiscordPresence(payload).catch(() => {});
+  }, [
+    streamStatus,
+    streamingGame?.title,
+    sessionStartedAtMs,
+    queuePosition,
+    diagnostics.resolution,
+    diagnostics.decodeFps,
+    diagnostics.bitrateKbps,
+    settings.discordPresenceEnabled,
+    settings.discordClientId,
+  ]);
+
+  // Clear Discord presence on logout
+  useEffect(() => {
+    if (!authSession) {
+      window.openNow.clearDiscordPresence().catch(() => {});
+    }
+  }, [authSession]);
+
   useEffect(() => {
     if (!streamWarning) return;
     const warning = streamWarning;
@@ -745,6 +799,7 @@ export function App(): JSX.Element {
           setStreamStatus("idle");
           setSession(null);
           setStreamingGame(null);
+          lastStreamGameTitleRef.current = null;
           setLaunchError(null);
           setSessionStartedAtMs(null);
           setSessionElapsedSeconds(0);
@@ -926,6 +981,7 @@ export function App(): JSX.Element {
     setStreamWarning(null);
     setLaunchError(null);
     setStreamingGame(game);
+    lastStreamGameTitleRef.current = game.title?.trim() || null;
     updateLoadingStep("queue");
     setQueuePosition(undefined);
 
@@ -1120,6 +1176,7 @@ export function App(): JSX.Element {
     setSessionStartedAtMs(Date.now());
     setSessionElapsedSeconds(0);
     setStreamWarning(null);
+    lastStreamGameTitleRef.current = activeSessionGameTitle?.trim() || null;
     updateLoadingStep("setup");
 
     try {
@@ -1176,6 +1233,7 @@ export function App(): JSX.Element {
       setSession(null);
       setStreamStatus("idle");
       setStreamingGame(null);
+      lastStreamGameTitleRef.current = null;
       setNavbarActiveSession(null);
       setLaunchError(null);
       setSessionStartedAtMs(null);
@@ -1196,6 +1254,7 @@ export function App(): JSX.Element {
     setSession(null);
     setLaunchError(null);
     setStreamingGame(null);
+    lastStreamGameTitleRef.current = null;
     setQueuePosition(undefined);
     setSessionStartedAtMs(null);
     setSessionElapsedSeconds(0);
