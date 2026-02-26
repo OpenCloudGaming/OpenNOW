@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.zortos.opennow.stable</id>
+  <name>OpenNOW</name>
+  <summary>An open-source GeForce NOW client</summary>
+  <developer_name>zortos293</developer_name>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>OpenNOW is a community-built desktop client for NVIDIA GeForce NOW, built with Electron and TypeScript. It gives you a fully open-source, cross-platform alternative to the official app — with zero telemetry, full transparency, and features the official client doesn't have.</p>
+    <p>Features:</p>
+    <ul>
+      <li>WebRTC streaming with H.264, H.265, and AV1 codecs</li>
+      <li>Up to 4K@240fps streaming</li>
+      <li>Gamepad support (up to 4 controllers)</li>
+      <li>Microphone support for voice chat</li>
+      <li>Stats overlay with performance metrics</li>
+      <li>Anti-AFK feature</li>
+      <li>Adjustable shortcuts</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">com.zortos.opennow.stable.desktop</launchable>
+  <url type="homepage">https://github.com/OpenCloudGaming/OpenNOW</url>
+  <url type="bugtracker">https://github.com/OpenCloudGaming/OpenNOW/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/OpenCloudGaming/OpenNOW/main/img.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.2.4" date="2025-02-27"/>
+  </releases>
+</component>
