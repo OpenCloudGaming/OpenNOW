@@ -31,8 +31,6 @@ export interface Settings {
   fps: number;
   maxBitrateMbps: number;
   codec: VideoCodec;
-  decoderPreference: VideoAccelerationPreference;
-  encoderPreference: VideoAccelerationPreference;
   colorQuality: ColorQuality;
   region: string;
   clipboardPaste: boolean;

@@ -26,7 +26,6 @@ import type {
   SendAnswerRequest,
   IceCandidatePayload,
   Settings,
-  VideoAccelerationPreference,
   SubscriptionFetchRequest,
   SessionConflictChoice,
 } from "@shared/gfn";
@@ -49,43 +48,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Configure Chromium video and WebRTC behavior before app.whenReady().
+// Video acceleration is always set to "auto" - decoder and encoder preferences removed from settings
 
-interface BootstrapVideoPreferences {
-  decoderPreference: VideoAccelerationPreference;
-  encoderPreference: VideoAccelerationPreference;
-}
-
-function isAccelerationPreference(value: unknown): value is VideoAccelerationPreference {
-  return value === "auto" || value === "hardware" || value === "software";
-}
-
-function loadBootstrapVideoPreferences(): BootstrapVideoPreferences {
-  const defaults: BootstrapVideoPreferences = {
-    decoderPreference: "auto",
-    encoderPreference: "auto",
-  };
-  try {
-    const settingsPath = join(app.getPath("userData"), "settings.json");
-    if (!existsSync(settingsPath)) {
-      return defaults;
-    }
-    const parsed = JSON.parse(readFileSync(settingsPath, "utf-8")) as Partial<BootstrapVideoPreferences>;
-    return {
-      decoderPreference: isAccelerationPreference(parsed.decoderPreference)
-        ? parsed.decoderPreference
-        : defaults.decoderPreference,
-      encoderPreference: isAccelerationPreference(parsed.encoderPreference)
-        ? parsed.encoderPreference
-        : defaults.encoderPreference,
-    };
-  } catch {
-    return defaults;
-  }
-}
-
-const bootstrapVideoPrefs = loadBootstrapVideoPreferences();
+const bootstrapVideoPrefs = {
+  decoderPreference: "auto" as const,
+  encoderPreference: "auto" as const,
+};
 console.log(
-  `[Main] Video acceleration preference: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
+  `[Main] Video acceleration: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
 );
 
 // --- Platform-specific HW video decode features ---
