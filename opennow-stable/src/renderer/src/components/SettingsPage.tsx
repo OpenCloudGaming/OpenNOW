@@ -8,7 +8,6 @@ import type {
   VideoCodec,
   ColorQuality,
   EntitledResolution,
-  VideoAccelerationPreference,
   MicrophoneMode,
 } from "@shared/gfn";
 import { colorQualityRequiresHevc } from "@shared/gfn";
@@ -21,12 +20,6 @@ interface SettingsPageProps {
 }
 
 const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
-
-const accelerationOptions: { value: VideoAccelerationPreference; label: string }[] = [
-  { value: "auto", label: "Auto" },
-  { value: "hardware", label: "Hardware" },
-  { value: "software", label: "Software (CPU)" },
-];
 
 const colorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [
   { value: "8bit_420", label: "8-bit 4:2:0", description: "Most compatible" },
@@ -443,13 +436,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [codecResults, setCodecResults] = useState<CodecTestResult[] | null>(initialCodecResults);
   const [codecTesting, setCodecTesting] = useState(false);
   const [codecTestOpen, setCodecTestOpen] = useState(() => initialCodecResults !== null);
-  const platformHardwareLabel = useMemo(() => {
-    const platform = navigator.platform.toLowerCase();
-    if (platform.includes("win")) return "D3D11 / DXVA";
-    if (platform.includes("mac")) return "VideoToolbox";
-    if (platform.includes("linux")) return isLinuxArmClient() ? "V4L2" : "VA-API";
-    return "Hardware";
-  }, []);
 
   const runCodecTest = useCallback(async () => {
     setCodecTesting(true);
@@ -753,6 +739,86 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       </header>
 
       <div className="settings-sections">
+        {/* ── Region ────────────────────────────────────── */}
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h2>Region</h2>
+          </div>
+          <div className="settings-rows">
+            {/* Region selector with search */}
+            <div className="region-selector">
+              <button
+                className={`region-selected ${regionDropdownOpen ? "open" : ""}`}
+                onClick={() => setRegionDropdownOpen(!regionDropdownOpen)}
+                type="button"
+              >
+                <span className="region-selected-name">{selectedRegionName}</span>
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`region-chevron ${regionDropdownOpen ? "flipped" : ""}`}>
+                  <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
+                </svg>
+              </button>
+
+              {regionDropdownOpen && (
+                <div className="region-dropdown">
+                  <div className="region-dropdown-search">
+                    <Search size={14} className="region-dropdown-search-icon" />
+                    <input
+                      type="text"
+                      className="region-dropdown-search-input"
+                      placeholder="Search regions..."
+                      value={regionSearch}
+                      onChange={(e) => setRegionSearch(e.target.value)}
+                      autoFocus
+                    />
+                    {regionSearch && (
+                      <button className="region-dropdown-clear" onClick={() => setRegionSearch("")} type="button">
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="region-dropdown-list">
+                    <button
+                      className={`region-dropdown-item ${!settings.region ? "active" : ""}`}
+                      onClick={() => {
+                        handleChange("region", "");
+                        setRegionDropdownOpen(false);
+                        setRegionSearch("");
+                      }}
+                      type="button"
+                    >
+                      <Globe size={14} />
+                      <span>Auto (Best)</span>
+                      {!settings.region && <Check size={14} className="region-check" />}
+                    </button>
+
+                    {filteredRegions.map((region) => (
+                      <button
+                        key={region.url}
+                        className={`region-dropdown-item ${settings.region === region.url ? "active" : ""}`}
+                        onClick={() => {
+                          handleChange("region", region.url);
+                          setRegionDropdownOpen(false);
+                          setRegionSearch("");
+                        }}
+                        type="button"
+                      >
+                        <Globe size={14} />
+                        <span>{region.name}</span>
+                        {settings.region === region.url && <Check size={14} className="region-check" />}
+                      </button>
+                    ))}
+
+                    {filteredRegions.length === 0 && regions.length > 0 && (
+                      <div className="region-dropdown-empty">No regions match &ldquo;{regionSearch}&rdquo;</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
         {/* ── Video ──────────────────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
@@ -839,42 +905,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                   </button>
                 ))}
               </div>
-            </div>
-
-            {/* Decoder preference */}
-            <div className="settings-row settings-row--column">
-              <label className="settings-label">Decoder</label>
-              <div className="settings-chip-row">
-                {accelerationOptions.map((option) => (
-                  <button
-                    key={`decoder-${option.value}`}
-                    className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
-                    onClick={() => handleChange("decoderPreference", option.value)}
-                    title={option.value === "hardware" ? platformHardwareLabel : option.label}
-                  >
-                    {option.value === "hardware" ? platformHardwareLabel : option.label}
-                  </button>
-                ))}
-              </div>
-              <span className="settings-subtle-hint">Applies after app restart.</span>
-            </div>
-
-            {/* Encoder preference */}
-            <div className="settings-row settings-row--column">
-              <label className="settings-label">Encoder</label>
-              <div className="settings-chip-row">
-                {accelerationOptions.map((option) => (
-                  <button
-                    key={`encoder-${option.value}`}
-                    className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
-                    onClick={() => handleChange("encoderPreference", option.value)}
-                    title={option.value === "hardware" ? platformHardwareLabel : option.label}
-                  >
-                    {option.value === "hardware" ? platformHardwareLabel : option.label}
-                  </button>
-                ))}
-              </div>
-              <span className="settings-subtle-hint">Applies after app restart.</span>
             </div>
 
             {/* Color Quality */}
@@ -1313,86 +1343,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 <span className="settings-shortcut-hint">
                   {shortcutExamples}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}.
                 </span>
-              )}
-            </div>
-          </div>
-        </section>
-
-        {/* ── Region ────────────────────────────────────── */}
-        <section className="settings-section">
-          <div className="settings-section-header">
-            <h2>Region</h2>
-          </div>
-          <div className="settings-rows">
-            {/* Region selector with search */}
-            <div className="region-selector">
-              <button
-                className={`region-selected ${regionDropdownOpen ? "open" : ""}`}
-                onClick={() => setRegionDropdownOpen(!regionDropdownOpen)}
-                type="button"
-              >
-                <span className="region-selected-name">{selectedRegionName}</span>
-                <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`region-chevron ${regionDropdownOpen ? "flipped" : ""}`}>
-                  <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
-                </svg>
-              </button>
-
-              {regionDropdownOpen && (
-                <div className="region-dropdown">
-                  <div className="region-dropdown-search">
-                    <Search size={14} className="region-dropdown-search-icon" />
-                    <input
-                      type="text"
-                      className="region-dropdown-search-input"
-                      placeholder="Search regions..."
-                      value={regionSearch}
-                      onChange={(e) => setRegionSearch(e.target.value)}
-                      autoFocus
-                    />
-                    {regionSearch && (
-                      <button className="region-dropdown-clear" onClick={() => setRegionSearch("")} type="button">
-                        <X size={12} />
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="region-dropdown-list">
-                    <button
-                      className={`region-dropdown-item ${!settings.region ? "active" : ""}`}
-                      onClick={() => {
-                        handleChange("region", "");
-                        setRegionDropdownOpen(false);
-                        setRegionSearch("");
-                      }}
-                      type="button"
-                    >
-                      <Globe size={14} />
-                      <span>Auto (Best)</span>
-                      {!settings.region && <Check size={14} className="region-check" />}
-                    </button>
-
-                    {filteredRegions.map((region) => (
-                      <button
-                        key={region.url}
-                        className={`region-dropdown-item ${settings.region === region.url ? "active" : ""}`}
-                        onClick={() => {
-                          handleChange("region", region.url);
-                          setRegionDropdownOpen(false);
-                          setRegionSearch("");
-                        }}
-                        type="button"
-                      >
-                        <Globe size={14} />
-                        <span>{region.name}</span>
-                        {settings.region === region.url && <Check size={14} className="region-check" />}
-                      </button>
-                    ))}
-
-                    {filteredRegions.length === 0 && regions.length > 0 && (
-                      <div className="region-dropdown-empty">No regions match &ldquo;{regionSearch}&rdquo;</div>
-                    )}
-                  </div>
-                </div>
               )}
             </div>
           </div>

@@ -299,8 +299,6 @@ export function App(): JSX.Element {
     fps: 60,
     maxBitrateMbps: 75,
     codec: "H264",
-    decoderPreference: "auto",
-    encoderPreference: "auto",
     colorQuality: "10bit_420",
     region: "",
     clipboardPaste: false,
