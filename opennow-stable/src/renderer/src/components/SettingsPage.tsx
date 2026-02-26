@@ -1417,6 +1417,36 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 Export Logs
               </button>
             </div>
+
+            {/* Mouse Sensitivity */}
+            <div className="settings-row">
+              <label className="settings-label">Mouse Sensitivity</label>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <input
+                  type="range"
+                  className="settings-slider"
+                  min={0.1}
+                  max={4}
+                  step={0.01}
+                  value={settings.mouseSensitivity}
+                  onChange={(e) => handleChange("mouseSensitivity", parseFloat(e.target.value))}
+                />
+                <input
+                  type="number"
+                  className="settings-number-input"
+                  style={{ width: 80 }}
+                  min={0.1}
+                  max={4}
+                  step={0.01}
+                  value={Number(settings.mouseSensitivity.toFixed(2))}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value || "0");
+                    if (Number.isFinite(v)) handleChange("mouseSensitivity", Math.max(0.1, Math.min(4, v)));
+                  }}
+                />
+                <span className="settings-subtle-hint">Multiplier applied to mouse movement (1.00 = default)</span>
+              </div>
+            </div>
           </div>
         </section>
       </div>

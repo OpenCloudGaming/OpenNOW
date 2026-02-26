@@ -183,6 +183,8 @@ interface ClientOptions {
   microphoneMode?: MicrophoneMode;
   /** Preferred microphone device ID */
   microphoneDeviceId?: string;
+  /** Mouse sensitivity multiplier (1.0 = default) */
+  mouseSensitivity?: number;
   onLog: (line: string) => void;
   onStats?: (stats: StreamDiagnostics) => void;
   onEscHoldProgress?: (visible: boolean, progress: number) => void;
@@ -503,6 +505,7 @@ export class GfnWebRtcClient {
   private mouseFlushLastTickMs = 0;
   private pendingMouseTimestampUs: bigint | null = null;
   private mouseDeltaFilter = new MouseDeltaFilter();
+  private mouseSensitivity = 1;
 
   private partialReliableThresholdMs = GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
   private inputQueuePeakBufferedBytesWindow = 0;
@@ -557,6 +560,7 @@ export class GfnWebRtcClient {
     options.videoElement.srcObject = this.videoStream;
     options.audioElement.srcObject = this.audioStream;
     options.audioElement.muted = true;
+    this.mouseSensitivity = options.mouseSensitivity ?? 1;
 
     // Configure video element for lowest latency playback
     this.configureVideoElementForLowLatency(options.videoElement);
@@ -603,6 +607,13 @@ export class GfnWebRtcClient {
     video.defaultPlaybackRate = 1.0;
 
     this.log("Video element configured for low-latency playback");
+  }
+
+  /** Update mouse sensitivity multiplier at runtime. */
+  public setMouseSensitivity(value: number): void {
+    const v = Number.isFinite(value) ? value : 1;
+    this.mouseSensitivity = Math.max(0.01, v);
+    this.log(`Mouse sensitivity set to ${this.mouseSensitivity}`);
   }
 
   /**
@@ -1840,8 +1851,9 @@ export class GfnWebRtcClient {
         return;
       }
 
-      this.pendingMouseDx += Math.round(this.mouseDeltaFilter.getX());
-      this.pendingMouseDy += Math.round(this.mouseDeltaFilter.getY());
+      // Apply user-configured mouse sensitivity multiplier before queuing
+      this.pendingMouseDx += Math.round(this.mouseDeltaFilter.getX() * this.mouseSensitivity);
+      this.pendingMouseDy += Math.round(this.mouseDeltaFilter.getY() * this.mouseSensitivity);
       this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
     };
 
