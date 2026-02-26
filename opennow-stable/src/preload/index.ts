@@ -18,6 +18,7 @@ import type {
   IceCandidatePayload,
   Settings,
   SubscriptionFetchRequest,
+  StreamRegion,
 } from "@shared/gfn";
 
 // Extend the OpenNowApi interface for internal preload use
@@ -74,6 +75,7 @@ const api: PreloadApi = {
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, key, value),
   resetSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_RESET),
   exportLogs: (format?: "text" | "json") => ipcRenderer.invoke(IPC_CHANNELS.LOGS_EXPORT, format),
+  pingRegions: (regions: StreamRegion[]) => ipcRenderer.invoke(IPC_CHANNELS.PING_REGIONS, regions),
 };
 
 contextBridge.exposeInMainWorld("openNow", api);

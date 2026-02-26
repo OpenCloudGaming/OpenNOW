@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, systemPreferences, session } from 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import * as net from "node:net";
 
 // Keyboard shortcuts reference (matching Rust implementation):
 // F11 - Toggle fullscreen (handled in main process)
@@ -28,6 +29,8 @@ import type {
   Settings,
   SubscriptionFetchRequest,
   SessionConflictChoice,
+  PingResult,
+  StreamRegion,
 } from "@shared/gfn";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
@@ -192,6 +195,7 @@ async function createMainWindow(): Promise<void> {
         mainWindow.webContents.send("app:toggle-fullscreen");
       }
     }
+
   });
 
   if (process.platform === "win32") {
@@ -468,6 +472,76 @@ function registerIpcHandlers(): void {
   // Logs export IPC handler
   ipcMain.handle(IPC_CHANNELS.LOGS_EXPORT, async (_event, format: "text" | "json" = "text"): Promise<string> => {
     return exportLogs(format);
+  });
+
+  // TCP-based ping function - more accurate than HTTP as it only measures connection time
+  async function tcpPing(hostname: string, port: number, timeoutMs: number = 3000): Promise<number | null> {
+    return new Promise((resolve) => {
+      const startTime = Date.now();
+      const socket = new net.Socket();
+      
+      socket.setTimeout(timeoutMs);
+      
+      socket.once('connect', () => {
+        const pingMs = Date.now() - startTime;
+        socket.destroy();
+        resolve(pingMs);
+      });
+      
+      socket.once('timeout', () => {
+        socket.destroy();
+        resolve(null);
+      });
+      
+      socket.once('error', () => {
+        socket.destroy();
+        resolve(null);
+      });
+      
+      socket.connect(port, hostname);
+    });
+  }
+
+  // Ping regions IPC handler - uses TCP connection timing for accurate latency measurement
+  // Runs 3 tests and averages the results
+  ipcMain.handle(IPC_CHANNELS.PING_REGIONS, async (_event, regions: StreamRegion[]): Promise<PingResult[]> => {
+    const pingPromises = regions.map(async (region) => {
+      try {
+        const url = new URL(region.url);
+        const hostname = url.hostname;
+        const port = url.protocol === 'https:' ? 443 : 80;
+        
+        const validPings: number[] = [];
+        
+        // Run 3 ping tests
+        for (let i = 0; i < 3; i++) {
+          const pingMs = await tcpPing(hostname, port, 3000);
+          if (pingMs !== null) {
+            validPings.push(pingMs);
+          }
+        }
+        
+        // Calculate average of successful pings
+        if (validPings.length > 0) {
+          const avgPing = Math.round(validPings.reduce((a, b) => a + b, 0) / validPings.length);
+          return { url: region.url, pingMs: avgPing };
+        } else {
+          return { 
+            url: region.url, 
+            pingMs: null, 
+            error: 'All ping tests failed'
+          };
+        }
+      } catch {
+        return { 
+          url: region.url, 
+          pingMs: null, 
+          error: 'Invalid URL'
+        };
+      }
+    });
+    
+    return Promise.all(pingPromises);
   });
 
   // Save window size when it changes

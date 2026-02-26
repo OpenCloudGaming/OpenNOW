@@ -1,4 +1,4 @@
-import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown } from "lucide-react";
+import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -9,6 +9,7 @@ import type {
   ColorQuality,
   EntitledResolution,
   MicrophoneMode,
+  PingResult,
 } from "@shared/gfn";
 import { colorQualityRequiresHevc } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
@@ -230,6 +231,7 @@ const CODEC_TEST_CONFIGS: {
 ];
 
 const CODEC_TEST_RESULTS_STORAGE_KEY = "opennow.codec-test-results.v1";
+const PING_RESULTS_STORAGE_KEY = "opennow.ping-results.v1";
 const ENTITLED_RESOLUTIONS_STORAGE_KEY = "opennow.entitled-resolutions.v1";
 
 interface EntitledResolutionsCache {
@@ -246,6 +248,39 @@ function loadStoredCodecResults(): CodecTestResult[] | null {
     return parsed as CodecTestResult[];
   } catch {
     return null;
+  }
+}
+
+interface PingCacheEntry {
+  url: string;
+  pingMs: number | null;
+}
+
+function loadStoredPingResults(): Map<string, number | null> | null {
+  try {
+    const raw = window.sessionStorage.getItem(PING_RESULTS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return null;
+    const results = new Map<string, number | null>();
+    for (const entry of parsed as PingCacheEntry[]) {
+      results.set(entry.url, entry.pingMs);
+    }
+    return results;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredPingResults(results: Map<string, number | null>): void {
+  try {
+    const entries: PingCacheEntry[] = [];
+    results.forEach((pingMs, url) => {
+      entries.push({ url, pingMs });
+    });
+    window.sessionStorage.setItem(PING_RESULTS_STORAGE_KEY, JSON.stringify(entries));
+  } catch {
+    // Ignore storage failures
   }
 }
 
@@ -437,6 +472,75 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [codecTesting, setCodecTesting] = useState(false);
   const [codecTestOpen, setCodecTestOpen] = useState(() => initialCodecResults !== null);
 
+  // Region ping state
+  const initialPingResults = useMemo(() => loadStoredPingResults(), []);
+  const [pingResults, setPingResults] = useState<Map<string, number | null>>(initialPingResults ?? new Map());
+  const [isPinging, setIsPinging] = useState(false);
+  const [bestRegionUrl, setBestRegionUrl] = useState<string | null>(() => {
+    if (!initialPingResults) return null;
+    let bestUrl: string | null = null;
+    let bestPing = Infinity;
+    initialPingResults.forEach((pingMs, url) => {
+      if (pingMs !== null && pingMs < bestPing) {
+        bestPing = pingMs;
+        bestUrl = url;
+      }
+    });
+    return bestUrl;
+  });
+
+  const runPingTest = useCallback(async () => {
+    if (regions.length === 0) return;
+    setIsPinging(true);
+    try {
+      const results = await window.openNow.pingRegions(regions);
+      const pingMap = new Map<string, number | null>();
+      let bestUrl: string | null = null;
+      let bestPing = Infinity;
+
+      for (const result of results) {
+        pingMap.set(result.url, result.pingMs);
+        if (result.pingMs !== null && result.pingMs < bestPing) {
+          bestPing = result.pingMs;
+          bestUrl = result.url;
+        }
+      }
+
+      setPingResults(pingMap);
+      setBestRegionUrl(bestUrl);
+      saveStoredPingResults(pingMap);
+    } catch (err) {
+      console.error("Ping test failed:", err);
+    } finally {
+      setIsPinging(false);
+    }
+  }, [regions]);
+
+  // Validate cached results match current regions
+  useEffect(() => {
+    if (regions.length > 0 && pingResults.size > 0) {
+      // Check if all current regions are in the cache
+      const allRegionsCached = regions.every(r => pingResults.has(r.url));
+      if (!allRegionsCached) {
+        // Regions changed, clear cache and re-test
+        setPingResults(new Map());
+        setBestRegionUrl(null);
+        try {
+          window.sessionStorage.removeItem(PING_RESULTS_STORAGE_KEY);
+        } catch {
+          // Ignore
+        }
+      }
+    }
+  }, [regions, pingResults]);
+
+  // Run ping test when regions are available and we don't have cached results
+  useEffect(() => {
+    if (regions.length > 0 && pingResults.size === 0 && !isPinging) {
+      runPingTest();
+    }
+  }, [regions, pingResults.size, isPinging, runPingTest]);
+
   const runCodecTest = useCallback(async () => {
     setCodecTesting(true);
     setCodecTestOpen(true);
@@ -618,10 +722,30 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   }, [settings.microphoneMode]);
 
   const filteredRegions = useMemo(() => {
-    if (!regionSearch.trim()) return regions;
     const q = regionSearch.trim().toLowerCase();
-    return regions.filter((r) => r.name.toLowerCase().includes(q));
-  }, [regions, regionSearch]);
+    const filtered = q
+      ? regions.filter((r) => r.name.toLowerCase().includes(q))
+      : [...regions];
+
+    // Sort by ping (best first), then by name
+    filtered.sort((a, b) => {
+      const pingA = pingResults.get(a.url);
+      const pingB = pingResults.get(b.url);
+
+      // If both have ping results, sort by ping
+      if (pingA !== undefined && pingB !== undefined && pingA !== null && pingB !== null) {
+        return pingA - pingB;
+      }
+      // If only A has ping, A comes first
+      if (pingA !== undefined && pingA !== null) return -1;
+      // If only B has ping, B comes first
+      if (pingB !== undefined && pingB !== null) return 1;
+      // If neither has ping, sort by name
+      return a.name.localeCompare(b.name);
+    });
+
+    return filtered;
+  }, [regions, regionSearch, pingResults]);
 
   const selectedRegionName = useMemo(() => {
     if (!settings.region) return "Auto (Best)";
@@ -753,6 +877,37 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 type="button"
               >
                 <span className="region-selected-name">{selectedRegionName}</span>
+                {!settings.region && bestRegionUrl && (
+                  (() => {
+                    const bestRegion = regions.find(r => r.url === bestRegionUrl);
+                    const pingValue = pingResults.get(bestRegionUrl);
+                    if (bestRegion && pingValue !== undefined && pingValue !== null) {
+                      return (
+                        <span className="region-selected-best-info">
+                          {bestRegion.name} • <span className={`region-selected-ping-inline ${pingValue <= 50 ? 'good' : pingValue <= 100 ? 'medium' : 'poor'}`}>{pingValue}ms</span>
+                        </span>
+                      );
+                    }
+                    return null;
+                  })()
+                )}
+                {settings.region && (
+                  (() => {
+                    const pingValue = pingResults.get(settings.region);
+                    if (pingValue !== undefined && pingValue !== null) {
+                      return (
+                        <span className={`region-selected-ping ${pingValue <= 50 ? 'good' : pingValue <= 100 ? 'medium' : 'poor'}`}>
+                          {pingValue}ms
+                        </span>
+                      );
+                    } else if (pingValue === null) {
+                      return <span className="region-selected-ping-unavailable">Failed</span>;
+                    } else if (isPinging) {
+                      return <span className="region-selected-ping-unavailable">Testing...</span>;
+                    }
+                    return null;
+                  })()
+                )}
                 <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`region-chevron ${regionDropdownOpen ? "flipped" : ""}`}>
                   <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
                 </svg>
@@ -760,21 +915,36 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
 
               {regionDropdownOpen && (
                 <div className="region-dropdown">
-                  <div className="region-dropdown-search">
-                    <Search size={14} className="region-dropdown-search-icon" />
-                    <input
-                      type="text"
-                      className="region-dropdown-search-input"
-                      placeholder="Search regions..."
-                      value={regionSearch}
-                      onChange={(e) => setRegionSearch(e.target.value)}
-                      autoFocus
-                    />
-                    {regionSearch && (
-                      <button className="region-dropdown-clear" onClick={() => setRegionSearch("")} type="button">
-                        <X size={12} />
-                      </button>
-                    )}
+                  <div className="region-dropdown-header">
+                    <div className="region-dropdown-search">
+                      <Search size={14} className="region-dropdown-search-icon" />
+                      <input
+                        type="text"
+                        className="region-dropdown-search-input"
+                        placeholder="Search regions..."
+                        value={regionSearch}
+                        onChange={(e) => setRegionSearch(e.target.value)}
+                        autoFocus
+                      />
+                      {regionSearch && (
+                        <button className="region-dropdown-clear" onClick={() => setRegionSearch("")} type="button">
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                    <button
+                      className="region-ping-refresh"
+                      onClick={runPingTest}
+                      disabled={isPinging}
+                      type="button"
+                      title="Refresh ping"
+                    >
+                      {isPinging ? (
+                        <Loader size={14} className="spin" />
+                      ) : (
+                        <Wifi size={14} />
+                      )}
+                    </button>
                   </div>
 
                   <div className="region-dropdown-list">
@@ -788,7 +958,21 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                       type="button"
                     >
                       <Globe size={14} />
-                      <span>Auto (Best)</span>
+                      <div className="region-auto-best-info">
+                        <span>Auto (Best)</span>
+                        {bestRegionUrl && (() => {
+                          const bestRegion = regions.find(r => r.url === bestRegionUrl);
+                          const bestPing = pingResults.get(bestRegionUrl);
+                          if (bestRegion && bestPing !== undefined && bestPing !== null) {
+                            return (
+                              <span className="region-auto-best-details">
+                                {bestRegion.name} • {bestPing}ms
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </div>
                       {!settings.region && <Check size={14} className="region-check" />}
                     </button>
 
@@ -804,7 +988,32 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                         type="button"
                       >
                         <Globe size={14} />
-                        <span>{region.name}</span>
+                        <span className="region-name-with-badge">
+                          {region.name}
+                          {region.url === bestRegionUrl && (
+                            <span className="region-best-badge">Best</span>
+                          )}
+                        </span>
+                        <span className="region-ping">
+                          {isPinging ? (
+                            <span className="region-ping-loading">...</span>
+                          ) : (
+                            (() => {
+                              const pingValue = pingResults.get(region.url);
+                              if (pingValue === undefined) {
+                                return <span className="region-ping-unavailable">-</span>;
+                              } else if (pingValue === null) {
+                                return <span className="region-ping-error">Failed</span>;
+                              } else {
+                                return (
+                                  <span className={`region-ping-value ${pingValue <= 50 ? 'good' : pingValue <= 100 ? 'medium' : 'poor'}`}>
+                                    {pingValue}ms
+                                  </span>
+                                );
+                              }
+                            })()
+                          )}
+                        </span>
                         {settings.region === region.url && <Check size={14} className="region-check" />}
                       </button>
                     ))}

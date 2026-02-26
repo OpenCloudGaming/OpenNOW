@@ -148,6 +148,13 @@ export interface RegionsFetchRequest {
 export interface StreamRegion {
   name: string;
   url: string;
+  pingMs?: number;
+}
+
+export interface PingResult {
+  url: string;
+  pingMs: number | null;
+  error?: string;
 }
 
 export interface GamesFetchRequest {
@@ -331,4 +338,6 @@ export interface OpenNowApi {
   resetSettings(): Promise<Settings>;
   /** Export logs in redacted format */
   exportLogs(format?: "text" | "json"): Promise<string>;
+  /** Ping all regions and return latency results */
+  pingRegions(regions: StreamRegion[]): Promise<PingResult[]>;
 }
