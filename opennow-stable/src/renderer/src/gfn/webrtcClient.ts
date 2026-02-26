@@ -5,7 +5,9 @@ import type {
   SessionInfo,
   VideoCodec,
   MicrophoneMode,
-} from "@shared/gfn";
+  FlightGamepadState,
+  HdrStreamState,
+  HevcCompatMode,} from "@shared/gfn";
 
 import {
   InputEncoder,
@@ -32,13 +34,16 @@ import {
 } from "./sdp";
 import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
 
+import type { MicAudioService } from "./micAudioService";
+import { resolveHevcCompat, shouldRequestSoftwareDecode, detectGpu } from "./gpuDetect";
 interface OfferSettings {
   codec: VideoCodec;
   colorQuality: ColorQuality;
   resolution: string;
   fps: number;
   maxBitrateKbps: number;
-}
+  hdrEnabled: boolean;
+  hevcCompatMode: HevcCompatMode;}
 
 interface KeyStrokeSpec {
   vk: number;
@@ -519,6 +524,10 @@ export class GfnWebRtcClient {
   private currentResolution = "";
   private isHdr = false;
   private videoDecodeStallWarningSent = false;
+  private greenScreenFrameCount = 0;
+  private greenScreenWarningSent = false;
+  private greenScreenCheckCanvas: HTMLCanvasElement | null = null;
+  private greenScreenCheckCtx: CanvasRenderingContext2D | null = null;
   private serverRegion = "";
   private gpuType = "";
 
@@ -646,6 +655,66 @@ export class GfnWebRtcClient {
     this.options.onLog(message);
   }
 
+  private checkForGreenScreen(): void {
+    if (this.greenScreenWarningSent) return;
+    const video = this.options.videoElement;
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) return;
+    if (this.currentCodec !== "H265") return;
+
+    try {
+      if (!this.greenScreenCheckCanvas) {
+        this.greenScreenCheckCanvas = document.createElement("canvas");
+        this.greenScreenCheckCanvas.width = 16;
+        this.greenScreenCheckCanvas.height = 16;
+        this.greenScreenCheckCtx = this.greenScreenCheckCanvas.getContext("2d", { willReadFrequently: true });
+      }
+
+      const ctx = this.greenScreenCheckCtx;
+      if (!ctx) return;
+
+      ctx.drawImage(video, 0, 0, 16, 16);
+      const imageData = ctx.getImageData(0, 0, 16, 16);
+      const pixels = imageData.data;
+
+      let greenDominantPixels = 0;
+      const totalPixels = 16 * 16;
+
+      for (let i = 0; i < pixels.length; i += 4) {
+        const r = pixels[i];
+        const g = pixels[i + 1];
+        const b = pixels[i + 2];
+        if (g > 100 && g > r * 1.8 && g > b * 1.8) {
+          greenDominantPixels++;
+        }
+      }
+
+      const greenRatio = greenDominantPixels / totalPixels;
+
+      if (greenRatio > 0.85) {
+        this.greenScreenFrameCount++;
+        if (this.greenScreenFrameCount >= 10) {
+          this.greenScreenWarningSent = true;
+          const gpuInfo = detectGpu();
+          this.log(
+            `[HEVC Compat] WARNING: Possible HEVC decode failure detected — ` +
+            `${this.greenScreenFrameCount} consecutive green-dominant frames. ` +
+            `GPU: ${gpuInfo.unmaskedRenderer || gpuInfo.renderer}, vendor=${gpuInfo.vendor}, ` +
+            `isAmdPolarisOrVega=${gpuInfo.isAmdPolarisOrVega}, codec=${this.currentCodec}`,
+          );
+          console.warn(
+            `[OpenNOW] Possible HEVC decode failure on AMD GPU. ` +
+            `${this.greenScreenFrameCount} green frames detected. ` +
+            `Consider switching to H.264 in Settings → Video → HEVC Compatibility Mode.`,
+          );
+        }
+      } else {
+        this.greenScreenFrameCount = 0;
+      }
+    } catch {
+      // Canvas sampling failed, skip
+    }
+  }
+
   private emitStats(): void {
     if (this.options.onStats) {
       this.options.onStats({ ...this.diagnostics });
@@ -658,6 +727,8 @@ export class GfnWebRtcClient {
     this.currentResolution = "";
     this.isHdr = false;
     this.videoDecodeStallWarningSent = false;
+    this.greenScreenFrameCount = 0;
+    this.greenScreenWarningSent = false;
     this.diagnostics = {
       connectionState: this.pc?.connectionState ?? "closed",
       inputReady: false,
@@ -959,7 +1030,23 @@ export class GfnWebRtcClient {
     this.inputQueuePeakBufferedBytesWindow = reliableBufferedAmount;
     this.inputQueueMaxSchedulingDelayMsWindow = 0;
 
-    this.emitStats();
+    for (const entry of report.values()) {
+      const stats = entry as unknown as Record<string, unknown>;
+      if (entry.type === "outbound-rtp" && stats.kind === "audio") {
+        const bytesSent = Number(stats.bytesSent ?? 0);
+        const packetsSent = Number(stats.packetsSent ?? 0);
+        const mid = String(stats.mid ?? "");
+        const prevBytes = this.diagnostics.micBytesSent;
+        this.diagnostics.micBytesSent = bytesSent;
+        this.diagnostics.micPacketsSent = packetsSent;
+        if (bytesSent > 0 && bytesSent !== prevBytes) {
+          this.log(`Outbound audio RTP: mid=${mid} bytesSent=${bytesSent} packetsSent=${packetsSent}`);
+        }
+        break;
+      }
+    }
+
+    this.checkForGreenScreen();    this.emitStats();
   }
 
   private detachInputCapture(): void {
@@ -2578,7 +2665,40 @@ export class GfnWebRtcClient {
     this.log(`Browser supported video codecs: ${supported.join(", ") || "unknown"}`);
 
     if (settings.codec === "H265") {
-      const hevcProfiles = this.getSupportedHevcProfiles();
+    // 3a. HEVC Compatibility Mode — detect AMD Polaris/Vega GPU and fallback if needed
+    const hevcCompat = resolveHevcCompat(effectiveCodec, settings.hevcCompatMode);
+    this.log(
+      `[HEVC Compat] mode=${settings.hevcCompatMode}, vendor=${hevcCompat.gpuInfo.vendor}, ` +
+      `renderer="${hevcCompat.gpuInfo.unmaskedRenderer || hevcCompat.gpuInfo.renderer}", ` +
+      `isAmdPolarisOrVega=${hevcCompat.gpuInfo.isAmdPolarisOrVega}, ` +
+      `decision=${hevcCompat.effectiveCodec}, overridden=${hevcCompat.wasOverridden}`,
+    );
+    this.log(`[HEVC Compat] reason: ${hevcCompat.reason}`);
+    if (hevcCompat.wasOverridden) {
+      effectiveCodec = hevcCompat.effectiveCodec;
+      this.log(`[HEVC Compat] Codec overridden: ${settings.codec} → ${effectiveCodec}`);
+    }
+
+    const useSoftwareDecode = shouldRequestSoftwareDecode(settings.hevcCompatMode, effectiveCodec);
+    if (useSoftwareDecode) {
+      this.log("[HEVC Compat] Software decode requested for HEVC");
+    }
+
+    // HDR requires a 10-bit capable codec. H264 cannot carry 10-bit HDR.
+    // Upgrade to H265 (or AV1) when HDR is enabled and user selected H264.
+    if (settings.hdrEnabled && effectiveCodec === "H264") {
+      if (supported.includes("H265")) {
+        effectiveCodec = "H265";
+        this.log("HDR: Upgraded codec H264 → H265 (H264 cannot carry 10-bit HDR)");
+      } else if (supported.includes("AV1")) {
+        effectiveCodec = "AV1";
+        this.log("HDR: Upgraded codec H264 → AV1 (H264 cannot carry 10-bit HDR, H265 unsupported)");
+      } else {
+        this.log("HDR: Warning — H264 selected but no 10-bit capable codec available; HDR may not activate");
+      }
+    }
+
+    if (effectiveCodec === "H265") {      const hevcProfiles = this.getSupportedHevcProfiles();
       if (hevcProfiles.size > 0) {
         this.log(`Browser HEVC profile-id support: ${Array.from(hevcProfiles).join(", ")}`);
       }
@@ -2779,7 +2899,8 @@ export class GfnWebRtcClient {
       this.micManager.dispose();
       this.micManager = null;
     }
-
+    this.greenScreenCheckCanvas = null;
+    this.greenScreenCheckCtx = null;
     for (const track of this.videoStream.getTracks()) {
       this.videoStream.removeTrack(track);
     }

@@ -841,6 +841,30 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               </div>
             </div>
 
+            {/* HEVC Compatibility Mode */}
+            <div className="settings-row settings-row--column">
+              <label className="settings-label">HEVC Compatibility</label>
+              <div className="settings-chip-row">
+                {([
+                  { value: "auto" as const, label: "Auto" },
+                  { value: "force_h264" as const, label: "Force H.264" },
+                  { value: "force_hevc" as const, label: "Force HEVC" },
+                  { value: "hevc_software" as const, label: "HEVC Software" },
+                ] as const).map((option) => (
+                  <button
+                    key={`hevc-compat-${option.value}`}
+                    className={`settings-chip ${settings.hevcCompatMode === option.value ? "active" : ""}`}
+                    onClick={() => handleChange("hevcCompatMode", option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <span className="settings-subtle-hint">
+                Auto disables HEVC on AMD Polaris/Vega GPUs (RX 550, Vega iGPU) to prevent green screen.
+              </span>
+            </div>
+
             {/* Decoder preference */}
             <div className="settings-row settings-row--column">
               <label className="settings-label">Decoder</label>
