@@ -40,10 +40,10 @@ jobs:
             builder_args: "--mac dmg zip --arm64"
           - label: linux-x64
             os: blacksmith-4vcpu-ubuntu-2404
-            builder_args: "--linux AppImage deb --x64"
+            builder_args: "--linux AppImage deb flatpak --x64"
           - label: linux-arm64
             os: blacksmith-4vcpu-ubuntu-2404-arm
-            builder_args: "--linux AppImage deb --arm64"
+            builder_args: "--linux AppImage deb flatpak --arm64"
 
     defaults:
       run:
@@ -84,7 +84,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y fakeroot rpm
+          sudo apt-get install -y fakeroot rpm flatpak flatpak-builder
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
       - name: Install FPM for arm64 deb builds
         if: matrix.label == 'linux-arm64'
         run: sudo apt-get install -y ruby ruby-dev build-essential && sudo gem install fpm
@@ -108,6 +109,7 @@ jobs:
             opennow-stable/dist-release/*.zip
             opennow-stable/dist-release/*.AppImage
             opennow-stable/dist-release/*.deb
+            opennow-stable/dist-release/*.flatpak
           if-no-files-found: error
 
   release:
