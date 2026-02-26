@@ -692,6 +692,7 @@ export function App(): JSX.Element {
               audioElement: audioRef.current,
               microphoneMode: settings.microphoneMode,
               microphoneDeviceId: settings.microphoneDeviceId || undefined,
+              mouseSensitivity: settings.mouseSensitivity,
               onLog: (line: string) => console.log(`[WebRTC] ${line}`),
               onStats: (stats) => setDiagnostics(stats),
               onEscHoldProgress: (visible, progress) => {
@@ -759,6 +760,14 @@ export function App(): JSX.Element {
     setSettings((prev) => ({ ...prev, [key]: value }));
     if (settingsLoaded) {
       await window.openNow.setSetting(key, value);
+    }
+    // If a running client exists, push certain settings live
+    if (key === "mouseSensitivity") {
+      try {
+        (clientRef.current as any)?.setMouseSensitivity?.(value as number);
+      } catch {
+        // ignore
+      }
     }
   }, [settingsLoaded]);
 
