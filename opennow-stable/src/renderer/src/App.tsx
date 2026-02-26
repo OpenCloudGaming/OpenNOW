@@ -21,14 +21,44 @@ import {
   type StreamDiagnostics,
   type StreamTimeWarning,
 } from "./gfn/webrtcClient";
+import {
+  GAMEPAD_A,
+  GAMEPAD_B,
+  GAMEPAD_BACK,
+  GAMEPAD_DPAD_DOWN,
+  GAMEPAD_DPAD_LEFT,
+  GAMEPAD_DPAD_RIGHT,
+  GAMEPAD_DPAD_UP,
+  GAMEPAD_GUIDE,
+  GAMEPAD_LB,
+  GAMEPAD_LS,
+  GAMEPAD_RB,
+  GAMEPAD_RS,
+  GAMEPAD_START,
+  GAMEPAD_X,
+  GAMEPAD_Y,
+  mapCodeToKey,
+  normalizeToInt16,
+  normalizeToUint8,
+} from "./gfn/inputProtocol";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { useControllerNavigation } from "./controllerNavigation";
+import {
+  createPluginScript,
+  loadPluginAccentColor,
+  loadPluginScripts,
+  persistPluginAccentColor,
+  persistPluginScripts,
+  type PluginRunState,
+  type PluginScript,
+} from "./plugins";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
 import { Navbar } from "./components/Navbar";
 import { HomePage } from "./components/HomePage";
 import { LibraryPage } from "./components/LibraryPage";
+import { PluginPage } from "./components/PluginPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
@@ -38,9 +68,10 @@ const resolutionOptions = ["1280x720", "1920x1080", "2560x1440", "3840x2160", "2
 const fpsOptions = [30, 60, 120, 144, 240];
 const SESSION_READY_POLL_INTERVAL_MS = 2000;
 const SESSION_READY_TIMEOUT_MS = 180000;
+const PLUGIN_SAFETY_ACK_STORAGE_KEY = "opennow.plugins.safety-ack.v1";
 
 type GameSource = "main" | "library" | "public";
-type AppPage = "home" | "library" | "settings";
+type AppPage = "home" | "library" | "plugins" | "settings";
 type StreamStatus = "idle" | "queue" | "setup" | "starting" | "connecting" | "streaming";
 type StreamLoadingStatus = "queue" | "setup" | "starting" | "connecting";
 type ExitPromptState = { open: boolean; gameTitle: string };
@@ -57,7 +88,7 @@ type LaunchErrorState = {
   codeLabel?: string;
 };
 
-const APP_PAGE_ORDER: AppPage[] = ["home", "library", "settings"];
+const APP_PAGE_ORDER: AppPage[] = ["home", "library", "plugins", "settings"];
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
 
@@ -267,6 +298,126 @@ function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchE
   };
 }
 
+const PLUGIN_GAMEPAD_BUTTONS = {
+  DPAD_UP: GAMEPAD_DPAD_UP,
+  DPAD_DOWN: GAMEPAD_DPAD_DOWN,
+  DPAD_LEFT: GAMEPAD_DPAD_LEFT,
+  DPAD_RIGHT: GAMEPAD_DPAD_RIGHT,
+  START: GAMEPAD_START,
+  BACK: GAMEPAD_BACK,
+  LS: GAMEPAD_LS,
+  RS: GAMEPAD_RS,
+  LB: GAMEPAD_LB,
+  RB: GAMEPAD_RB,
+  GUIDE: GAMEPAD_GUIDE,
+  A: GAMEPAD_A,
+  B: GAMEPAD_B,
+  X: GAMEPAD_X,
+  Y: GAMEPAD_Y,
+} as const;
+
+function normalizeHexColor(input: string): string | null {
+  const value = input.trim();
+  const shortHexMatch = value.match(/^#([0-9a-fA-F]{3})$/);
+  if (shortHexMatch) {
+    const [r, g, b] = shortHexMatch[1].split("");
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  const hexMatch = value.match(/^#([0-9a-fA-F]{6})$/);
+  if (!hexMatch) {
+    return null;
+  }
+  return `#${hexMatch[1].toLowerCase()}`;
+}
+
+function hexToRgb(hex: string): [number, number, number] | null {
+  const normalized = normalizeHexColor(hex);
+  if (!normalized) return null;
+  const color = normalized.slice(1);
+  const r = Number.parseInt(color.slice(0, 2), 16);
+  const g = Number.parseInt(color.slice(2, 4), 16);
+  const b = Number.parseInt(color.slice(4, 6), 16);
+  return [r, g, b];
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return `#${[r, g, b]
+    .map((value) => Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+function mixHex(base: string, target: string, ratio: number): string {
+  const baseRgb = hexToRgb(base);
+  const targetRgb = hexToRgb(target);
+  if (!baseRgb || !targetRgb) {
+    return base;
+  }
+  const t = Math.max(0, Math.min(1, ratio));
+  const r = baseRgb[0] + (targetRgb[0] - baseRgb[0]) * t;
+  const g = baseRgb[1] + (targetRgb[1] - baseRgb[1]) * t;
+  const b = baseRgb[2] + (targetRgb[2] - baseRgb[2]) * t;
+  return rgbToHex(r, g, b);
+}
+
+function withAlpha(hex: string, alpha: number): string {
+  const rgb = hexToRgb(hex);
+  if (!rgb) {
+    return "rgba(88, 217, 138, 0.2)";
+  }
+  const a = Math.max(0, Math.min(1, alpha));
+  return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a})`;
+}
+
+function applyPluginAccentTheme(accent: string | null): void {
+  const root = document.documentElement;
+  if (!accent) {
+    root.style.removeProperty("--accent");
+    root.style.removeProperty("--accent-hover");
+    root.style.removeProperty("--accent-press");
+    root.style.removeProperty("--accent-glow");
+    root.style.removeProperty("--accent-surface");
+    root.style.removeProperty("--accent-surface-strong");
+    return;
+  }
+
+  const normalized = normalizeHexColor(accent);
+  if (!normalized) {
+    return;
+  }
+
+  root.style.setProperty("--accent", normalized);
+  root.style.setProperty("--accent-hover", mixHex(normalized, "#ffffff", 0.12));
+  root.style.setProperty("--accent-press", mixHex(normalized, "#000000", 0.2));
+  root.style.setProperty("--accent-glow", withAlpha(normalized, 0.25));
+  root.style.setProperty("--accent-surface", withAlpha(normalized, 0.08));
+  root.style.setProperty("--accent-surface-strong", withAlpha(normalized, 0.15));
+}
+
+function modifierMask(modifiers?: {
+  shift?: boolean;
+  ctrl?: boolean;
+  alt?: boolean;
+  meta?: boolean;
+}): number {
+  let mask = 0;
+  if (modifiers?.shift) mask |= 0x01;
+  if (modifiers?.ctrl) mask |= 0x02;
+  if (modifiers?.alt) mask |= 0x04;
+  if (modifiers?.meta) mask |= 0x08;
+  return mask;
+}
+
+function mapPluginMouseButton(button: "left" | "middle" | "right" | "back" | "forward" | number): number {
+  if (typeof button === "number") {
+    return Math.max(1, Math.min(5, Math.round(button)));
+  }
+  if (button === "left") return 1;
+  if (button === "middle") return 2;
+  if (button === "right") return 3;
+  if (button === "back") return 4;
+  return 5;
+}
+
 export function App(): JSX.Element {
   // Auth State
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
@@ -283,6 +434,29 @@ export function App(): JSX.Element {
 
   // Navigation
   const [currentPage, setCurrentPage] = useState<AppPage>("home");
+  const [pluginSafetyAcknowledged, setPluginSafetyAcknowledged] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(PLUGIN_SAFETY_ACK_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [pluginSafetyPromptOpen, setPluginSafetyPromptOpen] = useState(false);
+
+  const initialPluginState = useMemo(() => {
+    const loadedPlugins = loadPluginScripts();
+    const selectedId = loadedPlugins[0]?.id ?? "";
+    return {
+      plugins: loadedPlugins,
+      selectedId,
+      accent: loadPluginAccentColor(),
+    };
+  }, []);
+
+  const [plugins, setPlugins] = useState<PluginScript[]>(initialPluginState.plugins);
+  const [selectedPluginId, setSelectedPluginId] = useState(initialPluginState.selectedId);
+  const [pluginAccentColor, setPluginAccentColor] = useState<string | null>(initialPluginState.accent);
+  const [pluginRunStates, setPluginRunStates] = useState<Record<string, PluginRunState>>({});
 
   // Games State
   const [games, setGames] = useState<GameInfo[]>([]);
@@ -341,6 +515,29 @@ export function App(): JSX.Element {
   const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState(0);
   const [streamWarning, setStreamWarning] = useState<StreamWarningState | null>(null);
 
+  const navigateToPage = useCallback((nextPage: AppPage): void => {
+    if (nextPage === "plugins" && !pluginSafetyAcknowledged) {
+      setPluginSafetyPromptOpen(true);
+      return;
+    }
+    setCurrentPage(nextPage);
+  }, [pluginSafetyAcknowledged]);
+
+  const acknowledgePluginSafety = useCallback((): void => {
+    setPluginSafetyAcknowledged(true);
+    setPluginSafetyPromptOpen(false);
+    try {
+      window.localStorage.setItem(PLUGIN_SAFETY_ACK_STORAGE_KEY, "1");
+    } catch {
+      // ignore storage failures
+    }
+    setCurrentPage("plugins");
+  }, []);
+
+  const dismissPluginSafety = useCallback((): void => {
+    setPluginSafetyPromptOpen(false);
+  }, []);
+
   const handleControllerPageNavigate = useCallback((direction: "prev" | "next"): void => {
     if (!authSession || streamStatus !== "idle") {
       return;
@@ -348,10 +545,14 @@ export function App(): JSX.Element {
     const currentIndex = APP_PAGE_ORDER.indexOf(currentPage);
     const step = direction === "next" ? 1 : -1;
     const nextIndex = (currentIndex + step + APP_PAGE_ORDER.length) % APP_PAGE_ORDER.length;
-    setCurrentPage(APP_PAGE_ORDER[nextIndex]);
-  }, [authSession, currentPage, streamStatus]);
+    navigateToPage(APP_PAGE_ORDER[nextIndex]);
+  }, [authSession, currentPage, navigateToPage, streamStatus]);
 
   const handleControllerBackAction = useCallback((): boolean => {
+    if (pluginSafetyPromptOpen) {
+      dismissPluginSafety();
+      return true;
+    }
     if (!authSession || streamStatus !== "idle") {
       return false;
     }
@@ -360,7 +561,7 @@ export function App(): JSX.Element {
       return true;
     }
     return false;
-  }, [authSession, currentPage, streamStatus]);
+  }, [authSession, currentPage, dismissPluginSafety, pluginSafetyPromptOpen, streamStatus]);
 
   const controllerConnected = useControllerNavigation({
     enabled: streamStatus !== "streaming" || exitPrompt.open,
@@ -377,6 +578,7 @@ export function App(): JSX.Element {
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const pluginRunLockRef = useRef<Set<string>>(new Set());
 
   const applyVariantSelections = useCallback((catalog: GameInfo[]): void => {
     setVariantByGameId((prev) => mergeVariantSelections(prev, catalog));
@@ -416,6 +618,259 @@ export function App(): JSX.Element {
       document.body.classList.remove("controller-mode");
     };
   }, [controllerConnected]);
+
+  useEffect(() => {
+    persistPluginScripts(plugins);
+  }, [plugins]);
+
+  useEffect(() => {
+    if (!selectedPluginId || !plugins.some((plugin) => plugin.id === selectedPluginId)) {
+      setSelectedPluginId(plugins[0]?.id ?? "");
+    }
+  }, [plugins, selectedPluginId]);
+
+  const setPluginRunState = useCallback((id: string, next: PluginRunState): void => {
+    setPluginRunStates((prev) => ({
+      ...prev,
+      [id]: next,
+    }));
+  }, []);
+
+  const updatePluginAccent = useCallback((nextColor: string | null) => {
+    const normalized = nextColor ? normalizeHexColor(nextColor) : null;
+    setPluginAccentColor(normalized);
+    persistPluginAccentColor(normalized);
+  }, []);
+
+  useEffect(() => {
+    applyPluginAccentTheme(pluginAccentColor);
+  }, [pluginAccentColor]);
+
+  const createPlugin = useCallback((): void => {
+    const created = createPluginScript({
+      name: `Plugin ${plugins.length + 1}`,
+    });
+    setPlugins((prev) => [...prev, created]);
+    setSelectedPluginId(created.id);
+  }, [plugins.length]);
+
+  const updatePlugin = useCallback((id: string, update: Partial<PluginScript>): void => {
+    setPlugins((prev) => prev.map((plugin) => (plugin.id === id ? { ...plugin, ...update } : plugin)));
+  }, []);
+
+  const deletePlugin = useCallback((id: string): void => {
+    setPlugins((prev) => prev.filter((plugin) => plugin.id !== id));
+    setPluginRunStates((prev) => {
+      if (!(id in prev)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
+  const executePlugin = useCallback(async (pluginId: string): Promise<void> => {
+    const plugin = plugins.find((candidate) => candidate.id === pluginId);
+    if (!plugin) {
+      return;
+    }
+    if (pluginRunLockRef.current.has(pluginId)) {
+      return;
+    }
+
+    pluginRunLockRef.current.add(pluginId);
+    setPluginRunState(pluginId, { status: "running", message: "Running plugin..." });
+
+    const client = clientRef.current;
+    const parseAxis = (value: number | undefined): number => {
+      const numeric = Number(value ?? 0);
+      if (!Number.isFinite(numeric)) return 0;
+      if (numeric >= -1 && numeric <= 1) return normalizeToInt16(numeric);
+      return Math.max(-32768, Math.min(32767, Math.round(numeric)));
+    };
+    const parseTrigger = (value: number | undefined): number => {
+      const numeric = Number(value ?? 0);
+      if (!Number.isFinite(numeric)) return 0;
+      if (numeric >= 0 && numeric <= 1) return normalizeToUint8(numeric);
+      return Math.max(0, Math.min(255, Math.round(numeric)));
+    };
+
+    const api = {
+      sleep: async (ms: number) => {
+        const timeout = Number.isFinite(ms) ? Math.max(0, Math.min(60_000, Math.round(ms))) : 0;
+        await sleep(timeout);
+      },
+      log: (...values: unknown[]) => {
+        console.log(`[Plugin:${plugin.name}]`, ...values);
+      },
+      input: {
+        buttons: PLUGIN_GAMEPAD_BUTTONS,
+        keyDown: (
+          code: string,
+          modifiers?: { shift?: boolean; ctrl?: boolean; alt?: boolean; meta?: boolean },
+        ): boolean => {
+          const mapped = mapCodeToKey(code);
+          if (!mapped || !client) return false;
+          return client.sendVirtualKey(mapped.vk, mapped.scancode, modifierMask(modifiers), true);
+        },
+        keyUp: (
+          code: string,
+          modifiers?: { shift?: boolean; ctrl?: boolean; alt?: boolean; meta?: boolean },
+        ): boolean => {
+          const mapped = mapCodeToKey(code);
+          if (!mapped || !client) return false;
+          return client.sendVirtualKey(mapped.vk, mapped.scancode, modifierMask(modifiers), false);
+        },
+        keyTap: (
+          code: string,
+          modifiers?: { shift?: boolean; ctrl?: boolean; alt?: boolean; meta?: boolean },
+        ): boolean => {
+          const mapped = mapCodeToKey(code);
+          if (!mapped || !client) return false;
+          return client.sendVirtualKeyTap(mapped.vk, mapped.scancode, modifierMask(modifiers));
+        },
+        mouseMove: (dx: number, dy: number): boolean => {
+          if (!client) return false;
+          return client.sendVirtualMouseMove(dx, dy);
+        },
+        mouseButton: (
+          button: "left" | "middle" | "right" | "back" | "forward" | number,
+          action: "down" | "up" | "click" = "click",
+        ): boolean => {
+          if (!client) return false;
+          const mappedButton = mapPluginMouseButton(button);
+          if (action === "down") {
+            return client.sendVirtualMouseButton(mappedButton, true);
+          }
+          if (action === "up") {
+            return client.sendVirtualMouseButton(mappedButton, false);
+          }
+          const downSent = client.sendVirtualMouseButton(mappedButton, true);
+          const upSent = client.sendVirtualMouseButton(mappedButton, false);
+          return downSent && upSent;
+        },
+        mouseWheel: (delta: number): boolean => {
+          if (!client) return false;
+          return client.sendVirtualMouseWheel(delta);
+        },
+        controllerFrame: (frame?: {
+          controllerId?: number;
+          buttons?: number;
+          leftTrigger?: number;
+          rightTrigger?: number;
+          leftStickX?: number;
+          leftStickY?: number;
+          rightStickX?: number;
+          rightStickY?: number;
+          connected?: boolean;
+          usePartiallyReliable?: boolean;
+        }): boolean => {
+          if (!client) return false;
+          return client.sendVirtualGamepadState({
+            controllerId: frame?.controllerId ?? 0,
+            buttons: frame?.buttons ?? 0,
+            leftTrigger: parseTrigger(frame?.leftTrigger),
+            rightTrigger: parseTrigger(frame?.rightTrigger),
+            leftStickX: parseAxis(frame?.leftStickX),
+            leftStickY: parseAxis(frame?.leftStickY),
+            rightStickX: parseAxis(frame?.rightStickX),
+            rightStickY: parseAxis(frame?.rightStickY),
+            connected: frame?.connected,
+            usePartiallyReliable: frame?.usePartiallyReliable,
+          });
+        },
+      },
+      stream: {
+        isReady: (): boolean => streamStatus === "streaming" && Boolean(client?.isInputReady()),
+        sendText: (text: string): number => client?.sendText(text) ?? 0,
+        pasteShortcut: (): boolean => client?.sendPasteShortcut(isMac) ?? false,
+        antiAfkPulse: (): boolean => client?.sendAntiAfkPulse() ?? false,
+      },
+      theme: {
+        getAccent: (): string | null => pluginAccentColor,
+        setAccent: (color: string): boolean => {
+          const normalized = normalizeHexColor(color);
+          if (!normalized) {
+            throw new Error(`Invalid accent color: ${color}`);
+          }
+          updatePluginAccent(normalized);
+          return true;
+        },
+        resetAccent: (): boolean => {
+          updatePluginAccent(null);
+          return true;
+        },
+      },
+    };
+
+    try {
+      const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (
+        apiName: string,
+        source: string,
+      ) => (apiValue: typeof api) => Promise<void>;
+
+      const runner = new AsyncFunction(
+        "api",
+        [
+          '"use strict";',
+          "const { input, stream, theme, sleep, log } = api;",
+          plugin.script,
+        ].join("\n"),
+      );
+
+      await runner(api);
+      setPluginRunState(pluginId, { status: "success", message: "Plugin completed." });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setPluginRunState(pluginId, { status: "error", message });
+    } finally {
+      pluginRunLockRef.current.delete(pluginId);
+    }
+  }, [pluginAccentColor, plugins, setPluginRunState, streamStatus, updatePluginAccent]);
+
+  useEffect(() => {
+    const registered = plugins
+      .filter((plugin) => plugin.enabled && plugin.shortcut.trim().length > 0)
+      .map((plugin) => {
+        const normalized = normalizeShortcut(plugin.shortcut);
+        return {
+          pluginId: plugin.id,
+          shortcut: normalized,
+        };
+      })
+      .filter((entry) => entry.shortcut.valid);
+
+    if (registered.length === 0) {
+      return;
+    }
+
+    const handlePluginHotkeys = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping = !!target && (
+        target.tagName === "INPUT"
+        || target.tagName === "TEXTAREA"
+        || target.isContentEditable
+      );
+      if (isTyping || exitPrompt.open || pluginSafetyPromptOpen) {
+        return;
+      }
+
+      for (const entry of registered) {
+        if (!isShortcutMatch(event, entry.shortcut)) {
+          continue;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        void executePlugin(entry.pluginId);
+        break;
+      }
+    };
+
+    window.addEventListener("keydown", handlePluginHotkeys, true);
+    return () => window.removeEventListener("keydown", handlePluginHotkeys, true);
+  }, [executePlugin, exitPrompt.open, pluginSafetyPromptOpen, plugins]);
 
   // Derived state
   const selectedProvider = useMemo(() => {
@@ -1297,6 +1752,21 @@ export function App(): JSX.Element {
         return;
       }
 
+      if (pluginSafetyPromptOpen) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          dismissPluginSafety();
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          acknowledgePluginSafety();
+        }
+        return;
+      }
+
       if (exitPrompt.open) {
         if (e.key === "Escape") {
           e.preventDefault();
@@ -1394,10 +1864,13 @@ export function App(): JSX.Element {
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [
+    acknowledgePluginSafety,
+    dismissPluginSafety,
     exitPrompt.open,
     handleExitPromptCancel,
     handleExitPromptConfirm,
     handlePromptedStopStream,
+    pluginSafetyPromptOpen,
     requestEscLockedPointerCapture,
     settings.clipboardPaste,
     shortcuts,
@@ -1575,7 +2048,7 @@ export function App(): JSX.Element {
       )}
       <Navbar
         currentPage={currentPage}
-        onNavigate={setCurrentPage}
+        onNavigate={navigateToPage}
         user={authSession.user}
         subscription={subscriptionInfo}
         activeSession={navbarActiveSession}
@@ -1586,6 +2059,44 @@ export function App(): JSX.Element {
         }}
         onLogout={handleLogout}
       />
+
+      {pluginSafetyPromptOpen && (
+        <div className="plugin-safety-backdrop" onClick={dismissPluginSafety}>
+          <div
+            className="plugin-safety-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="plugin-safety-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 id="plugin-safety-title">Plugin Safety Warning</h2>
+            <p>
+              Plugins run custom scripts with access to input automation and client theming.
+              They can send keyboard, mouse, and controller events to your cloud session.
+            </p>
+            <p>
+              Only run scripts you trust and review yourself. OpenNOW cannot verify third-party plugin safety.
+              This warning appears once.
+            </p>
+            <div className="plugin-safety-actions">
+              <button
+                type="button"
+                className="plugin-safety-btn plugin-safety-btn--ghost"
+                onClick={dismissPluginSafety}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="plugin-safety-btn plugin-safety-btn--confirm"
+                onClick={acknowledgePluginSafety}
+              >
+                I Understand
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <main className="main-content">
         {currentPage === "home" && (
@@ -1615,6 +2126,22 @@ export function App(): JSX.Element {
             onSelectGame={setSelectedGameId}
             selectedVariantByGameId={variantByGameId}
             onSelectGameVariant={handleSelectGameVariant}
+          />
+        )}
+
+        {currentPage === "plugins" && (
+          <PluginPage
+            plugins={plugins}
+            selectedPluginId={selectedPluginId}
+            runStates={pluginRunStates}
+            inputReady={Boolean(clientRef.current?.isInputReady())}
+            onSelectPlugin={setSelectedPluginId}
+            onCreatePlugin={createPlugin}
+            onDeletePlugin={deletePlugin}
+            onRunPlugin={(id) => {
+              void executePlugin(id);
+            }}
+            onUpdatePlugin={updatePlugin}
           />
         )}
 

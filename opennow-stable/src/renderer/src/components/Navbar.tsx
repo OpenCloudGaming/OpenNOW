@@ -1,11 +1,11 @@
 import type { ActiveSessionInfo, AuthUser, SubscriptionInfo } from "@shared/gfn";
-import { House, Library, Settings, User, LogOut, Zap, Timer, HardDrive, X, Loader2, PlayCircle } from "lucide-react";
+import { House, Library, Settings, User, LogOut, Zap, Timer, HardDrive, X, Loader2, PlayCircle, Puzzle } from "lucide-react";
 import { useEffect, useState, type JSX } from "react";
 import { createPortal } from "react-dom";
 
 interface NavbarProps {
-  currentPage: "home" | "library" | "settings";
-  onNavigate: (page: "home" | "library" | "settings") => void;
+  currentPage: "home" | "library" | "plugins" | "settings";
+  onNavigate: (page: "home" | "library" | "plugins" | "settings") => void;
   user: AuthUser | null;
   subscription: SubscriptionInfo | null;
   activeSession: ActiveSessionInfo | null;
@@ -40,6 +40,7 @@ export function Navbar({
   const navItems = [
     { id: "home" as const, label: "Store", icon: House },
     { id: "library" as const, label: "Library", icon: Library },
+    { id: "plugins" as const, label: "Plugins", icon: Puzzle },
     { id: "settings" as const, label: "Settings", icon: Settings },
   ];
 

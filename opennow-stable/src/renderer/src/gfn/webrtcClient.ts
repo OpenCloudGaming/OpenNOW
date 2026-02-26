@@ -616,6 +616,10 @@ export class GfnWebRtcClient {
     this.log(`Mouse sensitivity set to ${this.mouseSensitivity}`);
   }
 
+  public isInputReady(): boolean {
+    return this.inputReady;
+  }
+
   /**
    * Configure an RTCRtpReceiver for minimum jitter buffer delay.
    *
@@ -1741,6 +1745,117 @@ export class GfnWebRtcClient {
     }
 
     return sent;
+  }
+
+  public sendVirtualKey(vk: number, scancode: number, modifiers: number, isDown: boolean): boolean {
+    if (!this.inputReady || !this.ensureKeyboardInputMode()) {
+      return false;
+    }
+    this.sendKeyPacket(vk, scancode, modifiers, isDown);
+    return true;
+  }
+
+  public sendVirtualKeyTap(vk: number, scancode: number, modifiers: number): boolean {
+    if (!this.inputReady || !this.ensureKeyboardInputMode()) {
+      return false;
+    }
+    this.sendKeyPacket(vk, scancode, modifiers, true);
+    this.sendKeyPacket(vk, scancode, modifiers, false);
+    return true;
+  }
+
+  public sendVirtualMouseMove(dx: number, dy: number): boolean {
+    if (!this.inputReady || !this.ensureKeyboardInputMode()) {
+      return false;
+    }
+    const payload = this.inputEncoder.encodeMouseMove({
+      dx: Math.max(-32768, Math.min(32767, Math.round(dx))),
+      dy: Math.max(-32768, Math.min(32767, Math.round(dy))),
+      timestampUs: timestampUs(),
+    });
+    this.sendReliable(payload);
+    return true;
+  }
+
+  public sendVirtualMouseButton(button: number, isDown: boolean): boolean {
+    if (!this.inputReady || !this.ensureKeyboardInputMode()) {
+      return false;
+    }
+    const clampedButton = Math.max(1, Math.min(5, Math.round(button)));
+    const payload = isDown
+      ? this.inputEncoder.encodeMouseButtonDown({
+          button: clampedButton,
+          timestampUs: timestampUs(),
+        })
+      : this.inputEncoder.encodeMouseButtonUp({
+          button: clampedButton,
+          timestampUs: timestampUs(),
+        });
+    this.sendReliable(payload);
+    return true;
+  }
+
+  public sendVirtualMouseWheel(delta: number): boolean {
+    if (!this.inputReady || !this.ensureKeyboardInputMode()) {
+      return false;
+    }
+    const payload = this.inputEncoder.encodeMouseWheel({
+      delta: Math.max(-32768, Math.min(32767, Math.round(delta))),
+      timestampUs: timestampUs(),
+    });
+    this.sendReliable(payload);
+    return true;
+  }
+
+  public sendVirtualGamepadState(input: {
+    controllerId: number;
+    buttons: number;
+    leftTrigger: number;
+    rightTrigger: number;
+    leftStickX: number;
+    leftStickY: number;
+    rightStickX: number;
+    rightStickY: number;
+    connected?: boolean;
+    bitmap?: number;
+    usePartiallyReliable?: boolean;
+  }): boolean {
+    if (!this.inputReady) {
+      return false;
+    }
+
+    const controllerId = Math.max(0, Math.min(GAMEPAD_MAX_CONTROLLERS - 1, Math.round(input.controllerId)));
+    const connected = input.connected ?? true;
+    const bit = 1 << controllerId;
+    if (connected) {
+      this.gamepadBitmap |= bit;
+      this.connectedGamepads.add(controllerId);
+    } else {
+      this.gamepadBitmap &= ~bit;
+      this.connectedGamepads.delete(controllerId);
+    }
+
+    const bitmap = input.bitmap ?? this.gamepadBitmap;
+    const gamepadInput: GamepadInput = {
+      controllerId,
+      buttons: input.buttons,
+      leftTrigger: Math.max(0, Math.min(255, Math.round(input.leftTrigger))),
+      rightTrigger: Math.max(0, Math.min(255, Math.round(input.rightTrigger))),
+      leftStickX: Math.max(-32768, Math.min(32767, Math.round(input.leftStickX))),
+      leftStickY: Math.max(-32768, Math.min(32767, Math.round(input.leftStickY))),
+      rightStickX: Math.max(-32768, Math.min(32767, Math.round(input.rightStickX))),
+      rightStickY: Math.max(-32768, Math.min(32767, Math.round(input.rightStickY))),
+      connected,
+      timestampUs: timestampUs(),
+    };
+
+    this.activeInputMode = "gamepad";
+    this.lastGamepadActivityMs = performance.now();
+    this.lastGamepadSendMs = this.lastGamepadActivityMs;
+
+    const bytes = this.inputEncoder.encodeGamepadState(gamepadInput, bitmap, input.usePartiallyReliable ?? true);
+    this.sendGamepad(bytes);
+    return true;
   }
 
   /** Send gamepad data on the partially reliable channel (unordered, maxPacketLifeTime).

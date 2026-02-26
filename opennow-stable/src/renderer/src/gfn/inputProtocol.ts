@@ -529,6 +529,14 @@ export function mapKeyboardEvent(event: KeyboardEvent): { vk: number; scancode: 
   return null;
 }
 
+export function mapCodeToKey(code: string): { vk: number; scancode: number } | null {
+  if (!code) {
+    return null;
+  }
+  const mapped = codeMap[code.trim()];
+  return mapped ?? null;
+}
+
 /**
  * Convert browser mouse button (0-based) to GFN protocol (1-based).
  * Browser: 0=Left, 1=Middle, 2=Right, 3=Back, 4=Forward

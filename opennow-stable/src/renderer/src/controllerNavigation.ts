@@ -45,6 +45,9 @@ function getFocusScopeRoot(): ParentNode {
   const exitDialog = document.querySelector(".sv-exit");
   if (exitDialog) return exitDialog;
 
+  const pluginSafetyModal = document.querySelector(".plugin-safety-modal");
+  if (pluginSafetyModal) return pluginSafetyModal;
+
   const navbarModal = document.querySelector(".navbar-modal");
   if (navbarModal) return navbarModal;
 
@@ -213,6 +216,12 @@ function activateFocusedElement(): void {
 }
 
 function triggerBackAction(onBackAction?: () => boolean): void {
+  const pluginSafetyCancel = document.querySelector<HTMLButtonElement>(".plugin-safety-btn--ghost");
+  if (pluginSafetyCancel) {
+    pluginSafetyCancel.click();
+    return;
+  }
+
   const openNavbarModalClose = document.querySelector<HTMLButtonElement>(".navbar-modal-close");
   if (openNavbarModalClose) {
     openNavbarModalClose.click();
