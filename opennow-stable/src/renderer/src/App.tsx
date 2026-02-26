@@ -487,11 +487,11 @@ export function App(): JSX.Element {
         setSettings(loadedSettings);
         setSettingsLoaded(true);
 
-        // Load providers and session (force refresh on startup restore)
-        setStartupStatusMessage("Restoring saved session and refreshing token...");
+        // Load providers and session (refresh only if token is near expiry)
+        setStartupStatusMessage("Restoring saved session...");
         const [providerList, sessionResult] = await Promise.all([
           window.openNow.getLoginProviders(),
-          window.openNow.getAuthSession({ forceRefresh: true }),
+          window.openNow.getAuthSession(),
         ]);
         const persistedSession = sessionResult.session;
 
