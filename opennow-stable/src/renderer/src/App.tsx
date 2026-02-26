@@ -299,8 +299,6 @@ export function App(): JSX.Element {
     fps: 60,
     maxBitrateMbps: 75,
     codec: "H264",
-    decoderPreference: "auto",
-    encoderPreference: "auto",
     colorQuality: "10bit_420",
     region: "",
     clipboardPaste: false,
@@ -489,11 +487,11 @@ export function App(): JSX.Element {
         setSettings(loadedSettings);
         setSettingsLoaded(true);
 
-        // Load providers and session (force refresh on startup restore)
-        setStartupStatusMessage("Restoring saved session and refreshing token...");
+        // Load providers and session (refresh only if token is near expiry)
+        setStartupStatusMessage("Restoring saved session...");
         const [providerList, sessionResult] = await Promise.all([
           window.openNow.getLoginProviders(),
-          window.openNow.getAuthSession({ forceRefresh: true }),
+          window.openNow.getAuthSession(),
         ]);
         const persistedSession = sessionResult.session;
 
@@ -768,6 +766,7 @@ export function App(): JSX.Element {
               audioElement: audioRef.current,
               microphoneMode: settings.microphoneMode,
               microphoneDeviceId: settings.microphoneDeviceId || undefined,
+              mouseSensitivity: settings.mouseSensitivity,
               onLog: (line: string) => console.log(`[WebRTC] ${line}`),
               onStats: (stats) => setDiagnostics(stats),
               onEscHoldProgress: (visible, progress) => {
@@ -826,6 +825,14 @@ export function App(): JSX.Element {
     setSettings((prev) => ({ ...prev, [key]: value }));
     if (settingsLoaded) {
       await window.openNow.setSetting(key, value);
+    }
+    // If a running client exists, push certain settings live
+    if (key === "mouseSensitivity") {
+      try {
+        (clientRef.current as any)?.setMouseSensitivity?.(value as number);
+      } catch {
+        // ignore
+      }
     }
   }, [settingsLoaded]);
 
@@ -1606,6 +1613,8 @@ export function App(): JSX.Element {
             isLoading={isLoadingGames}
             selectedGameId={selectedGameId}
             onSelectGame={setSelectedGameId}
+            selectedVariantByGameId={variantByGameId}
+            onSelectGameVariant={handleSelectGameVariant}
           />
         )}
 

@@ -4,6 +4,7 @@ export const IPC_CHANNELS = {
   AUTH_GET_REGIONS: "auth:get-regions",
   AUTH_LOGIN: "auth:login",
   AUTH_LOGOUT: "auth:logout",
+  PING_REGIONS: "gfn:ping-regions",
   SUBSCRIPTION_FETCH: "subscription:fetch",
   GAMES_FETCH_MAIN: "games:fetch-main",
   GAMES_FETCH_LIBRARY: "games:fetch-library",

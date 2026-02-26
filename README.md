@@ -44,11 +44,15 @@
 > **Warning**  
 > OpenNOW is under active development. Bugs and performance issues are expected while features are finalized.
 
+> **Trademark & Affiliation Notice**  
+> OpenNOW is an independent community project and is **not affiliated with, endorsed by, or sponsored by NVIDIA Corporation**.  
+> **NVIDIA** and **GeForce NOW** are trademarks of NVIDIA Corporation. You must use your own GeForce NOW account.
+
 ---
 
 ## What is OpenNOW?
 
-OpenNOW is a community-built desktop client for [NVIDIA GeForce NOW](https://www.nvidia.com/en-us/geforce-now/), built with Electron and TypeScript. It gives you a fully open-source, cross-platform alternative to the official app — with zero telemetry, full transparency, and features the official client doesn't have.
+OpenNOW is an independent, community-built desktop client for [NVIDIA GeForce NOW](https://www.nvidia.com/en-us/geforce-now/), built with Electron and TypeScript. It provides a fully open-source, cross-platform alternative to the official app with zero telemetry, full transparency, and power-user features.
 
 - 🔓 **Fully open source** — audit every line, fork it, improve it
 - 🚫 **No telemetry** — OpenNOW collects nothing
@@ -203,7 +207,7 @@ opennow-stable/src/
 ## FAQ
 
 **Is this the official GeForce NOW client?**
-No. OpenNOW is a community-built alternative. It uses the same NVIDIA streaming infrastructure but is not affiliated with or endorsed by NVIDIA.
+No. OpenNOW is an independent third-party client and is not affiliated with, endorsed by, or sponsored by NVIDIA. NVIDIA and GeForce NOW are trademarks of NVIDIA Corporation.
 
 **Was this project built in Rust before?**
 Yes. OpenNOW originally used Rust/Tauri but switched to Electron for better cross-platform compatibility and faster development.
