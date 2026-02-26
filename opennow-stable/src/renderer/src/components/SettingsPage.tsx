@@ -1182,19 +1182,37 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               </label>
             </div>
 
-            <div className="settings-row">
-              <label className="settings-label">
-                Hide Stream Overlay Buttons
-                <span className="settings-hint">Hide microphone, fullscreen, and end-session buttons while streaming.</span>
-              </label>
-              <label className="settings-toggle">
+            {/* Mouse Sensitivity */}
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Mouse Sensitivity</label>
+                <span className="settings-value-badge">{settings.mouseSensitivity.toFixed(2)}x</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <input
-                  type="checkbox"
-                  checked={settings.hideStreamButtons}
-                  onChange={(e) => handleChange("hideStreamButtons", e.target.checked)}
+                  type="range"
+                  className="settings-slider"
+                  min={0.1}
+                  max={4}
+                  step={0.01}
+                  value={settings.mouseSensitivity}
+                  onChange={(e) => handleChange("mouseSensitivity", parseFloat(e.target.value))}
                 />
-                <span className="settings-toggle-track" />
-              </label>
+                <input
+                  type="number"
+                  className="settings-number-input"
+                  style={{ width: 80 }}
+                  min={0.1}
+                  max={4}
+                  step={0.01}
+                  value={Number(settings.mouseSensitivity.toFixed(2))}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value || "0");
+                    if (Number.isFinite(v)) handleChange("mouseSensitivity", Math.max(0.1, Math.min(4, v)));
+                  }}
+                />
+              </div>
+              <span className="settings-subtle-hint">Multiplier applied to mouse movement (1.00 = default)</span>
             </div>
 
             <div className="settings-row settings-row--column">
@@ -1380,6 +1398,29 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
           </div>
         </section>
 
+        {/* ── Appearance ─────────────────────────────────── */}
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h2>Appearance</h2>
+          </div>
+          <div className="settings-rows">
+            <div className="settings-row">
+              <label className="settings-label">
+                Hide Stream Overlay Buttons
+                <span className="settings-hint">Hide microphone, fullscreen, and end-session buttons while streaming.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.hideStreamButtons}
+                  onChange={(e) => handleChange("hideStreamButtons", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+          </div>
+        </section>
+
         {/* ── Miscellaneous ──────────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
@@ -1416,36 +1457,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 <FileDown size={16} />
                 Export Logs
               </button>
-            </div>
-
-            {/* Mouse Sensitivity */}
-            <div className="settings-row">
-              <label className="settings-label">Mouse Sensitivity</label>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <input
-                  type="range"
-                  className="settings-slider"
-                  min={0.1}
-                  max={4}
-                  step={0.01}
-                  value={settings.mouseSensitivity}
-                  onChange={(e) => handleChange("mouseSensitivity", parseFloat(e.target.value))}
-                />
-                <input
-                  type="number"
-                  className="settings-number-input"
-                  style={{ width: 80 }}
-                  min={0.1}
-                  max={4}
-                  step={0.01}
-                  value={Number(settings.mouseSensitivity.toFixed(2))}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value || "0");
-                    if (Number.isFinite(v)) handleChange("mouseSensitivity", Math.max(0.1, Math.min(4, v)));
-                  }}
-                />
-                <span className="settings-subtle-hint">Multiplier applied to mouse movement (1.00 = default)</span>
-              </div>
             </div>
           </div>
         </section>
