@@ -1,8 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import type { JSX } from "react";
 import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff } from "lucide-react";
+import SideBar from "./SideBar";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
+import type { MicrophoneMode } from "@shared/gfn";
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -44,6 +46,13 @@ interface StreamViewProps {
   onCancelExit: () => void;
   onEndSession: () => void;
   onToggleMicrophone?: () => void;
+  mouseSensitivity: number;
+  onMouseSensitivityChange: (value: number) => void;
+  onRequestPointerLock?: () => void;
+  maxBitrateMbps: number;
+  onMaxBitrateChange: (value: number) => void;
+  microphoneMode: MicrophoneMode;
+  onMicrophoneModeChange: (value: MicrophoneMode) => void;
 }
 
 function getRttColor(rttMs: number): string {
@@ -119,21 +128,48 @@ export function StreamView({
   onCancelExit,
   onEndSession,
   onToggleMicrophone,
+  mouseSensitivity,
+  onMouseSensitivityChange,
+  onRequestPointerLock,
+  maxBitrateMbps,
+  onMaxBitrateChange,
+  microphoneMode,
+  onMicrophoneModeChange,
   hideStreamButtons = false,
 }: StreamViewProps): JSX.Element {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
+  const [showSideBar, setShowSideBar] = useState(false);
+  const [isPointerLocked, setIsPointerLocked] = useState(false);
 
   // Microphone state
   const micState = stats.micState ?? "uninitialized";
   const micEnabled = stats.micEnabled ?? false;
   const hasMicrophone = micState === "started" || micState === "stopped";
   const showMicIndicator = hasMicrophone && !isConnecting && !hideStreamButtons;
+  const microphoneModes = useMemo(
+    () => [
+      { value: "disabled" as MicrophoneMode, label: "Disabled", description: "No microphone input" },
+      { value: "push-to-talk" as MicrophoneMode, label: "Push-to-Talk", description: "Hold a key to talk" },
+      { value: "voice-activity" as MicrophoneMode, label: "Voice Activity", description: "Always listen" },
+    ],
+    []
+  );
 
   const handleFullscreenToggle = useCallback(() => {
     onToggleFullscreen();
   }, [onToggleFullscreen]);
+
+  const handlePointerLockToggle = useCallback(() => {
+    if (isPointerLocked) {
+      document.exitPointerLock();
+      return;
+    }
+    if (onRequestPointerLock) {
+      onRequestPointerLock();
+    }
+  }, [isPointerLocked, onRequestPointerLock]);
 
   useEffect(() => {
     const timer = setTimeout(() => setShowHints(false), 5000);
@@ -226,6 +262,20 @@ export function StreamView({
     }
   }, [videoRef]);
 
+  useEffect(() => {
+    const handlePointerLockChange = () => {
+      setIsPointerLocked(document.pointerLockElement === localVideoRef.current);
+    };
+    document.addEventListener("pointerlockchange", handlePointerLockChange);
+    return () => document.removeEventListener("pointerlockchange", handlePointerLockChange);
+  }, []);
+
+  useEffect(() => {
+    if (showSideBar && document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+  }, [showSideBar]);
+
   // Focus video element when stream is ready (not connecting anymore)
   useEffect(() => {
     if (!isConnecting && localVideoRef.current && hasResolution) {
@@ -239,6 +289,36 @@ export function StreamView({
       return () => clearTimeout(timer);
     }
   }, [isConnecting, hasResolution]);
+
+  const handleToggleSideBar = useCallback(() => {
+    setShowSideBar((s) => {
+      if (!s && document.pointerLockElement) {
+        document.exitPointerLock();
+      }
+      return !s;
+    });
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Toggle: CMD+G on macOS, Ctrl+Shift+G elsewhere
+      const key = event.key.toLowerCase();
+      const isMac = navigator.platform?.toLowerCase().includes("mac") || navigator.userAgent.includes("Macintosh");
+      if (isMac) {
+        if (event.metaKey && !event.ctrlKey && !event.shiftKey && key === "g") {
+          event.preventDefault();
+          handleToggleSideBar();
+        }
+      } else {
+        if (event.ctrlKey && event.shiftKey && !event.metaKey && key === "g") {
+          event.preventDefault();
+          handleToggleSideBar();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handleToggleSideBar]);
 
   return (
     <div className="sv">
@@ -258,6 +338,115 @@ export function StreamView({
         }}
       />
       <audio ref={audioRef} autoPlay playsInline />
+
+      {showSideBar && (
+        <>
+          <div
+            className="sv-sidebar-backdrop"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={() => setShowSideBar(false)}
+          />
+          <SideBar title="Settings" className="sv-sidebar" onClose={() => setShowSideBar(false)}>
+            <section className="sidebar-section">
+              <div className="sidebar-section-header">
+                <span>Mouse Preferences</span>
+                <span className="sidebar-section-sub">Fine-tune cursor movement</span>
+              </div>
+              <div className="sidebar-row sidebar-row--column">
+                <div className="sidebar-row-top">
+                  <span className="sidebar-label">Mouse Sensitivity</span>
+                  <span className="settings-value-badge">{mouseSensitivity.toFixed(2)}x</span>
+                </div>
+                <input
+                  type="range"
+                  className="settings-slider"
+                  min={0.1}
+                  max={4}
+                  step={0.01}
+                  value={mouseSensitivity}
+                  onChange={(event) => {
+                    const next = Number(event.target.value);
+                    if (Number.isFinite(next)) {
+                      onMouseSensitivityChange(Math.max(0.1, Math.min(4, next)));
+                    }
+                  }}
+                />
+                <span className="sidebar-hint">Multiplier applied to mouse movement (1.00 = default).</span>
+              </div>
+            </section>
+            <section className="sidebar-section">
+              <div className="sidebar-section-header">
+                <span>Max Bitrate</span>
+                <span className="sidebar-section-sub">Cap the encoder bandwidth</span>
+              </div>
+              <div className="sidebar-row sidebar-row--column">
+                <div className="sidebar-row-top">
+                  <span className="sidebar-label">Bandwidth Ceiling</span>
+                  <span className="settings-value-badge">{maxBitrateMbps} Mbps</span>
+                </div>
+                <input
+                  type="range"
+                  className="settings-slider"
+                  min={5}
+                  max={150}
+                  step={5}
+                  value={maxBitrateMbps}
+                  onChange={(event) => {
+                    const next = Number(event.target.value);
+                    if (Number.isFinite(next)) {
+                      onMaxBitrateChange(Math.max(5, Math.min(150, next)));
+                    }
+                  }}
+                />
+              </div>
+            </section>
+            <section className="sidebar-section">
+              <div className="sidebar-section-header">
+                <span>Audio</span>
+                <span className="sidebar-section-sub">Microphone handling</span>
+              </div>
+              <div className="sidebar-row sidebar-row--column">
+                <div className="sidebar-row-top">
+                  <span className="sidebar-label">Microphone Mode</span>
+                  <span className="settings-value-badge">
+                    {microphoneModes.find((option) => option.value === microphoneMode)?.label ?? microphoneMode}
+                  </span>
+                </div>
+                <div className="sidebar-chip-row">
+                  {microphoneModes.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={`sidebar-chip${microphoneMode === option.value ? " sidebar-chip--active" : ""}`}
+                      onClick={() => onMicrophoneModeChange(option.value)}
+                    >
+                      <span>{option.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <span className="sidebar-hint">
+                  {microphoneModes.find((option) => option.value === microphoneMode)?.description ?? ""}
+                </span>
+              </div>
+            </section>
+            {onRequestPointerLock && (
+              <section className="sidebar-section">
+                <div className="sidebar-row sidebar-row--aligned">
+                  <span className="sidebar-label">Pointer Lock</span>
+                  <button
+                    type="button"
+                    className="sidebar-button"
+                    onClick={handlePointerLockToggle}
+                  >
+                    {isPointerLocked ? "Release lock" : "Engage lock"}
+                  </button>
+                </div>
+                <span className="sidebar-hint">Lock the cursor to the window for uninterrupted control.</span>
+              </section>
+            )}
+          </SideBar>
+        </>
+      )}
 
       {/* Gradient background when no video */}
       {!hasResolution && (

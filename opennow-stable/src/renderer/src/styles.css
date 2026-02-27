@@ -1517,6 +1517,16 @@ button.game-card-store-chip.active:hover {
   min-width: 185px;
   text-align: right;
 }
+.settings-shortcut-input--static {
+  background: var(--bg-e);
+  color: var(--ink);
+  border-color: var(--panel-border);
+  cursor: default;
+}
+.settings-shortcut-input--static:focus {
+  border-color: var(--panel-border);
+  box-shadow: none;
+}
 
 /* Chip row (presets) */
 .settings-chip-row {
@@ -2999,6 +3009,152 @@ button.game-card-store-chip.active:hover {
   width: 100%; margin-top: 3px; padding-top: 5px;
   border-top: 1px solid var(--panel-border);
   font-size: 0.65rem; color: var(--ink-muted); text-align: center;
+}
+
+/* Sidebar overlay for settings */
+.sidebar {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 1002;
+  width: min(340px, 92vw);
+  padding: 14px;
+  background: rgba(10, 10, 12, 0.96);
+  border-radius: var(--r-xl);
+  border: 1px solid var(--panel-border);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+}
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.sidebar-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.sidebar-close {
+  background: transparent;
+  border: none;
+  color: var(--ink-muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  transition: background var(--t-normal), color var(--t-normal);
+}
+.sidebar-close:hover {
+  background: var(--card-hover);
+  color: var(--ink);
+}
+.sidebar-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sidebar-section-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-muted);
+}
+.sidebar-section-sub {
+  font-size: 0.74rem;
+  letter-spacing: normal;
+}
+.sidebar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sidebar-row--column {
+  flex-direction: column;
+  align-items: stretch;
+}
+.sidebar-row--aligned {
+  justify-content: space-between;
+}
+.sidebar-row-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.sidebar-label {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+.sidebar-hint {
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+}
+.sidebar-button {
+  border-radius: 4px;
+  border: 1px solid var(--panel-border);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: transform var(--t-normal), background var(--t-normal);
+}
+.sidebar-button:hover {
+  transform: translateY(-1px);
+  background: var(--card-hover);
+}
+.sidebar-button:active {
+  transform: translateY(0);
+}
+.sidebar-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sidebar-chip {
+  border-radius: 999px;
+  border: 1px solid var(--panel-border);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: transform var(--t-normal), background var(--t-normal), border-color var(--t-normal), color var(--t-normal);
+}
+.sidebar-chip:hover {
+  transform: translateY(-1px);
+  background: var(--card-hover);
+}
+.sidebar-chip--active {
+  border-color: var(--accent);
+  background: rgba(119, 187, 255, 0.12);
+  color: var(--accent);
+}
+.sv-sidebar {
+  width: min(360px, 92vw);
+}
+.sv-sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 3, 5, 0.65);
+  z-index: 1000;
+  cursor: pointer;
 }
 
 

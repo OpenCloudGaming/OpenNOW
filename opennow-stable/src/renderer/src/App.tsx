@@ -621,6 +621,12 @@ export function App(): JSX.Element {
       .catch(() => {});
   }, []);
 
+  const handleRequestPointerLock = useCallback(() => {
+    if (videoRef.current) {
+      void requestEscLockedPointerCapture(videoRef.current);
+    }
+  }, [requestEscLockedPointerCapture]);
+
   const resolveExitPrompt = useCallback((confirmed: boolean) => {
     const resolver = exitPromptResolverRef.current;
     exitPromptResolverRef.current = null;
@@ -835,6 +841,10 @@ export function App(): JSX.Element {
       }
     }
   }, [settingsLoaded]);
+
+  const handleMouseSensitivityChange = useCallback((value: number) => {
+    void updateSetting("mouseSensitivity", value);
+  }, [updateSetting]);
 
   // Login handler
   const handleLogin = useCallback(async () => {
@@ -1527,6 +1537,9 @@ export function App(): JSX.Element {
             onToggleMicrophone={() => {
               clientRef.current?.toggleMicrophone();
             }}
+            mouseSensitivity={settings.mouseSensitivity}
+            onMouseSensitivityChange={handleMouseSensitivityChange}
+            onRequestPointerLock={handleRequestPointerLock}
           />
         )}
         {streamStatus !== "streaming" && (

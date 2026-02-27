@@ -1540,6 +1540,15 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                     spellCheck={false}
                   />
                 </label>
+                <label className="settings-shortcut-row">
+                  <span className="settings-shortcut-label">Toggle Settings Menu</span>
+                  <input
+                    type="text"
+                    value="Cmd+G / Ctrl+Shift+G"
+                    className="settings-text-input settings-shortcut-input settings-shortcut-input--static"
+                    disabled
+                  />
+                </label>
               </div>
 
               {(toggleStatsError || togglePointerLockError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError) && (
