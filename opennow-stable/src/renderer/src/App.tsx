@@ -600,6 +600,8 @@ export function App(): JSX.Element {
   ]);
 
   const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
+    const lockTarget = (target.parentElement as HTMLElement | null) ?? target;
+
     if (!document.fullscreenElement) {
       await document.documentElement.requestFullscreen().catch(() => {});
     }
@@ -611,10 +613,10 @@ export function App(): JSX.Element {
       ]).catch(() => {});
     }
 
-    await (target.requestPointerLock({ unadjustedMovement: true } as any) as unknown as Promise<void>)
+    await (lockTarget.requestPointerLock({ unadjustedMovement: true } as any) as unknown as Promise<void>)
       .catch((err: DOMException) => {
         if (err.name === "NotSupportedError") {
-          return target.requestPointerLock();
+          return lockTarget.requestPointerLock();
         }
         throw err;
       })
@@ -959,6 +961,7 @@ export function App(): JSX.Element {
         maxBitrateMbps: settings.maxBitrateMbps,
         codec: settings.codec,
         colorQuality: settings.colorQuality,
+        gameLanguage: settings.gameLanguage,
       },
     });
 
@@ -1072,6 +1075,7 @@ export function App(): JSX.Element {
           maxBitrateMbps: settings.maxBitrateMbps,
           codec: settings.codec,
           colorQuality: settings.colorQuality,
+          gameLanguage: settings.gameLanguage,
         },
       });
 
@@ -1353,7 +1357,7 @@ export function App(): JSX.Element {
         e.stopPropagation();
         e.stopImmediatePropagation();
         if (streamStatus === "streaming" && videoRef.current) {
-          if (document.pointerLockElement === videoRef.current) {
+          if (document.pointerLockElement) {
             document.exitPointerLock();
           } else {
             void requestEscLockedPointerCapture(videoRef.current);

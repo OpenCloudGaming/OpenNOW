@@ -4,6 +4,14 @@ export type VideoAccelerationPreference = "auto" | "hardware" | "software";
 /** Color quality (bit depth + chroma subsampling), matching Rust ColorQuality enum */
 export type ColorQuality = "8bit_420" | "8bit_444" | "10bit_420" | "10bit_444";
 
+/** Game language codes for in-game localization (sent to GFN servers) */
+export type GameLanguage =
+  | "en_US" | "en_GB" | "de_DE" | "fr_FR" | "es_ES" | "es_MX" | "it_IT"
+  | "pt_PT" | "pt_BR" | "ru_RU" | "pl_PL" | "tr_TR" | "ar_SA" | "ja_JP"
+  | "ko_KR" | "zh_CN" | "zh_TW" | "th_TH" | "vi_VN" | "id_ID" | "cs_CZ"
+  | "el_GR" | "hu_HU" | "ro_RO" | "uk_UA" | "nl_NL" | "sv_SE" | "da_DK"
+  | "fi_FI" | "no_NO";
+
 /** Helper: get CloudMatch bitDepth value (0 = 8-bit SDR, 10 = 10-bit HDR capable) */
 export function colorQualityBitDepth(cq: ColorQuality): number {
   return cq.startsWith("10bit") ? 10 : 0;
@@ -47,6 +55,8 @@ export interface Settings {
   sessionClockShowDurationSeconds: number;
   windowWidth: number;
   windowHeight: number;
+  /** In-game language setting (sent to GFN servers via languageCode parameter) */
+  gameLanguage: GameLanguage;
 }
 
 export interface LoginProvider {
@@ -199,6 +209,8 @@ export interface StreamSettings {
   maxBitrateMbps: number;
   codec: VideoCodec;
   colorQuality: ColorQuality;
+  /** In-game language setting (sent to GFN servers via languageCode parameter) */
+  gameLanguage: GameLanguage;
 }
 
 export interface SessionCreateRequest {
