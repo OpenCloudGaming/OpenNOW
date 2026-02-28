@@ -10,6 +10,7 @@ import type {
   EntitledResolution,
   MicrophoneMode,
   PingResult,
+  GameLanguage,
 } from "@shared/gfn";
 import { colorQualityRequiresHevc } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
@@ -75,6 +76,39 @@ const microphoneModeOptions: Array<{ value: MicrophoneMode; label: string }> = [
   { value: "disabled", label: "Disabled" },
   { value: "push-to-talk", label: "Push-to-Talk" },
   { value: "voice-activity", label: "Voice Activity" },
+];
+
+const gameLanguageOptions: Array<{ value: GameLanguage; label: string }> = [
+  { value: "en_US", label: "English (US)" },
+  { value: "en_GB", label: "English (UK)" },
+  { value: "de_DE", label: "Deutsch" },
+  { value: "fr_FR", label: "Français" },
+  { value: "es_ES", label: "Español (ES)" },
+  { value: "es_MX", label: "Español (MX)" },
+  { value: "it_IT", label: "Italiano" },
+  { value: "pt_PT", label: "Português (PT)" },
+  { value: "pt_BR", label: "Português (BR)" },
+  { value: "ru_RU", label: "Русский" },
+  { value: "pl_PL", label: "Polski" },
+  { value: "tr_TR", label: "Türkçe" },
+  { value: "ar_SA", label: "العربية" },
+  { value: "ja_JP", label: "日本語" },
+  { value: "ko_KR", label: "한국어" },
+  { value: "zh_CN", label: "简体中文" },
+  { value: "zh_TW", label: "繁體中文" },
+  { value: "th_TH", label: "ไทย" },
+  { value: "vi_VN", label: "Tiếng Việt" },
+  { value: "id_ID", label: "Bahasa Indonesia" },
+  { value: "cs_CZ", label: "Čeština" },
+  { value: "el_GR", label: "Ελληνικά" },
+  { value: "hu_HU", label: "Magyar" },
+  { value: "ro_RO", label: "Română" },
+  { value: "uk_UA", label: "Українська" },
+  { value: "nl_NL", label: "Nederlands" },
+  { value: "sv_SE", label: "Svenska" },
+  { value: "da_DK", label: "Dansk" },
+  { value: "fi_FI", label: "Suomi" },
+  { value: "no_NO", label: "Norsk" },
 ];
 
 /* ── Aspect ratio helpers ─────────────────────────────────────────── */
@@ -577,6 +611,10 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [toggleAntiAfkError, setToggleAntiAfkError] = useState(false);
   const [toggleMicrophoneError, setToggleMicrophoneError] = useState(false);
 
+  // Game language dropdown state
+  const [gameLanguageDropdownOpen, setGameLanguageDropdownOpen] = useState(false);
+  const gameLanguageDropdownRef = useRef<HTMLDivElement | null>(null);
+
   // Dynamic entitled resolutions from MES API
   const [entitledResolutions, setEntitledResolutions] = useState<EntitledResolution[]>([]);
   const [subscriptionLoading, setSubscriptionLoading] = useState(true);
@@ -763,6 +801,10 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     return found?.label || "Selected Device";
   }, [settings.microphoneDeviceId, microphoneDevices]);
 
+  const selectedGameLanguageName = useMemo(() => {
+    return gameLanguageOptions.find((option) => option.value === settings.gameLanguage)?.label ?? "English (US)";
+  }, [settings.gameLanguage]);
+
   useEffect(() => {
     if (settings.microphoneMode === "disabled") {
       setMicrophoneDeviceDropdownOpen(false);
@@ -777,6 +819,9 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       }
       if (microphoneDeviceDropdownRef.current && !microphoneDeviceDropdownRef.current.contains(target)) {
         setMicrophoneDeviceDropdownOpen(false);
+      }
+      if (gameLanguageDropdownRef.current && !gameLanguageDropdownRef.current.contains(target)) {
+        setGameLanguageDropdownOpen(false);
       }
     };
 
@@ -1576,6 +1621,52 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 />
                 <span className="settings-toggle-track" />
               </label>
+            </div>
+          </div>
+        </section>
+
+        {/* ── Game ───────────────────────────────────────── */}
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h2>Game</h2>
+          </div>
+          <div className="settings-rows">
+            {/* Game Language */}
+            <div className="settings-row">
+              <label className="settings-label">
+                In-Game Language
+                <span className="settings-hint">Language for in-game menus, subtitles, and audio (where supported)</span>
+              </label>
+              <div className="settings-dropdown" ref={gameLanguageDropdownRef}>
+                <button
+                  type="button"
+                  className={`settings-dropdown-selected ${gameLanguageDropdownOpen ? "open" : ""}`}
+                  onClick={() => setGameLanguageDropdownOpen((open) => !open)}
+                >
+                  <span className="settings-dropdown-selected-name">{selectedGameLanguageName}</span>
+                  <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${gameLanguageDropdownOpen ? "flipped" : ""}`}>
+                    <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
+                  </svg>
+                </button>
+                {gameLanguageDropdownOpen && (
+                  <div className="settings-dropdown-menu settings-dropdown-menu--tall">
+                    {gameLanguageOptions.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={`settings-dropdown-item ${settings.gameLanguage === option.value ? "active" : ""}`}
+                        onClick={() => {
+                          handleChange("gameLanguage", option.value);
+                          setGameLanguageDropdownOpen(false);
+                        }}
+                      >
+                        <span>{option.label}</span>
+                        {settings.gameLanguage === option.value && <Check size={14} className="settings-dropdown-check" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </section>

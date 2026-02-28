@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode } from "@shared/gfn";
+import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage } from "@shared/gfn";
 
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
@@ -44,6 +44,8 @@ export interface Settings {
   windowWidth: number;
   /** Window height */
   windowHeight: number;
+  /** In-game language setting (sent to GFN servers via languageCode parameter) */
+  gameLanguage: GameLanguage;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -73,6 +75,7 @@ const DEFAULT_SETTINGS: Settings = {
   sessionClockShowDurationSeconds: 30,
   windowWidth: 1400,
   windowHeight: 900,
+  gameLanguage: "en_US",
 };
 
 export class SettingsManager {

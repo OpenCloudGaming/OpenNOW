@@ -485,8 +485,8 @@ export class GfnWebRtcClient {
 
   // Track currently pressed keys (VK codes) for synthetic Escape detection
   private pressedKeys: Set<number> = new Set();
-  // Video element reference for pointer lock re-acquisition
-  private videoElement: HTMLVideoElement | null = null;
+  // Pointer lock target reference for lock re-acquisition
+  private pointerLockTarget: HTMLElement | null = null;
   // Timer for synthetic Escape on pointer lock loss
   private pointerLockEscapeTimer: number | null = null;
   // Fallback keyup if browser swallows Escape keyup while keyboard lock is active.
@@ -1514,7 +1514,7 @@ export class GfnWebRtcClient {
   }
 
   private async requestPointerLockWithEscGuard(
-    videoElement: HTMLVideoElement,
+    lockTarget: HTMLElement,
     ensureFullscreen: boolean,
   ): Promise<void> {
     if (ensureFullscreen && !document.fullscreenElement) {
@@ -1528,13 +1528,13 @@ export class GfnWebRtcClient {
     await this.lockEscapeInFullscreen();
 
     try {
-      await (videoElement.requestPointerLock({ unadjustedMovement: true } as any) as unknown as Promise<void>);
+      await (lockTarget.requestPointerLock({ unadjustedMovement: true } as any) as unknown as Promise<void>);
       this.log("Pointer lock acquired with unadjustedMovement=true (raw/unaccelerated)");
     } catch (err) {
       const domErr = err as DOMException;
       if (domErr?.name === "NotSupportedError") {
         this.log("unadjustedMovement not supported, falling back to standard pointer lock (accelerated)");
-        await videoElement.requestPointerLock();
+        await lockTarget.requestPointerLock();
       } else {
         throw err;
       }
@@ -1588,7 +1588,7 @@ export class GfnWebRtcClient {
     }, 120);
   }
 
-  private startEscapeHoldRelease(videoElement: HTMLVideoElement): void {
+  private startEscapeHoldRelease(lockTarget: HTMLElement): void {
     if (this.escapeHoldReleaseTimer !== null) {
       return;
     }
@@ -1616,7 +1616,7 @@ export class GfnWebRtcClient {
     this.escapeHoldReleaseTimer = window.setTimeout(() => {
       this.escapeHoldReleaseTimer = null;
       this.clearEscapeHoldTimer();
-      if (document.pointerLockElement === videoElement) {
+      if (document.pointerLockElement === lockTarget) {
         this.log("Escape held for 5s, releasing pointer lock");
         this.suppressNextSyntheticEscape = true;
         // Remove Escape from pressedKeys so keyup doesn't send it to stream
@@ -1759,6 +1759,12 @@ export class GfnWebRtcClient {
   private installInputCapture(videoElement: HTMLVideoElement): void {
     this.detachInputCapture();
 
+    const pointerLockTarget = (videoElement.parentElement as HTMLElement | null) ?? videoElement;
+    const isPointerLockActive = (): boolean => {
+      const lockElement = document.pointerLockElement;
+      return lockElement === pointerLockTarget || lockElement === videoElement;
+    };
+
     const hasPointerRawUpdate = "onpointerrawupdate" in videoElement;
     const hasCoalescedEvents =
       typeof PointerEvent !== "undefined" && "getCoalescedEvents" in PointerEvent.prototype;
@@ -1839,7 +1845,7 @@ export class GfnWebRtcClient {
     this.mouseFlushTimer = window.setInterval(flushMouse, this.mouseFlushIntervalMs);
 
     const queueMouseMovement = (dx: number, dy: number, eventTimestampMs: number): void => {
-      if (!this.inputReady || document.pointerLockElement !== videoElement) {
+      if (!this.inputReady || !isPointerLockActive()) {
         return;
       }
 
@@ -1892,13 +1898,13 @@ export class GfnWebRtcClient {
       // Keep browser from handling held keys (for example Tab focus traversal)
       // while streaming input is active.
       if (event.repeat) {
-        if (document.pointerLockElement === videoElement || mapped) {
+        if (isPointerLockActive() || mapped) {
           event.preventDefault();
         }
         return;
       }
 
-      if (document.pointerLockElement === videoElement) {
+      if (isPointerLockActive()) {
         event.preventDefault();
       }
 
@@ -1923,14 +1929,14 @@ export class GfnWebRtcClient {
       event.preventDefault();
       this.pressedKeys.add(mapped.vk);
 
-      if (mapped.vk === 0x1B && document.pointerLockElement === videoElement) {
+      if (mapped.vk === 0x1B && isPointerLockActive()) {
         // Escape with pointer lock active: we start the hold timer for hold-to-exit.
         // For a quick tap (< 5s), we send Escape on keyup (not here) so we can distinguish tap vs hold.
         // For a hold (>= 5s), pointer lock is released and we suppress sending Escape to stream.
         this.escapeTapDispatchedForCurrentHold = false;
         this.clearEscapeAutoKeyUpTimer();
         // Start the hold timer (will be cleared on keyup if released before 5s)
-        this.startEscapeHoldRelease(videoElement);
+        this.startEscapeHoldRelease(pointerLockTarget);
         // Don't send keydown yet - wait to see if this is a tap or hold
         return;
       }
@@ -2044,19 +2050,19 @@ export class GfnWebRtcClient {
 
     const onClick = () => {
       // GFN-style sequence: fullscreen -> keyboard lock (Escape) -> pointer lock.
-      void this.requestPointerLockWithEscGuard(videoElement, true).catch((err: DOMException) => {
+      void this.requestPointerLockWithEscGuard(pointerLockTarget, true).catch((err: DOMException) => {
         this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
       });
       videoElement.focus();
     };
 
-    // Store video element for pointer lock re-acquisition
-    this.videoElement = videoElement;
+    // Store lock target for pointer lock re-acquisition
+    this.pointerLockTarget = pointerLockTarget;
 
     // Handle pointer lock changes — send synthetic Escape when lock is lost by browser
     // (matches official GFN client's "pointerLockEscape" feature)
     const onPointerLockChange = () => {
-      if (document.pointerLockElement) {
+      if (isPointerLockActive()) {
         // Pointer lock gained — cancel any pending synthetic Escape
         if (this.pointerLockEscapeTimer !== null) {
           window.clearTimeout(this.pointerLockEscapeTimer);
@@ -2128,8 +2134,8 @@ export class GfnWebRtcClient {
         this.sendReliable(escUp);
 
         // Re-acquire pointer lock so the user stays in the game
-        if (this.videoElement && this.activeInputMode !== "gamepad") {
-          void this.requestPointerLockWithEscGuard(this.videoElement, false)
+        if (this.pointerLockTarget && this.activeInputMode !== "gamepad") {
+          void this.requestPointerLockWithEscGuard(this.pointerLockTarget, false)
             .catch(() => {});
         }
       }, 50);
@@ -2224,7 +2230,7 @@ export class GfnWebRtcClient {
       this.pendingMouseDy = 0;
       this.pendingMouseTimestampUs = null;
       this.mouseDeltaFilter.reset();
-      this.videoElement = null;
+      this.pointerLockTarget = null;
       // Unlock keyboard on cleanup
       const nav = navigator as any;
       if (nav.keyboard?.unlock) {
@@ -2706,10 +2712,19 @@ export class GfnWebRtcClient {
     const credentials = extractIceCredentials(finalSdp);
     this.log(`Extracted ICE credentials: ufrag=${credentials.ufrag}, pwd=${credentials.pwd.slice(0, 8)}...`);
     const { width, height } = parseResolution(settings.resolution);
+    const viewportRect = this.options.videoElement.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const clientViewportWidth = Math.max(1, Math.round(viewportRect.width * dpr));
+    const clientViewportHeight = Math.max(1, Math.round(viewportRect.height * dpr));
+    this.log(
+      `Client viewport for NVST: ${clientViewportWidth}x${clientViewportHeight} (CSS ${Math.round(viewportRect.width)}x${Math.round(viewportRect.height)} @ DPR ${dpr.toFixed(2)})`,
+    );
 
     const nvstSdp = buildNvstSdp({
       width,
       height,
+      clientViewportWidth,
+      clientViewportHeight,
       fps: settings.fps,
       maxBitrateKbps: settings.maxBitrateKbps,
       partialReliableThresholdMs: this.partialReliableThresholdMs,

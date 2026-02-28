@@ -555,7 +555,8 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   const body = buildSessionRequestBody(input);
 
   const base = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
-  const url = `${base}/v2/session?keyboardLayout=en-US&languageCode=en_US`;
+  const languageCode = input.settings.gameLanguage ?? "en_US";
+  const url = `${base}/v2/session?keyboardLayout=en-US&languageCode=${languageCode}`;
   const response = await fetch(url, {
     method: "POST",
     headers: requestHeaders(input.token),
@@ -867,8 +868,6 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   const deviceId = crypto.randomUUID();
   const clientId = crypto.randomUUID();
 
-  const claimUrl = `https://${input.serverIp}/v2/session/${input.sessionId}?keyboardLayout=en-US&languageCode=en_US`;
-
   // Provide default values for optional parameters
   const appId = input.appId ?? "0";
   const settings = input.settings ?? {
@@ -877,7 +876,11 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     maxBitrateMbps: 75,
     codec: "H264",
     colorQuality: "8bit_420",
+    gameLanguage: "en_US",
   };
+
+  const languageCode = settings.gameLanguage ?? "en_US";
+  const claimUrl = `https://${input.serverIp}/v2/session/${input.sessionId}?keyboardLayout=en-US&languageCode=${languageCode}`;
 
   const payload = buildClaimRequestBody(input.sessionId, appId, settings);
 
