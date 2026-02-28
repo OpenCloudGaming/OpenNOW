@@ -598,8 +598,6 @@ app.whenReady().then(async () => {
   });
 
   session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
-    console.log(`[Main] Permission check: ${permission} from ${requestingOrigin}`);
-
     const allowedPermissions = new Set([
       "media",
       "microphone",
