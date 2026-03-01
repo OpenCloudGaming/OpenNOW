@@ -61,7 +61,15 @@
     "files": [
       "dist/**",
       "dist-electron/**",
-      "package.json"
+      "package.json",
+      "build/**"
+    ],
+    "extraResources": [
+      {
+        "from": "build/",
+        "to": "build/",
+        "filter": ["**/*"]
+      }
     ],
     "asar": true,
     "win": {
@@ -87,11 +95,36 @@
     "linux": {
       "target": [
         "AppImage",
-        "deb"
+        "deb",
+        "flatpak"
       ],
       "category": "Game",
       "maintainer": "zortos293 <zortos293@users.noreply.github.com>",
       "artifactName": "OpenNOW-v${version}-linux-${arch}.${ext}"
+    },
+    "flatpak": {
+      "runtime": "org.freedesktop.Platform",
+      "runtimeVersion": "24.08",
+      "sdk": "org.freedesktop.Sdk",
+      "base": "org.electronjs.Electron2.BaseApp",
+      "baseVersion": "24.08",
+      "branch": "stable",
+      "artifactName": "OpenNOW-v${version}-${arch}.flatpak",
+      "finishArgs": [
+        "--share=network",
+        "--share=ipc",
+        "--socket=x11",
+        "--socket=wayland",
+        "--socket=pulseaudio",
+        "--device=dri",
+        "--device=all",
+        "--filesystem=home",
+        "--talk-name=org.freedesktop.Notifications",
+        "--talk-name=org.freedesktop.portal.Desktop",
+        "--talk-name=org.freedesktop.portal.Settings",
+        "--talk-name=org.freedesktop.portal.Documents",
+        "--own-name=com.zortos.opennow.stable"
+      ]
     }
   }
 }
