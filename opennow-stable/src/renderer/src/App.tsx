@@ -601,6 +601,14 @@ export function App(): JSX.Element {
 
   const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
     const lockTarget = (target.parentElement as HTMLElement | null) ?? target;
+    const requestPointerLockCompat = async (
+      options?: { unadjustedMovement?: boolean },
+    ): Promise<void> => {
+      const maybePromise = lockTarget.requestPointerLock(options as any) as unknown;
+      if (maybePromise && typeof (maybePromise as Promise<void>).then === "function") {
+        await (maybePromise as Promise<void>);
+      }
+    };
 
     if (!document.fullscreenElement) {
       await document.documentElement.requestFullscreen().catch(() => {});
@@ -613,10 +621,10 @@ export function App(): JSX.Element {
       ]).catch(() => {});
     }
 
-    await (lockTarget.requestPointerLock({ unadjustedMovement: true } as any) as unknown as Promise<void>)
+    await requestPointerLockCompat({ unadjustedMovement: true })
       .catch((err: DOMException) => {
         if (err.name === "NotSupportedError") {
-          return lockTarget.requestPointerLock();
+          return requestPointerLockCompat();
         }
         throw err;
       })

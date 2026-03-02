@@ -1513,6 +1513,16 @@ export class GfnWebRtcClient {
     }
   }
 
+  private async requestPointerLockCompat(
+    lockTarget: HTMLElement,
+    options?: { unadjustedMovement?: boolean },
+  ): Promise<void> {
+    const maybePromise = lockTarget.requestPointerLock(options as any) as unknown;
+    if (maybePromise && typeof (maybePromise as Promise<void>).then === "function") {
+      await (maybePromise as Promise<void>);
+    }
+  }
+
   private async requestPointerLockWithEscGuard(
     lockTarget: HTMLElement,
     ensureFullscreen: boolean,
@@ -1528,13 +1538,13 @@ export class GfnWebRtcClient {
     await this.lockEscapeInFullscreen();
 
     try {
-      await (lockTarget.requestPointerLock({ unadjustedMovement: true } as any) as unknown as Promise<void>);
+      await this.requestPointerLockCompat(lockTarget, { unadjustedMovement: true });
       this.log("Pointer lock acquired with unadjustedMovement=true (raw/unaccelerated)");
     } catch (err) {
       const domErr = err as DOMException;
       if (domErr?.name === "NotSupportedError") {
         this.log("unadjustedMovement not supported, falling back to standard pointer lock (accelerated)");
-        await lockTarget.requestPointerLock();
+        await this.requestPointerLockCompat(lockTarget);
       } else {
         throw err;
       }
@@ -2714,10 +2724,21 @@ export class GfnWebRtcClient {
     const { width, height } = parseResolution(settings.resolution);
     const viewportRect = this.options.videoElement.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    const clientViewportWidth = Math.max(1, Math.round(viewportRect.width * dpr));
-    const clientViewportHeight = Math.max(1, Math.round(viewportRect.height * dpr));
+    const baseCssViewportWidth = Math.max(viewportRect.width, window.innerWidth || 0);
+    const baseCssViewportHeight = Math.max(viewportRect.height, window.innerHeight || 0);
+    const screenCssWidth = window.screen?.width ?? baseCssViewportWidth;
+    const screenCssHeight = window.screen?.height ?? baseCssViewportHeight;
+    const shouldUseScreenViewportHint = dpr > 1 && (width >= 3840 || height >= 2160);
+    const resolvedCssViewportWidth = shouldUseScreenViewportHint
+      ? Math.max(baseCssViewportWidth, screenCssWidth)
+      : baseCssViewportWidth;
+    const resolvedCssViewportHeight = shouldUseScreenViewportHint
+      ? Math.max(baseCssViewportHeight, screenCssHeight)
+      : baseCssViewportHeight;
+    const clientViewportWidth = Math.max(1, Math.round(resolvedCssViewportWidth * dpr));
+    const clientViewportHeight = Math.max(1, Math.round(resolvedCssViewportHeight * dpr));
     this.log(
-      `Client viewport for NVST: ${clientViewportWidth}x${clientViewportHeight} (CSS ${Math.round(viewportRect.width)}x${Math.round(viewportRect.height)} @ DPR ${dpr.toFixed(2)})`,
+      `Client viewport for NVST: ${clientViewportWidth}x${clientViewportHeight} (CSS base ${Math.round(baseCssViewportWidth)}x${Math.round(baseCssViewportHeight)}, screen ${Math.round(screenCssWidth)}x${Math.round(screenCssHeight)}, mode=${shouldUseScreenViewportHint ? "screen-hidpi-4k" : "window"} @ DPR ${dpr.toFixed(2)})`,
     );
 
     const nvstSdp = buildNvstSdp({
