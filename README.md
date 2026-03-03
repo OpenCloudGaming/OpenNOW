@@ -225,6 +225,10 @@ Contributions are welcome! Open an issue or PR on [GitHub](https://github.com/Op
   </a>
 </p>
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left)](https://www.star-history.com/?repos=OpenCloudGaming%2FOpenNOW&type=date&legend=top-left)
+
 ## License
 
 [MIT](./LICENSE) © Zortos
