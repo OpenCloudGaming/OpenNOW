@@ -175,6 +175,9 @@ export interface StreamDiagnostics {
   cursorX: number;
   cursorY: number;
   cursorType: 'arrow' | 'ibeam' | 'hand' | 'crosshair' | 'wait' | 'default';
+  cursorImageUrl: string | null;
+  cursorHotspotX: number;
+  cursorHotspotY: number;
 }
 
 export interface StreamTimeWarning {
@@ -579,6 +582,9 @@ export class GfnWebRtcClient {
     cursorX: 0,
     cursorY: 0,
     cursorType: 'arrow',
+    cursorImageUrl: null,
+    cursorHotspotX: 0,
+    cursorHotspotY: 0,
   };
 
   constructor(private readonly options: ClientOptions) {
@@ -1492,78 +1498,116 @@ export class GfnWebRtcClient {
   }
 
   /**
-   * Handle server cursor position updates from cursor_channel.
-   * The server sends absolute cursor position for server-rendered cursor mode.
-   * Format from official GFN client:
-   * - x, y: cursor position in server screen coordinates (0,0 = top-left)
-   * - visibility: bit 15 of x or separate message may indicate visibility
-   * - cursor type: may be encoded in higher bits
+   * Handle cursor image data from cursor_channel.
    * 
-   * The cursor is rendered by the server into the video stream, but if the cursor
-   * appears black, we need to render it ourselves as an overlay.
+   * The official GFN web client sends actual cursor image data via cursor_channel
+   * in addition to position updates. The image data is base64-encoded ICO format
+   * (starts with "AAABAAEAICACAA..." which is a standard Windows ICO header).
+   * 
+   * Message format (from vendor_beautified.js analysis):
+   * - Header with cursor metadata (position, hotspot, type)
+   * - Base64-encoded cursor image data (ICO/PNG format)
+   * 
+   * The server-rendered cursor in the video may appear black, so we need to
+   * render the actual cursor image as an overlay on top of the video.
    */
-  private serverCursorX: number = 0;
-  private serverCursorY: number = 0;
-  private serverCursorVisible: boolean = true;
-  private serverCursorType: 'arrow' | 'ibeam' | 'hand' | 'crosshair' | 'wait' | 'default' = 'arrow';
+  private cursorImageDataUrl: string | null = null;
+  private cursorHotspotX: number = 0;
+  private cursorHotspotY: number = 0;
+  private cursorWidth: number = 32;
+  private cursorHeight: number = 32;
 
   private handleCursorMessage(data: ArrayBuffer): void {
     try {
-      const view = new DataView(data);
-      // Cursor messages from server vary in format
-      // Common formats observed:
-      // - 4 bytes: x (int16 BE), y (int16 BE)
-      // - 5 bytes: with visibility/type flags
-      // - 8 bytes: with additional metadata
+      // Check if this is a text message (JSON with base64 image) or binary position message
+      const textDecoder = new TextDecoder('utf-8');
+      const textData = textDecoder.decode(data);
       
+      // Try to parse as JSON first (contains cursor image data)
+      if (textData.startsWith('{') || textData.includes('"image"') || textData.includes('AAABAA')) {
+        try {
+          const cursorData = JSON.parse(textData);
+          
+          // Extract cursor image (base64 encoded ICO/PNG)
+          if (cursorData.image || cursorData.bf) {
+            const base64Image = cursorData.image || cursorData.bf;
+            // Determine image format from header
+            let mimeType = 'image/x-icon'; // Default ICO format
+            if (base64Image.startsWith('iVBOR')) {
+              mimeType = 'image/png';
+            } else if (base64Image.startsWith('/9j/')) {
+              mimeType = 'image/jpeg';
+            } else if (base64Image.startsWith('R0lGOD')) {
+              mimeType = 'image/gif';
+            }
+            this.cursorImageDataUrl = `data:${mimeType};base64,${base64Image}`;
+            this.log(`Cursor image received: ${base64Image.length} chars, format: ${mimeType}`);
+          }
+          
+          // Extract cursor hotspot (click point relative to cursor image)
+          if (cursorData.hotspotX !== undefined) {
+            this.cursorHotspotX = cursorData.hotspotX;
+          }
+          if (cursorData.hotspotY !== undefined) {
+            this.cursorHotspotY = cursorData.hotspotY;
+          }
+          if (cursorData.Sf !== undefined) {
+            this.cursorHotspotX = cursorData.Sf;
+          }
+          if (cursorData.wf !== undefined) {
+            this.cursorHotspotY = cursorData.wf;
+          }
+          
+          // Extract cursor size
+          if (cursorData.width) this.cursorWidth = cursorData.width;
+          if (cursorData.height) this.cursorHeight = cursorData.height;
+          
+          // Extract position if present
+          if (cursorData.x !== undefined && cursorData.y !== undefined) {
+            this.diagnostics.cursorX = cursorData.x;
+            this.diagnostics.cursorY = cursorData.y;
+          }
+          
+          // Extract visibility
+          if (cursorData.visible !== undefined) {
+            this.diagnostics.cursorVisible = cursorData.visible;
+          }
+          if (cursorData.style !== undefined) {
+            this.diagnostics.cursorType = cursorData.style;
+          }
+          
+          // Update diagnostics with image URL
+          this.diagnostics.cursorImageUrl = this.cursorImageDataUrl;
+          this.diagnostics.cursorHotspotX = this.cursorHotspotX;
+          this.diagnostics.cursorHotspotY = this.cursorHotspotY;
+          
+        } catch (jsonErr) {
+          // Not valid JSON, might be binary position message
+          this.log(`Cursor message not JSON, trying binary format`);
+        }
+      }
+      
+      // Also handle binary position messages (4+ bytes)
       if (data.byteLength >= 4) {
-        // Parse cursor position
+        const view = new DataView(data);
         let x = view.getInt16(0, false); // BE
         let y = view.getInt16(2, false); // BE
         
-        // Check for visibility flag in bit 15 (0x8000)
-        // This matches GFN's protocol where cursor position includes visibility
+        // Check for visibility flag in bit 15
         let visible = true;
-        let cursorType: typeof this.serverCursorType = 'arrow';
-        
         if ((x & 0x8000) !== 0) {
-          x = x & 0x7FFF; // Clear visibility flag
+          x = x & 0x7FFF;
         }
         if ((y & 0x8000) !== 0) {
           visible = false;
           y = y & 0x7FFF;
         }
         
-        // Extended format with cursor type
-        if (data.byteLength >= 6) {
-          const flags = view.getUint16(4, false);
-          // Decode cursor type from flags
-          const typeBits = (flags >> 12) & 0xF;
-          switch (typeBits) {
-            case 1: cursorType = 'ibeam'; break;
-            case 2: cursorType = 'hand'; break;
-            case 3: cursorType = 'crosshair'; break;
-            case 4: cursorType = 'wait'; break;
-            default: cursorType = 'arrow'; break;
-          }
-        }
-        
-        this.serverCursorX = x;
-        this.serverCursorY = y;
-        this.serverCursorVisible = visible;
-        this.serverCursorType = cursorType;
-        
-        // Update diagnostics for UI rendering
         this.diagnostics.cursorX = x;
         this.diagnostics.cursorY = y;
-        this.diagnostics.cursorVisible = visible;
-        this.diagnostics.cursorType = cursorType;
+        this.diagnostics.cursorVisible = visible && this.diagnostics.cursorVisible !== false;
         
-        this.log(`Server cursor position: x=${x}, y=${y}, visible=${visible}, type=${cursorType}`);
-        
-        // If cursor is visible, we may need to render it ourselves
-        // because the server-rendered cursor in the video may appear black
-        // This is handled by the UI overlay
+        this.log(`Server cursor position: x=${x}, y=${y}, visible=${visible}`);
       }
     } catch (e) {
       this.log(`Cursor message parse error: ${String(e)}`);
