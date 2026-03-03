@@ -352,4 +352,8 @@ export interface OpenNowApi {
   exportLogs(format?: "text" | "json"): Promise<string>;
   /** Ping all regions and return latency results */
   pingRegions(regions: StreamRegion[]): Promise<PingResult[]>;
+  /** Start power save blocker to prevent display sleep during streaming */
+  startPowerSaveBlocker(): Promise<void>;
+  /** Stop power save blocker when streaming ends */
+  stopPowerSaveBlocker(): Promise<void>;
 }

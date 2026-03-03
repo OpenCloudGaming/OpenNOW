@@ -76,6 +76,8 @@ const api: PreloadApi = {
   resetSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_RESET),
   exportLogs: (format?: "text" | "json") => ipcRenderer.invoke(IPC_CHANNELS.LOGS_EXPORT, format),
   pingRegions: (regions: StreamRegion[]) => ipcRenderer.invoke(IPC_CHANNELS.PING_REGIONS, regions),
+  startPowerSaveBlocker: () => ipcRenderer.invoke(IPC_CHANNELS.POWER_SAVE_BLOCKER_START),
+  stopPowerSaveBlocker: () => ipcRenderer.invoke(IPC_CHANNELS.POWER_SAVE_BLOCKER_STOP),
 };
 
 contextBridge.exposeInMainWorld("openNow", api);

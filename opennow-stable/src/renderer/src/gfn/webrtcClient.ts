@@ -431,8 +431,18 @@ export class GfnWebRtcClient {
   private pc: RTCPeerConnection | null = null;
   private reliableInputChannel: RTCDataChannel | null = null;
   private mouseInputChannel: RTCDataChannel | null = null;
+  private cursorChannel: RTCDataChannel | null = null;
+  private statsChannel: RTCDataChannel | null = null;
   private controlChannel: RTCDataChannel | null = null;
   private audioContext: AudioContext | null = null;
+
+  // Server timebase offset for timestamp synchronization (matches official client's time remapping)
+  private serverTimebaseOffsetMs = 0;
+  private serverTimebaseSynced = false;
+
+  // Mouse sub-pixel accumulation for fractional deltas (matches official client's Up/Hp fields)
+  private mouseSubPixelX = 0;
+  private mouseSubPixelY = 0;
 
   private inputReady = false;
   private inputProtocolVersion = 2;
@@ -512,6 +522,11 @@ export class GfnWebRtcClient {
   private inputQueueMaxSchedulingDelayMsWindow = 0;
   private inputQueuePressureLoggedAtMs = 0;
   private inputQueueDropCount = 0;
+
+  // Mouse event queue for coalescing and rate limiting (matches official client's ql/qc)
+  private mouseEventQueue: Array<{ dx: number; dy: number; ts: bigint; dropped?: boolean }> = [];
+  private static readonly MOUSE_QUEUE_MAX_SIZE = 8; // Max pending mouse events before coalescing
+  private mouseQueueHighWatermark = 0;
 
   // Microphone
   private micManager: MicrophoneManager | null = null;
@@ -718,10 +733,17 @@ export class GfnWebRtcClient {
     }
     this.reliableInputChannel?.close();
     this.mouseInputChannel?.close();
+    this.cursorChannel?.close();
+    this.statsChannel?.close();
     this.controlChannel?.close();
     this.reliableInputChannel = null;
     this.mouseInputChannel = null;
+    this.cursorChannel = null;
+    this.statsChannel = null;
     this.controlChannel = null;
+    this.serverTimebaseSynced = false;
+    this.mouseSubPixelX = 0;
+    this.mouseSubPixelY = 0;
   }
 
   private clearTimers(): void {
@@ -1031,6 +1053,10 @@ export class GfnWebRtcClient {
     this.pendingMouseDx = 0;
     this.pendingMouseDy = 0;
     this.pendingMouseTimestampUs = null;
+    this.mouseSubPixelX = 0;
+    this.mouseSubPixelY = 0;
+    this.mouseEventQueue = [];
+    this.mouseQueueHighWatermark = 0;
     this.mouseDeltaFilter.reset();
     this.mouseFlushLastTickMs = 0;
     this.inputQueuePeakBufferedBytesWindow = 0;
@@ -1406,6 +1432,39 @@ export class GfnWebRtcClient {
     this.mouseInputChannel.onopen = () => {
       this.log(`Mouse channel open (partially reliable, maxPacketLifeTime=${this.partialReliableThresholdMs}ms)`);
     };
+
+    // Server-rendered cursor channel for precise cursor positioning
+    // CRITICAL: Must use reliable=true, ordered=true for accurate cursor positioning
+    this.cursorChannel = pc.createDataChannel("cursor_channel", {
+      ordered: true,
+      reliable: true,
+    });
+
+    this.cursorChannel.onopen = () => {
+      this.log("Cursor channel open (server-rendered cursor, reliable=true)");
+    };
+
+    this.cursorChannel.onmessage = (event) => {
+      // Handle server cursor position updates (for server-rendered cursor)
+      this.handleCursorMessage(event.data as ArrayBuffer);
+    };
+
+    // Stats/telemetry channel for stream quality metrics
+    // Fire-and-forget: no ordering, no reliability, no retransmits (matches official)
+    this.statsChannel = pc.createDataChannel("stats_channel", {
+      ordered: false,
+      reliable: false,
+      maxRetransmits: 0,
+    });
+
+    this.statsChannel.onopen = () => {
+      this.log("Stats channel open (telemetry, fire-and-forget)");
+    };
+
+    this.statsChannel.onmessage = (event) => {
+      // Handle server telemetry/stats messages
+      this.handleServerStatsMessage(event.data as ArrayBuffer);
+    };
   }
 
   private mapTimerNotificationCode(rawCode: number): StreamTimeWarning["code"] | null {
@@ -1420,6 +1479,106 @@ export class GfnWebRtcClient {
       return 3;
     }
     return null;
+  }
+
+  /**
+   * Handle server cursor position updates from cursor_channel.
+   * The server sends absolute cursor position for server-rendered cursor mode.
+   */
+  private handleCursorMessage(data: ArrayBuffer): void {
+    try {
+      const view = new DataView(data);
+      // Cursor messages are typically simple position updates
+      // Format varies by protocol version, but usually contains x, y coordinates
+      if (data.byteLength >= 4) {
+        const x = view.getInt16(0, false); // BE
+        const y = view.getInt16(2, false); // BE
+        this.log(`Server cursor position: x=${x}, y=${y}`);
+        // In server-rendered cursor mode, the cursor is drawn by the server
+        // We may need to hide the local cursor or sync positions
+      }
+    } catch (e) {
+      this.log(`Cursor message parse error: ${String(e)}`);
+    }
+  }
+
+  /**
+   * Handle server stats/telemetry messages from stats_channel.
+   * The server sends performance metrics for adaptive streaming.
+   * 
+   * Message format (from vendor_beautified.js:18668-18682):
+   * - Byte 0: version/type
+   * - If version >= 4:
+   *   - Bytes 1-8: timestamp (float64 BE) / 1e6 = seconds
+   *   - Bytes 9-16: server timestamp (float64 BE)
+   *   - Bytes 17-24: unknown (float64 BE)
+   *   - Bytes 25-28: overall score (float32 BE)
+   *   - Bytes 29-32: gpuPerfScore (float32 BE)
+   *   - Bytes 33-36: serverPerfScore (float32 BE)
+   *   - etc.
+   */
+  private handleServerStatsMessage(data: ArrayBuffer): void {
+    try {
+      const view = new DataView(data);
+      if (data.byteLength < 1) return;
+
+      const version = view.getUint8(0);
+
+      // Version 3: simple ACK message
+      if (version === 3) {
+        this.log("Server stats: ACK received");
+        return;
+      }
+
+      // Version >= 4: full performance metrics (matches vendor:18668-18682)
+      if (version >= 4 && data.byteLength >= 70) {
+        // Extract timestamps for timebase synchronization
+        const serverTimestampUs = view.getFloat64(1, true); // microseconds
+        const serverPerfTimestamp = view.getFloat64(9, true);
+
+        // Calculate server timebase offset for timestamp remapping
+        if (!this.serverTimebaseSynced) {
+          const localNowUs = performance.now() * 1000;
+          this.serverTimebaseOffsetMs = (serverTimestampUs - localNowUs) / 1000;
+          this.serverTimebaseSynced = true;
+          this.log(`Server timebase synced: offset=${this.serverTimebaseOffsetMs.toFixed(2)}ms`);
+        }
+
+        // Extract performance scores (all float32 BE)
+        const overall = view.getFloat32(25, true);
+        const gpuPerfScore = view.getFloat32(29, true);
+        const serverPerfScore = view.getFloat32(33, true);
+        const visualScore = view.getFloat32(37, true);
+        const decoderScore = view.getFloat32(41, true);
+        const downlinkLag = view.getFloat32(45, true);
+        const downlinkCongestion = view.getFloat32(49, true);
+        const uplink = view.getFloat32(53, true);
+
+        this.log(
+          `Server stats: overall=${overall.toFixed(2)}, ` +
+          `gpu=${gpuPerfScore.toFixed(2)}, server=${serverPerfScore.toFixed(2)}, ` +
+          `visual=${visualScore.toFixed(2)}, decoder=${decoderScore.toFixed(2)}, ` +
+          `lag=${downlinkLag.toFixed(2)}, congestion=${downlinkCongestion.toFixed(2)}, ` +
+          `uplink=${uplink.toFixed(2)}`
+        );
+
+        // Could use these metrics for adaptive bitrate or quality adjustments
+      }
+    } catch (e) {
+      this.log(`Server stats message parse error: ${String(e)}`);
+    }
+  }
+
+  /**
+   * Convert local timestamp to server timebase for input events.
+   * This ensures timestamps are synchronized with the server's clock.
+   */
+  private remapTimestampToServer(localTimestampMs: number): bigint {
+    if (!this.serverTimebaseSynced) {
+      return timestampUs(localTimestampMs);
+    }
+    const remappedMs = localTimestampMs + this.serverTimebaseOffsetMs;
+    return BigInt(Math.floor(remappedMs * 1000));
   }
 
   private async onControlChannelMessage(data: string | Blob | ArrayBuffer): Promise<void> {
@@ -1813,13 +1972,13 @@ export class GfnWebRtcClient {
       }
 
       if (this.activeInputMode === "gamepad") {
-        this.pendingMouseDx = 0;
-        this.pendingMouseDy = 0;
-        this.pendingMouseTimestampUs = null;
+        this.mouseEventQueue = [];
+        this.mouseSubPixelX = 0;
+        this.mouseSubPixelY = 0;
         return;
       }
 
-      if (this.pendingMouseDx === 0 && this.pendingMouseDy === 0) {
+      if (this.mouseEventQueue.length === 0) {
         return;
       }
 
@@ -1840,15 +1999,39 @@ export class GfnWebRtcClient {
         return;
       }
 
+      // Process queued mouse events (matches official client's batching behavior)
+      // Sum all queued deltas and use the oldest timestamp for the batch
+      let totalDx = 0;
+      let totalDy = 0;
+      let batchTimestamp: bigint | null = null;
+      let coalescedCount = 0;
+
+      for (const event of this.mouseEventQueue) {
+        totalDx += event.dx;
+        totalDy += event.dy;
+        if (event.dropped) coalescedCount++;
+        if (batchTimestamp === null) {
+          batchTimestamp = event.ts;
+        }
+      }
+
+      // Add sub-pixel remainders
+      totalDx += Math.trunc(this.mouseSubPixelX);
+      totalDy += Math.trunc(this.mouseSubPixelY);
+
+      // Store fractional remainders for next frame
+      this.mouseSubPixelX = this.mouseSubPixelX - Math.trunc(this.mouseSubPixelX);
+      this.mouseSubPixelY = this.mouseSubPixelY - Math.trunc(this.mouseSubPixelY);
+
+      // Clear queue
+      this.mouseEventQueue = [];
+
       const payload = this.inputEncoder.encodeMouseMove({
-        dx: Math.max(-32768, Math.min(32767, this.pendingMouseDx)),
-        dy: Math.max(-32768, Math.min(32767, this.pendingMouseDy)),
-        timestampUs: this.pendingMouseTimestampUs ?? timestampUs(),
+        dx: Math.max(-32768, Math.min(32767, totalDx)),
+        dy: Math.max(-32768, Math.min(32767, totalDy)),
+        timestampUs: batchTimestamp ?? timestampUs(),
       });
 
-      this.pendingMouseDx = 0;
-      this.pendingMouseDy = 0;
-      this.pendingMouseTimestampUs = null;
       this.sendReliable(payload);
     };
 
@@ -1867,10 +2050,45 @@ export class GfnWebRtcClient {
         return;
       }
 
-      // Apply user-configured mouse sensitivity multiplier before queuing
-      this.pendingMouseDx += Math.round(this.mouseDeltaFilter.getX() * this.mouseSensitivity);
-      this.pendingMouseDy += Math.round(this.mouseDeltaFilter.getY() * this.mouseSensitivity);
-      this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
+      // Apply user-configured mouse sensitivity multiplier
+      const scaledX = this.mouseDeltaFilter.getX() * this.mouseSensitivity;
+      const scaledY = this.mouseDeltaFilter.getY() * this.mouseSensitivity;
+
+      // Accumulate fractional deltas in sub-pixel storage (matches official Up/Hp)
+      // This preserves sub-pixel precision across multiple events
+      const roundedX = Math.round(scaledX);
+      const roundedY = Math.round(scaledY);
+
+      // Store fractional remainder for next accumulation
+      this.mouseSubPixelX += scaledX - roundedX;
+      this.mouseSubPixelY += scaledY - roundedY;
+
+      // Remap timestamp to server timebase for synchronization
+      const timestampUs = this.remapTimestampToServer(eventTimestampMs);
+
+      // Queue depth-based rate limiting (matches official client's ql/qc behavior)
+      // When queue is full, coalesce with last event rather than dropping
+      if (this.mouseEventQueue.length >= GfnWebRtcClient.MOUSE_QUEUE_MAX_SIZE) {
+        // Queue full - coalesce with last pending event (sum deltas, use newer timestamp)
+        const lastEvent = this.mouseEventQueue[this.mouseEventQueue.length - 1];
+        lastEvent.dx += roundedX;
+        lastEvent.dy += roundedY;
+        lastEvent.ts = timestampUs;
+        lastEvent.dropped = true; // Mark as coalesced
+
+        // Track high watermark for diagnostics
+        if (this.mouseEventQueue.length > this.mouseQueueHighWatermark) {
+          this.mouseQueueHighWatermark = this.mouseEventQueue.length;
+        }
+        return;
+      }
+
+      // Add to queue
+      this.mouseEventQueue.push({
+        dx: roundedX,
+        dy: roundedY,
+        ts: timestampUs,
+      });
     };
 
     const onPointerMove = (event: PointerEvent) => {
@@ -2483,8 +2701,9 @@ export class GfnWebRtcClient {
 
     const rtcConfig: RTCConfiguration = {
       iceServers: toRtcIceServers(session.iceServers),
-      bundlePolicy: "max-bundle",
+      bundlePolicy: "balanced",
       rtcpMuxPolicy: "require",
+      iceCandidatePoolSize: 4,
     };
 
     const pc = new RTCPeerConnection(rtcConfig);

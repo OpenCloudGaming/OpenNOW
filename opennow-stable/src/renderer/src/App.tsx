@@ -810,6 +810,10 @@ export function App(): JSX.Element {
             });
             setLaunchError(null);
             setStreamStatus("streaming");
+            // Start power save blocker to prevent display sleep during streaming
+            void window.openNow.startPowerSaveBlocker().catch((err) => {
+              console.warn("[App] Failed to start power save blocker:", err);
+            });
           }
         } else if (event.type === "remote-ice") {
           await clientRef.current?.addRemoteCandidate(event.candidate);
@@ -818,6 +822,8 @@ export function App(): JSX.Element {
           clientRef.current?.dispose();
           clientRef.current = null;
           resetLaunchRuntime();
+          // Stop power save blocker on unexpected disconnect
+          void window.openNow.stopPowerSaveBlocker().catch(() => {});
           launchInFlightRef.current = false;
         } else if (event.type === "error") {
           console.error("Signaling error:", event.message);
@@ -1258,9 +1264,15 @@ export function App(): JSX.Element {
       clientRef.current = null;
       setNavbarActiveSession(null);
       resetLaunchRuntime();
+      // Stop power save blocker when streaming ends
+      void window.openNow.stopPowerSaveBlocker().catch((err) => {
+        console.warn("[App] Failed to stop power save blocker:", err);
+      });
       void refreshNavbarActiveSession();
     } catch (error) {
       console.error("Stop failed:", error);
+      // Ensure power save blocker is stopped even on error
+      void window.openNow.stopPowerSaveBlocker().catch(() => {});
     }
   }, [authSession, refreshNavbarActiveSession, resetLaunchRuntime, resolveExitPrompt]);
 
@@ -1269,6 +1281,8 @@ export function App(): JSX.Element {
     clientRef.current?.dispose();
     clientRef.current = null;
     resetLaunchRuntime();
+    // Stop power save blocker when dismissing launch error
+    void window.openNow.stopPowerSaveBlocker().catch(() => {});
     void refreshNavbarActiveSession();
   }, [refreshNavbarActiveSession, resetLaunchRuntime]);
 

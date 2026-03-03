@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, systemPreferences, session } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, systemPreferences, session, powerSaveBlocker } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -157,6 +157,7 @@ let signalingClient: GfnSignalingClient | null = null;
 let signalingClientKey: string | null = null;
 let authService: AuthService;
 let settingsManager: SettingsManager;
+let powerSaveBlockerId: number | null = null;
 
 function emitToRenderer(event: MainToRendererSignalingEvent): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -183,6 +184,8 @@ async function createMainWindow(): Promise<void> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      backgroundThrottling: false,
+      v8CacheOptions: "code",
     },
   });
 
@@ -439,6 +442,22 @@ function registerIpcHandlers(): void {
       throw new Error("Signaling is not connected");
     }
     return signalingClient.sendIceCandidate(payload);
+  });
+
+  // Power save blocker handlers - prevent display sleep during streaming
+  ipcMain.handle(IPC_CHANNELS.POWER_SAVE_BLOCKER_START, async (): Promise<void> => {
+    if (powerSaveBlockerId === null) {
+      powerSaveBlockerId = powerSaveBlocker.start("prevent-display-sleep");
+      console.log("[Main] Power save blocker started, id:", powerSaveBlockerId);
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.POWER_SAVE_BLOCKER_STOP, async (): Promise<void> => {
+    if (powerSaveBlockerId !== null) {
+      powerSaveBlocker.stop(powerSaveBlockerId);
+      console.log("[Main] Power save blocker stopped, id:", powerSaveBlockerId);
+      powerSaveBlockerId = null;
+    }
   });
 
   // Toggle fullscreen via IPC (for completeness)
