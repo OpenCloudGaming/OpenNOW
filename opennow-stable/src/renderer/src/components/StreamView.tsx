@@ -553,7 +553,17 @@ export function StreamView({
     if (showSideBar) {
       document.exitPointerLock();
       void refreshScreenshots();
+      return;
     }
+    // Sidebar just closed — restore focus to the video so clicks register
+    // immediately. Without this, focus stays on the last sidebar element and
+    // mousedown's preventDefault() blocks the browser from re-focusing on click.
+    const timer = window.setTimeout(() => {
+      if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
+        localVideoRef.current.focus();
+      }
+    }, 50);
+    return () => clearTimeout(timer);
   }, [refreshScreenshots, showSideBar]);
 
   useEffect(() => {

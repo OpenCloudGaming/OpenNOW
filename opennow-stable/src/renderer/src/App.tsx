@@ -1458,7 +1458,13 @@ export function App(): JSX.Element {
         e.stopImmediatePropagation();
         if (streamStatus === "streaming" && videoRef.current) {
           if (document.pointerLockElement === videoRef.current) {
+            try {
+              (clientRef.current as any).suppressNextSyntheticEscape = true;
+            } catch {
+              // best-effort — client may not be initialised
+            }
             document.exitPointerLock();
+            setEscHoldReleaseIndicator({ visible: false, progress: 0 });
           } else {
             void requestEscLockedPointerCapture(videoRef.current);
           }
