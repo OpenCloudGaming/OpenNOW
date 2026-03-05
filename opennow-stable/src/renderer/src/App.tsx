@@ -853,10 +853,6 @@ export function App(): JSX.Element {
     void updateSetting("mouseSensitivity", value);
   }, [updateSetting]);
 
-  const handleMaxBitrateChange = useCallback((value: number) => {
-    void updateSetting("maxBitrateMbps", value);
-  }, [updateSetting]);
-
   const handleMicrophoneModeChange = useCallback((value: import("@shared/gfn").MicrophoneMode) => {
     void updateSetting("microphoneMode", value);
   }, [updateSetting]);
@@ -1561,8 +1557,6 @@ export function App(): JSX.Element {
             }}
             mouseSensitivity={settings.mouseSensitivity}
             onMouseSensitivityChange={handleMouseSensitivityChange}
-            maxBitrateMbps={settings.maxBitrateMbps}
-            onMaxBitrateChange={handleMaxBitrateChange}
             microphoneMode={settings.microphoneMode}
             onMicrophoneModeChange={handleMicrophoneModeChange}
             micTrack={clientRef.current?.getMicTrack() ?? null}

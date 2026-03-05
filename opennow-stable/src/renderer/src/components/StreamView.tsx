@@ -50,8 +50,6 @@ interface StreamViewProps {
   onMouseSensitivityChange: (value: number) => void;
   onRequestPointerLock?: () => void;
   onReleasePointerLock?: () => void;
-  maxBitrateMbps: number;
-  onMaxBitrateChange: (value: number) => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   micTrack?: MediaStreamTrack | null;
@@ -224,8 +222,6 @@ export function StreamView({
   onMouseSensitivityChange,
   onRequestPointerLock,
   onReleasePointerLock,
-  maxBitrateMbps,
-  onMaxBitrateChange,
   microphoneMode,
   onMicrophoneModeChange,
   micTrack,
@@ -474,32 +470,6 @@ export function StreamView({
                   }}
                 />
                 <span className="sidebar-hint">Multiplier applied to mouse movement (1.00 = default).</span>
-              </div>
-            </section>
-            <section className="sidebar-section">
-              <div className="sidebar-section-header">
-                <span>Max Bitrate</span>
-                <span className="sidebar-section-sub">Cap the encoder bandwidth</span>
-              </div>
-              <div className="sidebar-row sidebar-row--column">
-                <div className="sidebar-row-top">
-                  <span className="sidebar-label">Bandwidth Ceiling</span>
-                  <span className="settings-value-badge">{maxBitrateMbps} Mbps</span>
-                </div>
-                <input
-                  type="range"
-                  className="settings-slider"
-                  min={5}
-                  max={150}
-                  step={5}
-                  value={maxBitrateMbps}
-                  onChange={(event) => {
-                    const next = Number(event.target.value);
-                    if (Number.isFinite(next)) {
-                      onMaxBitrateChange(Math.max(5, Math.min(150, next)));
-                    }
-                  }}
-                />
               </div>
             </section>
             <section className="sidebar-section">
