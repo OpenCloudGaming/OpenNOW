@@ -617,6 +617,54 @@ export class GfnWebRtcClient {
   }
 
   /**
+   * Replace the b=AS bandwidth line in video sections of an SDP string.
+   * Unlike mungeAnswerSdp, this is safe to call on an already-munged SDP
+   * because it replaces the existing line rather than injecting a new one.
+   */
+  private replaceVideoBitrateInSdp(sdp: string, maxBitrateKbps: number): string {
+    const lines = sdp.split("\r\n");
+    let inVideoSection = false;
+    let bitrateReplaced = false;
+    const result: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith("m=")) {
+        inVideoSection = line.startsWith("m=video");
+        bitrateReplaced = false;
+      }
+      if (inVideoSection && !bitrateReplaced && line.startsWith("b=AS:")) {
+        result.push(`b=AS:${maxBitrateKbps}`);
+        bitrateReplaced = true;
+        continue;
+      }
+      result.push(line);
+    }
+    return result.join("\r\n");
+  }
+
+  /**
+   * Update the maximum receive bitrate ceiling mid-stream by replacing b=AS
+   * in the local SDP and re-applying it. Chrome/Electron honours this change
+   * without requiring a full ICE renegotiation.
+   */
+  public async setMaxBitrateKbps(kbps: number): Promise<void> {
+    if (!this.pc || !this.pc.localDescription) {
+      return;
+    }
+    const updatedSdp = this.replaceVideoBitrateInSdp(
+      this.pc.localDescription.sdp,
+      kbps,
+    );
+    try {
+      await this.pc.setLocalDescription(
+        new RTCSessionDescription({ type: this.pc.localDescription.type, sdp: updatedSdp }),
+      );
+      this.log(`Bitrate ceiling updated to ${kbps} kbps via local SDP`);
+    } catch (err) {
+      this.log(`setMaxBitrateKbps failed (non-fatal): ${String(err)}`);
+    }
+  }
+
+  /**
    * Configure an RTCRtpReceiver for minimum jitter buffer delay.
    *
    * jitterBufferTarget controls how long Chrome holds decoded frames before
@@ -2866,6 +2914,14 @@ export class GfnWebRtcClient {
    */
   getMicrophoneState(): MicState {
     return this.micState;
+  }
+
+  /**
+   * Return the live audio track from the microphone stream, or null if
+   * the mic has not been started or has been stopped.
+   */
+  getMicTrack(): MediaStreamTrack | null {
+    return this.micManager?.getTrack() ?? null;
   }
 
   /**

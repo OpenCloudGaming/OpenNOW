@@ -3156,6 +3156,12 @@ button.game-card-store-chip.active:hover {
   z-index: 1000;
   cursor: pointer;
 }
+.mic-meter-canvas {
+  display: block;
+  width: 100%;
+  height: 14px;
+  border-radius: 3px;
+}
 
 
 /* ======================================================

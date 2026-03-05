@@ -54,6 +54,7 @@ interface StreamViewProps {
   onMaxBitrateChange: (value: number) => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
+  micTrack?: MediaStreamTrack | null;
 }
 
 function getRttColor(rttMs: number): string {
@@ -106,6 +107,96 @@ function formatWarningSeconds(value: number | undefined): string | null {
   return `${seconds}s`;
 }
 
+/**
+ * Drives a canvas-based segmented level meter from a live MediaStreamTrack.
+ * Uses the Web Audio API AnalyserNode as a read-only tap — audio is never
+ * routed to the speaker. Runs a requestAnimationFrame loop while active;
+ * tears down fully (rAF cancelled, AudioContext closed) on deactivation.
+ */
+function useMicMeter(
+  canvasRef: React.RefObject<HTMLCanvasElement | null>,
+  track: MediaStreamTrack | null,
+  active: boolean,
+): void {
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!active || !track || !canvas) return;
+
+    const ctx2d = canvas.getContext("2d");
+    if (!ctx2d) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(canvas.clientWidth * dpr);
+    canvas.height = Math.round(canvas.clientHeight * dpr);
+    const W = canvas.width;
+    const H = canvas.height;
+
+    let audioCtx: AudioContext | null = null;
+    let source: MediaStreamAudioSourceNode | null = null;
+    let analyser: AnalyserNode | null = null;
+    let raf = 0;
+    let dead = false;
+
+    try {
+      audioCtx = new AudioContext();
+      void audioCtx.resume();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.65;
+      source = audioCtx.createMediaStreamSource(new MediaStream([track]));
+      source.connect(analyser);
+      // NOT connected to destination — monitoring only, no loopback
+
+      const buf = new Uint8Array(analyser.frequencyBinCount);
+      const SEG = 20;
+      const GAP = Math.round(2 * dpr);
+      const bw = (W - GAP * (SEG - 1)) / SEG;
+      const radius = Math.min(3 * dpr, bw / 2);
+
+      const frame = () => {
+        if (dead) return;
+        raf = requestAnimationFrame(frame);
+        analyser!.getByteTimeDomainData(buf);
+
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) {
+          const v = ((buf[i] ?? 128) - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / buf.length);
+        const level = Math.min(1, rms * 5.5);
+        const filled = Math.round(level * SEG);
+
+        ctx2d.clearRect(0, 0, W, H);
+        for (let i = 0; i < SEG; i++) {
+          const x = i * (bw + GAP);
+          if (i < filled) {
+            ctx2d.fillStyle =
+              i < SEG * 0.7 ? "#58d98a" : i < SEG * 0.9 ? "#fbbf24" : "#f87171";
+          } else {
+            ctx2d.fillStyle = "rgba(255,255,255,0.07)";
+          }
+          ctx2d.beginPath();
+          ctx2d.roundRect(x, 0, Math.max(1, bw), H, radius);
+          ctx2d.fill();
+        }
+      };
+
+      frame();
+    } catch (e) {
+      console.warn("[MicMeter]", e);
+    }
+
+    return () => {
+      dead = true;
+      cancelAnimationFrame(raf);
+      source?.disconnect();
+      analyser?.disconnect();
+      void audioCtx?.close();
+    };
+  }, [track, active, canvasRef]);
+}
+
 export function StreamView({
   videoRef,
   audioRef,
@@ -137,6 +228,7 @@ export function StreamView({
   onMaxBitrateChange,
   microphoneMode,
   onMicrophoneModeChange,
+  micTrack,
   hideStreamButtons = false,
 }: StreamViewProps): JSX.Element {
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -252,6 +344,10 @@ export function StreamView({
 
   // Local ref for video element to manage focus
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Mic level meter canvas
+  const micMeterRef = useRef<HTMLCanvasElement | null>(null);
+  useMicMeter(micMeterRef, micTrack ?? null, showSideBar && microphoneMode !== "disabled");
 
   // Combined ref callback that sets both local and forwarded ref
   const setVideoRef = useCallback((element: HTMLVideoElement | null) => {
@@ -434,6 +530,24 @@ export function StreamView({
                   {microphoneModes.find((option) => option.value === microphoneMode)?.description ?? ""}
                 </span>
               </div>
+              {microphoneMode !== "disabled" && (
+                <div className="sidebar-row sidebar-row--column">
+                  <div className="sidebar-row-top">
+                    <span className="sidebar-label">Input Level</span>
+                    {micTrack && !micEnabled && (
+                      <span className="settings-value-badge">Muted</span>
+                    )}
+                  </div>
+                  <canvas
+                    ref={micMeterRef}
+                    className="mic-meter-canvas"
+                    aria-label="Microphone input level"
+                  />
+                  {!micTrack && (
+                    <span className="sidebar-hint">Mic not active — check mode and permissions.</span>
+                  )}
+                </div>
+              )}
             </section>
           </SideBar>
         </>

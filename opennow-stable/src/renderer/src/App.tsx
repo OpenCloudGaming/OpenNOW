@@ -840,6 +840,13 @@ export function App(): JSX.Element {
         // ignore
       }
     }
+    if (key === "maxBitrateMbps") {
+      try {
+        void (clientRef.current as any)?.setMaxBitrateKbps?.((value as number) * 1000);
+      } catch {
+        // ignore
+      }
+    }
   }, [settingsLoaded]);
 
   const handleMouseSensitivityChange = useCallback((value: number) => {
@@ -1558,6 +1565,7 @@ export function App(): JSX.Element {
             onMaxBitrateChange={handleMaxBitrateChange}
             microphoneMode={settings.microphoneMode}
             onMicrophoneModeChange={handleMicrophoneModeChange}
+            micTrack={clientRef.current?.getMicTrack() ?? null}
             onRequestPointerLock={handleRequestPointerLock}
             onReleasePointerLock={() => {
               void releasePointerLockIfNeeded();
