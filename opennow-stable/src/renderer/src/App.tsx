@@ -185,7 +185,10 @@ function warningMessage(code: StreamTimeWarning["code"]): string {
   return "Maximum session time approaching";
 }
 
-function formatRemainingPlaytimeFromSubscription(subscription: SubscriptionInfo | null): string {
+function formatRemainingPlaytimeFromSubscription(
+  subscription: SubscriptionInfo | null,
+  consumedHours = 0,
+): string {
   if (!subscription) {
     return "--";
   }
@@ -193,7 +196,8 @@ function formatRemainingPlaytimeFromSubscription(subscription: SubscriptionInfo 
     return "Unlimited";
   }
 
-  const safeHours = Math.max(0, Number.isFinite(subscription.remainingHours) ? subscription.remainingHours : 0);
+  const baseHours = Number.isFinite(subscription.remainingHours) ? subscription.remainingHours : 0;
+  const safeHours = Math.max(0, baseHours - Math.max(0, consumedHours));
   const totalMinutes = Math.round(safeHours * 60);
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
@@ -1532,7 +1536,11 @@ export function App(): JSX.Element {
   }
 
   const showLaunchOverlay = streamStatus !== "idle" || launchError !== null;
-  const remainingPlaytimeText = formatRemainingPlaytimeFromSubscription(subscriptionInfo);
+  const consumedHours =
+    streamStatus === "streaming"
+      ? Math.floor(sessionElapsedSeconds / 60) / 60
+      : 0;
+  const remainingPlaytimeText = formatRemainingPlaytimeFromSubscription(subscriptionInfo, consumedHours);
 
   // Show stream lifecycle (waiting/connecting/streaming/failure)
   if (showLaunchOverlay) {
