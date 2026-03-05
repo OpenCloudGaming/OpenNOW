@@ -1466,19 +1466,38 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               <span className="settings-subtle-hint">Multiplier applied to mouse movement (1.00 = default)</span>
             </div>
 
-            <div className="settings-row">
-              <label className="settings-label">
-                Mouse Accelerator
-                <span className="settings-hint">Adds dynamic turn boost at higher mouse speeds while preserving low-speed precision.</span>
-              </label>
-              <label className="settings-toggle">
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Mouse Accelerator</label>
+                <span className="settings-value-badge">{Math.round(settings.mouseAcceleration)}%</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <input
-                  type="checkbox"
-                  checked={settings.mouseAcceleration}
-                  onChange={(e) => handleChange("mouseAcceleration", e.target.checked)}
+                  type="range"
+                  className="settings-slider"
+                  min={1}
+                  max={150}
+                  step={1}
+                  value={Math.round(settings.mouseAcceleration)}
+                  onChange={(e) => handleChange("mouseAcceleration", Math.max(1, Math.min(150, Math.round(Number(e.target.value) || 1))))}
                 />
-                <span className="settings-toggle-track" />
-              </label>
+                <input
+                  type="number"
+                  className="settings-number-input"
+                  style={{ width: 80 }}
+                  min={1}
+                  max={150}
+                  step={1}
+                  value={Math.round(settings.mouseAcceleration)}
+                  onChange={(e) => {
+                    const v = Number(e.target.value || "1");
+                    if (Number.isFinite(v)) {
+                      handleChange("mouseAcceleration", Math.max(1, Math.min(150, Math.round(v))));
+                    }
+                  }}
+                />
+              </div>
+              <span className="settings-subtle-hint">Dynamic turn boost strength (1% = off-like, 150% = strongest).</span>
             </div>
 
             <div className="settings-row settings-row--column">

@@ -185,8 +185,8 @@ interface ClientOptions {
   microphoneDeviceId?: string;
   /** Mouse sensitivity multiplier (1.0 = default) */
   mouseSensitivity?: number;
-  /** Apply software acceleration to mouse deltas before sending */
-  mouseAcceleration?: boolean;
+  /** Software acceleration strength percentage (1-150) */
+  mouseAcceleration?: number;
   onLog: (line: string) => void;
   onStats?: (stats: StreamDiagnostics) => void;
   onEscHoldProgress?: (visible: boolean, progress: number) => void;
@@ -508,7 +508,7 @@ export class GfnWebRtcClient {
   private pendingMouseTimestampUs: bigint | null = null;
   private mouseDeltaFilter = new MouseDeltaFilter();
   private mouseSensitivity = 1;
-  private mouseAccelerationEnabled = false;
+  private mouseAccelerationPercent = 1;
 
   private partialReliableThresholdMs = GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
   private inputQueuePeakBufferedBytesWindow = 0;
@@ -564,7 +564,7 @@ export class GfnWebRtcClient {
     options.audioElement.srcObject = this.audioStream;
     options.audioElement.muted = true;
     this.mouseSensitivity = options.mouseSensitivity ?? 1;
-    this.mouseAccelerationEnabled = options.mouseAcceleration ?? false;
+    this.mouseAccelerationPercent = Math.max(1, Math.min(150, Math.round(options.mouseAcceleration ?? 1)));
 
     // Configure video element for lowest latency playback
     this.configureVideoElementForLowLatency(options.videoElement);
@@ -620,10 +620,11 @@ export class GfnWebRtcClient {
     this.log(`Mouse sensitivity set to ${this.mouseSensitivity}`);
   }
 
-  /** Enable/disable software mouse acceleration at runtime. */
-  public setMouseAccelerationEnabled(value: boolean): void {
-    this.mouseAccelerationEnabled = Boolean(value);
-    this.log(`Mouse acceleration ${this.mouseAccelerationEnabled ? "enabled" : "disabled"}`);
+  /** Update software mouse acceleration strength at runtime (1-150%). */
+  public setMouseAccelerationPercent(value: number): void {
+    const v = Number.isFinite(value) ? value : 1;
+    this.mouseAccelerationPercent = Math.max(1, Math.min(150, Math.round(v)));
+    this.log(`Mouse acceleration set to ${this.mouseAccelerationPercent}%`);
   }
 
   /**
@@ -1913,10 +1914,11 @@ export class GfnWebRtcClient {
       let adjustedDx = this.mouseDeltaFilter.getX() * this.mouseSensitivity;
       let adjustedDy = this.mouseDeltaFilter.getY() * this.mouseSensitivity;
 
-      if (this.mouseAccelerationEnabled) {
+      if (this.mouseAccelerationPercent > 1) {
         const speed = Math.hypot(adjustedDx, adjustedDy);
-        // Gentle curve: low-speed precision, high-speed turn boost (caps at +60%).
-        const accelFactor = 1 + Math.min(0.6, speed / 50);
+        const strength = (this.mouseAccelerationPercent - 1) / 149;
+        // Gentle curve: low-speed precision, high-speed turn boost (caps at +60% at 150%).
+        const accelFactor = 1 + Math.min(0.6 * strength, (speed / 50) * strength);
         adjustedDx *= accelFactor;
         adjustedDy *= accelFactor;
       }

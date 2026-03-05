@@ -20,8 +20,8 @@ export interface Settings {
   clipboardPaste: boolean;
   /** Mouse sensitivity multiplier */
   mouseSensitivity: number;
-  /** Apply software mouse acceleration on top of sensitivity */
-  mouseAcceleration: boolean;
+  /** Software mouse acceleration strength percentage (1-150) */
+  mouseAcceleration: number;
   /** Toggle stats overlay shortcut */
   shortcutToggleStats: string;
   /** Toggle pointer lock shortcut */
@@ -65,7 +65,7 @@ const DEFAULT_SETTINGS: Settings = {
   region: "",
   clipboardPaste: false,
   mouseSensitivity: 1,
-  mouseAcceleration: false,
+  mouseAcceleration: 1,
   shortcutToggleStats: "F3",
   shortcutTogglePointerLock: "F8",
   shortcutStopStream: defaultStopShortcut,
@@ -108,7 +108,15 @@ export class SettingsManager {
         ...parsed,
       };
 
-      const migrated = this.migrateLegacyShortcutDefaults(merged);
+      let migrated = this.migrateLegacyShortcutDefaults(merged);
+
+      // Migrate legacy boolean accelerator setting to percentage slider.
+      if (typeof (parsed as { mouseAcceleration?: unknown }).mouseAcceleration === "boolean") {
+        merged.mouseAcceleration = (parsed as { mouseAcceleration?: boolean }).mouseAcceleration ? 100 : 1;
+        migrated = true;
+      }
+
+      merged.mouseAcceleration = Math.max(1, Math.min(150, Math.round(merged.mouseAcceleration)));
       if (migrated) {
         writeFileSync(this.settingsPath, JSON.stringify(merged, null, 2), "utf-8");
       }

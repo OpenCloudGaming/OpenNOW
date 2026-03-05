@@ -50,8 +50,8 @@ interface StreamViewProps {
   onToggleMicrophone?: () => void;
   mouseSensitivity: number;
   onMouseSensitivityChange: (value: number) => void;
-  mouseAcceleration: boolean;
-  onMouseAccelerationChange: (value: boolean) => void;
+  mouseAcceleration: number;
+  onMouseAccelerationChange: (value: number) => void;
   onRequestPointerLock?: () => void;
   onReleasePointerLock?: () => void;
   microphoneMode: MicrophoneMode;
@@ -628,25 +628,23 @@ export function StreamView({
               <div className="sidebar-row sidebar-row--column">
                 <div className="sidebar-row-top">
                   <span className="sidebar-label">Mouse Accelerator</span>
-                  <span className="settings-value-badge">{mouseAcceleration ? "Enabled" : "Disabled"}</span>
+                  <span className="settings-value-badge">{Math.round(mouseAcceleration)}%</span>
                 </div>
-                <div className="sidebar-chip-row">
-                  <button
-                    type="button"
-                    className={`sidebar-chip${!mouseAcceleration ? " sidebar-chip--active" : ""}`}
-                    onClick={() => onMouseAccelerationChange(false)}
-                  >
-                    <span>Off</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`sidebar-chip${mouseAcceleration ? " sidebar-chip--active" : ""}`}
-                    onClick={() => onMouseAccelerationChange(true)}
-                  >
-                    <span>On</span>
-                  </button>
-                </div>
-                <span className="sidebar-hint">Boosts large/faster turns while keeping fine movement precise.</span>
+                <input
+                  type="range"
+                  className="settings-slider"
+                  min={1}
+                  max={150}
+                  step={1}
+                  value={Math.round(mouseAcceleration)}
+                  onChange={(event) => {
+                    const next = Number(event.target.value);
+                    if (Number.isFinite(next)) {
+                      onMouseAccelerationChange(Math.max(1, Math.min(150, Math.round(next))));
+                    }
+                  }}
+                />
+                <span className="sidebar-hint">Dynamic turn boost strength (1% = off-like, 150% = strongest).</span>
               </div>
             </section>
             <div className="sidebar-separator" aria-hidden="true" />

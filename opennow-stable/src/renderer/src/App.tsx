@@ -328,7 +328,7 @@ export function App(): JSX.Element {
     region: "",
     clipboardPaste: false,
     mouseSensitivity: 1,
-    mouseAcceleration: false,
+    mouseAcceleration: 1,
     shortcutToggleStats: DEFAULT_SHORTCUTS.shortcutToggleStats,
     shortcutTogglePointerLock: DEFAULT_SHORTCUTS.shortcutTogglePointerLock,
     shortcutStopStream: DEFAULT_SHORTCUTS.shortcutStopStream,
@@ -901,7 +901,7 @@ export function App(): JSX.Element {
     }
     if (key === "mouseAcceleration") {
       try {
-        (clientRef.current as any)?.setMouseAccelerationEnabled?.(value as boolean);
+        (clientRef.current as any)?.setMouseAccelerationPercent?.(value as number);
       } catch {
         // ignore
       }
@@ -919,7 +919,7 @@ export function App(): JSX.Element {
     void updateSetting("mouseSensitivity", value);
   }, [updateSetting]);
 
-  const handleMouseAccelerationChange = useCallback((value: boolean) => {
+  const handleMouseAccelerationChange = useCallback((value: number) => {
     void updateSetting("mouseAcceleration", value);
   }, [updateSetting]);
 
