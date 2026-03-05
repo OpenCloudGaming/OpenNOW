@@ -184,6 +184,25 @@ function warningMessage(code: StreamTimeWarning["code"]): string {
   return "Maximum session time approaching";
 }
 
+function formatRemainingPlaytimeFromSubscription(subscription: SubscriptionInfo | null): string {
+  if (!subscription) {
+    return "--";
+  }
+  if (subscription.isUnlimited) {
+    return "Unlimited";
+  }
+
+  const safeHours = Math.max(0, Number.isFinite(subscription.remainingHours) ? subscription.remainingHours : 0);
+  const totalMinutes = Math.round(safeHours * 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
+  }
+  return `${minutes}m`;
+}
+
 function toLoadingStatus(status: StreamStatus): StreamLoadingStatus {
   switch (status) {
     case "queue":
@@ -1509,6 +1528,7 @@ export function App(): JSX.Element {
   }
 
   const showLaunchOverlay = streamStatus !== "idle" || launchError !== null;
+  const remainingPlaytimeText = formatRemainingPlaytimeFromSubscription(subscriptionInfo);
 
   // Show stream lifecycle (waiting/connecting/streaming/failure)
   if (showLaunchOverlay) {
@@ -1559,6 +1579,7 @@ export function App(): JSX.Element {
             onMouseSensitivityChange={handleMouseSensitivityChange}
             microphoneMode={settings.microphoneMode}
             onMicrophoneModeChange={handleMicrophoneModeChange}
+            remainingPlaytimeText={remainingPlaytimeText}
             micTrack={clientRef.current?.getMicTrack() ?? null}
             onRequestPointerLock={handleRequestPointerLock}
             onReleasePointerLock={() => {

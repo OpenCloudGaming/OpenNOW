@@ -3057,6 +3057,24 @@ button.game-card-store-chip.active:hover {
   flex-direction: column;
   gap: 12px;
 }
+.sidebar-stat-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sidebar-stat-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.sidebar-separator {
+  height: 1px;
+  background: var(--panel-border);
+  width: 100%;
+}
 .sidebar-section {
   display: flex;
   flex-direction: column;
