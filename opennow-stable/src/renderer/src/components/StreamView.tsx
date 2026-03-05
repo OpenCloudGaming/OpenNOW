@@ -122,6 +122,8 @@ function useMicMeter(
   track: MediaStreamTrack | null,
   active: boolean,
 ): void {
+  const pendingCloseRef = useRef<Promise<void> | null>(null);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!active || !track || !canvas) return;
@@ -134,6 +136,9 @@ function useMicMeter(
     canvas.height = Math.round(canvas.clientHeight * dpr);
     const W = canvas.width;
     const H = canvas.height;
+    if (W <= 0 || H <= 0) {
+      return;
+    }
 
     let audioCtx: AudioContext | null = null;
     let source: MediaStreamAudioSourceNode | null = null;
@@ -141,62 +146,86 @@ function useMicMeter(
     let raf = 0;
     let dead = false;
 
-    try {
-      audioCtx = new AudioContext();
-      void audioCtx.resume();
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.65;
-      source = audioCtx.createMediaStreamSource(new MediaStream([track]));
-      source.connect(analyser);
-      // NOT connected to destination — monitoring only, no loopback
-
-      const buf = new Uint8Array(analyser.frequencyBinCount);
-      const SEG = 20;
-      const GAP = Math.round(2 * dpr);
-      const bw = (W - GAP * (SEG - 1)) / SEG;
-      const radius = Math.min(3 * dpr, bw / 2);
-
-      const frame = () => {
-        if (dead) return;
-        raf = requestAnimationFrame(frame);
-        analyser!.getByteTimeDomainData(buf);
-
-        let sum = 0;
-        for (let i = 0; i < buf.length; i++) {
-          const v = ((buf[i] ?? 128) - 128) / 128;
-          sum += v * v;
+    const start = async () => {
+      if (pendingCloseRef.current) {
+        try {
+          await pendingCloseRef.current;
+        } catch {
+          // Ignore close errors from previous contexts.
         }
-        const rms = Math.sqrt(sum / buf.length);
-        const level = Math.min(1, rms * 5.5);
-        const filled = Math.round(level * SEG);
+      }
+      if (dead) {
+        return;
+      }
 
-        ctx2d.clearRect(0, 0, W, H);
-        for (let i = 0; i < SEG; i++) {
-          const x = i * (bw + GAP);
-          if (i < filled) {
-            ctx2d.fillStyle =
-              i < SEG * 0.7 ? "#58d98a" : i < SEG * 0.9 ? "#fbbf24" : "#f87171";
-          } else {
-            ctx2d.fillStyle = "rgba(255,255,255,0.07)";
+      try {
+        audioCtx = new AudioContext();
+        await audioCtx.resume().catch(() => undefined);
+        if (dead) {
+          return;
+        }
+
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.65;
+        source = audioCtx.createMediaStreamSource(new MediaStream([track]));
+        source.connect(analyser);
+        // NOT connected to destination — monitoring only, no loopback
+
+        const buf = new Uint8Array(analyser.frequencyBinCount);
+        const SEG = 20;
+        const GAP = Math.round(2 * dpr);
+        const bw = (W - GAP * (SEG - 1)) / SEG;
+        const radius = Math.min(3 * dpr, bw / 2);
+
+        const frame = () => {
+          if (dead || !analyser) return;
+          raf = requestAnimationFrame(frame);
+          analyser.getByteTimeDomainData(buf);
+
+          let sum = 0;
+          for (let i = 0; i < buf.length; i++) {
+            const v = ((buf[i] ?? 128) - 128) / 128;
+            sum += v * v;
           }
-          ctx2d.beginPath();
-          ctx2d.roundRect(x, 0, Math.max(1, bw), H, radius);
-          ctx2d.fill();
-        }
-      };
+          const rms = Math.sqrt(sum / buf.length);
+          const level = Math.min(1, rms * 5.5);
+          const filled = Math.round(level * SEG);
 
-      frame();
-    } catch (e) {
-      console.warn("[MicMeter]", e);
-    }
+          ctx2d.clearRect(0, 0, W, H);
+          for (let i = 0; i < SEG; i++) {
+            const x = i * (bw + GAP);
+            if (i < filled) {
+              ctx2d.fillStyle =
+                i < SEG * 0.7 ? "#58d98a" : i < SEG * 0.9 ? "#fbbf24" : "#f87171";
+            } else {
+              ctx2d.fillStyle = "rgba(255,255,255,0.07)";
+            }
+            ctx2d.beginPath();
+            ctx2d.roundRect(x, 0, Math.max(1, bw), H, radius);
+            ctx2d.fill();
+          }
+        };
+
+        frame();
+      } catch (e) {
+        console.warn("[MicMeter]", e);
+      }
+    };
+
+    void start();
 
     return () => {
       dead = true;
       cancelAnimationFrame(raf);
       source?.disconnect();
       analyser?.disconnect();
-      void audioCtx?.close();
+      if (audioCtx && audioCtx.state !== "closed") {
+        pendingCloseRef.current = audioCtx
+          .close()
+          .catch(() => undefined)
+          .then(() => undefined);
+      }
     };
   }, [track, active, canvasRef]);
 }
@@ -247,13 +276,13 @@ export function StreamView({
   const [galleryError, setGalleryError] = useState<string | null>(null);
   const [selectedScreenshotId, setSelectedScreenshotId] = useState<string | null>(null);
   const [screenshotShortcutInput, setScreenshotShortcutInput] = useState(shortcuts.screenshot);
-  const [screenshotShortcutError, setScreenshotShortcutError] = useState(false);
+  const [screenshotShortcutError, setScreenshotShortcutError] = useState<string | null>(null);
   const [activeSidebarTab, setActiveSidebarTab] = useState<"preferences" | "shortcuts">("preferences");
   const screenshotApiAvailable =
-    typeof (window.openNow as any)?.saveScreenshot === "function" &&
-    typeof (window.openNow as any)?.listScreenshots === "function" &&
-    typeof (window.openNow as any)?.deleteScreenshot === "function" &&
-    typeof (window.openNow as any)?.saveScreenshotAs === "function";
+    typeof window.openNow?.saveScreenshot === "function" &&
+    typeof window.openNow?.listScreenshots === "function" &&
+    typeof window.openNow?.deleteScreenshot === "function" &&
+    typeof window.openNow?.saveScreenshotAs === "function";
 
   // Microphone state
   const micState = stats.micState ?? "uninitialized";
@@ -376,9 +405,41 @@ export function StreamView({
 
   useEffect(() => {
     setScreenshotShortcutInput(shortcuts.screenshot);
+    setScreenshotShortcutError(null);
   }, [shortcuts.screenshot]);
 
+  const getScreenshotShortcutError = useCallback((rawValue: string): string | null => {
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      return "Shortcut cannot be empty.";
+    }
+
+    const normalized = normalizeShortcut(trimmed);
+    if (!normalized.valid) {
+      return "Invalid shortcut format.";
+    }
+
+    const reserved = [
+      shortcuts.toggleStats,
+      shortcuts.togglePointerLock,
+      shortcuts.stopStream,
+      shortcuts.toggleMicrophone,
+      isMacClient ? "Cmd+G" : "Ctrl+Shift+G",
+    ]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => normalizeShortcut(value))
+      .filter((parsed) => parsed.valid)
+      .map((parsed) => parsed.canonical);
+
+    if (reserved.includes(normalized.canonical)) {
+      return "Shortcut conflicts with an existing binding.";
+    }
+
+    return null;
+  }, [isMacClient, shortcuts.stopStream, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
+
   const refreshScreenshots = useCallback(async () => {
+    setGalleryError(null);
     if (!screenshotApiAvailable) {
       setGalleryError("Screenshot API unavailable. Restart OpenNOW to enable gallery.");
       return;
@@ -393,6 +454,7 @@ export function StreamView({
   }, [screenshotApiAvailable]);
 
   const captureScreenshot = useCallback(async () => {
+    setGalleryError(null);
     if (!screenshotApiAvailable) {
       setGalleryError("Screenshot API unavailable. Restart OpenNOW to enable capture.");
       return;
@@ -408,7 +470,6 @@ export function StreamView({
     }
 
     setIsSavingScreenshot(true);
-    setGalleryError(null);
     try {
       const canvas = document.createElement("canvas");
       canvas.width = video.videoWidth;
@@ -438,6 +499,7 @@ export function StreamView({
   }, []);
 
   const handleDeleteScreenshot = useCallback(async () => {
+    setGalleryError(null);
     if (!screenshotApiAvailable) {
       setGalleryError("Screenshot API unavailable. Restart OpenNOW to enable gallery.");
       return;
@@ -455,6 +517,7 @@ export function StreamView({
   }, [screenshotApiAvailable, selectedScreenshot]);
 
   const handleSaveScreenshotAs = useCallback(async () => {
+    setGalleryError(null);
     if (!screenshotApiAvailable) {
       setGalleryError("Screenshot API unavailable. Restart OpenNOW to enable gallery.");
       return;
@@ -781,14 +844,23 @@ export function StreamView({
                       type="text"
                       className={`settings-text-input settings-shortcut-input sidebar-shortcut-input ${screenshotShortcutError ? "error" : ""}`}
                       value={screenshotShortcutInput}
-                      onChange={(event) => setScreenshotShortcutInput(event.target.value)}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        setScreenshotShortcutInput(nextValue);
+                        setScreenshotShortcutError(getScreenshotShortcutError(nextValue));
+                      }}
                       onBlur={() => {
-                        const normalized = normalizeShortcut(screenshotShortcutInput.trim());
-                        if (!normalized.valid) {
-                          setScreenshotShortcutError(true);
+                        const error = getScreenshotShortcutError(screenshotShortcutInput);
+                        if (error) {
+                          setScreenshotShortcutError(error);
                           return;
                         }
-                        setScreenshotShortcutError(false);
+                        const normalized = normalizeShortcut(screenshotShortcutInput.trim());
+                        if (!normalized.valid) {
+                          setScreenshotShortcutError("Invalid shortcut format.");
+                          return;
+                        }
+                        setScreenshotShortcutError(null);
                         setScreenshotShortcutInput(normalized.canonical);
                         if (normalized.canonical !== shortcuts.screenshot) {
                           onScreenshotShortcutChange(normalized.canonical);
@@ -803,7 +875,7 @@ export function StreamView({
                       spellCheck={false}
                     />
                   </div>
-                  {screenshotShortcutError && <span className="sidebar-hint sidebar-hint--error">Invalid shortcut format.</span>}
+                  {screenshotShortcutError && <span className="sidebar-hint sidebar-hint--error">{screenshotShortcutError}</span>}
                   <div className="sidebar-row sidebar-row--aligned">
                     <span className="sidebar-label">Toggle Stats</span>
                     <span className="settings-value-badge">{shortcuts.toggleStats}</span>

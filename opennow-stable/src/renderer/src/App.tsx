@@ -927,7 +927,10 @@ export function App(): JSX.Element {
   }, [updateSetting]);
 
   const handleMicrophoneModeChange = useCallback((value: import("@shared/gfn").MicrophoneMode) => {
-    void updateSetting("microphoneMode", value);
+    // Keep UI responsive while still surfacing persistence failures.
+    void updateSetting("microphoneMode", value).catch((error) => {
+      console.warn("Failed to persist microphone mode setting:", error);
+    });
   }, [updateSetting]);
 
   // Login handler

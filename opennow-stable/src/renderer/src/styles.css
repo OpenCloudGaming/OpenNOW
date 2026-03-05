@@ -3057,6 +3057,9 @@ button.game-card-store-chip.active:hover {
   flex-direction: column;
   gap: 12px;
 }
+.sidebar-body > * {
+  min-width: 0;
+}
 .sidebar-stat-line {
   display: flex;
   align-items: center;
@@ -3117,6 +3120,7 @@ button.game-card-store-chip.active:hover {
 .sidebar-section-sub {
   font-size: 0.74rem;
   letter-spacing: normal;
+  overflow-wrap: anywhere;
 }
 .sidebar-row {
   display: flex;
@@ -3145,12 +3149,14 @@ button.game-card-store-chip.active:hover {
 .sidebar-hint {
   font-size: 0.72rem;
   color: var(--ink-muted);
+  overflow-wrap: anywhere;
 }
 .sidebar-hint--error {
   color: #fda4af;
 }
 .sidebar-shortcut-input {
   width: 100%;
+  min-width: 0;
 }
 .sidebar-button {
   border-radius: 4px;
