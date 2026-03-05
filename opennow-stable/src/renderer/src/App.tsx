@@ -67,6 +67,7 @@ const DEFAULT_SHORTCUTS = {
   shortcutStopStream: "Ctrl+Shift+Q",
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
   shortcutToggleMicrophone: "Ctrl+Shift+M",
+  shortcutScreenshot: "F11",
 } as const;
 
 function sleep(ms: number): Promise<void> {
@@ -327,6 +328,7 @@ export function App(): JSX.Element {
     shortcutStopStream: DEFAULT_SHORTCUTS.shortcutStopStream,
     shortcutToggleAntiAfk: DEFAULT_SHORTCUTS.shortcutToggleAntiAfk,
     shortcutToggleMicrophone: DEFAULT_SHORTCUTS.shortcutToggleMicrophone,
+    shortcutScreenshot: DEFAULT_SHORTCUTS.shortcutScreenshot,
     microphoneMode: "disabled",
     microphoneDeviceId: "",
     hideStreamButtons: false,
@@ -609,13 +611,15 @@ export function App(): JSX.Element {
     const stopStream = parseWithFallback(settings.shortcutStopStream, DEFAULT_SHORTCUTS.shortcutStopStream);
     const toggleAntiAfk = parseWithFallback(settings.shortcutToggleAntiAfk, DEFAULT_SHORTCUTS.shortcutToggleAntiAfk);
     const toggleMicrophone = parseWithFallback(settings.shortcutToggleMicrophone, DEFAULT_SHORTCUTS.shortcutToggleMicrophone);
-    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk, toggleMicrophone };
+    const screenshot = parseWithFallback(settings.shortcutScreenshot, DEFAULT_SHORTCUTS.shortcutScreenshot);
+    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk, toggleMicrophone, screenshot };
   }, [
     settings.shortcutToggleStats,
     settings.shortcutTogglePointerLock,
     settings.shortcutStopStream,
     settings.shortcutToggleAntiAfk,
     settings.shortcutToggleMicrophone,
+    settings.shortcutScreenshot,
   ]);
 
   const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
@@ -1546,6 +1550,7 @@ export function App(): JSX.Element {
               togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),
               stopStream: formatShortcutForDisplay(settings.shortcutStopStream, isMac),
               toggleMicrophone: formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac),
+              screenshot: shortcuts.screenshot.canonical,
             }}
             hideStreamButtons={settings.hideStreamButtons}
             serverRegion={session?.serverIp}
@@ -1579,6 +1584,9 @@ export function App(): JSX.Element {
             onMouseSensitivityChange={handleMouseSensitivityChange}
             microphoneMode={settings.microphoneMode}
             onMicrophoneModeChange={handleMicrophoneModeChange}
+            onScreenshotShortcutChange={(value) => {
+              void updateSetting("shortcutScreenshot", value);
+            }}
             remainingPlaytimeText={remainingPlaytimeText}
             micTrack={clientRef.current?.getMicTrack() ?? null}
             onRequestPointerLock={handleRequestPointerLock}

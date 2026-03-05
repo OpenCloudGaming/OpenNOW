@@ -5,6 +5,7 @@ import SideBar from "./SideBar";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import type { MicrophoneMode, ScreenshotEntry } from "@shared/gfn";
+import { isShortcutMatch, normalizeShortcut } from "../shortcuts";
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -16,6 +17,7 @@ interface StreamViewProps {
     togglePointerLock: string;
     stopStream: string;
     toggleMicrophone?: string;
+    screenshot: string;
   };
   hideStreamButtons?: boolean;
   serverRegion?: string;
@@ -52,6 +54,7 @@ interface StreamViewProps {
   onReleasePointerLock?: () => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
+  onScreenshotShortcutChange: (value: string) => void;
   remainingPlaytimeText: string;
   micTrack?: MediaStreamTrack | null;
 }
@@ -225,6 +228,7 @@ export function StreamView({
   onReleasePointerLock,
   microphoneMode,
   onMicrophoneModeChange,
+  onScreenshotShortcutChange,
   remainingPlaytimeText,
   micTrack,
   hideStreamButtons = false,
@@ -238,6 +242,8 @@ export function StreamView({
   const [isSavingScreenshot, setIsSavingScreenshot] = useState(false);
   const [galleryError, setGalleryError] = useState<string | null>(null);
   const [selectedScreenshotId, setSelectedScreenshotId] = useState<string | null>(null);
+  const [screenshotShortcutInput, setScreenshotShortcutInput] = useState(shortcuts.screenshot);
+  const [screenshotShortcutError, setScreenshotShortcutError] = useState(false);
   const screenshotApiAvailable =
     typeof (window.openNow as any)?.saveScreenshot === "function" &&
     typeof (window.openNow as any)?.listScreenshots === "function" &&
@@ -361,6 +367,10 @@ export function StreamView({
     if (!selectedScreenshotId) return null;
     return screenshots.find((item) => item.id === selectedScreenshotId) ?? null;
   }, [screenshots, selectedScreenshotId]);
+
+  useEffect(() => {
+    setScreenshotShortcutInput(shortcuts.screenshot);
+  }, [shortcuts.screenshot]);
 
   const refreshScreenshots = useCallback(async () => {
     if (!screenshotApiAvailable) {
@@ -486,17 +496,6 @@ export function StreamView({
     }
   }, [screenshots, selectedScreenshotId]);
 
-  useEffect(() => {
-    if (typeof (window.openNow as any)?.onTriggerScreenshot !== "function") {
-      return;
-    }
-
-    const unsubscribe = window.openNow.onTriggerScreenshot(() => {
-      void captureScreenshot();
-    });
-    return () => unsubscribe();
-  }, [captureScreenshot]);
-
   // Focus video element when stream is ready (not connecting anymore)
   useEffect(() => {
     if (!isConnecting && localVideoRef.current && hasResolution) {
@@ -525,9 +524,22 @@ export function StreamView({
   }, []);
 
   useEffect(() => {
+    const screenshotShortcut = normalizeShortcut(shortcuts.screenshot);
+
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "F11") {
+      const target = event.target as HTMLElement | null;
+      const isTyping = !!target && (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable
+      );
+      if (isTyping) {
+        return;
+      }
+
+      if (isShortcutMatch(event, screenshotShortcut)) {
         event.preventDefault();
+        event.stopPropagation();
         void captureScreenshot();
         return;
       }
@@ -547,9 +559,9 @@ export function StreamView({
         }
       }
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [captureScreenshot, handleToggleSideBar]);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [captureScreenshot, handleToggleSideBar, shortcuts.screenshot]);
 
   return (
     <div className="sv">
@@ -661,7 +673,7 @@ export function StreamView({
             <section className="sidebar-section">
               <div className="sidebar-section-header">
                 <span>Gallery</span>
-                <span className="sidebar-section-sub">ScreensShot key: F11</span>
+                <span className="sidebar-section-sub">ScreensShot key: {shortcuts.screenshot}</span>
               </div>
               <div className="sidebar-row sidebar-row--aligned">
                 <span className="sidebar-label">ScreensShot</span>
@@ -676,6 +688,36 @@ export function StreamView({
                   <Camera size={14} />
                   <span>{isSavingScreenshot ? "Capturing..." : "Capture"}</span>
                 </button>
+              </div>
+              <div className="sidebar-row sidebar-row--column">
+                <div className="sidebar-row-top">
+                  <span className="sidebar-label">Screenshot Shortcut</span>
+                </div>
+                <input
+                  type="text"
+                  className={`settings-text-input settings-shortcut-input sidebar-shortcut-input ${screenshotShortcutError ? "error" : ""}`}
+                  value={screenshotShortcutInput}
+                  onChange={(event) => setScreenshotShortcutInput(event.target.value)}
+                  onBlur={() => {
+                    const normalized = normalizeShortcut(screenshotShortcutInput.trim());
+                    if (!normalized.valid) {
+                      setScreenshotShortcutError(true);
+                      return;
+                    }
+                    setScreenshotShortcutError(false);
+                    setScreenshotShortcutInput(normalized.canonical);
+                    if (normalized.canonical !== shortcuts.screenshot) {
+                      onScreenshotShortcutChange(normalized.canonical);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      (event.target as HTMLInputElement).blur();
+                    }
+                  }}
+                  placeholder="F11"
+                  spellCheck={false}
+                />
               </div>
               <div className="sidebar-gallery-row">
                 <button
@@ -709,7 +751,10 @@ export function StreamView({
                 </button>
               </div>
               {screenshots.length === 0 && (
-                <span className="sidebar-hint">No screenshots yet. Press F11 to capture one.</span>
+                <span className="sidebar-hint">No screenshots yet. Press {shortcuts.screenshot} to capture one.</span>
+              )}
+              {screenshotShortcutError && (
+                <span className="sidebar-hint sidebar-hint--error">Invalid shortcut format.</span>
               )}
               {galleryError && <span className="sidebar-hint sidebar-hint--error">{galleryError}</span>}
             </section>

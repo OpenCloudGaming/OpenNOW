@@ -69,6 +69,7 @@ const shortcutDefaults = {
   shortcutStopStream: "Ctrl+Shift+Q",
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
   shortcutToggleMicrophone: "Ctrl+Shift+M",
+  shortcutScreenshot: "F11",
 } as const;
 
 const microphoneModeOptions: Array<{ value: MicrophoneMode; label: string }> = [
@@ -571,11 +572,13 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [stopStreamInput, setStopStreamInput] = useState(settings.shortcutStopStream);
   const [toggleAntiAfkInput, setToggleAntiAfkInput] = useState(settings.shortcutToggleAntiAfk);
   const [toggleMicrophoneInput, setToggleMicrophoneInput] = useState(settings.shortcutToggleMicrophone);
+  const [screenshotInput, setScreenshotInput] = useState(settings.shortcutScreenshot);
   const [toggleStatsError, setToggleStatsError] = useState(false);
   const [togglePointerLockError, setTogglePointerLockError] = useState(false);
   const [stopStreamError, setStopStreamError] = useState(false);
   const [toggleAntiAfkError, setToggleAntiAfkError] = useState(false);
   const [toggleMicrophoneError, setToggleMicrophoneError] = useState(false);
+  const [screenshotError, setScreenshotError] = useState(false);
 
   // Dynamic entitled resolutions from MES API
   const [entitledResolutions, setEntitledResolutions] = useState<EntitledResolution[]>([]);
@@ -600,6 +603,10 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   useEffect(() => {
     setToggleMicrophoneInput(settings.shortcutToggleMicrophone);
   }, [settings.shortcutToggleMicrophone]);
+
+  useEffect(() => {
+    setScreenshotInput(settings.shortcutScreenshot);
+  }, [settings.shortcutScreenshot]);
 
   // Fetch subscription data (cached per account; reload only when account changes)
   useEffect(() => {
@@ -814,13 +821,15 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       && settings.shortcutTogglePointerLock === shortcutDefaults.shortcutTogglePointerLock
       && settings.shortcutStopStream === shortcutDefaults.shortcutStopStream
       && settings.shortcutToggleAntiAfk === shortcutDefaults.shortcutToggleAntiAfk
-      && settings.shortcutToggleMicrophone === shortcutDefaults.shortcutToggleMicrophone,
+      && settings.shortcutToggleMicrophone === shortcutDefaults.shortcutToggleMicrophone
+      && settings.shortcutScreenshot === shortcutDefaults.shortcutScreenshot,
     [
       settings.shortcutToggleStats,
       settings.shortcutTogglePointerLock,
       settings.shortcutStopStream,
       settings.shortcutToggleAntiAfk,
       settings.shortcutToggleMicrophone,
+      settings.shortcutScreenshot,
     ]
   );
 
@@ -830,11 +839,13 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     setStopStreamInput(shortcutDefaults.shortcutStopStream);
     setToggleAntiAfkInput(shortcutDefaults.shortcutToggleAntiAfk);
     setToggleMicrophoneInput(shortcutDefaults.shortcutToggleMicrophone);
+    setScreenshotInput(shortcutDefaults.shortcutScreenshot);
     setToggleStatsError(false);
     setTogglePointerLockError(false);
     setStopStreamError(false);
     setToggleAntiAfkError(false);
     setToggleMicrophoneError(false);
+    setScreenshotError(false);
 
     const shortcutKeys = [
       "shortcutToggleStats",
@@ -842,6 +853,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       "shortcutStopStream",
       "shortcutToggleAntiAfk",
       "shortcutToggleMicrophone",
+      "shortcutScreenshot",
     ] as const;
 
     for (const key of shortcutKeys) {
@@ -1540,6 +1552,20 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                     spellCheck={false}
                   />
                 </label>
+
+                <label className="settings-shortcut-row">
+                  <span className="settings-shortcut-label">ScreensShot</span>
+                  <input
+                    type="text"
+                    className={`settings-text-input settings-shortcut-input ${screenshotError ? "error" : ""}`}
+                    value={screenshotInput}
+                    onChange={(e) => setScreenshotInput(e.target.value)}
+                    onBlur={() => handleShortcutBlur("shortcutScreenshot", screenshotInput, setScreenshotInput, setScreenshotError)}
+                    onKeyDown={handleShortcutKeyDown}
+                    placeholder="F11"
+                    spellCheck={false}
+                  />
+                </label>
                 <label className="settings-shortcut-row">
                   <span className="settings-shortcut-label">Toggle Settings Menu</span>
                   <input
@@ -1551,15 +1577,15 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 </label>
               </div>
 
-              {(toggleStatsError || togglePointerLockError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError) && (
+              {(toggleStatsError || togglePointerLockError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError || screenshotError) && (
                 <span className="settings-input-hint">
                   Invalid shortcut. Use {shortcutExamples}
                 </span>
               )}
 
-              {!toggleStatsError && !togglePointerLockError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && (
+              {!toggleStatsError && !togglePointerLockError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && !screenshotError && (
                 <span className="settings-shortcut-hint">
-                  {shortcutExamples}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}.
+                  {shortcutExamples}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}. ScreensShot: {formatShortcutForDisplay(settings.shortcutScreenshot, isMac)}.
                 </span>
               )}
             </div>

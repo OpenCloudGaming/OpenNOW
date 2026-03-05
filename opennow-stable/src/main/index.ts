@@ -6,7 +6,7 @@ import { copyFile, mkdir, readdir, readFile, stat, unlink, writeFile } from "nod
 import * as net from "node:net";
 
 // Keyboard shortcuts reference (matching Rust implementation):
-// F11 - Take screenshot (handled in main process)
+// Screenshot keybind - configurable, handled in renderer
 // F3  - Toggle stats overlay (handled in renderer)
 // Ctrl+Shift+Q - Stop streaming (handled in renderer)
 // F8  - Toggle mouse/pointer lock (handled in main process via IPC)
@@ -331,17 +331,6 @@ async function createMainWindow(): Promise<void> {
       nodeIntegration: false,
       sandbox: false,
     },
-  });
-
-  // Handle F11 screenshot hotkey in main process to avoid browser-level interception.
-  mainWindow.webContents.on("before-input-event", (event, input) => {
-    if (input.key === "F11" && input.type === "keyDown") {
-      event.preventDefault();
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("app:trigger-screenshot");
-      }
-    }
-
   });
 
   if (process.platform === "win32") {

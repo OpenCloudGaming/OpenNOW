@@ -3124,6 +3124,9 @@ button.game-card-store-chip.active:hover {
 .sidebar-hint--error {
   color: #fda4af;
 }
+.sidebar-shortcut-input {
+  width: 100%;
+}
 .sidebar-button {
   border-radius: 4px;
   border: 1px solid var(--panel-border);

@@ -30,6 +30,8 @@ export interface Settings {
   shortcutToggleAntiAfk: string;
   /** Toggle microphone shortcut */
   shortcutToggleMicrophone: string;
+  /** Take screenshot shortcut */
+  shortcutScreenshot: string;
   /** How often to re-show the session timer while streaming (0 = off) */
   sessionClockShowEveryMinutes: number;
   /** How long the session timer stays visible when it appears */
@@ -66,6 +68,7 @@ const DEFAULT_SETTINGS: Settings = {
   shortcutStopStream: defaultStopShortcut,
   shortcutToggleAntiAfk: defaultAntiAfkShortcut,
   shortcutToggleMicrophone: defaultMicShortcut,
+  shortcutScreenshot: "F11",
   microphoneMode: "disabled",
   microphoneDeviceId: "",
   hideStreamButtons: false,
