@@ -50,6 +50,8 @@ interface StreamViewProps {
   onToggleMicrophone?: () => void;
   mouseSensitivity: number;
   onMouseSensitivityChange: (value: number) => void;
+  mouseAcceleration: boolean;
+  onMouseAccelerationChange: (value: boolean) => void;
   onRequestPointerLock?: () => void;
   onReleasePointerLock?: () => void;
   microphoneMode: MicrophoneMode;
@@ -224,6 +226,8 @@ export function StreamView({
   onToggleMicrophone,
   mouseSensitivity,
   onMouseSensitivityChange,
+  mouseAcceleration,
+  onMouseAccelerationChange,
   onRequestPointerLock,
   onReleasePointerLock,
   microphoneMode,
@@ -621,7 +625,31 @@ export function StreamView({
                 />
                 <span className="sidebar-hint">Multiplier applied to mouse movement (1.00 = default).</span>
               </div>
+              <div className="sidebar-row sidebar-row--column">
+                <div className="sidebar-row-top">
+                  <span className="sidebar-label">Mouse Accelerator</span>
+                  <span className="settings-value-badge">{mouseAcceleration ? "Enabled" : "Disabled"}</span>
+                </div>
+                <div className="sidebar-chip-row">
+                  <button
+                    type="button"
+                    className={`sidebar-chip${!mouseAcceleration ? " sidebar-chip--active" : ""}`}
+                    onClick={() => onMouseAccelerationChange(false)}
+                  >
+                    <span>Off</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`sidebar-chip${mouseAcceleration ? " sidebar-chip--active" : ""}`}
+                    onClick={() => onMouseAccelerationChange(true)}
+                  >
+                    <span>On</span>
+                  </button>
+                </div>
+                <span className="sidebar-hint">Boosts large/faster turns while keeping fine movement precise.</span>
+              </div>
             </section>
+            <div className="sidebar-separator" aria-hidden="true" />
             <section className="sidebar-section">
               <div className="sidebar-section-header">
                 <span>Audio</span>

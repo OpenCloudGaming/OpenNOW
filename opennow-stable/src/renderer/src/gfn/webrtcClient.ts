@@ -185,6 +185,8 @@ interface ClientOptions {
   microphoneDeviceId?: string;
   /** Mouse sensitivity multiplier (1.0 = default) */
   mouseSensitivity?: number;
+  /** Apply software acceleration to mouse deltas before sending */
+  mouseAcceleration?: boolean;
   onLog: (line: string) => void;
   onStats?: (stats: StreamDiagnostics) => void;
   onEscHoldProgress?: (visible: boolean, progress: number) => void;
@@ -506,6 +508,7 @@ export class GfnWebRtcClient {
   private pendingMouseTimestampUs: bigint | null = null;
   private mouseDeltaFilter = new MouseDeltaFilter();
   private mouseSensitivity = 1;
+  private mouseAccelerationEnabled = false;
 
   private partialReliableThresholdMs = GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
   private inputQueuePeakBufferedBytesWindow = 0;
@@ -561,6 +564,7 @@ export class GfnWebRtcClient {
     options.audioElement.srcObject = this.audioStream;
     options.audioElement.muted = true;
     this.mouseSensitivity = options.mouseSensitivity ?? 1;
+    this.mouseAccelerationEnabled = options.mouseAcceleration ?? false;
 
     // Configure video element for lowest latency playback
     this.configureVideoElementForLowLatency(options.videoElement);
@@ -614,6 +618,12 @@ export class GfnWebRtcClient {
     const v = Number.isFinite(value) ? value : 1;
     this.mouseSensitivity = Math.max(0.01, v);
     this.log(`Mouse sensitivity set to ${this.mouseSensitivity}`);
+  }
+
+  /** Enable/disable software mouse acceleration at runtime. */
+  public setMouseAccelerationEnabled(value: boolean): void {
+    this.mouseAccelerationEnabled = Boolean(value);
+    this.log(`Mouse acceleration ${this.mouseAccelerationEnabled ? "enabled" : "disabled"}`);
   }
 
   /**
@@ -1899,9 +1909,20 @@ export class GfnWebRtcClient {
         return;
       }
 
-      // Apply user-configured mouse sensitivity multiplier before queuing
-      this.pendingMouseDx += Math.round(this.mouseDeltaFilter.getX() * this.mouseSensitivity);
-      this.pendingMouseDy += Math.round(this.mouseDeltaFilter.getY() * this.mouseSensitivity);
+      // Apply user-configured sensitivity, then optional software acceleration.
+      let adjustedDx = this.mouseDeltaFilter.getX() * this.mouseSensitivity;
+      let adjustedDy = this.mouseDeltaFilter.getY() * this.mouseSensitivity;
+
+      if (this.mouseAccelerationEnabled) {
+        const speed = Math.hypot(adjustedDx, adjustedDy);
+        // Gentle curve: low-speed precision, high-speed turn boost (caps at +60%).
+        const accelFactor = 1 + Math.min(0.6, speed / 50);
+        adjustedDx *= accelFactor;
+        adjustedDy *= accelFactor;
+      }
+
+      this.pendingMouseDx += Math.round(adjustedDx);
+      this.pendingMouseDy += Math.round(adjustedDy);
       this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
     };
 

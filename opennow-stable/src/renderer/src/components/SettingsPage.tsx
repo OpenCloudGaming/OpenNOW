@@ -1466,6 +1466,21 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               <span className="settings-subtle-hint">Multiplier applied to mouse movement (1.00 = default)</span>
             </div>
 
+            <div className="settings-row">
+              <label className="settings-label">
+                Mouse Accelerator
+                <span className="settings-hint">Adds dynamic turn boost at higher mouse speeds while preserving low-speed precision.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.mouseAcceleration}
+                  onChange={(e) => handleChange("mouseAcceleration", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+
             <div className="settings-row settings-row--column">
               <div className="settings-row-top">
                 <label className="settings-label">Shortcuts</label>

@@ -20,6 +20,8 @@ export interface Settings {
   clipboardPaste: boolean;
   /** Mouse sensitivity multiplier */
   mouseSensitivity: number;
+  /** Apply software mouse acceleration on top of sensitivity */
+  mouseAcceleration: boolean;
   /** Toggle stats overlay shortcut */
   shortcutToggleStats: string;
   /** Toggle pointer lock shortcut */
@@ -63,6 +65,7 @@ const DEFAULT_SETTINGS: Settings = {
   region: "",
   clipboardPaste: false,
   mouseSensitivity: 1,
+  mouseAcceleration: false,
   shortcutToggleStats: "F3",
   shortcutTogglePointerLock: "F8",
   shortcutStopStream: defaultStopShortcut,

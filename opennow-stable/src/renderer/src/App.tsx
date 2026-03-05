@@ -328,6 +328,7 @@ export function App(): JSX.Element {
     region: "",
     clipboardPaste: false,
     mouseSensitivity: 1,
+    mouseAcceleration: false,
     shortcutToggleStats: DEFAULT_SHORTCUTS.shortcutToggleStats,
     shortcutTogglePointerLock: DEFAULT_SHORTCUTS.shortcutTogglePointerLock,
     shortcutStopStream: DEFAULT_SHORTCUTS.shortcutStopStream,
@@ -830,6 +831,7 @@ export function App(): JSX.Element {
               microphoneMode: settings.microphoneMode,
               microphoneDeviceId: settings.microphoneDeviceId || undefined,
               mouseSensitivity: settings.mouseSensitivity,
+              mouseAcceleration: settings.mouseAcceleration,
               onLog: (line: string) => console.log(`[WebRTC] ${line}`),
               onStats: (stats) => setDiagnostics(stats),
               onEscHoldProgress: (visible, progress) => {
@@ -897,6 +899,13 @@ export function App(): JSX.Element {
         // ignore
       }
     }
+    if (key === "mouseAcceleration") {
+      try {
+        (clientRef.current as any)?.setMouseAccelerationEnabled?.(value as boolean);
+      } catch {
+        // ignore
+      }
+    }
     if (key === "maxBitrateMbps") {
       try {
         void (clientRef.current as any)?.setMaxBitrateKbps?.((value as number) * 1000);
@@ -908,6 +917,10 @@ export function App(): JSX.Element {
 
   const handleMouseSensitivityChange = useCallback((value: number) => {
     void updateSetting("mouseSensitivity", value);
+  }, [updateSetting]);
+
+  const handleMouseAccelerationChange = useCallback((value: boolean) => {
+    void updateSetting("mouseAcceleration", value);
   }, [updateSetting]);
 
   const handleMicrophoneModeChange = useCallback((value: import("@shared/gfn").MicrophoneMode) => {
@@ -1620,6 +1633,8 @@ export function App(): JSX.Element {
             }}
             mouseSensitivity={settings.mouseSensitivity}
             onMouseSensitivityChange={handleMouseSensitivityChange}
+            mouseAcceleration={settings.mouseAcceleration}
+            onMouseAccelerationChange={handleMouseAccelerationChange}
             microphoneMode={settings.microphoneMode}
             onMicrophoneModeChange={handleMicrophoneModeChange}
             onScreenshotShortcutChange={(value) => {
