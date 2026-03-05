@@ -49,6 +49,7 @@ interface StreamViewProps {
   mouseSensitivity: number;
   onMouseSensitivityChange: (value: number) => void;
   onRequestPointerLock?: () => void;
+  onReleasePointerLock?: () => void;
   maxBitrateMbps: number;
   onMaxBitrateChange: (value: number) => void;
   microphoneMode: MicrophoneMode;
@@ -131,6 +132,7 @@ export function StreamView({
   mouseSensitivity,
   onMouseSensitivityChange,
   onRequestPointerLock,
+  onReleasePointerLock,
   maxBitrateMbps,
   onMaxBitrateChange,
   microphoneMode,
@@ -271,7 +273,7 @@ export function StreamView({
   }, []);
 
   useEffect(() => {
-    if (showSideBar && document.pointerLockElement) {
+    if (showSideBar) {
       document.exitPointerLock();
     }
   }, [showSideBar]);
@@ -293,7 +295,11 @@ export function StreamView({
   const handleToggleSideBar = useCallback(() => {
     setShowSideBar((s) => {
       if (!s && document.pointerLockElement) {
-        document.exitPointerLock();
+        if (onReleasePointerLock) {
+          onReleasePointerLock();
+        } else {
+          document.exitPointerLock();
+        }
       }
       return !s;
     });
