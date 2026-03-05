@@ -2,10 +2,11 @@ import { app, BrowserWindow, ipcMain, dialog, systemPreferences, session } from 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import { copyFile, mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import * as net from "node:net";
 
 // Keyboard shortcuts reference (matching Rust implementation):
-// F11 - Toggle fullscreen (handled in main process)
+// F11 - Take screenshot (handled in main process)
 // F3  - Toggle stats overlay (handled in renderer)
 // Ctrl+Shift+Q - Stop streaming (handled in renderer)
 // F8  - Toggle mouse/pointer lock (handled in main process via IPC)
@@ -31,6 +32,12 @@ import type {
   SessionConflictChoice,
   PingResult,
   StreamRegion,
+  VideoAccelerationPreference,
+  ScreenshotDeleteRequest,
+  ScreenshotEntry,
+  ScreenshotSaveAsRequest,
+  ScreenshotSaveAsResult,
+  ScreenshotSaveRequest,
 } from "@shared/gfn";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
@@ -53,9 +60,12 @@ const __dirname = dirname(__filename);
 // Configure Chromium video and WebRTC behavior before app.whenReady().
 // Video acceleration is always set to "auto" - decoder and encoder preferences removed from settings
 
-const bootstrapVideoPrefs = {
-  decoderPreference: "auto" as const,
-  encoderPreference: "auto" as const,
+const bootstrapVideoPrefs: {
+  decoderPreference: VideoAccelerationPreference;
+  encoderPreference: VideoAccelerationPreference;
+} = {
+  decoderPreference: "auto",
+  encoderPreference: "auto",
 };
 console.log(
   `[Main] Video acceleration: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
@@ -157,6 +167,143 @@ let signalingClient: GfnSignalingClient | null = null;
 let signalingClientKey: string | null = null;
 let authService: AuthService;
 let settingsManager: SettingsManager;
+const SCREENSHOT_LIMIT = 60;
+
+function getScreenshotDirectory(): string {
+  return join(app.getPath("pictures"), "OpenNOW", "Screenshots");
+}
+
+async function ensureScreenshotDirectory(): Promise<string> {
+  const dir = getScreenshotDirectory();
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+function sanitizeTitleForFileName(value: string | undefined): string {
+  const source = (value ?? "").trim().toLowerCase();
+  const compact = source.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!compact) return "stream";
+  return compact.slice(0, 48);
+}
+
+function dataUrlToBuffer(dataUrl: string): { ext: "png" | "jpg" | "webp"; buffer: Buffer } {
+  const match = /^data:image\/(png|jpeg|jpg|webp);base64,([a-z0-9+/=\s]+)$/i.exec(dataUrl);
+  if (!match || !match[1] || !match[2]) {
+    throw new Error("Invalid screenshot payload");
+  }
+
+  const rawExt = match[1].toLowerCase();
+  const ext: "png" | "jpg" | "webp" = rawExt === "jpeg" ? "jpg" : (rawExt as "png" | "jpg" | "webp");
+  const buffer = Buffer.from(match[2].replace(/\s+/g, ""), "base64");
+  if (!buffer.length) {
+    throw new Error("Empty screenshot payload");
+  }
+
+  return { ext, buffer };
+}
+
+function buildScreenshotDataUrl(ext: string, buffer: Buffer): string {
+  const mime = ext === "jpg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+  return `data:${mime};base64,${buffer.toString("base64")}`;
+}
+
+function assertSafeScreenshotId(id: string): void {
+  if (!id || id.includes("/") || id.includes("\\") || id.includes("..")) {
+    throw new Error("Invalid screenshot id");
+  }
+}
+
+async function listScreenshots(): Promise<ScreenshotEntry[]> {
+  const dir = await ensureScreenshotDirectory();
+  const entries = await readdir(dir, { withFileTypes: true });
+  const screenshotFiles = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .filter((name) => /\.(png|jpg|jpeg|webp)$/i.test(name));
+
+  const loaded = await Promise.all(
+    screenshotFiles.map(async (fileName): Promise<ScreenshotEntry | null> => {
+      const filePath = join(dir, fileName);
+      try {
+        const fileStats = await stat(filePath);
+        const fileBuffer = await readFile(filePath);
+        const extMatch = /\.([^.]+)$/.exec(fileName);
+        const ext = (extMatch?.[1] ?? "png").toLowerCase();
+
+        return {
+          id: fileName,
+          fileName,
+          filePath,
+          createdAtMs: fileStats.birthtimeMs || fileStats.mtimeMs,
+          sizeBytes: fileStats.size,
+          dataUrl: buildScreenshotDataUrl(ext, fileBuffer),
+        };
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return loaded
+    .filter((item): item is ScreenshotEntry => item !== null)
+    .sort((a, b) => b.createdAtMs - a.createdAtMs)
+    .slice(0, SCREENSHOT_LIMIT);
+}
+
+async function saveScreenshot(input: ScreenshotSaveRequest): Promise<ScreenshotEntry> {
+  const { ext, buffer } = dataUrlToBuffer(input.dataUrl);
+  const dir = await ensureScreenshotDirectory();
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const title = sanitizeTitleForFileName(input.gameTitle);
+  const fileName = `${stamp}-${title}-${Math.random().toString(16).slice(2, 8)}.${ext}`;
+  const filePath = join(dir, fileName);
+
+  await writeFile(filePath, buffer);
+
+  return {
+    id: fileName,
+    fileName,
+    filePath,
+    createdAtMs: Date.now(),
+    sizeBytes: buffer.byteLength,
+    dataUrl: buildScreenshotDataUrl(ext, buffer),
+  };
+}
+
+async function deleteScreenshot(input: ScreenshotDeleteRequest): Promise<void> {
+  assertSafeScreenshotId(input.id);
+  const dir = await ensureScreenshotDirectory();
+  const filePath = join(dir, input.id);
+  await unlink(filePath);
+}
+
+async function saveScreenshotAs(input: ScreenshotSaveAsRequest): Promise<ScreenshotSaveAsResult> {
+  assertSafeScreenshotId(input.id);
+  const dir = await ensureScreenshotDirectory();
+  const sourcePath = join(dir, input.id);
+
+  const saveDialogOptions = {
+    title: "Save Screenshot",
+    defaultPath: join(app.getPath("pictures"), input.id),
+    filters: [
+      { name: "PNG Image", extensions: ["png"] },
+      { name: "JPEG Image", extensions: ["jpg", "jpeg"] },
+      { name: "WebP Image", extensions: ["webp"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
+  };
+  const target =
+    mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showSaveDialog(mainWindow, saveDialogOptions)
+      : await dialog.showSaveDialog(saveDialogOptions);
+
+  if (target.canceled || !target.filePath) {
+    return { saved: false };
+  }
+
+  await copyFile(sourcePath, target.filePath);
+  return { saved: true, filePath: target.filePath };
+}
 
 function emitToRenderer(event: MainToRendererSignalingEvent): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -186,13 +333,12 @@ async function createMainWindow(): Promise<void> {
     },
   });
 
-  // Handle F11 fullscreen toggle — send to renderer so it uses W3C Fullscreen API
-  // (which enables navigator.keyboard.lock for Escape key capture)
+  // Handle F11 screenshot hotkey in main process to avoid browser-level interception.
   mainWindow.webContents.on("before-input-event", (event, input) => {
     if (input.key === "F11" && input.type === "keyDown") {
       event.preventDefault();
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("app:toggle-fullscreen");
+        mainWindow.webContents.send("app:trigger-screenshot");
       }
     }
 
@@ -473,6 +619,25 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.LOGS_EXPORT, async (_event, format: "text" | "json" = "text"): Promise<string> => {
     return exportLogs(format);
   });
+
+  ipcMain.handle(IPC_CHANNELS.SCREENSHOT_SAVE, async (_event, input: ScreenshotSaveRequest): Promise<ScreenshotEntry> => {
+    return saveScreenshot(input);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SCREENSHOT_LIST, async (): Promise<ScreenshotEntry[]> => {
+    return listScreenshots();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SCREENSHOT_DELETE, async (_event, input: ScreenshotDeleteRequest): Promise<void> => {
+    return deleteScreenshot(input);
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.SCREENSHOT_SAVE_AS,
+    async (_event, input: ScreenshotSaveAsRequest): Promise<ScreenshotSaveAsResult> => {
+      return saveScreenshotAs(input);
+    },
+  );
 
   // TCP-based ping function - more accurate than HTTP as it only measures connection time
   async function tcpPing(hostname: string, port: number, timeoutMs: number = 3000): Promise<number | null> {

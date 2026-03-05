@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import type { JSX } from "react";
-import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff } from "lucide-react";
+import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X } from "lucide-react";
 import SideBar from "./SideBar";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
-import type { MicrophoneMode } from "@shared/gfn";
+import type { MicrophoneMode, ScreenshotEntry } from "@shared/gfn";
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -234,6 +234,15 @@ export function StreamView({
   const [showSessionClock, setShowSessionClock] = useState(false);
   const [showSideBar, setShowSideBar] = useState(false);
   const [isPointerLocked, setIsPointerLocked] = useState(false);
+  const [screenshots, setScreenshots] = useState<ScreenshotEntry[]>([]);
+  const [isSavingScreenshot, setIsSavingScreenshot] = useState(false);
+  const [galleryError, setGalleryError] = useState<string | null>(null);
+  const [selectedScreenshotId, setSelectedScreenshotId] = useState<string | null>(null);
+  const screenshotApiAvailable =
+    typeof (window.openNow as any)?.saveScreenshot === "function" &&
+    typeof (window.openNow as any)?.listScreenshots === "function" &&
+    typeof (window.openNow as any)?.deleteScreenshot === "function" &&
+    typeof (window.openNow as any)?.saveScreenshotAs === "function";
 
   // Microphone state
   const micState = stats.micState ?? "uninitialized";
@@ -345,7 +354,104 @@ export function StreamView({
 
   // Mic level meter canvas
   const micMeterRef = useRef<HTMLCanvasElement | null>(null);
+  const galleryStripRef = useRef<HTMLDivElement | null>(null);
   useMicMeter(micMeterRef, micTrack ?? null, showSideBar && microphoneMode !== "disabled");
+
+  const selectedScreenshot = useMemo(() => {
+    if (!selectedScreenshotId) return null;
+    return screenshots.find((item) => item.id === selectedScreenshotId) ?? null;
+  }, [screenshots, selectedScreenshotId]);
+
+  const refreshScreenshots = useCallback(async () => {
+    if (!screenshotApiAvailable) {
+      setGalleryError("Screenshot API unavailable. Restart OpenNOW to enable gallery.");
+      return;
+    }
+    try {
+      const items = await window.openNow.listScreenshots();
+      setScreenshots(items);
+    } catch (error) {
+      console.error("[StreamView] Failed to load screenshots:", error);
+      setGalleryError("Unable to load screenshot gallery.");
+    }
+  }, [screenshotApiAvailable]);
+
+  const captureScreenshot = useCallback(async () => {
+    if (!screenshotApiAvailable) {
+      setGalleryError("Screenshot API unavailable. Restart OpenNOW to enable capture.");
+      return;
+    }
+
+    if (isSavingScreenshot) {
+      return;
+    }
+
+    const video = localVideoRef.current;
+    if (!video || video.videoWidth <= 0 || video.videoHeight <= 0) {
+      setGalleryError("Stream is not ready for screenshots yet.");
+      return;
+    }
+
+    setIsSavingScreenshot(true);
+    setGalleryError(null);
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      const context = canvas.getContext("2d");
+      if (!context) {
+        throw new Error("Could not acquire 2D context");
+      }
+
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL("image/png");
+      const saved = await window.openNow.saveScreenshot({ dataUrl, gameTitle });
+      setScreenshots((prev) => [saved, ...prev.filter((item) => item.id !== saved.id)].slice(0, 60));
+    } catch (error) {
+      console.error("[StreamView] Failed to capture screenshot:", error);
+      setGalleryError("Screenshot failed. Try again.");
+    } finally {
+      setIsSavingScreenshot(false);
+    }
+  }, [gameTitle, isSavingScreenshot, screenshotApiAvailable]);
+
+  const scrollGallery = useCallback((direction: "left" | "right") => {
+    const strip = galleryStripRef.current;
+    if (!strip) return;
+    const delta = Math.max(180, Math.round(strip.clientWidth * 0.7));
+    strip.scrollBy({ left: direction === "left" ? -delta : delta, behavior: "smooth" });
+  }, []);
+
+  const handleDeleteScreenshot = useCallback(async () => {
+    if (!screenshotApiAvailable) {
+      setGalleryError("Screenshot API unavailable. Restart OpenNOW to enable gallery.");
+      return;
+    }
+    if (!selectedScreenshot) return;
+    try {
+      await window.openNow.deleteScreenshot({ id: selectedScreenshot.id });
+      setScreenshots((prev) => prev.filter((item) => item.id !== selectedScreenshot.id));
+      setSelectedScreenshotId(null);
+    } catch (error) {
+      console.error("[StreamView] Failed to delete screenshot:", error);
+      setGalleryError("Unable to delete screenshot.");
+    }
+  }, [selectedScreenshot, screenshotApiAvailable]);
+
+  const handleSaveScreenshotAs = useCallback(async () => {
+    if (!screenshotApiAvailable) {
+      setGalleryError("Screenshot API unavailable. Restart OpenNOW to enable gallery.");
+      return;
+    }
+    if (!selectedScreenshot) return;
+    try {
+      await window.openNow.saveScreenshotAs({ id: selectedScreenshot.id });
+    } catch (error) {
+      console.error("[StreamView] Failed to save screenshot as:", error);
+      setGalleryError("Unable to save screenshot.");
+    }
+  }, [selectedScreenshot, screenshotApiAvailable]);
 
   // Combined ref callback that sets both local and forwarded ref
   const setVideoRef = useCallback((element: HTMLVideoElement | null) => {
@@ -369,8 +475,27 @@ export function StreamView({
   useEffect(() => {
     if (showSideBar) {
       document.exitPointerLock();
+      void refreshScreenshots();
     }
-  }, [showSideBar]);
+  }, [refreshScreenshots, showSideBar]);
+
+  useEffect(() => {
+    if (!selectedScreenshotId) return;
+    if (!screenshots.some((item) => item.id === selectedScreenshotId)) {
+      setSelectedScreenshotId(null);
+    }
+  }, [screenshots, selectedScreenshotId]);
+
+  useEffect(() => {
+    if (typeof (window.openNow as any)?.onTriggerScreenshot !== "function") {
+      return;
+    }
+
+    const unsubscribe = window.openNow.onTriggerScreenshot(() => {
+      void captureScreenshot();
+    });
+    return () => unsubscribe();
+  }, [captureScreenshot]);
 
   // Focus video element when stream is ready (not connecting anymore)
   useEffect(() => {
@@ -401,6 +526,12 @@ export function StreamView({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "F11") {
+        event.preventDefault();
+        void captureScreenshot();
+        return;
+      }
+
       // Toggle: CMD+G on macOS, Ctrl+Shift+G elsewhere
       const key = event.key.toLowerCase();
       const isMac = navigator.platform?.toLowerCase().includes("mac") || navigator.userAgent.includes("Macintosh");
@@ -418,7 +549,7 @@ export function StreamView({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleToggleSideBar]);
+  }, [captureScreenshot, handleToggleSideBar]);
 
   return (
     <div className="sv">
@@ -526,8 +657,115 @@ export function StreamView({
                 </div>
               )}
             </section>
+            <div className="sidebar-separator" aria-hidden="true" />
+            <section className="sidebar-section">
+              <div className="sidebar-section-header">
+                <span>Gallery</span>
+                <span className="sidebar-section-sub">ScreensShot key: F11</span>
+              </div>
+              <div className="sidebar-row sidebar-row--aligned">
+                <span className="sidebar-label">ScreensShot</span>
+                <button
+                  type="button"
+                  className="sidebar-button sidebar-screenshot-button"
+                  onClick={() => {
+                    void captureScreenshot();
+                  }}
+                  disabled={isSavingScreenshot || !screenshotApiAvailable}
+                >
+                  <Camera size={14} />
+                  <span>{isSavingScreenshot ? "Capturing..." : "Capture"}</span>
+                </button>
+              </div>
+              <div className="sidebar-gallery-row">
+                <button
+                  type="button"
+                  className="sidebar-gallery-arrow"
+                  onClick={() => scrollGallery("left")}
+                  aria-label="Scroll gallery left"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <div className="sidebar-gallery-strip" ref={galleryStripRef}>
+                  {screenshots.map((shot) => (
+                    <button
+                      key={shot.id}
+                      type="button"
+                      className="sidebar-gallery-item"
+                      onClick={() => setSelectedScreenshotId(shot.id)}
+                      title={new Date(shot.createdAtMs).toLocaleString()}
+                    >
+                      <img src={shot.dataUrl} alt={`Screenshot ${shot.fileName}`} />
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="sidebar-gallery-arrow"
+                  onClick={() => scrollGallery("right")}
+                  aria-label="Scroll gallery right"
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+              {screenshots.length === 0 && (
+                <span className="sidebar-hint">No screenshots yet. Press F11 to capture one.</span>
+              )}
+              {galleryError && <span className="sidebar-hint sidebar-hint--error">{galleryError}</span>}
+            </section>
           </SideBar>
         </>
+      )}
+
+      {selectedScreenshot && (
+        <div className="sv-shot-modal" role="dialog" aria-modal="true" aria-label="Screenshot preview">
+          <button
+            type="button"
+            className="sv-shot-modal-backdrop"
+            onClick={() => setSelectedScreenshotId(null)}
+            aria-label="Close screenshot preview"
+          />
+          <div className="sv-shot-modal-card">
+            <div className="sv-shot-modal-head">
+              <h4>Screenshot</h4>
+              <button
+                type="button"
+                className="sv-shot-modal-close"
+                onClick={() => setSelectedScreenshotId(null)}
+                aria-label="Close screenshot preview"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <img
+              className="sv-shot-modal-image"
+              src={selectedScreenshot.dataUrl}
+              alt={`Screenshot ${selectedScreenshot.fileName}`}
+            />
+            <div className="sv-shot-modal-actions">
+              <button
+                type="button"
+                className="sv-shot-modal-btn"
+                onClick={() => {
+                  void handleSaveScreenshotAs();
+                }}
+              >
+                <Save size={14} />
+                <span>Save</span>
+              </button>
+              <button
+                type="button"
+                className="sv-shot-modal-btn sv-shot-modal-btn--danger"
+                onClick={() => {
+                  void handleDeleteScreenshot();
+                }}
+              >
+                <Trash2 size={14} />
+                <span>Delete</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Gradient background when no video */}

@@ -340,4 +340,46 @@ export interface OpenNowApi {
   exportLogs(format?: "text" | "json"): Promise<string>;
   /** Ping all regions and return latency results */
   pingRegions(regions: StreamRegion[]): Promise<PingResult[]>;
+
+  /** Persist a PNG screenshot from a renderer-generated data URL */
+  saveScreenshot(input: ScreenshotSaveRequest): Promise<ScreenshotEntry>;
+
+  /** List recent screenshots from the persistent screenshot directory */
+  listScreenshots(): Promise<ScreenshotEntry[]>;
+
+  /** Delete a screenshot from the persistent screenshot directory */
+  deleteScreenshot(input: ScreenshotDeleteRequest): Promise<void>;
+
+  /** Export a screenshot to a user-selected path */
+  saveScreenshotAs(input: ScreenshotSaveAsRequest): Promise<ScreenshotSaveAsResult>;
+
+  /** Listen for screenshot hotkey events from the main process (F11) */
+  onTriggerScreenshot(listener: () => void): () => void;
+}
+
+export interface ScreenshotSaveRequest {
+  dataUrl: string;
+  gameTitle?: string;
+}
+
+export interface ScreenshotDeleteRequest {
+  id: string;
+}
+
+export interface ScreenshotSaveAsRequest {
+  id: string;
+}
+
+export interface ScreenshotSaveAsResult {
+  saved: boolean;
+  filePath?: string;
+}
+
+export interface ScreenshotEntry {
+  id: string;
+  fileName: string;
+  filePath: string;
+  createdAtMs: number;
+  sizeBytes: number;
+  dataUrl: string;
 }

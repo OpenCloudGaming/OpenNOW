@@ -3121,6 +3121,9 @@ button.game-card-store-chip.active:hover {
   font-size: 0.72rem;
   color: var(--ink-muted);
 }
+.sidebar-hint--error {
+  color: #fda4af;
+}
 .sidebar-button {
   border-radius: 4px;
   border: 1px solid var(--panel-border);
@@ -3138,6 +3141,11 @@ button.game-card-store-chip.active:hover {
 }
 .sidebar-button:active {
   transform: translateY(0);
+}
+.sidebar-screenshot-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .sidebar-chip-row {
   display: flex;
@@ -3164,6 +3172,60 @@ button.game-card-store-chip.active:hover {
   background: rgba(119, 187, 255, 0.12);
   color: var(--accent);
 }
+.sidebar-gallery-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 24px;
+  gap: 8px;
+  align-items: center;
+}
+.sidebar-gallery-arrow {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-border);
+  background: var(--card);
+  color: var(--ink-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+}
+.sidebar-gallery-arrow:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--card-hover);
+}
+.sidebar-gallery-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 2px 6px;
+  scroll-behavior: smooth;
+}
+.sidebar-gallery-item {
+  width: 88px;
+  height: 50px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  background: #08090b;
+  padding: 0;
+  cursor: pointer;
+  transition: transform var(--t-fast), border-color var(--t-fast);
+}
+.sidebar-gallery-item:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent);
+}
+.sidebar-gallery-item img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 .sv-sidebar {
   width: min(360px, 92vw);
 }
@@ -3179,6 +3241,99 @@ button.game-card-store-chip.active:hover {
   width: 100%;
   height: 14px;
   border-radius: 3px;
+}
+
+.sv-shot-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+.sv-shot-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: rgba(5, 6, 8, 0.72);
+  backdrop-filter: blur(8px);
+}
+.sv-shot-modal-card {
+  position: relative;
+  z-index: 1;
+  width: min(980px, calc(100vw - 32px));
+  max-height: calc(100vh - 36px);
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--panel-border);
+  background: rgba(10, 10, 12, 0.96);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sv-shot-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sv-shot-modal-head h4 {
+  margin: 0;
+  font-size: 0.86rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+}
+.sv-shot-modal-close {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--ink-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.sv-shot-modal-close:hover {
+  color: var(--ink);
+  border-color: var(--panel-border-solid);
+}
+.sv-shot-modal-image {
+  width: 100%;
+  max-height: calc(100vh - 180px);
+  object-fit: contain;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: #050607;
+}
+.sv-shot-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.sv-shot-modal-btn {
+  border: 1px solid var(--panel-border);
+  background: var(--card);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.sv-shot-modal-btn:hover {
+  border-color: var(--accent);
+}
+.sv-shot-modal-btn--danger:hover {
+  border-color: rgba(248, 113, 113, 0.55);
+  color: #ffd4d4;
 }
 
 
