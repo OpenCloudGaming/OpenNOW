@@ -38,6 +38,7 @@ const resolutionOptions = ["1280x720", "1920x1080", "2560x1440", "3840x2160", "2
 const fpsOptions = [30, 60, 120, 144, 240];
 const SESSION_READY_POLL_INTERVAL_MS = 2000;
 const SESSION_READY_TIMEOUT_MS = 180000;
+const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
 
 type GameSource = "main" | "library" | "public";
 type AppPage = "home" | "library" | "settings";
@@ -715,6 +716,35 @@ export function App(): JSX.Element {
 
     return () => clearInterval(interval);
   }, [antiAfkEnabled, streamStatus]);
+
+  // Periodically re-sync subscription playtime from backend while streaming.
+  useEffect(() => {
+    if (streamStatus !== "streaming" || !authSession) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const syncPlaytime = async (): Promise<void> => {
+      try {
+        await loadSubscriptionInfo(authSession);
+      } catch (error) {
+        if (!cancelled) {
+          console.warn("Failed to re-sync subscription playtime:", error);
+        }
+      }
+    };
+
+    void syncPlaytime();
+    const timer = window.setInterval(() => {
+      void syncPlaytime();
+    }, PLAYTIME_RESYNC_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [authSession, loadSubscriptionInfo, streamStatus]);
 
   // Restore focus to video element when navigating away from Settings during streaming
   useEffect(() => {
