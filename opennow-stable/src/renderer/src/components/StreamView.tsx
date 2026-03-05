@@ -52,6 +52,7 @@ interface StreamViewProps {
   onReleasePointerLock?: () => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
+  remainingPlaytimeText: string;
   micTrack?: MediaStreamTrack | null;
 }
 
@@ -224,6 +225,7 @@ export function StreamView({
   onReleasePointerLock,
   microphoneMode,
   onMicrophoneModeChange,
+  remainingPlaytimeText,
   micTrack,
   hideStreamButtons = false,
 }: StreamViewProps): JSX.Element {
@@ -445,6 +447,11 @@ export function StreamView({
             onClick={() => setShowSideBar(false)}
           />
           <SideBar title="Settings" className="sv-sidebar" onClose={() => setShowSideBar(false)}>
+            <div className="sidebar-stat-line" title="Total remaining playtime from subscription">
+              <span className="sidebar-stat-label">Remaining Playtime</span>
+              <span className="settings-value-badge">{remainingPlaytimeText}</span>
+            </div>
+            <div className="sidebar-separator" aria-hidden="true" />
             <section className="sidebar-section">
               <div className="sidebar-section-header">
                 <span>Mouse Preferences</span>
