@@ -435,21 +435,6 @@ export function StreamView({
                 </span>
               </div>
             </section>
-            {onRequestPointerLock && (
-              <section className="sidebar-section">
-                <div className="sidebar-row sidebar-row--aligned">
-                  <span className="sidebar-label">Pointer Lock</span>
-                  <button
-                    type="button"
-                    className="sidebar-button"
-                    onClick={handlePointerLockToggle}
-                  >
-                    {isPointerLocked ? "Release lock" : "Engage lock"}
-                  </button>
-                </div>
-                <span className="sidebar-hint">Lock the cursor to the window for uninterrupted control.</span>
-              </section>
-            )}
           </SideBar>
         </>
       )}
