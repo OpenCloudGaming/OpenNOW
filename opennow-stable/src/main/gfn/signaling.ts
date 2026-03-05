@@ -4,6 +4,7 @@ import WebSocket from "ws";
 
 import type {
   IceCandidatePayload,
+  KeyframeRequest,
   MainToRendererSignalingEvent,
   SendAnswerRequest,
 } from "@shared/gfn";
@@ -269,6 +270,25 @@ export class GfnSignalingClient {
       },
       ackid: this.nextAckId(),
     });
+  }
+
+  async requestKeyframe(payload: KeyframeRequest): Promise<void> {
+    this.sendJson({
+      peer_msg: {
+        from: this.peerId,
+        to: 1,
+        msg: JSON.stringify({
+          type: "request_keyframe",
+          reason: payload.reason,
+          backlogFrames: payload.backlogFrames,
+          attempt: payload.attempt,
+        }),
+      },
+      ackid: this.nextAckId(),
+    });
+    console.log(
+      `[Signaling] Sent keyframe request (reason=${payload.reason}, backlog=${payload.backlogFrames}, attempt=${payload.attempt})`,
+    );
   }
 
   disconnect(): void {

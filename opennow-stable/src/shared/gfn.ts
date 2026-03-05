@@ -295,6 +295,12 @@ export interface SendAnswerRequest {
   nvstSdp?: string;
 }
 
+export interface KeyframeRequest {
+  reason: string;
+  backlogFrames: number;
+  attempt: number;
+}
+
 export type MainToRendererSignalingEvent =
   | { type: "connected" }
   | { type: "disconnected"; reason: string }
@@ -330,6 +336,7 @@ export interface OpenNowApi {
   disconnectSignaling(): Promise<void>;
   sendAnswer(input: SendAnswerRequest): Promise<void>;
   sendIceCandidate(input: IceCandidatePayload): Promise<void>;
+  requestKeyframe(input: KeyframeRequest): Promise<void>;
   onSignalingEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void;
   /** Listen for F11 fullscreen toggle from main process */
   onToggleFullscreen(listener: () => void): () => void;

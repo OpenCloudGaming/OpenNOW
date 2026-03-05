@@ -20,6 +20,7 @@ export const IPC_CHANNELS = {
   DISCONNECT_SIGNALING: "gfn:disconnect-signaling",
   SEND_ANSWER: "gfn:send-answer",
   SEND_ICE_CANDIDATE: "gfn:send-ice-candidate",
+  REQUEST_KEYFRAME: "gfn:request-keyframe",
   SIGNALING_EVENT: "gfn:signaling-event",
   TOGGLE_FULLSCREEN: "window:toggle-fullscreen",
   TOGGLE_POINTER_LOCK: "window:toggle-pointer-lock",

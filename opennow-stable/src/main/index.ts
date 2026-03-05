@@ -27,6 +27,7 @@ import type {
   SignalingConnectRequest,
   SendAnswerRequest,
   IceCandidatePayload,
+  KeyframeRequest,
   Settings,
   SubscriptionFetchRequest,
   SessionConflictChoice,
@@ -574,6 +575,13 @@ function registerIpcHandlers(): void {
       throw new Error("Signaling is not connected");
     }
     return signalingClient.sendIceCandidate(payload);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.REQUEST_KEYFRAME, async (_event, payload: KeyframeRequest) => {
+    if (!signalingClient) {
+      throw new Error("Signaling is not connected");
+    }
+    return signalingClient.requestKeyframe(payload);
   });
 
   // Toggle fullscreen via IPC (for completeness)

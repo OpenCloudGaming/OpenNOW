@@ -16,6 +16,7 @@ import type {
   SignalingConnectRequest,
   SendAnswerRequest,
   IceCandidatePayload,
+  KeyframeRequest,
   Settings,
   SubscriptionFetchRequest,
   StreamRegion,
@@ -54,6 +55,8 @@ const api: PreloadApi = {
   sendAnswer: (input: SendAnswerRequest) => ipcRenderer.invoke(IPC_CHANNELS.SEND_ANSWER, input),
   sendIceCandidate: (input: IceCandidatePayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.SEND_ICE_CANDIDATE, input),
+  requestKeyframe: (input: KeyframeRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.REQUEST_KEYFRAME, input),
   onSignalingEvent: (listener: (event: MainToRendererSignalingEvent) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, payload: MainToRendererSignalingEvent) => {
       listener(payload);

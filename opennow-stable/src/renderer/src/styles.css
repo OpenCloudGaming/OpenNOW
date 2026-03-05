@@ -3070,6 +3070,31 @@ button.game-card-store-chip.active:hover {
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
+.sidebar-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.sidebar-tab {
+  border-radius: 8px;
+  border: 1px solid var(--panel-border);
+  background: var(--card);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 7px 10px;
+  cursor: pointer;
+  transition: border-color var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+.sidebar-tab:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--panel-border));
+  color: var(--ink);
+}
+.sidebar-tab--active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-surface);
+}
 .sidebar-separator {
   height: 1px;
   background: var(--panel-border);

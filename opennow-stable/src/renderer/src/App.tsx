@@ -154,6 +154,9 @@ function defaultDiagnostics(): StreamDiagnostics {
     inputQueueMaxSchedulingDelayMs: 0,
     gpuType: "",
     serverRegion: "",
+    decoderPressureActive: false,
+    decoderRecoveryAttempts: 0,
+    decoderRecoveryAction: "none",
     micState: "uninitialized",
     micEnabled: false,
   };
