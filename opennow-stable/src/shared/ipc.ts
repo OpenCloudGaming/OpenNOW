@@ -28,6 +28,10 @@ export const IPC_CHANNELS = {
   SETTINGS_RESET: "settings:reset",
   LOGS_EXPORT: "logs:export",
   LOGS_GET_RENDERER: "logs:get-renderer",
+  SCREENSHOT_SAVE: "screenshot:save",
+  SCREENSHOT_LIST: "screenshot:list",
+  SCREENSHOT_DELETE: "screenshot:delete",
+  SCREENSHOT_SAVE_AS: "screenshot:save-as",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
