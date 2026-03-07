@@ -23,6 +23,13 @@ import type {
   ScreenshotSaveRequest,
   ScreenshotDeleteRequest,
   ScreenshotSaveAsRequest,
+  RecordingBeginRequest,
+  RecordingBeginResult,
+  RecordingChunkRequest,
+  RecordingFinishRequest,
+  RecordingAbortRequest,
+  RecordingEntry,
+  RecordingDeleteRequest,
 } from "@shared/gfn";
 
 // Extend the OpenNowApi interface for internal preload use
@@ -93,6 +100,20 @@ const api: PreloadApi = {
       ipcRenderer.off("app:trigger-screenshot", wrapped);
     };
   },
+  beginRecording: (input: RecordingBeginRequest): Promise<RecordingBeginResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.RECORDING_BEGIN, input),
+  sendRecordingChunk: (input: RecordingChunkRequest): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.RECORDING_CHUNK, input),
+  finishRecording: (input: RecordingFinishRequest): Promise<RecordingEntry> =>
+    ipcRenderer.invoke(IPC_CHANNELS.RECORDING_FINISH, input),
+  abortRecording: (input: RecordingAbortRequest): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.RECORDING_ABORT, input),
+  listRecordings: (): Promise<RecordingEntry[]> =>
+    ipcRenderer.invoke(IPC_CHANNELS.RECORDING_LIST),
+  deleteRecording: (input: RecordingDeleteRequest): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.RECORDING_DELETE, input),
+  showRecordingInFolder: (id: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.RECORDING_SHOW_IN_FOLDER, id),
 };
 
 contextBridge.exposeInMainWorld("openNow", api);

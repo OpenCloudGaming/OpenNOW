@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import type { JSX } from "react";
-import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X } from "lucide-react";
+import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen } from "lucide-react";
 import SideBar from "./SideBar";
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
-import type { MicrophoneMode, ScreenshotEntry } from "@shared/gfn";
+import type { MicrophoneMode, ScreenshotEntry, RecordingEntry } from "@shared/gfn";
 import { isShortcutMatch, normalizeShortcut } from "../shortcuts";
 
 interface StreamViewProps {
@@ -18,6 +18,7 @@ interface StreamViewProps {
     stopStream: string;
     toggleMicrophone?: string;
     screenshot: string;
+    recording: string;
   };
   hideStreamButtons?: boolean;
   serverRegion?: string;
@@ -57,6 +58,7 @@ interface StreamViewProps {
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   onScreenshotShortcutChange: (value: string) => void;
+  onRecordingShortcutChange: (value: string) => void;
   remainingPlaytimeText: string;
   micTrack?: MediaStreamTrack | null;
 }
@@ -96,6 +98,12 @@ function formatElapsed(totalSeconds: number): string {
     return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
   }
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function formatWarningSeconds(value: number | undefined): string | null {
@@ -262,6 +270,7 @@ export function StreamView({
   microphoneMode,
   onMicrophoneModeChange,
   onScreenshotShortcutChange,
+  onRecordingShortcutChange,
   remainingPlaytimeText,
   micTrack,
   hideStreamButtons = false,
@@ -283,6 +292,28 @@ export function StreamView({
     typeof window.openNow?.listScreenshots === "function" &&
     typeof window.openNow?.deleteScreenshot === "function" &&
     typeof window.openNow?.saveScreenshotAs === "function";
+
+  // Recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordings, setRecordings] = useState<RecordingEntry[]>([]);
+  const [recordingDurationMs, setRecordingDurationMs] = useState(0);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [usedMimeType, setUsedMimeType] = useState<string | null>(null);
+  const [recordingShortcutInput, setRecordingShortcutInput] = useState(shortcuts.recording);
+  const [recordingShortcutError, setRecordingShortcutError] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingIdRef = useRef<string | null>(null);
+  const recordingStartTimeRef = useRef<number>(0);
+  const recordingTimerRef = useRef<number | undefined>(undefined);
+  const thumbnailDataUrlRef = useRef<string | null>(null);
+  const recCarouselRef = useRef<HTMLDivElement | null>(null);
+  const recordingApiAvailable =
+    typeof window.openNow?.beginRecording === "function" &&
+    typeof window.openNow?.sendRecordingChunk === "function" &&
+    typeof window.openNow?.finishRecording === "function" &&
+    typeof window.openNow?.abortRecording === "function" &&
+    typeof window.openNow?.listRecordings === "function" &&
+    typeof window.openNow?.deleteRecording === "function";
 
   // Microphone state
   const micState = stats.micState ?? "uninitialized";
@@ -392,6 +423,10 @@ export function StreamView({
 
   // Local ref for video element to manage focus
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  // Local ref for audio element (game audio stream)
+  const localAudioRef = useRef<HTMLAudioElement | null>(null);
+  // AudioContext used during an active recording (torn down on stop/error)
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
   // Mic level meter canvas
   const micMeterRef = useRef<HTMLCanvasElement | null>(null);
@@ -407,6 +442,11 @@ export function StreamView({
     setScreenshotShortcutInput(shortcuts.screenshot);
     setScreenshotShortcutError(null);
   }, [shortcuts.screenshot]);
+
+  useEffect(() => {
+    setRecordingShortcutInput(shortcuts.recording);
+    setRecordingShortcutError(null);
+  }, [shortcuts.recording]);
 
   const getScreenshotShortcutError = useCallback((rawValue: string): string | null => {
     const trimmed = rawValue.trim();
@@ -424,6 +464,7 @@ export function StreamView({
       shortcuts.togglePointerLock,
       shortcuts.stopStream,
       shortcuts.toggleMicrophone,
+      shortcuts.recording,
       isMacClient ? "Cmd+G" : "Ctrl+Shift+G",
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
@@ -436,7 +477,38 @@ export function StreamView({
     }
 
     return null;
-  }, [isMacClient, shortcuts.stopStream, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
+  }, [isMacClient, shortcuts.recording, shortcuts.stopStream, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
+
+  const getRecordingShortcutError = useCallback((rawValue: string): string | null => {
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      return "Shortcut cannot be empty.";
+    }
+
+    const normalized = normalizeShortcut(trimmed);
+    if (!normalized.valid) {
+      return "Invalid shortcut format.";
+    }
+
+    const reserved = [
+      shortcuts.toggleStats,
+      shortcuts.togglePointerLock,
+      shortcuts.stopStream,
+      shortcuts.toggleMicrophone,
+      shortcuts.screenshot,
+      isMacClient ? "Cmd+G" : "Ctrl+Shift+G",
+    ]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => normalizeShortcut(value))
+      .filter((parsed) => parsed.valid)
+      .map((parsed) => parsed.canonical);
+
+    if (reserved.includes(normalized.canonical)) {
+      return "Shortcut conflicts with an existing binding.";
+    }
+
+    return null;
+  }, [isMacClient, shortcuts.screenshot, shortcuts.stopStream, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
 
   const refreshScreenshots = useCallback(async () => {
     setGalleryError(null);
@@ -532,6 +604,228 @@ export function StreamView({
     }
   }, [screenshotApiAvailable, selectedScreenshot]);
 
+  const refreshRecordings = useCallback(async () => {
+    setRecordingError(null);
+    if (!recordingApiAvailable) return;
+    try {
+      const items = await window.openNow.listRecordings();
+      setRecordings(items);
+    } catch (error) {
+      console.error("[StreamView] Failed to load recordings:", error);
+      setRecordingError("Unable to load recordings.");
+    }
+  }, [recordingApiAvailable]);
+
+  const handleDeleteRecording = useCallback(async (id: string) => {
+    setRecordingError(null);
+    if (!recordingApiAvailable) return;
+    try {
+      await window.openNow.deleteRecording({ id });
+      setRecordings((prev) => prev.filter((r) => r.id !== id));
+    } catch (error) {
+      console.error("[StreamView] Failed to delete recording:", error);
+      setRecordingError("Unable to delete recording.");
+    }
+  }, [recordingApiAvailable]);
+
+  const scrollRecCarousel = useCallback((direction: "left" | "right") => {
+    const strip = recCarouselRef.current;
+    if (!strip) return;
+    strip.scrollBy({ left: direction === "left" ? -200 : 200, behavior: "smooth" });
+  }, []);
+
+  const toggleRecording = useCallback(async () => {
+    setRecordingError(null);
+
+    if (isRecording) {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+
+    if (!recordingApiAvailable) {
+      setRecordingError("Recording API unavailable. Restart OpenNOW to enable recording.");
+      return;
+    }
+
+    const video = localVideoRef.current;
+    if (!video || !video.srcObject) {
+      setRecordingError("Stream is not ready for recording yet.");
+      return;
+    }
+
+    const stream = video.srcObject as MediaStream;
+    const mimeTypes = [
+      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+      "video/mp4;codecs=avc1",
+      "video/mp4",
+      "video/webm;codecs=h264",
+      "video/webm;codecs=vp8",
+      "video/webm",
+    ];
+    const mimeType = mimeTypes.find((m) => MediaRecorder.isTypeSupported(m)) ?? "video/webm";
+    setUsedMimeType(mimeType);
+
+    // Build a composed MediaStream: video tracks + mixed audio (game + mic)
+    const audioCtx = new AudioContext();
+    audioCtxRef.current = audioCtx;
+    const audioDest = audioCtx.createMediaStreamDestination();
+
+    // Wire game audio (from the <audio> element's srcObject)
+    const audioEl = localAudioRef.current;
+    const gameAudioStream = audioEl?.srcObject instanceof MediaStream ? audioEl.srcObject : null;
+    if (gameAudioStream && gameAudioStream.getAudioTracks().length > 0) {
+      audioCtx.createMediaStreamSource(gameAudioStream).connect(audioDest);
+    }
+
+    // Wire microphone (if active)
+    if (micTrack && micTrack.readyState === "live") {
+      const micStream = new MediaStream([micTrack]);
+      audioCtx.createMediaStreamSource(micStream).connect(audioDest);
+    }
+
+    // Compose: video tracks from the video element + mixed audio destination track
+    const composed = new MediaStream([
+      ...stream.getVideoTracks(),
+      ...audioDest.stream.getAudioTracks(),
+    ]);
+
+    let recordingId: string;
+    try {
+      const result = await window.openNow.beginRecording({ mimeType });
+      recordingId = result.recordingId;
+    } catch (error) {
+      console.error("[StreamView] Failed to begin recording:", error);
+      audioCtx.close().catch(() => undefined);
+      audioCtxRef.current = null;
+      setRecordingError("Could not start recording.");
+      return;
+    }
+
+    recordingIdRef.current = recordingId;
+    thumbnailDataUrlRef.current = null;
+    recordingStartTimeRef.current = Date.now();
+    setRecordingDurationMs(0);
+    setIsRecording(true);
+
+    recordingTimerRef.current = window.setInterval(() => {
+      setRecordingDurationMs(Date.now() - recordingStartTimeRef.current);
+    }, 500);
+
+    let isFirstChunk = true;
+    const recorder = new MediaRecorder(composed, { mimeType });
+
+    recorder.ondataavailable = (e: BlobEvent) => {
+      if (!e.data || e.data.size === 0) return;
+
+      // Capture thumbnail from the first chunk (frame ~2 s in)
+      if (isFirstChunk) {
+        isFirstChunk = false;
+        const vid = localVideoRef.current;
+        if (vid && vid.videoWidth > 0 && vid.videoHeight > 0) {
+          // create a canvas sized to preserve the video's aspect ratio, but
+          // capped at roughly 320×180 so we don't generate unnecessarily large
+          // thumbnails when the stream resolution is higher than 16:9.
+          const maxW = 320;
+          const maxH = 180;
+          let w = vid.videoWidth;
+          let h = vid.videoHeight;
+
+          // shrink to fit within bounds while keeping aspect ratio
+          if (w > maxW) {
+            h = Math.round((maxW / w) * h);
+            w = maxW;
+          }
+          if (h > maxH) {
+            w = Math.round((maxH / h) * w);
+            h = maxH;
+          }
+
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx2d = canvas.getContext("2d");
+          if (ctx2d) {
+            ctx2d.drawImage(vid, 0, 0, w, h);
+            thumbnailDataUrlRef.current = canvas.toDataURL("image/jpeg", 0.72);
+          }
+        }
+      }
+
+      void e.data.arrayBuffer().then((buf) => {
+        const id = recordingIdRef.current;
+        if (!id) return;
+        window.openNow.sendRecordingChunk({ recordingId: id, chunk: buf }).catch((err: unknown) => {
+          console.error("[StreamView] Failed to send recording chunk:", err);
+        });
+      });
+    };
+
+    recorder.onstop = () => {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = undefined;
+      audioCtxRef.current?.close().catch(() => undefined);
+      audioCtxRef.current = null;
+      const id = recordingIdRef.current;
+      recordingIdRef.current = null;
+      setIsRecording(false);
+
+      if (!id) return;
+
+      const durationMs = Date.now() - recordingStartTimeRef.current;
+      void window.openNow
+        .finishRecording({
+          recordingId: id,
+          durationMs,
+          gameTitle,
+          thumbnailDataUrl: thumbnailDataUrlRef.current ?? undefined,
+        })
+        .then((entry) => {
+          setRecordings((prev) => [entry, ...prev].slice(0, 20));
+          thumbnailDataUrlRef.current = null;
+        })
+        .catch((err: unknown) => {
+          console.error("[StreamView] Failed to finish recording:", err);
+          setRecordingError("Recording could not be saved.");
+        });
+    };
+
+    recorder.onerror = () => {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = undefined;
+      audioCtxRef.current?.close().catch(() => undefined);
+      audioCtxRef.current = null;
+      const id = recordingIdRef.current;
+      recordingIdRef.current = null;
+      setIsRecording(false);
+      thumbnailDataUrlRef.current = null;
+      if (id) {
+        window.openNow.abortRecording({ recordingId: id }).catch(() => undefined);
+      }
+      setRecordingError("Recording encountered an error.");
+    };
+
+    mediaRecorderRef.current = recorder;
+    recorder.start(2000);
+  }, [gameTitle, isRecording, micTrack, recordingApiAvailable]);
+
+  // Cleanup: abort any active recording on unmount
+  useEffect(() => {
+    return () => {
+      window.clearInterval(recordingTimerRef.current);
+      const recorder = mediaRecorderRef.current;
+      const id = recordingIdRef.current;
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop();
+      }
+      if (id) {
+        window.openNow.abortRecording({ recordingId: id }).catch(() => undefined);
+        recordingIdRef.current = null;
+      }
+      audioCtxRef.current?.close().catch(() => undefined);
+      audioCtxRef.current = null;
+    };
+  }, []);
+
   const setVideoRef = useCallback((element: HTMLVideoElement | null) => {
     localVideoRef.current = element;
     if (typeof videoRef === "function") {
@@ -540,6 +834,15 @@ export function StreamView({
       (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = element;
     }
   }, [videoRef]);
+
+  const setAudioRef = useCallback((element: HTMLAudioElement | null) => {
+    localAudioRef.current = element;
+    if (typeof audioRef === "function") {
+      audioRef(element);
+    } else if (audioRef && "current" in audioRef) {
+      (audioRef as React.MutableRefObject<HTMLAudioElement | null>).current = element;
+    }
+  }, [audioRef]);
 
   useEffect(() => {
     const handlePointerLockChange = () => {
@@ -553,6 +856,7 @@ export function StreamView({
     if (showSideBar) {
       document.exitPointerLock();
       void refreshScreenshots();
+      void refreshRecordings();
       return;
     }
     // Sidebar just closed — restore focus to the video so clicks register
@@ -564,7 +868,7 @@ export function StreamView({
       }
     }, 50);
     return () => clearTimeout(timer);
-  }, [refreshScreenshots, showSideBar]);
+  }, [refreshRecordings, refreshScreenshots, showSideBar]);
 
   useEffect(() => {
     if (!selectedScreenshotId) return;
@@ -600,6 +904,7 @@ export function StreamView({
 
   useEffect(() => {
     const screenshotShortcut = normalizeShortcut(shortcuts.screenshot);
+    const recordingShortcut = normalizeShortcut(shortcuts.recording);
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const isTyping = !!target && (
@@ -618,6 +923,13 @@ export function StreamView({
         return;
       }
 
+      if (isShortcutMatch(event, recordingShortcut)) {
+        event.preventDefault();
+        event.stopPropagation();
+        void toggleRecording();
+        return;
+      }
+
       const key = event.key.toLowerCase();
       if (isMacClient) {
         if (event.metaKey && !event.ctrlKey && !event.shiftKey && key === "g") {
@@ -632,7 +944,7 @@ export function StreamView({
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [captureScreenshot, handleToggleSideBar, isMacClient, shortcuts.screenshot]);
+  }, [captureScreenshot, handleToggleSideBar, isMacClient, shortcuts.screenshot, shortcuts.recording, toggleRecording]);
 
   return (
     <div className="sv">
@@ -649,7 +961,7 @@ export function StreamView({
           }
         }}
       />
-      <audio ref={audioRef} autoPlay playsInline />
+      <audio ref={setAudioRef} autoPlay playsInline />
 
       {showSideBar && (
         <>
@@ -835,6 +1147,99 @@ export function StreamView({
                   )}
                   {galleryError && <span className="sidebar-hint sidebar-hint--error">{galleryError}</span>}
                 </section>
+                <div className="sidebar-separator" aria-hidden="true" />
+                <section className="sidebar-section">
+                  <div className="sidebar-section-header">
+                    <span>Recordings</span>
+                    <span className="sidebar-section-sub">Record key: {shortcuts.recording}</span>
+                  </div>
+                  {usedMimeType && (
+                    <span className="sidebar-hint sidebar-hint--codec">Codec: {usedMimeType}</span>
+                  )}
+                  <div className="sidebar-row sidebar-row--aligned">
+                    <span className="sidebar-label">
+                      {isRecording ? `Recording ${formatElapsed(Math.round(recordingDurationMs / 1000))}` : "Record"}
+                    </span>
+                    <button
+                      type="button"
+                      className="sidebar-button sidebar-screenshot-button"
+                      onClick={() => { void toggleRecording(); }}
+                      disabled={!recordingApiAvailable}
+                    >
+                      {isRecording ? <Square size={14} /> : <Circle size={14} />}
+                      <span>{isRecording ? "Stop" : "Start"}</span>
+                    </button>
+                  </div>
+                  {recordingError && (
+                    <span className="sidebar-hint sidebar-hint--error">{recordingError}</span>
+                  )}
+                  {recordings.length === 0 ? (
+                    <span className="sidebar-hint">No recordings yet. Press {shortcuts.recording} to record.</span>
+                  ) : (
+                    <div className="sidebar-gallery-row">
+                      <button
+                        type="button"
+                        className="sidebar-gallery-arrow"
+                        onClick={() => scrollRecCarousel("left")}
+                        aria-label="Scroll recordings left"
+                      >
+                        <ChevronLeft size={16} />
+                      </button>
+                      <div className="sidebar-rec-strip" ref={recCarouselRef}>
+                        {recordings.map((rec) => (
+                          <div key={rec.id} className="sidebar-rec-card">
+                            {rec.thumbnailDataUrl ? (
+                              <img
+                                className="sidebar-rec-card-thumb"
+                                src={rec.thumbnailDataUrl}
+                                alt=""
+                              />
+                            ) : (
+                              <div className="sidebar-rec-card-thumb sidebar-rec-card-thumb--placeholder">
+                                <Video size={20} />
+                              </div>
+                            )}
+                            <div className="sidebar-rec-card-meta">
+                              <span className="sidebar-rec-card-title">{rec.gameTitle ?? "Untitled"}</span>
+                              <span className="sidebar-rec-card-detail">
+                                {formatElapsed(Math.round(rec.durationMs / 1000))} · {formatFileSize(rec.sizeBytes)}
+                              </span>
+                            </div>
+                            <div className="sidebar-rec-card-actions">
+                              <button
+                                type="button"
+                                className="sidebar-rec-card-action"
+                                aria-label="Show in folder"
+                                title="Show in folder"
+                                onClick={() => { void window.openNow.showRecordingInFolder(rec.id); }}
+                                disabled={typeof window.openNow?.showRecordingInFolder !== "function"}
+                              >
+                                <FolderOpen size={11} />
+                              </button>
+                              <button
+                                type="button"
+                                className="sidebar-rec-card-action sidebar-rec-card-action--danger"
+                                aria-label="Delete recording"
+                                title="Delete"
+                                onClick={() => { void handleDeleteRecording(rec.id); }}
+                              >
+                                <Trash2 size={11} />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        className="sidebar-gallery-arrow"
+                        onClick={() => scrollRecCarousel("right")}
+                        aria-label="Scroll recordings right"
+                      >
+                        <ChevronRight size={16} />
+                      </button>
+                    </div>
+                  )}
+                </section>
               </>
             )}
 
@@ -886,6 +1291,46 @@ export function StreamView({
                     />
                   </div>
                   {screenshotShortcutError && <span className="sidebar-hint sidebar-hint--error">{screenshotShortcutError}</span>}
+                  <div className="sidebar-row sidebar-row--column">
+                    <div className="sidebar-row-top">
+                      <span className="sidebar-label">Recording Shortcut</span>
+                    </div>
+                    <input
+                      type="text"
+                      className={`settings-text-input settings-shortcut-input sidebar-shortcut-input ${recordingShortcutError ? "error" : ""}`}
+                      value={recordingShortcutInput}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        setRecordingShortcutInput(nextValue);
+                        setRecordingShortcutError(getRecordingShortcutError(nextValue));
+                      }}
+                      onBlur={() => {
+                        const error = getRecordingShortcutError(recordingShortcutInput);
+                        if (error) {
+                          setRecordingShortcutError(error);
+                          return;
+                        }
+                        const normalized = normalizeShortcut(recordingShortcutInput.trim());
+                        if (!normalized.valid) {
+                          setRecordingShortcutError("Invalid shortcut format.");
+                          return;
+                        }
+                        setRecordingShortcutError(null);
+                        setRecordingShortcutInput(normalized.canonical);
+                        if (normalized.canonical !== shortcuts.recording) {
+                          onRecordingShortcutChange(normalized.canonical);
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          (event.target as HTMLInputElement).blur();
+                        }
+                      }}
+                      placeholder="F12"
+                      spellCheck={false}
+                    />
+                  </div>
+                  {recordingShortcutError && <span className="sidebar-hint sidebar-hint--error">{recordingShortcutError}</span>}
                   <div className="sidebar-row sidebar-row--aligned">
                     <span className="sidebar-label">Toggle Stats</span>
                     <span className="settings-value-badge">{shortcuts.toggleStats}</span>
@@ -1105,6 +1550,18 @@ export function StreamView({
         <div className={`sv-afk${connectedControllers > 0 ? " sv-afk--stacked" : ""}`} title="Anti-AFK is enabled">
           <span className="sv-afk-dot" />
           <span className="sv-afk-label">ANTI-AFK ON</span>
+        </div>
+      )}
+
+      {/* Recording indicator (top-left, stacked below other badges) */}
+      {isRecording && !isConnecting && (
+        <div
+          className="sv-rec"
+          style={{ top: 14 + 42 * ([connectedControllers > 0, antiAfkEnabled, showMicIndicator].filter(Boolean).length) }}
+          title={`Recording · ${formatElapsed(Math.round(recordingDurationMs / 1000))}`}
+        >
+          <span className="sv-rec-dot" />
+          <span className="sv-rec-label">REC {formatElapsed(Math.round(recordingDurationMs / 1000))}</span>
         </div>
       )}
 

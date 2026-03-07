@@ -1,9 +1,10 @@
-import { app, BrowserWindow, ipcMain, dialog, systemPreferences, session } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, systemPreferences, session } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
-import { copyFile, mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, createWriteStream } from "node:fs";
+import { copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import * as net from "node:net";
+import { randomUUID } from "node:crypto";
 
 // Keyboard shortcuts reference (matching Rust implementation):
 // Screenshot keybind - configurable, handled in renderer
@@ -39,6 +40,13 @@ import type {
   ScreenshotSaveAsRequest,
   ScreenshotSaveAsResult,
   ScreenshotSaveRequest,
+  RecordingEntry,
+  RecordingBeginRequest,
+  RecordingBeginResult,
+  RecordingChunkRequest,
+  RecordingFinishRequest,
+  RecordingAbortRequest,
+  RecordingDeleteRequest,
 } from "@shared/gfn";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
@@ -113,6 +121,8 @@ if (process.platform === "win32") {
 
 app.commandLine.appendSwitch("enable-features",
   [
+    // --- MP4 recording via MediaRecorder (Chromium 127+) ---
+    "MediaRecorderEnableMp4Muxer",
     // --- AV1 support (cross-platform) ---
     "Dav1dVideoDecoder", // Fast AV1 software fallback via dav1d (if no HW decoder)
     // --- Additional (cross-platform) ---
@@ -304,6 +314,95 @@ async function saveScreenshotAs(input: ScreenshotSaveAsRequest): Promise<Screens
 
   await copyFile(sourcePath, target.filePath);
   return { saved: true, filePath: target.filePath };
+}
+
+// ---------------------------------------------------------------------------
+// Recording helpers
+// ---------------------------------------------------------------------------
+
+const RECORDING_LIMIT = 20;
+
+interface ActiveRecording {
+  writeStream: ReturnType<typeof createWriteStream>;
+  tempPath: string;
+  mimeType: string;
+}
+
+const activeRecordings = new Map<string, ActiveRecording>();
+
+function getRecordingsDirectory(): string {
+  return join(app.getPath("pictures"), "OpenNOW", "Recordings");
+}
+
+async function ensureRecordingsDirectory(): Promise<string> {
+  const dir = getRecordingsDirectory();
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+function assertSafeRecordingId(id: string): void {
+  if (!id || id.includes("/") || id.includes("\\") || id.includes("..")) {
+    throw new Error("Invalid recording id");
+  }
+}
+
+function extFromMimeType(mimeType: string): ".mp4" | ".webm" {
+  return mimeType.startsWith("video/mp4") ? ".mp4" : ".webm";
+}
+
+async function listRecordings(): Promise<RecordingEntry[]> {
+  const dir = await ensureRecordingsDirectory();
+  const entries = await readdir(dir, { withFileTypes: true });
+  const webmFiles = entries
+    .filter((e) => e.isFile())
+    .map((e) => e.name)
+    .filter((name) => /\.(mp4|webm)$/i.test(name));
+
+  const loaded = await Promise.all(
+    webmFiles.map(async (fileName): Promise<RecordingEntry | null> => {
+      const filePath = join(dir, fileName);
+      try {
+        const fileStats = await stat(filePath);
+        const stem = fileName.replace(/\.webm$/i, "");
+        const thumbName = `${stem}-thumb.jpg`;
+        const thumbPath = join(dir, thumbName);
+
+        let thumbnailDataUrl: string | undefined;
+        try {
+          const thumbBuf = await readFile(thumbPath);
+          thumbnailDataUrl = `data:image/jpeg;base64,${thumbBuf.toString("base64")}`;
+        } catch {
+          // No thumbnail for this recording — that's fine
+        }
+
+        // Parse durationMs encoded in filename as last numeric segment before extension
+        const durMatch = /-dur(\d+)\.(mp4|webm)$/i.exec(fileName);
+        const durationMs = durMatch ? Number(durMatch[1]) : 0;
+
+        // Parse game title from filename: {stamp}-{title}-{rand}[-dur{ms}].{ext}
+        const titleMatch = /^[^-]+-[^-]+-([^-]+(?:-[^-]+)*?)-[a-f0-9]{6}(?:-dur\d+)?\.(mp4|webm)$/i.exec(fileName);
+        const gameTitle = titleMatch ? titleMatch[1].replace(/-/g, " ") : undefined;
+
+        return {
+          id: fileName,
+          fileName,
+          filePath,
+          createdAtMs: fileStats.birthtimeMs || fileStats.mtimeMs,
+          sizeBytes: fileStats.size,
+          durationMs,
+          gameTitle,
+          thumbnailDataUrl,
+        };
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return loaded
+    .filter((item): item is RecordingEntry => item !== null)
+    .sort((a, b) => b.createdAtMs - a.createdAtMs)
+    .slice(0, RECORDING_LIMIT);
 }
 
 function emitToRenderer(event: MainToRendererSignalingEvent): void {
@@ -635,6 +734,123 @@ function registerIpcHandlers(): void {
       return saveScreenshotAs(input);
     },
   );
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_BEGIN, async (_event, input: RecordingBeginRequest): Promise<RecordingBeginResult> => {
+    const dir = await ensureRecordingsDirectory();
+    const recordingId = randomUUID();
+    const ext = extFromMimeType(input.mimeType);
+    const tempPath = join(dir, `${recordingId}${ext}.tmp`);
+    const writeStream = createWriteStream(tempPath);
+    activeRecordings.set(recordingId, { writeStream, tempPath, mimeType: input.mimeType });
+    return { recordingId };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_CHUNK, async (_event, input: RecordingChunkRequest): Promise<void> => {
+    const rec = activeRecordings.get(input.recordingId);
+    if (!rec) {
+      throw new Error("Unknown recording id");
+    }
+    await new Promise<void>((resolve, reject) => {
+      rec.writeStream.write(Buffer.from(input.chunk), (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_FINISH, async (_event, input: RecordingFinishRequest): Promise<RecordingEntry> => {
+    const rec = activeRecordings.get(input.recordingId);
+    if (!rec) {
+      throw new Error("Unknown recording id");
+    }
+    activeRecordings.delete(input.recordingId);
+
+    await new Promise<void>((resolve, reject) => {
+      rec.writeStream.end((err?: Error | null) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    const dir = getRecordingsDirectory();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const title = sanitizeTitleForFileName(input.gameTitle);
+    const rand = Math.random().toString(16).slice(2, 8);
+    const durSuffix = input.durationMs > 0 ? `-dur${Math.round(input.durationMs)}` : "";
+    const ext = extFromMimeType(rec.mimeType);
+    const fileName = `${stamp}-${title}-${rand}${durSuffix}${ext}`;
+    const finalPath = join(dir, fileName);
+
+    await rename(rec.tempPath, finalPath);
+
+    // Save thumbnail if provided
+    let thumbnailDataUrl: string | undefined;
+    if (input.thumbnailDataUrl) {
+      try {
+        const { buffer } = dataUrlToBuffer(input.thumbnailDataUrl);
+        const stem = fileName.replace(/\.(mp4|webm)$/i, "");
+        const thumbPath = join(dir, `${stem}-thumb.jpg`);
+        await writeFile(thumbPath, buffer);
+        thumbnailDataUrl = input.thumbnailDataUrl;
+      } catch {
+        // Thumbnail save is best-effort — don't fail the recording
+      }
+    }
+
+    // Enforce recording limit: delete oldest entries beyond RECORDING_LIMIT
+    const all = await listRecordings();
+    if (all.length > RECORDING_LIMIT) {
+      const toDelete = all.slice(RECORDING_LIMIT);
+      await Promise.all(
+        toDelete.map(async (entry) => {
+          await unlink(entry.filePath).catch(() => undefined);
+          const stem = entry.fileName.replace(/\.(mp4|webm)$/i, "");
+          await unlink(join(dir, `${stem}-thumb.jpg`)).catch(() => undefined);
+        }),
+      );
+    }
+
+    const fileStats = await stat(finalPath);
+    return {
+      id: fileName,
+      fileName,
+      filePath: finalPath,
+      createdAtMs: Date.now(),
+      sizeBytes: fileStats.size,
+      durationMs: input.durationMs,
+      gameTitle: input.gameTitle,
+      thumbnailDataUrl,
+    };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_ABORT, async (_event, input: RecordingAbortRequest): Promise<void> => {
+    const rec = activeRecordings.get(input.recordingId);
+    if (!rec) {
+      return;
+    }
+    activeRecordings.delete(input.recordingId);
+    rec.writeStream.destroy();
+    await unlink(rec.tempPath).catch(() => undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_LIST, async (): Promise<RecordingEntry[]> => {
+    return listRecordings();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_DELETE, async (_event, input: RecordingDeleteRequest): Promise<void> => {
+    assertSafeRecordingId(input.id);
+    const dir = await ensureRecordingsDirectory();
+    const filePath = join(dir, input.id);
+    await unlink(filePath);
+    const stem = input.id.replace(/\.(mp4|webm)$/i, "");
+    await unlink(join(dir, `${stem}-thumb.jpg`)).catch(() => undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_SHOW_IN_FOLDER, async (_event, id: string): Promise<void> => {
+    assertSafeRecordingId(id);
+    const dir = await ensureRecordingsDirectory();
+    shell.showItemInFolder(join(dir, id));
+  });
 
   // TCP-based ping function - more accurate than HTTP as it only measures connection time
   async function tcpPing(hostname: string, port: number, timeoutMs: number = 3000): Promise<number | null> {

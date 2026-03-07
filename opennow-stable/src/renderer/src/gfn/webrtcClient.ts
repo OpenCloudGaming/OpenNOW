@@ -2387,6 +2387,11 @@ export class GfnWebRtcClient {
       if (!this.inputReady) {
         return;
       }
+      // When pointer lock is not active, only forward events that originate from
+      // the video element itself to avoid intercepting overlay button clicks.
+      if (!isPointerLockActive() && event.target !== videoElement) {
+        return;
+      }
       // Don't send mouse clicks while gamepad was recently active.
       // This prevents accidental clicks from making the game switch
       // to showing keyboard/mouse prompts.
@@ -2410,6 +2415,11 @@ export class GfnWebRtcClient {
 
     const onMouseUp = (event: MouseEvent) => {
       if (!this.inputReady || this.activeInputMode === "gamepad") {
+        return;
+      }
+      // When pointer lock is not active, only forward events that originate from
+      // the video element itself to avoid intercepting overlay button clicks.
+      if (!isPointerLockActive() && event.target !== videoElement) {
         return;
       }
       event.preventDefault();
@@ -2574,9 +2584,9 @@ export class GfnWebRtcClient {
     } else {
       window.addEventListener("mousemove", onMouseMove);
     }
-    videoElement.addEventListener("mousedown", onMouseDown);
-    videoElement.addEventListener("mouseup", onMouseUp);
-    videoElement.addEventListener("wheel", onWheel, { passive: false });
+    pointerLockTarget.addEventListener("mousedown", onMouseDown);
+    pointerLockTarget.addEventListener("mouseup", onMouseUp);
+    pointerLockTarget.addEventListener("wheel", onWheel, { passive: false });
     videoElement.addEventListener("click", onClick);
     document.addEventListener("pointerlockchange", onPointerLockChange);
     document.addEventListener("fullscreenchange", onFullscreenChange);
@@ -2597,9 +2607,9 @@ export class GfnWebRtcClient {
     } else {
       this.inputCleanup.push(() => window.removeEventListener("mousemove", onMouseMove));
     }
-    this.inputCleanup.push(() => videoElement.removeEventListener("mousedown", onMouseDown));
-    this.inputCleanup.push(() => videoElement.removeEventListener("mouseup", onMouseUp));
-    this.inputCleanup.push(() => videoElement.removeEventListener("wheel", onWheel));
+    this.inputCleanup.push(() => pointerLockTarget.removeEventListener("mousedown", onMouseDown));
+    this.inputCleanup.push(() => pointerLockTarget.removeEventListener("mouseup", onMouseUp));
+    this.inputCleanup.push(() => pointerLockTarget.removeEventListener("wheel", onWheel));
     this.inputCleanup.push(() => videoElement.removeEventListener("click", onClick));
     this.inputCleanup.push(() => document.removeEventListener("pointerlockchange", onPointerLockChange));
     this.inputCleanup.push(() => document.removeEventListener("fullscreenchange", onFullscreenChange));

@@ -33,6 +33,13 @@ export const IPC_CHANNELS = {
   SCREENSHOT_LIST: "screenshot:list",
   SCREENSHOT_DELETE: "screenshot:delete",
   SCREENSHOT_SAVE_AS: "screenshot:save-as",
+  RECORDING_BEGIN: "recording:begin",
+  RECORDING_CHUNK: "recording:chunk",
+  RECORDING_FINISH: "recording:finish",
+  RECORDING_ABORT: "recording:abort",
+  RECORDING_LIST: "recording:list",
+  RECORDING_DELETE: "recording:delete",
+  RECORDING_SHOW_IN_FOLDER: "recording:showInFolder",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

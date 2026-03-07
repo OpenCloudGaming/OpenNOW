@@ -69,6 +69,7 @@ const DEFAULT_SHORTCUTS = {
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
   shortcutToggleMicrophone: "Ctrl+Shift+M",
   shortcutScreenshot: "F11",
+  shortcutToggleRecording: "F12",
 } as const;
 
 function sleep(ms: number): Promise<void> {
@@ -338,6 +339,7 @@ export function App(): JSX.Element {
     shortcutToggleAntiAfk: DEFAULT_SHORTCUTS.shortcutToggleAntiAfk,
     shortcutToggleMicrophone: DEFAULT_SHORTCUTS.shortcutToggleMicrophone,
     shortcutScreenshot: DEFAULT_SHORTCUTS.shortcutScreenshot,
+    shortcutToggleRecording: DEFAULT_SHORTCUTS.shortcutToggleRecording,
     microphoneMode: "disabled",
     microphoneDeviceId: "",
     hideStreamButtons: false,
@@ -345,6 +347,7 @@ export function App(): JSX.Element {
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
+    gameLanguage: "en_US",
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
@@ -621,7 +624,8 @@ export function App(): JSX.Element {
     const toggleAntiAfk = parseWithFallback(settings.shortcutToggleAntiAfk, DEFAULT_SHORTCUTS.shortcutToggleAntiAfk);
     const toggleMicrophone = parseWithFallback(settings.shortcutToggleMicrophone, DEFAULT_SHORTCUTS.shortcutToggleMicrophone);
     const screenshot = parseWithFallback(settings.shortcutScreenshot, DEFAULT_SHORTCUTS.shortcutScreenshot);
-    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk, toggleMicrophone, screenshot };
+    const recording = parseWithFallback(settings.shortcutToggleRecording, DEFAULT_SHORTCUTS.shortcutToggleRecording);
+    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk, toggleMicrophone, screenshot, recording };
   }, [
     settings.shortcutToggleStats,
     settings.shortcutTogglePointerLock,
@@ -629,6 +633,7 @@ export function App(): JSX.Element {
     settings.shortcutToggleAntiAfk,
     settings.shortcutToggleMicrophone,
     settings.shortcutScreenshot,
+    settings.shortcutToggleRecording,
   ]);
 
   const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
@@ -1626,6 +1631,7 @@ export function App(): JSX.Element {
               stopStream: formatShortcutForDisplay(settings.shortcutStopStream, isMac),
               toggleMicrophone: formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac),
               screenshot: shortcuts.screenshot.canonical,
+              recording: shortcuts.recording.canonical,
             }}
             hideStreamButtons={settings.hideStreamButtons}
             serverRegion={session?.serverIp}
@@ -1663,6 +1669,9 @@ export function App(): JSX.Element {
             onMicrophoneModeChange={handleMicrophoneModeChange}
             onScreenshotShortcutChange={(value) => {
               void updateSetting("shortcutScreenshot", value);
+            }}
+            onRecordingShortcutChange={(value) => {
+              void updateSetting("shortcutToggleRecording", value);
             }}
             remainingPlaytimeText={remainingPlaytimeText}
             micTrack={clientRef.current?.getMicTrack() ?? null}
