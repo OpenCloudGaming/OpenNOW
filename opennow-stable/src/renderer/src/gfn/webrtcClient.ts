@@ -453,18 +453,12 @@ export class GfnWebRtcClient {
   private inputCleanup: Array<() => void> = [];
   private queuedCandidates: RTCIceCandidateInit[] = [];
 
-  // Input mode: auto-switches between mouse+keyboard and gamepad
-  // When gamepad has activity, mouse/keyboard are suppressed (and vice versa)
-  private activeInputMode: "mkb" | "gamepad" = "mkb";
-  // Timestamp of last gamepad state change — used for mode-switch lockout
-  private lastGamepadActivityMs = 0;
+  // Input mode: all input types (mouse, keyboard, gamepad) work simultaneously
+  // Removed exclusive mode switching to allow concurrent input
   // Timestamp of last gamepad packet sent — used for keepalive
   private lastGamepadSendMs = 0;
   // Gamepad keepalive interval: resend last state every 100ms to keep server controller alive
   private static readonly GAMEPAD_KEEPALIVE_MS = 100;
-  // How long to wait after last gamepad activity before allowing switch to mkb (seconds)
-  // Prevents accidental key/mouse events from disrupting controller gameplay
-  private static readonly GAMEPAD_MODE_LOCKOUT_MS = 3000;
   private static readonly MOUSE_FLUSH_FAST_MS = 4;
   private static readonly MOUSE_FLUSH_NORMAL_MS = 8;
   private static readonly MOUSE_FLUSH_SAFE_MS = 16;
@@ -1390,9 +1384,7 @@ export class GfnWebRtcClient {
     this.previousGamepadStates.clear();
     this.gamepadSendCount = 0;
     this.lastGamepadSendMs = 0;
-    this.lastGamepadActivityMs = 0;
     this.reliableDropLogged = false;
-    this.activeInputMode = "mkb";
     this.gamepadBitmap = 0;
     this.pendingMouseDx = 0;
     this.pendingMouseDy = 0;
@@ -1600,8 +1592,7 @@ export class GfnWebRtcClient {
         // Send if state changed OR as a keepalive to maintain server controller presence
         // Games detect active input device by receiving packets; if we stop sending,
         // the game falls back to showing keyboard/mouse prompts.
-        const needsKeepalive = this.activeInputMode === "gamepad"
-          && !stateChanged
+        const needsKeepalive = !stateChanged
           && (nowMs - this.lastGamepadSendMs) >= GfnWebRtcClient.GAMEPAD_KEEPALIVE_MS;
 
         if (stateChanged || needsKeepalive) {
@@ -1613,16 +1604,6 @@ export class GfnWebRtcClient {
 
           if (stateChanged) {
             this.previousGamepadStates.set(i, { ...gamepadInput });
-            this.lastGamepadActivityMs = nowMs;
-          }
-
-          // Switch to gamepad input mode — suppresses mouse/keyboard
-          if (this.activeInputMode !== "gamepad") {
-            this.activeInputMode = "gamepad";
-            // Discard any pending mouse deltas to avoid a stale burst
-            this.pendingMouseDx = 0;
-            this.pendingMouseDy = 0;
-            this.log("Input mode → gamepad");
           }
 
           // Log first N gamepad sends for debugging
@@ -2049,19 +2030,6 @@ export class GfnWebRtcClient {
     this.sendReliable(payload);
   }
 
-  private ensureKeyboardInputMode(): boolean {
-    if (this.activeInputMode !== "gamepad") {
-      return true;
-    }
-    const idleMs = performance.now() - this.lastGamepadActivityMs;
-    if (idleMs < GfnWebRtcClient.GAMEPAD_MODE_LOCKOUT_MS) {
-      return false;
-    }
-    this.activeInputMode = "mkb";
-    this.log("Input mode → mouse+keyboard (gamepad idle)");
-    return true;
-  }
-
   public sendAntiAfkPulse(): boolean {
     if (!this.inputReady) {
       return false;
@@ -2073,7 +2041,7 @@ export class GfnWebRtcClient {
   }
 
   public sendPasteShortcut(useMeta: boolean): boolean {
-    if (!this.inputReady || !this.ensureKeyboardInputMode()) {
+    if (!this.inputReady) {
       return false;
     }
 
@@ -2089,7 +2057,7 @@ export class GfnWebRtcClient {
   }
 
   public sendText(text: string): number {
-    if (!this.inputReady || !text || !this.ensureKeyboardInputMode()) {
+    if (!this.inputReady || !text) {
       return 0;
     }
 
@@ -2178,13 +2146,6 @@ export class GfnWebRtcClient {
         return;
       }
 
-      if (this.activeInputMode === "gamepad") {
-        this.pendingMouseDx = 0;
-        this.pendingMouseDy = 0;
-        this.pendingMouseTimestampUs = null;
-        return;
-      }
-
       if (this.pendingMouseDx === 0 && this.pendingMouseDy === 0) {
         return;
       }
@@ -2222,10 +2183,6 @@ export class GfnWebRtcClient {
 
     const queueMouseMovement = (dx: number, dy: number, eventTimestampMs: number): void => {
       if (!this.inputReady || !isPointerLockActive()) {
-        return;
-      }
-
-      if (this.activeInputMode === "gamepad") {
         return;
       }
 
@@ -2300,20 +2257,6 @@ export class GfnWebRtcClient {
         return;
       }
 
-      // Don't send keyboard input while gamepad was recently active.
-      // This prevents accidental key presses from making the game switch
-      // to showing keyboard/mouse prompts. The user must put down the
-      // controller for a few seconds before keyboard input takes over.
-      if (this.activeInputMode === "gamepad") {
-        const idleMs = performance.now() - this.lastGamepadActivityMs;
-        if (idleMs < GfnWebRtcClient.GAMEPAD_MODE_LOCKOUT_MS) {
-          return;
-        }
-        // Gamepad idle long enough — allow switch to mkb
-        this.activeInputMode = "mkb";
-        this.log("Input mode → mouse+keyboard (gamepad idle)");
-      }
-
       event.preventDefault();
       this.pressedKeys.add(mapped.vk);
 
@@ -2341,7 +2284,7 @@ export class GfnWebRtcClient {
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
-      if (!this.inputReady || this.activeInputMode === "gamepad") {
+      if (!this.inputReady) {
         return;
       }
 
@@ -2387,23 +2330,6 @@ export class GfnWebRtcClient {
       if (!this.inputReady) {
         return;
       }
-      // When pointer lock is not active, only forward events that originate from
-      // the video element itself to avoid intercepting overlay button clicks.
-      if (!isPointerLockActive() && event.target !== videoElement) {
-        return;
-      }
-      // Don't send mouse clicks while gamepad was recently active.
-      // This prevents accidental clicks from making the game switch
-      // to showing keyboard/mouse prompts.
-      if (this.activeInputMode === "gamepad") {
-        const idleMs = performance.now() - this.lastGamepadActivityMs;
-        if (idleMs < GfnWebRtcClient.GAMEPAD_MODE_LOCKOUT_MS) {
-          return;
-        }
-        // Gamepad idle long enough — allow switch to mkb
-        this.activeInputMode = "mkb";
-        this.log("Input mode → mouse+keyboard (gamepad idle)");
-      }
       event.preventDefault();
       const payload = this.inputEncoder.encodeMouseButtonDown({
         button: toMouseButton(event.button),
@@ -2414,7 +2340,7 @@ export class GfnWebRtcClient {
     };
 
     const onMouseUp = (event: MouseEvent) => {
-      if (!this.inputReady || this.activeInputMode === "gamepad") {
+      if (!this.inputReady) {
         return;
       }
       // When pointer lock is not active, only forward events that originate from
@@ -2432,7 +2358,7 @@ export class GfnWebRtcClient {
     };
 
     const onWheel = (event: WheelEvent) => {
-      if (!this.inputReady || this.activeInputMode === "gamepad") {
+      if (!this.inputReady) {
         return;
       }
       event.preventDefault();
@@ -2532,8 +2458,8 @@ export class GfnWebRtcClient {
         this.sendReliable(escUp);
 
         // Re-acquire pointer lock so the user stays in the game
-        if (this.pointerLockTarget && this.activeInputMode !== "gamepad") {
-          void this.requestPointerLockWithEscGuard(this.pointerLockTarget, false)
+        if (this.videoElement) {
+          void this.requestPointerLockWithEscGuard(this.videoElement, false)
             .catch(() => {});
         }
       }, 50);
