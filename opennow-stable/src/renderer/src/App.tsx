@@ -39,6 +39,7 @@ const fpsOptions = [30, 60, 120, 144, 240];
 const SESSION_READY_POLL_INTERVAL_MS = 2000;
 const SESSION_READY_TIMEOUT_MS = 180000;
 const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
+const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
 
 type GameSource = "main" | "library" | "public";
 type AppPage = "home" | "library" | "settings";
@@ -548,6 +549,19 @@ export function App(): JSX.Element {
           setStartupStatusMessage("No saved session found.");
         }
 
+        // Load persisted variant selections from localStorage before applying defaults
+        try {
+          const raw = localStorage.getItem(VARIANT_SELECTION_LOCALSTORAGE_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === "object") {
+              setVariantByGameId(parsed as Record<string, string>);
+            }
+          }
+        } catch (e) {
+          // ignore parse/storage errors
+        }
+
         // Update isInitializing FIRST so UI knows we're done loading
         setIsInitializing(false);
         setProviders(providerList);
@@ -1047,7 +1061,13 @@ export function App(): JSX.Element {
       if (prev[gameId] === variantId) {
         return prev;
       }
-      return { ...prev, [gameId]: variantId };
+      const next = { ...prev, [gameId]: variantId };
+      try {
+        localStorage.setItem(VARIANT_SELECTION_LOCALSTORAGE_KEY, JSON.stringify(next));
+      } catch (e) {
+        // ignore storage errors
+      }
+      return next;
     });
   }, []);
 
