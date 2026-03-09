@@ -1,11 +1,13 @@
-import { app, BrowserWindow, ipcMain, dialog, systemPreferences, session } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, systemPreferences, session } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, createWriteStream } from "node:fs";
+import { copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import * as net from "node:net";
+import { randomUUID } from "node:crypto";
 
 // Keyboard shortcuts reference (matching Rust implementation):
-// F11 - Toggle fullscreen (handled in main process)
+// Screenshot keybind - configurable, handled in renderer
 // F3  - Toggle stats overlay (handled in renderer)
 // Ctrl+Shift+Q - Stop streaming (handled in renderer)
 // F8  - Toggle mouse/pointer lock (handled in main process via IPC)
@@ -26,11 +28,25 @@ import type {
   SignalingConnectRequest,
   SendAnswerRequest,
   IceCandidatePayload,
+  KeyframeRequest,
   Settings,
   SubscriptionFetchRequest,
   SessionConflictChoice,
   PingResult,
   StreamRegion,
+  VideoAccelerationPreference,
+  ScreenshotDeleteRequest,
+  ScreenshotEntry,
+  ScreenshotSaveAsRequest,
+  ScreenshotSaveAsResult,
+  ScreenshotSaveRequest,
+  RecordingEntry,
+  RecordingBeginRequest,
+  RecordingBeginResult,
+  RecordingChunkRequest,
+  RecordingFinishRequest,
+  RecordingAbortRequest,
+  RecordingDeleteRequest,
 } from "@shared/gfn";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
@@ -53,9 +69,12 @@ const __dirname = dirname(__filename);
 // Configure Chromium video and WebRTC behavior before app.whenReady().
 // Video acceleration is always set to "auto" - decoder and encoder preferences removed from settings
 
-const bootstrapVideoPrefs = {
-  decoderPreference: "auto" as const,
-  encoderPreference: "auto" as const,
+const bootstrapVideoPrefs: {
+  decoderPreference: VideoAccelerationPreference;
+  encoderPreference: VideoAccelerationPreference;
+} = {
+  decoderPreference: "auto",
+  encoderPreference: "auto",
 };
 console.log(
   `[Main] Video acceleration: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
@@ -102,6 +121,8 @@ if (process.platform === "win32") {
 
 app.commandLine.appendSwitch("enable-features",
   [
+    // --- MP4 recording via MediaRecorder (Chromium 127+) ---
+    "MediaRecorderEnableMp4Muxer",
     // --- AV1 support (cross-platform) ---
     "Dav1dVideoDecoder", // Fast AV1 software fallback via dav1d (if no HW decoder)
     // --- Additional (cross-platform) ---
@@ -157,6 +178,232 @@ let signalingClient: GfnSignalingClient | null = null;
 let signalingClientKey: string | null = null;
 let authService: AuthService;
 let settingsManager: SettingsManager;
+const SCREENSHOT_LIMIT = 60;
+
+function getScreenshotDirectory(): string {
+  return join(app.getPath("pictures"), "OpenNOW", "Screenshots");
+}
+
+async function ensureScreenshotDirectory(): Promise<string> {
+  const dir = getScreenshotDirectory();
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+function sanitizeTitleForFileName(value: string | undefined): string {
+  const source = (value ?? "").trim().toLowerCase();
+  const compact = source.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!compact) return "stream";
+  return compact.slice(0, 48);
+}
+
+function dataUrlToBuffer(dataUrl: string): { ext: "png" | "jpg" | "webp"; buffer: Buffer } {
+  const match = /^data:image\/(png|jpeg|jpg|webp);base64,([a-z0-9+/=\s]+)$/i.exec(dataUrl);
+  if (!match || !match[1] || !match[2]) {
+    throw new Error("Invalid screenshot payload");
+  }
+
+  const rawExt = match[1].toLowerCase();
+  const ext: "png" | "jpg" | "webp" = rawExt === "jpeg" ? "jpg" : (rawExt as "png" | "jpg" | "webp");
+  const buffer = Buffer.from(match[2].replace(/\s+/g, ""), "base64");
+  if (!buffer.length) {
+    throw new Error("Empty screenshot payload");
+  }
+
+  return { ext, buffer };
+}
+
+function buildScreenshotDataUrl(ext: string, buffer: Buffer): string {
+  const mime = ext === "jpg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+  return `data:${mime};base64,${buffer.toString("base64")}`;
+}
+
+function assertSafeScreenshotId(id: string): void {
+  if (!id || id.includes("/") || id.includes("\\") || id.includes("..")) {
+    throw new Error("Invalid screenshot id");
+  }
+}
+
+async function listScreenshots(): Promise<ScreenshotEntry[]> {
+  const dir = await ensureScreenshotDirectory();
+  const entries = await readdir(dir, { withFileTypes: true });
+  const screenshotFiles = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .filter((name) => /\.(png|jpg|jpeg|webp)$/i.test(name));
+
+  const loaded = await Promise.all(
+    screenshotFiles.map(async (fileName): Promise<ScreenshotEntry | null> => {
+      const filePath = join(dir, fileName);
+      try {
+        const fileStats = await stat(filePath);
+        const fileBuffer = await readFile(filePath);
+        const extMatch = /\.([^.]+)$/.exec(fileName);
+        const ext = (extMatch?.[1] ?? "png").toLowerCase();
+
+        return {
+          id: fileName,
+          fileName,
+          filePath,
+          createdAtMs: fileStats.birthtimeMs || fileStats.mtimeMs,
+          sizeBytes: fileStats.size,
+          dataUrl: buildScreenshotDataUrl(ext, fileBuffer),
+        };
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return loaded
+    .filter((item): item is ScreenshotEntry => item !== null)
+    .sort((a, b) => b.createdAtMs - a.createdAtMs)
+    .slice(0, SCREENSHOT_LIMIT);
+}
+
+async function saveScreenshot(input: ScreenshotSaveRequest): Promise<ScreenshotEntry> {
+  const { ext, buffer } = dataUrlToBuffer(input.dataUrl);
+  const dir = await ensureScreenshotDirectory();
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const title = sanitizeTitleForFileName(input.gameTitle);
+  const fileName = `${stamp}-${title}-${Math.random().toString(16).slice(2, 8)}.${ext}`;
+  const filePath = join(dir, fileName);
+
+  await writeFile(filePath, buffer);
+
+  return {
+    id: fileName,
+    fileName,
+    filePath,
+    createdAtMs: Date.now(),
+    sizeBytes: buffer.byteLength,
+    dataUrl: buildScreenshotDataUrl(ext, buffer),
+  };
+}
+
+async function deleteScreenshot(input: ScreenshotDeleteRequest): Promise<void> {
+  assertSafeScreenshotId(input.id);
+  const dir = await ensureScreenshotDirectory();
+  const filePath = join(dir, input.id);
+  await unlink(filePath);
+}
+
+async function saveScreenshotAs(input: ScreenshotSaveAsRequest): Promise<ScreenshotSaveAsResult> {
+  assertSafeScreenshotId(input.id);
+  const dir = await ensureScreenshotDirectory();
+  const sourcePath = join(dir, input.id);
+
+  const saveDialogOptions = {
+    title: "Save Screenshot",
+    defaultPath: join(app.getPath("pictures"), input.id),
+    filters: [
+      { name: "PNG Image", extensions: ["png"] },
+      { name: "JPEG Image", extensions: ["jpg", "jpeg"] },
+      { name: "WebP Image", extensions: ["webp"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
+  };
+  const target =
+    mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showSaveDialog(mainWindow, saveDialogOptions)
+      : await dialog.showSaveDialog(saveDialogOptions);
+
+  if (target.canceled || !target.filePath) {
+    return { saved: false };
+  }
+
+  await copyFile(sourcePath, target.filePath);
+  return { saved: true, filePath: target.filePath };
+}
+
+// ---------------------------------------------------------------------------
+// Recording helpers
+// ---------------------------------------------------------------------------
+
+const RECORDING_LIMIT = 20;
+
+interface ActiveRecording {
+  writeStream: ReturnType<typeof createWriteStream>;
+  tempPath: string;
+  mimeType: string;
+}
+
+const activeRecordings = new Map<string, ActiveRecording>();
+
+function getRecordingsDirectory(): string {
+  return join(app.getPath("pictures"), "OpenNOW", "Recordings");
+}
+
+async function ensureRecordingsDirectory(): Promise<string> {
+  const dir = getRecordingsDirectory();
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+function assertSafeRecordingId(id: string): void {
+  if (!id || id.includes("/") || id.includes("\\") || id.includes("..")) {
+    throw new Error("Invalid recording id");
+  }
+}
+
+function extFromMimeType(mimeType: string): ".mp4" | ".webm" {
+  return mimeType.startsWith("video/mp4") ? ".mp4" : ".webm";
+}
+
+async function listRecordings(): Promise<RecordingEntry[]> {
+  const dir = await ensureRecordingsDirectory();
+  const entries = await readdir(dir, { withFileTypes: true });
+  const webmFiles = entries
+    .filter((e) => e.isFile())
+    .map((e) => e.name)
+    .filter((name) => /\.(mp4|webm)$/i.test(name));
+
+  const loaded = await Promise.all(
+    webmFiles.map(async (fileName): Promise<RecordingEntry | null> => {
+      const filePath = join(dir, fileName);
+      try {
+        const fileStats = await stat(filePath);
+        const stem = fileName.replace(/\.webm$/i, "");
+        const thumbName = `${stem}-thumb.jpg`;
+        const thumbPath = join(dir, thumbName);
+
+        let thumbnailDataUrl: string | undefined;
+        try {
+          const thumbBuf = await readFile(thumbPath);
+          thumbnailDataUrl = `data:image/jpeg;base64,${thumbBuf.toString("base64")}`;
+        } catch {
+          // No thumbnail for this recording — that's fine
+        }
+
+        // Parse durationMs encoded in filename as last numeric segment before extension
+        const durMatch = /-dur(\d+)\.(mp4|webm)$/i.exec(fileName);
+        const durationMs = durMatch ? Number(durMatch[1]) : 0;
+
+        // Parse game title from filename: {stamp}-{title}-{rand}[-dur{ms}].{ext}
+        const titleMatch = /^[^-]+-[^-]+-([^-]+(?:-[^-]+)*?)-[a-f0-9]{6}(?:-dur\d+)?\.(mp4|webm)$/i.exec(fileName);
+        const gameTitle = titleMatch ? titleMatch[1].replace(/-/g, " ") : undefined;
+
+        return {
+          id: fileName,
+          fileName,
+          filePath,
+          createdAtMs: fileStats.birthtimeMs || fileStats.mtimeMs,
+          sizeBytes: fileStats.size,
+          durationMs,
+          gameTitle,
+          thumbnailDataUrl,
+        };
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return loaded
+    .filter((item): item is RecordingEntry => item !== null)
+    .sort((a, b) => b.createdAtMs - a.createdAtMs)
+    .slice(0, RECORDING_LIMIT);
+}
 
 function emitToRenderer(event: MainToRendererSignalingEvent): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -184,18 +431,6 @@ async function createMainWindow(): Promise<void> {
       nodeIntegration: false,
       sandbox: false,
     },
-  });
-
-  // Handle F11 fullscreen toggle — send to renderer so it uses W3C Fullscreen API
-  // (which enables navigator.keyboard.lock for Escape key capture)
-  mainWindow.webContents.on("before-input-event", (event, input) => {
-    if (input.key === "F11" && input.type === "keyDown") {
-      event.preventDefault();
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("app:toggle-fullscreen");
-      }
-    }
-
   });
 
   if (process.platform === "win32") {
@@ -441,6 +676,13 @@ function registerIpcHandlers(): void {
     return signalingClient.sendIceCandidate(payload);
   });
 
+  ipcMain.handle(IPC_CHANNELS.REQUEST_KEYFRAME, async (_event, payload: KeyframeRequest) => {
+    if (!signalingClient) {
+      throw new Error("Signaling is not connected");
+    }
+    return signalingClient.requestKeyframe(payload);
+  });
+
   // Toggle fullscreen via IPC (for completeness)
   ipcMain.handle(IPC_CHANNELS.TOGGLE_FULLSCREEN, async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -472,6 +714,142 @@ function registerIpcHandlers(): void {
   // Logs export IPC handler
   ipcMain.handle(IPC_CHANNELS.LOGS_EXPORT, async (_event, format: "text" | "json" = "text"): Promise<string> => {
     return exportLogs(format);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SCREENSHOT_SAVE, async (_event, input: ScreenshotSaveRequest): Promise<ScreenshotEntry> => {
+    return saveScreenshot(input);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SCREENSHOT_LIST, async (): Promise<ScreenshotEntry[]> => {
+    return listScreenshots();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SCREENSHOT_DELETE, async (_event, input: ScreenshotDeleteRequest): Promise<void> => {
+    return deleteScreenshot(input);
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.SCREENSHOT_SAVE_AS,
+    async (_event, input: ScreenshotSaveAsRequest): Promise<ScreenshotSaveAsResult> => {
+      return saveScreenshotAs(input);
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_BEGIN, async (_event, input: RecordingBeginRequest): Promise<RecordingBeginResult> => {
+    const dir = await ensureRecordingsDirectory();
+    const recordingId = randomUUID();
+    const ext = extFromMimeType(input.mimeType);
+    const tempPath = join(dir, `${recordingId}${ext}.tmp`);
+    const writeStream = createWriteStream(tempPath);
+    activeRecordings.set(recordingId, { writeStream, tempPath, mimeType: input.mimeType });
+    return { recordingId };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_CHUNK, async (_event, input: RecordingChunkRequest): Promise<void> => {
+    const rec = activeRecordings.get(input.recordingId);
+    if (!rec) {
+      throw new Error("Unknown recording id");
+    }
+    await new Promise<void>((resolve, reject) => {
+      rec.writeStream.write(Buffer.from(input.chunk), (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_FINISH, async (_event, input: RecordingFinishRequest): Promise<RecordingEntry> => {
+    const rec = activeRecordings.get(input.recordingId);
+    if (!rec) {
+      throw new Error("Unknown recording id");
+    }
+    activeRecordings.delete(input.recordingId);
+
+    await new Promise<void>((resolve, reject) => {
+      rec.writeStream.end((err?: Error | null) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    const dir = getRecordingsDirectory();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const title = sanitizeTitleForFileName(input.gameTitle);
+    const rand = Math.random().toString(16).slice(2, 8);
+    const durSuffix = input.durationMs > 0 ? `-dur${Math.round(input.durationMs)}` : "";
+    const ext = extFromMimeType(rec.mimeType);
+    const fileName = `${stamp}-${title}-${rand}${durSuffix}${ext}`;
+    const finalPath = join(dir, fileName);
+
+    await rename(rec.tempPath, finalPath);
+
+    // Save thumbnail if provided
+    let thumbnailDataUrl: string | undefined;
+    if (input.thumbnailDataUrl) {
+      try {
+        const { buffer } = dataUrlToBuffer(input.thumbnailDataUrl);
+        const stem = fileName.replace(/\.(mp4|webm)$/i, "");
+        const thumbPath = join(dir, `${stem}-thumb.jpg`);
+        await writeFile(thumbPath, buffer);
+        thumbnailDataUrl = input.thumbnailDataUrl;
+      } catch {
+        // Thumbnail save is best-effort — don't fail the recording
+      }
+    }
+
+    // Enforce recording limit: delete oldest entries beyond RECORDING_LIMIT
+    const all = await listRecordings();
+    if (all.length > RECORDING_LIMIT) {
+      const toDelete = all.slice(RECORDING_LIMIT);
+      await Promise.all(
+        toDelete.map(async (entry) => {
+          await unlink(entry.filePath).catch(() => undefined);
+          const stem = entry.fileName.replace(/\.(mp4|webm)$/i, "");
+          await unlink(join(dir, `${stem}-thumb.jpg`)).catch(() => undefined);
+        }),
+      );
+    }
+
+    const fileStats = await stat(finalPath);
+    return {
+      id: fileName,
+      fileName,
+      filePath: finalPath,
+      createdAtMs: Date.now(),
+      sizeBytes: fileStats.size,
+      durationMs: input.durationMs,
+      gameTitle: input.gameTitle,
+      thumbnailDataUrl,
+    };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_ABORT, async (_event, input: RecordingAbortRequest): Promise<void> => {
+    const rec = activeRecordings.get(input.recordingId);
+    if (!rec) {
+      return;
+    }
+    activeRecordings.delete(input.recordingId);
+    rec.writeStream.destroy();
+    await unlink(rec.tempPath).catch(() => undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_LIST, async (): Promise<RecordingEntry[]> => {
+    return listRecordings();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_DELETE, async (_event, input: RecordingDeleteRequest): Promise<void> => {
+    assertSafeRecordingId(input.id);
+    const dir = await ensureRecordingsDirectory();
+    const filePath = join(dir, input.id);
+    await unlink(filePath);
+    const stem = input.id.replace(/\.(mp4|webm)$/i, "");
+    await unlink(join(dir, `${stem}-thumb.jpg`)).catch(() => undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_SHOW_IN_FOLDER, async (_event, id: string): Promise<void> => {
+    assertSafeRecordingId(id);
+    const dir = await ensureRecordingsDirectory();
+    shell.showItemInFolder(join(dir, id));
   });
 
   // TCP-based ping function - more accurate than HTTP as it only measures connection time

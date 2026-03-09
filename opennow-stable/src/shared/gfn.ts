@@ -43,11 +43,14 @@ export interface Settings {
   region: string;
   clipboardPaste: boolean;
   mouseSensitivity: number;
+  mouseAcceleration: number;
   shortcutToggleStats: string;
   shortcutTogglePointerLock: string;
   shortcutStopStream: string;
   shortcutToggleAntiAfk: string;
   shortcutToggleMicrophone: string;
+  shortcutScreenshot: string;
+  shortcutToggleRecording: string;
   microphoneMode: MicrophoneMode;
   microphoneDeviceId: string;
   hideStreamButtons: boolean;
@@ -305,6 +308,12 @@ export interface SendAnswerRequest {
   nvstSdp?: string;
 }
 
+export interface KeyframeRequest {
+  reason: string;
+  backlogFrames: number;
+  attempt: number;
+}
+
 export type MainToRendererSignalingEvent =
   | { type: "connected" }
   | { type: "disconnected"; reason: string }
@@ -340,6 +349,7 @@ export interface OpenNowApi {
   disconnectSignaling(): Promise<void>;
   sendAnswer(input: SendAnswerRequest): Promise<void>;
   sendIceCandidate(input: IceCandidatePayload): Promise<void>;
+  requestKeyframe(input: KeyframeRequest): Promise<void>;
   onSignalingEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void;
   /** Listen for F11 fullscreen toggle from main process */
   onToggleFullscreen(listener: () => void): () => void;
@@ -352,4 +362,106 @@ export interface OpenNowApi {
   exportLogs(format?: "text" | "json"): Promise<string>;
   /** Ping all regions and return latency results */
   pingRegions(regions: StreamRegion[]): Promise<PingResult[]>;
+
+  /** Persist a PNG screenshot from a renderer-generated data URL */
+  saveScreenshot(input: ScreenshotSaveRequest): Promise<ScreenshotEntry>;
+
+  /** List recent screenshots from the persistent screenshot directory */
+  listScreenshots(): Promise<ScreenshotEntry[]>;
+
+  /** Delete a screenshot from the persistent screenshot directory */
+  deleteScreenshot(input: ScreenshotDeleteRequest): Promise<void>;
+
+  /** Export a screenshot to a user-selected path */
+  saveScreenshotAs(input: ScreenshotSaveAsRequest): Promise<ScreenshotSaveAsResult>;
+
+  /** Listen for screenshot hotkey events from the main process (F11) */
+  onTriggerScreenshot(listener: () => void): () => void;
+
+  /** Begin a new recording session; returns a recordingId to use for subsequent calls */
+  beginRecording(input: RecordingBeginRequest): Promise<RecordingBeginResult>;
+
+  /** Stream a chunk of recorded video data to the main process */
+  sendRecordingChunk(input: RecordingChunkRequest): Promise<void>;
+
+  /** Finalise a recording; saves the video and optional thumbnail to disk */
+  finishRecording(input: RecordingFinishRequest): Promise<RecordingEntry>;
+
+  /** Abort an in-progress recording and remove the temporary file */
+  abortRecording(input: RecordingAbortRequest): Promise<void>;
+
+  /** List all saved recordings from the recordings directory */
+  listRecordings(): Promise<RecordingEntry[]>;
+
+  /** Delete a saved recording (and its thumbnail if present) */
+  deleteRecording(input: RecordingDeleteRequest): Promise<void>;
+
+  /** Reveal a saved recording in the system file manager */
+  showRecordingInFolder(id: string): Promise<void>;
+}
+
+export interface ScreenshotSaveRequest {
+  dataUrl: string;
+  gameTitle?: string;
+}
+
+export interface ScreenshotDeleteRequest {
+  id: string;
+}
+
+export interface ScreenshotSaveAsRequest {
+  id: string;
+}
+
+export interface ScreenshotSaveAsResult {
+  saved: boolean;
+  filePath?: string;
+}
+
+export interface ScreenshotEntry {
+  id: string;
+  fileName: string;
+  filePath: string;
+  createdAtMs: number;
+  sizeBytes: number;
+  dataUrl: string;
+}
+
+export interface RecordingEntry {
+  id: string;
+  fileName: string;
+  filePath: string;
+  createdAtMs: number;
+  sizeBytes: number;
+  durationMs: number;
+  gameTitle?: string;
+  thumbnailDataUrl?: string;
+}
+
+export interface RecordingBeginRequest {
+  mimeType: string;
+}
+
+export interface RecordingBeginResult {
+  recordingId: string;
+}
+
+export interface RecordingChunkRequest {
+  recordingId: string;
+  chunk: ArrayBuffer;
+}
+
+export interface RecordingFinishRequest {
+  recordingId: string;
+  durationMs: number;
+  gameTitle?: string;
+  thumbnailDataUrl?: string;
+}
+
+export interface RecordingAbortRequest {
+  recordingId: string;
+}
+
+export interface RecordingDeleteRequest {
+  id: string;
 }
