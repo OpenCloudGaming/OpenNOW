@@ -31,6 +31,7 @@ import type {
   SessionConflictChoice,
   PingResult,
   StreamRegion,
+  VideoAccelerationPreference,
 } from "@shared/gfn";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
@@ -53,9 +54,12 @@ const __dirname = dirname(__filename);
 // Configure Chromium video and WebRTC behavior before app.whenReady().
 // Video acceleration is always set to "auto" - decoder and encoder preferences removed from settings
 
-const bootstrapVideoPrefs = {
-  decoderPreference: "auto" as const,
-  encoderPreference: "auto" as const,
+const bootstrapVideoPrefs: {
+  decoderPreference: VideoAccelerationPreference;
+  encoderPreference: VideoAccelerationPreference;
+} = {
+  decoderPreference: "auto",
+  encoderPreference: "auto",
 };
 console.log(
   `[Main] Video acceleration: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
