@@ -2042,7 +2042,7 @@ export function App(): JSX.Element {
               onToggleFavoriteGame={handleToggleFavoriteGame}
               onOpenSettings={() => setCurrentPage("settings")}
               currentStreamingGame={streamingGame}
-              onResumeGame={handleSwitchGame}
+              onResumeGame={() => setControllerOverlayOpen(false)}
               onCloseGame={handlePromptedStopStream}
               pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
