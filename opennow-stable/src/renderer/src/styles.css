@@ -5470,6 +5470,21 @@ button.game-card-store-chip.active:hover {
   letter-spacing: 0.05em;
 }
 
+.xmb-clock-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.xmb-remaining-playtime {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.72);
+}
+
 .xmb-user-badge {
   display: flex;
   align-items: center;

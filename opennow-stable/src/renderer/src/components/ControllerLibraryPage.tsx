@@ -15,6 +15,7 @@ interface ControllerLibraryPageProps {
   favoriteGameIds: string[];
   userName?: string;
   userAvatarUrl?: string;
+  remainingPlaytimeText?: string;
   playtimeData?: PlaytimeStore;
   onSelectGame: (id: string) => void;
   onSelectGameVariant: (gameId: string, variantId: string) => void;
@@ -99,6 +100,7 @@ export function ControllerLibraryPage({
   pendingSwitchGameCover,
   userName = "Player One",
   userAvatarUrl,
+  remainingPlaytimeText = "--",
   playtimeData = {},
   settings = {},
   resolutionOptions = [],
@@ -130,7 +132,7 @@ export function ControllerLibraryPage({
   const [editingBandwidth, setEditingBandwidth] = useState(false);
 
   useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 10000);
+    const timer = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
@@ -728,7 +730,10 @@ export function ControllerLibraryPage({
       </div>
 
       <div className="xmb-top-right">
-        <div className="xmb-clock">{formatTime(time)}</div>
+        <div className="xmb-clock-wrap">
+          <div className="xmb-clock">{formatTime(time)}</div>
+          <div className="xmb-remaining-playtime">{remainingPlaytimeText} left</div>
+        </div>
         <div className="xmb-user-badge">
           {userAvatarUrl ? (
             <img

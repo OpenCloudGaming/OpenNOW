@@ -2099,6 +2099,7 @@ export function App(): JSX.Element {
               pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
+              remainingPlaytimeText={remainingPlaytimeText}
               playtimeData={playtime}
               settings={{
                 resolution: settings.resolution,
@@ -2214,6 +2215,7 @@ export function App(): JSX.Element {
               pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
+              remainingPlaytimeText={remainingPlaytimeText}
               playtimeData={playtime}
               settings={{
                 resolution: settings.resolution,
