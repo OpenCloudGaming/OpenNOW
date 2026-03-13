@@ -448,17 +448,21 @@ export function App(): JSX.Element {
   }, [authSession, currentPage, settings.controllerMode, streamStatus]);
 
   const handleControllerBackAction = useCallback((): boolean => {
+    // If the controller overlay is open but we're currently inside the
+    // controller-mode library, consume Back as a local "cancel" so it
+    // navigates subcategories instead of closing the overlay.
+    if (controllerOverlayOpenRef.current && settings.controllerMode && currentPage === "library") {
+      window.dispatchEvent(new CustomEvent("opennow:controller-cancel"));
+      return true;
+    }
+
     if (controllerOverlayOpenRef.current) {
       setControllerOverlayOpen(false);
       return true;
     }
+
     if (!authSession || streamStatus !== "idle") {
       return false;
-    }
-
-    if (settings.controllerMode && currentPage === "library") {
-      window.dispatchEvent(new CustomEvent("opennow:controller-cancel"));
-      return true;
     }
 
     if (settings.controllerMode && currentPage === "settings") {
