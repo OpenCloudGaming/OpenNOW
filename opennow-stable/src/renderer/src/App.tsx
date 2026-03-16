@@ -448,11 +448,11 @@ export function App(): JSX.Element {
   }, [authSession, currentPage, settings.controllerMode, streamStatus]);
 
   const handleControllerBackAction = useCallback((): boolean => {
-    // If the controller overlay is open but we're currently inside the
-    // controller-mode library, consume Back as a local "cancel" so it
-    // navigates subcategories instead of closing the overlay.
-    if (controllerOverlayOpenRef.current && settings.controllerMode && currentPage === "library") {
-      window.dispatchEvent(new CustomEvent("opennow:controller-cancel"));
+    // Prefer to let the controller library handle Back (e.g. closing submenus
+    // inside the XMB) before falling back to global navigation.
+    const cancelEvent = new CustomEvent("opennow:controller-cancel", { cancelable: true });
+    window.dispatchEvent(cancelEvent);
+    if (cancelEvent.defaultPrevented) {
       return true;
     }
 

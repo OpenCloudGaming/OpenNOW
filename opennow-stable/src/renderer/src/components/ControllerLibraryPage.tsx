@@ -703,23 +703,27 @@ export function ControllerLibraryPage({
       }
     };
 
-    const cancelHandler = () => {
-      // Circle/B button goes back from subcategory to root
+    const cancelHandler = (e: Event) => {
+      // Circle/B button goes back from subcategory to root.
+      // Prevent default to signal the App-level back handler that we've handled it.
       if (topCategory === "settings" && settingsSubcategory !== "root") {
         if (editingBandwidth) {
           setEditingBandwidth(false);
           playUiSound("move");
+          e.preventDefault();
           return;
         }
         setSettingsSubcategory("root");
         setSelectedSettingIndex(lastRootSettingIndex);
         playUiSound("move");
+        e.preventDefault();
         return;
       }
       if (topCategory === "media" && mediaSubcategory !== "root") {
         setMediaSubcategory("root");
         setSelectedMediaIndex(lastRootMediaIndex);
         playUiSound("move");
+        e.preventDefault();
       }
     };
 
@@ -731,7 +735,7 @@ export function ControllerLibraryPage({
       else if (e.key === "ArrowDown") applyDirection("down");
       else if (e.key === "Enter") activateHandler();
       else if (e.key.toLowerCase() === "y") tertiaryActivateHandler();
-      else if (e.key.toLowerCase() === "c" || e.key.toLowerCase() === "b") cancelHandler();
+      else if (e.key.toLowerCase() === "c" || e.key.toLowerCase() === "b") cancelHandler(e);
       else if (e.key === "Escape") {
         if (topCategory === "current" || topCategory === "settings") {
           setCategoryIndex((prev) => (prev - 1 + TOP_CATEGORIES.length) % TOP_CATEGORIES.length);
