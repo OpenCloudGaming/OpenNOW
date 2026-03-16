@@ -2112,6 +2112,7 @@ export function App(): JSX.Element {
                 codec: settings.codec,
                 controllerUiSounds: settings.controllerUiSounds,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
+                autoFullScreen: settings.autoFullScreen,
                 aspectRatio: settings.aspectRatio,
                 maxBitrateMbps: settings.maxBitrateMbps,
               }}
@@ -2229,6 +2230,7 @@ export function App(): JSX.Element {
                 codec: settings.codec,
                 controllerUiSounds: settings.controllerUiSounds,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
+                autoFullScreen: settings.autoFullScreen,
                 aspectRatio: settings.aspectRatio,
                 maxBitrateMbps: settings.maxBitrateMbps,
               }}

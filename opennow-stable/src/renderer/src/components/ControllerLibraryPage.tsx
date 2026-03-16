@@ -32,6 +32,7 @@ interface ControllerLibraryPageProps {
     codec?: string;
     controllerUiSounds?: boolean;
     autoLoadControllerLibrary?: boolean;
+    autoFullScreen?: boolean;
     aspectRatio?: string;
     maxBitrateMbps?: number;
   };
