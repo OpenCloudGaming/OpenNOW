@@ -46,7 +46,7 @@ interface ControllerLibraryPageProps {
 type Direction = "up" | "down" | "left" | "right";
 type TopCategory = "current" | "all" | "settings" | "media" | "favorites" | `genre:${string}`;
 type SoundKind = "move" | "confirm";
-type SettingsSubcategory = "root" | "Network" | "Audio" | "System";
+type SettingsSubcategory = "root" | "Network" | "Audio" | "Video" | "System";
 type MediaSubcategory = "root" | "Videos" | "Screenshots";
 
 const CATEGORY_STEP_PX = 160;
@@ -111,7 +111,7 @@ export function ControllerLibraryPage({
   onSettingChange,
   sessionElapsedSeconds = 0,
 }: ControllerLibraryPageProps): JSX.Element {
-  const initialCategoryIndex = currentStreamingGame ? 0 : 2;
+  const initialCategoryIndex = currentStreamingGame ? 0 : 1;
   const [categoryIndex, setCategoryIndex] = useState(initialCategoryIndex);
   const audioContextRef = useRef<AudioContext | null>(null);
   const itemsContainerRef = useRef<HTMLDivElement>(null);
@@ -251,12 +251,8 @@ export function ControllerLibraryPage({
     const categories: Array<{ id: TopCategory; label: string }> = [];
     if (currentStreamingGame) {
       categories.push({ id: "current", label: currentStreamingGame.title || "Current Game" });
-      categories.push({ id: "media", label: "Media" });
     }
     categories.push({ id: "settings", label: "Settings" });
-    if (!currentStreamingGame) {
-      categories.push({ id: "media", label: "Media" });
-    }
     categories.push({ id: "all", label: "All" });
     categories.push({ id: "favorites", label: "Favorites" });
     for (const genre of allGenres) categories.push({ id: `genre:${genre}`, label: sanitizeGenreName(genre) });
@@ -282,10 +278,14 @@ export function ControllerLibraryPage({
       root: [
         { id: "network", label: "Network", value: "" },
         { id: "audio", label: "Audio", value: "" },
+        { id: "video", label: "Video", value: "" },
         { id: "system", label: "System", value: "" },
         { id: "exit", label: "Exit Controller Mode", value: "" },
       ],
       Network: [
+        { id: "bandwidth", label: "Max Bitrate", value: `${(settings.maxBitrateMbps ?? 75)} Mbps` },
+      ],
+      Video: [
         { id: "resolution", label: "Resolution", value: settings.resolution || "1920x1080" },
         { id: "fps", label: "Frame Rate", value: `${settings.fps || 60} FPS` },
         { id: "codec", label: "Video Codec", value: settings.codec || "H264" },
@@ -463,7 +463,7 @@ export function ControllerLibraryPage({
           return;
         }
         if (direction === "right") {
-          const next = Math.min(200, current + step);
+          const next = Math.min(150, current + step);
           onSettingChange && onSettingChange("maxBitrateMbps" as any, next as any);
           playUiSound("move");
           return;
@@ -577,10 +577,11 @@ export function ControllerLibraryPage({
       if (topCategory === "settings") {
         const setting = displayItems[selectedSettingIndex];
         // Enter subcategory if at root and selecting network/audio/system
-        if (settingsSubcategory === "root" && setting && (setting.id === "network" || setting.id === "audio" || setting.id === "system")) {
+        if (settingsSubcategory === "root" && setting && (setting.id === "network" || setting.id === "audio" || setting.id === "video" || setting.id === "system")) {
           setLastRootSettingIndex(selectedSettingIndex);
           if (setting.id === "network") setSettingsSubcategory("Network");
           if (setting.id === "audio") setSettingsSubcategory("Audio");
+          if (setting.id === "video") setSettingsSubcategory("Video");
           if (setting.id === "system") setSettingsSubcategory("System");
           setSelectedSettingIndex(0);
           playUiSound("confirm");
@@ -594,8 +595,8 @@ export function ControllerLibraryPage({
         if (setting?.id === "exit" && onSettingChange) {
           onSettingChange("controllerMode" as any, false as any);
           playUiSound("confirm");
-          const nextSettingsIndex = currentStreamingGame ? 1 : 0;
-          setCategoryIndex(nextSettingsIndex); // go back to All or Current
+          const nextSettingsIndex = currentStreamingGame ? 0 : 1;
+          setCategoryIndex(nextSettingsIndex);
           setSelectedSettingIndex(0);
           return;
         }
@@ -637,7 +638,7 @@ export function ControllerLibraryPage({
           if (!setting || !onSettingChange) return;
           if (setting.id === "exit") return;
           // Skip X cycling for subcategory items at root
-          if (settingsSubcategory === "root" && (setting.id === "network" || setting.id === "audio" || setting.id === "system")) return;
+          if (settingsSubcategory === "root" && (setting.id === "network" || setting.id === "audio" || setting.id === "video" || setting.id === "system")) return;
 
           // Microphone device cycling
           if (setting.id === "microphone") {
@@ -892,7 +893,7 @@ export function ControllerLibraryPage({
       >
         {displayItems.map((item, idx) => {
           const isActive = idx === (topCategory === "media" ? selectedMediaIndex : selectedSettingIndex);
-          const isSubcategoryItem = settingsSubcategory === "root" && (item.id === "network" || item.id === "audio" || item.id === "system");
+          const isSubcategoryItem = settingsSubcategory === "root" && (item.id === "network" || item.id === "audio" || item.id === "video" || item.id === "system");
           const isMediaSubcategoryItem = topCategory === "media" && mediaSubcategory === "root" && (item.id === "videos" || item.id === "screenshots");
           return (
             <div 
@@ -904,19 +905,19 @@ export function ControllerLibraryPage({
                 <div className="xmb-game-title">{item.label}</div>
                 {item.value && (
                   <div className="xmb-game-meta">
-                    {settingsSubcategory === 'Network' && item.id === 'bandwidth' ? (
+                    {item.id === 'bandwidth' && settingsSubcategory !== 'root' ? (
                       <div style={{display:'flex',alignItems:'center',gap:12}}>
                         <input
                           type="range"
                           min={1}
-                          max={200}
+                          max={150}
                           step={1}
                           value={(settings.maxBitrateMbps ?? 75)}
                           onChange={(e) => onSettingChange && onSettingChange("maxBitrateMbps" as any, Number(e.target.value) as any)}
                           aria-label="Bandwidth Limit (Mbps)"
                           style={editingBandwidth ? {outline: '2px solid rgba(255,255,255,0.2)'} : undefined}
                         />
-                        <span className="xmb-game-meta-chip">{(settings.maxBitrateMbps ?? 75) >= 200 ? "Unlimited" : `${settings.maxBitrateMbps ?? 75} Mbps`}{editingBandwidth ? ' • Editing' : ''}</span>
+                        <span className="xmb-game-meta-chip">{`${settings.maxBitrateMbps ?? 75} Mbps`}{editingBandwidth ? ' • Editing' : ''}</span>
                       </div>
                     ) : (
                       <span className="xmb-game-meta-chip">{item.value}</span>

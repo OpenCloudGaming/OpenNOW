@@ -10,7 +10,7 @@ export interface Settings {
   aspectRatio: AspectRatio;
   /** Target FPS (30, 60, 120, etc.) */
   fps: number;
-  /** Maximum bitrate in Mbps (200 = unlimited) */
+  /** Maximum bitrate in Mbps (cap at 150) */
   maxBitrateMbps: number;
   /** Preferred video codec */
   codec: VideoCodec;
