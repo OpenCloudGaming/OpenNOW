@@ -5548,3 +5548,342 @@ button.game-card-store-chip.active:hover {
   opacity: 1;
   color: var(--accent);
 }
+
+/* ---------- Controller Stream Loading (PS3-Style) ---------- */
+@keyframes csl-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes csl-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes csl-content-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes csl-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes csl-pulse {
+  0%, 100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.controller-stream-loading {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+.csl-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #000;
+  animation: csl-fade-in 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.csl-content-wrapper {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 60px;
+  animation: csl-fade-in 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both;
+}
+
+.csl-content {
+  display: grid;
+  grid-template-columns: 500px 1fr;
+  gap: 80px;
+  max-width: 1400px;
+  width: 100%;
+  height: auto;
+  align-items: center;
+}
+
+/* Poster Section (Left) */
+.csl-poster-section {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  perspective: 1200px;
+}
+
+.csl-poster {
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  object-fit: cover;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7), 0 0 60px rgba(88, 217, 138, 0.15);
+  animation: csl-content-slide-up 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.4s both;
+  border: 1px solid rgba(88, 217, 138, 0.2);
+}
+
+.csl-poster-placeholder {
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  background: linear-gradient(135deg, rgba(88, 217, 138, 0.1) 0%, rgba(88, 217, 138, 0.05) 100%);
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(88, 217, 138, 0.3);
+  border: 2px solid rgba(88, 217, 138, 0.1);
+}
+
+/* Info Section (Right) */
+.csl-info-section {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  color: var(--ink);
+  animation: csl-content-slide-up 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.3s both;
+}
+
+.csl-title-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.csl-title {
+  font-size: 3.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  margin: 0;
+  color: #fff;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.csl-description-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 120px;
+  overflow: hidden;
+}
+
+.csl-description {
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.csl-playtime-container {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  font-size: 1rem;
+}
+
+.csl-playtime-label {
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+
+.csl-playtime-value {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 1.2rem;
+}
+
+/* Status Section */
+.csl-status-container {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  margin-top: 16px;
+  padding-top: 24px;
+  border-top: 1px solid rgba(88, 217, 138, 0.1);
+}
+
+.csl-status-message {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--accent);
+  animation: csl-pulse 2s ease-in-out infinite;
+}
+
+/* Progress Indicator */
+.csl-progress-indicator {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+}
+
+.csl-progress-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  transition: all 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.csl-progress-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(88, 217, 138, 0.2);
+  border: 2px solid rgba(88, 217, 138, 0.3);
+  transition: all 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.csl-progress-step.active .csl-progress-dot {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 12px rgba(88, 217, 138, 0.5);
+}
+
+.csl-progress-step.completed .csl-progress-dot {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.csl-progress-step.inactive .csl-progress-dot {
+  background: rgba(88, 217, 138, 0.1);
+  border-color: rgba(88, 217, 138, 0.15);
+}
+
+.csl-progress-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  transition: all 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.csl-progress-step.active .csl-progress-label {
+  color: var(--accent);
+}
+
+.csl-progress-step.completed .csl-progress-label {
+  color: var(--accent);
+  opacity: 0.7;
+}
+
+.csl-progress-step.inactive .csl-progress-label {
+  color: var(--ink-muted);
+}
+
+.csl-progress-connector {
+  height: 2px;
+  background: linear-gradient(90deg, rgba(88, 217, 138, 0.3) 0%, rgba(88, 217, 138, 0.2) 100%);
+  transition: all 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.csl-progress-connector.inactive {
+  background: rgba(88, 217, 138, 0.1);
+}
+
+/* Spinner */
+.csl-spinner-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 60px;
+}
+
+.csl-spinner {
+  animation: csl-spin 2s linear infinite;
+  color: var(--accent);
+  filter: drop-shadow(0 0 8px rgba(88, 217, 138, 0.4));
+}
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+  .csl-content {
+    grid-template-columns: 1fr;
+    gap: 48px;
+  }
+
+  .csl-poster-section {
+    max-width: 350px;
+    margin: 0 auto;
+  }
+
+  .csl-poster {
+    max-width: 100%;
+  }
+
+  .csl-title {
+    font-size: 2.5rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .csl-content-wrapper {
+    padding: 40px 24px;
+  }
+
+  .csl-content {
+    gap: 32px;
+  }
+
+  .csl-info-section {
+    gap: 24px;
+  }
+
+  .csl-title {
+    font-size: 2rem;
+  }
+
+  .csl-description {
+    font-size: 0.95rem;
+  }
+
+  .csl-status-message {
+    font-size: 1.1rem;
+  }
+}
+}

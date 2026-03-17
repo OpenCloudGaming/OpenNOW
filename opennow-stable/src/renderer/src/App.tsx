@@ -33,6 +33,7 @@ import { LibraryPage } from "./components/LibraryPage";
 import { ControllerLibraryPage } from "./components/ControllerLibraryPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { StreamLoading } from "./components/StreamLoading";
+import { ControllerStreamLoading } from "./components/ControllerStreamLoading";
 import { StreamView } from "./components/StreamView";
 
 const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
@@ -681,6 +682,23 @@ export function App(): JSX.Element {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  // Broadcast minimal session/loading state for UI overlays (controller + other listeners)
+  useEffect(() => {
+    const detail = {
+      status: streamStatus,
+      queuePosition,
+      launchError: launchError ? { title: launchError.title, description: launchError.description, stage: launchError.stage, codeLabel: launchError.codeLabel } : null,
+      gameTitle: streamingGame?.title ?? null,
+      gameCover: streamingGame?.imageUrl ?? null,
+      platformStore: streamingStore ?? null,
+    };
+    try {
+      window.dispatchEvent(new CustomEvent("opennow:session-update", { detail }));
+    } catch {
+      // ignore
+    }
+  }, [streamStatus, queuePosition, launchError, streamingGame, streamingStore]);
 
   useEffect(() => {
     document.body.classList.toggle("controller-mode", controllerConnected);
@@ -2052,7 +2070,18 @@ export function App(): JSX.Element {
             }}
           />
         )}
-        {isSwitchingGame && (
+        {isSwitchingGame && settings.controllerMode && (
+          <ControllerStreamLoading
+            gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? "Game"}
+            gamePoster={pendingSwitchGameCover ?? streamingGame?.imageUrl}
+            gameDescription={streamingGame?.description}
+            status={switchingPhase === "cleaning" ? "setup" : "starting"}
+            queuePosition={queuePosition}
+            playtimeData={playtime}
+            gameId={streamingGame?.id}
+          />
+        )}
+        {isSwitchingGame && !settings.controllerMode && (
           <StreamLoading
             gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? "Game"}
             gameCover={pendingSwitchGameCover ?? streamingGame?.imageUrl}
@@ -2124,7 +2153,18 @@ export function App(): JSX.Element {
             />
           </div>
         )}
-        {streamStatus !== "streaming" && (
+        {streamStatus !== "streaming" && settings.controllerMode && (
+          <ControllerStreamLoading
+            gameTitle={streamingGame?.title ?? "Game"}
+            gamePoster={streamingGame?.imageUrl}
+            gameDescription={streamingGame?.description}
+            status={loadingStatus}
+            queuePosition={queuePosition}
+            playtimeData={playtime}
+            gameId={streamingGame?.id}
+          />
+        )}
+        {streamStatus !== "streaming" && !settings.controllerMode && (
           <StreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
             gameCover={streamingGame?.imageUrl}
