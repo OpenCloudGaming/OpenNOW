@@ -1,5 +1,5 @@
 import { app } from "electron";
-import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, writeFile, unlink, readdir, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -15,6 +15,8 @@ interface CachedData<T> {
 
 const CACHE_DIRECTORY = "gfn-cache";
 const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+
+const THUMBNAILS_DIRECTORY = "media-thumbs";
 
 class CacheManager {
   private cacheDir: string;
@@ -133,7 +135,7 @@ class CacheManager {
     }
 
     try {
-      const files = await import("node:fs/promises").then(m => m.readdir(this.cacheDir));
+      const files = await readdir(this.cacheDir);
       for (const file of files) {
         const filePath = join(this.cacheDir, file);
         try {
@@ -143,7 +145,17 @@ class CacheManager {
           console.error(`[CACHE] Error deleting cache file: ${file}`, err);
         }
       }
-      console.log(`[CACHE] Cleared all cache files`);
+      console.log(`[CACHE] Cleared all cache files in ${this.cacheDir}`);
+
+      // Also remove the thumbnail cache directory created by main process
+      const thumbsDir = join(app.getPath("userData"), THUMBNAILS_DIRECTORY);
+      try {
+        await rm(thumbsDir, { recursive: true, force: true });
+        console.log(`[CACHE] Removed thumbnail cache directory: ${thumbsDir}`);
+      } catch (err) {
+        // Non-fatal: log and continue
+        console.warn(`[CACHE] Failed to remove thumbnail cache directory: ${thumbsDir}`, err);
+      }
     } catch (error) {
       console.error(`[CACHE] Error clearing all cache:`, error);
       throw error;
