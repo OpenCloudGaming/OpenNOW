@@ -2153,7 +2153,7 @@ export function App(): JSX.Element {
             />
           </div>
         )}
-        {streamStatus !== "streaming" && settings.controllerMode && (
+        {streamStatus !== "idle" && streamStatus !== "streaming" && settings.controllerMode && (
           <ControllerStreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
             gamePoster={streamingGame?.imageUrl}
@@ -2164,7 +2164,7 @@ export function App(): JSX.Element {
             gameId={streamingGame?.id}
           />
         )}
-        {streamStatus !== "streaming" && !settings.controllerMode && (
+        {streamStatus !== "idle" && streamStatus !== "streaming" && !settings.controllerMode && (
           <StreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
             gameCover={streamingGame?.imageUrl}
