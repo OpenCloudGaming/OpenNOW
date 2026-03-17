@@ -611,6 +611,7 @@ export function App(): JSX.Element {
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
+  const streamStatusRef = useRef<StreamStatus>(streamStatus);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
   useEffect(() => {
@@ -683,6 +684,11 @@ export function App(): JSX.Element {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  // Keep a ref copy of `streamStatus` so async callbacks can observe latest value
+  useEffect(() => {
+    streamStatusRef.current = streamStatus;
+  }, [streamStatus]);
 
   // Broadcast minimal session/loading state for UI overlays (controller + other listeners)
   useEffect(() => {
@@ -1734,11 +1740,11 @@ export function App(): JSX.Element {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 120));
 
     // Wait until the play guard conditions are satisfied (defensive against races)
-    const ready = await waitFor(() => !launchInFlightRef.current && streamStatus === "idle", { timeout: 1000, interval: 50 });
+    const ready = await waitFor(() => !launchInFlightRef.current && streamStatusRef.current === "idle", { timeout: 1000, interval: 50 });
     if (!ready) {
       console.warn("Switch flow: runtime not ready for new launch after cleanup", {
         launchInFlight: launchInFlightRef.current,
-        streamStatus,
+        streamStatus: streamStatusRef.current,
       });
       // Do a small additional delay before aborting the automatic start to avoid nav-to-dashboard
       await sleep(250);
