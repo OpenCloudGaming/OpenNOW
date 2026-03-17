@@ -5631,6 +5631,20 @@ button.game-card-store-chip.active:hover {
   animation: csl-fade-in 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
+/* Ensure XMB ribbon background sits behind the loading UI */
+.controller-stream-loading .xmb-wrapper {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.controller-stream-loading .xmb-bg-layer {
+  z-index: 0;
+}
+.controller-stream-loading .csl-backdrop {
+  z-index: 1;
+}
+
 .csl-content-wrapper {
   position: relative;
   z-index: 2;

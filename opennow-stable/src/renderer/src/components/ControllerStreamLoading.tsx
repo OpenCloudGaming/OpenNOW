@@ -67,10 +67,11 @@ export function ControllerStreamLoading({
   return (
     <div className="controller-stream-loading">
       {enableBackgroundAnimations && (
-        <div className="login-bg" aria-hidden>
-          <div className="login-bg-orb login-bg-orb--1" />
-          <div className="login-bg-orb login-bg-orb--2" />
-          <div className="login-bg-orb login-bg-orb--3" />
+        <div className={`xmb-wrapper ${enableBackgroundAnimations ? "xmb-animate" : ""}`} aria-hidden>
+          <div className="xmb-bg-layer">
+            <div className="xmb-bg-gradient" />
+            <div className="xmb-bg-overlay" />
+          </div>
         </div>
       )}
       {/* Fade-to-black backdrop */}
