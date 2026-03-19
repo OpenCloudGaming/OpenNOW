@@ -1,4 +1,4 @@
-import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi } from "lucide-react";
+import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2 } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -41,14 +41,32 @@ interface FpsPreset {
   value: number;
 }
 
+interface AspectRatioPreset {
+  value: string;
+  label: string;
+}
+
+const STATIC_ASPECT_RATIO_PRESETS: AspectRatioPreset[] = [
+  { value: "16:9", label: "16:9 (Widescreen)" },
+  { value: "16:10", label: "16:10 (Widescreen)" },
+  { value: "21:9", label: "21:9 (Ultrawide)" },
+  { value: "32:9", label: "32:9 (Super Ultrawide)" },
+];
+
 const STATIC_RESOLUTION_PRESETS: ResolutionPreset[] = [
-  { value: "1280x720", label: "720p" },
-  { value: "1920x1080", label: "1080p" },
-  { value: "2560x1440", label: "1440p" },
-  { value: "3840x2160", label: "4K" },
-  { value: "2560x1080", label: "Ultrawide 1080p" },
-  { value: "3440x1440", label: "Ultrawide 1440p" },
-  { value: "5120x1440", label: "Super Ultrawide" },
+  { value: "1280x720", label: "720p (16:9)" },
+  { value: "1280x800", label: "720p (16:10)" },
+  { value: "1440x900", label: "WXGA (16:10)" },
+  { value: "1680x1050", label: "WSXGA (16:10)" },
+  { value: "1920x1080", label: "1080p (16:9)" },
+  { value: "1920x1200", label: "1200p (16:10)" },
+  { value: "2560x1080", label: "Ultrawide 1080p (21:9)" },
+  { value: "2560x1440", label: "1440p (16:9)" },
+  { value: "2560x1600", label: "1600p (16:10)" },
+  { value: "3440x1440", label: "Ultrawide 1440p (21:9)" },
+  { value: "3840x2160", label: "4K (16:9)" },
+  { value: "3840x2400", label: "4K (16:10)" },
+  { value: "5120x1440", label: "Super Ultrawide (32:9)" },
 ];
 
 const STATIC_FPS_PRESETS: FpsPreset[] = [
@@ -1092,6 +1110,24 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
           </div>
 
           <div className="settings-rows">
+            {/* Aspect Ratio — static chips */}
+            <div className="settings-row">
+              <label className="settings-label">Aspect Ratio</label>
+              <div className="settings-chip-row">
+                {STATIC_ASPECT_RATIO_PRESETS.map((preset) => (
+                  <button
+                    key={preset.value}
+                    className={`settings-chip ${settings.aspectRatio === preset.value ? "active" : ""}`}
+                    onClick={() => {
+                      handleChange("aspectRatio", preset.value as any);
+                    }}
+                  >
+                    <span>{preset.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Resolution — dynamic or static chips */}
             <div className="settings-row settings-row--column">
               <label className="settings-label">
@@ -1691,6 +1727,80 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 <span className="settings-toggle-track" />
               </label>
             </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
+                Controller Mode Library
+                <span className="settings-hint">Use a controller-first media bar layout for library browsing.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.controllerMode}
+                  onChange={(e) => handleChange("controllerMode", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+
+            {settings.controllerMode && (
+              <div className="settings-row">
+                <label className="settings-label">Exit Controller Mode</label>
+                <div>
+                  <button
+                    className="settings-exit-btn"
+                    onClick={() => handleChange("controllerMode", false)}
+                  >
+                    Exit
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="settings-row">
+              <label className="settings-label">
+                Controller UI Sounds
+                <span className="settings-hint">Play subtle move, open, and back sounds in controller library mode.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.controllerUiSounds}
+                  onChange={(e) => handleChange("controllerUiSounds", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
+                Background Animations (Controller Mode)
+                <span className="settings-hint">Show animated background visuals on controller loading screens.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.controllerBackgroundAnimations}
+                  onChange={(e) => handleChange("controllerBackgroundAnimations", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
+                Auto-Load Controller Library
+                <span className="settings-hint">Automatically load the controller library view at startup when controller mode is enabled.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.autoLoadControllerLibrary}
+                  onChange={(e) => handleChange("autoLoadControllerLibrary", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
           </div>
         </section>
 
@@ -1775,6 +1885,32 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               >
                 <FileDown size={16} />
                 Export Logs
+              </button>
+            </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
+                Delete Cache
+                <span className="settings-hint">Clear all cached game data, images, and metadata</span>
+              </label>
+              <button
+                type="button"
+                className="settings-delete-cache-btn"
+                onClick={async () => {
+                  if (!window.confirm("Are you sure you want to delete all cached data? This will clear all game metadata, images, and library information.")) {
+                    return;
+                  }
+                  try {
+                    await window.openNow.deleteCache();
+                    alert("Cache cleared successfully. The app will refresh on next startup.");
+                  } catch (err) {
+                    console.error("[Settings] Failed to delete cache:", err);
+                    alert("Failed to delete cache. Please try again.");
+                  }
+                }}
+              >
+                <Trash2 size={16} />
+                Delete Cache
               </button>
             </div>
           </div>

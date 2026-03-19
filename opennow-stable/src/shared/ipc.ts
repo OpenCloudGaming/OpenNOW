@@ -23,6 +23,7 @@ export const IPC_CHANNELS = {
   REQUEST_KEYFRAME: "gfn:request-keyframe",
   SIGNALING_EVENT: "gfn:signaling-event",
   TOGGLE_FULLSCREEN: "window:toggle-fullscreen",
+  SET_FULLSCREEN: "window:set-fullscreen",
   TOGGLE_POINTER_LOCK: "window:toggle-pointer-lock",
   SETTINGS_GET: "settings:get",
   SETTINGS_SET: "settings:set",
@@ -40,6 +41,13 @@ export const IPC_CHANNELS = {
   RECORDING_LIST: "recording:list",
   RECORDING_DELETE: "recording:delete",
   RECORDING_SHOW_IN_FOLDER: "recording:showInFolder",
+  CACHE_REFRESH_MANUAL: "cache:refresh-manual",
+  CACHE_STATUS_UPDATE: "cache:status-update",
+  CACHE_DELETE_ALL: "cache:delete-all",
+  // Media browsing
+  MEDIA_LIST_BY_GAME: "media:list-by-game",
+  MEDIA_THUMBNAIL: "media:thumbnail",
+  MEDIA_SHOW_IN_FOLDER: "media:show-in-folder",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

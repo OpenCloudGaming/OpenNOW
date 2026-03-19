@@ -33,9 +33,11 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
 }
 
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
+export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
 
 export interface Settings {
   resolution: string;
+  aspectRatio: AspectRatio;
   fps: number;
   maxBitrateMbps: number;
   codec: VideoCodec;
@@ -54,6 +56,14 @@ export interface Settings {
   microphoneMode: MicrophoneMode;
   microphoneDeviceId: string;
   hideStreamButtons: boolean;
+  controllerMode: boolean;
+  controllerUiSounds: boolean;
+  autoLoadControllerLibrary: boolean;
+  /** When true, controller-mode overlays will show animated background orbs */
+  controllerBackgroundAnimations: boolean;
+  /** When true, the app will automatically enter fullscreen when controller mode triggers it */
+  autoFullScreen: boolean;
+  favoriteGameIds: string[];
   sessionClockShowEveryMinutes: number;
   sessionClockShowDurationSeconds: number;
   windowWidth: number;
@@ -199,7 +209,11 @@ export interface GameInfo {
   launchAppId?: string;
   title: string;
   description?: string;
+  longDescription?: string;
+  featureLabels?: string[];
+  genres?: string[];
   imageUrl?: string;
+  screenshotUrl?: string;
   playType?: string;
   membershipTierLabel?: string;
   selectedVariantIndex: number;
@@ -353,6 +367,7 @@ export interface OpenNowApi {
   onSignalingEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void;
   /** Listen for F11 fullscreen toggle from main process */
   onToggleFullscreen(listener: () => void): () => void;
+  setFullscreen(v: boolean): Promise<void>;
   toggleFullscreen(): Promise<void>;
   togglePointerLock(): Promise<void>;
   getSettings(): Promise<Settings>;
@@ -398,6 +413,17 @@ export interface OpenNowApi {
 
   /** Reveal a saved recording in the system file manager */
   showRecordingInFolder(id: string): Promise<void>;
+
+  /** List screenshot and recording media, optionally filtered by game title */
+  listMediaByGame(input?: { gameTitle?: string }): Promise<MediaListingResult>;
+
+  /** Resolve a thumbnail data URL for a media file path */
+  getMediaThumbnail(input: { filePath: string }): Promise<string | null>;
+
+  /** Reveal a media file path in the system file manager */
+  showMediaInFolder(input: { filePath: string }): Promise<void>;
+
+  deleteCache(): Promise<void>;
 }
 
 export interface ScreenshotSaveRequest {
@@ -464,4 +490,21 @@ export interface RecordingAbortRequest {
 
 export interface RecordingDeleteRequest {
   id: string;
+}
+
+export interface MediaListingEntry {
+  id: string;
+  fileName: string;
+  filePath: string;
+  createdAtMs: number;
+  sizeBytes: number;
+  gameTitle?: string;
+  durationMs?: number;
+  thumbnailDataUrl?: string;
+  dataUrl?: string;
+}
+
+export interface MediaListingResult {
+  screenshots: MediaListingEntry[];
+  videos: MediaListingEntry[];
 }

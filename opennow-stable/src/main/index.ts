@@ -1,10 +1,11 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, systemPreferences, session } from "electron";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, relative } from "node:path";
 import { existsSync, readFileSync, createWriteStream } from "node:fs";
-import { copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile, realpath } from "node:fs/promises";
 import * as net from "node:net";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 
 // Keyboard shortcuts reference (matching Rust implementation):
 // Screenshot keybind - configurable, handled in renderer
@@ -14,6 +15,14 @@ import { randomUUID } from "node:crypto";
 
 import { IPC_CHANNELS } from "@shared/ipc";
 import { initLogCapture, exportLogs } from "@shared/logger";
+import { cacheManager } from "./services/cacheManager";
+import { refreshScheduler } from "./services/refreshScheduler";
+import { cacheEventBus } from "./services/cacheEventBus";
+import {
+  fetchMainGamesUncached,
+  fetchLibraryGamesUncached,
+  fetchPublicGamesUncached,
+} from "./gfn/games";
 import type {
   MainToRendererSignalingEvent,
   AuthLoginRequest,
@@ -334,6 +343,72 @@ function getRecordingsDirectory(): string {
   return join(app.getPath("pictures"), "OpenNOW", "Recordings");
 }
 
+function getThumbnailCacheDirectory(): string {
+  return join(app.getPath("userData"), "media-thumbs");
+}
+
+async function ensureThumbnailCacheDirectory(): Promise<string> {
+  const dir = getThumbnailCacheDirectory();
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+function md5(input: string): string {
+  return createHash("md5").update(input).digest("hex");
+}
+
+async function generateVideoThumbnail(sourcePath: string, outPath: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    // Try to run ffmpeg to extract a frame at 1s.
+    const args = ["-y", "-ss", "1", "-i", sourcePath, "-frames:v", "1", "-q:v", "2", outPath];
+    const child = spawn("ffmpeg", args, { stdio: "ignore" });
+    child.on("error", () => resolve(false));
+    child.on("close", (code) => {
+      resolve(code === 0);
+    });
+  });
+}
+
+async function ensureThumbnailForMedia(filePath: string): Promise<string | null> {
+  try {
+    const stats = await stat(filePath);
+    const key = md5(`${filePath}|${stats.mtimeMs}`);
+    const cacheDir = await ensureThumbnailCacheDirectory();
+    const outPath = join(cacheDir, `${key}.jpg`);
+    // If cached, return
+    try {
+      await stat(outPath);
+      return outPath;
+    } catch {
+      // not exists
+    }
+
+    const lower = filePath.toLowerCase();
+    if (lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mkv") || lower.endsWith(".mov")) {
+      const ok = await generateVideoThumbnail(filePath, outPath);
+      if (ok) return outPath;
+      // generation failed
+      return null;
+    }
+
+    // For images, copy into cache (no re-encoding)
+    if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
+      try {
+        const buf = await readFile(filePath);
+        await writeFile(outPath, buf);
+        return outPath;
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  } catch (err) {
+    console.warn("ensureThumbnailForMedia error:", err);
+    return null;
+  }
+}
+
 async function ensureRecordingsDirectory(): Promise<string> {
   const dir = getRecordingsDirectory();
   await mkdir(dir, { recursive: true });
@@ -455,6 +530,15 @@ async function createMainWindow(): Promise<void> {
     await mainWindow.loadFile(join(__dirname, "../../dist/index.html"));
   }
 
+  // Apply full screen on startup if the user has configured it.
+  if (settings.autoFullScreen) {
+    try {
+      mainWindow.setFullScreen(true);
+    } catch (err) {
+      console.warn("Failed to apply autoFullScreen on startup:", err);
+    }
+  }
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -547,6 +631,7 @@ function registerIpcHandlers(): void {
     const token = await resolveJwt(payload?.token);
     const streamingBaseUrl =
       payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+    refreshScheduler.updateAuthContext(token, streamingBaseUrl);
     return fetchMainGames(token, streamingBaseUrl);
   });
 
@@ -554,6 +639,7 @@ function registerIpcHandlers(): void {
     const token = await resolveJwt(payload?.token);
     const streamingBaseUrl =
       payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+    refreshScheduler.updateAuthContext(token, streamingBaseUrl);
     return fetchLibraryGames(token, streamingBaseUrl);
   });
 
@@ -691,6 +777,16 @@ function registerIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle(IPC_CHANNELS.SET_FULLSCREEN, async (_event, value: boolean) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try {
+        mainWindow.setFullScreen(Boolean(value));
+      } catch (err) {
+        console.warn("Failed to set fullscreen:", err);
+      }
+    }
+  });
+
   // Toggle pointer lock via IPC (F8 shortcut)
   ipcMain.handle(IPC_CHANNELS.TOGGLE_POINTER_LOCK, async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -705,6 +801,17 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_SET, async <K extends keyof Settings>(_event: Electron.IpcMainInvokeEvent, key: K, value: Settings[K]) => {
     settingsManager.set(key, value);
+    // React to certain setting changes immediately in main process
+    try {
+      if (key === "autoFullScreen") {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          const should = Boolean(value as unknown as boolean);
+          mainWindow.setFullScreen(should);
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to apply setting change in main process:", err);
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
@@ -722,6 +829,33 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.SCREENSHOT_LIST, async (): Promise<ScreenshotEntry[]> => {
     return listScreenshots();
+  });
+
+  // Media: per-game listing (screenshots + recordings). Best-effort title matching.
+  ipcMain.handle(IPC_CHANNELS.MEDIA_LIST_BY_GAME, async (_event, payload: { gameTitle?: string } = {}) => {
+    const title = (payload?.gameTitle || "").trim().toLowerCase();
+    const screenshots = await listScreenshots();
+    const recordings = await listRecordings();
+
+    const normalize = (s?: string) => (s || "").replace(/[^a-z0-9]+/gi, "").toLowerCase();
+    const needle = normalize(title);
+
+    const matchedScreens = screenshots.filter((s) => {
+      if (!needle) return true;
+      const candidate = normalize(s.fileName) + normalize(s.filePath || "");
+      return candidate.includes(needle);
+    });
+
+    const matchedRecordings = recordings.filter((r) => {
+      if (!needle) return true;
+      const candidate = normalize(r.gameTitle ?? r.fileName ?? "");
+      return candidate.includes(needle);
+    });
+
+    return {
+      screenshots: matchedScreens,
+      videos: matchedRecordings,
+    };
   });
 
   ipcMain.handle(IPC_CHANNELS.SCREENSHOT_DELETE, async (_event, input: ScreenshotDeleteRequest): Promise<void> => {
@@ -852,6 +986,83 @@ function registerIpcHandlers(): void {
     shell.showItemInFolder(join(dir, id));
   });
 
+  // Return a thumbnail data URL for a given media file path (images or companion thumbs for videos).
+  ipcMain.handle(IPC_CHANNELS.MEDIA_THUMBNAIL, async (_event, payload: { filePath: string }): Promise<string | null> => {
+    const rawFp = payload?.filePath;
+    if (typeof rawFp !== "string") return null;
+    if (rawFp.length > 4096) return null;
+    try {
+      const allowedRoot = resolve(join(app.getPath("pictures"), "OpenNOW"));
+      const fpResolved = resolve(rawFp);
+      const allowedRootReal = await realpath(allowedRoot).catch(() => allowedRoot);
+      const fpReal = await realpath(fpResolved).catch(() => fpResolved);
+      const rel = relative(allowedRootReal, fpReal);
+      if (rel.startsWith("..")) return null;
+
+      const lower = fpReal.toLowerCase();
+      if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
+        const buf = await readFile(fpReal);
+        const extMatch = /\.([^.]+)$/.exec(fpReal);
+        const ext = (extMatch?.[1] || "png").toLowerCase();
+        const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+        return `data:${mime};base64,${buf.toString("base64")}`;
+      }
+
+      if (lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mkv") || lower.endsWith(".mov")) {
+        // Prefer an existing companion thumb next to the video
+        const stem = fpReal.replace(/\.(mp4|webm|mkv|mov)$/i, "");
+        const thumbPath = `${stem}-thumb.jpg`;
+        try {
+          const b = await readFile(thumbPath);
+          return `data:image/jpeg;base64,${b.toString("base64")}`;
+        } catch {
+          // Try generating a cached thumbnail via ffmpeg
+        }
+
+        const gen = await ensureThumbnailForMedia(fpReal);
+        if (gen) {
+          try {
+            const b2 = await readFile(gen);
+            return `data:image/jpeg;base64,${b2.toString("base64")}`;
+          } catch {
+            return null;
+          }
+        }
+        return null;
+      }
+
+      return null;
+    } catch (err) {
+      console.warn("MEDIA_THUMBNAIL error:", err);
+      return null;
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.MEDIA_SHOW_IN_FOLDER, async (_event, payload: { filePath: string }): Promise<void> => {
+    const rawFp = payload?.filePath;
+    if (typeof rawFp !== "string") return;
+    try {
+      const allowedRoot = resolve(join(app.getPath("pictures"), "OpenNOW"));
+      const fpResolved = resolve(rawFp);
+      const allowedRootReal = await realpath(allowedRoot).catch(() => allowedRoot);
+      const fpReal = await realpath(fpResolved).catch(() => fpResolved);
+      const rel = relative(allowedRootReal, fpReal);
+      if (rel.startsWith("..")) return;
+      shell.showItemInFolder(fpReal);
+    } catch {
+      return;
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.CACHE_REFRESH_MANUAL, async (): Promise<void> => {
+    await refreshScheduler.manualRefresh();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.CACHE_DELETE_ALL, async (): Promise<void> => {
+    await cacheManager.deleteAll();
+    console.log("[IPC] Cache deletion completed successfully");
+  });
+
   // TCP-based ping function - more accurate than HTTP as it only measures connection time
   async function tcpPing(hostname: string, port: number, timeoutMs: number = 3000): Promise<number | null> {
     return new Promise((resolve) => {
@@ -936,6 +1147,8 @@ app.whenReady().then(async () => {
   // Initialize log capture first to capture all console output
   initLogCapture("main");
 
+  await cacheManager.initialize();
+
   authService = new AuthService(join(app.getPath("userData"), "auth-state.json"));
   await authService.initialize();
 
@@ -990,6 +1203,33 @@ app.whenReady().then(async () => {
   });
 
   registerIpcHandlers();
+
+  refreshScheduler.initialize(
+    fetchMainGamesUncached,
+    fetchLibraryGamesUncached,
+    fetchPublicGamesUncached,
+  );
+
+  cacheEventBus.on("cache:refresh-start", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IPC_CHANNELS.CACHE_STATUS_UPDATE, { event: "refresh-start" });
+    }
+  });
+
+  cacheEventBus.on("cache:refresh-success", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IPC_CHANNELS.CACHE_STATUS_UPDATE, { event: "refresh-success" });
+    }
+  });
+
+  cacheEventBus.on("cache:refresh-error", (details: { key: string; error: string }) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IPC_CHANNELS.CACHE_STATUS_UPDATE, { event: "refresh-error", ...details });
+    }
+  });
+
+  refreshScheduler.start();
+
   await createMainWindow();
 
   app.on("activate", async () => {
@@ -1006,6 +1246,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  refreshScheduler.stop();
   signalingClient?.disconnect();
   signalingClient = null;
   signalingClientKey = null;

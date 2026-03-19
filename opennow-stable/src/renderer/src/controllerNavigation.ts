@@ -7,6 +7,10 @@ interface UseControllerNavigationOptions {
   enabled: boolean;
   onNavigatePage?: (direction: PageDirection) => void;
   onBackAction?: () => boolean;
+  onDirectionInput?: (direction: Direction) => boolean;
+  onActivateInput?: () => boolean;
+  onSecondaryActivateInput?: () => boolean;
+  onTertiaryActivateInput?: () => boolean;
 }
 
 const INTERACTIVE_SELECTOR = [
@@ -42,6 +46,9 @@ function isElementDisabled(el: HTMLElement): boolean {
 }
 
 function getFocusScopeRoot(): ParentNode {
+  const overlay = document.querySelector(".controller-overlay");
+  if (overlay) return overlay as ParentNode;
+
   const exitDialog = document.querySelector(".sv-exit");
   if (exitDialog) return exitDialog;
 
@@ -252,6 +259,10 @@ export function useControllerNavigation({
   enabled,
   onNavigatePage,
   onBackAction,
+  onDirectionInput,
+  onActivateInput,
+  onSecondaryActivateInput,
+  onTertiaryActivateInput,
 }: UseControllerNavigationOptions): boolean {
   const [controllerConnected, setControllerConnected] = useState(false);
   const connectedRef = useRef(false);
@@ -266,6 +277,8 @@ export function useControllerNavigation({
 
   const actionStateRef = useRef({
     a: false,
+    x: false,
+    y: false,
     b: false,
     lb: false,
     rb: false,
@@ -299,7 +312,7 @@ export function useControllerNavigation({
         for (const state of Object.values(directionStateRef.current)) {
           state.pressed = false;
         }
-        actionStateRef.current = { a: false, b: false, lb: false, rb: false };
+        actionStateRef.current = { a: false, x: false, y: false, b: false, lb: false, rb: false };
         frameRef.current = window.requestAnimationFrame(tick);
         return;
       }
@@ -311,6 +324,8 @@ export function useControllerNavigation({
       const left = Boolean(pad.buttons[14]?.pressed || pad.axes[0] < -0.55);
       const right = Boolean(pad.buttons[15]?.pressed || pad.axes[0] > 0.55);
       const a = Boolean(pad.buttons[0]?.pressed);
+      const x = Boolean(pad.buttons[2]?.pressed);
+      const y = Boolean(pad.buttons[3]?.pressed);
       const b = Boolean(pad.buttons[1]?.pressed);
       const lb = Boolean(pad.buttons[4]?.pressed);
       const rb = Boolean(pad.buttons[5]?.pressed);
@@ -326,12 +341,18 @@ export function useControllerNavigation({
         if (!state.pressed) {
           state.pressed = true;
           state.nextRepeatAt = now + DIRECTION_INITIAL_REPEAT_MS;
+          if (onDirectionInput?.(direction)) {
+            return;
+          }
           moveFocus(direction);
           return;
         }
 
         if (now >= state.nextRepeatAt) {
           state.nextRepeatAt = now + DIRECTION_REPEAT_MS;
+          if (onDirectionInput?.(direction)) {
+            return;
+          }
           moveFocus(direction);
         }
       };
@@ -342,7 +363,18 @@ export function useControllerNavigation({
       handleDirection("right", right);
 
       if (a && !actionStateRef.current.a) {
+        if (onActivateInput?.()) {
+          actionStateRef.current = { a, x, y, b, lb, rb };
+          frameRef.current = window.requestAnimationFrame(tick);
+          return;
+        }
         activateFocusedElement();
+      }
+      if (x && !actionStateRef.current.x) {
+        onSecondaryActivateInput?.();
+      }
+      if (y && !actionStateRef.current.y) {
+        onTertiaryActivateInput?.();
       }
       if (b && !actionStateRef.current.b) {
         triggerBackAction(onBackAction);
@@ -354,7 +386,7 @@ export function useControllerNavigation({
         onNavigatePage?.("next");
       }
 
-      actionStateRef.current = { a, b, lb, rb };
+      actionStateRef.current = { a, x, y, b, lb, rb };
       frameRef.current = window.requestAnimationFrame(tick);
     };
 
@@ -368,7 +400,7 @@ export function useControllerNavigation({
         node.classList.remove("controller-focus");
       });
     };
-  }, [enabled, onBackAction, onNavigatePage]);
+  }, [enabled, onActivateInput, onBackAction, onDirectionInput, onNavigatePage, onSecondaryActivateInput, onTertiaryActivateInput]);
 
   return controllerConnected;
 }

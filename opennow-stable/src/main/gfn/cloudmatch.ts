@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import dns from "node:dns";
 
 import type {
   ActiveSessionInfo,
@@ -23,7 +24,36 @@ const GFN_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
 const GFN_CLIENT_VERSION = "2.0.80.173";
 
-function normalizeIceServers(response: CloudMatchResponse): IceServer[] {
+async function resolveHostnameWithFallback(hostname: string): Promise<string | null> {
+  // Try system resolver first, then fall back to Cloudflare (1.1.1.1) and Google (8.8.8.8)
+  try {
+    const r = await dns.promises.lookup(hostname);
+    if (r && (r as any).address) return (r as any).address;
+  } catch {
+    // ignore and try custom resolvers
+  }
+
+  const fallbackServers = ["1.1.1.1", "8.8.8.8"];
+  for (const server of fallbackServers) {
+    try {
+      const resolver = new dns.Resolver();
+      resolver.setServers([server]);
+      const addrs: string[] = await new Promise((resolve, reject) => {
+        resolver.resolve4(hostname, (err, addresses) => {
+          if (err) reject(err);
+          else resolve(addresses);
+        });
+      });
+      if (addrs && addrs.length > 0) return addrs[0];
+    } catch {
+      // try next fallback
+    }
+  }
+
+  return null;
+}
+
+async function normalizeIceServers(response: CloudMatchResponse): Promise<IceServer[]> {
   const raw = response.session.iceServerConfiguration?.iceServers ?? [];
   const servers = raw
     .map((entry) => {
@@ -37,13 +67,67 @@ function normalizeIceServers(response: CloudMatchResponse): IceServer[] {
     .filter((entry) => entry.urls.length > 0);
 
   if (servers.length > 0) {
-    return servers;
+    // Attempt to resolve any hostnames in STUN/TURN URLs to IPs to avoid relying on the
+    // renderer's DNS resolution. This makes it possible to try alternate DNS servers
+    // when the system resolver fails.
+    const resolvedServers: IceServer[] = [];
+    for (const s of servers) {
+      const resolvedUrls: string[] = [];
+      for (const u of s.urls) {
+          try {
+          const m = u.match(/^([a-zA-Z0-9+.-]+):([^/]+)/);
+          if (m) {
+            const scheme = m[1];
+            const hostPort = m[2];
+            const host = hostPort.split(":")[0];
+            const portPart = hostPort.includes(":") ? ":" + hostPort.split(":").slice(1).join(":") : "";
+
+            // Helper to bracket IPv6 literals when necessary
+            const bracketIfIpv6 = (h: string) => {
+              if (h.startsWith("[") && h.endsWith("]")) return h;
+              // Heuristic: contains ':' and is not an IPv4 dotted-quad
+              if (h.includes(":") && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(h)) {
+                return `[${h}]`;
+              }
+              return h;
+            };
+
+            // If host already looks like an IPv4 or bracketed IPv6, keep original URL
+            if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || /^\[[0-9a-fA-F:]+\]$/.test(host)) {
+              resolvedUrls.push(u);
+            } else {
+              const ip = await resolveHostnameWithFallback(host);
+              const finalHost = ip ?? host;
+              const maybeBracketted = bracketIfIpv6(finalHost);
+              resolvedUrls.push(`${scheme}:${maybeBracketted}${portPart}`);
+            }
+          } else {
+            resolvedUrls.push(u);
+          }
+        } catch {
+          resolvedUrls.push(u);
+        }
+      }
+      resolvedServers.push({ urls: resolvedUrls, username: s.username, credential: s.credential });
+    }
+
+    return resolvedServers;
   }
 
-  return [
-    { urls: ["stun:s1.stun.gamestream.nvidia.com:19308"] },
-    { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
-  ];
+  // Default fallbacks — try to resolve known STUN hostnames to IPs as well
+  const defaults = ["s1.stun.gamestream.nvidia.com:19308", "stun.l.google.com:19302", "stun1.l.google.com:19302"];
+  const out: IceServer[] = [];
+  for (const d of defaults) {
+    const parts = d.split(":");
+    const host = parts[0];
+    const port = parts.length > 1 ? `:${parts.slice(1).join(":")}` : "";
+    const ip = await resolveHostnameWithFallback(host);
+    const bracketIfIpv6 = (h: string) => (h.includes(":") && !h.startsWith("[") ? `[${h}]` : h);
+    if (ip) out.push({ urls: [`stun:${bracketIfIpv6(ip)}${port}`] });
+    else out.push({ urls: [`stun:${bracketIfIpv6(host)}${port}`] });
+  }
+
+  return out;
 }
 
 /**
@@ -498,7 +582,7 @@ function extractSeatSetupStep(payload: CloudMatchResponse): number | undefined {
   return undefined;
 }
 
-function toSessionInfo(zone: string, streamingBaseUrl: string, payload: CloudMatchResponse): SessionInfo {
+async function toSessionInfo(zone: string, streamingBaseUrl: string, payload: CloudMatchResponse): Promise<SessionInfo> {
   if (payload.requestStatus.statusCode !== 1) {
     // Use SessionError for parsing error responses
     const errorJson = JSON.stringify(payload);
@@ -538,7 +622,7 @@ function toSessionInfo(zone: string, streamingBaseUrl: string, payload: CloudMat
     signalingServer: signaling.signalingServer,
     signalingUrl: signaling.signalingUrl,
     gpuType: payload.session.gpuType,
-    iceServers: normalizeIceServers(payload),
+    iceServers: await normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,
   };
 }
@@ -570,7 +654,7 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   }
 
   const payload = JSON.parse(text) as CloudMatchResponse;
-  return toSessionInfo(input.zone, base, payload);
+  return await toSessionInfo(input.zone, base, payload);
 }
 
 export async function pollSession(input: SessionPollRequest): Promise<SessionInfo> {
@@ -623,7 +707,7 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
         const directPayload = JSON.parse(directText) as CloudMatchResponse;
         if (directPayload.requestStatus.statusCode === 1) {
           console.log("[CloudMatch] Direct re-poll succeeded, using direct response for signaling info");
-          return toSessionInfo(input.zone, directBase, directPayload);
+          return await toSessionInfo(input.zone, directBase, directPayload);
         }
       }
     } catch (e) {
@@ -632,7 +716,7 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
     }
   }
 
-  return toSessionInfo(input.zone, base, payload);
+  return await toSessionInfo(input.zone, base, payload);
 }
 
 export async function stopSession(input: SessionStopRequest): Promise<void> {
@@ -719,21 +803,23 @@ export async function getActiveSessions(
       // Extract appId from sessionRequestData
       const appId = s.sessionRequestData?.appId ? Number(s.sessionRequestData.appId) : 0;
 
-      // Get server IP from sessionControlInfo
-      const serverIp = s.sessionControlInfo?.ip;
-
-      // Build signaling URL from connection info
+      // Prefer the real server IP from connectionInfo[usage=14] — this is the actual game server,
+      // not the zone load balancer. sessionControlInfo.ip is the zone LB hostname and cannot
+      // accept claim (PUT) requests, which causes HTTP 400.
       const connInfo = s.connectionInfo?.find((conn) => conn.usage === 14 && conn.ip);
-      const connIp = connInfo?.ip;
-      const signalingUrl = Array.isArray(connIp)
-        ? connIp.map((ip: string) => `wss://${ip}:443/nvst/`)
-        : typeof connIp === "string"
-          ? [`wss://${connIp}:443/nvst/`]
-          : Array.isArray(serverIp)
-            ? serverIp.map((ip: string) => `wss://${ip}:443/nvst/`)
-            : typeof serverIp === "string"
-              ? [`wss://${serverIp}:443/nvst/`]
-              : undefined;
+      const rawConnIp = connInfo?.ip as string | string[] | undefined;
+      const connIp = Array.isArray(rawConnIp) ? rawConnIp[0] : rawConnIp;
+
+      const rawControlIp = s.sessionControlInfo?.ip as string | string[] | undefined;
+      const controlIp = Array.isArray(rawControlIp) ? rawControlIp[0] : rawControlIp;
+
+      const serverIp = connIp ?? controlIp;
+
+      const signalingUrl = connIp
+        ? `wss://${connIp}:443/nvst/`
+        : controlIp
+          ? `wss://${controlIp}:443/nvst/`
+          : undefined;
 
       // Extract resolution and fps from monitor settings
       const monitorSettings = s.monitorSettings?.[0];
@@ -748,7 +834,7 @@ export async function getActiveSessions(
         gpuType: s.gpuType,
         status: s.status,
         serverIp,
-        signalingUrl: Array.isArray(signalingUrl) ? signalingUrl[0] : signalingUrl,
+        signalingUrl,
         resolution,
         fps,
       };
@@ -761,37 +847,22 @@ export async function getActiveSessions(
  * Build claim/resume request payload
  */
 function buildClaimRequestBody(sessionId: string, appId: string, settings: StreamSettings): unknown {
-  const { width, height } = parseResolution(settings.resolution);
-  const cq = settings.colorQuality;
-  const chromaFormat = colorQualityChromaFormat(cq);
-  // Claim/resume uses SDR mode (matching Rust: hdr_enabled defaults false for claims).
-  // HDR is only negotiated on the initial session create.
-  const hdrEnabled = false;
+  // For RESUME claims, we must NOT attempt to renegotiate streaming parameters.
+  // The session is already configured on the server side. Sending different fps, resolution,
+  // codec, etc. causes HTTP 400 from the server because those parameters are immutable for
+  // an already-streaming session. Only send the action and minimal required fields.
   const deviceId = crypto.randomUUID();
   const subSessionId = crypto.randomUUID();
   const timezoneMs = timezoneOffsetMs();
-
-  // Build HDR capabilities if enabled
-  const hdrCapabilities = hdrEnabled
-    ? {
-        version: 1,
-        hdrEdrSupportedFlagsInUint32: 3, // 1=HDR10, 2=EDR, 3=both
-        staticMetadataDescriptorId: 0,
-        displayData: {
-          maxLuminance: 1000,
-          minLuminance: 0.01,
-          maxFrameAverageLuminance: 500,
-        },
-      }
-    : null;
 
   return {
     action: 2,
     data: "RESUME",
     sessionRequestData: {
+      // Minimal fields required for resume - NO streaming parameter renegotiation
       audioMode: 2,
       remoteControllersBitmap: 0,
-      sdrHdrMode: hdrEnabled ? 1 : 0,
+      sdrHdrMode: 0,
       networkTestSessionId: null,
       availableSupportedControllers: [],
       clientVersion: "30.0",
@@ -804,50 +875,31 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
         { key: "GSStreamerType", value: "WebRTC" },
         { key: "networkType", value: "Unknown" },
         { key: "ClientImeSupport", value: "0" },
-        {
-          key: "clientPhysicalResolution",
-          value: JSON.stringify({ horizontalPixels: width, verticalPixels: height }),
-        },
-        { key: "surroundAudioInfo", value: "2" },
       ],
       surroundAudioInfo: 0,
       clientTimezoneOffset: timezoneMs,
       clientIdentification: "GFN-PC",
       parentSessionId: null,
-      appId,
+      appId: parseInt(appId, 10),
       streamerVersion: 1,
-      clientRequestMonitorSettings: [
-        {
-          widthInPixels: width,
-          heightInPixels: height,
-          framesPerSecond: settings.fps,
-          sdrHdrMode: hdrEnabled ? 1 : 0,
-          displayData: {
-            desiredContentMaxLuminance: hdrEnabled ? 1000 : 0,
-            desiredContentMinLuminance: 0,
-            desiredContentMaxFrameAverageLuminance: hdrEnabled ? 500 : 0,
-          },
-          dpi: 0,
-        },
-      ],
       appLaunchMode: 1,
       sdkVersion: "1.0",
       enhancedStreamMode: 1,
       useOps: true,
-      clientDisplayHdrCapabilities: hdrCapabilities,
+      clientDisplayHdrCapabilities: null,
       accountLinked: true,
       partnerCustomData: "",
       enablePersistingInGameSettings: true,
       secureRTSPSupported: false,
       userAge: 26,
       requestedStreamingFeatures: {
-        reflex: settings.fps >= 120,
+        reflex: false,
         bitDepth: 0,
         cloudGsync: false,
         enabledL4S: false,
         profile: 0,
         fallbackToLogicalResolution: false,
-        chromaFormat,
+        chromaFormat: 0,
         prefilterMode: 0,
         hudStreamingMode: 0,
       },
@@ -880,7 +932,69 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   };
 
   const languageCode = settings.gameLanguage ?? "en_US";
-  const claimUrl = `https://${input.serverIp}/v2/session/${input.sessionId}?keyboardLayout=en-US&languageCode=${languageCode}`;
+
+  // The session list endpoint returns the zone LB hostname in sessionControlInfo.ip.
+  // A claim PUT sent to the zone LB returns HTTP 400 because it does not handle
+  // session-level mutations. The real game server IP is only reliably available from
+  // the individual session endpoint (GET /v2/session/{id}). Resolve it here before
+  // building the claim URL.
+  // IMPORTANT: We must query the SAME zone LB where the session is hosted (use serverIp),
+  // not the provider's generic streamingBaseUrl (which may route to a different zone LB).
+  let effectiveServerIp = input.serverIp;
+  console.log(`[CloudMatch] claimSession: input serverIp=${input.serverIp}, isZone=${isZoneHostname(input.serverIp)}`);
+  if (isZoneHostname(effectiveServerIp)) {
+    const zoneBase = `https://${effectiveServerIp}`;
+    const prefetchUrl = `${zoneBase}/v2/session/${input.sessionId}`;
+    console.log(`[CloudMatch] claimSession: pre-flight query ${prefetchUrl}`);
+    const prefetchHeaders = requestHeaders(input.token);
+    delete prefetchHeaders["Origin"];
+    delete prefetchHeaders["Referer"];
+    try {
+      const prefetchResp = await fetch(prefetchUrl, { method: "GET", headers: prefetchHeaders });
+      console.log(`[CloudMatch] claimSession: pre-flight response status=${prefetchResp.status}`);
+      if (prefetchResp.ok) {
+        const prefetchPayload = JSON.parse(await prefetchResp.text()) as CloudMatchResponse;
+        const realIp = streamingServerIp(prefetchPayload);
+        console.log(`[CloudMatch] claimSession: extracted realIp=${realIp}, isZone=${realIp ? isZoneHostname(realIp) : 'N/A'}`);
+        if (realIp) {
+          effectiveServerIp = realIp;
+          const ipType = isZoneHostname(realIp) ? 'zone LB' : 'direct IP';
+          console.log(`[CloudMatch] claimSession: using extracted ${ipType}: ${realIp}`);
+        }
+      } else {
+        console.warn(`[CloudMatch] claimSession: pre-flight returned HTTP ${prefetchResp.status}, text=${await prefetchResp.text()}`);
+      }
+    } catch (e) {
+      console.warn("[CloudMatch] claimSession: pre-flight poll failed, proceeding with zone hostname:", e);
+    }
+  }
+
+  const claimUrl = `https://${effectiveServerIp}/v2/session/${input.sessionId}?keyboardLayout=en-US&languageCode=${languageCode}`;
+
+  // Pre-claim validation: verify the session is still alive and in ready state before attempting claim
+  // This prevents sending a claim to an expired/dead session
+  try {
+    const validationUrl = `https://${effectiveServerIp}/v2/session/${input.sessionId}`;
+    const validationHeaders = requestHeaders(input.token);
+    delete validationHeaders["Origin"];
+    delete validationHeaders["Referer"];
+    const validationResp = await fetch(validationUrl, { method: "GET", headers: validationHeaders });
+    if (validationResp.ok) {
+      const validationText = await validationResp.text();
+      const validationPayload = JSON.parse(validationText) as CloudMatchResponse;
+      const sessionStatus = validationPayload.session?.status ?? 0;
+      const errorCode = validationPayload.session?.errorCode ?? 0;
+      console.log(`[CloudMatch] claimSession: pre-claim validation status=${sessionStatus}, errorCode=${errorCode}`);
+      console.log(`[CloudMatch] claimSession: validation response (first 1000 chars): ${validationText.slice(0, 1000)}`);
+      if (sessionStatus !== 2 && sessionStatus !== 3) {
+        console.warn(`[CloudMatch] claimSession: session not in ready state (status=${sessionStatus}), claim may fail`);
+      }
+    } else {
+      console.warn(`[CloudMatch] claimSession: pre-claim validation returned HTTP ${validationResp.status}`);
+    }
+  } catch (e) {
+    console.warn("[CloudMatch] claimSession: pre-claim validation failed:", e);
+  }
 
   const payload = buildClaimRequestBody(input.sessionId, appId, settings);
 
@@ -900,6 +1014,8 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   };
 
   // Send claim request
+  console.log(`[CloudMatch] claimSession PUT ${claimUrl}`);
+  console.log(`[CloudMatch] claimSession body: ${JSON.stringify(payload)}`);
   const response = await fetch(claimUrl, {
     method: "PUT",
     headers,
@@ -907,6 +1023,10 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   });
 
   const text = await response.text();
+  
+  // Log full response body for debugging (not truncated)
+  console.log(`[CloudMatch] claimSession response: HTTP ${response.status}`);
+  console.log(`[CloudMatch] claimSession response body FULL: ${text}`);
 
   if (!response.ok) {
     throw SessionError.fromResponse(response.status, text);
@@ -919,7 +1039,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   }
 
   // Poll until session is ready (status 2 or 3)
-  const getUrl = `https://${input.serverIp}/v2/session/${input.sessionId}`;
+  const getUrl = `https://${effectiveServerIp}/v2/session/${input.sessionId}`;
   const maxAttempts = 60;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -962,18 +1082,19 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
         status: sessionData.status,
         queuePosition,
         zone: "", // Zone not applicable for claimed sessions
-        streamingBaseUrl: `https://${input.serverIp}`,
+        streamingBaseUrl: `https://${effectiveServerIp}`,
         serverIp: signaling.serverIp,
         signalingServer: signaling.signalingServer,
         signalingUrl: signaling.signalingUrl,
         gpuType: sessionData.gpuType,
-        iceServers: normalizeIceServers(pollApiResponse),
+        iceServers: await normalizeIceServers(pollApiResponse),
         mediaConnectionInfo: signaling.mediaConnectionInfo,
       };
     }
 
-    // If status is not "cleaning up" (6), break early
-    if (sessionData.status !== 6) {
+    // Status 1 (setup/launching), 6 (cleaning up), etc. — continue polling for ready state (2 or 3)
+    // Only break if we encounter a terminal error state (status 4, 5, etc.)
+    if (sessionData.status > 3 && sessionData.status !== 6) {
       break;
     }
   }

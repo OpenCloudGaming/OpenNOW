@@ -442,6 +442,7 @@ export class GfnWebRtcClient {
   private audioContext: AudioContext | null = null;
 
   private inputReady = false;
+  public inputPaused = false;
   private inputProtocolVersion = 2;
   private heartbeatTimer: number | null = null;
   private mouseFlushTimer: number | null = null;
@@ -1559,6 +1560,7 @@ export class GfnWebRtcClient {
   private gamepadSendCount = 0;
 
   private pollGamepads(): void {
+    if (this.inputPaused) return;
     const gamepads = navigator.getGamepads();
     if (!gamepads) {
       return;
@@ -2209,6 +2211,7 @@ export class GfnWebRtcClient {
     };
 
     const onPointerMove = (event: PointerEvent) => {
+      if (this.inputPaused) return;
       if (event.pointerType && event.pointerType !== "mouse") {
         return;
       }
@@ -2225,10 +2228,12 @@ export class GfnWebRtcClient {
     };
 
     const onMouseMove = (event: MouseEvent) => {
+      if (this.inputPaused) return;
       queueMouseMovement(event.movementX, event.movementY, event.timeStamp);
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (this.inputPaused) return;
       if (!this.inputReady) {
         return;
       }
@@ -2284,6 +2289,7 @@ export class GfnWebRtcClient {
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
+      if (this.inputPaused) return;
       if (!this.inputReady) {
         return;
       }
@@ -2327,6 +2333,7 @@ export class GfnWebRtcClient {
     };
 
     const onMouseDown = (event: MouseEvent) => {
+      if (this.inputPaused) return;
       if (!this.inputReady) {
         return;
       }
@@ -2345,6 +2352,7 @@ export class GfnWebRtcClient {
     };
 
     const onMouseUp = (event: MouseEvent) => {
+      if (this.inputPaused) return;
       if (!this.inputReady) {
         return;
       }
@@ -2479,13 +2487,26 @@ export class GfnWebRtcClient {
       }
       this.clearEscapeHoldTimer();
       this.releasePressedKeys("window blur");
+      // Pause all input while window is not focused so no new events
+      // (keyboard/gamepad/mouse) are registered or forwarded to the stream.
+      this.inputPaused = true;
     };
 
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") {
         this.clearEscapeHoldTimer();
         this.releasePressedKeys(`visibility ${document.visibilityState}`);
+        this.inputPaused = true;
+        return;
       }
+
+      // Document is visible again — resume input
+      this.inputPaused = false;
+    };
+
+    const onWindowFocus = () => {
+      // Resume input when window regains focus
+      this.inputPaused = false;
     };
 
     // Try to lock keyboard (Escape, F11, etc.) when in fullscreen.
@@ -2523,6 +2544,7 @@ export class GfnWebRtcClient {
     document.addEventListener("fullscreenchange", onFullscreenChange);
     window.addEventListener("blur", onWindowBlur);
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onWindowFocus);
 
     // If already in fullscreen, try to lock keyboard immediately
     if (document.fullscreenElement) {
@@ -2546,6 +2568,7 @@ export class GfnWebRtcClient {
     this.inputCleanup.push(() => document.removeEventListener("fullscreenchange", onFullscreenChange));
     this.inputCleanup.push(() => window.removeEventListener("blur", onWindowBlur));
     this.inputCleanup.push(() => document.removeEventListener("visibilitychange", onVisibilityChange));
+    this.inputCleanup.push(() => window.removeEventListener("focus", onWindowFocus));
       this.inputCleanup.push(() => {
         if (this.pointerLockEscapeTimer !== null) {
           window.clearTimeout(this.pointerLockEscapeTimer);
