@@ -162,6 +162,9 @@ export interface StreamDiagnostics {
   inputQueueDropCount: number;
   inputQueueMaxSchedulingDelayMs: number;
 
+  lagReason: StreamLagReason;
+  lagReasonDetail: string;
+
   // System info
   gpuType: string;
   serverRegion: string;
@@ -175,6 +178,14 @@ export interface StreamDiagnostics {
   micState: MicState;
   micEnabled: boolean;
 }
+
+export type StreamLagReason =
+  | "unknown"
+  | "stable"
+  | "network"
+  | "decoder"
+  | "input_backpressure"
+  | "render";
 
 export interface StreamTimeWarning {
   code: 1 | 2 | 3;
@@ -578,6 +589,8 @@ export class GfnWebRtcClient {
     inputQueuePeakBufferedBytes: 0,
     inputQueueDropCount: 0,
     inputQueueMaxSchedulingDelayMs: 0,
+    lagReason: "unknown",
+    lagReasonDetail: "Waiting for stream stats",
     gpuType: "",
     serverRegion: "",
     decoderPressureActive: false,
@@ -837,6 +850,8 @@ export class GfnWebRtcClient {
       inputQueuePeakBufferedBytes: 0,
       inputQueueDropCount: 0,
       inputQueueMaxSchedulingDelayMs: 0,
+      lagReason: "unknown",
+      lagReasonDetail: "Waiting for stream stats",
       gpuType: this.gpuType,
       serverRegion: this.serverRegion,
       decoderPressureActive: false,
@@ -884,7 +899,7 @@ export class GfnWebRtcClient {
       this.statsTimer = null;
     }
     if (this.gamepadPollTimer !== null) {
-      window.clearInterval(this.gamepadPollTimer);
+      window.clearTimeout(this.gamepadPollTimer);
       this.gamepadPollTimer = null;
     }
   }
@@ -974,6 +989,89 @@ export class GfnWebRtcClient {
       reason,
       backlogFrames,
       dropRatePercent,
+    };
+  }
+
+  private classifyLagReason(params: {
+    framesReceived: number;
+    framesDecoded: number;
+    framesDropped: number;
+    decodeTimeMs: number;
+    decodeFps: number;
+    renderFps: number;
+    rttMs: number;
+    packetLossPercent: number;
+    jitterMs: number;
+    jitterBufferDelayMs: number;
+    inputQueueBufferedBytes: number;
+    inputQueueDropCount: number;
+    inputQueueMaxSchedulingDelayMs: number;
+  }): { reason: StreamLagReason; detail: string } {
+    const networkSignals: string[] = [];
+    if (params.packetLossPercent >= 1) networkSignals.push(`${params.packetLossPercent.toFixed(1)}% loss`);
+    if (params.rttMs >= 75) networkSignals.push(`RTT ${params.rttMs.toFixed(0)}ms`);
+    if (params.jitterMs >= 12) networkSignals.push(`jitter ${params.jitterMs.toFixed(1)}ms`);
+    if (params.jitterBufferDelayMs >= 20) networkSignals.push(`buffer ${params.jitterBufferDelayMs.toFixed(1)}ms`);
+    if (networkSignals.length > 0) {
+      return {
+        reason: "network",
+        detail: networkSignals.join(" · "),
+      };
+    }
+
+    const frameBudgetMs = params.decodeFps > 0 ? 1000 / params.decodeFps : 0;
+    const decodeSaturated =
+      frameBudgetMs > 0 &&
+      params.decodeTimeMs > 0 &&
+      params.decodeTimeMs >= frameBudgetMs * 0.82;
+    const severeDecoderStall = params.framesReceived > 100 && params.framesDecoded === 0;
+    const decoderBacklog = Math.max(0, params.framesReceived - params.framesDecoded);
+    if (severeDecoderStall || decodeSaturated || decoderBacklog >= 45 || params.framesDropped >= 8) {
+      const detailParts: string[] = [];
+      if (severeDecoderStall) detailParts.push("frames received but not decoded");
+      if (decodeSaturated) detailParts.push(`decode ${params.decodeTimeMs.toFixed(1)}ms`);
+      if (decoderBacklog >= 45) detailParts.push(`backlog ${decoderBacklog}`);
+      if (params.framesDropped >= 8) detailParts.push(`drops ${params.framesDropped}`);
+      return {
+        reason: "decoder",
+        detail: detailParts.join(" · ") || "decode saturation",
+      };
+    }
+
+    if (
+      params.inputQueueDropCount > 0 ||
+      params.inputQueueBufferedBytes >= GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES ||
+      params.inputQueueMaxSchedulingDelayMs >= 4
+    ) {
+      const detailParts: string[] = [];
+      if (params.inputQueueDropCount > 0) detailParts.push(`drops ${params.inputQueueDropCount}`);
+      if (params.inputQueueBufferedBytes >= GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES) {
+        detailParts.push(`buffered ${(params.inputQueueBufferedBytes / 1024).toFixed(1)}KB`);
+      }
+      if (params.inputQueueMaxSchedulingDelayMs >= 4) {
+        detailParts.push(`sched ${params.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms`);
+      }
+      return {
+        reason: "input_backpressure",
+        detail: detailParts.join(" · "),
+      };
+    }
+
+    if (params.renderFps > 0 && params.decodeFps > 0) {
+      const renderGap = params.decodeFps - params.renderFps;
+      if (renderGap >= 8 || params.renderFps < 24) {
+        return {
+          reason: "render",
+          detail: `render ${params.renderFps}fps vs decode ${params.decodeFps}fps`,
+        };
+      }
+    }
+
+    return {
+      reason: params.decodeFps > 0 || params.renderFps > 0 ? "stable" : "unknown",
+      detail: params.decodeFps > 0 || params.renderFps > 0
+        ? "No dominant lag source detected"
+        : "Waiting for stream stats",
     };
   }
 
@@ -1133,6 +1231,9 @@ export class GfnWebRtcClient {
     let inboundVideo: Record<string, unknown> | null = null;
     let activePair: Record<string, unknown> | null = null;
     const codecs = new Map<string, Record<string, unknown>>();
+    let framesReceived = 0;
+    let framesDecoded = 0;
+    let framesDropped = 0;
 
     for (const entry of report.values()) {
       const stats = entry as unknown as Record<string, unknown>;
@@ -1157,9 +1258,9 @@ export class GfnWebRtcClient {
     // Process video track stats
     if (inboundVideo) {
       const bytes = Number(inboundVideo.bytesReceived ?? 0);
-      const framesReceived = Number(inboundVideo.framesReceived ?? 0);
-      const framesDecoded = Number(inboundVideo.framesDecoded ?? 0);
-      const framesDropped = Number(inboundVideo.framesDropped ?? 0);
+      framesReceived = Number(inboundVideo.framesReceived ?? 0);
+      framesDecoded = Number(inboundVideo.framesDecoded ?? 0);
+      framesDropped = Number(inboundVideo.framesDropped ?? 0);
       const packetsReceived = Number(inboundVideo.packetsReceived ?? 0);
       const packetsLost = Number(inboundVideo.packetsLost ?? 0);
       const prevSample = this.lastStatsSample;
@@ -1312,6 +1413,24 @@ export class GfnWebRtcClient {
     this.diagnostics.inputQueueDropCount = this.inputQueueDropCount;
     this.diagnostics.inputQueueMaxSchedulingDelayMs =
       Math.round(this.inputQueueMaxSchedulingDelayMsWindow * 10) / 10;
+
+    const lagClassification = this.classifyLagReason({
+      framesReceived,
+      framesDecoded,
+      framesDropped,
+      decodeTimeMs: this.diagnostics.decodeTimeMs,
+      decodeFps: this.diagnostics.decodeFps,
+      renderFps: this.diagnostics.renderFps,
+      rttMs: this.diagnostics.rttMs,
+      packetLossPercent: this.diagnostics.packetLossPercent,
+      jitterMs: this.diagnostics.jitterMs,
+      jitterBufferDelayMs: this.diagnostics.jitterBufferDelayMs,
+      inputQueueBufferedBytes: reliableBufferedAmount,
+      inputQueueDropCount: this.inputQueueDropCount,
+      inputQueueMaxSchedulingDelayMs: this.diagnostics.inputQueueMaxSchedulingDelayMs,
+    });
+    this.diagnostics.lagReason = lagClassification.reason;
+    this.diagnostics.lagReasonDetail = lagClassification.detail;
 
     const shouldLogQueuePressure =
       reliableBufferedAmount > GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES / 2
@@ -1541,20 +1660,40 @@ export class GfnWebRtcClient {
 
   private setupGamepadPolling(): void {
     if (this.gamepadPollTimer !== null) {
-      window.clearInterval(this.gamepadPollTimer);
+      window.clearTimeout(this.gamepadPollTimer);
     }
 
-    this.log("Gamepad polling started (250Hz)");
+    this.log("Gamepad polling started (adaptive)");
+    this.scheduleGamepadPolling();
+  }
 
-    // Poll at 250Hz (4ms interval) — the practical minimum for setInterval in browsers.
-    // The Rust reference polls at 1000Hz; browser timers can't go below ~4ms reliably.
-    // Previous 60Hz (16.6ms) added up to 1-2 frames of input lag at 120fps.
-    this.gamepadPollTimer = window.setInterval(() => {
+  private scheduleGamepadPolling(): void {
+    if (this.gamepadPollTimer !== null) {
+      window.clearTimeout(this.gamepadPollTimer);
+    }
+
+    const nextDelay = this.getGamepadPollIntervalMs();
+    this.gamepadPollTimer = window.setTimeout(() => {
+      this.gamepadPollTimer = null;
       if (!this.inputReady) {
+        this.scheduleGamepadPolling();
         return;
       }
       this.pollGamepads();
-    }, 4);
+      this.scheduleGamepadPolling();
+    }, nextDelay);
+  }
+
+  private getGamepadPollIntervalMs(): number {
+    if (!this.inputReady || this.inputPaused || document.visibilityState !== "visible") {
+      return 100;
+    }
+
+    if (this.connectedGamepads.size === 0) {
+      return 100;
+    }
+
+    return 4;
   }
 
   private gamepadSendCount = 0;

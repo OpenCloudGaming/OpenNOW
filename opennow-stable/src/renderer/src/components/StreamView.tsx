@@ -3,7 +3,9 @@ import { createPortal } from "react-dom";
 import type { JSX } from "react";
 import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen } from "lucide-react";
 import SideBar from "./SideBar";
-import type { StreamDiagnostics } from "../gfn/webrtcClient";
+import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
+import { useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
+import type { StreamLagReason } from "../gfn/webrtcClient";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry } from "@shared/gfn";
 import { isShortcutMatch, normalizeShortcut } from "../shortcuts";
@@ -11,7 +13,7 @@ import { isShortcutMatch, normalizeShortcut } from "../shortcuts";
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
   audioRef: React.Ref<HTMLAudioElement>;
-  stats: StreamDiagnostics;
+  diagnosticsStore: StreamDiagnosticsStore;
   showStats: boolean;
   shortcuts: {
     toggleStats: string;
@@ -23,7 +25,6 @@ interface StreamViewProps {
   };
   hideStreamButtons?: boolean;
   serverRegion?: string;
-  connectedControllers: number;
   antiAfkEnabled: boolean;
   escHoldReleaseIndicator: {
     visible: boolean;
@@ -91,6 +92,38 @@ function getInputQueueColor(bufferedBytes: number, dropCount: number): string {
   return "var(--success)";
 }
 
+function getLagReasonLabel(reason: StreamLagReason): string {
+  switch (reason) {
+    case "network":
+      return "Network";
+    case "decoder":
+      return "Decode";
+    case "input_backpressure":
+      return "Input";
+    case "render":
+      return "Render";
+    case "stable":
+      return "Stable";
+    default:
+      return "Unknown";
+  }
+}
+
+function getLagReasonColor(reason: StreamLagReason): string {
+  switch (reason) {
+    case "network":
+    case "decoder":
+      return "var(--error)";
+    case "input_backpressure":
+    case "render":
+      return "var(--warning)";
+    case "stable":
+      return "var(--success)";
+    default:
+      return "var(--ink-muted)";
+  }
+}
+
 function formatElapsed(totalSeconds: number): string {
   const safe = Math.max(0, Math.floor(totalSeconds));
   const hours = Math.floor(safe / 3600);
@@ -121,12 +154,6 @@ function formatWarningSeconds(value: number | undefined): string | null {
   return `${seconds}s`;
 }
 
-/**
- * Drives a canvas-based segmented level meter from a live MediaStreamTrack.
- * Uses the Web Audio API AnalyserNode as a read-only tap — audio is never
- * routed to the speaker. Runs a requestAnimationFrame loop while active;
- * tears down fully (rAF cancelled, AudioContext closed) on deactivation.
- */
 function useMicMeter(
   canvasRef: React.RefObject<HTMLCanvasElement | null>,
   track: MediaStreamTrack | null,
@@ -153,7 +180,7 @@ function useMicMeter(
     let audioCtx: AudioContext | null = null;
     let source: MediaStreamAudioSourceNode | null = null;
     let analyser: AnalyserNode | null = null;
-    let raf = 0;
+    let tickTimer: number | null = null;
     let dead = false;
 
     const start = async () => {
@@ -176,21 +203,21 @@ function useMicMeter(
         }
 
         analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 512;
+        analyser.fftSize = 256;
         analyser.smoothingTimeConstant = 0.65;
         source = audioCtx.createMediaStreamSource(new MediaStream([track]));
         source.connect(analyser);
-        // NOT connected to destination — monitoring only, no loopback
 
         const buf = new Uint8Array(analyser.frequencyBinCount);
         const SEG = 20;
         const GAP = Math.round(2 * dpr);
         const bw = (W - GAP * (SEG - 1)) / SEG;
         const radius = Math.min(3 * dpr, bw / 2);
+        const frameIntervalMs = 33;
 
         const frame = () => {
           if (dead || !analyser) return;
-          raf = requestAnimationFrame(frame);
+          tickTimer = window.setTimeout(frame, frameIntervalMs);
           analyser.getByteTimeDomainData(buf);
 
           let sum = 0;
@@ -227,7 +254,9 @@ function useMicMeter(
 
     return () => {
       dead = true;
-      cancelAnimationFrame(raf);
+      if (tickTimer !== null) {
+        window.clearTimeout(tickTimer);
+      }
       source?.disconnect();
       analyser?.disconnect();
       if (audioCtx && audioCtx.state !== "closed") {
@@ -243,11 +272,10 @@ function useMicMeter(
 export function StreamView({
   videoRef,
   audioRef,
-  stats,
+  diagnosticsStore,
   showStats,
   shortcuts,
   serverRegion,
-  connectedControllers,
   antiAfkEnabled,
   escHoldReleaseIndicator,
   exitPrompt,
@@ -278,6 +306,7 @@ export function StreamView({
   hideStreamButtons = false,
   className,
 }: StreamViewProps): JSX.Element {
+  const stats = useStreamDiagnosticsStore(diagnosticsStore);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
@@ -1505,6 +1534,11 @@ export function StreamView({
             <span className="sv-stats-chip" title="Input queue pressure (buffered bytes and delayed flush)">
               IQ <span className="sv-stats-chip-val" style={{ color: inputQueueColor }}>{inputQueueText}</span>
             </span>
+            {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
+              <span className="sv-stats-chip" title={stats.lagReasonDetail}>
+                Lag <span className="sv-stats-chip-val" style={{ color: getLagReasonColor(stats.lagReason) }}>{getLagReasonLabel(stats.lagReason)}</span>
+              </span>
+            )}
           </div>
 
           <div className="sv-stats-foot">
@@ -1522,14 +1556,20 @@ export function StreamView({
               {[stats.gpuType, regionLabel].filter(Boolean).join(" · ")}
             </div>
           )}
+
+          {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
+            <div className="sv-stats-foot">
+              Lag source {getLagReasonLabel(stats.lagReason).toLowerCase()} · {stats.lagReasonDetail}
+            </div>
+          )}
         </div>
       )}
 
       {/* Controller indicator (top-left) */}
-      {connectedControllers > 0 && !isConnecting && (
-        <div className="sv-ctrl" title={`${connectedControllers} controller(s) connected`}>
+      {stats.connectedGamepads > 0 && !isConnecting && (
+        <div className="sv-ctrl" title={`${stats.connectedGamepads} controller(s) connected`}>
           <Gamepad2 size={18} />
-          {connectedControllers > 1 && <span className="sv-ctrl-n">{connectedControllers}</span>}
+          {stats.connectedGamepads > 1 && <span className="sv-ctrl-n">{stats.connectedGamepads}</span>}
         </div>
       )}
 
@@ -1537,7 +1577,7 @@ export function StreamView({
       {showMicIndicator && onToggleMicrophone && (
         <button
           type="button"
-          className={`sv-mic${connectedControllers > 0 || antiAfkEnabled ? " sv-mic--stacked" : ""}`}
+          className={`sv-mic${stats.connectedGamepads > 0 || antiAfkEnabled ? " sv-mic--stacked" : ""}`}
           onClick={onToggleMicrophone}
           data-enabled={micEnabled}
           title={micEnabled ? "Mute microphone" : "Unmute microphone"}
@@ -1550,7 +1590,7 @@ export function StreamView({
 
       {/* Anti-AFK indicator (top-left, below controller badge when present) */}
       {antiAfkEnabled && !isConnecting && (
-        <div className={`sv-afk${connectedControllers > 0 ? " sv-afk--stacked" : ""}`} title="Anti-AFK is enabled">
+        <div className={`sv-afk${stats.connectedGamepads > 0 ? " sv-afk--stacked" : ""}`} title="Anti-AFK is enabled">
           <span className="sv-afk-dot" />
           <span className="sv-afk-label">ANTI-AFK ON</span>
         </div>
@@ -1560,7 +1600,7 @@ export function StreamView({
       {isRecording && !isConnecting && (
         <div
           className="sv-rec"
-          style={{ top: 14 + 42 * ([connectedControllers > 0, antiAfkEnabled, showMicIndicator].filter(Boolean).length) }}
+          style={{ top: 14 + 42 * ([stats.connectedGamepads > 0, antiAfkEnabled, showMicIndicator].filter(Boolean).length) }}
           title={`Recording · ${formatElapsed(Math.round(recordingDurationMs / 1000))}`}
         >
           <span className="sv-rec-dot" />

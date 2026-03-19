@@ -24,6 +24,7 @@ import {
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { useControllerNavigation } from "./controllerNavigation";
 import { usePlaytime } from "./utils/usePlaytime";
+import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
@@ -196,6 +197,8 @@ function defaultDiagnostics(): StreamDiagnostics {
     inputQueuePeakBufferedBytes: 0,
     inputQueueDropCount: 0,
     inputQueueMaxSchedulingDelayMs: 0,
+    lagReason: "unknown",
+    lagReasonDetail: "Waiting for stream stats",
     gpuType: "",
     serverRegion: "",
     decoderPressureActive: false,
@@ -403,11 +406,13 @@ export function App(): JSX.Element {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
+  const diagnosticsStoreRef = useRef<ReturnType<typeof createStreamDiagnosticsStore> | null>(null);
+  const diagnosticsStore =
+    diagnosticsStoreRef.current ?? (diagnosticsStoreRef.current = createStreamDiagnosticsStore(defaultDiagnostics()));
 
   // Stream State
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("idle");
-  const [diagnostics, setDiagnostics] = useState<StreamDiagnostics>(defaultDiagnostics());
   const [showStatsOverlay, setShowStatsOverlay] = useState(true);
   const [antiAfkEnabled, setAntiAfkEnabled] = useState(false);
   const [escHoldReleaseIndicator, setEscHoldReleaseIndicator] = useState<{ visible: boolean; progress: number }>({
@@ -668,7 +673,7 @@ export function App(): JSX.Element {
     setSessionElapsedSeconds(0);
     setStreamWarning(null);
     setEscHoldReleaseIndicator({ visible: false, progress: 0 });
-    setDiagnostics(defaultDiagnostics());
+    diagnosticsStore.set(defaultDiagnostics());
 
     if (!options?.keepStreamingContext) {
       setStreamingGame(null);
@@ -678,7 +683,7 @@ export function App(): JSX.Element {
     if (!options?.keepLaunchError) {
       setLaunchError(null);
     }
-  }, []);
+  }, [diagnosticsStore]);
 
   // Session ref sync
   useEffect(() => {
@@ -1121,19 +1126,19 @@ export function App(): JSX.Element {
       return;
     }
 
-    const hasLiveFrames = diagnostics.framesDecoded > 0 || diagnostics.framesReceived > 0 || diagnostics.renderFps > 0;
-    if (!hasLiveFrames) {
-      return;
-    }
+    const evaluate = () => {
+      const snapshot = diagnosticsStore.getSnapshot();
+      const hasLiveFrames =
+        snapshot.framesDecoded > 0 || snapshot.framesReceived > 0 || snapshot.renderFps > 0;
+      if (hasLiveFrames) {
+        setSessionStartedAtMs(Date.now());
+      }
+    };
 
-    setSessionStartedAtMs(Date.now());
-  }, [
-    diagnostics.framesDecoded,
-    diagnostics.framesReceived,
-    diagnostics.renderFps,
-    sessionStartedAtMs,
-    streamStatus,
-  ]);
+    evaluate();
+    const unsubscribe = diagnosticsStore.subscribe(evaluate);
+    return unsubscribe;
+  }, [sessionStartedAtMs, streamStatus]);
 
   useEffect(() => {
     if (!streamWarning) return;
@@ -1172,7 +1177,7 @@ export function App(): JSX.Element {
               mouseSensitivity: settings.mouseSensitivity,
               mouseAcceleration: settings.mouseAcceleration,
               onLog: (line: string) => console.log(`[WebRTC] ${line}`),
-              onStats: (stats) => setDiagnostics(stats),
+              onStats: (stats) => diagnosticsStore.set(stats),
               onEscHoldProgress: (visible, progress) => {
                 setEscHoldReleaseIndicator({ visible, progress });
               },
@@ -2019,7 +2024,7 @@ export function App(): JSX.Element {
             className={isSwitchingGame ? "sv--switching" : undefined}
             videoRef={videoRef}
             audioRef={audioRef}
-            stats={diagnostics}
+            diagnosticsStore={diagnosticsStore}
             showStats={showStatsOverlay}
             shortcuts={{
               toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
@@ -2031,7 +2036,6 @@ export function App(): JSX.Element {
             }}
             hideStreamButtons={settings.hideStreamButtons}
             serverRegion={session?.serverIp}
-            connectedControllers={diagnostics.connectedGamepads}
             antiAfkEnabled={antiAfkEnabled}
             escHoldReleaseIndicator={escHoldReleaseIndicator}
             exitPrompt={exitPrompt}
