@@ -367,16 +367,21 @@ function buildSignalingUrl(
   };
 }
 
-function requestHeaders(token: string): Record<string, string> {
-  const clientId = crypto.randomUUID();
-  const deviceId = crypto.randomUUID();
+interface RequestHeadersOptions {
+  token: string;
+  clientId?: string;
+  deviceId?: string;
+  includeOrigin?: boolean;
+}
 
-  return {
+function requestHeaders(options: RequestHeadersOptions): Record<string, string> {
+  const clientId = options.clientId ?? crypto.randomUUID();
+  const deviceId = options.deviceId ?? crypto.randomUUID();
+
+  const headers: Record<string, string> = {
     "User-Agent": GFN_USER_AGENT,
-    Authorization: `GFNJWT ${token}`,
+    Authorization: `GFNJWT ${options.token}`,
     "Content-Type": "application/json",
-    Origin: "https://play.geforcenow.com",
-    Referer: "https://play.geforcenow.com/",
     "nv-browser-type": "CHROME",
     "nv-client-id": clientId,
     "nv-client-streamer": "NVIDIA-CLASSIC",
@@ -388,6 +393,13 @@ function requestHeaders(token: string): Record<string, string> {
     "nv-device-type": "DESKTOP",
     "x-device-id": deviceId,
   };
+
+  if (options.includeOrigin !== false) {
+    headers["Origin"] = "https://play.geforcenow.com";
+    headers["Referer"] = "https://play.geforcenow.com/";
+  }
+
+  return headers;
 }
 
 function parseResolution(input: string): { width: number; height: number } {
@@ -582,7 +594,16 @@ function extractSeatSetupStep(payload: CloudMatchResponse): number | undefined {
   return undefined;
 }
 
-async function toSessionInfo(zone: string, streamingBaseUrl: string, payload: CloudMatchResponse): Promise<SessionInfo> {
+interface ToSessionInfoOptions {
+  zone: string;
+  streamingBaseUrl: string;
+  payload: CloudMatchResponse;
+  clientId?: string;
+  deviceId?: string;
+}
+
+async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo> {
+  const { zone, streamingBaseUrl, payload, clientId, deviceId } = options;
   if (payload.requestStatus.statusCode !== 1) {
     // Use SessionError for parsing error responses
     const errorJson = JSON.stringify(payload);
@@ -624,6 +645,8 @@ async function toSessionInfo(zone: string, streamingBaseUrl: string, payload: Cl
     gpuType: payload.session.gpuType,
     iceServers: await normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,
+    clientId,
+    deviceId,
   };
 }
 
@@ -636,6 +659,10 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
     throw new Error(`Invalid launch appId '${input.appId}' (must be numeric)`);
   }
 
+  // Generate client/device IDs once for the entire session lifecycle
+  const clientId = crypto.randomUUID();
+  const deviceId = crypto.randomUUID();
+
   const body = buildSessionRequestBody(input);
 
   const base = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
@@ -643,7 +670,7 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   const url = `${base}/v2/session?keyboardLayout=en-US&languageCode=${languageCode}`;
   const response = await fetch(url, {
     method: "POST",
-    headers: requestHeaders(input.token),
+    headers: requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: true }),
     body: JSON.stringify(body),
   });
 
@@ -654,7 +681,7 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   }
 
   const payload = JSON.parse(text) as CloudMatchResponse;
-  return await toSessionInfo(input.zone, base, payload);
+  return await toSessionInfo({ zone: input.zone, streamingBaseUrl: base, payload, clientId, deviceId });
 }
 
 export async function pollSession(input: SessionPollRequest): Promise<SessionInfo> {
@@ -662,9 +689,14 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
     throw new Error("Missing token for session polling");
   }
 
+  // Use provided client/device IDs if available (should match session creation)
+  const clientId = input.clientId ?? crypto.randomUUID();
+  const deviceId = input.deviceId ?? crypto.randomUUID();
+
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
   const url = `${base}/v2/session/${input.sessionId}`;
-  const headers = requestHeaders(input.token);
+  // Polling should NOT include Origin/Referer headers (matches claimSession polling pattern)
+  const headers = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
   const response = await fetch(url, {
     method: "GET",
     headers,
@@ -707,7 +739,7 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
         const directPayload = JSON.parse(directText) as CloudMatchResponse;
         if (directPayload.requestStatus.statusCode === 1) {
           console.log("[CloudMatch] Direct re-poll succeeded, using direct response for signaling info");
-          return await toSessionInfo(input.zone, directBase, directPayload);
+          return await toSessionInfo({ zone: input.zone, streamingBaseUrl: directBase, payload: directPayload, clientId, deviceId });
         }
       }
     } catch (e) {
@@ -716,7 +748,7 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
     }
   }
 
-  return await toSessionInfo(input.zone, base, payload);
+  return await toSessionInfo({ zone: input.zone, streamingBaseUrl: base, payload, clientId, deviceId });
 }
 
 export async function stopSession(input: SessionStopRequest): Promise<void> {
@@ -724,11 +756,15 @@ export async function stopSession(input: SessionStopRequest): Promise<void> {
     throw new Error("Missing token for session stop");
   }
 
+  // Use provided client/device IDs if available (should match session creation)
+  const clientId = input.clientId ?? crypto.randomUUID();
+  const deviceId = input.deviceId ?? crypto.randomUUID();
+
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
   const url = `${base}/v2/session/${input.sessionId}`;
   const response = await fetch(url, {
     method: "DELETE",
-    headers: requestHeaders(input.token),
+    headers: requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false }),
   });
 
   if (!response.ok) {
@@ -750,30 +786,14 @@ export async function getActiveSessions(
     throw new Error("Missing token for getting active sessions");
   }
 
-  const deviceId = crypto.randomUUID();
-  const clientId = crypto.randomUUID();
-
   const base = streamingBaseUrl.trim().endsWith("/")
     ? streamingBaseUrl.trim().slice(0, -1)
     : streamingBaseUrl.trim();
   const url = `${base}/v2/session`;
 
-  const headers: Record<string, string> = {
-    "User-Agent": GFN_USER_AGENT,
-    Authorization: `GFNJWT ${token}`,
-    "Content-Type": "application/json",
-    "nv-client-id": clientId,
-    "nv-client-streamer": "NVIDIA-CLASSIC",
-    "nv-client-type": "NATIVE",
-    "nv-client-version": GFN_CLIENT_VERSION,
-    "nv-device-os": process.platform === "win32" ? "WINDOWS" : process.platform === "darwin" ? "MACOS" : "LINUX",
-    "nv-device-type": "DESKTOP",
-    "x-device-id": deviceId,
-  };
-
   const response = await fetch(url, {
     method: "GET",
-    headers,
+    headers: requestHeaders({ token, includeOrigin: false }),
   });
 
   const text = await response.text();
@@ -946,9 +966,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     const zoneBase = `https://${effectiveServerIp}`;
     const prefetchUrl = `${zoneBase}/v2/session/${input.sessionId}`;
     console.log(`[CloudMatch] claimSession: pre-flight query ${prefetchUrl}`);
-    const prefetchHeaders = requestHeaders(input.token);
-    delete prefetchHeaders["Origin"];
-    delete prefetchHeaders["Referer"];
+    const prefetchHeaders = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
     try {
       const prefetchResp = await fetch(prefetchUrl, { method: "GET", headers: prefetchHeaders });
       console.log(`[CloudMatch] claimSession: pre-flight response status=${prefetchResp.status}`);
@@ -975,9 +993,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   // This prevents sending a claim to an expired/dead session
   try {
     const validationUrl = `https://${effectiveServerIp}/v2/session/${input.sessionId}`;
-    const validationHeaders = requestHeaders(input.token);
-    delete validationHeaders["Origin"];
-    delete validationHeaders["Referer"];
+    const validationHeaders = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
     const validationResp = await fetch(validationUrl, { method: "GET", headers: validationHeaders });
     if (validationResp.ok) {
       const validationText = await validationResp.text();

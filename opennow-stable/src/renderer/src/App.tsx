@@ -1566,6 +1566,8 @@ export function App(): JSX.Element {
           serverIp: newSession.serverIp,
           zone: newSession.zone,
           sessionId: newSession.sessionId,
+          clientId: newSession.clientId,
+          deviceId: newSession.deviceId,
         });
 
         setSession(polled);
@@ -1708,6 +1710,8 @@ export function App(): JSX.Element {
           serverIp: current.serverIp,
           zone: current.zone,
           sessionId: current.sessionId,
+          clientId: current.clientId,
+          deviceId: current.deviceId,
         });
       }
 

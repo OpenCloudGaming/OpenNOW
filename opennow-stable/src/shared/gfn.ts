@@ -246,6 +246,8 @@ export interface SessionPollRequest {
   serverIp?: string;
   zone: string;
   sessionId: string;
+  clientId?: string;
+  deviceId?: string;
 }
 
 export interface SessionStopRequest {
@@ -254,6 +256,8 @@ export interface SessionStopRequest {
   serverIp?: string;
   zone: string;
   sessionId: string;
+  clientId?: string;
+  deviceId?: string;
 }
 
 export interface IceServer {
@@ -280,6 +284,8 @@ export interface SessionInfo {
   gpuType?: string;
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
+  clientId?: string;
+  deviceId?: string;
 }
 
 /** Information about an active session from getActiveSessions */
