@@ -12,6 +12,8 @@
   <img src="img.png" alt="OpenNOW" />
 </p>
 
+
+
 <p align="center">
   <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
     <img src="https://img.shields.io/github/v/tag/OpenCloudGaming/OpenNOW?style=for-the-badge&label=Download&color=brightgreen" alt="Download">
@@ -59,6 +61,9 @@ OpenNOW is an independent, community-built desktop client for [NVIDIA GeForce NO
 - 🖥️ **Cross-platform** — Windows, macOS, Linux, and ARM64
 - ⚡ **Community-driven** — faster fixes, transparent development
 - 🎮 **Anti-AFK, Stats Overlay, Adjustable Shortcuts** — power-user features built in
+
+## Gameplay Video (Ball X Pit) (Controller Mode)
+[![Watch the video](https://img.youtube.com/vi/N2X7VBKp4jg/maxresdefault.jpg)](https://www.youtube.com/watch?v=N2X7VBKp4jg)
 
 ## OpenNOW vs Official GeForce NOW
 
