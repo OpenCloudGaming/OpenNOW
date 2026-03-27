@@ -42,6 +42,7 @@ interface ControllerLibraryPageProps {
   codecOptions?: string[];
   aspectRatioOptions?: string[];
   onSettingChange?: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  onExitControllerMode?: () => void;
   sessionElapsedSeconds?: number;
 }
 
@@ -111,8 +112,10 @@ export function ControllerLibraryPage({
   codecOptions = [],
   aspectRatioOptions = [],
   onSettingChange,
+  onExitControllerMode,
   sessionElapsedSeconds = 0,
 }: ControllerLibraryPageProps): JSX.Element {
+  const [isEntering, setIsEntering] = useState(true);
   const initialCategoryIndex = (() => {
     const hasFavorites = Array.isArray(favoriteGameIds) && favoriteGameIds.length > 0;
     if (currentStreamingGame) {
@@ -163,6 +166,26 @@ export function ControllerLibraryPage({
   const [mediaThumbById, setMediaThumbById] = useState<Record<string, string>>({});
   const [controllerType, setControllerType] = useState<"ps" | "xbox" | "nintendo" | "generic">("generic");
   const [editingBandwidth, setEditingBandwidth] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      setIsEntering(false);
+      return;
+    }
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setIsEntering(false);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setIsEntering(false);
+    }, 760);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => setTime(new Date()), 1000);
@@ -602,8 +625,12 @@ export function ControllerLibraryPage({
           secondaryActivateHandler();
           return;
         }
-        if (setting?.id === "exit" && onSettingChange) {
-          onSettingChange("controllerMode" as any, false as any);
+        if (setting?.id === "exit") {
+          if (onExitControllerMode) {
+            onExitControllerMode();
+          } else if (onSettingChange) {
+            onSettingChange("controllerMode" as any, false as any);
+          }
           playUiSound("confirm");
           const nextSettingsIndex = currentStreamingGame ? 0 : 1;
           setCategoryIndex(nextSettingsIndex);
@@ -775,10 +802,12 @@ export function ControllerLibraryPage({
     };
   }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, displayItems, mediaAssetItems.length, mediaSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, editingBandwidth]);
 
-  if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") return <div className={`xmb-wrapper ${settings.controllerBackgroundAnimations ? 'xmb-animate' : 'xmb-static'}`}><div className="xmb-bg-layer"><div className="xmb-bg-gradient" /></div><div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh'}}>Loading...</div></div>;
+  const wrapperClassName = `xmb-wrapper ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"}`;
+
+  if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") return <div className={wrapperClassName}><div className="xmb-bg-layer"><div className="xmb-bg-gradient" /></div><div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh'}}>Loading...</div></div>;
 
   return (
-    <div className={`xmb-wrapper ${settings.controllerBackgroundAnimations ? 'xmb-animate' : 'xmb-static'}`}>
+    <div className={wrapperClassName}>
       <div className="xmb-bg-layer">
         <div className="xmb-bg-gradient" />
         <div className="xmb-bg-overlay" />

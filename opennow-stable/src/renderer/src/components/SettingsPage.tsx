@@ -725,6 +725,9 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const handleChange = useCallback(
     <K extends keyof Settings>(key: K, value: Settings[K]) => {
       onSettingChange(key, value);
+      if (key === "controllerMode" && value === false) {
+        onSettingChange("autoLoadControllerLibrary", false);
+      }
       setSavedIndicator(true);
       setTimeout(() => setSavedIndicator(false), 1500);
     },
@@ -1731,7 +1734,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             <div className="settings-row">
               <label className="settings-label">
                 Controller Mode Library
-                <span className="settings-hint">Use a controller-first media bar layout for library browsing.</span>
+                <span className="settings-hint">Replace the desktop library/settings navigation with the controller-first layout only when controller mode is enabled.</span>
               </label>
               <label className="settings-toggle">
                 <input
@@ -1760,7 +1763,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             <div className="settings-row">
               <label className="settings-label">
                 Controller UI Sounds
-                <span className="settings-hint">Play subtle move, open, and back sounds in controller library mode.</span>
+                <span className="settings-hint">Play subtle move, open, and back sounds inside controller mode only.</span>
               </label>
               <label className="settings-toggle">
                 <input
@@ -1775,7 +1778,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             <div className="settings-row">
               <label className="settings-label">
                 Background Animations (Controller Mode)
-                <span className="settings-hint">Show animated background visuals on controller loading screens.</span>
+                <span className="settings-hint">Show animated background visuals on controller-mode loading screens only.</span>
               </label>
               <label className="settings-toggle">
                 <input
@@ -1790,7 +1793,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             <div className="settings-row">
               <label className="settings-label">
                 Auto-Load Controller Library
-                <span className="settings-hint">Automatically load the controller library view at startup when controller mode is enabled.</span>
+                <span className="settings-hint">Automatically open the controller library at startup when controller mode is enabled.</span>
               </label>
               <label className="settings-toggle">
                 <input

@@ -565,9 +565,14 @@ export function App(): JSX.Element {
   const [switchingPhase, setSwitchingPhase] = useState<null | "cleaning" | "creating">(null);
   const [pendingSwitchGameTitle, setPendingSwitchGameTitle] = useState<string | null>(null);
   const [pendingSwitchGameCover, setPendingSwitchGameCover] = useState<string | null>(null);
+  const controllerDesktopModeActive = Boolean(authSession)
+    && streamStatus === "idle"
+    && settings.controllerMode
+    && (currentPage === "library" || currentPage === "settings");
+  const controllerUiActive = controllerDesktopModeActive || controllerOverlayOpen;
 
   const controllerConnected = useControllerNavigation({
-    enabled: streamStatus !== "streaming" || exitPrompt.open || controllerOverlayOpen,
+    enabled: controllerUiActive,
     onNavigatePage: handleControllerPageNavigate,
     onBackAction: handleControllerBackAction,
     onDirectionInput: handleControllerDirectionInput,
@@ -575,6 +580,9 @@ export function App(): JSX.Element {
     onSecondaryActivateInput: handleControllerSecondaryActivateInput,
     onTertiaryActivateInput: handleControllerTertiaryActivateInput,
   });
+  const showControllerHint = controllerUiActive
+    && controllerConnected
+    && !(settings.controllerMode && currentPage === "library");
 
   useEffect(() => {
     let raf = 0;
@@ -713,14 +721,14 @@ export function App(): JSX.Element {
   }, [streamStatus, queuePosition, launchError, streamingGame, streamingStore]);
 
   useEffect(() => {
-    document.body.classList.toggle("controller-mode", controllerConnected);
+    document.body.classList.toggle("controller-mode", controllerUiActive);
     return () => {
       document.body.classList.remove("controller-mode");
     };
-  }, [controllerConnected]);
+  }, [controllerUiActive]);
 
   useEffect(() => {
-    if (!controllerConnected) {
+    if (!controllerUiActive || !controllerConnected) {
       document.body.classList.remove("controller-hide-cursor");
       return;
     }
@@ -753,7 +761,7 @@ export function App(): JSX.Element {
       document.removeEventListener("mousemove", onMouseMove);
       document.body.classList.remove("controller-hide-cursor");
     };
-  }, [controllerConnected]);
+  }, [controllerConnected, controllerUiActive]);
 
   // Derived state
   const selectedProvider = useMemo(() => {
@@ -1281,6 +1289,23 @@ export function App(): JSX.Element {
   const handleMouseAccelerationChange = useCallback((value: number) => {
     void updateSetting("mouseAcceleration", value);
   }, [updateSetting]);
+
+  const handleExitControllerMode = useCallback(() => {
+    setSettings((prev) => ({
+      ...prev,
+      controllerMode: false,
+      autoLoadControllerLibrary: false,
+    }));
+
+    if (settingsLoaded) {
+      void Promise.all([
+        window.openNow.setSetting("controllerMode", false),
+        window.openNow.setSetting("autoLoadControllerLibrary", false),
+      ]).catch((error) => {
+        console.warn("Failed to persist controller mode exit settings:", error);
+      });
+    }
+  }, [settingsLoaded]);
 
   const handleMicrophoneModeChange = useCallback((value: import("@shared/gfn").MicrophoneMode) => {
     // Keep UI responsive while still surfacing persistence failures.
@@ -2000,13 +2025,6 @@ export function App(): JSX.Element {
           isInitializing={isInitializing}
           statusMessage={startupStatusMessage}
         />
-        {controllerConnected && (
-          <div className="controller-hint">
-            <span>D-pad Navigate</span>
-            <span>A Select</span>
-            <span>B Back</span>
-          </div>
-        )}
       </>
     );
   }
@@ -2207,7 +2225,7 @@ export function App(): JSX.Element {
             }}
           />
         )}
-        {controllerConnected && streamStatus !== "streaming" && (
+        {showControllerHint && streamStatus !== "streaming" && (
           <div className="controller-hint controller-hint--overlay">
             <span>D-pad Navigate</span>
             <span>A Select</span>
@@ -2298,6 +2316,7 @@ export function App(): JSX.Element {
               codecOptions={codecOptions}
               aspectRatioOptions={aspectRatioOptions as unknown as string[]}
               onSettingChange={updateSetting}
+              onExitControllerMode={handleExitControllerMode}
             />
           ) : (
             <LibraryPage
@@ -2322,7 +2341,7 @@ export function App(): JSX.Element {
           />
         )}
       </main>
-      {controllerConnected && !(settings.controllerMode && currentPage === "library") && (
+      {showControllerHint && (
         <div className="controller-hint">
           <span>D-pad Navigate</span>
           <span>A Select</span>
