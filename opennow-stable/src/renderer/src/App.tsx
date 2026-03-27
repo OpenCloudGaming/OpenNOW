@@ -152,6 +152,29 @@ function getSelectedVariant(game: GameInfo, variantId: string): GameVariant | un
   return game.variants.find((variant) => variant.id === variantId) ?? game.variants[0];
 }
 
+function findSessionContextForAppId(
+  catalog: GameInfo[],
+  variantByGameId: Record<string, string>,
+  appId: number,
+): { game: GameInfo; variant?: GameVariant } | null {
+  for (const game of catalog) {
+    const matchedVariant = game.variants.find((variant) => parseNumericId(variant.id) === appId);
+    if (matchedVariant) {
+      return { game, variant: matchedVariant };
+    }
+
+    if (parseNumericId(game.launchAppId) === appId) {
+      const preferredVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
+      return {
+        game,
+        variant: getSelectedVariant(game, preferredVariantId),
+      };
+    }
+  }
+
+  return null;
+}
+
 function mergeVariantSelections(
   current: Record<string, string>,
   catalog: GameInfo[],
@@ -804,6 +827,37 @@ export function App(): JSX.Element {
     }
   }, [authSession, effectiveStreamingBaseUrl]);
 
+  const allKnownGames = useMemo(() => [...games, ...libraryGames], [games, libraryGames]);
+
+  const gameTitleByAppId = useMemo(() => {
+    const titles = new Map<number, string>();
+
+    for (const game of allKnownGames) {
+      const idsForGame = new Set<number>();
+      const launchId = parseNumericId(game.launchAppId);
+      if (launchId !== null) {
+        idsForGame.add(launchId);
+      }
+      for (const variant of game.variants) {
+        const variantId = parseNumericId(variant.id);
+        if (variantId !== null) {
+          idsForGame.add(variantId);
+        }
+      }
+      for (const appId of idsForGame) {
+        if (!titles.has(appId)) {
+          titles.set(appId, game.title);
+        }
+      }
+    }
+
+    return titles;
+  }, [allKnownGames]);
+
+  const findGameContextForSession = useCallback((activeSession: ActiveSessionInfo) => {
+    return findSessionContextForAppId(allKnownGames, variantByGameId, activeSession.appId);
+  }, [allKnownGames, variantByGameId]);
+
   useEffect(() => {
     if (!startupRefreshNotice) return;
     const timer = window.setTimeout(() => setStartupRefreshNotice(null), 7000);
@@ -1432,11 +1486,20 @@ export function App(): JSX.Element {
       throw new Error("Active session is missing server address. Start the game again to create a new session.");
     }
 
+    const matchedContext = findGameContextForSession(existingSession);
+    if (matchedContext) {
+      setStreamingGame(matchedContext.game);
+      setStreamingStore(matchedContext.variant?.store ?? null);
+    } else {
+      setStreamingStore(null);
+    }
+
     const claimed = await window.openNow.claimSession({
       token,
       streamingBaseUrl: effectiveStreamingBaseUrl,
       serverIp: existingSession.serverIp,
       sessionId: existingSession.sessionId,
+      appId: String(existingSession.appId),
       settings: {
         resolution: settings.resolution,
         fps: settings.fps,
@@ -1465,7 +1528,7 @@ export function App(): JSX.Element {
       signalingServer: claimed.signalingServer,
       signalingUrl: claimed.signalingUrl,
     });
-  }, [authSession, effectiveStreamingBaseUrl, settings]);
+  }, [authSession, effectiveStreamingBaseUrl, findGameContextForSession, settings]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean }) => {
@@ -1499,8 +1562,6 @@ export function App(): JSX.Element {
     setLaunchError(null);
     const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
     const selectedVariant = getSelectedVariant(game, selectedVariantId);
-    setStreamingGame(game);
-    setStreamingStore(selectedVariant?.store ?? null);
     startPlaytimeSession(game.id);
     updateLoadingStep("queue");
     setQueuePosition(undefined);
@@ -1535,15 +1596,40 @@ export function App(): JSX.Element {
         throw new Error("Could not resolve numeric appId for this game");
       }
 
+      const numericAppId = Number(appId);
+      const matchedGameContext = findSessionContextForAppId(allKnownGames, variantByGameId, numericAppId) ?? {
+        game,
+        variant: selectedVariant,
+      };
+      setStreamingGame(matchedGameContext.game);
+      setStreamingStore(matchedGameContext.variant?.store ?? null);
+
       // Check for active sessions first
       if (token) {
         try {
           const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
           if (activeSessions.length > 0) {
-            const existingSession = activeSessions[0];
-            await claimAndConnectSession(existingSession);
-            setNavbarActiveSession(null);
-            return;
+            const matchingSession = activeSessions.find((entry) => entry.appId === numericAppId) ?? null;
+            const otherSession = activeSessions[0] ?? null;
+
+            if (matchingSession) {
+              await claimAndConnectSession(matchingSession);
+              setNavbarActiveSession(null);
+              return;
+            }
+
+            if (otherSession) {
+              const choice = await window.openNow.showSessionConflictDialog();
+              if (choice === "cancel") {
+                resetLaunchRuntime();
+                return;
+              }
+              if (choice === "resume") {
+                await claimAndConnectSession(otherSession);
+                setNavbarActiveSession(null);
+                return;
+              }
+            }
           }
         } catch (error) {
           console.error("Failed to claim/resume session:", error);
@@ -1661,6 +1747,7 @@ export function App(): JSX.Element {
     }
   }, [
     authSession,
+    allKnownGames,
     claimAndConnectSession,
     effectiveStreamingBaseUrl,
     refreshNavbarActiveSession,
@@ -1692,7 +1779,13 @@ export function App(): JSX.Element {
     setSessionStartedAtMs(null);
     setSessionElapsedSeconds(0);
     setStreamWarning(null);
-    setStreamingStore(null);
+    const matchedContext = findGameContextForSession(navbarActiveSession);
+    if (matchedContext) {
+      setStreamingGame(matchedContext.game);
+      setStreamingStore(matchedContext.variant?.store ?? null);
+    } else {
+      setStreamingStore(null);
+    }
     updateLoadingStep("setup");
 
     try {
@@ -1714,6 +1807,7 @@ export function App(): JSX.Element {
     claimAndConnectSession,
     isResumingNavbarSession,
     navbarActiveSession,
+    findGameContextForSession,
     refreshNavbarActiveSession,
     resetLaunchRuntime,
     selectedProvider,
@@ -1972,32 +2066,6 @@ export function App(): JSX.Element {
     if (!query) return libraryGames;
     return libraryGames.filter((g) => g.title.toLowerCase().includes(query));
   }, [libraryGames, searchQuery]);
-
-  const gameTitleByAppId = useMemo(() => {
-    const titles = new Map<number, string>();
-    const allKnownGames = [...games, ...libraryGames];
-
-    for (const game of allKnownGames) {
-      const idsForGame = new Set<number>();
-      const launchId = parseNumericId(game.launchAppId);
-      if (launchId !== null) {
-        idsForGame.add(launchId);
-      }
-      for (const variant of game.variants) {
-        const variantId = parseNumericId(variant.id);
-        if (variantId !== null) {
-          idsForGame.add(variantId);
-        }
-      }
-      for (const appId of idsForGame) {
-        if (!titles.has(appId)) {
-          titles.set(appId, game.title);
-        }
-      }
-    }
-
-    return titles;
-  }, [games, libraryGames]);
 
   const activeSessionGameTitle = useMemo(() => {
     if (!navbarActiveSession) return null;
