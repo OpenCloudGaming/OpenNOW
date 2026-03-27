@@ -1252,6 +1252,21 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               />
             </div>
 
+            <div className="settings-row">
+              <label className="settings-label">
+                Experimental L4S Request
+                <span className="settings-hint">Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.enableL4S}
+                  onChange={(e) => handleChange("enableL4S", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+
             <div className="settings-row settings-row--column">
               <div className="settings-row-top">
                 <label className="settings-label">Session Timer Reappear</label>

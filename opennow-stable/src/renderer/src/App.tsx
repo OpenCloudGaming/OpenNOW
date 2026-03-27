@@ -425,6 +425,7 @@ export function App(): JSX.Element {
     windowWidth: 1400,
     windowHeight: 900,
     gameLanguage: "en_US",
+    enableL4S: false,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
@@ -1507,6 +1508,7 @@ export function App(): JSX.Element {
         codec: settings.codec,
         colorQuality: settings.colorQuality,
         gameLanguage: settings.gameLanguage,
+        enableL4S: settings.enableL4S,
       },
     });
 
@@ -1652,6 +1654,7 @@ export function App(): JSX.Element {
           codec: settings.codec,
           colorQuality: settings.colorQuality,
           gameLanguage: settings.gameLanguage,
+          enableL4S: settings.enableL4S,
         },
       });
 
@@ -2241,6 +2244,7 @@ export function App(): JSX.Element {
                 resolution: settings.resolution,
                 fps: settings.fps,
                 codec: settings.codec,
+                enableL4S: settings.enableL4S,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,

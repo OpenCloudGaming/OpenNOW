@@ -65,6 +65,8 @@ export interface Settings {
   windowHeight: number;
   /** In-game language setting (sent to GFN servers via languageCode parameter) */
   gameLanguage: GameLanguage;
+  /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
+  enableL4S: boolean;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -105,6 +107,7 @@ const DEFAULT_SETTINGS: Settings = {
   windowWidth: 1400,
   windowHeight: 900,
   gameLanguage: "en_US",
+  enableL4S: false,
 };
 
 export class SettingsManager {

@@ -70,6 +70,8 @@ export interface Settings {
   windowHeight: number;
   /** In-game language setting (sent to GFN servers via languageCode parameter) */
   gameLanguage: GameLanguage;
+  /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
+  enableL4S: boolean;
 }
 
 export interface LoginProvider {
@@ -228,6 +230,8 @@ export interface StreamSettings {
   colorQuality: ColorQuality;
   /** In-game language setting (sent to GFN servers via languageCode parameter) */
   gameLanguage: GameLanguage;
+  /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
+  enableL4S: boolean;
 }
 
 export interface SessionCreateRequest {

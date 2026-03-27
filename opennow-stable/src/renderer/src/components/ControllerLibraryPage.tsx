@@ -30,6 +30,7 @@ interface ControllerLibraryPageProps {
     resolution?: string;
     fps?: number;
     codec?: string;
+    enableL4S?: boolean;
     controllerUiSounds?: boolean;
     controllerBackgroundAnimations?: boolean;
     autoLoadControllerLibrary?: boolean;
@@ -317,6 +318,7 @@ export function ControllerLibraryPage({
       ],
       Network: [
         { id: "bandwidth", label: "Max Bitrate", value: `${(settings.maxBitrateMbps ?? 75)} Mbps` },
+        { id: "l4s", label: "Experimental L4S", value: settings.enableL4S ? "On" : "Off" },
       ],
       Video: [
         { id: "resolution", label: "Resolution", value: settings.resolution || "1920x1080" },
@@ -720,6 +722,9 @@ export function ControllerLibraryPage({
             playUiSound("move");
           } else if (setting.id === "backgroundAnimations") {
             onSettingChange("controllerBackgroundAnimations" as any, !((settings as any).controllerBackgroundAnimations || false));
+            playUiSound("move");
+          } else if (setting.id === "l4s") {
+            onSettingChange("enableL4S" as any, !((settings as any).enableL4S || false));
             playUiSound("move");
           }
           else if (setting.id === "bandwidth") {

@@ -494,7 +494,7 @@ function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest
         reflex: input.settings.fps >= 120,
         bitDepth,
         cloudGsync: false,
-        enabledL4S: false,
+        enabledL4S: input.settings.enableL4S,
         mouseMovementFlags: 0,
         trueHdr: hdrEnabled,
         supportedHidDevices: 0,
@@ -949,6 +949,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     codec: "H264",
     colorQuality: "8bit_420",
     gameLanguage: "en_US",
+    enableL4S: false,
   };
 
   const languageCode = settings.gameLanguage ?? "en_US";
