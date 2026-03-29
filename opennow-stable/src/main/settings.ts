@@ -1,21 +1,19 @@
 import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode } from "@shared/gfn";
+import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage, AspectRatio } from "@shared/gfn";
 
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
   resolution: string;
+  /** Aspect ratio (16:9, 16:10, 21:9, 32:9) */
+  aspectRatio: AspectRatio;
   /** Target FPS (30, 60, 120, etc.) */
   fps: number;
-  /** Maximum bitrate in Mbps (200 = unlimited) */
+  /** Maximum bitrate in Mbps (cap at 150) */
   maxBitrateMbps: number;
   /** Preferred video codec */
   codec: VideoCodec;
-  /** Preferred video decode acceleration mode */
-  decoderPreference: VideoAccelerationPreference;
-  /** Preferred video encode acceleration mode */
-  encoderPreference: VideoAccelerationPreference;
   /** Color quality (bit depth + chroma subsampling) */
   colorQuality: ColorQuality;
   /** Preferred region URL (empty = auto) */
@@ -24,6 +22,10 @@ export interface Settings {
   clipboardPaste: boolean;
   /** Mouse sensitivity multiplier */
   mouseSensitivity: number;
+  /** Software mouse acceleration strength percentage (1-150) */
+  mouseAcceleration: number;
+  /** Prefer unadjusted pointer-lock input and force 1x / no software acceleration */
+  rawMouseInput: boolean;
   /** Toggle stats overlay shortcut */
   shortcutToggleStats: string;
   /** Toggle pointer lock shortcut */
@@ -34,6 +36,10 @@ export interface Settings {
   shortcutToggleAntiAfk: string;
   /** Toggle microphone shortcut */
   shortcutToggleMicrophone: string;
+  /** Take screenshot shortcut */
+  shortcutScreenshot: string;
+  /** Toggle stream recording shortcut */
+  shortcutToggleRecording: string;
   /** How often to re-show the session timer while streaming (0 = off) */
   sessionClockShowEveryMinutes: number;
   /** How long the session timer stays visible when it appears */
@@ -44,10 +50,25 @@ export interface Settings {
   microphoneDeviceId: string;
   /** Hide stream buttons (mic/fullscreen/end-session) while streaming */
   hideStreamButtons: boolean;
+  /** Enable controller-first media bar layout for library browsing */
+  controllerMode: boolean;
+  /** Play subtle sounds in controller library mode */
+  controllerUiSounds: boolean;
+  /** Enable animated background visuals for controller-mode loading screens */
+  controllerBackgroundAnimations: boolean;
+  /** Auto-load controller library at startup when controller mode is enabled */
+  autoLoadControllerLibrary: boolean;
+  /** Automatically enter fullscreen when controller-mode triggers it */
+  autoFullScreen: boolean;
+  favoriteGameIds: string[];
   /** Window width */
   windowWidth: number;
   /** Window height */
   windowHeight: number;
+  /** In-game language setting (sent to GFN servers via languageCode parameter) */
+  gameLanguage: GameLanguage;
+  /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
+  enableL4S: boolean;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -58,27 +79,38 @@ const LEGACY_ANTI_AFK_SHORTCUTS = new Set(["META+SHIFT+F10", "CMD+SHIFT+F10", "C
 
 const DEFAULT_SETTINGS: Settings = {
   resolution: "1920x1080",
+  aspectRatio: "16:9",
   fps: 60,
   maxBitrateMbps: 75,
   codec: "H264",
-  decoderPreference: "auto",
-  encoderPreference: "auto",
   colorQuality: "10bit_420",
   region: "",
   clipboardPaste: false,
   mouseSensitivity: 1,
+  mouseAcceleration: 1,
+  rawMouseInput: false,
   shortcutToggleStats: "F3",
   shortcutTogglePointerLock: "F8",
   shortcutStopStream: defaultStopShortcut,
   shortcutToggleAntiAfk: defaultAntiAfkShortcut,
   shortcutToggleMicrophone: defaultMicShortcut,
+  shortcutScreenshot: "F11",
+  shortcutToggleRecording: "F12",
   microphoneMode: "disabled",
   microphoneDeviceId: "",
   hideStreamButtons: false,
+  controllerMode: false,
+  controllerUiSounds: false,
+  controllerBackgroundAnimations: false,
+  autoLoadControllerLibrary: false,
+  autoFullScreen: false,
+  favoriteGameIds: [],
   sessionClockShowEveryMinutes: 60,
   sessionClockShowDurationSeconds: 30,
   windowWidth: 1400,
   windowHeight: 900,
+  gameLanguage: "en_US",
+  enableL4S: false,
 };
 
 export class SettingsManager {
@@ -108,7 +140,15 @@ export class SettingsManager {
         ...parsed,
       };
 
-      const migrated = this.migrateLegacyShortcutDefaults(merged);
+      let migrated = this.migrateLegacyShortcutDefaults(merged);
+
+      // Migrate legacy boolean accelerator setting to percentage slider.
+      if (typeof (parsed as { mouseAcceleration?: unknown }).mouseAcceleration === "boolean") {
+        merged.mouseAcceleration = (parsed as { mouseAcceleration?: boolean }).mouseAcceleration ? 100 : 1;
+        migrated = true;
+      }
+
+      merged.mouseAcceleration = Math.max(1, Math.min(150, Math.round(merged.mouseAcceleration)));
       if (migrated) {
         writeFileSync(this.settingsPath, JSON.stringify(merged, null, 2), "utf-8");
       }

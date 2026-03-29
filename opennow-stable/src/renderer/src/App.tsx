@@ -6,6 +6,7 @@ import type {
   AuthSession,
   AuthUser,
   GameInfo,
+  GameVariant,
   LoginProvider,
   MainToRendererSignalingEvent,
   SessionInfo,
@@ -22,21 +23,49 @@ import {
 } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { useControllerNavigation } from "./controllerNavigation";
+import { usePlaytime } from "./utils/usePlaytime";
+import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
 import { Navbar } from "./components/Navbar";
 import { HomePage } from "./components/HomePage";
 import { LibraryPage } from "./components/LibraryPage";
+import { ControllerLibraryPage } from "./components/ControllerLibraryPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { StreamLoading } from "./components/StreamLoading";
+import { ControllerStreamLoading } from "./components/ControllerStreamLoading";
 import { StreamView } from "./components/StreamView";
 
 const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
-const resolutionOptions = ["1280x720", "1920x1080", "2560x1440", "3840x2160", "2560x1080", "3440x1440"];
+const allResolutionOptions = ["1280x720", "1280x800", "1440x900", "1680x1050", "1920x1080", "1920x1200", "2560x1080", "2560x1440", "2560x1600", "3440x1440", "3840x2160", "3840x2400"];
 const fpsOptions = [30, 60, 120, 144, 240];
+const aspectRatioOptions = ["16:9", "16:10", "21:9", "32:9"] as const;
+
+const RESOLUTION_TO_ASPECT_RATIO: Record<string, string> = {
+  "1280x720": "16:9",
+  "1280x800": "16:10",
+  "1440x900": "16:10",
+  "1680x1050": "16:10",
+  "1920x1080": "16:9",
+  "1920x1200": "16:10",
+  "2560x1080": "21:9",
+  "2560x1440": "16:9",
+  "2560x1600": "16:10",
+  "3440x1440": "21:9",
+  "3840x2160": "16:9",
+  "3840x2400": "16:10",
+  "5120x1440": "32:9",
+};
+
+const getResolutionsByAspectRatio = (aspectRatio: string): string[] => {
+  return allResolutionOptions.filter(res => RESOLUTION_TO_ASPECT_RATIO[res] === aspectRatio);
+};
+const resolutionOptions = getResolutionsByAspectRatio("16:9");
 const SESSION_READY_POLL_INTERVAL_MS = 2000;
 const SESSION_READY_TIMEOUT_MS = 180000;
+const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
+const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
 
 type GameSource = "main" | "library" | "public";
 type AppPage = "home" | "library" | "settings";
@@ -66,14 +95,42 @@ const DEFAULT_SHORTCUTS = {
   shortcutStopStream: "Ctrl+Shift+Q",
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
   shortcutToggleMicrophone: "Ctrl+Shift+M",
+  shortcutScreenshot: "F11",
+  shortcutToggleRecording: "F12",
 } as const;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+async function waitFor(
+  predicate: () => boolean,
+  { timeout = 1000, interval = 50 }: { timeout?: number; interval?: number } = {},
+): Promise<boolean> {
+  const start = Date.now();
+  while (true) {
+    try {
+      if (predicate()) return true;
+    } catch {
+      // ignore predicate errors
+    }
+    if (Date.now() - start >= timeout) return false;
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(interval);
+  }
+}
+
 function isSessionReadyForConnect(status: number): boolean {
   return status === 2 || status === 3;
+}
+
+function isSessionInQueue(session: SessionInfo): boolean {
+  // Official client treats seat setup step 1 as queue state even when queuePosition reaches 1.
+  // Fallback to queuePosition-based inference for payloads that do not expose seatSetupStep.
+  if (session.seatSetupStep === 1) {
+    return true;
+  }
+  return (session.queuePosition ?? 0) > 1;
 }
 
 function isNumericId(value: string | undefined): value is string {
@@ -88,9 +145,53 @@ function parseNumericId(value: string | undefined): number | null {
 }
 
 function defaultVariantId(game: GameInfo): string {
-  const fallback = game.variants[0]?.id;
-  const preferred = game.variants[game.selectedVariantIndex]?.id;
-  return preferred ?? fallback ?? game.id;
+  return game.variants[0]?.id ?? game.id;
+}
+
+function getSelectedVariant(game: GameInfo, variantId: string): GameVariant | undefined {
+  return game.variants.find((variant) => variant.id === variantId) ?? game.variants[0];
+}
+
+function findSessionContextForAppId(
+  catalog: GameInfo[],
+  variantByGameId: Record<string, string>,
+  appId: number,
+): { game: GameInfo; variant?: GameVariant } | null {
+  for (const game of catalog) {
+    const matchedVariant = game.variants.find((variant) => parseNumericId(variant.id) === appId);
+    if (matchedVariant) {
+      return { game, variant: matchedVariant };
+    }
+
+    if (parseNumericId(game.launchAppId) === appId) {
+      const preferredVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
+      return {
+        game,
+        variant: getSelectedVariant(game, preferredVariantId),
+      };
+    }
+  }
+
+  return null;
+}
+
+function mergeVariantSelections(
+  current: Record<string, string>,
+  catalog: GameInfo[],
+): Record<string, string> {
+  if (catalog.length === 0) {
+    return current;
+  }
+
+  const next = { ...current };
+  for (const game of catalog) {
+    const selectedVariantId = next[game.id];
+    const hasSelectedVariant = !!selectedVariantId && game.variants.some((variant) => variant.id === selectedVariantId);
+    if (!hasSelectedVariant) {
+      next[game.id] = defaultVariantId(game);
+    }
+  }
+  return next;
 }
 
 function defaultDiagnostics(): StreamDiagnostics {
@@ -119,8 +220,13 @@ function defaultDiagnostics(): StreamDiagnostics {
     inputQueuePeakBufferedBytes: 0,
     inputQueueDropCount: 0,
     inputQueueMaxSchedulingDelayMs: 0,
+    lagReason: "unknown",
+    lagReasonDetail: "Waiting for stream stats",
     gpuType: "",
     serverRegion: "",
+    decoderPressureActive: false,
+    decoderRecoveryAttempts: 0,
+    decoderRecoveryAction: "none",
     micState: "uninitialized",
     micEnabled: false,
   };
@@ -151,6 +257,29 @@ function warningMessage(code: StreamTimeWarning["code"]): string {
   if (code === 1) return "Session time limit approaching";
   if (code === 2) return "Idle timeout approaching";
   return "Maximum session time approaching";
+}
+
+function formatRemainingPlaytimeFromSubscription(
+  subscription: SubscriptionInfo | null,
+  consumedHours = 0,
+): string {
+  if (!subscription) {
+    return "--";
+  }
+  if (subscription.isUnlimited) {
+    return "Unlimited";
+  }
+
+  const baseHours = Number.isFinite(subscription.remainingHours) ? subscription.remainingHours : 0;
+  const safeHours = Math.max(0, baseHours - Math.max(0, consumedHours));
+  const totalMinutes = Math.round(safeHours * 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
+  }
+  return `${minutes}m`;
 }
 
 function toLoadingStatus(status: StreamStatus): StreamLoadingStatus {
@@ -237,6 +366,7 @@ function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchE
 }
 
 export function App(): JSX.Element {
+
   // Auth State
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [providers, setProviders] = useState<LoginProvider[]>([]);
@@ -265,36 +395,49 @@ export function App(): JSX.Element {
   // Settings State
   const [settings, setSettings] = useState<Settings>({
     resolution: "1920x1080",
+    aspectRatio: "16:9",
     fps: 60,
     maxBitrateMbps: 75,
     codec: "H264",
-    decoderPreference: "auto",
-    encoderPreference: "auto",
     colorQuality: "10bit_420",
     region: "",
     clipboardPaste: false,
     mouseSensitivity: 1,
+    mouseAcceleration: 1,
+    rawMouseInput: false,
     shortcutToggleStats: DEFAULT_SHORTCUTS.shortcutToggleStats,
     shortcutTogglePointerLock: DEFAULT_SHORTCUTS.shortcutTogglePointerLock,
     shortcutStopStream: DEFAULT_SHORTCUTS.shortcutStopStream,
     shortcutToggleAntiAfk: DEFAULT_SHORTCUTS.shortcutToggleAntiAfk,
     shortcutToggleMicrophone: DEFAULT_SHORTCUTS.shortcutToggleMicrophone,
+    shortcutScreenshot: DEFAULT_SHORTCUTS.shortcutScreenshot,
+    shortcutToggleRecording: DEFAULT_SHORTCUTS.shortcutToggleRecording,
     microphoneMode: "disabled",
     microphoneDeviceId: "",
     hideStreamButtons: false,
+    controllerMode: false,
+    controllerUiSounds: false,
+    controllerBackgroundAnimations: false,
+    autoLoadControllerLibrary: false,
+    autoFullScreen: false,
+    favoriteGameIds: [],
     sessionClockShowEveryMinutes: 60,
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
+    gameLanguage: "en_US",
+    enableL4S: false,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
+  const diagnosticsStoreRef = useRef<ReturnType<typeof createStreamDiagnosticsStore> | null>(null);
+  const diagnosticsStore =
+    diagnosticsStoreRef.current ?? (diagnosticsStoreRef.current = createStreamDiagnosticsStore(defaultDiagnostics()));
 
   // Stream State
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("idle");
-  const [diagnostics, setDiagnostics] = useState<StreamDiagnostics>(defaultDiagnostics());
   const [showStatsOverlay, setShowStatsOverlay] = useState(true);
   const [antiAfkEnabled, setAntiAfkEnabled] = useState(false);
   const [escHoldReleaseIndicator, setEscHoldReleaseIndicator] = useState<{ visible: boolean; progress: number }>({
@@ -303,6 +446,7 @@ export function App(): JSX.Element {
   });
   const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: "Game" });
   const [streamingGame, setStreamingGame] = useState<GameInfo | null>(null);
+  const [streamingStore, setStreamingStore] = useState<string | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | undefined>();
   const [navbarActiveSession, setNavbarActiveSession] = useState<ActiveSessionInfo | null>(null);
   const [isResumingNavbarSession, setIsResumingNavbarSession] = useState(false);
@@ -311,32 +455,191 @@ export function App(): JSX.Element {
   const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState(0);
   const [streamWarning, setStreamWarning] = useState<StreamWarningState | null>(null);
 
+  const { playtime, startSession: startPlaytimeSession, endSession: endPlaytimeSession } = usePlaytime();
+
+  const controllerOverlayOpenRef = useRef(false);
+
   const handleControllerPageNavigate = useCallback((direction: "prev" | "next"): void => {
+    if (controllerOverlayOpenRef.current) {
+      window.dispatchEvent(new CustomEvent("opennow:controller-shoulder", { detail: { direction } }));
+      return;
+    }
     if (!authSession || streamStatus !== "idle") {
       return;
     }
+
+    if (settings.controllerMode && currentPage === "library") {
+      window.dispatchEvent(new CustomEvent("opennow:controller-shoulder", { detail: { direction } }));
+      return;
+    }
+
     const currentIndex = APP_PAGE_ORDER.indexOf(currentPage);
     const step = direction === "next" ? 1 : -1;
     const nextIndex = (currentIndex + step + APP_PAGE_ORDER.length) % APP_PAGE_ORDER.length;
     setCurrentPage(APP_PAGE_ORDER[nextIndex]);
-  }, [authSession, currentPage, streamStatus]);
+  }, [authSession, currentPage, settings.controllerMode, streamStatus]);
 
   const handleControllerBackAction = useCallback((): boolean => {
+    // Prefer to let the controller library handle Back (e.g. closing submenus
+    // inside the XMB) before falling back to global navigation.
+    const cancelEvent = new CustomEvent("opennow:controller-cancel", { cancelable: true });
+    window.dispatchEvent(cancelEvent);
+    if (cancelEvent.defaultPrevented) {
+      return true;
+    }
+
+    if (controllerOverlayOpenRef.current) {
+      setControllerOverlayOpen(false);
+      return true;
+    }
+
     if (!authSession || streamStatus !== "idle") {
       return false;
     }
+
+    if (settings.controllerMode && currentPage === "settings") {
+      setCurrentPage("library");
+      return true;
+    }
+
     if (currentPage !== "home") {
       setCurrentPage("home");
       return true;
     }
     return false;
-  }, [authSession, currentPage, streamStatus]);
+  }, [authSession, currentPage, settings.controllerMode, streamStatus]);
+
+  const handleControllerDirectionInput = useCallback((direction: "up" | "down" | "left" | "right"): boolean => {
+    if (controllerOverlayOpenRef.current) {
+      window.dispatchEvent(new CustomEvent("opennow:controller-direction", { detail: { direction } }));
+      return true;
+    }
+    if (!authSession || streamStatus !== "idle") {
+      return false;
+    }
+    if (settings.controllerMode && currentPage === "library") {
+      window.dispatchEvent(new CustomEvent("opennow:controller-direction", { detail: { direction } }));
+      return true;
+    }
+    if (settings.controllerMode && currentPage === "settings") {
+      window.dispatchEvent(new CustomEvent("opennow:controller-direction", { detail: { direction } }));
+      return true;
+    }
+    return false;
+  }, [authSession, currentPage, settings.controllerMode, streamStatus]);
+
+  const handleControllerActivateInput = useCallback((): boolean => {
+    if (controllerOverlayOpenRef.current) {
+      window.dispatchEvent(new CustomEvent("opennow:controller-activate"));
+      return true;
+    }
+    if (!authSession || streamStatus !== "idle") {
+      return false;
+    }
+    if (settings.controllerMode && currentPage === "library") {
+      window.dispatchEvent(new CustomEvent("opennow:controller-activate"));
+      return true;
+    }
+    if (settings.controllerMode && currentPage === "settings") {
+      window.dispatchEvent(new CustomEvent("opennow:controller-activate"));
+      return true;
+    }
+    return false;
+  }, [authSession, currentPage, settings.controllerMode, streamStatus]);
+
+  const handleControllerSecondaryActivateInput = useCallback((): boolean => {
+    if (controllerOverlayOpenRef.current) {
+      window.dispatchEvent(new CustomEvent("opennow:controller-secondary-activate"));
+      return true;
+    }
+    if (!authSession || streamStatus !== "idle") {
+      return false;
+    }
+    if (settings.controllerMode && currentPage === "library") {
+      window.dispatchEvent(new CustomEvent("opennow:controller-secondary-activate"));
+      return true;
+    }
+    if (settings.controllerMode && currentPage === "settings") {
+      window.dispatchEvent(new CustomEvent("opennow:controller-secondary-activate"));
+      return true;
+    }
+    return false;
+  }, [authSession, currentPage, settings.controllerMode, streamStatus]);
+
+  const handleControllerTertiaryActivateInput = useCallback((): boolean => {
+    if (controllerOverlayOpenRef.current) {
+      window.dispatchEvent(new CustomEvent("opennow:controller-tertiary-activate"));
+      return true;
+    }
+    if (!authSession || streamStatus !== "idle") {
+      return false;
+    }
+    if (settings.controllerMode && currentPage === "library") {
+      window.dispatchEvent(new CustomEvent("opennow:controller-tertiary-activate"));
+      return true;
+    }
+    if (settings.controllerMode && currentPage === "settings") {
+      window.dispatchEvent(new CustomEvent("opennow:controller-tertiary-activate"));
+      return true;
+    }
+    return false;
+  }, [authSession, currentPage, settings.controllerMode, streamStatus]);
+
+  const [controllerOverlayOpen, setControllerOverlayOpen] = useState(false);
+  const [isSwitchingGame, setIsSwitchingGame] = useState(false);
+  const [switchingPhase, setSwitchingPhase] = useState<null | "cleaning" | "creating">(null);
+  const [pendingSwitchGameTitle, setPendingSwitchGameTitle] = useState<string | null>(null);
+  const [pendingSwitchGameCover, setPendingSwitchGameCover] = useState<string | null>(null);
+  const controllerDesktopModeActive = Boolean(authSession)
+    && streamStatus === "idle"
+    && settings.controllerMode
+    && (currentPage === "library" || currentPage === "settings");
+  const controllerUiActive = controllerDesktopModeActive || controllerOverlayOpen;
 
   const controllerConnected = useControllerNavigation({
-    enabled: streamStatus !== "streaming" || exitPrompt.open,
+    enabled: controllerUiActive,
     onNavigatePage: handleControllerPageNavigate,
     onBackAction: handleControllerBackAction,
+    onDirectionInput: handleControllerDirectionInput,
+    onActivateInput: handleControllerActivateInput,
+    onSecondaryActivateInput: handleControllerSecondaryActivateInput,
+    onTertiaryActivateInput: handleControllerTertiaryActivateInput,
   });
+  const showControllerHint = controllerUiActive
+    && controllerConnected
+    && !(settings.controllerMode && currentPage === "library");
+
+  useEffect(() => {
+    let raf = 0;
+    const prev = { pressed: false };
+    const tick = () => {
+      try {
+        if (streamStatus !== "streaming") {
+          prev.pressed = false;
+          raf = window.requestAnimationFrame(tick);
+          return;
+        }
+        const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+        const pad = Array.from(pads).find((p) => p && p.connected) ?? null;
+        if (!pad) {
+          prev.pressed = false;
+          raf = window.requestAnimationFrame(tick);
+          return;
+        }
+        // Meta/Home button only: button 16 (standard)
+        const metaPressed = Boolean(pad.buttons[16]?.pressed);
+        if (metaPressed && !prev.pressed) {
+          setControllerOverlayOpen((v) => !v);
+        }
+        prev.pressed = metaPressed;
+      } catch {
+        // ignore
+      }
+      raf = window.requestAnimationFrame(tick);
+    };
+    raf = window.requestAnimationFrame(tick);
+    return () => { if (raf) window.cancelAnimationFrame(raf); };
+  }, [streamStatus]);
 
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -346,19 +649,144 @@ export function App(): JSX.Element {
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
+  const streamStatusRef = useRef<StreamStatus>(streamStatus);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+
+  useEffect(() => {
+    controllerOverlayOpenRef.current = controllerOverlayOpen;
+    if (clientRef.current) {
+      clientRef.current.inputPaused = controllerOverlayOpen;
+    }
+  }, [controllerOverlayOpen]);
+
+  useEffect(() => {
+    if (!controllerOverlayOpen) return;
+    const overlay = document.querySelector(".controller-overlay");
+    if (!overlay) return;
+    const selector = [
+      "button",
+      "a[href]",
+      "input:not([type='hidden'])",
+      "select",
+      "textarea",
+      "[role='button']",
+      "[tabindex]:not([tabindex='-1'])",
+    ].join(",");
+    const candidates = Array.from(overlay.querySelectorAll(selector)) as HTMLElement[];
+    const first = candidates.find((el) => {
+      const style = window.getComputedStyle(el);
+      if (style.visibility === "hidden" || style.display === "none") return false;
+      if ((el as HTMLButtonElement | HTMLInputElement | any).disabled) return false;
+      return el.tabIndex >= 0;
+    });
+    if (first) {
+      document.querySelectorAll<HTMLElement>(".controller-focus").forEach((n) => n.classList.remove("controller-focus"));
+      first.classList.add("controller-focus");
+      try {
+        first.focus({ preventScroll: true });
+      } catch {
+        /* ignore */
+      }
+      first.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, [controllerOverlayOpen]);
+
+  const applyVariantSelections = useCallback((catalog: GameInfo[]): void => {
+    setVariantByGameId((prev) => mergeVariantSelections(prev, catalog));
+  }, []);
+
+  const resetLaunchRuntime = useCallback((options?: {
+    keepLaunchError?: boolean;
+    keepStreamingContext?: boolean;
+  }): void => {
+    setSession(null);
+    setStreamStatus("idle");
+    setQueuePosition(undefined);
+    setSessionStartedAtMs(null);
+    setSessionElapsedSeconds(0);
+    setStreamWarning(null);
+    setEscHoldReleaseIndicator({ visible: false, progress: 0 });
+    diagnosticsStore.set(defaultDiagnostics());
+
+    if (!options?.keepStreamingContext) {
+      setStreamingGame(null);
+      setStreamingStore(null);
+    }
+
+    if (!options?.keepLaunchError) {
+      setLaunchError(null);
+    }
+  }, [diagnosticsStore]);
 
   // Session ref sync
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
 
+  // Keep a ref copy of `streamStatus` so async callbacks can observe latest value
   useEffect(() => {
-    document.body.classList.toggle("controller-mode", controllerConnected);
+    streamStatusRef.current = streamStatus;
+  }, [streamStatus]);
+
+  // Broadcast minimal session/loading state for UI overlays (controller + other listeners)
+  useEffect(() => {
+    const detail = {
+      status: streamStatus,
+      queuePosition,
+      launchError: launchError ? { title: launchError.title, description: launchError.description, stage: launchError.stage, codeLabel: launchError.codeLabel } : null,
+      gameTitle: streamingGame?.title ?? null,
+      gameCover: streamingGame?.imageUrl ?? null,
+      platformStore: streamingStore ?? null,
+    };
+    try {
+      window.dispatchEvent(new CustomEvent("opennow:session-update", { detail }));
+    } catch {
+      // ignore
+    }
+  }, [streamStatus, queuePosition, launchError, streamingGame, streamingStore]);
+
+  useEffect(() => {
+    document.body.classList.toggle("controller-mode", controllerUiActive);
     return () => {
       document.body.classList.remove("controller-mode");
     };
-  }, [controllerConnected]);
+  }, [controllerUiActive]);
+
+  useEffect(() => {
+    if (!controllerUiActive || !controllerConnected) {
+      document.body.classList.remove("controller-hide-cursor");
+      return;
+    }
+
+    const IDLE_MS = 1300;
+    let timeoutId: number | null = null;
+
+    const hideCursor = () => {
+      document.body.classList.add("controller-hide-cursor");
+    };
+
+    const showCursor = () => {
+      document.body.classList.remove("controller-hide-cursor");
+      if (timeoutId != null) {
+        window.clearTimeout(timeoutId);
+      }
+      timeoutId = window.setTimeout(hideCursor, IDLE_MS) as unknown as number;
+    };
+
+    const onMouseMove = (): void => showCursor();
+
+    // Start visible then hide after timeout
+    showCursor();
+    document.addEventListener("mousemove", onMouseMove, { passive: true });
+
+    return () => {
+      if (timeoutId != null) {
+        window.clearTimeout(timeoutId);
+      }
+      document.removeEventListener("mousemove", onMouseMove);
+      document.body.classList.remove("controller-hide-cursor");
+    };
+  }, [controllerConnected, controllerUiActive]);
 
   // Derived state
   const selectedProvider = useMemo(() => {
@@ -401,6 +829,37 @@ export function App(): JSX.Element {
     }
   }, [authSession, effectiveStreamingBaseUrl]);
 
+  const allKnownGames = useMemo(() => [...games, ...libraryGames], [games, libraryGames]);
+
+  const gameTitleByAppId = useMemo(() => {
+    const titles = new Map<number, string>();
+
+    for (const game of allKnownGames) {
+      const idsForGame = new Set<number>();
+      const launchId = parseNumericId(game.launchAppId);
+      if (launchId !== null) {
+        idsForGame.add(launchId);
+      }
+      for (const variant of game.variants) {
+        const variantId = parseNumericId(variant.id);
+        if (variantId !== null) {
+          idsForGame.add(variantId);
+        }
+      }
+      for (const appId of idsForGame) {
+        if (!titles.has(appId)) {
+          titles.set(appId, game.title);
+        }
+      }
+    }
+
+    return titles;
+  }, [allKnownGames]);
+
+  const findGameContextForSession = useCallback((activeSession: ActiveSessionInfo) => {
+    return findSessionContextForAppId(allKnownGames, variantByGameId, activeSession.appId);
+  }, [allKnownGames, variantByGameId]);
+
   useEffect(() => {
     if (!startupRefreshNotice) return;
     const timer = window.setTimeout(() => setStartupRefreshNotice(null), 7000);
@@ -430,11 +889,11 @@ export function App(): JSX.Element {
         setSettings(loadedSettings);
         setSettingsLoaded(true);
 
-        // Load providers and session (force refresh on startup restore)
-        setStartupStatusMessage("Restoring saved session and refreshing token...");
+        // Load providers and session (refresh only if token is near expiry)
+        setStartupStatusMessage("Restoring saved session...");
         const [providerList, sessionResult] = await Promise.all([
           window.openNow.getLoginProviders(),
-          window.openNow.getAuthSession({ forceRefresh: true }),
+          window.openNow.getAuthSession(),
         ]);
         const persistedSession = sessionResult.session;
 
@@ -456,6 +915,19 @@ export function App(): JSX.Element {
           setStartupStatusMessage("Session restored.");
         } else {
           setStartupStatusMessage("No saved session found.");
+        }
+
+        // Load persisted variant selections from localStorage before applying defaults
+        try {
+          const raw = localStorage.getItem(VARIANT_SELECTION_LOCALSTORAGE_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === "object") {
+              setVariantByGameId(parsed as Record<string, string>);
+            }
+          }
+        } catch (e) {
+          // ignore parse/storage errors
         }
 
         // Update isInitializing FIRST so UI knows we're done loading
@@ -488,12 +960,7 @@ export function App(): JSX.Element {
             setGames(mainGames);
             setSource("main");
             setSelectedGameId(mainGames[0]?.id ?? "");
-            setVariantByGameId(
-              mainGames.reduce((acc, g) => {
-                acc[g.id] = defaultVariantId(g);
-                return acc;
-              }, {} as Record<string, string>)
-            );
+            applyVariantSelections(mainGames);
 
             // Also load library
             const libGames = await window.openNow.fetchLibraryGames({
@@ -501,17 +968,20 @@ export function App(): JSX.Element {
               providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
             });
             setLibraryGames(libGames);
+            applyVariantSelections(libGames);
           } catch {
             // Fallback to public games
             const publicGames = await window.openNow.fetchPublicGames();
             setGames(publicGames);
             setSource("public");
+            applyVariantSelections(publicGames);
           }
         } else {
           // Load public games for non-logged in users
           const publicGames = await window.openNow.fetchPublicGames();
           setGames(publicGames);
           setSource("public");
+          applyVariantSelections(publicGames);
           setSubscriptionInfo(null);
         }
       } catch (error) {
@@ -525,6 +995,14 @@ export function App(): JSX.Element {
     void initialize();
   }, []);
 
+  // Auto-load controller library at startup if enabled
+  useEffect(() => {
+    if (isInitializing || !authSession || !settings.controllerMode || !settings.autoLoadControllerLibrary || currentPage !== "home") {
+      return;
+    }
+    setCurrentPage("library");
+  }, [isInitializing, authSession, settings.controllerMode, settings.autoLoadControllerLibrary, currentPage]);
+
   const shortcuts = useMemo(() => {
     const parseWithFallback = (value: string, fallback: string) => {
       const parsed = normalizeShortcut(value);
@@ -535,16 +1013,30 @@ export function App(): JSX.Element {
     const stopStream = parseWithFallback(settings.shortcutStopStream, DEFAULT_SHORTCUTS.shortcutStopStream);
     const toggleAntiAfk = parseWithFallback(settings.shortcutToggleAntiAfk, DEFAULT_SHORTCUTS.shortcutToggleAntiAfk);
     const toggleMicrophone = parseWithFallback(settings.shortcutToggleMicrophone, DEFAULT_SHORTCUTS.shortcutToggleMicrophone);
-    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk, toggleMicrophone };
+    const screenshot = parseWithFallback(settings.shortcutScreenshot, DEFAULT_SHORTCUTS.shortcutScreenshot);
+    const recording = parseWithFallback(settings.shortcutToggleRecording, DEFAULT_SHORTCUTS.shortcutToggleRecording);
+    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk, toggleMicrophone, screenshot, recording };
   }, [
     settings.shortcutToggleStats,
     settings.shortcutTogglePointerLock,
     settings.shortcutStopStream,
     settings.shortcutToggleAntiAfk,
     settings.shortcutToggleMicrophone,
+    settings.shortcutScreenshot,
+    settings.shortcutToggleRecording,
   ]);
 
   const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
+    const lockTarget = (target.parentElement as HTMLElement | null) ?? target;
+    const requestPointerLockCompat = async (
+      options?: { unadjustedMovement?: boolean },
+    ): Promise<void> => {
+      const maybePromise = lockTarget.requestPointerLock(options as any) as unknown;
+      if (maybePromise && typeof (maybePromise as Promise<void>).then === "function") {
+        await (maybePromise as Promise<void>);
+      }
+    };
+
     if (!document.fullscreenElement) {
       await document.documentElement.requestFullscreen().catch(() => {});
     }
@@ -556,15 +1048,26 @@ export function App(): JSX.Element {
       ]).catch(() => {});
     }
 
-    await (target.requestPointerLock({ unadjustedMovement: true } as any) as unknown as Promise<void>)
-      .catch((err: DOMException) => {
-        if (err.name === "NotSupportedError") {
-          return target.requestPointerLock();
-        }
-        throw err;
-      })
-      .catch(() => {});
-  }, []);
+    if (settings.rawMouseInput) {
+      await requestPointerLockCompat({ unadjustedMovement: true })
+        .catch((err: DOMException) => {
+          if (err.name === "NotSupportedError") {
+            return requestPointerLockCompat();
+          }
+          throw err;
+        })
+        .catch(() => {});
+      return;
+    }
+
+    await requestPointerLockCompat().catch(() => {});
+  }, [settings.rawMouseInput]);
+
+  const handleRequestPointerLock = useCallback(() => {
+    if (videoRef.current) {
+      void requestEscLockedPointerCapture(videoRef.current);
+    }
+  }, [requestEscLockedPointerCapture]);
 
   const resolveExitPrompt = useCallback((confirmed: boolean) => {
     const resolver = exitPromptResolverRef.current;
@@ -628,6 +1131,35 @@ export function App(): JSX.Element {
     return () => clearInterval(interval);
   }, [antiAfkEnabled, streamStatus]);
 
+  // Periodically re-sync subscription playtime from backend while streaming.
+  useEffect(() => {
+    if (streamStatus !== "streaming" || !authSession) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const syncPlaytime = async (): Promise<void> => {
+      try {
+        await loadSubscriptionInfo(authSession);
+      } catch (error) {
+        if (!cancelled) {
+          console.warn("Failed to re-sync subscription playtime:", error);
+        }
+      }
+    };
+
+    void syncPlaytime();
+    const timer = window.setInterval(() => {
+      void syncPlaytime();
+    }, PLAYTIME_RESYNC_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [authSession, loadSubscriptionInfo, streamStatus]);
+
   // Restore focus to video element when navigating away from Settings during streaming
   useEffect(() => {
     if (streamStatus === "streaming" && currentPage !== "settings" && videoRef.current) {
@@ -656,6 +1188,25 @@ export function App(): JSX.Element {
     updateElapsed();
     const timer = window.setInterval(updateElapsed, 1000);
     return () => window.clearInterval(timer);
+  }, [sessionStartedAtMs, streamStatus]);
+
+  useEffect(() => {
+    if (streamStatus !== "streaming" || sessionStartedAtMs !== null) {
+      return;
+    }
+
+    const evaluate = () => {
+      const snapshot = diagnosticsStore.getSnapshot();
+      const hasLiveFrames =
+        snapshot.framesDecoded > 0 || snapshot.framesReceived > 0 || snapshot.renderFps > 0;
+      if (hasLiveFrames) {
+        setSessionStartedAtMs(Date.now());
+      }
+    };
+
+    evaluate();
+    const unsubscribe = diagnosticsStore.subscribe(evaluate);
+    return unsubscribe;
   }, [sessionStartedAtMs, streamStatus]);
 
   useEffect(() => {
@@ -692,8 +1243,11 @@ export function App(): JSX.Element {
               audioElement: audioRef.current,
               microphoneMode: settings.microphoneMode,
               microphoneDeviceId: settings.microphoneDeviceId || undefined,
+              mouseSensitivity: settings.mouseSensitivity,
+              mouseAcceleration: settings.mouseAcceleration,
+              rawMouseInput: settings.rawMouseInput,
               onLog: (line: string) => console.log(`[WebRTC] ${line}`),
-              onStats: (stats) => setDiagnostics(stats),
+              onStats: (stats) => diagnosticsStore.set(stats),
               onEscHoldProgress: (visible, progress) => {
                 setEscHoldReleaseIndicator({ visible, progress });
               },
@@ -725,7 +1279,14 @@ export function App(): JSX.Element {
             });
             setLaunchError(null);
             setStreamStatus("streaming");
-            setSessionStartedAtMs((current) => current ?? Date.now());
+            // Auto-enter fullscreen on stream start if user enabled it
+            try {
+              if ((settings as any).autoFullScreen) {
+                void (window as any).openNow?.setFullscreen?.(true);
+              }
+            } catch (err) {
+              console.warn("Failed to auto-fullscreen on stream start:", err);
+            }
           }
         } else if (event.type === "remote-ice") {
           await clientRef.current?.addRemoteCandidate(event.candidate);
@@ -733,15 +1294,7 @@ export function App(): JSX.Element {
           console.warn("Signaling disconnected:", event.reason);
           clientRef.current?.dispose();
           clientRef.current = null;
-          setStreamStatus("idle");
-          setSession(null);
-          setStreamingGame(null);
-          setLaunchError(null);
-          setSessionStartedAtMs(null);
-          setSessionElapsedSeconds(0);
-          setStreamWarning(null);
-          setEscHoldReleaseIndicator({ visible: false, progress: 0 });
-          setDiagnostics(defaultDiagnostics());
+          resetLaunchRuntime();
           launchInFlightRef.current = false;
         } else if (event.type === "error") {
           console.error("Signaling error:", event.message);
@@ -752,7 +1305,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [settings]);
+  }, [resetLaunchRuntime, settings]);
 
   // Save settings when changed
   const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {
@@ -760,7 +1313,75 @@ export function App(): JSX.Element {
     if (settingsLoaded) {
       await window.openNow.setSetting(key, value);
     }
+    // If a running client exists, push certain settings live
+    if (key === "mouseSensitivity") {
+      try {
+        (clientRef.current as any)?.setMouseSensitivity?.(value as number);
+      } catch {
+        // ignore
+      }
+    }
+    if (key === "mouseAcceleration") {
+      try {
+        (clientRef.current as any)?.setMouseAccelerationPercent?.(value as number);
+      } catch {
+        // ignore
+      }
+    }
+    if (key === "rawMouseInput") {
+      try {
+        (clientRef.current as any)?.setRawMouseInputEnabled?.(value as boolean);
+      } catch {
+        // ignore
+      }
+    }
+    if (key === "maxBitrateMbps") {
+      try {
+        void (clientRef.current as any)?.setMaxBitrateKbps?.((value as number) * 1000);
+      } catch {
+        // ignore
+      }
+    }
   }, [settingsLoaded]);
+
+  const handleMouseSensitivityChange = useCallback((value: number) => {
+    void updateSetting("mouseSensitivity", value);
+  }, [updateSetting]);
+
+  const handleToggleFavoriteGame = useCallback((gameId: string): void => {
+    const favorites = settings.favoriteGameIds;
+    const exists = favorites.includes(gameId);
+    const next = exists ? favorites.filter((id) => id !== gameId) : [...favorites, gameId];
+    void updateSetting("favoriteGameIds", next);
+  }, [settings.favoriteGameIds, updateSetting]);
+
+  const handleMouseAccelerationChange = useCallback((value: number) => {
+    void updateSetting("mouseAcceleration", value);
+  }, [updateSetting]);
+
+  const handleExitControllerMode = useCallback(() => {
+    setSettings((prev) => ({
+      ...prev,
+      controllerMode: false,
+      autoLoadControllerLibrary: false,
+    }));
+
+    if (settingsLoaded) {
+      void Promise.all([
+        window.openNow.setSetting("controllerMode", false),
+        window.openNow.setSetting("autoLoadControllerLibrary", false),
+      ]).catch((error) => {
+        console.warn("Failed to persist controller mode exit settings:", error);
+      });
+    }
+  }, [settingsLoaded]);
+
+  const handleMicrophoneModeChange = useCallback((value: import("@shared/gfn").MicrophoneMode) => {
+    // Keep UI responsive while still surfacing persistence failures.
+    void updateSetting("microphoneMode", value).catch((error) => {
+      console.warn("Failed to persist microphone mode setting:", error);
+    });
+  }, [updateSetting]);
 
   // Login handler
   const handleLogin = useCallback(async () => {
@@ -791,6 +1412,7 @@ export function App(): JSX.Element {
       setGames(mainGames);
       setSource("main");
       setSelectedGameId(mainGames[0]?.id ?? "");
+      applyVariantSelections(mainGames);
 
       // Load library
       const libGames = await window.openNow.fetchLibraryGames({
@@ -798,12 +1420,13 @@ export function App(): JSX.Element {
         providerStreamingBaseUrl: session.provider.streamingServiceUrl,
       });
       setLibraryGames(libGames);
+      applyVariantSelections(libGames);
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "Login failed");
     } finally {
       setIsLoggingIn(false);
     }
-  }, [loadSubscriptionInfo, providerIdpId]);
+  }, [applyVariantSelections, loadSubscriptionInfo, providerIdpId]);
 
   // Logout handler
   const handleLogout = useCallback(async () => {
@@ -811,15 +1434,17 @@ export function App(): JSX.Element {
     setAuthSession(null);
     setGames([]);
     setLibraryGames([]);
+    setVariantByGameId({});
+    resetLaunchRuntime();
     setNavbarActiveSession(null);
     setIsResumingNavbarSession(false);
-    setLaunchError(null);
     setSubscriptionInfo(null);
     setCurrentPage("home");
     const publicGames = await window.openNow.fetchPublicGames();
     setGames(publicGames);
     setSource("public");
-  }, []);
+    applyVariantSelections(publicGames);
+  }, [applyVariantSelections, resetLaunchRuntime]);
 
   // Load games handler
   const loadGames = useCallback(async (targetSource: GameSource) => {
@@ -834,6 +1459,7 @@ export function App(): JSX.Element {
       } else if (targetSource === "library" && token) {
         result = await window.openNow.fetchLibraryGames({ token, providerStreamingBaseUrl: baseUrl });
         setLibraryGames(result);
+        applyVariantSelections(result);
       } else if (targetSource === "public") {
         result = await window.openNow.fetchPublicGames();
       }
@@ -842,13 +1468,29 @@ export function App(): JSX.Element {
         setGames(result);
         setSource(targetSource);
         setSelectedGameId(result[0]?.id ?? "");
+        applyVariantSelections(result);
       }
     } catch (error) {
       console.error("Failed to load games:", error);
     } finally {
       setIsLoadingGames(false);
     }
-  }, [authSession, effectiveStreamingBaseUrl]);
+  }, [applyVariantSelections, authSession, effectiveStreamingBaseUrl]);
+
+  const handleSelectGameVariant = useCallback((gameId: string, variantId: string): void => {
+    setVariantByGameId((prev) => {
+      if (prev[gameId] === variantId) {
+        return prev;
+      }
+      const next = { ...prev, [gameId]: variantId };
+      try {
+        localStorage.setItem(VARIANT_SELECTION_LOCALSTORAGE_KEY, JSON.stringify(next));
+      } catch (e) {
+        // ignore storage errors
+      }
+      return next;
+    });
+  }, []);
 
   const claimAndConnectSession = useCallback(async (existingSession: ActiveSessionInfo): Promise<void> => {
     const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
@@ -859,17 +1501,28 @@ export function App(): JSX.Element {
       throw new Error("Active session is missing server address. Start the game again to create a new session.");
     }
 
+    const matchedContext = findGameContextForSession(existingSession);
+    if (matchedContext) {
+      setStreamingGame(matchedContext.game);
+      setStreamingStore(matchedContext.variant?.store ?? null);
+    } else {
+      setStreamingStore(null);
+    }
+
     const claimed = await window.openNow.claimSession({
       token,
       streamingBaseUrl: effectiveStreamingBaseUrl,
       serverIp: existingSession.serverIp,
       sessionId: existingSession.sessionId,
+      appId: String(existingSession.appId),
       settings: {
         resolution: settings.resolution,
         fps: settings.fps,
         maxBitrateMbps: settings.maxBitrateMbps,
         codec: settings.codec,
         colorQuality: settings.colorQuality,
+        gameLanguage: settings.gameLanguage,
+        enableL4S: settings.enableL4S,
       },
     });
 
@@ -891,13 +1544,20 @@ export function App(): JSX.Element {
       signalingServer: claimed.signalingServer,
       signalingUrl: claimed.signalingUrl,
     });
-  }, [authSession, effectiveStreamingBaseUrl, settings]);
+  }, [authSession, effectiveStreamingBaseUrl, findGameContextForSession, settings]);
 
   // Play game handler
-  const handlePlayGame = useCallback(async (game: GameInfo) => {
+  const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean }) => {
     if (!selectedProvider) return;
 
-    if (launchInFlightRef.current || streamStatus !== "idle") {
+    console.log("handlePlayGame entry", {
+      title: game.title,
+      launchInFlight: launchInFlightRef.current,
+      streamStatus,
+      bypass: options?.bypassGuards ?? false,
+    });
+
+    if (!options?.bypassGuards && (launchInFlightRef.current || streamStatus !== "idle")) {
       console.warn("Ignoring play request: launch already in progress or stream not idle", {
         inFlight: launchInFlightRef.current,
         streamStatus,
@@ -912,17 +1572,18 @@ export function App(): JSX.Element {
       setStreamStatus(next);
     };
 
-    setSessionStartedAtMs(Date.now());
+    setSessionStartedAtMs(null);
     setSessionElapsedSeconds(0);
     setStreamWarning(null);
     setLaunchError(null);
-    setStreamingGame(game);
+    const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
+    const selectedVariant = getSelectedVariant(game, selectedVariantId);
+    startPlaytimeSession(game.id);
     updateLoadingStep("queue");
     setQueuePosition(undefined);
 
     try {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
-      const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
 
       // Resolve appId
       let appId: string | null = null;
@@ -951,15 +1612,40 @@ export function App(): JSX.Element {
         throw new Error("Could not resolve numeric appId for this game");
       }
 
+      const numericAppId = Number(appId);
+      const matchedGameContext = findSessionContextForAppId(allKnownGames, variantByGameId, numericAppId) ?? {
+        game,
+        variant: selectedVariant,
+      };
+      setStreamingGame(matchedGameContext.game);
+      setStreamingStore(matchedGameContext.variant?.store ?? null);
+
       // Check for active sessions first
       if (token) {
         try {
           const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
           if (activeSessions.length > 0) {
-            const existingSession = activeSessions[0];
-            await claimAndConnectSession(existingSession);
-            setNavbarActiveSession(null);
-            return;
+            const matchingSession = activeSessions.find((entry) => entry.appId === numericAppId) ?? null;
+            const otherSession = activeSessions[0] ?? null;
+
+            if (matchingSession) {
+              await claimAndConnectSession(matchingSession);
+              setNavbarActiveSession(null);
+              return;
+            }
+
+            if (otherSession) {
+              const choice = await window.openNow.showSessionConflictDialog();
+              if (choice === "cancel") {
+                resetLaunchRuntime();
+                return;
+              }
+              if (choice === "resume") {
+                await claimAndConnectSession(otherSession);
+                setNavbarActiveSession(null);
+                return;
+              }
+            }
           }
         } catch (error) {
           console.error("Failed to claim/resume session:", error);
@@ -981,6 +1667,8 @@ export function App(): JSX.Element {
           maxBitrateMbps: settings.maxBitrateMbps,
           codec: settings.codec,
           colorQuality: settings.colorQuality,
+          gameLanguage: settings.gameLanguage,
+          enableL4S: settings.enableL4S,
         },
       });
 
@@ -988,12 +1676,10 @@ export function App(): JSX.Element {
       setQueuePosition(newSession.queuePosition);
 
       // Poll for readiness.
-      // Queue mode (>1): no timeout - users wait indefinitely and see position updates.
-      // Setup/Starting mode (0, 1, or undefined): 180s timeout applies - machine is starting.
+      // Queue mode: no timeout - users wait indefinitely and see position updates.
+      // Setup/Starting mode: 180s timeout applies while machine is being allocated.
       let finalSession: SessionInfo | null = null;
-      // Only in queue mode if queuePosition > 1 (actually waiting in line)
-      // queuePosition 0 or 1 means machine is being allocated, not queue wait
-      let isInQueueMode = (newSession.queuePosition ?? 0) > 1;
+      let isInQueueMode = isSessionInQueue(newSession);
       let timeoutStartAttempt = 1;
       const maxAttempts = Math.ceil(SESSION_READY_TIMEOUT_MS / SESSION_READY_POLL_INTERVAL_MS);
       let attempt = 0;
@@ -1008,6 +1694,8 @@ export function App(): JSX.Element {
           serverIp: newSession.serverIp,
           zone: newSession.zone,
           sessionId: newSession.sessionId,
+          clientId: newSession.clientId,
+          deviceId: newSession.deviceId,
         });
 
         setSession(polled);
@@ -1015,16 +1703,14 @@ export function App(): JSX.Element {
 
         // Check if queue just cleared - transition from queue mode to setup mode
         const wasInQueueMode = isInQueueMode;
-        // Queue mode only when position > 1 (actually waiting behind others)
-        // Position 0 or 1 means machine allocation is starting
-        isInQueueMode = (polled.queuePosition ?? 0) > 1;
+        isInQueueMode = isSessionInQueue(polled);
         if (wasInQueueMode && !isInQueueMode) {
           // Queue just cleared, start timeout counting from now
           timeoutStartAttempt = attempt;
         }
 
         console.log(
-          `Poll attempt ${attempt}: status=${polled.status}, queuePosition=${polled.queuePosition ?? "n/a"}, serverIp=${polled.serverIp}, queueMode=${isInQueueMode}`,
+          `Poll attempt ${attempt}: status=${polled.status}, seatSetupStep=${polled.seatSetupStep ?? "n/a"}, queuePosition=${polled.queuePosition ?? "n/a"}, serverIp=${polled.serverIp}, queueMode=${isInQueueMode}`,
         );
 
         if (isSessionReadyForConnect(polled.status)) {
@@ -1071,23 +1757,18 @@ export function App(): JSX.Element {
       await window.openNow.disconnectSignaling().catch(() => {});
       clientRef.current?.dispose();
       clientRef.current = null;
-      setSession(null);
-      setStreamStatus("idle");
-      setQueuePosition(undefined);
-      setSessionStartedAtMs(null);
-      setSessionElapsedSeconds(0);
-      setStreamWarning(null);
-      setEscHoldReleaseIndicator({ visible: false, progress: 0 });
-      setDiagnostics(defaultDiagnostics());
+      resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
       void refreshNavbarActiveSession();
     } finally {
       launchInFlightRef.current = false;
     }
   }, [
     authSession,
+    allKnownGames,
     claimAndConnectSession,
     effectiveStreamingBaseUrl,
     refreshNavbarActiveSession,
+    resetLaunchRuntime,
     selectedProvider,
     settings,
     streamStatus,
@@ -1112,9 +1793,16 @@ export function App(): JSX.Element {
 
     setLaunchError(null);
     setQueuePosition(undefined);
-    setSessionStartedAtMs(Date.now());
+    setSessionStartedAtMs(null);
     setSessionElapsedSeconds(0);
     setStreamWarning(null);
+    const matchedContext = findGameContextForSession(navbarActiveSession);
+    if (matchedContext) {
+      setStreamingGame(matchedContext.game);
+      setStreamingStore(matchedContext.variant?.store ?? null);
+    } else {
+      setStreamingStore(null);
+    }
     updateLoadingStep("setup");
 
     try {
@@ -1126,14 +1814,7 @@ export function App(): JSX.Element {
       await window.openNow.disconnectSignaling().catch(() => {});
       clientRef.current?.dispose();
       clientRef.current = null;
-      setSession(null);
-      setStreamStatus("idle");
-      setQueuePosition(undefined);
-      setSessionStartedAtMs(null);
-      setSessionElapsedSeconds(0);
-      setStreamWarning(null);
-      setEscHoldReleaseIndicator({ visible: false, progress: 0 });
-      setDiagnostics(defaultDiagnostics());
+      resetLaunchRuntime({ keepLaunchError: true });
       void refreshNavbarActiveSession();
     } finally {
       launchInFlightRef.current = false;
@@ -1143,7 +1824,9 @@ export function App(): JSX.Element {
     claimAndConnectSession,
     isResumingNavbarSession,
     navbarActiveSession,
+    findGameContextForSession,
     refreshNavbarActiveSession,
+    resetLaunchRuntime,
     selectedProvider,
     streamStatus,
   ]);
@@ -1163,45 +1846,83 @@ export function App(): JSX.Element {
           serverIp: current.serverIp,
           zone: current.zone,
           sessionId: current.sessionId,
+          clientId: current.clientId,
+          deviceId: current.deviceId,
         });
       }
 
       clientRef.current?.dispose();
       clientRef.current = null;
-      setSession(null);
-      setStreamStatus("idle");
-      setStreamingGame(null);
       setNavbarActiveSession(null);
-      setLaunchError(null);
-      setSessionStartedAtMs(null);
-      setSessionElapsedSeconds(0);
-      setStreamWarning(null);
-      setEscHoldReleaseIndicator({ visible: false, progress: 0 });
-      setDiagnostics(defaultDiagnostics());
+      if (streamingGame) endPlaytimeSession(streamingGame.id);
+      resetLaunchRuntime();
       void refreshNavbarActiveSession();
     } catch (error) {
       console.error("Stop failed:", error);
     }
-  }, [authSession, refreshNavbarActiveSession, resolveExitPrompt]);
+  }, [authSession, endPlaytimeSession, refreshNavbarActiveSession, resetLaunchRuntime, resolveExitPrompt, streamingGame]);
+
+  const handleSwitchGame = useCallback(async (game: GameInfo) => {
+    setControllerOverlayOpen(false);
+    setPendingSwitchGameTitle(game.title ?? null);
+    setPendingSwitchGameCover(game.imageUrl ?? null);
+    setIsSwitchingGame(true);
+    setSwitchingPhase("cleaning");
+    // allow overlay to paint
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 140));
+    try {
+      await handleStopStream();
+    } catch (e) {
+      console.error("Error while cleaning up stream during switch:", e);
+    }
+    setSwitchingPhase("creating");
+    // ensure runtime flags/state reflect the stopped session before launching again
+    launchInFlightRef.current = false;
+    setStreamStatus("idle");
+    // give the render loop a frame so React state updates propagate
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    // small pause so user sees transition
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 120));
+
+    // Wait until the play guard conditions are satisfied (defensive against races)
+    const ready = await waitFor(() => !launchInFlightRef.current && streamStatusRef.current === "idle", { timeout: 1000, interval: 50 });
+    if (!ready) {
+      console.warn("Switch flow: runtime not ready for new launch after cleanup", {
+        launchInFlight: launchInFlightRef.current,
+        streamStatus: streamStatusRef.current,
+      });
+      // Do a small additional delay before aborting the automatic start to avoid nav-to-dashboard
+      await sleep(250);
+    }
+
+    try {
+      await handlePlayGame(game, { bypassGuards: true });
+    } catch (e) {
+      console.error("Error while starting new stream during switch:", e);
+    }
+    setIsSwitchingGame(false);
+    setSwitchingPhase(null);
+    setPendingSwitchGameTitle(null);
+    setPendingSwitchGameCover(null);
+  }, [handleStopStream, handlePlayGame]);
 
   const handleDismissLaunchError = useCallback(async () => {
     await window.openNow.disconnectSignaling().catch(() => {});
     clientRef.current?.dispose();
     clientRef.current = null;
-    setSession(null);
-    setLaunchError(null);
-    setStreamingGame(null);
-    setQueuePosition(undefined);
-    setSessionStartedAtMs(null);
-    setSessionElapsedSeconds(0);
-    setStreamWarning(null);
-    setEscHoldReleaseIndicator({ visible: false, progress: 0 });
-    setDiagnostics(defaultDiagnostics());
+    resetLaunchRuntime();
     void refreshNavbarActiveSession();
-  }, [refreshNavbarActiveSession]);
+  }, [refreshNavbarActiveSession, resetLaunchRuntime]);
 
   const releasePointerLockIfNeeded = useCallback(async () => {
     if (document.pointerLockElement) {
+      // Tell the client to suppress synthetic Escape/reactive re-acquisition
+      try {
+        // clientRef is a mutable ref to the GfnWebRtcClient instance; access runtime property
+        (clientRef.current as any).suppressNextSyntheticEscape = true;
+      } catch (e) {
+        // ignore
+      }
       document.exitPointerLock();
       setEscHoldReleaseIndicator({ visible: false, progress: 0 });
       await sleep(75);
@@ -1294,7 +2015,13 @@ export function App(): JSX.Element {
         e.stopImmediatePropagation();
         if (streamStatus === "streaming" && videoRef.current) {
           if (document.pointerLockElement === videoRef.current) {
+            try {
+              (clientRef.current as any).suppressNextSyntheticEscape = true;
+            } catch {
+              // best-effort — client may not be initialised
+            }
             document.exitPointerLock();
+            setEscHoldReleaseIndicator({ visible: false, progress: 0 });
           } else {
             void requestEscLockedPointerCapture(videoRef.current);
           }
@@ -1357,32 +2084,6 @@ export function App(): JSX.Element {
     return libraryGames.filter((g) => g.title.toLowerCase().includes(query));
   }, [libraryGames, searchQuery]);
 
-  const gameTitleByAppId = useMemo(() => {
-    const titles = new Map<number, string>();
-    const allKnownGames = [...games, ...libraryGames];
-
-    for (const game of allKnownGames) {
-      const idsForGame = new Set<number>();
-      const launchId = parseNumericId(game.launchAppId);
-      if (launchId !== null) {
-        idsForGame.add(launchId);
-      }
-      for (const variant of game.variants) {
-        const variantId = parseNumericId(variant.id);
-        if (variantId !== null) {
-          idsForGame.add(variantId);
-        }
-      }
-      for (const appId of idsForGame) {
-        if (!titles.has(appId)) {
-          titles.set(appId, game.title);
-        }
-      }
-    }
-
-    return titles;
-  }, [games, libraryGames]);
-
   const activeSessionGameTitle = useMemo(() => {
     if (!navbarActiveSession) return null;
     const mappedTitle = gameTitleByAppId.get(navbarActiveSession.appId);
@@ -1409,18 +2110,16 @@ export function App(): JSX.Element {
           isInitializing={isInitializing}
           statusMessage={startupStatusMessage}
         />
-        {controllerConnected && (
-          <div className="controller-hint">
-            <span>D-pad Navigate</span>
-            <span>A Select</span>
-            <span>B Back</span>
-          </div>
-        )}
       </>
     );
   }
 
-  const showLaunchOverlay = streamStatus !== "idle" || launchError !== null;
+  const showLaunchOverlay = streamStatus !== "idle" || launchError !== null || isSwitchingGame;
+  const consumedHours =
+    streamStatus === "streaming"
+      ? Math.floor(sessionElapsedSeconds / 60) / 60
+      : 0;
+  const remainingPlaytimeText = formatRemainingPlaytimeFromSubscription(subscriptionInfo, consumedHours);
 
   // Show stream lifecycle (waiting/connecting/streaming/failure)
   if (showLaunchOverlay) {
@@ -1429,19 +2128,21 @@ export function App(): JSX.Element {
       <>
         {streamStatus !== "idle" && (
           <StreamView
+            className={isSwitchingGame ? "sv--switching" : undefined}
             videoRef={videoRef}
             audioRef={audioRef}
-            stats={diagnostics}
+            diagnosticsStore={diagnosticsStore}
             showStats={showStatsOverlay}
             shortcuts={{
               toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
               togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),
               stopStream: formatShortcutForDisplay(settings.shortcutStopStream, isMac),
               toggleMicrophone: formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac),
+              screenshot: shortcuts.screenshot.canonical,
+              recording: shortcuts.recording.canonical,
             }}
             hideStreamButtons={settings.hideStreamButtons}
             serverRegion={session?.serverIp}
-            connectedControllers={diagnostics.connectedGamepads}
             antiAfkEnabled={antiAfkEnabled}
             escHoldReleaseIndicator={escHoldReleaseIndicator}
             exitPrompt={exitPrompt}
@@ -1451,6 +2152,7 @@ export function App(): JSX.Element {
             streamWarning={streamWarning}
             isConnecting={streamStatus === "connecting"}
             gameTitle={streamingGame?.title ?? "Game"}
+            platformStore={streamingStore ?? undefined}
             onToggleFullscreen={() => {
               if (document.fullscreenElement) {
                 document.exitFullscreen().catch(() => {});
@@ -1466,12 +2168,133 @@ export function App(): JSX.Element {
             onToggleMicrophone={() => {
               clientRef.current?.toggleMicrophone();
             }}
+            rawMouseInput={settings.rawMouseInput}
+            onRawMouseInputChange={(value) => {
+              void updateSetting("rawMouseInput", value);
+            }}
+            mouseSensitivity={settings.mouseSensitivity}
+            onMouseSensitivityChange={handleMouseSensitivityChange}
+            mouseAcceleration={settings.mouseAcceleration}
+            onMouseAccelerationChange={handleMouseAccelerationChange}
+            microphoneMode={settings.microphoneMode}
+            onMicrophoneModeChange={handleMicrophoneModeChange}
+            onScreenshotShortcutChange={(value) => {
+              void updateSetting("shortcutScreenshot", value);
+            }}
+            onRecordingShortcutChange={(value) => {
+              void updateSetting("shortcutToggleRecording", value);
+            }}
+            remainingPlaytimeText={remainingPlaytimeText}
+            micTrack={clientRef.current?.getMicTrack() ?? null}
+            onRequestPointerLock={handleRequestPointerLock}
+            onReleasePointerLock={() => {
+              void releasePointerLockIfNeeded();
+            }}
           />
         )}
-        {streamStatus !== "streaming" && (
+        {isSwitchingGame && settings.controllerMode && (
+          <ControllerStreamLoading
+            gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? "Game"}
+            gamePoster={pendingSwitchGameCover ?? streamingGame?.imageUrl}
+            gameDescription={streamingGame?.description}
+            status={switchingPhase === "cleaning" ? "setup" : "starting"}
+            queuePosition={queuePosition}
+            playtimeData={playtime}
+            gameId={streamingGame?.id}
+            enableBackgroundAnimations={settings.controllerBackgroundAnimations}
+          />
+        )}
+        {isSwitchingGame && !settings.controllerMode && (
+          <StreamLoading
+            gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? "Game"}
+            gameCover={pendingSwitchGameCover ?? streamingGame?.imageUrl}
+            platformStore={streamingStore ?? undefined}
+            status={switchingPhase === "cleaning" ? "setup" : "starting"}
+            queuePosition={queuePosition}
+            error={
+              launchError
+                ? {
+                    title: launchError.title,
+                    description: launchError.description,
+                    code: launchError.codeLabel,
+                  }
+                : undefined
+            }
+            onCancel={() => {
+              if (launchError) {
+                void handleDismissLaunchError();
+                return;
+              }
+              void handlePromptedStopStream();
+            }}
+          />
+        )}
+        {streamStatus === "streaming" && controllerOverlayOpen && (
+          <div className="controller-overlay">
+            <ControllerLibraryPage
+              games={filteredLibraryGames}
+              onPlayGame={handleSwitchGame}
+              isLoading={isLoadingGames}
+              selectedGameId={selectedGameId}
+              onSelectGame={setSelectedGameId}
+              uiSoundsEnabled={settings.controllerUiSounds}
+              selectedVariantByGameId={variantByGameId}
+              onSelectGameVariant={handleSelectGameVariant}
+              favoriteGameIds={settings.favoriteGameIds}
+              onToggleFavoriteGame={handleToggleFavoriteGame}
+              onOpenSettings={() => setCurrentPage("settings")}
+              currentStreamingGame={streamingGame}
+              onResumeGame={() => setControllerOverlayOpen(false)}
+              onCloseGame={async () => {
+                setControllerOverlayOpen(false);
+                // allow overlay close animation to play
+                await sleep(300);
+                await releasePointerLockIfNeeded();
+                await handleStopStream();
+              }}
+              pendingSwitchGameCover={pendingSwitchGameCover}
+              userName={authSession?.user.displayName}
+              userAvatarUrl={authSession?.user.avatarUrl}
+              remainingPlaytimeText={remainingPlaytimeText}
+              playtimeData={playtime}
+              sessionElapsedSeconds={sessionElapsedSeconds}
+              settings={{
+                resolution: settings.resolution,
+                fps: settings.fps,
+                codec: settings.codec,
+                enableL4S: settings.enableL4S,
+                controllerUiSounds: settings.controllerUiSounds,
+                controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
+                autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
+                autoFullScreen: settings.autoFullScreen,
+                aspectRatio: settings.aspectRatio,
+                maxBitrateMbps: settings.maxBitrateMbps,
+              }}
+              resolutionOptions={getResolutionsByAspectRatio(settings.aspectRatio)}
+              fpsOptions={fpsOptions}
+              codecOptions={codecOptions}
+              aspectRatioOptions={aspectRatioOptions as unknown as string[]}
+              onSettingChange={updateSetting}
+            />
+          </div>
+        )}
+        {streamStatus !== "idle" && streamStatus !== "streaming" && settings.controllerMode && (
+          <ControllerStreamLoading
+            gameTitle={streamingGame?.title ?? "Game"}
+            gamePoster={streamingGame?.imageUrl}
+            gameDescription={streamingGame?.description}
+            status={loadingStatus}
+            queuePosition={queuePosition}
+            playtimeData={playtime}
+            gameId={streamingGame?.id}
+            enableBackgroundAnimations={settings.controllerBackgroundAnimations}
+          />
+        )}
+        {streamStatus !== "idle" && streamStatus !== "streaming" && !settings.controllerMode && (
           <StreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
             gameCover={streamingGame?.imageUrl}
+            platformStore={streamingStore ?? undefined}
             status={loadingStatus}
             queuePosition={queuePosition}
             error={
@@ -1492,7 +2315,7 @@ export function App(): JSX.Element {
             }}
           />
         )}
-        {controllerConnected && streamStatus !== "streaming" && (
+        {showControllerHint && streamStatus !== "streaming" && (
           <div className="controller-hint controller-hint--overlay">
             <span>D-pad Navigate</span>
             <span>A Select</span>
@@ -1511,19 +2334,21 @@ export function App(): JSX.Element {
           {startupRefreshNotice.text}
         </div>
       )}
-      <Navbar
-        currentPage={currentPage}
-        onNavigate={setCurrentPage}
-        user={authSession.user}
-        subscription={subscriptionInfo}
-        activeSession={navbarActiveSession}
-        activeSessionGameTitle={activeSessionGameTitle}
-        isResumingSession={isResumingNavbarSession}
-        onResumeSession={() => {
-          void handleResumeFromNavbar();
-        }}
-        onLogout={handleLogout}
-      />
+      {!(settings.controllerMode && currentPage === "library") && (
+        <Navbar
+          currentPage={currentPage}
+          onNavigate={setCurrentPage}
+          user={authSession.user}
+          subscription={subscriptionInfo}
+          activeSession={navbarActiveSession}
+          activeSessionGameTitle={activeSessionGameTitle}
+          isResumingSession={isResumingNavbarSession}
+          onResumeSession={() => {
+            void handleResumeFromNavbar();
+          }}
+          onLogout={handleLogout}
+        />
+      )}
 
       <main className="main-content">
         {currentPage === "home" && (
@@ -1537,19 +2362,65 @@ export function App(): JSX.Element {
             isLoading={isLoadingGames}
             selectedGameId={selectedGameId}
             onSelectGame={setSelectedGameId}
+            selectedVariantByGameId={variantByGameId}
+            onSelectGameVariant={handleSelectGameVariant}
           />
         )}
 
         {currentPage === "library" && (
-          <LibraryPage
-            games={filteredLibraryGames}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            onPlayGame={handlePlayGame}
-            isLoading={isLoadingGames}
-            selectedGameId={selectedGameId}
-            onSelectGame={setSelectedGameId}
-          />
+          settings.controllerMode ? (
+            <ControllerLibraryPage
+              games={filteredLibraryGames}
+              onPlayGame={handlePlayGame}
+              isLoading={isLoadingGames}
+              selectedGameId={selectedGameId}
+              onSelectGame={setSelectedGameId}
+              uiSoundsEnabled={settings.controllerUiSounds}
+              selectedVariantByGameId={variantByGameId}
+              onSelectGameVariant={handleSelectGameVariant}
+              favoriteGameIds={settings.favoriteGameIds}
+              onToggleFavoriteGame={handleToggleFavoriteGame}
+              onOpenSettings={() => setCurrentPage("settings")}
+              currentStreamingGame={streamingGame}
+              onResumeGame={handlePlayGame}
+              onCloseGame={handlePromptedStopStream}
+              pendingSwitchGameCover={pendingSwitchGameCover}
+              userName={authSession?.user.displayName}
+              userAvatarUrl={authSession?.user.avatarUrl}
+              remainingPlaytimeText={remainingPlaytimeText}
+              playtimeData={playtime}
+              sessionElapsedSeconds={sessionElapsedSeconds}
+              settings={{
+                resolution: settings.resolution,
+                fps: settings.fps,
+                codec: settings.codec,
+                controllerUiSounds: settings.controllerUiSounds,
+                controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
+                autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
+                autoFullScreen: settings.autoFullScreen,
+                aspectRatio: settings.aspectRatio,
+                maxBitrateMbps: settings.maxBitrateMbps,
+              }}
+              resolutionOptions={getResolutionsByAspectRatio(settings.aspectRatio)}
+              fpsOptions={fpsOptions}
+              codecOptions={codecOptions}
+              aspectRatioOptions={aspectRatioOptions as unknown as string[]}
+              onSettingChange={updateSetting}
+              onExitControllerMode={handleExitControllerMode}
+            />
+          ) : (
+            <LibraryPage
+              games={filteredLibraryGames}
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              onPlayGame={handlePlayGame}
+              isLoading={isLoadingGames}
+              selectedGameId={selectedGameId}
+              onSelectGame={setSelectedGameId}
+              selectedVariantByGameId={variantByGameId}
+              onSelectGameVariant={handleSelectGameVariant}
+            />
+          )
         )}
 
         {currentPage === "settings" && (
@@ -1560,7 +2431,7 @@ export function App(): JSX.Element {
           />
         )}
       </main>
-      {controllerConnected && (
+      {showControllerHint && (
         <div className="controller-hint">
           <span>D-pad Navigate</span>
           <span>A Select</span>

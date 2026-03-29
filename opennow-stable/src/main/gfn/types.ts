@@ -76,6 +76,11 @@ export interface CloudMatchResponse {
     sessionId: string;
     status: number;
     queuePosition?: number;
+    seatSetupInfo?: {
+      seatSetupStep?: number;
+      queuePosition?: number;
+      seatSetupEta?: number;
+    };
     progressState?: number;
     eta?: number;
     sessionProgress?: {

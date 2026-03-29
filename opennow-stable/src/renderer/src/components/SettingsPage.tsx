@@ -1,4 +1,4 @@
-import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown } from "lucide-react";
+import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2 } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -8,8 +8,9 @@ import type {
   VideoCodec,
   ColorQuality,
   EntitledResolution,
-  VideoAccelerationPreference,
   MicrophoneMode,
+  PingResult,
+  GameLanguage,
 } from "@shared/gfn";
 import { colorQualityRequiresHevc } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
@@ -21,12 +22,6 @@ interface SettingsPageProps {
 }
 
 const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
-
-const accelerationOptions: { value: VideoAccelerationPreference; label: string }[] = [
-  { value: "auto", label: "Auto" },
-  { value: "hardware", label: "Hardware" },
-  { value: "software", label: "Software (CPU)" },
-];
 
 const colorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [
   { value: "8bit_420", label: "8-bit 4:2:0", description: "Most compatible" },
@@ -46,14 +41,32 @@ interface FpsPreset {
   value: number;
 }
 
+interface AspectRatioPreset {
+  value: string;
+  label: string;
+}
+
+const STATIC_ASPECT_RATIO_PRESETS: AspectRatioPreset[] = [
+  { value: "16:9", label: "16:9 (Widescreen)" },
+  { value: "16:10", label: "16:10 (Widescreen)" },
+  { value: "21:9", label: "21:9 (Ultrawide)" },
+  { value: "32:9", label: "32:9 (Super Ultrawide)" },
+];
+
 const STATIC_RESOLUTION_PRESETS: ResolutionPreset[] = [
-  { value: "1280x720", label: "720p" },
-  { value: "1920x1080", label: "1080p" },
-  { value: "2560x1440", label: "1440p" },
-  { value: "3840x2160", label: "4K" },
-  { value: "2560x1080", label: "Ultrawide 1080p" },
-  { value: "3440x1440", label: "Ultrawide 1440p" },
-  { value: "5120x1440", label: "Super Ultrawide" },
+  { value: "1280x720", label: "720p (16:9)" },
+  { value: "1280x800", label: "720p (16:10)" },
+  { value: "1440x900", label: "WXGA (16:10)" },
+  { value: "1680x1050", label: "WSXGA (16:10)" },
+  { value: "1920x1080", label: "1080p (16:9)" },
+  { value: "1920x1200", label: "1200p (16:10)" },
+  { value: "2560x1080", label: "Ultrawide 1080p (21:9)" },
+  { value: "2560x1440", label: "1440p (16:9)" },
+  { value: "2560x1600", label: "1600p (16:10)" },
+  { value: "3440x1440", label: "Ultrawide 1440p (21:9)" },
+  { value: "3840x2160", label: "4K (16:9)" },
+  { value: "3840x2400", label: "4K (16:10)" },
+  { value: "5120x1440", label: "Super Ultrawide (32:9)" },
 ];
 
 const STATIC_FPS_PRESETS: FpsPreset[] = [
@@ -75,12 +88,46 @@ const shortcutDefaults = {
   shortcutStopStream: "Ctrl+Shift+Q",
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
   shortcutToggleMicrophone: "Ctrl+Shift+M",
+  shortcutScreenshot: "F11",
 } as const;
 
 const microphoneModeOptions: Array<{ value: MicrophoneMode; label: string }> = [
   { value: "disabled", label: "Disabled" },
   { value: "push-to-talk", label: "Push-to-Talk" },
   { value: "voice-activity", label: "Voice Activity" },
+];
+
+const gameLanguageOptions: Array<{ value: GameLanguage; label: string }> = [
+  { value: "en_US", label: "English (US)" },
+  { value: "en_GB", label: "English (UK)" },
+  { value: "de_DE", label: "Deutsch" },
+  { value: "fr_FR", label: "Français" },
+  { value: "es_ES", label: "Español (ES)" },
+  { value: "es_MX", label: "Español (MX)" },
+  { value: "it_IT", label: "Italiano" },
+  { value: "pt_PT", label: "Português (PT)" },
+  { value: "pt_BR", label: "Português (BR)" },
+  { value: "ru_RU", label: "Русский" },
+  { value: "pl_PL", label: "Polski" },
+  { value: "tr_TR", label: "Türkçe" },
+  { value: "ar_SA", label: "العربية" },
+  { value: "ja_JP", label: "日本語" },
+  { value: "ko_KR", label: "한국어" },
+  { value: "zh_CN", label: "简体中文" },
+  { value: "zh_TW", label: "繁體中文" },
+  { value: "th_TH", label: "ไทย" },
+  { value: "vi_VN", label: "Tiếng Việt" },
+  { value: "id_ID", label: "Bahasa Indonesia" },
+  { value: "cs_CZ", label: "Čeština" },
+  { value: "el_GR", label: "Ελληνικά" },
+  { value: "hu_HU", label: "Magyar" },
+  { value: "ro_RO", label: "Română" },
+  { value: "uk_UA", label: "Українська" },
+  { value: "nl_NL", label: "Nederlands" },
+  { value: "sv_SE", label: "Svenska" },
+  { value: "da_DK", label: "Dansk" },
+  { value: "fi_FI", label: "Suomi" },
+  { value: "no_NO", label: "Norsk" },
 ];
 
 /* ── Aspect ratio helpers ─────────────────────────────────────────── */
@@ -101,6 +148,7 @@ function classifyAspectRatio(width: number, height: number): string {
   if (Math.abs(ratio - 21 / 9) < 0.05) return "21:9 Ultrawide";
   if (Math.abs(ratio - 32 / 9) < 0.05) return "32:9 Super Ultrawide";
   if (Math.abs(ratio - 4 / 3) < 0.05) return "4:3 Legacy";
+  if (ratio > 2 && ratio < 3.5) return "21:9 Ultrawide";
   return "Other";
 }
 
@@ -236,6 +284,7 @@ const CODEC_TEST_CONFIGS: {
 ];
 
 const CODEC_TEST_RESULTS_STORAGE_KEY = "opennow.codec-test-results.v1";
+const PING_RESULTS_STORAGE_KEY = "opennow.ping-results.v1";
 const ENTITLED_RESOLUTIONS_STORAGE_KEY = "opennow.entitled-resolutions.v1";
 
 interface EntitledResolutionsCache {
@@ -252,6 +301,39 @@ function loadStoredCodecResults(): CodecTestResult[] | null {
     return parsed as CodecTestResult[];
   } catch {
     return null;
+  }
+}
+
+interface PingCacheEntry {
+  url: string;
+  pingMs: number | null;
+}
+
+function loadStoredPingResults(): Map<string, number | null> | null {
+  try {
+    const raw = window.sessionStorage.getItem(PING_RESULTS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return null;
+    const results = new Map<string, number | null>();
+    for (const entry of parsed as PingCacheEntry[]) {
+      results.set(entry.url, entry.pingMs);
+    }
+    return results;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredPingResults(results: Map<string, number | null>): void {
+  try {
+    const entries: PingCacheEntry[] = [];
+    results.forEach((pingMs, url) => {
+      entries.push({ url, pingMs });
+    });
+    window.sessionStorage.setItem(PING_RESULTS_STORAGE_KEY, JSON.stringify(entries));
+  } catch {
+    // Ignore storage failures
   }
 }
 
@@ -442,13 +524,75 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [codecResults, setCodecResults] = useState<CodecTestResult[] | null>(initialCodecResults);
   const [codecTesting, setCodecTesting] = useState(false);
   const [codecTestOpen, setCodecTestOpen] = useState(() => initialCodecResults !== null);
-  const platformHardwareLabel = useMemo(() => {
-    const platform = navigator.platform.toLowerCase();
-    if (platform.includes("win")) return "D3D11 / DXVA";
-    if (platform.includes("mac")) return "VideoToolbox";
-    if (platform.includes("linux")) return isLinuxArmClient() ? "V4L2" : "VA-API";
-    return "Hardware";
-  }, []);
+
+  // Region ping state
+  const initialPingResults = useMemo(() => loadStoredPingResults(), []);
+  const [pingResults, setPingResults] = useState<Map<string, number | null>>(initialPingResults ?? new Map());
+  const [isPinging, setIsPinging] = useState(false);
+  const [bestRegionUrl, setBestRegionUrl] = useState<string | null>(() => {
+    if (!initialPingResults) return null;
+    let bestUrl: string | null = null;
+    let bestPing = Infinity;
+    initialPingResults.forEach((pingMs, url) => {
+      if (pingMs !== null && pingMs < bestPing) {
+        bestPing = pingMs;
+        bestUrl = url;
+      }
+    });
+    return bestUrl;
+  });
+
+  const runPingTest = useCallback(async () => {
+    if (regions.length === 0) return;
+    setIsPinging(true);
+    try {
+      const results = await window.openNow.pingRegions(regions);
+      const pingMap = new Map<string, number | null>();
+      let bestUrl: string | null = null;
+      let bestPing = Infinity;
+
+      for (const result of results) {
+        pingMap.set(result.url, result.pingMs);
+        if (result.pingMs !== null && result.pingMs < bestPing) {
+          bestPing = result.pingMs;
+          bestUrl = result.url;
+        }
+      }
+
+      setPingResults(pingMap);
+      setBestRegionUrl(bestUrl);
+      saveStoredPingResults(pingMap);
+    } catch (err) {
+      console.error("Ping test failed:", err);
+    } finally {
+      setIsPinging(false);
+    }
+  }, [regions]);
+
+  // Validate cached results match current regions
+  useEffect(() => {
+    if (regions.length > 0 && pingResults.size > 0) {
+      // Check if all current regions are in the cache
+      const allRegionsCached = regions.every(r => pingResults.has(r.url));
+      if (!allRegionsCached) {
+        // Regions changed, clear cache and re-test
+        setPingResults(new Map());
+        setBestRegionUrl(null);
+        try {
+          window.sessionStorage.removeItem(PING_RESULTS_STORAGE_KEY);
+        } catch {
+          // Ignore
+        }
+      }
+    }
+  }, [regions, pingResults]);
+
+  // Run ping test when regions are available and we don't have cached results
+  useEffect(() => {
+    if (regions.length > 0 && pingResults.size === 0 && !isPinging) {
+      runPingTest();
+    }
+  }, [regions, pingResults.size, isPinging, runPingTest]);
 
   const runCodecTest = useCallback(async () => {
     setCodecTesting(true);
@@ -480,11 +624,17 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [stopStreamInput, setStopStreamInput] = useState(settings.shortcutStopStream);
   const [toggleAntiAfkInput, setToggleAntiAfkInput] = useState(settings.shortcutToggleAntiAfk);
   const [toggleMicrophoneInput, setToggleMicrophoneInput] = useState(settings.shortcutToggleMicrophone);
+  const [screenshotInput, setScreenshotInput] = useState(settings.shortcutScreenshot);
   const [toggleStatsError, setToggleStatsError] = useState(false);
   const [togglePointerLockError, setTogglePointerLockError] = useState(false);
   const [stopStreamError, setStopStreamError] = useState(false);
   const [toggleAntiAfkError, setToggleAntiAfkError] = useState(false);
   const [toggleMicrophoneError, setToggleMicrophoneError] = useState(false);
+  const [screenshotError, setScreenshotError] = useState(false);
+
+  // Game language dropdown state
+  const [gameLanguageDropdownOpen, setGameLanguageDropdownOpen] = useState(false);
+  const gameLanguageDropdownRef = useRef<HTMLDivElement | null>(null);
 
   // Dynamic entitled resolutions from MES API
   const [entitledResolutions, setEntitledResolutions] = useState<EntitledResolution[]>([]);
@@ -509,6 +659,10 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   useEffect(() => {
     setToggleMicrophoneInput(settings.shortcutToggleMicrophone);
   }, [settings.shortcutToggleMicrophone]);
+
+  useEffect(() => {
+    setScreenshotInput(settings.shortcutScreenshot);
+  }, [settings.shortcutScreenshot]);
 
   // Fetch subscription data (cached per account; reload only when account changes)
   useEffect(() => {
@@ -571,6 +725,9 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const handleChange = useCallback(
     <K extends keyof Settings>(key: K, value: Settings[K]) => {
       onSettingChange(key, value);
+      if (key === "controllerMode" && value === false) {
+        onSettingChange("autoLoadControllerLibrary", false);
+      }
       setSavedIndicator(true);
       setTimeout(() => setSavedIndicator(false), 1500);
     },
@@ -631,10 +788,30 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   }, [settings.microphoneMode]);
 
   const filteredRegions = useMemo(() => {
-    if (!regionSearch.trim()) return regions;
     const q = regionSearch.trim().toLowerCase();
-    return regions.filter((r) => r.name.toLowerCase().includes(q));
-  }, [regions, regionSearch]);
+    const filtered = q
+      ? regions.filter((r) => r.name.toLowerCase().includes(q))
+      : [...regions];
+
+    // Sort by ping (best first), then by name
+    filtered.sort((a, b) => {
+      const pingA = pingResults.get(a.url);
+      const pingB = pingResults.get(b.url);
+
+      // If both have ping results, sort by ping
+      if (pingA !== undefined && pingB !== undefined && pingA !== null && pingB !== null) {
+        return pingA - pingB;
+      }
+      // If only A has ping, A comes first
+      if (pingA !== undefined && pingA !== null) return -1;
+      // If only B has ping, B comes first
+      if (pingB !== undefined && pingB !== null) return 1;
+      // If neither has ping, sort by name
+      return a.name.localeCompare(b.name);
+    });
+
+    return filtered;
+  }, [regions, regionSearch, pingResults]);
 
   const selectedRegionName = useMemo(() => {
     if (!settings.region) return "Auto (Best)";
@@ -652,6 +829,10 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     return found?.label || "Selected Device";
   }, [settings.microphoneDeviceId, microphoneDevices]);
 
+  const selectedGameLanguageName = useMemo(() => {
+    return gameLanguageOptions.find((option) => option.value === settings.gameLanguage)?.label ?? "English (US)";
+  }, [settings.gameLanguage]);
+
   useEffect(() => {
     if (settings.microphoneMode === "disabled") {
       setMicrophoneDeviceDropdownOpen(false);
@@ -666,6 +847,9 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       }
       if (microphoneDeviceDropdownRef.current && !microphoneDeviceDropdownRef.current.contains(target)) {
         setMicrophoneDeviceDropdownOpen(false);
+      }
+      if (gameLanguageDropdownRef.current && !gameLanguageDropdownRef.current.contains(target)) {
+        setGameLanguageDropdownOpen(false);
       }
     };
 
@@ -703,13 +887,15 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       && settings.shortcutTogglePointerLock === shortcutDefaults.shortcutTogglePointerLock
       && settings.shortcutStopStream === shortcutDefaults.shortcutStopStream
       && settings.shortcutToggleAntiAfk === shortcutDefaults.shortcutToggleAntiAfk
-      && settings.shortcutToggleMicrophone === shortcutDefaults.shortcutToggleMicrophone,
+      && settings.shortcutToggleMicrophone === shortcutDefaults.shortcutToggleMicrophone
+      && settings.shortcutScreenshot === shortcutDefaults.shortcutScreenshot,
     [
       settings.shortcutToggleStats,
       settings.shortcutTogglePointerLock,
       settings.shortcutStopStream,
       settings.shortcutToggleAntiAfk,
       settings.shortcutToggleMicrophone,
+      settings.shortcutScreenshot,
     ]
   );
 
@@ -719,11 +905,13 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     setStopStreamInput(shortcutDefaults.shortcutStopStream);
     setToggleAntiAfkInput(shortcutDefaults.shortcutToggleAntiAfk);
     setToggleMicrophoneInput(shortcutDefaults.shortcutToggleMicrophone);
+    setScreenshotInput(shortcutDefaults.shortcutScreenshot);
     setToggleStatsError(false);
     setTogglePointerLockError(false);
     setStopStreamError(false);
     setToggleAntiAfkError(false);
     setToggleMicrophoneError(false);
+    setScreenshotError(false);
 
     const shortcutKeys = [
       "shortcutToggleStats",
@@ -731,6 +919,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       "shortcutStopStream",
       "shortcutToggleAntiAfk",
       "shortcutToggleMicrophone",
+      "shortcutScreenshot",
     ] as const;
 
     for (const key of shortcutKeys) {
@@ -752,6 +941,171 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       </header>
 
       <div className="settings-sections">
+        {/* ── Region ────────────────────────────────────── */}
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h2>Region</h2>
+          </div>
+          <div className="settings-rows">
+            {/* Region selector with search */}
+            <div className="region-selector">
+              <button
+                className={`region-selected ${regionDropdownOpen ? "open" : ""}`}
+                onClick={() => setRegionDropdownOpen(!regionDropdownOpen)}
+                type="button"
+              >
+                <span className="region-selected-name">{selectedRegionName}</span>
+                {!settings.region && bestRegionUrl && (
+                  (() => {
+                    const bestRegion = regions.find(r => r.url === bestRegionUrl);
+                    const pingValue = pingResults.get(bestRegionUrl);
+                    if (bestRegion && pingValue !== undefined && pingValue !== null) {
+                      return (
+                        <span className="region-selected-best-info">
+                          {bestRegion.name} • <span className={`region-selected-ping-inline ${pingValue <= 50 ? 'good' : pingValue <= 100 ? 'medium' : 'poor'}`}>{pingValue}ms</span>
+                        </span>
+                      );
+                    }
+                    return null;
+                  })()
+                )}
+                {settings.region && (
+                  (() => {
+                    const pingValue = pingResults.get(settings.region);
+                    if (pingValue !== undefined && pingValue !== null) {
+                      return (
+                        <span className={`region-selected-ping ${pingValue <= 50 ? 'good' : pingValue <= 100 ? 'medium' : 'poor'}`}>
+                          {pingValue}ms
+                        </span>
+                      );
+                    } else if (pingValue === null) {
+                      return <span className="region-selected-ping-unavailable">Failed</span>;
+                    } else if (isPinging) {
+                      return <span className="region-selected-ping-unavailable">Testing...</span>;
+                    }
+                    return null;
+                  })()
+                )}
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`region-chevron ${regionDropdownOpen ? "flipped" : ""}`}>
+                  <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
+                </svg>
+              </button>
+
+              {regionDropdownOpen && (
+                <div className="region-dropdown">
+                  <div className="region-dropdown-header">
+                    <div className="region-dropdown-search">
+                      <Search size={14} className="region-dropdown-search-icon" />
+                      <input
+                        type="text"
+                        className="region-dropdown-search-input"
+                        placeholder="Search regions..."
+                        value={regionSearch}
+                        onChange={(e) => setRegionSearch(e.target.value)}
+                        autoFocus
+                      />
+                      {regionSearch && (
+                        <button className="region-dropdown-clear" onClick={() => setRegionSearch("")} type="button">
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                    <button
+                      className="region-ping-refresh"
+                      onClick={runPingTest}
+                      disabled={isPinging}
+                      type="button"
+                      title="Refresh ping"
+                    >
+                      {isPinging ? (
+                        <Loader size={14} className="spin" />
+                      ) : (
+                        <Wifi size={14} />
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="region-dropdown-list">
+                    <button
+                      className={`region-dropdown-item ${!settings.region ? "active" : ""}`}
+                      onClick={() => {
+                        handleChange("region", "");
+                        setRegionDropdownOpen(false);
+                        setRegionSearch("");
+                      }}
+                      type="button"
+                    >
+                      <Globe size={14} />
+                      <div className="region-auto-best-info">
+                        <span>Auto (Best)</span>
+                        {bestRegionUrl && (() => {
+                          const bestRegion = regions.find(r => r.url === bestRegionUrl);
+                          const bestPing = pingResults.get(bestRegionUrl);
+                          if (bestRegion && bestPing !== undefined && bestPing !== null) {
+                            return (
+                              <span className="region-auto-best-details">
+                                {bestRegion.name} • {bestPing}ms
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </div>
+                      {!settings.region && <Check size={14} className="region-check" />}
+                    </button>
+
+                    {filteredRegions.map((region) => (
+                      <button
+                        key={region.url}
+                        className={`region-dropdown-item ${settings.region === region.url ? "active" : ""}`}
+                        onClick={() => {
+                          handleChange("region", region.url);
+                          setRegionDropdownOpen(false);
+                          setRegionSearch("");
+                        }}
+                        type="button"
+                      >
+                        <Globe size={14} />
+                        <span className="region-name-with-badge">
+                          {region.name}
+                          {region.url === bestRegionUrl && (
+                            <span className="region-best-badge">Best</span>
+                          )}
+                        </span>
+                        <span className="region-ping">
+                          {isPinging ? (
+                            <span className="region-ping-loading">...</span>
+                          ) : (
+                            (() => {
+                              const pingValue = pingResults.get(region.url);
+                              if (pingValue === undefined) {
+                                return <span className="region-ping-unavailable">-</span>;
+                              } else if (pingValue === null) {
+                                return <span className="region-ping-error">Failed</span>;
+                              } else {
+                                return (
+                                  <span className={`region-ping-value ${pingValue <= 50 ? 'good' : pingValue <= 100 ? 'medium' : 'poor'}`}>
+                                    {pingValue}ms
+                                  </span>
+                                );
+                              }
+                            })()
+                          )}
+                        </span>
+                        {settings.region === region.url && <Check size={14} className="region-check" />}
+                      </button>
+                    ))}
+
+                    {filteredRegions.length === 0 && regions.length > 0 && (
+                      <div className="region-dropdown-empty">No regions match &ldquo;{regionSearch}&rdquo;</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
         {/* ── Video ──────────────────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
@@ -759,6 +1113,24 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
           </div>
 
           <div className="settings-rows">
+            {/* Aspect Ratio — static chips */}
+            <div className="settings-row">
+              <label className="settings-label">Aspect Ratio</label>
+              <div className="settings-chip-row">
+                {STATIC_ASPECT_RATIO_PRESETS.map((preset) => (
+                  <button
+                    key={preset.value}
+                    className={`settings-chip ${settings.aspectRatio === preset.value ? "active" : ""}`}
+                    onClick={() => {
+                      handleChange("aspectRatio", preset.value as any);
+                    }}
+                  >
+                    <span>{preset.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Resolution — dynamic or static chips */}
             <div className="settings-row settings-row--column">
               <label className="settings-label">
@@ -840,42 +1212,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               </div>
             </div>
 
-            {/* Decoder preference */}
-            <div className="settings-row settings-row--column">
-              <label className="settings-label">Decoder</label>
-              <div className="settings-chip-row">
-                {accelerationOptions.map((option) => (
-                  <button
-                    key={`decoder-${option.value}`}
-                    className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
-                    onClick={() => handleChange("decoderPreference", option.value)}
-                    title={option.value === "hardware" ? platformHardwareLabel : option.label}
-                  >
-                    {option.value === "hardware" ? platformHardwareLabel : option.label}
-                  </button>
-                ))}
-              </div>
-              <span className="settings-subtle-hint">Applies after app restart.</span>
-            </div>
-
-            {/* Encoder preference */}
-            <div className="settings-row settings-row--column">
-              <label className="settings-label">Encoder</label>
-              <div className="settings-chip-row">
-                {accelerationOptions.map((option) => (
-                  <button
-                    key={`encoder-${option.value}`}
-                    className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
-                    onClick={() => handleChange("encoderPreference", option.value)}
-                    title={option.value === "hardware" ? platformHardwareLabel : option.label}
-                  >
-                    {option.value === "hardware" ? platformHardwareLabel : option.label}
-                  </button>
-                ))}
-              </div>
-              <span className="settings-subtle-hint">Applies after app restart.</span>
-            </div>
-
             {/* Color Quality */}
             <div className="settings-row settings-row--column">
               <label className="settings-label">Color Depth</label>
@@ -916,46 +1252,19 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               />
             </div>
 
-            <div className="settings-row settings-row--column">
-              <div className="settings-row-top">
-                <label className="settings-label">Session Timer Reappear</label>
-                <span className="settings-value-badge">
-                  {settings.sessionClockShowEveryMinutes === 0
-                    ? "Off"
-                    : `Every ${settings.sessionClockShowEveryMinutes} min`}
-                </span>
-              </div>
-              <input
-                type="range"
-                className="settings-slider"
-                min={0}
-                max={120}
-                step={5}
-                value={settings.sessionClockShowEveryMinutes}
-                onChange={(e) => handleChange("sessionClockShowEveryMinutes", parseInt(e.target.value, 10))}
-              />
-              <span className="settings-subtle-hint">
-                How often the session timer pops back up while streaming (0 disables repeats).
-              </span>
-            </div>
-
-            <div className="settings-row settings-row--column">
-              <div className="settings-row-top">
-                <label className="settings-label">Session Timer Visible Time</label>
-                <span className="settings-value-badge">{settings.sessionClockShowDurationSeconds}s</span>
-              </div>
-              <input
-                type="range"
-                className="settings-slider"
-                min={5}
-                max={120}
-                step={5}
-                value={settings.sessionClockShowDurationSeconds}
-                onChange={(e) => handleChange("sessionClockShowDurationSeconds", parseInt(e.target.value, 10))}
-              />
-              <span className="settings-subtle-hint">
-                How long the session timer stays visible each time it appears.
-              </span>
+            <div className="settings-row settings-row--top-aligned">
+              <label className="settings-label">
+                Experimental L4S Request
+                <span className="settings-hint">Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.enableL4S}
+                  onChange={(e) => handleChange("enableL4S", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
             </div>
           </div>
         </section>
@@ -1181,19 +1490,98 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               </label>
             </div>
 
-            <div className="settings-row">
+            <div className="settings-row settings-row--top-aligned">
               <label className="settings-label">
-                Hide Stream Overlay Buttons
-                <span className="settings-hint">Hide microphone, fullscreen, and end-session buttons while streaming.</span>
+                Raw Input
+                <span className="settings-hint">Uses unadjusted pointer lock when available, forces 1.00x mouse sensitivity, and disables software mouse acceleration.</span>
               </label>
               <label className="settings-toggle">
                 <input
                   type="checkbox"
-                  checked={settings.hideStreamButtons}
-                  onChange={(e) => handleChange("hideStreamButtons", e.target.checked)}
+                  checked={settings.rawMouseInput}
+                  onChange={(e) => handleChange("rawMouseInput", e.target.checked)}
                 />
                 <span className="settings-toggle-track" />
               </label>
+            </div>
+
+            {/* Mouse Sensitivity */}
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Mouse Sensitivity</label>
+                <span className="settings-value-badge">{settings.rawMouseInput ? "1.00x" : `${settings.mouseSensitivity.toFixed(2)}x`}</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <input
+                  type="range"
+                  className="settings-slider"
+                  min={0.1}
+                  max={4}
+                  step={0.01}
+                  value={settings.mouseSensitivity}
+                  disabled={settings.rawMouseInput}
+                  onChange={(e) => handleChange("mouseSensitivity", parseFloat(e.target.value))}
+                />
+                <input
+                  type="number"
+                  className="settings-number-input"
+                  style={{ width: 80 }}
+                  min={0.1}
+                  max={4}
+                  step={0.01}
+                  value={Number(settings.mouseSensitivity.toFixed(2))}
+                  disabled={settings.rawMouseInput}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value || "0");
+                    if (Number.isFinite(v)) handleChange("mouseSensitivity", Math.max(0.1, Math.min(4, v)));
+                  }}
+                />
+              </div>
+              <span className="settings-subtle-hint">
+                {settings.rawMouseInput
+                  ? "Raw Input is enabled, so sensitivity is locked to 1.00x."
+                  : "Multiplier applied to mouse movement (1.00 = default)"}
+              </span>
+            </div>
+
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Mouse Accelerator</label>
+                <span className="settings-value-badge">{settings.rawMouseInput ? "Off" : `${Math.round(settings.mouseAcceleration)}%`}</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <input
+                  type="range"
+                  className="settings-slider"
+                  min={1}
+                  max={150}
+                  step={1}
+                  value={Math.round(settings.mouseAcceleration)}
+                  disabled={settings.rawMouseInput}
+                  onChange={(e) => handleChange("mouseAcceleration", Math.max(1, Math.min(150, Math.round(Number(e.target.value) || 1))))}
+                />
+                <input
+                  type="number"
+                  className="settings-number-input"
+                  style={{ width: 80 }}
+                  min={1}
+                  max={150}
+                  step={1}
+                  value={Math.round(settings.mouseAcceleration)}
+                  disabled={settings.rawMouseInput}
+                  onChange={(e) => {
+                    const v = Number(e.target.value || "1");
+                    if (Number.isFinite(v)) {
+                      handleChange("mouseAcceleration", Math.max(1, Math.min(150, Math.round(v))));
+                    }
+                  }}
+                />
+              </div>
+              <span className="settings-subtle-hint">
+                {settings.rawMouseInput
+                  ? "Raw Input disables the app-side mouse accelerator."
+                  : "Dynamic turn boost strength (1% = off-like, 150% = strongest)."}
+              </span>
             </div>
 
             <div className="settings-row settings-row--column">
@@ -1282,99 +1670,230 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                     spellCheck={false}
                   />
                 </label>
+
+                <label className="settings-shortcut-row">
+                  <span className="settings-shortcut-label">ScreensShot</span>
+                  <input
+                    type="text"
+                    className={`settings-text-input settings-shortcut-input ${screenshotError ? "error" : ""}`}
+                    value={screenshotInput}
+                    onChange={(e) => setScreenshotInput(e.target.value)}
+                    onBlur={() => handleShortcutBlur("shortcutScreenshot", screenshotInput, setScreenshotInput, setScreenshotError)}
+                    onKeyDown={handleShortcutKeyDown}
+                    placeholder="F11"
+                    spellCheck={false}
+                  />
+                </label>
+                <label className="settings-shortcut-row">
+                  <span className="settings-shortcut-label">Toggle Settings Menu</span>
+                  <input
+                    type="text"
+                    value="Cmd+G / Ctrl+Shift+G"
+                    className="settings-text-input settings-shortcut-input settings-shortcut-input--static"
+                    disabled
+                  />
+                </label>
               </div>
 
-              {(toggleStatsError || togglePointerLockError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError) && (
+              {(toggleStatsError || togglePointerLockError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError || screenshotError) && (
                 <span className="settings-input-hint">
                   Invalid shortcut. Use {shortcutExamples}
                 </span>
               )}
 
-              {!toggleStatsError && !togglePointerLockError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && (
+              {!toggleStatsError && !togglePointerLockError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && !screenshotError && (
                 <span className="settings-shortcut-hint">
-                  {shortcutExamples}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}.
+                  {shortcutExamples}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}. ScreensShot: {formatShortcutForDisplay(settings.shortcutScreenshot, isMac)}.
                 </span>
               )}
             </div>
           </div>
         </section>
 
-        {/* ── Region ────────────────────────────────────── */}
+        {/* ── Appearance ─────────────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
-            <h2>Region</h2>
+            <h2>Appearance</h2>
           </div>
           <div className="settings-rows">
-            {/* Region selector with search */}
-            <div className="region-selector">
-              <button
-                className={`region-selected ${regionDropdownOpen ? "open" : ""}`}
-                onClick={() => setRegionDropdownOpen(!regionDropdownOpen)}
-                type="button"
-              >
-                <span className="region-selected-name">{selectedRegionName}</span>
-                <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`region-chevron ${regionDropdownOpen ? "flipped" : ""}`}>
-                  <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
-                </svg>
-              </button>
+            <div className="settings-row">
+              <label className="settings-label">
+                Hide Stream Overlay Buttons
+                <span className="settings-hint">Hide microphone, fullscreen, and end-session buttons while streaming.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.hideStreamButtons}
+                  onChange={(e) => handleChange("hideStreamButtons", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
 
-              {regionDropdownOpen && (
-                <div className="region-dropdown">
-                  <div className="region-dropdown-search">
-                    <Search size={14} className="region-dropdown-search-icon" />
-                    <input
-                      type="text"
-                      className="region-dropdown-search-input"
-                      placeholder="Search regions..."
-                      value={regionSearch}
-                      onChange={(e) => setRegionSearch(e.target.value)}
-                      autoFocus
-                    />
-                    {regionSearch && (
-                      <button className="region-dropdown-clear" onClick={() => setRegionSearch("")} type="button">
-                        <X size={12} />
-                      </button>
-                    )}
-                  </div>
+            <div className="settings-row">
+              <label className="settings-label">
+                <span className="settings-label-inline">
+                  <span>Controller Mode Library</span>
+                  <span className="settings-inline-badge">Beta</span>
+                </span>
+                <span className="settings-hint">Replace the desktop library/settings navigation with the controller-first layout only when controller mode is enabled.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.controllerMode}
+                  onChange={(e) => handleChange("controllerMode", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
 
-                  <div className="region-dropdown-list">
-                    <button
-                      className={`region-dropdown-item ${!settings.region ? "active" : ""}`}
-                      onClick={() => {
-                        handleChange("region", "");
-                        setRegionDropdownOpen(false);
-                        setRegionSearch("");
-                      }}
-                      type="button"
-                    >
-                      <Globe size={14} />
-                      <span>Auto (Best)</span>
-                      {!settings.region && <Check size={14} className="region-check" />}
-                    </button>
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Session Timer Reappear</label>
+                <span className="settings-value-badge">
+                  {settings.sessionClockShowEveryMinutes === 0
+                    ? "Off"
+                    : `Every ${settings.sessionClockShowEveryMinutes} min`}
+                </span>
+              </div>
+              <input
+                type="range"
+                className="settings-slider"
+                min={0}
+                max={120}
+                step={5}
+                value={settings.sessionClockShowEveryMinutes}
+                onChange={(e) => handleChange("sessionClockShowEveryMinutes", parseInt(e.target.value, 10))}
+              />
+              <span className="settings-subtle-hint">
+                How often the session timer pops back up while streaming (0 disables repeats).
+              </span>
+            </div>
 
-                    {filteredRegions.map((region) => (
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Session Timer Visible Time</label>
+                <span className="settings-value-badge">{settings.sessionClockShowDurationSeconds}s</span>
+              </div>
+              <input
+                type="range"
+                className="settings-slider"
+                min={5}
+                max={120}
+                step={5}
+                value={settings.sessionClockShowDurationSeconds}
+                onChange={(e) => handleChange("sessionClockShowDurationSeconds", parseInt(e.target.value, 10))}
+              />
+              <span className="settings-subtle-hint">
+                How long the session timer stays visible each time it appears.
+              </span>
+            </div>
+
+            {settings.controllerMode && (
+              <div className="settings-row">
+                <label className="settings-label">Exit Controller Mode</label>
+                <div>
+                  <button
+                    className="settings-exit-btn"
+                    onClick={() => handleChange("controllerMode", false)}
+                  >
+                    Exit
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="settings-row">
+              <label className="settings-label">
+                Controller UI Sounds
+                <span className="settings-hint">Play subtle move, open, and back sounds inside controller mode only.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.controllerUiSounds}
+                  onChange={(e) => handleChange("controllerUiSounds", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
+                Background Animations (Controller Mode)
+                <span className="settings-hint">Show animated background visuals on controller-mode loading screens only.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.controllerBackgroundAnimations}
+                  onChange={(e) => handleChange("controllerBackgroundAnimations", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
+                Auto-Load Controller Library
+                <span className="settings-hint">Automatically open the controller library at startup when controller mode is enabled.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.autoLoadControllerLibrary}
+                  onChange={(e) => handleChange("autoLoadControllerLibrary", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+          </div>
+        </section>
+
+        {/* ── Game ───────────────────────────────────────── */}
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h2>Game</h2>
+          </div>
+          <div className="settings-rows">
+            {/* Game Language */}
+            <div className="settings-row">
+              <label className="settings-label">
+                In-Game Language
+                <span className="settings-hint">Language for in-game menus, subtitles, and audio (where supported)</span>
+              </label>
+              <div className="settings-dropdown" ref={gameLanguageDropdownRef}>
+                <button
+                  type="button"
+                  className={`settings-dropdown-selected ${gameLanguageDropdownOpen ? "open" : ""}`}
+                  onClick={() => setGameLanguageDropdownOpen((open) => !open)}
+                >
+                  <span className="settings-dropdown-selected-name">{selectedGameLanguageName}</span>
+                  <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${gameLanguageDropdownOpen ? "flipped" : ""}`}>
+                    <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
+                  </svg>
+                </button>
+                {gameLanguageDropdownOpen && (
+                  <div className="settings-dropdown-menu settings-dropdown-menu--tall">
+                    {gameLanguageOptions.map((option) => (
                       <button
-                        key={region.url}
-                        className={`region-dropdown-item ${settings.region === region.url ? "active" : ""}`}
-                        onClick={() => {
-                          handleChange("region", region.url);
-                          setRegionDropdownOpen(false);
-                          setRegionSearch("");
-                        }}
+                        key={option.value}
                         type="button"
+                        className={`settings-dropdown-item ${settings.gameLanguage === option.value ? "active" : ""}`}
+                        onClick={() => {
+                          handleChange("gameLanguage", option.value);
+                          setGameLanguageDropdownOpen(false);
+                        }}
                       >
-                        <Globe size={14} />
-                        <span>{region.name}</span>
-                        {settings.region === region.url && <Check size={14} className="region-check" />}
+                        <span>{option.label}</span>
+                        {settings.gameLanguage === option.value && <Check size={14} className="settings-dropdown-check" />}
                       </button>
                     ))}
-
-                    {filteredRegions.length === 0 && regions.length > 0 && (
-                      <div className="region-dropdown-empty">No regions match &ldquo;{regionSearch}&rdquo;</div>
-                    )}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </div>
         </section>
@@ -1414,6 +1933,32 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               >
                 <FileDown size={16} />
                 Export Logs
+              </button>
+            </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
+                Delete Cache
+                <span className="settings-hint">Clear all cached game data, images, and metadata</span>
+              </label>
+              <button
+                type="button"
+                className="settings-delete-cache-btn"
+                onClick={async () => {
+                  if (!window.confirm("Are you sure you want to delete all cached data? This will clear all game metadata, images, and library information.")) {
+                    return;
+                  }
+                  try {
+                    await window.openNow.deleteCache();
+                    alert("Cache cleared successfully. The app will refresh on next startup.");
+                  } catch (err) {
+                    console.error("[Settings] Failed to delete cache:", err);
+                    alert("Failed to delete cache. Please try again.");
+                  }
+                }}
+              >
+                <Trash2 size={16} />
+                Delete Cache
               </button>
             </div>
           </div>

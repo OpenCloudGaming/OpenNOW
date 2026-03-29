@@ -1,13 +1,22 @@
 import { Play, Monitor } from "lucide-react";
 import { memo } from "react";
 import type { JSX } from "react";
-import type { GameInfo, GameVariant } from "@shared/gfn";
+import type { GameInfo } from "@shared/gfn";
 
 interface GameCardProps {
   game: GameInfo;
   isSelected?: boolean;
   onPlay: () => void;
   onSelect: () => void;
+  selectedVariantId?: string;
+  onSelectStore?: (variantId: string) => void;
+}
+
+interface StoreOption {
+  storeKey: string;
+  variantId: string;
+  displayName: string;
+  IconComponent: () => JSX.Element;
 }
 
 /* ── Official store brand icons (Simple Icons / MDI, viewBox 0 0 24 24) ── */
@@ -121,29 +130,80 @@ const STORE_DISPLAY_NAME: Record<string, string> = {
 };
 
 /** Normalize an appStore value to the uppercase key used by the icon/name maps. */
-function normalizeStoreKey(raw: string): string {
+export function normalizeStoreKey(raw: string): string {
   return raw.toUpperCase().replace(/[\s-]+/g, "_");
 }
 
-function getUniqueStores(game: GameInfo): string[] {
-  const seen = new Set<string>();
-  const stores: string[] = [];
-  for (const v of game.variants) {
-    const key = normalizeStoreKey(v.store);
-    if (key !== "UNKNOWN" && key !== "NONE" && !seen.has(key)) {
-      seen.add(key);
-      stores.push(key);
-    }
-  }
-  return stores;
+function formatStoreFallbackName(storeKey: string): string {
+  return storeKey
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
-export const GameCard = memo(function GameCard({ game, isSelected = false, onPlay, onSelect }: GameCardProps): JSX.Element {
-  const stores = getUniqueStores(game);
+export function getStoreDisplayName(store: string): string {
+  const key = normalizeStoreKey(store);
+  return STORE_DISPLAY_NAME[key] ?? formatStoreFallbackName(key);
+}
+
+export function getStoreIconComponent(store: string): () => JSX.Element {
+  const key = normalizeStoreKey(store);
+  return STORE_ICON_MAP[key] ?? DefaultStoreIcon;
+}
+
+function getStoreOptions(game: GameInfo): StoreOption[] {
+  const seen = new Set<string>();
+  const options: StoreOption[] = [];
+  for (const variant of game.variants) {
+    const key = normalizeStoreKey(variant.store);
+    if (key !== "UNKNOWN" && key !== "NONE" && !seen.has(key)) {
+      seen.add(key);
+      options.push({
+        storeKey: key,
+        variantId: variant.id,
+        displayName: getStoreDisplayName(variant.store),
+        IconComponent: getStoreIconComponent(variant.store),
+      });
+    }
+  }
+  return options;
+}
+
+function getActiveVariantId(storeOptions: StoreOption[], selectedVariantId?: string): string | undefined {
+  if (!selectedVariantId) {
+    return storeOptions[0]?.variantId;
+  }
+  const hasSelected = storeOptions.some((option) => option.variantId === selectedVariantId);
+  return hasSelected ? selectedVariantId : storeOptions[0]?.variantId;
+}
+
+function getActiveStoreOption(storeOptions: StoreOption[], activeVariantId?: string): StoreOption | undefined {
+  if (!activeVariantId) {
+    return storeOptions[0];
+  }
+  return storeOptions.find((option) => option.variantId === activeVariantId) ?? storeOptions[0];
+}
+
+export const GameCard = memo(function GameCard({
+  game,
+  isSelected = false,
+  onPlay,
+  onSelect,
+  selectedVariantId,
+  onSelectStore,
+}: GameCardProps): JSX.Element {
+  const storeOptions = getStoreOptions(game);
+  const activeVariantId = getActiveVariantId(storeOptions, selectedVariantId);
+  const activeStoreOption = getActiveStoreOption(storeOptions, activeVariantId);
 
   const handlePlayClick = (event: React.MouseEvent): void => {
     event.stopPropagation();
     onPlay();
+  };
+
+  const handleStoreClick = (event: React.MouseEvent, variantId: string): void => {
+    event.stopPropagation();
+    onSelectStore?.(variantId);
   };
 
   return (
@@ -151,6 +211,9 @@ export const GameCard = memo(function GameCard({ game, isSelected = false, onPla
       className={`game-card ${isSelected ? "selected" : ""}`}
       onClick={onSelect}
       onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) {
+          return;
+        }
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           onPlay();
@@ -191,14 +254,37 @@ export const GameCard = memo(function GameCard({ game, isSelected = false, onPla
         <h3 className="game-card-title" title={game.title}>
           {game.title}
         </h3>
-        {stores.length > 0 && (
+        {activeStoreOption && (
+          <p className="game-card-platform" title={activeStoreOption.displayName}>
+            {activeStoreOption.displayName}
+          </p>
+        )}
+        {storeOptions.length > 0 && (
           <div className="game-card-stores">
-            {stores.map((store) => {
-              const IconComponent = STORE_ICON_MAP[store] ?? DefaultStoreIcon;
-              const displayName = STORE_DISPLAY_NAME[store] ?? store;
+            {storeOptions.map((store) => {
+              const isActive = store.variantId === activeVariantId;
+              const className = `game-card-store-chip ${isActive ? "active" : ""}`;
+              const title = `${store.displayName}${isActive ? " (selected)" : ""}`;
+
+              if (onSelectStore) {
+                return (
+                  <button
+                    key={store.storeKey}
+                    type="button"
+                    className={className}
+                    title={title}
+                    onClick={(event) => handleStoreClick(event, store.variantId)}
+                    aria-label={`${store.displayName} store`}
+                    aria-pressed={isActive}
+                  >
+                    <store.IconComponent />
+                  </button>
+                );
+              }
+
               return (
-                <span key={store} className="game-card-store-chip" title={displayName}>
-                  <IconComponent />
+                <span key={store.storeKey} className={className} title={title}>
+                  <store.IconComponent />
                 </span>
               );
             })}

@@ -397,6 +397,8 @@ export function preferCodec(sdp: string, codec: VideoCodec, options?: PreferCode
 interface NvstParams {
   width: number;
   height: number;
+  clientViewportWidth: number;
+  clientViewportHeight: number;
   fps: number;
   maxBitrateKbps: number;
   partialReliableThresholdMs: number;
@@ -577,8 +579,8 @@ export function buildNvstSdp(params: NvstParams): string {
 
   // Viewport, FPS, and bitrate
   lines.push(
-    `a=video.clientViewportWd:${params.width}`,
-    `a=video.clientViewportHt:${params.height}`,
+    `a=video.clientViewportWd:${params.clientViewportWidth}`,
+    `a=video.clientViewportHt:${params.clientViewportHeight}`,
     `a=video.maxFPS:${params.fps}`,
     `a=video.initialBitrateKbps:${initialBitrate}`,
     `a=video.initialPeakBitrateKbps:${params.maxBitrateKbps}`,

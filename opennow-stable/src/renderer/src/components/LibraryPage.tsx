@@ -11,6 +11,8 @@ export interface LibraryPageProps {
   isLoading: boolean;
   selectedGameId: string;
   onSelectGame: (id: string) => void;
+  selectedVariantByGameId: Record<string, string>;
+  onSelectGameVariant: (gameId: string, variantId: string) => void;
 }
 
 function formatLastPlayed(date?: string): string {
@@ -40,6 +42,8 @@ export function LibraryPage({
   isLoading,
   selectedGameId,
   onSelectGame,
+  selectedVariantByGameId,
+  onSelectGameVariant,
 }: LibraryPageProps): JSX.Element {
   const filteredGames = searchQuery.trim()
     ? games.filter((game) =>
@@ -98,6 +102,8 @@ export function LibraryPage({
                   isSelected={game.id === selectedGameId}
                   onSelect={() => onSelectGame(game.id)}
                   onPlay={() => onPlayGame(game)}
+                  selectedVariantId={selectedVariantByGameId[game.id]}
+                  onSelectStore={(variantId) => onSelectGameVariant(game.id, variantId)}
                 />
                 {/* @ts-expect-error - lastPlayed may exist on library games */}
                 {game.lastPlayed && (
