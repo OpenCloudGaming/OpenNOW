@@ -1,9 +1,11 @@
 import { Loader2, Monitor, Cpu, Wifi, X, XCircle } from "lucide-react";
 import type { JSX } from "react";
+import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 
 export interface StreamLoadingProps {
   gameTitle: string;
   gameCover?: string;
+  platformStore?: string;
   status: "queue" | "setup" | "starting" | "connecting";
   queuePosition?: number;
   estimatedWait?: string;
@@ -60,6 +62,7 @@ function getActiveStepIndex(status: StreamLoadingProps["status"]): number {
 export function StreamLoading({
   gameTitle,
   gameCover,
+  platformStore,
   status,
   queuePosition,
   estimatedWait,
@@ -69,6 +72,8 @@ export function StreamLoading({
   const hasError = Boolean(error);
   const activeStepIndex = getActiveStepIndex(status);
   const statusMessage = getStatusMessage(status, queuePosition, hasError);
+  const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
+  const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
 
   return (
     <div className={`sload${hasError ? " sload--error" : ""}`}>
@@ -95,6 +100,14 @@ export function StreamLoading({
             <h2 className="sload-title" title={gameTitle}>
               {gameTitle}
             </h2>
+            {PlatformIcon && (
+              <div className="sload-platform" title={platformName}>
+                <span className="sload-platform-icon">
+                  <PlatformIcon />
+                </span>
+                <span>{platformName}</span>
+              </div>
+            )}
           </div>
         </div>
 

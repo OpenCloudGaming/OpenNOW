@@ -397,6 +397,8 @@ export function preferCodec(sdp: string, codec: VideoCodec, options?: PreferCode
 interface NvstParams {
   width: number;
   height: number;
+  clientViewportWidth: number;
+  clientViewportHeight: number;
   fps: number;
   maxBitrateKbps: number;
   partialReliableThresholdMs: number;
@@ -448,7 +450,9 @@ export function mungeAnswerSdp(sdp: string, maxBitrateKbps: number): string {
 
 export function buildNvstSdp(params: NvstParams): string {
   console.log(`[SDP] buildNvstSdp: ${params.width}x${params.height}@${params.fps}fps, codec=${params.codec}, colorQuality=${params.colorQuality}, maxBitrate=${params.maxBitrateKbps}kbps`);
-  console.log(`[SDP] buildNvstSdp: ICE ufrag=${params.credentials.ufrag}, pwd=${params.credentials.pwd.slice(0, 8)}..., fingerprint=${params.credentials.fingerprint.slice(0, 20)}...`);
+  console.log(
+    `[SDP] buildNvstSdp: ICE credential lengths ufrag=${params.credentials.ufrag.length}, pwd=${params.credentials.pwd.length}, fingerprint=${params.credentials.fingerprint.length}`,
+  );
   // Adaptive profile:
   // allow bitrate to scale down under congestion to reduce stutter and input lag.
   const minBitrate = Math.max(5000, Math.floor(params.maxBitrateKbps * 0.35));
@@ -577,8 +581,8 @@ export function buildNvstSdp(params: NvstParams): string {
 
   // Viewport, FPS, and bitrate
   lines.push(
-    `a=video.clientViewportWd:${params.width}`,
-    `a=video.clientViewportHt:${params.height}`,
+    `a=video.clientViewportWd:${params.clientViewportWidth}`,
+    `a=video.clientViewportHt:${params.clientViewportHeight}`,
     `a=video.maxFPS:${params.fps}`,
     `a=video.initialBitrateKbps:${initialBitrate}`,
     `a=video.initialPeakBitrateKbps:${params.maxBitrateKbps}`,

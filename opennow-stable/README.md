@@ -37,14 +37,12 @@ Workflow: `.github/workflows/auto-build.yml`
 
 ## Tagged Releases
 
-Format: `opennow-stable-vX.Y.Z` (e.g., `opennow-stable-v0.2.4`)
+Release workflow: `.github/workflows/release.yml`
 
-```bash
-git tag opennow-stable-v0.2.4
-git push origin opennow-stable-v0.2.4
-```
-
-The workflow automatically builds all platforms and creates/updates the GitHub Release.
+- Run it manually with `workflow_dispatch`
+- Provide a version like `1.2.3` or `v1.2.3`
+- Optional tag pushes matching `v*.*.*` or `opennow-stable-v*.*.*` also trigger releases
+- The workflow builds all platforms, publishes the GitHub Release, then commits the version bump back to the triggering release branch; manual/tagged runs fall back to `dev` when no branch context is available
 
 ## Technical Notes
 

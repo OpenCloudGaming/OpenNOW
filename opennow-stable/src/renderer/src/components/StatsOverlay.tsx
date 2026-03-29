@@ -82,6 +82,13 @@ export function StatsOverlay({
           </div>
         )}
 
+        {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
+          <div className="sovl-pill sovl-pill--warn" title={stats.lagReasonDetail}>
+            <AlertTriangle size={13} className="sovl-icon" />
+            <span className="sovl-val">{stats.lagReason}</span>
+          </div>
+        )}
+
         {/* Controller Status */}
         {connectedControllers > 0 && (
           <div className="sovl-pill">

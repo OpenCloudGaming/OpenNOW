@@ -1,0 +1,260 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, e.g. 1.2.3 or v1.2.3
+        required: true
+        type: string
+  push:
+    tags:
+      - "v*.*.*"
+      - "opennow-stable-v*.*.*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      make_latest: ${{ steps.release.outputs.make_latest }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: opennow-stable/package-lock.json
+
+      - name: Install dependencies
+        working-directory: opennow-stable
+        run: npm ci --prefer-offline --no-audit --progress=false
+
+      - name: Typecheck
+        working-directory: opennow-stable
+        run: npm run typecheck --if-present
+
+      - name: Resolve release metadata
+        id: release
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          raw="${INPUT_VERSION:-$REF_NAME}"
+          case "$raw" in
+            opennow-stable-v*) version="${raw#opennow-stable-v}" ;;
+            v*) version="${raw#v}" ;;
+            *) version="$raw" ;;
+          esac
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid semver version: $raw" >&2
+            exit 1
+          fi
+
+          prerelease=false
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          fi
+
+          make_latest=true
+          if [[ "$prerelease" == true ]]; then
+            make_latest=false
+          fi
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            release_tag="v${version}"
+          else
+            release_tag="$raw"
+          fi
+
+          {
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "make_latest=$make_latest"
+            echo "release_tag=$release_tag"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows
+            os: blacksmith-4vcpu-windows-2025
+            builder_args: "--win nsis portable"
+          - label: macos-x64
+            os: macos-latest
+            builder_args: "--mac dmg zip --x64"
+          - label: macos-arm64
+            os: macos-latest
+            builder_args: "--mac dmg zip --arm64"
+          - label: linux-x64
+            os: blacksmith-4vcpu-ubuntu-2404
+            builder_args: "--linux AppImage deb --x64"
+          - label: linux-arm64
+            os: blacksmith-4vcpu-ubuntu-2404-arm
+            builder_args: "--linux AppImage deb --arm64"
+
+    defaults:
+      run:
+        working-directory: opennow-stable
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      npm_config_audit: "false"
+      npm_config_fund: "false"
+      RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+      USE_SYSTEM_FPM: ${{ matrix.label == 'linux-arm64' && 'true' || 'false' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: "**/package-lock.json"
+
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.cache/electron
+            ${{ github.workspace }}/.cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fakeroot rpm
+
+      - name: Install FPM for arm64 deb builds
+        if: matrix.label == 'linux-arm64'
+        run: sudo apt-get install -y ruby ruby-dev build-essential && sudo gem install fpm
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --progress=false
+
+      - name: Update package version
+        run: node -e "const fs=require('fs'); const path='package.json'; const pkg=JSON.parse(fs.readFileSync(path,'utf8')); pkg.version=process.env.RELEASE_VERSION; fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');"
+
+      - name: Build app bundles
+        run: npm run build
+
+      - name: Package installers
+        run: npx electron-builder --publish never ${{ matrix.builder_args }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-stable-${{ matrix.label }}
+          path: |
+            opennow-stable/dist-release/*.exe
+            opennow-stable/dist-release/*.dmg
+            opennow-stable/dist-release/*.zip
+            opennow-stable/dist-release/*.AppImage
+            opennow-stable/dist-release/*.deb
+          if-no-files-found: error
+
+  release:
+    name: publish-release
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    needs:
+      - preflight
+      - build
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.preflight.outputs.release_tag }}
+          name: OpenNOW v${{ needs.preflight.outputs.version }}
+          prerelease: ${{ needs.preflight.outputs.prerelease }}
+          make_latest: ${{ needs.preflight.outputs.make_latest }}
+          generate_release_notes: true
+          files: release-artifacts/**/*
+
+  finalize:
+    name: finalize-version-bump
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    needs:
+      - preflight
+      - release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Resolve release branch
+        id: branch
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "$REF_TYPE" == "branch" ]]; then
+            branch="$REF_NAME"
+          else
+            branch="dev"
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.branch.outputs.branch }}
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Update package version
+        working-directory: opennow-stable
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: node -e "const fs=require('fs'); const path='package.json'; const pkg=JSON.parse(fs.readFileSync(path,'utf8')); pkg.version=process.env.RELEASE_VERSION; fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');"
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add opennow-stable/package.json
+          if git diff --cached --quiet; then
+            echo "No version bump changes to commit."
+            exit 0
+          fi
+          git commit -m "chore(release): prepare v${{ needs.preflight.outputs.version }}"
+          git push origin HEAD:${{ steps.branch.outputs.branch }}
