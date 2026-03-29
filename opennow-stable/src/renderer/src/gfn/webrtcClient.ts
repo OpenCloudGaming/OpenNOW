@@ -6,6 +6,7 @@ import type {
   VideoCodec,
   MicrophoneMode,
 } from "@shared/gfn";
+import { isGfnVerboseLoggingEnabled } from "@shared/gfnClient";
 
 import {
   InputEncoder,
@@ -224,8 +225,11 @@ function parsePartialReliableThresholdMs(sdp: string): number | null {
     return null;
   }
   const parsed = Number.parseInt(match[1], 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
+  if (!Number.isFinite(parsed) || parsed < 0) {
     return null;
+  }
+  if (parsed === 0) {
+    return 0;
   }
   return Math.max(1, Math.min(5000, parsed));
 }
@@ -448,9 +452,10 @@ export class GfnWebRtcClient {
 
   private pc: RTCPeerConnection | null = null;
   private reliableInputChannel: RTCDataChannel | null = null;
-  private mouseInputChannel: RTCDataChannel | null = null;
+  private gamepadInputChannel: RTCDataChannel | null = null;
   private controlChannel: RTCDataChannel | null = null;
   private audioContext: AudioContext | null = null;
+  private readonly verboseLogging = isGfnVerboseLoggingEnabled();
 
   private inputReady = false;
   public inputPaused = false;
@@ -474,7 +479,7 @@ export class GfnWebRtcClient {
   private static readonly MOUSE_FLUSH_FAST_MS = 4;
   private static readonly MOUSE_FLUSH_NORMAL_MS = 8;
   private static readonly MOUSE_FLUSH_SAFE_MS = 16;
-  private static readonly DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS = 300;
+  private static readonly DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS = 0;
   private static readonly RELIABLE_MOUSE_BACKPRESSURE_BYTES = 64 * 1024;
   private static readonly BACKPRESSURE_LOG_INTERVAL_MS = 2000;
   private static readonly VIDEO_BASE_JITTER_TARGET_MS = 12;
@@ -795,6 +800,18 @@ export class GfnWebRtcClient {
     this.options.onLog(message);
   }
 
+  private summarizeCandidate(candidate: string): string {
+    const protocol = candidate.match(/candidate:\S+\s+\d+\s+(\w+)/i)?.[1] ?? "unknown";
+    const type = candidate.match(/\styp\s+(\w+)/i)?.[1] ?? "unknown";
+    return `${protocol.toLowerCase()}/${type} (${candidate.length} chars)`;
+  }
+
+  private summarizeSdp(label: string, sdp: string): string {
+    const lineCount = sdp.split(/\r?\n/).filter(Boolean).length;
+    const mediaSections = (sdp.match(/^m=/gm) ?? []).length;
+    return `${label}: ${sdp.length} chars, ${lineCount} lines, ${mediaSections} media sections`;
+  }
+
   private emitStats(): void {
     if (this.options.onStats) {
       this.options.onStats({ ...this.diagnostics });
@@ -878,10 +895,10 @@ export class GfnWebRtcClient {
       this.controlChannel.onerror = null;
     }
     this.reliableInputChannel?.close();
-    this.mouseInputChannel?.close();
+    this.gamepadInputChannel?.close();
     this.controlChannel?.close();
     this.reliableInputChannel = null;
-    this.mouseInputChannel = null;
+    this.gamepadInputChannel = null;
     this.controlChannel = null;
   }
 
@@ -1737,8 +1754,8 @@ export class GfnWebRtcClient {
           && (nowMs - this.lastGamepadSendMs) >= GfnWebRtcClient.GAMEPAD_KEEPALIVE_MS;
 
         if (stateChanged || needsKeepalive) {
-          // Determine if we should use the partially reliable channel
-          const usePR = this.mouseInputChannel?.readyState === "open";
+          // Official behavior: gamepad can use the partially reliable channel when negotiated.
+          const usePR = this.gamepadInputChannel?.readyState === "open";
           const bytes = this.inputEncoder.encodeGamepadState(gamepadInput, this.gamepadBitmap, usePR);
           this.sendGamepad(bytes);
           this.lastGamepadSendMs = nowMs;
@@ -1777,7 +1794,7 @@ export class GfnWebRtcClient {
           connected: false,
           timestampUs: timestampUs(),
         };
-        const usePR = this.mouseInputChannel?.readyState === "open";
+        const usePR = this.gamepadInputChannel?.readyState === "open";
         const bytes = this.inputEncoder.encodeGamepadState(disconnectState, this.gamepadBitmap, usePR);
         this.sendGamepad(bytes);
       }
@@ -1886,13 +1903,21 @@ export class GfnWebRtcClient {
       this.onInputHandshakeMessage(bytes);
     };
 
-    this.mouseInputChannel = pc.createDataChannel("input_channel_partially_reliable", {
+    if (this.partialReliableThresholdMs <= 0) {
+      this.log("Gamepad partial reliable channel disabled by negotiation");
+      this.gamepadInputChannel = null;
+      return;
+    }
+
+    this.gamepadInputChannel = pc.createDataChannel("input_channel_partially_reliable", {
       ordered: false,
       maxPacketLifeTime: this.partialReliableThresholdMs,
     });
 
-    this.mouseInputChannel.onopen = () => {
-      this.log(`Mouse channel open (partially reliable, maxPacketLifeTime=${this.partialReliableThresholdMs}ms)`);
+    this.gamepadInputChannel.onopen = () => {
+      this.log(
+        `Gamepad partial reliable channel open (maxPacketLifeTime=${this.partialReliableThresholdMs}ms)`,
+      );
     };
   }
 
@@ -2232,9 +2257,9 @@ export class GfnWebRtcClient {
    *  Falls back to reliable channel if partially reliable isn't available.
    *  Official GFN client uses partially reliable ONLY for gamepad, not mouse. */
   private sendGamepad(payload: Uint8Array): void {
-    if (this.mouseInputChannel?.readyState === "open") {
+    if (this.gamepadInputChannel?.readyState === "open") {
       const safePayload = Uint8Array.from(payload);
-      this.mouseInputChannel.send(safePayload.buffer);
+      this.gamepadInputChannel.send(safePayload.buffer);
       return;
     }
     // Fallback to reliable channel if partially reliable not ready
@@ -2936,23 +2961,25 @@ export class GfnWebRtcClient {
       `Settings: codec=${settings.codec}, colorQuality=${settings.colorQuality}, resolution=${settings.resolution}, fps=${settings.fps}, maxBitrate=${settings.maxBitrateKbps}kbps`,
     );
     this.log(`ICE servers: ${session.iceServers.length} (${session.iceServers.map(s => s.urls.join(",")).join(" | ")})`);
-    this.log(`Offer SDP length: ${offerSdp.length} chars`);
-    // Log full offer SDP for ICE debugging
-    this.log(`=== FULL OFFER SDP START ===`);
-    for (const line of offerSdp.split(/\r?\n/)) {
-      this.log(`  SDP> ${line}`);
+    this.log(this.summarizeSdp("Offer SDP", offerSdp));
+    if (this.verboseLogging) {
+      for (const line of offerSdp.split(/\r?\n/)) {
+        this.log(`  SDP> ${line}`);
+      }
     }
-    this.log(`=== FULL OFFER SDP END ===`);
 
     const negotiatedPartialReliable = parsePartialReliableThresholdMs(offerSdp);
-    this.partialReliableThresholdMs = negotiatedPartialReliable ?? GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
+    this.partialReliableThresholdMs =
+      negotiatedPartialReliable ?? GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
     this.negotiatedMaxBitrateKbps = Math.max(
       GfnWebRtcClient.DECODER_MIN_RECOVERY_BITRATE_KBPS,
       Math.floor(settings.maxBitrateKbps),
     );
     this.currentBitrateCeilingKbps = this.negotiatedMaxBitrateKbps;
     this.log(
-      `Input channel policy: partial reliable threshold=${this.partialReliableThresholdMs}ms${negotiatedPartialReliable === null ? " (fallback)" : ""}`,
+      this.partialReliableThresholdMs > 0
+        ? `Input channel policy: gamepad partial reliable enabled (${this.partialReliableThresholdMs}ms)`
+        : "Input channel policy: gamepad partial reliable disabled",
     );
 
     // Extract server region from session
@@ -2995,7 +3022,7 @@ export class GfnWebRtcClient {
       if (!payload.candidate) {
         return;
       }
-      this.log(`Local ICE candidate: ${payload.candidate}`);
+      this.log(`Local ICE candidate: ${this.summarizeCandidate(payload.candidate)}`);
       const candidate: IceCandidatePayload = {
         candidate: payload.candidate,
         sdpMid: payload.sdpMid,
@@ -3136,7 +3163,7 @@ export class GfnWebRtcClient {
     const filteredOffer = preferCodec(processedOffer, effectiveCodec, {
       preferHevcProfileId: preferredHevcProfileId,
     });
-    this.log(`Filtered offer SDP length: ${filteredOffer.length} chars`);
+    this.log(this.summarizeSdp("Filtered offer SDP", filteredOffer));
     this.log("Setting remote description (offer)...");
     await pc.setRemoteDescription({ type: "offer", sdp: filteredOffer });
     this.log("Remote description set successfully");
@@ -3157,7 +3184,7 @@ export class GfnWebRtcClient {
     // 4. Create answer, munge SDP, and set local description
     this.log("Creating answer...");
     const answer = await pc.createAnswer();
-    this.log(`Answer created, SDP length: ${answer.sdp?.length ?? 0} chars`);
+    this.log(`Answer created (${answer.sdp?.length ?? 0} chars before munging)`);
 
     // Munge answer SDP: inject b=AS: bitrate limits and stereo=1 for opus
     if (answer.sdp) {
@@ -3169,7 +3196,7 @@ export class GfnWebRtcClient {
     this.log("Local description set, waiting for ICE gathering...");
 
     const finalSdp = await this.waitForIceGathering(pc, 5000);
-    this.log(`ICE gathering done, final SDP length: ${finalSdp.length} chars`);
+    this.log(this.summarizeSdp("Final local SDP", finalSdp));
 
     // Debug negotiated video codec/fmtp lines from local answer SDP
     {
@@ -3193,7 +3220,7 @@ export class GfnWebRtcClient {
           }
         }
       }
-      if (negotiatedVideoLines.length > 0) {
+      if (negotiatedVideoLines.length > 0 && this.verboseLogging) {
         this.log("Negotiated local video SDP lines:");
         for (const l of negotiatedVideoLines) {
           this.log(`  SDP< ${l}`);
@@ -3206,7 +3233,9 @@ export class GfnWebRtcClient {
     }
 
     const credentials = extractIceCredentials(finalSdp);
-    this.log(`Extracted ICE credentials: ufrag=${credentials.ufrag}, pwd=${credentials.pwd.slice(0, 8)}...`);
+    this.log(
+      `Extracted ICE credentials: ufragLen=${credentials.ufrag.length}, pwdLen=${credentials.pwd.length}, fingerprintLen=${credentials.fingerprint.length}`,
+    );
     const { width, height } = parseResolution(settings.resolution);
     const viewportRect = this.options.videoElement.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
@@ -3289,7 +3318,9 @@ export class GfnWebRtcClient {
   }
 
   async addRemoteCandidate(candidate: IceCandidatePayload): Promise<void> {
-    this.log(`Remote ICE candidate received: ${candidate.candidate} (sdpMid=${candidate.sdpMid})`);
+    this.log(
+      `Remote ICE candidate received: ${this.summarizeCandidate(candidate.candidate)} sdpMid=${candidate.sdpMid ?? "?"}`,
+    );
     const init: RTCIceCandidateInit = {
       candidate: candidate.candidate,
       sdpMid: candidate.sdpMid ?? undefined,

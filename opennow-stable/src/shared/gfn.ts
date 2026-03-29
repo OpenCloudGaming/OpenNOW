@@ -285,6 +285,7 @@ export interface SessionInfo {
   serverIp: string;
   signalingServer: string;
   signalingUrl: string;
+  pairingId?: string;
   gpuType?: string;
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
@@ -318,6 +319,7 @@ export interface SignalingConnectRequest {
   sessionId: string;
   signalingServer: string;
   signalingUrl?: string;
+  pairingId?: string;
 }
 
 export interface IceCandidatePayload {

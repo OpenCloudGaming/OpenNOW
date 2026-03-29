@@ -919,7 +919,15 @@ export class SessionError extends Error {
       GfnErrorCode.PeerNoResponse, // 3237101586
     ];
 
-    return retryableCodes.includes(this.gfnErrorCode);
+    if (retryableCodes.includes(this.gfnErrorCode)) {
+      return true;
+    }
+
+    if (this.httpStatus === 429 || (this.httpStatus >= 500 && this.httpStatus < 600)) {
+      return true;
+    }
+
+    return false;
   }
 
   /**

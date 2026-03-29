@@ -9,15 +9,19 @@ import type {
   StorageAddon,
   StreamRegion,
 } from "@shared/gfn";
+import {
+  buildGfnHeaders,
+  GFN_CLIENT_STREAMER_CLASSIC,
+  GFN_CLIENT_STREAMER_WEBRTC,
+  GFN_CLIENT_TYPE_BROWSER,
+  GFN_CLIENT_TYPE_NATIVE,
+  GFN_DEVICE_OS_WINDOWS,
+  GFN_DEVICE_TYPE_DESKTOP,
+  GFN_LCARS_CLIENT_ID,
+} from "@shared/gfnClient";
 
 /** MES API endpoint URL */
 const MES_URL = "https://mes.geforcenow.com/v4/subscriptions";
-
-/** LCARS Client ID */
-const LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
-
-/** GFN client version */
-const GFN_CLIENT_VERSION = "2.0.80.173";
 
 interface SubscriptionResponse {
   firstEntitlementStartDateTime?: string;
@@ -113,16 +117,15 @@ export async function fetchSubscription(
   url.searchParams.append("userId", userId);
 
   const response = await fetch(url.toString(), {
-    headers: {
-      Authorization: `GFNJWT ${token}`,
-      Accept: "application/json",
-      "nv-client-id": LCARS_CLIENT_ID,
-      "nv-client-type": "NATIVE",
-      "nv-client-version": GFN_CLIENT_VERSION,
-      "nv-client-streamer": "NVIDIA-CLASSIC",
-      "nv-device-os": "WINDOWS",
-      "nv-device-type": "DESKTOP",
-    },
+    headers: buildGfnHeaders({
+      authorization: { token },
+      accept: "application/json",
+      clientId: GFN_LCARS_CLIENT_ID,
+      clientType: GFN_CLIENT_TYPE_NATIVE,
+      clientStreamer: GFN_CLIENT_STREAMER_CLASSIC,
+      deviceOs: GFN_DEVICE_OS_WINDOWS,
+      deviceType: GFN_DEVICE_TYPE_DESKTOP,
+    }),
   });
 
   if (!response.ok) {
@@ -253,15 +256,14 @@ export async function fetchDynamicRegions(
     : `${streamingBaseUrl}/`;
   const url = `${base}v2/serverInfo`;
 
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-    "nv-client-id": LCARS_CLIENT_ID,
-    "nv-client-type": "BROWSER",
-    "nv-client-version": GFN_CLIENT_VERSION,
-    "nv-client-streamer": "WEBRTC",
-    "nv-device-os": "WINDOWS",
-    "nv-device-type": "DESKTOP",
-  };
+  const headers: Record<string, string> = buildGfnHeaders({
+    accept: "application/json",
+    clientId: GFN_LCARS_CLIENT_ID,
+    clientType: GFN_CLIENT_TYPE_BROWSER,
+    clientStreamer: GFN_CLIENT_STREAMER_WEBRTC,
+    deviceOs: GFN_DEVICE_OS_WINDOWS,
+    deviceType: GFN_DEVICE_TYPE_DESKTOP,
+  });
 
   if (token) {
     headers.Authorization = `GFNJWT ${token}`;
