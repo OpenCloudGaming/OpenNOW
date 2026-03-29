@@ -1,10 +1,7 @@
 import { createServer } from "node:http";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import net from "node:net";
-import os from "node:os";
-
 import { shell } from "electron";
 
 import type {
@@ -18,21 +15,26 @@ import type {
   SubscriptionInfo,
 } from "@shared/gfn";
 import { fetchSubscription, fetchDynamicRegions } from "./subscription";
+import {
+  buildAuthUrl,
+  CLIENT_ID,
+  findAvailablePort,
+  generatePkce,
+  isExpired,
+  isNearExpiry,
+  normalizeProvider,
+  parseJwtPayload,
+  toExpiresAt,
+} from "./authHelpers";
 
 const SERVICE_URLS_ENDPOINT = "https://pcs.geforcenow.com/v1/serviceUrls";
 const TOKEN_ENDPOINT = "https://login.nvidia.com/token";
 const CLIENT_TOKEN_ENDPOINT = "https://login.nvidia.com/client_token";
 const USERINFO_ENDPOINT = "https://login.nvidia.com/userinfo";
-const AUTH_ENDPOINT = "https://login.nvidia.com/authorize";
-
-const CLIENT_ID = "ZU7sPN-miLujMD95LfOQ453IB0AtjM8sMyvgJ9wCXEQ";
-const SCOPES = "openid consent email tk_client age";
 const DEFAULT_IDP_ID = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg";
-
 const GFN_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
 
-const REDIRECT_PORTS = [2259, 6460, 7119, 8870, 9096];
 const TOKEN_REFRESH_WINDOW_MS = 10 * 60 * 1000;
 const CLIENT_TOKEN_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 
@@ -87,117 +89,6 @@ function defaultProvider(): LoginProvider {
     streamingServiceUrl: "https://prod.cloudmatchbeta.nvidiagrid.net/",
     priority: 0,
   };
-}
-
-function normalizeProvider(provider: LoginProvider): LoginProvider {
-  return {
-    ...provider,
-    streamingServiceUrl: provider.streamingServiceUrl.endsWith("/")
-      ? provider.streamingServiceUrl
-      : `${provider.streamingServiceUrl}/`,
-  };
-}
-
-function decodeBase64Url(value: string): string {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padding = normalized.length % 4;
-  const padded = padding === 0 ? normalized : `${normalized}${"=".repeat(4 - padding)}`;
-  return Buffer.from(padded, "base64").toString("utf8");
-}
-
-function parseJwtPayload<T>(token: string): T | null {
-  const parts = token.split(".");
-  if (parts.length !== 3) {
-    return null;
-  }
-  try {
-    const payload = decodeBase64Url(parts[1]);
-    return JSON.parse(payload) as T;
-  } catch {
-    return null;
-  }
-}
-
-function toExpiresAt(expiresInSeconds: number | undefined, defaultSeconds = 86400): number {
-  return Date.now() + (expiresInSeconds ?? defaultSeconds) * 1000;
-}
-
-function isExpired(expiresAt: number | undefined): boolean {
-  if (!expiresAt) {
-    return true;
-  }
-  return expiresAt <= Date.now();
-}
-
-function isNearExpiry(expiresAt: number | undefined, windowMs: number): boolean {
-  if (!expiresAt) {
-    return true;
-  }
-  return expiresAt - Date.now() < windowMs;
-}
-
-function generateDeviceId(): string {
-  const host = os.hostname();
-  const username = os.userInfo().username;
-  return createHash("sha256").update(`${host}:${username}:opennow-stable`).digest("hex");
-}
-
-function generatePkce(): { verifier: string; challenge: string } {
-  const verifier = randomBytes(64)
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "")
-    .slice(0, 86);
-
-  const challenge = createHash("sha256")
-    .update(verifier)
-    .digest("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-
-  return { verifier, challenge };
-}
-
-function buildAuthUrl(provider: LoginProvider, challenge: string, port: number): string {
-  const redirectUri = `http://localhost:${port}`;
-  const nonce = randomBytes(16).toString("hex");
-  const params = new URLSearchParams({
-    response_type: "code",
-    device_id: generateDeviceId(),
-    scope: SCOPES,
-    client_id: CLIENT_ID,
-    redirect_uri: redirectUri,
-    ui_locales: "en_US",
-    nonce,
-    prompt: "select_account",
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    idp_id: provider.idpId,
-  });
-  return `${AUTH_ENDPOINT}?${params.toString()}`;
-}
-
-async function isPortAvailable(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once("error", () => resolve(false));
-    server.once("listening", () => {
-      server.close(() => resolve(true));
-    });
-    server.listen(port, "127.0.0.1");
-  });
-}
-
-async function findAvailablePort(): Promise<number> {
-  for (const port of REDIRECT_PORTS) {
-    if (await isPortAvailable(port)) {
-      return port;
-    }
-  }
-
-  throw new Error("No available OAuth callback ports");
 }
 
 async function waitForAuthorizationCode(port: number, timeoutMs: number): Promise<string> {
@@ -629,7 +520,7 @@ export class AuthService {
 
     const { verifier, challenge } = generatePkce();
     const port = await findAvailablePort();
-    const authUrl = buildAuthUrl(this.selectedProvider, challenge, port);
+    const authUrl = buildAuthUrl(this.selectedProvider, { challenge, port });
 
     const codePromise = waitForAuthorizationCode(port, 120000);
     await shell.openExternal(authUrl);

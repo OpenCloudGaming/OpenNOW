@@ -24,7 +24,7 @@ function normalizeKeyToken(token: string): string | null {
   if (alias[upper]) {
     return alias[upper];
   }
-  if (upper.length === 1) {
+  if (upper.length === 1 && /^[A-Z0-9]$/.test(upper)) {
     return upper;
   }
   if (/^F\d{1,2}$/.test(upper)) {

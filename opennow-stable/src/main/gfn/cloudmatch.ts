@@ -12,17 +12,20 @@ import type {
   StreamSettings,
 } from "@shared/gfn";
 
-import {
-  colorQualityBitDepth,
-  colorQualityChromaFormat,
-} from "@shared/gfn";
-
-import type { CloudMatchRequest, CloudMatchResponse, GetSessionsResponse } from "./types";
+import type { CloudMatchResponse, GetSessionsResponse } from "./types";
 import { SessionError } from "./errorCodes";
-
-const GFN_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
-const GFN_CLIENT_VERSION = "2.0.80.173";
+import {
+  buildSessionRequestBody,
+  buildSignalingUrl,
+  extractHostFromUrl,
+  GFN_CLIENT_VERSION,
+  GFN_USER_AGENT,
+  isZoneHostname,
+  requestHeaders,
+  resolvePollStopBase,
+  resolveStreamingBaseUrl,
+  streamingServerIp,
+} from "./cloudmatchHelpers";
 
 async function resolveHostnameWithFallback(hostname: string): Promise<string | null> {
   // Try system resolver first, then fall back to Cloudflare (1.1.1.1) and Google (8.8.8.8)
@@ -128,71 +131,6 @@ async function normalizeIceServers(response: CloudMatchResponse): Promise<IceSer
   }
 
   return out;
-}
-
-/**
- * Extract the streaming server IP from the CloudMatch response, matching Rust's
- * `streaming_server_ip()` priority chain:
- *   1. connectionInfo[usage==14].ip (direct IP)
- *   2. Host extracted from connectionInfo[usage==14].resourcePath (for rtsps:// URLs)
- *   3. sessionControlInfo.ip (fallback)
- */
-function streamingServerIp(response: CloudMatchResponse): string | null {
-  const connections = response.session.connectionInfo ?? [];
-  const sigConn = connections.find((conn) => conn.usage === 14);
-
-  if (sigConn) {
-    // Priority 1: Direct IP field
-    const rawIp = sigConn.ip;
-    const directIp = Array.isArray(rawIp) ? rawIp[0] : rawIp;
-    if (directIp && directIp.length > 0) {
-      return directIp;
-    }
-
-    // Priority 2: Extract host from resourcePath (Alliance format: rtsps://host:port)
-    if (sigConn.resourcePath) {
-      const host = extractHostFromUrl(sigConn.resourcePath);
-      if (host) return host;
-    }
-  }
-
-  // Priority 3: sessionControlInfo.ip
-  const controlIp = response.session.sessionControlInfo?.ip;
-  if (controlIp && controlIp.length > 0) {
-    return Array.isArray(controlIp) ? controlIp[0] : controlIp;
-  }
-
-  return null;
-}
-
-/**
- * Extract host from a URL string (handles rtsps://, rtsp://, wss://, https://).
- * Matches Rust's extract_host_from_url().
- */
-function extractHostFromUrl(url: string): string | null {
-  const prefixes = ["rtsps://", "rtsp://", "wss://", "https://"];
-  let afterProto: string | null = null;
-  for (const prefix of prefixes) {
-    if (url.startsWith(prefix)) {
-      afterProto = url.slice(prefix.length);
-      break;
-    }
-  }
-  if (!afterProto) return null;
-
-  // Get host (before port or path)
-  const host = afterProto.split(":")[0]?.split("/")[0];
-  if (!host || host.length === 0 || host.startsWith(".")) return null;
-  return host;
-}
-
-/**
- * Check if a given IP/hostname is a CloudMatch zone load balancer hostname
- * (not a real game server IP). Zone hostnames look like:
- *   np-ams-06.cloudmatchbeta.nvidiagrid.net
- */
-function isZoneHostname(ip: string): boolean {
-  return ip.includes("cloudmatchbeta.nvidiagrid.net") || ip.includes("cloudmatch.nvidiagrid.net");
 }
 
 function resolveSignaling(response: CloudMatchResponse): {
@@ -317,228 +255,6 @@ function resolveMediaConnectionInfo(
 
   console.log("[CloudMatch] resolveMediaConnectionInfo: NO valid media connection info found");
   return undefined;
-}
-
-/**
- * Build signaling WSS URL from the resourcePath, matching Rust implementation.
- * Returns the URL and optionally the extracted host (if different from serverIp).
- */
-function buildSignalingUrl(
-  raw: string,
-  serverIp: string,
-): { signalingUrl: string; signalingHost: string | null } {
-  if (raw.startsWith("rtsps://") || raw.startsWith("rtsp://")) {
-    // Extract hostname from RTSP URL, convert to wss://
-    const withoutScheme = raw.startsWith("rtsps://")
-      ? raw.slice("rtsps://".length)
-      : raw.slice("rtsp://".length);
-    const host = withoutScheme.split(":")[0]?.split("/")[0];
-    if (host && host.length > 0 && !host.startsWith(".")) {
-      return {
-        signalingUrl: `wss://${host}/nvst/`,
-        signalingHost: host,
-      };
-    }
-    return {
-      signalingUrl: `wss://${serverIp}:443/nvst/`,
-      signalingHost: null,
-    };
-  }
-
-  if (raw.startsWith("wss://")) {
-    // Already a full WSS URL, use as-is; extract host
-    const withoutScheme = raw.slice("wss://".length);
-    const host = withoutScheme.split("/")[0] ?? null;
-    return { signalingUrl: raw, signalingHost: host };
-  }
-
-  if (raw.startsWith("/")) {
-    // Relative path
-    return {
-      signalingUrl: `wss://${serverIp}:443${raw}`,
-      signalingHost: null,
-    };
-  }
-
-  // Fallback
-  return {
-    signalingUrl: `wss://${serverIp}:443/nvst/`,
-    signalingHost: null,
-  };
-}
-
-interface RequestHeadersOptions {
-  token: string;
-  clientId?: string;
-  deviceId?: string;
-  includeOrigin?: boolean;
-}
-
-function requestHeaders(options: RequestHeadersOptions): Record<string, string> {
-  const clientId = options.clientId ?? crypto.randomUUID();
-  const deviceId = options.deviceId ?? crypto.randomUUID();
-
-  const headers: Record<string, string> = {
-    "User-Agent": GFN_USER_AGENT,
-    Authorization: `GFNJWT ${options.token}`,
-    "Content-Type": "application/json",
-    "nv-browser-type": "CHROME",
-    "nv-client-id": clientId,
-    "nv-client-streamer": "NVIDIA-CLASSIC",
-    "nv-client-type": "NATIVE",
-    "nv-client-version": GFN_CLIENT_VERSION,
-    "nv-device-make": "UNKNOWN",
-    "nv-device-model": "UNKNOWN",
-    "nv-device-os": process.platform === "win32" ? "WINDOWS" : process.platform === "darwin" ? "MACOS" : "LINUX",
-    "nv-device-type": "DESKTOP",
-    "x-device-id": deviceId,
-  };
-
-  if (options.includeOrigin !== false) {
-    headers["Origin"] = "https://play.geforcenow.com";
-    headers["Referer"] = "https://play.geforcenow.com/";
-  }
-
-  return headers;
-}
-
-function parseResolution(input: string): { width: number; height: number } {
-  const [rawWidth, rawHeight] = input.split("x");
-  const width = Number.parseInt(rawWidth ?? "", 10);
-  const height = Number.parseInt(rawHeight ?? "", 10);
-
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-    return { width: 1920, height: 1080 };
-  }
-
-  return { width, height };
-}
-
-function timezoneOffsetMs(): number {
-  return -new Date().getTimezoneOffset() * 60 * 1000;
-}
-
-function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest {
-  const { width, height } = parseResolution(input.settings.resolution);
-  const cq = input.settings.colorQuality;
-  // IMPORTANT: hdrEnabled is a SEPARATE toggle from color quality.
-  // The Rust reference (cloudmatch.rs) uses settings.hdr_enabled independently.
-  // 10-bit color depth does NOT mean HDR — you can have 10-bit SDR.
-  // Conflating them caused the server to set up an HDR pipeline, which
-  // dynamically downscaled resolution to ~540p.
-  const hdrEnabled = false; // No HDR toggle implemented yet; hardcode off like claim body
-  const bitDepth = colorQualityBitDepth(cq);
-  const chromaFormat = colorQualityChromaFormat(cq);
-  const accountLinked = input.accountLinked ?? true;
-
-  return {
-    sessionRequestData: {
-      appId: input.appId,
-      internalTitle: input.internalTitle || null,
-      availableSupportedControllers: [],
-      networkTestSessionId: null,
-      parentSessionId: null,
-      clientIdentification: "GFN-PC",
-      deviceHashId: crypto.randomUUID(),
-      clientVersion: "30.0",
-      sdkVersion: "1.0",
-      streamerVersion: 1,
-      clientPlatformName: "windows",
-      clientRequestMonitorSettings: [
-        {
-          widthInPixels: width,
-          heightInPixels: height,
-          framesPerSecond: input.settings.fps,
-          sdrHdrMode: hdrEnabled ? 1 : 0,
-          displayData: {
-            desiredContentMaxLuminance: hdrEnabled ? 1000 : 0,
-            desiredContentMinLuminance: 0,
-            desiredContentMaxFrameAverageLuminance: hdrEnabled ? 500 : 0,
-          },
-          dpi: 100,
-        },
-      ],
-      useOps: true,
-      audioMode: 2,
-      metaData: [
-        { key: "SubSessionId", value: crypto.randomUUID() },
-        { key: "wssignaling", value: "1" },
-        { key: "GSStreamerType", value: "WebRTC" },
-        { key: "networkType", value: "Unknown" },
-        { key: "ClientImeSupport", value: "0" },
-        {
-          key: "clientPhysicalResolution",
-          value: JSON.stringify({ horizontalPixels: width, verticalPixels: height }),
-        },
-        { key: "surroundAudioInfo", value: "2" },
-      ],
-      sdrHdrMode: hdrEnabled ? 1 : 0,
-      clientDisplayHdrCapabilities: hdrEnabled
-        ? {
-            version: 1,
-            hdrEdrSupportedFlagsInUint32: 1,
-            staticMetadataDescriptorId: 0,
-          }
-        : null,
-      surroundAudioInfo: 0,
-      remoteControllersBitmap: 0,
-      clientTimezoneOffset: timezoneOffsetMs(),
-      enhancedStreamMode: 1,
-      appLaunchMode: 1,
-      secureRTSPSupported: false,
-      partnerCustomData: "",
-      accountLinked,
-      enablePersistingInGameSettings: true,
-      userAge: 26,
-      requestedStreamingFeatures: {
-        reflex: input.settings.fps >= 120,
-        bitDepth,
-        cloudGsync: false,
-        enabledL4S: input.settings.enableL4S,
-        mouseMovementFlags: 0,
-        trueHdr: hdrEnabled,
-        supportedHidDevices: 0,
-        profile: 0,
-        fallbackToLogicalResolution: false,
-        hidDevices: null,
-        chromaFormat,
-        prefilterMode: 0,
-        prefilterSharpness: 0,
-        prefilterNoiseReduction: 0,
-        hudStreamingMode: 0,
-        sdrColorSpace: 2,
-        hdrColorSpace: hdrEnabled ? 4 : 0,
-      },
-    },
-  };
-}
-
-function cloudmatchUrl(zone: string): string {
-  return `https://${zone}.cloudmatchbeta.nvidiagrid.net`;
-}
-
-function resolveStreamingBaseUrl(zone: string, provided?: string): string {
-  if (provided && provided.trim()) {
-    const trimmed = provided.trim();
-    return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
-  }
-  return cloudmatchUrl(zone);
-}
-
-function shouldUseServerIp(baseUrl: string): boolean {
-  return baseUrl.includes("cloudmatchbeta.nvidiagrid.net");
-}
-
-function resolvePollStopBase(zone: string, provided?: string, serverIp?: string): string {
-  const base = resolveStreamingBaseUrl(zone, provided);
-  // Only use serverIp if it's a real server IP (not a zone hostname).
-  // The Rust version checks: if we're NOT an alliance partner AND we have a server_ip, use it.
-  // But if the "serverIp" is actually the zone hostname (from an early poll when connectionInfo
-  // was empty), using it is circular and doesn't help.
-  if (serverIp && shouldUseServerIp(base) && !isZoneHostname(serverIp)) {
-    return `https://${serverIp}`;
-  }
-  return base;
 }
 
 function toPositiveInt(value: unknown): number | undefined {
@@ -866,6 +582,10 @@ export async function getActiveSessions(
 /**
  * Build claim/resume request payload
  */
+function timezoneOffsetMs(): number {
+  return -new Date().getTimezoneOffset() * 60 * 1000;
+}
+
 function buildClaimRequestBody(sessionId: string, appId: string, settings: StreamSettings): unknown {
   // For RESUME claims, we must NOT attempt to renegotiate streaming parameters.
   // The session is already configured on the server side. Sending different fps, resolution,

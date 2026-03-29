@@ -518,7 +518,7 @@ export function mapKeyboardEvent(event: KeyboardEvent): { vk: number; scancode: 
   const key = event.key;
   if (key.length === 1) {
     const upper = key.toUpperCase();
-    if (upper >= "A" && upper <= "Z") {
+    if (upper.length === 1 && upper >= "A" && upper <= "Z") {
       return { vk: upper.charCodeAt(0), scancode: 0 };
     }
     if (key >= "0" && key <= "9") {

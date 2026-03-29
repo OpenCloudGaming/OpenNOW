@@ -35,6 +35,8 @@ gfn_tokens.json
 
 # Test files
 test/
+!opennow-stable/test/
+!opennow-stable/test/**
 
 package-lock.json
 !opennow-stable/package-lock.json
