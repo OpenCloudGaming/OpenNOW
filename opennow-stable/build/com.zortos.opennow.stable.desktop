@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=OpenNOW
+Comment=An open-source GeForce NOW client
+Exec=opennow-stable %U
+Type=Application
+Icon=com.zortos.opennow.stable
+Categories=Game;
+Terminal=false
+StartupWMClass=OpenNOW
+MimeType=x-scheme-handler/opennow;
+X-Flatpak=com.zortos.opennow.stable

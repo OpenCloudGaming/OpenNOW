@@ -24,8 +24,8 @@ npm run dist
 |----------|---------|
 | Windows | NSIS installer + portable |
 | macOS | dmg + zip (x64 and arm64 universal) |
-| Linux x64 | AppImage + deb |
-| Linux ARM64 | AppImage + deb (Raspberry Pi 4/5) |
+| Linux x64 | AppImage + deb + Flatpak |
+| Linux ARM64 | AppImage + deb + Flatpak (Raspberry Pi 4/5) |
 
 ## CI/CD
 

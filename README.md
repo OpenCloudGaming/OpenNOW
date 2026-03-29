@@ -139,7 +139,7 @@ OpenNOW is an independent, community-built desktop client for [NVIDIA GeForce NO
 `Stats Overlay` `Anti-AFK` `Adjustable Shortcuts` · OAuth + session restore · Region selection · Alliance partners
 
 **Platforms**
-`Windows` `macOS` `Linux` `ARM64` · Installer, portable, AppImage, deb, dmg
+`Windows` `macOS` `Linux` `ARM64` · Installer, portable, AppImage, deb, dmg, Flatpak
 
 ## Platform Support
 
@@ -147,8 +147,8 @@ OpenNOW is an independent, community-built desktop client for [NVIDIA GeForce NO
 |----------|:------:|--------|
 | Windows | ✅ Working | NSIS installer + portable |
 | macOS | ✅ Working | dmg + zip (x64 and arm64) |
-| Linux x64 | ✅ Working | AppImage + deb |
-| Linux ARM64 | 🚧 Experimental | AppImage + deb (Raspberry Pi 4/5) |
+| Linux x64 | ✅ Working | AppImage + deb + Flatpak |
+| Linux ARM64 | 🚧 Experimental | AppImage + deb + Flatpak (Raspberry Pi 4/5) |
 
 ## Quick Start
 
@@ -174,7 +174,9 @@ Grab the latest release for your platform:
 | macOS (x64) | `OpenNOW-v0.2.4-mac-x64.dmg` |
 | macOS (ARM) | `OpenNOW-v0.2.4-mac-arm64.dmg` |
 | Linux (x64) | `OpenNOW-v0.2.4-linux-x86_64.AppImage` |
+| Linux (x64 Flatpak) | `OpenNOW-v0.2.4-x86_64.flatpak` |
 | Linux (ARM64) | `OpenNOW-v0.2.4-linux-arm64.AppImage` |
+| Linux (ARM64 Flatpak) | `OpenNOW-v0.2.4-arm64.flatpak` |
 
 ## Architecture
 
