@@ -1266,48 +1266,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 <span className="settings-toggle-track" />
               </label>
             </div>
-
-            <div className="settings-row settings-row--column">
-              <div className="settings-row-top">
-                <label className="settings-label">Session Timer Reappear</label>
-                <span className="settings-value-badge">
-                  {settings.sessionClockShowEveryMinutes === 0
-                    ? "Off"
-                    : `Every ${settings.sessionClockShowEveryMinutes} min`}
-                </span>
-              </div>
-              <input
-                type="range"
-                className="settings-slider"
-                min={0}
-                max={120}
-                step={5}
-                value={settings.sessionClockShowEveryMinutes}
-                onChange={(e) => handleChange("sessionClockShowEveryMinutes", parseInt(e.target.value, 10))}
-              />
-              <span className="settings-subtle-hint">
-                How often the session timer pops back up while streaming (0 disables repeats).
-              </span>
-            </div>
-
-            <div className="settings-row settings-row--column">
-              <div className="settings-row-top">
-                <label className="settings-label">Session Timer Visible Time</label>
-                <span className="settings-value-badge">{settings.sessionClockShowDurationSeconds}s</span>
-              </div>
-              <input
-                type="range"
-                className="settings-slider"
-                min={5}
-                max={120}
-                step={5}
-                value={settings.sessionClockShowDurationSeconds}
-                onChange={(e) => handleChange("sessionClockShowDurationSeconds", parseInt(e.target.value, 10))}
-              />
-              <span className="settings-subtle-hint">
-                How long the session timer stays visible each time it appears.
-              </span>
-            </div>
           </div>
         </section>
 
@@ -1746,9 +1704,54 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               </label>
             </div>
 
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Session Timer Reappear</label>
+                <span className="settings-value-badge">
+                  {settings.sessionClockShowEveryMinutes === 0
+                    ? "Off"
+                    : `Every ${settings.sessionClockShowEveryMinutes} min`}
+                </span>
+              </div>
+              <input
+                type="range"
+                className="settings-slider"
+                min={0}
+                max={120}
+                step={5}
+                value={settings.sessionClockShowEveryMinutes}
+                onChange={(e) => handleChange("sessionClockShowEveryMinutes", parseInt(e.target.value, 10))}
+              />
+              <span className="settings-subtle-hint">
+                How often the session timer pops back up while streaming (0 disables repeats).
+              </span>
+            </div>
+
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Session Timer Visible Time</label>
+                <span className="settings-value-badge">{settings.sessionClockShowDurationSeconds}s</span>
+              </div>
+              <input
+                type="range"
+                className="settings-slider"
+                min={5}
+                max={120}
+                step={5}
+                value={settings.sessionClockShowDurationSeconds}
+                onChange={(e) => handleChange("sessionClockShowDurationSeconds", parseInt(e.target.value, 10))}
+              />
+              <span className="settings-subtle-hint">
+                How long the session timer stays visible each time it appears.
+              </span>
+            </div>
+
             <div className="settings-row">
               <label className="settings-label">
-                Controller Mode Library
+                <span className="settings-label-with-badge">
+                  <span>Controller Mode Library</span>
+                  <span className="settings-inline-badge">Beta</span>
+                </span>
                 <span className="settings-hint">Replace the desktop library/settings navigation with the controller-first layout only when controller mode is enabled.</span>
               </label>
               <label className="settings-toggle">
@@ -1762,63 +1765,65 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             </div>
 
             {settings.controllerMode && (
-              <div className="settings-row">
-                <label className="settings-label">Exit Controller Mode</label>
-                <div>
-                  <button
-                    className="settings-exit-btn"
-                    onClick={() => handleChange("controllerMode", false)}
-                  >
-                    Exit
-                  </button>
+              <div className="settings-subrows">
+                <div className="settings-row">
+                  <label className="settings-label">Exit Controller Mode</label>
+                  <div>
+                    <button
+                      className="settings-exit-btn"
+                      onClick={() => handleChange("controllerMode", false)}
+                    >
+                      Exit
+                    </button>
+                  </div>
+                </div>
+
+                <div className="settings-row">
+                  <label className="settings-label">
+                    Controller UI Sounds
+                    <span className="settings-hint">Play subtle move, open, and back sounds inside controller mode only.</span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.controllerUiSounds}
+                      onChange={(e) => handleChange("controllerUiSounds", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
+                </div>
+
+                <div className="settings-row">
+                  <label className="settings-label">
+                    Background Animations (Controller Mode)
+                    <span className="settings-hint">Show animated background visuals on controller-mode loading screens only.</span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.controllerBackgroundAnimations}
+                      onChange={(e) => handleChange("controllerBackgroundAnimations", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
+                </div>
+
+                <div className="settings-row">
+                  <label className="settings-label">
+                    Auto-Load Controller Library
+                    <span className="settings-hint">Automatically open the controller library at startup when controller mode is enabled.</span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.autoLoadControllerLibrary}
+                      onChange={(e) => handleChange("autoLoadControllerLibrary", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
                 </div>
               </div>
             )}
-
-            <div className="settings-row">
-              <label className="settings-label">
-                Controller UI Sounds
-                <span className="settings-hint">Play subtle move, open, and back sounds inside controller mode only.</span>
-              </label>
-              <label className="settings-toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.controllerUiSounds}
-                  onChange={(e) => handleChange("controllerUiSounds", e.target.checked)}
-                />
-                <span className="settings-toggle-track" />
-              </label>
-            </div>
-
-            <div className="settings-row">
-              <label className="settings-label">
-                Background Animations (Controller Mode)
-                <span className="settings-hint">Show animated background visuals on controller-mode loading screens only.</span>
-              </label>
-              <label className="settings-toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.controllerBackgroundAnimations}
-                  onChange={(e) => handleChange("controllerBackgroundAnimations", e.target.checked)}
-                />
-                <span className="settings-toggle-track" />
-              </label>
-            </div>
-
-            <div className="settings-row">
-              <label className="settings-label">
-                Auto-Load Controller Library
-                <span className="settings-hint">Automatically open the controller library at startup when controller mode is enabled.</span>
-              </label>
-              <label className="settings-toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.autoLoadControllerLibrary}
-                  onChange={(e) => handleChange("autoLoadControllerLibrary", e.target.checked)}
-                />
-                <span className="settings-toggle-track" />
-              </label>
-            </div>
           </div>
         </section>
 
