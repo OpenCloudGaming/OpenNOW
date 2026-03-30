@@ -1522,7 +1522,7 @@ export function StreamView({
             <span className="sv-stats-chip" title="D = decode time">
               D <span className="sv-stats-chip-val" style={{ color: decodeColor }}>{dText}</span>
             </span>
-            <span className="sv-stats-chip" title="R = render time">
+            <span className="sv-stats-chip" title="R = recent presentation cadence">
               R <span className="sv-stats-chip-val" style={{ color: renderColor }}>{rText}</span>
             </span>
             <span className="sv-stats-chip" title="JB = jitter buffer delay">

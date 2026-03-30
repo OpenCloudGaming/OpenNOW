@@ -256,6 +256,46 @@ interface DecoderPressureSignal {
   detail: string;
 }
 
+interface VideoPlaybackQualitySample {
+  totalVideoFrames: number;
+  droppedVideoFrames: number;
+}
+
+interface RecentPresentationSample {
+  intervalMs: number;
+  presentedFramesDelta: number;
+  droppedFramesDelta: number;
+  cadenceSampleCount: number;
+  cadenceIntervalSumMs: number;
+  maxCadenceIntervalMs: number;
+  paused: boolean;
+  readyState: number;
+  atMs: number;
+}
+
+interface RecentPresentationWindowMetrics {
+  intervalMs: number;
+  pollCount: number;
+  presentedFrames: number;
+  droppedFrames: number;
+  presentedFps: number;
+  dropRatePercent: number;
+  avgCadenceIntervalMs: number;
+  maxCadenceIntervalMs: number;
+  pausedPolls: number;
+  underflowPolls: number;
+}
+
+interface RenderPressureSignal {
+  active: boolean;
+  detail: string;
+}
+
+interface LagReasonSignals {
+  decoder: DecoderPressureSignal;
+  render: RenderPressureSignal;
+}
+
 function timestampUs(sourceTimestampMs?: number): bigint {
   const base =
     typeof sourceTimestampMs === "number" && Number.isFinite(sourceTimestampMs) && sourceTimestampMs >= 0
@@ -532,6 +572,9 @@ export class GfnWebRtcClient {
   private static readonly DECODER_STALL_MIN_RECEIVED_FRAMES = 24;
   private static readonly DECODER_RECENT_DEFICIT_MIN_FRAMES = 12;
   private static readonly DECODER_RECENT_DROP_BURST_MIN_FRAMES = 6;
+  private static readonly RECENT_PRESENTATION_WINDOW_MS = 1600;
+  private static readonly RENDER_STALL_MIN_WINDOW_MS = 900;
+  private static readonly VIDEO_PLAYBACK_RECOVERY_COOLDOWN_MS = 1500;
   private static readonly DECODER_PRESSURE_CONSECUTIVE_POLLS = 3;
   private static readonly DECODER_STABLE_CONSECUTIVE_POLLS = 6;
   private static readonly DECODER_RECOVERY_COOLDOWN_MS = 1500;
@@ -546,7 +589,18 @@ export class GfnWebRtcClient {
   // Stats tracking
   private lastStatsSample: CumulativeVideoStatsSample | null = null;
   private recentVideoIntervalSamples: RecentVideoIntervalSample[] = [];
-  private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
+  private lastPlaybackQualitySample: VideoPlaybackQualitySample | null = null;
+  private recentPresentationSamples: RecentPresentationSample[] = [];
+  private lastPresentationStatsAtMs = 0;
+  private presentationCadenceSincePoll = {
+    presentedFrames: 0,
+    sampleCount: 0,
+    intervalSumMs: 0,
+    maxIntervalMs: 0,
+    lastPresentedAtMs: 0,
+  };
+  private videoFrameCallbackId: number | null = null;
+  private lastVideoPlaybackRecoveryAttemptAtMs = 0;
   private connectedGamepads: Set<number> = new Set();
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
 
@@ -867,6 +921,7 @@ export class GfnWebRtcClient {
   private resetDiagnostics(): void {
     this.lastStatsSample = null;
     this.recentVideoIntervalSamples = [];
+    this.resetPresentationTracking();
     this.currentCodec = "";
     this.currentResolution = "";
     this.isHdr = false;
@@ -967,18 +1022,189 @@ export class GfnWebRtcClient {
     }, 500);
   }
 
-  private updateRenderFps(): void {
-    const now = performance.now();
-    this.renderFpsCounter.frames++;
-
-    // Update FPS every 500ms
-    if (now - this.renderFpsCounter.lastUpdate >= 500) {
-      const elapsed = (now - this.renderFpsCounter.lastUpdate) / 1000;
-      this.renderFpsCounter.fps = Math.round(this.renderFpsCounter.frames / elapsed);
-      this.renderFpsCounter.frames = 0;
-      this.renderFpsCounter.lastUpdate = now;
-      this.diagnostics.renderFps = this.renderFpsCounter.fps;
+  private resetPresentationTracking(): void {
+    const video = this.options.videoElement as HTMLVideoElement & {
+      cancelVideoFrameCallback?: (handle: number) => void;
+    };
+    if (this.videoFrameCallbackId !== null && typeof video.cancelVideoFrameCallback === "function") {
+      video.cancelVideoFrameCallback(this.videoFrameCallbackId);
     }
+    this.videoFrameCallbackId = null;
+    this.lastVideoPlaybackRecoveryAttemptAtMs = 0;
+    this.lastPlaybackQualitySample = null;
+    this.recentPresentationSamples = [];
+    this.lastPresentationStatsAtMs = 0;
+    this.presentationCadenceSincePoll = {
+      presentedFrames: 0,
+      sampleCount: 0,
+      intervalSumMs: 0,
+      maxIntervalMs: 0,
+      lastPresentedAtMs: 0,
+    };
+  }
+
+  private startPresentationTracking(video: HTMLVideoElement): void {
+    this.resetPresentationTracking();
+    if (typeof video.requestVideoFrameCallback !== "function") {
+      return;
+    }
+
+    // requestVideoFrameCallback runs when Chromium is actually handing a frame to
+    // the video element for presentation. This is a stronger presentation signal
+    // than our old local counter because it reflects browser display cadence.
+
+    const frameCallback = (now: number, metadata?: VideoFrameCallbackMetadata) => {
+      this.presentationCadenceSincePoll.presentedFrames++;
+      const presentedAtMs = metadata?.expectedDisplayTime ?? now;
+      const lastPresentedAtMs = this.presentationCadenceSincePoll.lastPresentedAtMs;
+      if (lastPresentedAtMs > 0) {
+        const intervalMs = presentedAtMs - lastPresentedAtMs;
+        if (intervalMs > 0 && intervalMs < 1000) {
+          this.presentationCadenceSincePoll.sampleCount++;
+          this.presentationCadenceSincePoll.intervalSumMs += intervalMs;
+          this.presentationCadenceSincePoll.maxIntervalMs = Math.max(
+            this.presentationCadenceSincePoll.maxIntervalMs,
+            intervalMs,
+          );
+        }
+      }
+      this.presentationCadenceSincePoll.lastPresentedAtMs = presentedAtMs;
+      if (this.videoStream.active) {
+        this.videoFrameCallbackId = video.requestVideoFrameCallback(frameCallback);
+      } else {
+        this.videoFrameCallbackId = null;
+      }
+    };
+
+    this.videoFrameCallbackId = video.requestVideoFrameCallback(frameCallback);
+  }
+
+  private readVideoPlaybackQuality(): VideoPlaybackQualitySample | null {
+    const video = this.options.videoElement as HTMLVideoElement & {
+      getVideoPlaybackQuality?: () => VideoPlaybackQuality;
+    };
+
+    // getVideoPlaybackQuality exposes browser-maintained lifetime presentation
+    // counters, including drops at the HTML video element/compositor layer.
+    // We still window them via deltas so old drops do not stick forever.
+    if (typeof video.getVideoPlaybackQuality !== "function") {
+      return null;
+    }
+    const quality = video.getVideoPlaybackQuality();
+    return {
+      totalVideoFrames: Number(quality.totalVideoFrames ?? 0),
+      droppedVideoFrames: Number(quality.droppedVideoFrames ?? 0),
+    };
+  }
+
+  private appendRecentPresentationSample(sample: RecentPresentationSample): void {
+    this.recentPresentationSamples.push(sample);
+    const cutoffMs = sample.atMs - GfnWebRtcClient.RECENT_PRESENTATION_WINDOW_MS;
+    this.recentPresentationSamples = this.recentPresentationSamples.filter((entry) => entry.atMs > cutoffMs);
+  }
+
+  private ensureVideoPlaybackActive(reason: string): void {
+    const video = this.options.videoElement;
+    const now = performance.now();
+    if (!this.videoStream.active || !video.paused) {
+      return;
+    }
+    if (now - this.lastVideoPlaybackRecoveryAttemptAtMs < GfnWebRtcClient.VIDEO_PLAYBACK_RECOVERY_COOLDOWN_MS) {
+      return;
+    }
+    this.lastVideoPlaybackRecoveryAttemptAtMs = now;
+    void video.play()
+      .then(() => {
+        this.log(`Video playback resumed (${reason})`);
+      })
+      .catch((error) => {
+        this.log(`Video playback resume failed (${reason}): ${String(error)}`);
+      });
+  }
+
+  private captureRecentPresentationWindow(now: number): RecentPresentationWindowMetrics | null {
+    const playbackQuality = this.readVideoPlaybackQuality();
+    const video = this.options.videoElement;
+    if (this.lastPresentationStatsAtMs > 0) {
+      const intervalMs = now - this.lastPresentationStatsAtMs;
+      if (intervalMs > 0) {
+        const presentedFramesDelta = playbackQuality && this.lastPlaybackQualitySample
+          ? Math.max(
+            this.presentationCadenceSincePoll.presentedFrames,
+            Math.max(0, playbackQuality.totalVideoFrames - this.lastPlaybackQualitySample.totalVideoFrames),
+          )
+          : this.presentationCadenceSincePoll.presentedFrames;
+        const droppedFramesDelta = playbackQuality && this.lastPlaybackQualitySample
+          ? Math.max(0, playbackQuality.droppedVideoFrames - this.lastPlaybackQualitySample.droppedVideoFrames)
+          : 0;
+        this.appendRecentPresentationSample({
+          intervalMs,
+          presentedFramesDelta,
+          droppedFramesDelta,
+          cadenceSampleCount: this.presentationCadenceSincePoll.sampleCount,
+          cadenceIntervalSumMs: this.presentationCadenceSincePoll.intervalSumMs,
+          maxCadenceIntervalMs: this.presentationCadenceSincePoll.maxIntervalMs,
+          paused: video.paused,
+          readyState: video.readyState,
+          atMs: now,
+        });
+      }
+    }
+    this.lastPresentationStatsAtMs = now;
+    this.lastPlaybackQualitySample = playbackQuality;
+    this.presentationCadenceSincePoll.presentedFrames = 0;
+    this.presentationCadenceSincePoll.sampleCount = 0;
+    this.presentationCadenceSincePoll.intervalSumMs = 0;
+    this.presentationCadenceSincePoll.maxIntervalMs = 0;
+    return this.summarizeRecentPresentationWindow();
+  }
+
+  private summarizeRecentPresentationWindow(): RecentPresentationWindowMetrics | null {
+    if (this.recentPresentationSamples.length === 0) {
+      return null;
+    }
+
+    let intervalMs = 0;
+    let presentedFrames = 0;
+    let droppedFrames = 0;
+    let cadenceSampleCount = 0;
+    let cadenceIntervalSumMs = 0;
+    let maxCadenceIntervalMs = 0;
+    let pausedPolls = 0;
+    let underflowPolls = 0;
+
+    for (const sample of this.recentPresentationSamples) {
+      intervalMs += sample.intervalMs;
+      presentedFrames += sample.presentedFramesDelta;
+      droppedFrames += sample.droppedFramesDelta;
+      cadenceSampleCount += sample.cadenceSampleCount;
+      cadenceIntervalSumMs += sample.cadenceIntervalSumMs;
+      maxCadenceIntervalMs = Math.max(maxCadenceIntervalMs, sample.maxCadenceIntervalMs);
+      if (sample.paused) {
+        pausedPolls++;
+      }
+      if (sample.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
+        underflowPolls++;
+      }
+    }
+
+    if (intervalMs <= 0) {
+      return null;
+    }
+
+    const renderedFrameTotal = presentedFrames + droppedFrames;
+    return {
+      intervalMs,
+      pollCount: this.recentPresentationSamples.length,
+      presentedFrames,
+      droppedFrames,
+      presentedFps: (presentedFrames * 1000) / intervalMs,
+      dropRatePercent: renderedFrameTotal > 0 ? (droppedFrames / renderedFrameTotal) * 100 : 0,
+      avgCadenceIntervalMs: cadenceSampleCount > 0 ? cadenceIntervalSumMs / cadenceSampleCount : 0,
+      maxCadenceIntervalMs,
+      pausedPolls,
+      underflowPolls,
+    };
   }
 
   private appendRecentVideoIntervalSample(sample: RecentVideoIntervalSample): void {
@@ -1120,6 +1346,47 @@ export class GfnWebRtcClient {
     };
   }
 
+  private shouldTreatAsRenderPressure(params: {
+    decodeFps: number;
+    recentPresentation: RecentPresentationWindowMetrics | null;
+    decoderPressure: DecoderPressureSignal;
+  }): RenderPressureSignal {
+    const recent = params.recentPresentation;
+    if (!recent || recent.intervalMs < 400 || params.decoderPressure.active || params.decodeFps <= 0) {
+      return {
+        active: false,
+        detail: "No recent presentation pressure",
+      };
+    }
+
+    const fpsGap = Math.max(0, params.decodeFps - recent.presentedFps);
+    const cadenceUnstable =
+      recent.maxCadenceIntervalMs >= Math.max(34, recent.avgCadenceIntervalMs * 1.8) ||
+      recent.underflowPolls >= 2;
+    const dropBurst = recent.droppedFrames >= 3 || recent.dropRatePercent >= 3;
+    const presentStall =
+      recent.intervalMs >= GfnWebRtcClient.RENDER_STALL_MIN_WINDOW_MS &&
+      recent.presentedFrames <= Math.max(1, Math.round(params.decodeFps * 0.1)) &&
+      recent.pausedPolls === 0;
+    const fpsShortfall = recent.presentedFps > 0 && (fpsGap >= 10 || recent.presentedFps < params.decodeFps * 0.75);
+
+    if (presentStall || (fpsShortfall && (cadenceUnstable || dropBurst)) || (dropBurst && cadenceUnstable)) {
+      const detailParts = [`present ${recent.presentedFps.toFixed(0)}fps vs decode ${params.decodeFps.toFixed(0)}fps`];
+      if (recent.dropRatePercent > 0) detailParts.push(`video drops ${recent.dropRatePercent.toFixed(1)}%`);
+      if (recent.maxCadenceIntervalMs > 0) detailParts.push(`max gap ${recent.maxCadenceIntervalMs.toFixed(1)}ms`);
+      if (recent.underflowPolls > 0) detailParts.push("video underflow");
+      return {
+        active: true,
+        detail: detailParts.join(" · "),
+      };
+    }
+
+    return {
+      active: false,
+      detail: "No recent presentation pressure",
+    };
+  }
+
   private classifyLagReason(params: {
     decodeFps: number;
     renderFps: number;
@@ -1130,7 +1397,7 @@ export class GfnWebRtcClient {
     inputQueueBufferedBytes: number;
     inputQueueDropCount: number;
     inputQueueMaxSchedulingDelayMs: number;
-    decoderPressure: DecoderPressureSignal;
+    lagSignals: LagReasonSignals;
   }): { reason: StreamLagReason; detail: string } {
     const networkSignals: string[] = [];
     if (params.packetLossPercent >= 1) networkSignals.push(`${params.packetLossPercent.toFixed(1)}% loss`);
@@ -1144,10 +1411,10 @@ export class GfnWebRtcClient {
       };
     }
 
-    if (params.decoderPressure.active) {
+    if (params.lagSignals.decoder.active) {
       return {
         reason: "decoder",
-        detail: params.decoderPressure.detail,
+        detail: params.lagSignals.decoder.detail,
       };
     }
 
@@ -1170,14 +1437,11 @@ export class GfnWebRtcClient {
       };
     }
 
-    if (params.renderFps > 0 && params.decodeFps > 0) {
-      const renderGap = params.decodeFps - params.renderFps;
-      if (renderGap >= 8 || params.renderFps < 24) {
-        return {
-          reason: "render",
-          detail: `render ${params.renderFps}fps vs decode ${params.decodeFps}fps`,
-        };
-      }
+    if (params.lagSignals.render.active) {
+      return {
+        reason: "render",
+        detail: params.lagSignals.render.detail,
+      };
     }
 
     return {
@@ -1356,6 +1620,10 @@ export class GfnWebRtcClient {
       recentDeficitFrames: 0,
       dropRatePercent: 0,
       detail: "No recent decoder pressure",
+    };
+    let renderPressureSignal: RenderPressureSignal = {
+      active: false,
+      detail: "No recent presentation pressure",
     };
 
     for (const entry of report.values()) {
@@ -1546,6 +1814,24 @@ export class GfnWebRtcClient {
       await this.maybeRecoverFromDecoderPressure(decoderPressureSignal);
     }
 
+    const recentPresentation = this.captureRecentPresentationWindow(now);
+    if (recentPresentation) {
+      this.diagnostics.renderFps = Math.round(recentPresentation.presentedFps);
+      if (recentPresentation.avgCadenceIntervalMs > 0) {
+        // renderTimeMs now reflects recent presentation cadence at the video
+        // element, not RTP inter-frame timing from decoder stats.
+        this.diagnostics.renderTimeMs = Math.round(recentPresentation.avgCadenceIntervalMs * 10) / 10;
+      }
+      if (recentPresentation.pausedPolls > 0) {
+        this.ensureVideoPlaybackActive("paused_during_stream");
+      }
+      renderPressureSignal = this.shouldTreatAsRenderPressure({
+        decodeFps: this.diagnostics.decodeFps,
+        recentPresentation,
+        decoderPressure: decoderPressureSignal,
+      });
+    }
+
     // RTT from active candidate pair
     if (activePair?.currentRoundTripTime !== undefined) {
       const rtt = Number(activePair.currentRoundTripTime);
@@ -1573,7 +1859,10 @@ export class GfnWebRtcClient {
       inputQueueBufferedBytes: reliableBufferedAmount,
       inputQueueDropCount: this.inputQueueDropCount,
       inputQueueMaxSchedulingDelayMs: this.diagnostics.inputQueueMaxSchedulingDelayMs,
-      decoderPressure: decoderPressureSignal,
+      lagSignals: {
+        decoder: decoderPressureSignal,
+        render: renderPressureSignal,
+      },
     });
     this.diagnostics.lagReason = lagClassification.reason;
     this.diagnostics.lagReasonDetail = lagClassification.detail;
@@ -1621,6 +1910,7 @@ export class GfnWebRtcClient {
     this.clearTimers();
     this.detachInputCapture();
     this.closeDataChannels();
+    this.resetPresentationTracking();
     if (this.audioContext) {
       void this.audioContext.close();
       this.audioContext = null;
@@ -1668,15 +1958,8 @@ export class GfnWebRtcClient {
     if (track.kind === "video") {
       this.replaceTrackInStream(this.videoStream, track);
 
-      // Set up render FPS tracking using video element
       const video = this.options.videoElement;
-      const frameCallback = () => {
-        this.updateRenderFps();
-        if (this.videoStream.active) {
-          video.requestVideoFrameCallback(frameCallback);
-        }
-      };
-      video.requestVideoFrameCallback(frameCallback);
+      this.startPresentationTracking(video);
 
       this.log(
         `Video element before play: paused=${video.paused}, readyState=${video.readyState}, size=${video.videoWidth}x${video.videoHeight}`,
