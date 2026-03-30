@@ -1,5 +1,3 @@
-import { randomBytes } from "node:crypto";
-
 import WebSocket from "ws";
 
 import type {
@@ -11,8 +9,10 @@ import type {
 import {
   buildGfnHeaders,
   buildGfnSignalingSignInUrl,
+  GFN_CLIENT_STREAMER_WEBRTC,
+  GFN_CLIENT_TYPE_NATIVE,
+  GFN_CLIENT_VERSION,
   GFN_PLAY_ORIGIN,
-  GFN_USER_AGENT,
   isGfnVerboseLoggingEnabled,
 } from "@shared/gfnClient";
 
@@ -33,9 +33,17 @@ interface SignalingMessage {
 export class GfnSignalingClient {
   private ws: WebSocket | null = null;
   private peerId = 2;
+  private remotePeerId: number | null = null;
   private peerName = `peer-${Math.floor(Math.random() * 10_000_000_000)}`;
   private ackCounter = 0;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private offerWatchdogTimer: NodeJS.Timeout | null = null;
+  private openedAtMs = 0;
+  private receivedMessageCount = 0;
+  private sawAck = false;
+  private sawHeartbeat = false;
+  private sawPeerInfo = false;
+  private sawOffer = false;
   private listeners = new Set<(event: MainToRendererSignalingEvent) => void>();
   private readonly verboseLogging = isGfnVerboseLoggingEnabled();
 
@@ -44,6 +52,8 @@ export class GfnSignalingClient {
     private readonly sessionId: string,
     private readonly signalingUrl?: string,
     private readonly pairingId: string = sessionId,
+    private readonly clientId?: string,
+    private readonly deviceId?: string,
   ) {}
 
   private buildSignInUrl(): string {
@@ -94,6 +104,72 @@ export class GfnSignalingClient {
     this.ws.send(JSON.stringify(payload));
   }
 
+  private buildHandshakeHeaders(): Record<string, string> {
+    return {
+      ...buildGfnHeaders({
+        origin: GFN_PLAY_ORIGIN,
+      }),
+      Host: this.signalingServer.includes(":") ? this.signalingServer : `${this.signalingServer}:443`,
+    };
+  }
+
+  private redactProtocol(value: string): string {
+    const [name, rest] = value.split(".", 2);
+    if (!rest) {
+      return value;
+    }
+    return `${name}.${rest.slice(0, 8)}${rest.length > 8 ? "…" : ""}`;
+  }
+
+  private summarizeHeaders(headers: Record<string, string>): string {
+    return Object.entries(headers)
+      .map(([name, value]) => {
+        if (name === "User-Agent" || name === "Authorization") {
+          return `${name}=set`;
+        }
+        if (name === "Host" || name === "Origin" || name === "Referer") {
+          return `${name}=${value}`;
+        }
+        return `${name}=set`;
+      })
+      .join(", ");
+  }
+
+  private summarizeFrame(payload: Record<string, unknown>): string {
+    const keys = Object.keys(payload);
+    const parts = [
+      `keys=${keys.join(",") || "none"}`,
+      `ackid=${typeof payload.ackid === "number" ? payload.ackid : "n/a"}`,
+      `ack=${typeof payload.ack === "number" ? payload.ack : "n/a"}`,
+      `hb=${typeof payload.hb === "number" ? payload.hb : "n/a"}`,
+      `peer_info=${payload.peer_info ? "yes" : "n"}`,
+      `peer_msg=${payload.peer_msg ? "yes" : "n"}`,
+    ];
+    return parts.join(" ");
+  }
+
+  private clearOfferWatchdog(): void {
+    if (this.offerWatchdogTimer) {
+      clearTimeout(this.offerWatchdogTimer);
+      this.offerWatchdogTimer = null;
+    }
+  }
+
+  private startOfferWatchdog(): void {
+    this.clearOfferWatchdog();
+    const warnAfterMs = 12_000;
+    this.offerWatchdogTimer = setTimeout(() => {
+      if (this.sawOffer || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      const elapsed = this.openedAtMs ? Math.max(0, Date.now() - this.openedAtMs) : warnAfterMs;
+      console.warn(
+        `[Signaling] No offer after ${Math.round(elapsed / 1000)}s ` +
+          `messages=${this.receivedMessageCount} ack=${this.sawAck ? 1 : 0} hb=${this.sawHeartbeat ? 1 : 0} peer_info=${this.sawPeerInfo ? 1 : 0} remotePeer=${this.remotePeerId ?? "n/a"}`,
+      );
+    }, warnAfterMs);
+  }
+
   private setupHeartbeat(): void {
     this.clearHeartbeat();
     this.heartbeatTimer = setInterval(() => {
@@ -131,25 +207,17 @@ export class GfnSignalingClient {
 
     const url = this.buildSignInUrl();
     const protocol = `x-nv-sessionid.${this.sessionId}`;
+    const headers = this.buildHandshakeHeaders();
     const parsedUrl = new URL(url);
 
     console.log(
-      `[Signaling] Connecting host=${parsedUrl.host} protocol=${protocol} pairing=${this.pairingId.slice(0, 8)}…`,
+      `[Signaling] Connecting host=${parsedUrl.host} protocol=${this.redactProtocol(protocol)} headers={${this.summarizeHeaders(headers)}} pairing=${this.pairingId.slice(0, 8)}…`,
     );
 
     await new Promise<void>((resolve, reject) => {
-      const urlHost = parsedUrl.host;
-
       const ws = new WebSocket(url, protocol, {
         rejectUnauthorized: false,
-        headers: {
-          ...buildGfnHeaders({
-            origin: GFN_PLAY_ORIGIN,
-          }),
-          Host: urlHost,
-          "User-Agent": GFN_USER_AGENT,
-          "Sec-WebSocket-Key": randomBytes(16).toString("base64"),
-        },
+        headers,
       });
 
       this.ws = ws;
@@ -160,20 +228,34 @@ export class GfnSignalingClient {
       });
 
       ws.once("open", () => {
+        this.openedAtMs = Date.now();
+        this.receivedMessageCount = 0;
+        this.sawAck = false;
+        this.sawHeartbeat = false;
+        this.sawPeerInfo = false;
+        this.sawOffer = false;
+        this.remotePeerId = null;
+        console.log(`[Signaling] Socket open; sending peer_info and starting watchdog`);
         this.sendPeerInfo();
         this.setupHeartbeat();
+        this.startOfferWatchdog();
         this.emit({ type: "connected" });
         resolve();
       });
 
       ws.on("message", (raw) => {
         const text = typeof raw === "string" ? raw : raw.toString("utf8");
+        this.receivedMessageCount += 1;
         this.handleMessage(text);
       });
 
-      ws.on("close", (_code, reason) => {
+      ws.on("close", (code, reason) => {
         this.clearHeartbeat();
+        this.clearOfferWatchdog();
         const reasonText = typeof reason === "string" ? reason : reason.toString("utf8");
+        console.log(
+          `[Signaling] Socket closed code=${code} reason=${reasonText || "n/a"} messages=${this.receivedMessageCount} sawOffer=${this.sawOffer ? 1 : 0}`,
+        );
         this.emit({ type: "disconnected", reason: reasonText || "socket closed" });
       });
     });
@@ -188,14 +270,24 @@ export class GfnSignalingClient {
       return;
     }
 
+    console.log(`[Signaling] Rx ${this.summarizeFrame(parsed as Record<string, unknown>)}`);
+
+    if (typeof parsed.peer_info?.id === "number" && parsed.peer_info.id !== this.remotePeerId) {
+      const prev = this.remotePeerId ?? "n/a";
+      this.remotePeerId = parsed.peer_info.id;
+      this.sawPeerInfo = true;
+      console.log(`[Signaling] peer_info updated remote peer id ${prev} -> ${this.remotePeerId}`);
+    } else if (parsed.peer_info) {
+      this.sawPeerInfo = true;
+    }
+
     if (typeof parsed.ackid === "number") {
-      const shouldAck = parsed.peer_info?.id !== this.peerId;
-      if (shouldAck) {
-        this.sendJson({ ack: parsed.ackid });
-      }
+      this.sawAck = true;
+      this.sendJson({ ack: parsed.ackid });
     }
 
     if (parsed.hb) {
+      this.sawHeartbeat = true;
       this.sendJson({ hb: 1 });
       return;
     }
@@ -213,6 +305,8 @@ export class GfnSignalingClient {
     }
 
     if (peerPayload.type === "offer" && typeof peerPayload.sdp === "string") {
+      this.sawOffer = true;
+      this.clearOfferWatchdog();
       console.log(`[Signaling] ${this.summarizeSdp("Received offer SDP", peerPayload.sdp)}`);
       if (this.verboseLogging) {
         console.debug("[Signaling] Offer SDP preview:", peerPayload.sdp.slice(0, 1000));
@@ -312,6 +406,7 @@ export class GfnSignalingClient {
 
   disconnect(): void {
     this.clearHeartbeat();
+    this.clearOfferWatchdog();
     if (this.ws) {
       this.ws.close();
       this.ws = null;

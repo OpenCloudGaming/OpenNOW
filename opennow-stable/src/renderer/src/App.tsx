@@ -717,6 +717,11 @@ export function App(): JSX.Element {
     }
   }, [diagnosticsStore]);
 
+  const setBestSessionSnapshot = useCallback((next: SessionInfo | null): void => {
+    sessionRef.current = next;
+    setSession(next);
+  }, []);
+
   // Session ref sync
   useEffect(() => {
     sessionRef.current = session;
@@ -1521,8 +1526,7 @@ export function App(): JSX.Element {
 
     await sleep(1000);
 
-    setSession(claimed);
-    sessionRef.current = claimed;
+    setBestSessionSnapshot(claimed);
     setQueuePosition(undefined);
     setStreamStatus("connecting");
     await window.openNow.connectSignaling({
@@ -1530,8 +1534,10 @@ export function App(): JSX.Element {
       signalingServer: claimed.signalingServer,
       signalingUrl: claimed.signalingUrl,
       pairingId: claimed.pairingId,
+      clientId: claimed.clientId,
+      deviceId: claimed.deviceId,
     });
-  }, [authSession, effectiveStreamingBaseUrl, findGameContextForSession, settings]);
+  }, [authSession, effectiveStreamingBaseUrl, findGameContextForSession, setBestSessionSnapshot, settings]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean }) => {
@@ -1659,7 +1665,7 @@ export function App(): JSX.Element {
         },
       });
 
-      setSession(newSession);
+      setBestSessionSnapshot(newSession);
       setQueuePosition(newSession.queuePosition);
 
       // Poll for readiness.
@@ -1670,22 +1676,25 @@ export function App(): JSX.Element {
       let timeoutStartAttempt = 1;
       const maxAttempts = Math.ceil(SESSION_READY_TIMEOUT_MS / SESSION_READY_POLL_INTERVAL_MS);
       let attempt = 0;
+      let rollingSession = newSession;
 
       while (true) {
         attempt++;
         await sleep(SESSION_READY_POLL_INTERVAL_MS);
+        const previousPollServerIp = rollingSession.serverIp;
 
         const polled = await window.openNow.pollSession({
           token: token || undefined,
-          streamingBaseUrl: newSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
-          serverIp: newSession.serverIp,
-          zone: newSession.zone,
-          sessionId: newSession.sessionId,
-          clientId: newSession.clientId,
-          deviceId: newSession.deviceId,
+          streamingBaseUrl: rollingSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
+          serverIp: rollingSession.serverIp,
+          zone: rollingSession.zone,
+          sessionId: rollingSession.sessionId,
+          clientId: rollingSession.clientId,
+          deviceId: rollingSession.deviceId,
         });
 
-        setSession(polled);
+        rollingSession = polled;
+        setBestSessionSnapshot(polled);
         setQueuePosition(polled.queuePosition);
 
         // Check if queue just cleared - transition from queue mode to setup mode
@@ -1699,6 +1708,11 @@ export function App(): JSX.Element {
         console.log(
           `Poll attempt ${attempt}: status=${polled.status}, seatSetupStep=${polled.seatSetupStep ?? "n/a"}, queuePosition=${polled.queuePosition ?? "n/a"}, serverIp=${polled.serverIp}, queueMode=${isInQueueMode}`,
         );
+        if (previousPollServerIp !== polled.serverIp) {
+          console.log(
+            `[CloudMatch] Poll routing updated session=${polled.sessionId} from=${previousPollServerIp} to=${polled.serverIp} signalingHost=${polled.signalingServer}`,
+          );
+        }
 
         if (isSessionReadyForConnect(polled.status)) {
           finalSession = polled;
@@ -1725,7 +1739,7 @@ export function App(): JSX.Element {
       updateLoadingStep("connecting");
 
       // Use the polled session data which has the latest signaling info
-      const sessionToConnect = sessionRef.current ?? finalSession ?? newSession;
+      const sessionToConnect = sessionRef.current ?? finalSession ?? rollingSession;
       console.log("Connecting signaling with:", {
         sessionId: sessionToConnect.sessionId,
         signalingServer: sessionToConnect.signalingServer,
@@ -1738,6 +1752,8 @@ export function App(): JSX.Element {
         signalingServer: sessionToConnect.signalingServer,
         signalingUrl: sessionToConnect.signalingUrl,
         pairingId: sessionToConnect.pairingId,
+        clientId: sessionToConnect.clientId,
+        deviceId: sessionToConnect.deviceId,
       });
     } catch (error) {
       console.error("Launch failed:", error);

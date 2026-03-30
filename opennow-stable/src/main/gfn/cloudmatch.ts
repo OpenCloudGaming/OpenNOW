@@ -190,20 +190,20 @@ function streamingServerIp(response: CloudMatchResponse): string | null {
  * Matches Rust's extract_host_from_url().
  */
 function extractHostFromUrl(url: string): string | null {
-  const prefixes = ["rtsps://", "rtsp://", "wss://", "https://"];
-  let afterProto: string | null = null;
-  for (const prefix of prefixes) {
-    if (url.startsWith(prefix)) {
-      afterProto = url.slice(prefix.length);
-      break;
-    }
+  if (!/^(rtsps?|wss?|https?):\/\//i.test(url)) {
+    return null;
   }
-  if (!afterProto) return null;
 
-  // Get host (before port or path)
-  const host = afterProto.split(":")[0]?.split("/")[0];
-  if (!host || host.length === 0 || host.startsWith(".")) return null;
-  return host;
+  try {
+    const parsed = new URL(url.replace(/^rtsps:/i, "https:").replace(/^rtsp:/i, "http:"));
+    const host = parsed.hostname;
+    if (!host || host.length === 0 || host.startsWith(".")) {
+      return null;
+    }
+    return host;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -212,7 +212,67 @@ function extractHostFromUrl(url: string): string | null {
  *   np-ams-06.cloudmatchbeta.nvidiagrid.net
  */
 function isZoneHostname(ip: string): boolean {
-  return ip.includes("cloudmatchbeta.nvidiagrid.net") || ip.includes("cloudmatch.nvidiagrid.net");
+  const normalized = ip.replace(/^\[([^\]]+)\]:(\d+)$/, "$1").split(":")[0] ?? ip;
+  return normalized.includes("cloudmatchbeta.nvidiagrid.net") || normalized.includes("cloudmatch.nvidiagrid.net");
+}
+
+type SessionRoutingInfo = Pick<SessionInfo, "serverIp" | "signalingServer" | "signalingUrl" | "mediaConnectionInfo">;
+
+const sessionRoutingCache = new Map<string, SessionRoutingInfo>();
+
+function isUsefulRoutingHost(value: string): boolean {
+  return value.length > 0 && !isZoneHostname(value);
+}
+
+function isUsefulSignalingUrl(value: string): boolean {
+  try {
+    return !isZoneHostname(new URL(value).hostname);
+  } catch {
+    return !isZoneHostname(value);
+  }
+}
+
+function isUsefulMediaConnectionInfo(info?: SessionRoutingInfo["mediaConnectionInfo"]): boolean {
+  return Boolean(info?.ip && info.port > 0 && !isZoneHostname(info.ip));
+}
+
+function mergeSessionRoutingInfo(sessionId: string, next: SessionRoutingInfo): {
+  routing: SessionRoutingInfo;
+  retainedFields: string[];
+} {
+  const previous = sessionRoutingCache.get(sessionId);
+  const routing: SessionRoutingInfo = {
+    serverIp: next.serverIp,
+    signalingServer: next.signalingServer,
+    signalingUrl: next.signalingUrl,
+    mediaConnectionInfo: next.mediaConnectionInfo,
+  };
+  const retainedFields: string[] = [];
+
+  if (previous) {
+    if (!isUsefulRoutingHost(routing.serverIp) && isUsefulRoutingHost(previous.serverIp)) {
+      routing.serverIp = previous.serverIp;
+      retainedFields.push("serverIp");
+    }
+
+    if (!isUsefulRoutingHost(routing.signalingServer) && isUsefulRoutingHost(previous.signalingServer)) {
+      routing.signalingServer = previous.signalingServer;
+      retainedFields.push("signalingServer");
+    }
+
+    if (!isUsefulSignalingUrl(routing.signalingUrl) && isUsefulSignalingUrl(previous.signalingUrl)) {
+      routing.signalingUrl = previous.signalingUrl;
+      retainedFields.push("signalingUrl");
+    }
+
+    if (!isUsefulMediaConnectionInfo(routing.mediaConnectionInfo) && isUsefulMediaConnectionInfo(previous.mediaConnectionInfo)) {
+      routing.mediaConnectionInfo = previous.mediaConnectionInfo;
+      retainedFields.push("mediaConnectionInfo");
+    }
+  }
+
+  sessionRoutingCache.set(sessionId, routing);
+  return { routing, retainedFields };
 }
 
 function resolveSignaling(response: CloudMatchResponse): {
@@ -223,7 +283,7 @@ function resolveSignaling(response: CloudMatchResponse): {
 } {
   const connections = response.session.connectionInfo ?? [];
   const signalingConnection =
-    connections.find((conn) => conn.usage === 14 && conn.ip) ?? connections.find((conn) => conn.ip);
+    connections.find((conn) => conn.usage === 14) ?? connections.find((conn) => conn.ip);
 
   // Use the Rust-matching priority chain for server IP
   const serverIp = streamingServerIp(response);
@@ -231,20 +291,9 @@ function resolveSignaling(response: CloudMatchResponse): {
     throw new Error("CloudMatch response did not include a signaling host");
   }
 
-  const resourcePath = signalingConnection?.resourcePath ?? "/nvst/";
-
-  // Build signaling URL matching Rust's build_signaling_url() behavior:
-  // - rtsps://host:port -> extract host, convert to wss://host/nvst/
-  // - wss://... -> use as-is
-  // - /path -> wss://serverIp:443/path
-  // - fallback -> wss://serverIp:443/nvst/
-  const { signalingUrl, signalingHost } = buildSignalingUrl(resourcePath, serverIp);
-
-  // Use the resolved signaling host (which may differ from serverIp if extracted from rtsps:// URL)
+  const { signalingUrl, signalingHost, signalingPort } = buildSignalingUrl(signalingConnection, serverIp);
   const effectiveHost = signalingHost ?? serverIp;
-  const signalingServer = effectiveHost.includes(":")
-    ? effectiveHost
-    : `${effectiveHost}:443`;
+  const signalingServer = `${effectiveHost}:${signalingPort}`;
 
   return {
     serverIp,
@@ -340,50 +389,51 @@ function resolveMediaConnectionInfo(
 }
 
 /**
- * Build signaling WSS URL from the resourcePath, matching Rust implementation.
- * Returns the URL and optionally the extracted host (if different from serverIp).
+ * Build signaling websocket URL using CloudMatch usage=14 semantics.
+ * Prefer the connection's explicit host/port/path instead of forcing :443 + /nvst/.
  */
 function buildSignalingUrl(
-  raw: string,
+  connection: { ip?: string; port: number; appLevelProtocol?: number; resourcePath?: string } | undefined,
   serverIp: string,
-): { signalingUrl: string; signalingHost: string | null } {
-  if (raw.startsWith("rtsps://") || raw.startsWith("rtsp://")) {
-    // Extract hostname from RTSP URL, convert to wss://
-    const withoutScheme = raw.startsWith("rtsps://")
-      ? raw.slice("rtsps://".length)
-      : raw.slice("rtsp://".length);
-    const host = withoutScheme.split(":")[0]?.split("/")[0];
-    if (host && host.length > 0 && !host.startsWith(".")) {
+): { signalingUrl: string; signalingHost: string | null; signalingPort: number } {
+  const raw = connection?.resourcePath?.trim() || "/nvst";
+  const explicitIp = Array.isArray(connection?.ip) ? connection?.ip[0] : connection?.ip;
+  const defaultSecure = connection?.appLevelProtocol === 5;
+  const defaultPort = connection?.port && connection.port > 0 ? connection.port : 443;
+
+  if (/^(wss?|https?|rtsps?):\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw.replace(/^rtsps:/i, "https:").replace(/^rtsp:/i, "http:"));
+      const protocol = raw.startsWith("wss://")
+        || raw.startsWith("https://")
+        || raw.startsWith("rtsp://")
+        || raw.startsWith("rtsps://")
+          ? "wss"
+          : "ws";
+      const host = parsed.hostname && !parsed.hostname.startsWith(".")
+        ? parsed.hostname
+        : explicitIp || serverIp;
+      const port = parsed.port ? Number.parseInt(parsed.port, 10) : defaultPort;
+      const path = parsed.pathname && parsed.pathname.length > 0 ? parsed.pathname : "/nvst";
+      const search = parsed.search ?? "";
       return {
-        signalingUrl: `wss://${host}/nvst/`,
+        signalingUrl: `${protocol}://${host}:${port}${path}${search}`,
         signalingHost: host,
+        signalingPort: port,
       };
+    } catch {
+      // Fall through to path-based handling.
     }
-    return {
-      signalingUrl: `wss://${serverIp}:443/nvst/`,
-      signalingHost: null,
-    };
   }
 
-  if (raw.startsWith("wss://")) {
-    // Already a full WSS URL, use as-is; extract host
-    const withoutScheme = raw.slice("wss://".length);
-    const host = withoutScheme.split("/")[0] ?? null;
-    return { signalingUrl: raw, signalingHost: host };
-  }
+  const protocol = defaultSecure ? "wss" : "ws";
+  const host = explicitIp || serverIp;
+  const path = raw.startsWith("/") ? raw : `/${raw}`;
 
-  if (raw.startsWith("/")) {
-    // Relative path
-    return {
-      signalingUrl: `wss://${serverIp}:443${raw}`,
-      signalingHost: null,
-    };
-  }
-
-  // Fallback
   return {
-    signalingUrl: `wss://${serverIp}:443/nvst/`,
-    signalingHost: null,
+    signalingUrl: `${protocol}://${host}:${defaultPort}${path}`,
+    signalingHost: host,
+    signalingPort: defaultPort,
   };
 }
 
@@ -491,6 +541,7 @@ function buildSessionInfoFromPayload(
   deviceId?: string,
 ): SessionInfo {
   const signaling = resolveSignaling(payload);
+  const mergedRouting = mergeSessionRoutingInfo(sessionData.sessionId, signaling);
   const queuePosition = extractQueuePosition(payload);
 
   return {
@@ -499,13 +550,13 @@ function buildSessionInfoFromPayload(
     queuePosition,
     zone: "",
     streamingBaseUrl: `https://${effectiveServerIp}`,
-    serverIp: signaling.serverIp,
-    signalingServer: signaling.signalingServer,
-    signalingUrl: signaling.signalingUrl,
+    serverIp: mergedRouting.routing.serverIp,
+    signalingServer: mergedRouting.routing.signalingServer,
+    signalingUrl: mergedRouting.routing.signalingUrl,
     pairingId,
     gpuType: sessionData.gpuType,
     iceServers,
-    mediaConnectionInfo: signaling.mediaConnectionInfo,
+    mediaConnectionInfo: mergedRouting.routing.mediaConnectionInfo,
     clientId,
     deviceId,
   };
@@ -704,11 +755,17 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
   }
 
   const signaling = resolveSignaling(payload);
+  const mergedRouting = mergeSessionRoutingInfo(payload.session.sessionId, signaling);
   const queuePosition = extractQueuePosition(payload);
   const seatSetupStep = extractSeatSetupStep(payload);
+  if (mergedRouting.retainedFields.length > 0) {
+    console.log(
+      `[CloudMatch] Session routing retained session=${payload.session.sessionId} fields=${mergedRouting.retainedFields.join(",")}`,
+    );
+  }
   console.log(
     `[CloudMatch] Session info ready ${summarizeCloudMatchPayload(payload)} ` +
-    `serverIp=${signaling.serverIp} signalingHost=${signaling.signalingServer}`,
+    `serverIp=${mergedRouting.routing.serverIp} signalingHost=${mergedRouting.routing.signalingServer}`,
   );
 
   return {
@@ -718,13 +775,13 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     queuePosition,
     zone,
     streamingBaseUrl,
-    serverIp: signaling.serverIp,
-    signalingServer: signaling.signalingServer,
-    signalingUrl: signaling.signalingUrl,
+    serverIp: mergedRouting.routing.serverIp,
+    signalingServer: mergedRouting.routing.signalingServer,
+    signalingUrl: mergedRouting.routing.signalingUrl,
     pairingId: payload.session.sessionId,
     gpuType: payload.session.gpuType,
     iceServers: await normalizeIceServers(payload),
-    mediaConnectionInfo: signaling.mediaConnectionInfo,
+    mediaConnectionInfo: mergedRouting.routing.mediaConnectionInfo,
     clientId,
     deviceId,
   };
@@ -802,10 +859,11 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
     !isZoneHostname(realServerIp) &&
     realServerIp !== input.serverIp;
 
-  if (polledViaZone && realIpDiffers && (payload.session.status === 2 || payload.session.status === 3)) {
-    // Session is ready and we now know the real server IP — re-poll directly
+  if (polledViaZone && realIpDiffers) {
+    // We now know a real server IP from the zone LB response; re-poll directly so
+    // queue/setup flows can recover better routing metadata earlier than ready state.
     console.log(
-      `[CloudMatch] Session ready: re-polling via real server IP ${realServerIp} (was: ${new URL(base).hostname})`,
+      `[CloudMatch] Session routing upgrade: re-polling via real server IP ${realServerIp} (was: ${new URL(base).hostname}, status=${payload.session.status})`,
     );
     const directBase = `https://${realServerIp}`;
     const directUrl = `${directBase}/v2/session/${input.sessionId}`;
@@ -852,6 +910,8 @@ export async function stopSession(input: SessionStopRequest): Promise<void> {
     // Use SessionError to parse and throw detailed error
     throw SessionError.fromResponse(response.status, text);
   }
+
+  sessionRoutingCache.delete(input.sessionId);
 }
 
 /**
