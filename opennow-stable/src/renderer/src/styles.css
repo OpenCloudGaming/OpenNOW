@@ -2018,6 +2018,10 @@ button.game-card-store-chip.active:hover {
   margin-bottom: 8px;
 }
 
+.settings-row-top--compact {
+  margin-bottom: 4px;
+}
+
 .settings-shortcut-actions {
   display: flex;
   align-items: center;
@@ -2056,12 +2060,59 @@ button.game-card-store-chip.active:hover {
   cursor: default;
 }
 
+.settings-label--wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-label-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.settings-inline-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.64rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.settings-inline-badge--beta {
+  color: var(--accent);
+  background: var(--accent-surface);
+  border-color: rgba(88, 217, 138, 0.24);
+}
+
 .settings-hint {
   display: block;
   margin-top: 2px;
   font-size: 0.78rem;
   color: var(--ink-muted);
   font-weight: 500;
+}
+
+.settings-controller-subsettings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-left: 18px;
+  margin-left: 4px;
+  border-left: 1px solid var(--panel-border);
+}
+
+.settings-controller-subsettings .settings-row {
+  gap: 12px;
 }
 
 /* Text input for resolution / FPS */

@@ -1,4 +1,4 @@
-import { Globe, Save, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2 } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2 } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -1106,6 +1106,52 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
           </div>
         </section>
 
+        {/* ── Game ───────────────────────────────────────── */}
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h2>Game</h2>
+          </div>
+          <div className="settings-rows">
+            {/* Game Language */}
+            <div className="settings-row">
+              <label className="settings-label">
+                In-Game Language
+                <span className="settings-hint">Language for in-game menus, subtitles, and audio (where supported)</span>
+              </label>
+              <div className="settings-dropdown" ref={gameLanguageDropdownRef}>
+                <button
+                  type="button"
+                  className={`settings-dropdown-selected ${gameLanguageDropdownOpen ? "open" : ""}`}
+                  onClick={() => setGameLanguageDropdownOpen((open) => !open)}
+                >
+                  <span className="settings-dropdown-selected-name">{selectedGameLanguageName}</span>
+                  <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${gameLanguageDropdownOpen ? "flipped" : ""}`}>
+                    <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
+                  </svg>
+                </button>
+                {gameLanguageDropdownOpen && (
+                  <div className="settings-dropdown-menu settings-dropdown-menu--tall">
+                    {gameLanguageOptions.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={`settings-dropdown-item ${settings.gameLanguage === option.value ? "active" : ""}`}
+                        onClick={() => {
+                          handleChange("gameLanguage", option.value);
+                          setGameLanguageDropdownOpen(false);
+                        }}
+                      >
+                        <span>{option.label}</span>
+                        {settings.gameLanguage === option.value && <Check size={14} className="settings-dropdown-check" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+
         {/* ── Video ──────────────────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
@@ -1252,62 +1298,28 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               />
             </div>
 
-            <div className="settings-row">
-              <label className="settings-label">
-                Experimental L4S Request
-                <span className="settings-hint">Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path.</span>
-              </label>
-              <label className="settings-toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.enableL4S}
-                  onChange={(e) => handleChange("enableL4S", e.target.checked)}
-                />
-                <span className="settings-toggle-track" />
-              </label>
-            </div>
-
             <div className="settings-row settings-row--column">
-              <div className="settings-row-top">
-                <label className="settings-label">Session Timer Reappear</label>
-                <span className="settings-value-badge">
-                  {settings.sessionClockShowEveryMinutes === 0
-                    ? "Off"
-                    : `Every ${settings.sessionClockShowEveryMinutes} min`}
-                </span>
+              <div className="settings-row-top settings-row-top--compact">
+                <label className="settings-label settings-label--wrap">
+                  <span className="settings-label-title">
+                    Experimental L4S Request
+                    <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
+                  </span>
+                </label>
+                <label className="settings-toggle">
+                  <input
+                    type="checkbox"
+                    checked={settings.enableL4S}
+                    onChange={(e) => handleChange("enableL4S", e.target.checked)}
+                  />
+                  <span className="settings-toggle-track" />
+                </label>
               </div>
-              <input
-                type="range"
-                className="settings-slider"
-                min={0}
-                max={120}
-                step={5}
-                value={settings.sessionClockShowEveryMinutes}
-                onChange={(e) => handleChange("sessionClockShowEveryMinutes", parseInt(e.target.value, 10))}
-              />
               <span className="settings-subtle-hint">
-                How often the session timer pops back up while streaming (0 disables repeats).
+                Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path.
               </span>
             </div>
 
-            <div className="settings-row settings-row--column">
-              <div className="settings-row-top">
-                <label className="settings-label">Session Timer Visible Time</label>
-                <span className="settings-value-badge">{settings.sessionClockShowDurationSeconds}s</span>
-              </div>
-              <input
-                type="range"
-                className="settings-slider"
-                min={5}
-                max={120}
-                step={5}
-                value={settings.sessionClockShowDurationSeconds}
-                onChange={(e) => handleChange("sessionClockShowDurationSeconds", parseInt(e.target.value, 10))}
-              />
-              <span className="settings-subtle-hint">
-                How long the session timer stays visible each time it appears.
-              </span>
-            </div>
           </div>
         </section>
 
@@ -1748,7 +1760,10 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
 
             <div className="settings-row">
               <label className="settings-label">
-                Controller Mode Library
+                <span className="settings-label-title">
+                  Controller Mode Library
+                  <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
+                </span>
                 <span className="settings-hint">Replace the desktop library/settings navigation with the controller-first layout only when controller mode is enabled.</span>
               </label>
               <label className="settings-toggle">
@@ -1762,108 +1777,106 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             </div>
 
             {settings.controllerMode && (
-              <div className="settings-row">
-                <label className="settings-label">Exit Controller Mode</label>
-                <div>
-                  <button
-                    className="settings-exit-btn"
-                    onClick={() => handleChange("controllerMode", false)}
-                  >
-                    Exit
-                  </button>
+              <div className="settings-controller-subsettings">
+                <div className="settings-row">
+                  <label className="settings-label">Exit Controller Mode</label>
+                  <div>
+                    <button
+                      className="settings-exit-btn"
+                      onClick={() => handleChange("controllerMode", false)}
+                    >
+                      Exit
+                    </button>
+                  </div>
+                </div>
+
+                <div className="settings-row">
+                  <label className="settings-label">
+                    Controller UI Sounds
+                    <span className="settings-hint">Play subtle move, open, and back sounds inside controller mode only.</span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.controllerUiSounds}
+                      onChange={(e) => handleChange("controllerUiSounds", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
+                </div>
+
+                <div className="settings-row">
+                  <label className="settings-label">
+                    Background Animations (Controller Mode)
+                    <span className="settings-hint">Show animated background visuals on controller-mode loading screens only.</span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.controllerBackgroundAnimations}
+                      onChange={(e) => handleChange("controllerBackgroundAnimations", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
+                </div>
+
+                <div className="settings-row">
+                  <label className="settings-label">
+                    Auto-Load Controller Library
+                    <span className="settings-hint">Automatically open the controller library at startup when controller mode is enabled.</span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.autoLoadControllerLibrary}
+                      onChange={(e) => handleChange("autoLoadControllerLibrary", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
                 </div>
               </div>
             )}
 
-            <div className="settings-row">
-              <label className="settings-label">
-                Controller UI Sounds
-                <span className="settings-hint">Play subtle move, open, and back sounds inside controller mode only.</span>
-              </label>
-              <label className="settings-toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.controllerUiSounds}
-                  onChange={(e) => handleChange("controllerUiSounds", e.target.checked)}
-                />
-                <span className="settings-toggle-track" />
-              </label>
-            </div>
-
-            <div className="settings-row">
-              <label className="settings-label">
-                Background Animations (Controller Mode)
-                <span className="settings-hint">Show animated background visuals on controller-mode loading screens only.</span>
-              </label>
-              <label className="settings-toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.controllerBackgroundAnimations}
-                  onChange={(e) => handleChange("controllerBackgroundAnimations", e.target.checked)}
-                />
-                <span className="settings-toggle-track" />
-              </label>
-            </div>
-
-            <div className="settings-row">
-              <label className="settings-label">
-                Auto-Load Controller Library
-                <span className="settings-hint">Automatically open the controller library at startup when controller mode is enabled.</span>
-              </label>
-              <label className="settings-toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.autoLoadControllerLibrary}
-                  onChange={(e) => handleChange("autoLoadControllerLibrary", e.target.checked)}
-                />
-                <span className="settings-toggle-track" />
-              </label>
-            </div>
-          </div>
-        </section>
-
-        {/* ── Game ───────────────────────────────────────── */}
-        <section className="settings-section">
-          <div className="settings-section-header">
-            <h2>Game</h2>
-          </div>
-          <div className="settings-rows">
-            {/* Game Language */}
-            <div className="settings-row">
-              <label className="settings-label">
-                In-Game Language
-                <span className="settings-hint">Language for in-game menus, subtitles, and audio (where supported)</span>
-              </label>
-              <div className="settings-dropdown" ref={gameLanguageDropdownRef}>
-                <button
-                  type="button"
-                  className={`settings-dropdown-selected ${gameLanguageDropdownOpen ? "open" : ""}`}
-                  onClick={() => setGameLanguageDropdownOpen((open) => !open)}
-                >
-                  <span className="settings-dropdown-selected-name">{selectedGameLanguageName}</span>
-                  <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${gameLanguageDropdownOpen ? "flipped" : ""}`}>
-                    <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
-                  </svg>
-                </button>
-                {gameLanguageDropdownOpen && (
-                  <div className="settings-dropdown-menu settings-dropdown-menu--tall">
-                    {gameLanguageOptions.map((option) => (
-                      <button
-                        key={option.value}
-                        type="button"
-                        className={`settings-dropdown-item ${settings.gameLanguage === option.value ? "active" : ""}`}
-                        onClick={() => {
-                          handleChange("gameLanguage", option.value);
-                          setGameLanguageDropdownOpen(false);
-                        }}
-                      >
-                        <span>{option.label}</span>
-                        {settings.gameLanguage === option.value && <Check size={14} className="settings-dropdown-check" />}
-                      </button>
-                    ))}
-                  </div>
-                )}
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Session Timer Reappear</label>
+                <span className="settings-value-badge">
+                  {settings.sessionClockShowEveryMinutes === 0
+                    ? "Off"
+                    : `Every ${settings.sessionClockShowEveryMinutes} min`}
+                </span>
               </div>
+              <input
+                type="range"
+                className="settings-slider"
+                min={0}
+                max={120}
+                step={5}
+                value={settings.sessionClockShowEveryMinutes}
+                onChange={(e) => handleChange("sessionClockShowEveryMinutes", parseInt(e.target.value, 10))}
+              />
+              <span className="settings-subtle-hint">
+                How often the session timer pops back up while streaming (0 disables repeats).
+              </span>
+            </div>
+
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label">Session Timer Visible Time</label>
+                <span className="settings-value-badge">{settings.sessionClockShowDurationSeconds}s</span>
+              </div>
+              <input
+                type="range"
+                className="settings-slider"
+                min={5}
+                max={120}
+                step={5}
+                value={settings.sessionClockShowDurationSeconds}
+                onChange={(e) => handleChange("sessionClockShowDurationSeconds", parseInt(e.target.value, 10))}
+              />
+              <span className="settings-subtle-hint">
+                How long the session timer stays visible each time it appears.
+              </span>
             </div>
           </div>
         </section>
@@ -1935,19 +1948,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
         </section>
       </div>
 
-      {/* Footer */}
-      <div className="settings-footer">
-        <button
-          className="settings-save-btn"
-          onClick={() => {
-            setSavedIndicator(true);
-            setTimeout(() => setSavedIndicator(false), 1500);
-          }}
-        >
-          <Save size={16} />
-          Save Settings
-        </button>
-      </div>
     </div>
   );
 }
