@@ -448,7 +448,7 @@ export class GfnWebRtcClient {
 
   private pc: RTCPeerConnection | null = null;
   private reliableInputChannel: RTCDataChannel | null = null;
-  private gamepadInputChannel: RTCDataChannel | null = null;
+  private mouseInputChannel: RTCDataChannel | null = null;
   private controlChannel: RTCDataChannel | null = null;
   private audioContext: AudioContext | null = null;
 
@@ -795,18 +795,6 @@ export class GfnWebRtcClient {
     this.options.onLog(message);
   }
 
-  private summarizeCandidate(candidate: string): string {
-    const protocol = candidate.match(/candidate:\S+\s+\d+\s+(\w+)/i)?.[1] ?? "unknown";
-    const type = candidate.match(/\styp\s+(\w+)/i)?.[1] ?? "unknown";
-    return `${protocol.toLowerCase()}/${type} (${candidate.length} chars)`;
-  }
-
-  private summarizeSdp(label: string, sdp: string): string {
-    const lineCount = sdp.split(/\r?\n/).filter(Boolean).length;
-    const mediaSections = (sdp.match(/^m=/gm) ?? []).length;
-    return `${label}: ${sdp.length} chars, ${lineCount} lines, ${mediaSections} media sections`;
-  }
-
   private emitStats(): void {
     if (this.options.onStats) {
       this.options.onStats({ ...this.diagnostics });
@@ -890,10 +878,10 @@ export class GfnWebRtcClient {
       this.controlChannel.onerror = null;
     }
     this.reliableInputChannel?.close();
-    this.gamepadInputChannel?.close();
+    this.mouseInputChannel?.close();
     this.controlChannel?.close();
     this.reliableInputChannel = null;
-    this.gamepadInputChannel = null;
+    this.mouseInputChannel = null;
     this.controlChannel = null;
   }
 
@@ -1749,8 +1737,8 @@ export class GfnWebRtcClient {
           && (nowMs - this.lastGamepadSendMs) >= GfnWebRtcClient.GAMEPAD_KEEPALIVE_MS;
 
         if (stateChanged || needsKeepalive) {
-          // Official behavior: gamepad can use the partially reliable channel when negotiated.
-          const usePR = this.gamepadInputChannel?.readyState === "open";
+          // Determine if we should use the partially reliable channel
+          const usePR = this.mouseInputChannel?.readyState === "open";
           const bytes = this.inputEncoder.encodeGamepadState(gamepadInput, this.gamepadBitmap, usePR);
           this.sendGamepad(bytes);
           this.lastGamepadSendMs = nowMs;
@@ -1789,7 +1777,7 @@ export class GfnWebRtcClient {
           connected: false,
           timestampUs: timestampUs(),
         };
-        const usePR = this.gamepadInputChannel?.readyState === "open";
+        const usePR = this.mouseInputChannel?.readyState === "open";
         const bytes = this.inputEncoder.encodeGamepadState(disconnectState, this.gamepadBitmap, usePR);
         this.sendGamepad(bytes);
       }
@@ -1898,13 +1886,13 @@ export class GfnWebRtcClient {
       this.onInputHandshakeMessage(bytes);
     };
 
-    this.gamepadInputChannel = pc.createDataChannel("input_channel_partially_reliable", {
+    this.mouseInputChannel = pc.createDataChannel("input_channel_partially_reliable", {
       ordered: false,
       maxPacketLifeTime: this.partialReliableThresholdMs,
     });
 
-    this.gamepadInputChannel.onopen = () => {
-      this.log(`Gamepad partial reliable channel open (maxPacketLifeTime=${this.partialReliableThresholdMs}ms)`);
+    this.mouseInputChannel.onopen = () => {
+      this.log(`Mouse channel open (partially reliable, maxPacketLifeTime=${this.partialReliableThresholdMs}ms)`);
     };
   }
 
@@ -2244,9 +2232,9 @@ export class GfnWebRtcClient {
    *  Falls back to reliable channel if partially reliable isn't available.
    *  Official GFN client uses partially reliable ONLY for gamepad, not mouse. */
   private sendGamepad(payload: Uint8Array): void {
-    if (this.gamepadInputChannel?.readyState === "open") {
+    if (this.mouseInputChannel?.readyState === "open") {
       const safePayload = Uint8Array.from(payload);
-      this.gamepadInputChannel.send(safePayload.buffer);
+      this.mouseInputChannel.send(safePayload.buffer);
       return;
     }
     // Fallback to reliable channel if partially reliable not ready
@@ -2949,6 +2937,7 @@ export class GfnWebRtcClient {
     );
     this.log(`ICE servers: ${session.iceServers.length} (${session.iceServers.map(s => s.urls.join(",")).join(" | ")})`);
     this.log(`Offer SDP length: ${offerSdp.length} chars`);
+    // Log full offer SDP for ICE debugging
     this.log(`=== FULL OFFER SDP START ===`);
     for (const line of offerSdp.split(/\r?\n/)) {
       this.log(`  SDP> ${line}`);
@@ -2956,8 +2945,7 @@ export class GfnWebRtcClient {
     this.log(`=== FULL OFFER SDP END ===`);
 
     const negotiatedPartialReliable = parsePartialReliableThresholdMs(offerSdp);
-    this.partialReliableThresholdMs =
-      negotiatedPartialReliable ?? GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
+    this.partialReliableThresholdMs = negotiatedPartialReliable ?? GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
     this.negotiatedMaxBitrateKbps = Math.max(
       GfnWebRtcClient.DECODER_MIN_RECOVERY_BITRATE_KBPS,
       Math.floor(settings.maxBitrateKbps),

@@ -1,24 +1,16 @@
 import type { GameInfo, GameVariant } from "@shared/gfn";
-import {
-  buildGfnHeaders,
-  GFN_BROWSER_TYPE_CHROME,
-  GFN_CLIENT_IDENTIFICATION,
-  GFN_CLIENT_STREAMER_CLASSIC,
-  GFN_CLIENT_TYPE_NATIVE,
-  GFN_DEVICE_MAKE_UNKNOWN,
-  GFN_DEVICE_MODEL_UNKNOWN,
-  GFN_DEVICE_OS_WINDOWS,
-  GFN_DEVICE_TYPE_DESKTOP,
-  GFN_LCARS_CLIENT_ID,
-  GFN_PLAY_ORIGIN,
-  GFN_PLAY_REFERER,
-} from "@shared/gfnClient";
 import { cacheManager } from "../services/cacheManager";
 
 const GRAPHQL_URL = "https://games.geforce.com/graphql";
 const PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
 const APP_METADATA_QUERY_HASH = "39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7";
 const DEFAULT_LOCALE = "en_US";
+const LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
+const GFN_CLIENT_VERSION = "2.0.80.173";
+
+const GFN_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
+
 interface GraphQlResponse {
   data?: {
     panels: Array<{
@@ -111,24 +103,24 @@ async function getVpcId(token: string, providerStreamingBaseUrl?: string): Promi
 
   const response = await fetch(`${normalizedBase}v2/serverInfo`, {
     headers: {
-      ...buildGfnHeaders({
-        accept: "application/json",
-        authorization: { token },
-        clientId: GFN_LCARS_CLIENT_ID,
-        clientType: GFN_CLIENT_TYPE_NATIVE,
-        clientStreamer: GFN_CLIENT_STREAMER_CLASSIC,
-        deviceOs: GFN_DEVICE_OS_WINDOWS,
-        deviceType: GFN_DEVICE_TYPE_DESKTOP,
-      }),
+      Accept: "application/json",
+      Authorization: `GFNJWT ${token}`,
+      "nv-client-id": LCARS_CLIENT_ID,
+      "nv-client-type": "NATIVE",
+      "nv-client-version": GFN_CLIENT_VERSION,
+      "nv-client-streamer": "NVIDIA-CLASSIC",
+      "nv-device-os": "WINDOWS",
+      "nv-device-type": "DESKTOP",
+      "User-Agent": GFN_USER_AGENT,
     },
   });
 
   if (!response.ok) {
-    return GFN_CLIENT_IDENTIFICATION;
+    return "GFN-PC";
   }
 
   const payload = (await response.json()) as ServerInfoResponse;
-  return payload.requestStatus?.serverId ?? GFN_CLIENT_IDENTIFICATION;
+  return payload.requestStatus?.serverId ?? "GFN-PC";
 }
 
 function appToGame(app: AppData): GameInfo {
@@ -301,21 +293,21 @@ async function fetchAppMetaData(
   try {
     const response = await fetch(`${GRAPHQL_URL}?${params.toString()}`, {
       headers: {
-        ...buildGfnHeaders({
-          accept: "application/json, text/plain, */*",
-          contentType: "application/graphql",
-          origin: GFN_PLAY_ORIGIN,
-          referer: GFN_PLAY_REFERER,
-          authorization: { token },
-          clientId: GFN_LCARS_CLIENT_ID,
-          clientType: GFN_CLIENT_TYPE_NATIVE,
-          clientStreamer: GFN_CLIENT_STREAMER_CLASSIC,
-          deviceOs: GFN_DEVICE_OS_WINDOWS,
-          deviceType: GFN_DEVICE_TYPE_DESKTOP,
-          deviceMake: GFN_DEVICE_MAKE_UNKNOWN,
-          deviceModel: GFN_DEVICE_MODEL_UNKNOWN,
-          browserType: GFN_BROWSER_TYPE_CHROME,
-        }),
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/graphql",
+        Origin: "https://play.geforcenow.com",
+        Referer: "https://play.geforcenow.com/",
+        Authorization: `GFNJWT ${token}`,
+        "nv-client-id": LCARS_CLIENT_ID,
+        "nv-client-type": "NATIVE",
+        "nv-client-version": GFN_CLIENT_VERSION,
+        "nv-client-streamer": "NVIDIA-CLASSIC",
+        "nv-device-os": "WINDOWS",
+        "nv-device-type": "DESKTOP",
+        "nv-device-make": "UNKNOWN",
+        "nv-device-model": "UNKNOWN",
+        "nv-browser-type": "CHROME",
+        "User-Agent": GFN_USER_AGENT,
       },
     });
 
@@ -407,21 +399,21 @@ async function fetchPanels(
 
   const response = await fetch(`${GRAPHQL_URL}?${params.toString()}`, {
     headers: {
-      ...buildGfnHeaders({
-        accept: "application/json, text/plain, */*",
-        contentType: "application/graphql",
-        origin: GFN_PLAY_ORIGIN,
-        referer: GFN_PLAY_REFERER,
-        authorization: { token },
-        clientId: GFN_LCARS_CLIENT_ID,
-        clientType: GFN_CLIENT_TYPE_NATIVE,
-        clientStreamer: GFN_CLIENT_STREAMER_CLASSIC,
-        deviceOs: GFN_DEVICE_OS_WINDOWS,
-        deviceType: GFN_DEVICE_TYPE_DESKTOP,
-        deviceMake: GFN_DEVICE_MAKE_UNKNOWN,
-        deviceModel: GFN_DEVICE_MODEL_UNKNOWN,
-        browserType: GFN_BROWSER_TYPE_CHROME,
-      }),
+      Accept: "application/json, text/plain, */*",
+      "Content-Type": "application/graphql",
+      Origin: "https://play.geforcenow.com",
+      Referer: "https://play.geforcenow.com/",
+      Authorization: `GFNJWT ${token}`,
+      "nv-client-id": LCARS_CLIENT_ID,
+      "nv-client-type": "NATIVE",
+      "nv-client-version": GFN_CLIENT_VERSION,
+      "nv-client-streamer": "NVIDIA-CLASSIC",
+      "nv-device-os": "WINDOWS",
+      "nv-device-type": "DESKTOP",
+      "nv-device-make": "UNKNOWN",
+      "nv-device-model": "UNKNOWN",
+      "nv-browser-type": "CHROME",
+      "User-Agent": GFN_USER_AGENT,
     },
   });
 
@@ -514,7 +506,7 @@ async function fetchPublicGamesUncached(): Promise<GameInfo[]> {
     "https://static.nvidiagrid.net/supported-public-game-list/locales/gfnpc-en-US.json",
     {
       headers: {
-        ...buildGfnHeaders(),
+        "User-Agent": GFN_USER_AGENT,
       },
     },
   );

@@ -41,9 +41,13 @@ export class GfnSignalingClient {
   ) {}
 
   private buildSignInUrl(): string {
+    // Match Rust behavior: extract host:port from signalingUrl if available,
+    // since the signalingUrl contains the real server address (which may differ
+    // from signalingServer when the resource path was an rtsps:// URL)
     let serverWithPort: string;
 
     if (this.signalingUrl) {
+      // Extract host:port from wss://host:port/path
       const withoutScheme = this.signalingUrl.replace(/^wss?:\/\//, "");
       const hostPort = withoutScheme.split("/")[0];
       serverWithPort = hostPort && hostPort.length > 0
@@ -126,6 +130,7 @@ export class GfnSignalingClient {
     console.log("[Signaling] Protocol:", protocol);
 
     await new Promise<void>((resolve, reject) => {
+      // Extract host:port for the Host header (matching Rust behavior)
       const urlHost = url.replace(/^wss?:\/\//, "").split("/")[0];
 
       const ws = new WebSocket(url, protocol, {
@@ -224,6 +229,7 @@ export class GfnSignalingClient {
       return;
     }
 
+    // Log any unhandled peer message types for debugging
     console.log("[Signaling] Unhandled peer message keys:", Object.keys(peerPayload));
   }
 
