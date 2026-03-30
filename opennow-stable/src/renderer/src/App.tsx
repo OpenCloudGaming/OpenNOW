@@ -1534,6 +1534,8 @@ export function App(): JSX.Element {
       signalingServer: claimed.signalingServer,
       signalingUrl: claimed.signalingUrl,
       pairingId: claimed.pairingId,
+      clientId: claimed.clientId,
+      deviceId: claimed.deviceId,
     });
   }, [authSession, effectiveStreamingBaseUrl, findGameContextForSession, setBestSessionSnapshot, settings]);
 
@@ -1750,6 +1752,8 @@ export function App(): JSX.Element {
         signalingServer: sessionToConnect.signalingServer,
         signalingUrl: sessionToConnect.signalingUrl,
         pairingId: sessionToConnect.pairingId,
+        clientId: sessionToConnect.clientId,
+        deviceId: sessionToConnect.deviceId,
       });
     } catch (error) {
       console.error("Launch failed:", error);

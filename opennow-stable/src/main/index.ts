@@ -736,6 +736,8 @@ function registerIpcHandlers(): void {
         payload.sessionId,
         payload.signalingUrl,
         payload.pairingId,
+        payload.clientId,
+        payload.deviceId,
       );
       signalingClientKey = nextKey;
       signalingClient.onEvent(emitToRenderer);

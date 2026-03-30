@@ -320,6 +320,8 @@ export interface SignalingConnectRequest {
   signalingServer: string;
   signalingUrl?: string;
   pairingId?: string;
+  clientId?: string;
+  deviceId?: string;
 }
 
 export interface IceCandidatePayload {
