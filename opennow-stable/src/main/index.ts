@@ -721,7 +721,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC_CHANNELS.CONNECT_SIGNALING,
     async (_event, payload: SignalingConnectRequest): Promise<void> => {
-      const nextKey = `${payload.sessionId}|${payload.signalingServer}|${payload.signalingUrl ?? ""}|${payload.pairingId ?? ""}`;
+      const nextKey = `${payload.sessionId}|${payload.signalingServer}|${payload.signalingUrl ?? ""}`;
       if (signalingClient && signalingClientKey === nextKey) {
         console.log("[Signaling] Reuse existing signaling connection (duplicate connect request ignored)");
         return;
@@ -735,9 +735,6 @@ function registerIpcHandlers(): void {
         payload.signalingServer,
         payload.sessionId,
         payload.signalingUrl,
-        payload.pairingId,
-        payload.clientId,
-        payload.deviceId,
       );
       signalingClientKey = nextKey;
       signalingClient.onEvent(emitToRenderer);

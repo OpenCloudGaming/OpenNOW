@@ -100,7 +100,6 @@ export interface CloudMatchResponse {
       port: number;
       usage: number;
       protocol?: number;
-      appLevelProtocol?: number;
       resourcePath?: string;
     }>;
     sessionControlInfo?: {
@@ -133,7 +132,6 @@ export interface SessionEntry {
     port: number;
     usage: number;
     protocol?: number;
-    appLevelProtocol?: number;
   }>;
   monitorSettings?: Array<{
     widthInPixels?: number;

@@ -2006,22 +2006,9 @@ button.game-card-store-chip.active:hover {
   gap: 14px;
 }
 
-.settings-subrows {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  margin-left: 18px;
-  padding-left: 18px;
-  border-left: 1px solid var(--panel-border);
-}
-
 .settings-row--column {
   flex-direction: column;
   align-items: stretch;
-}
-
-.settings-row--column + .settings-row {
-  margin-top: 8px;
 }
 
 .settings-row-top {
@@ -2065,8 +2052,7 @@ button.game-card-store-chip.active:hover {
   font-size: 0.92rem;
   color: var(--ink-soft);
   font-weight: 500;
-  flex: 1 1 auto;
-  min-width: 0;
+  flex-shrink: 0;
   cursor: default;
 }
 
@@ -2076,27 +2062,6 @@ button.game-card-store-chip.active:hover {
   font-size: 0.78rem;
   color: var(--ink-muted);
   font-weight: 500;
-}
-
-.settings-label-with-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.settings-inline-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: rgba(88, 217, 138, 0.14);
-  border: 1px solid rgba(88, 217, 138, 0.24);
-  color: var(--accent);
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
 }
 
 /* Text input for resolution / FPS */
@@ -2295,9 +2260,7 @@ button.game-card-store-chip.active:hover {
 
 /* Slider */
 .settings-slider {
-  display: block;
   width: 100%;
-  margin: 6px 0 8px;
   height: 6px;
   background: var(--chip);
   border-radius: 2px;
@@ -2328,9 +2291,6 @@ button.game-card-store-chip.active:hover {
   display: inline-block;
   width: 44px;
   height: 24px;
-  flex-shrink: 0;
-  align-self: flex-start;
-  margin-top: 4px;
   cursor: pointer;
 }
 
