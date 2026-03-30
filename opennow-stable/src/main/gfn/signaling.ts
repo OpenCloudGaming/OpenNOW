@@ -8,13 +8,9 @@ import type {
   MainToRendererSignalingEvent,
   SendAnswerRequest,
 } from "@shared/gfn";
-import {
-  buildGfnHeaders,
-  buildGfnSignalingSignInUrl,
-  GFN_PLAY_ORIGIN,
-  GFN_USER_AGENT,
-  isGfnVerboseLoggingEnabled,
-} from "@shared/gfnClient";
+
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36";
 
 interface SignalingMessage {
   ackid?: number;
@@ -37,38 +33,29 @@ export class GfnSignalingClient {
   private ackCounter = 0;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private listeners = new Set<(event: MainToRendererSignalingEvent) => void>();
-  private readonly verboseLogging = isGfnVerboseLoggingEnabled();
 
   constructor(
     private readonly signalingServer: string,
     private readonly sessionId: string,
     private readonly signalingUrl?: string,
-    private readonly pairingId: string = sessionId,
   ) {}
 
   private buildSignInUrl(): string {
-    const serverWithPort = this.signalingServer.includes(":")
+    const fallbackHost = this.signalingServer.includes(":")
       ? this.signalingServer
       : `${this.signalingServer}:443`;
-    const baseUrl = this.signalingUrl?.trim() || `wss://${serverWithPort}/nvst/`;
-    const url = buildGfnSignalingSignInUrl(baseUrl, this.peerName, this.pairingId);
-    const parsedUrl = new URL(url);
-    console.log(
-      `[Signaling] Prepared sign-in URL host=${parsedUrl.host} path=${parsedUrl.pathname} pairing=${this.pairingId.slice(0, 8)}…`,
-    );
+    const baseUrl = this.signalingUrl?.trim() || `wss://${fallbackHost}/nvst/`;
+    const signInUrl = new URL(baseUrl);
+
+    signInUrl.protocol = "wss:";
+    signInUrl.pathname = `${signInUrl.pathname.replace(/\/?$/, "/")}sign_in`;
+    signInUrl.search = "";
+    signInUrl.searchParams.set("peer_id", this.peerName);
+    signInUrl.searchParams.set("version", "2");
+
+    const url = signInUrl.toString();
+    console.log("[Signaling] URL:", url, "(server:", this.signalingServer, ", signalingUrl:", this.signalingUrl, ")");
     return url;
-  }
-
-  private summarizeSdp(label: string, sdp: string): string {
-    const lineCount = sdp.split(/\r?\n/).filter(Boolean).length;
-    const mediaSections = (sdp.match(/^m=/gm) ?? []).length;
-    return `${label}: ${sdp.length} chars, ${lineCount} lines, ${mediaSections} media sections`;
-  }
-
-  private summarizeCandidate(candidate: string): string {
-    const protocol = candidate.match(/candidate:\S+\s+\d+\s+(\w+)/i)?.[1] ?? "unknown";
-    const type = candidate.match(/\styp\s+(\w+)/i)?.[1] ?? "unknown";
-    return `${protocol.toLowerCase()}/${type} (${candidate.length} chars)`;
   }
 
   onEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void {
@@ -117,7 +104,7 @@ export class GfnSignalingClient {
         connected: true,
         id: this.peerId,
         name: this.peerName,
-        peerRole: 1,
+        peerRole: 0,
         resolution: "1920x1080",
         version: 2,
       },
@@ -131,23 +118,21 @@ export class GfnSignalingClient {
 
     const url = this.buildSignInUrl();
     const protocol = `x-nv-sessionid.${this.sessionId}`;
-    const parsedUrl = new URL(url);
 
-    console.log(
-      `[Signaling] Connecting host=${parsedUrl.host} protocol=${protocol} pairing=${this.pairingId.slice(0, 8)}…`,
-    );
+    console.log("[Signaling] Connecting to:", url);
+    console.log("[Signaling] Session ID:", this.sessionId);
+    console.log("[Signaling] Protocol:", protocol);
 
     await new Promise<void>((resolve, reject) => {
-      const urlHost = parsedUrl.host;
+      // Extract host:port for the Host header (matching Rust behavior)
+      const urlHost = url.replace(/^wss?:\/\//, "").split("/")[0];
 
       const ws = new WebSocket(url, protocol, {
         rejectUnauthorized: false,
         headers: {
-          ...buildGfnHeaders({
-            origin: GFN_PLAY_ORIGIN,
-          }),
           Host: urlHost,
-          "User-Agent": GFN_USER_AGENT,
+          Origin: "https://play.geforcenow.com",
+          "User-Agent": USER_AGENT,
           "Sec-WebSocket-Key": randomBytes(16).toString("base64"),
         },
       });
@@ -213,18 +198,14 @@ export class GfnSignalingClient {
     }
 
     if (peerPayload.type === "offer" && typeof peerPayload.sdp === "string") {
-      console.log(`[Signaling] ${this.summarizeSdp("Received offer SDP", peerPayload.sdp)}`);
-      if (this.verboseLogging) {
-        console.debug("[Signaling] Offer SDP preview:", peerPayload.sdp.slice(0, 1000));
-      }
+      console.log(`[Signaling] Received OFFER SDP (${peerPayload.sdp.length} chars), first 500 chars:`);
+      console.log(peerPayload.sdp.slice(0, 500));
       this.emit({ type: "offer", sdp: peerPayload.sdp });
       return;
     }
 
     if (typeof peerPayload.candidate === "string") {
-      console.log(
-        `[Signaling] Received remote ICE candidate ${this.summarizeCandidate(peerPayload.candidate)}`,
-      );
+      console.log(`[Signaling] Received remote ICE candidate: ${peerPayload.candidate}`);
       this.emit({
         type: "remote-ice",
         candidate: {
@@ -242,21 +223,17 @@ export class GfnSignalingClient {
       return;
     }
 
+    // Log any unhandled peer message types for debugging
     console.log("[Signaling] Unhandled peer message keys:", Object.keys(peerPayload));
   }
 
   async sendAnswer(payload: SendAnswerRequest): Promise<void> {
-    console.log(`[Signaling] ${this.summarizeSdp("Sending answer SDP", payload.sdp)}`);
+    console.log(`[Signaling] Sending ANSWER SDP (${payload.sdp.length} chars), first 500 chars:`);
+    console.log(payload.sdp.slice(0, 500));
     if (payload.nvstSdp) {
-      console.log(`[Signaling] ${this.summarizeSdp("Sending nvstSdp", payload.nvstSdp)}`);
+      console.log(`[Signaling] Sending nvstSdp (${payload.nvstSdp.length} chars):`);
+      console.log(payload.nvstSdp);
     }
-    if (this.verboseLogging) {
-      console.debug("[Signaling] Answer SDP preview:", payload.sdp.slice(0, 1000));
-      if (payload.nvstSdp) {
-        console.debug("[Signaling] nvstSdp preview:", payload.nvstSdp.slice(0, 1000));
-      }
-    }
-
     const answer = {
       type: "answer",
       sdp: payload.sdp,
@@ -274,9 +251,7 @@ export class GfnSignalingClient {
   }
 
   async sendIceCandidate(candidate: IceCandidatePayload): Promise<void> {
-    console.log(
-      `[Signaling] Sending local ICE candidate ${this.summarizeCandidate(candidate.candidate)} sdpMid=${candidate.sdpMid ?? "?"}`,
-    );
+    console.log(`[Signaling] Sending local ICE candidate: ${candidate.candidate} (sdpMid=${candidate.sdpMid})`);
     this.sendJson({
       peer_msg: {
         from: this.peerId,
