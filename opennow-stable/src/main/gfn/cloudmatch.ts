@@ -212,7 +212,67 @@ function extractHostFromUrl(url: string): string | null {
  *   np-ams-06.cloudmatchbeta.nvidiagrid.net
  */
 function isZoneHostname(ip: string): boolean {
-  return ip.includes("cloudmatchbeta.nvidiagrid.net") || ip.includes("cloudmatch.nvidiagrid.net");
+  const normalized = ip.replace(/^\[([^\]]+)\]:(\d+)$/, "$1").split(":")[0] ?? ip;
+  return normalized.includes("cloudmatchbeta.nvidiagrid.net") || normalized.includes("cloudmatch.nvidiagrid.net");
+}
+
+type SessionRoutingInfo = Pick<SessionInfo, "serverIp" | "signalingServer" | "signalingUrl" | "mediaConnectionInfo">;
+
+const sessionRoutingCache = new Map<string, SessionRoutingInfo>();
+
+function isUsefulRoutingHost(value: string): boolean {
+  return value.length > 0 && !isZoneHostname(value);
+}
+
+function isUsefulSignalingUrl(value: string): boolean {
+  try {
+    return !isZoneHostname(new URL(value).hostname);
+  } catch {
+    return !isZoneHostname(value);
+  }
+}
+
+function isUsefulMediaConnectionInfo(info?: SessionRoutingInfo["mediaConnectionInfo"]): boolean {
+  return Boolean(info?.ip && info.port > 0 && !isZoneHostname(info.ip));
+}
+
+function mergeSessionRoutingInfo(sessionId: string, next: SessionRoutingInfo): {
+  routing: SessionRoutingInfo;
+  retainedFields: string[];
+} {
+  const previous = sessionRoutingCache.get(sessionId);
+  const routing: SessionRoutingInfo = {
+    serverIp: next.serverIp,
+    signalingServer: next.signalingServer,
+    signalingUrl: next.signalingUrl,
+    mediaConnectionInfo: next.mediaConnectionInfo,
+  };
+  const retainedFields: string[] = [];
+
+  if (previous) {
+    if (!isUsefulRoutingHost(routing.serverIp) && isUsefulRoutingHost(previous.serverIp)) {
+      routing.serverIp = previous.serverIp;
+      retainedFields.push("serverIp");
+    }
+
+    if (!isUsefulRoutingHost(routing.signalingServer) && isUsefulRoutingHost(previous.signalingServer)) {
+      routing.signalingServer = previous.signalingServer;
+      retainedFields.push("signalingServer");
+    }
+
+    if (!isUsefulSignalingUrl(routing.signalingUrl) && isUsefulSignalingUrl(previous.signalingUrl)) {
+      routing.signalingUrl = previous.signalingUrl;
+      retainedFields.push("signalingUrl");
+    }
+
+    if (!isUsefulMediaConnectionInfo(routing.mediaConnectionInfo) && isUsefulMediaConnectionInfo(previous.mediaConnectionInfo)) {
+      routing.mediaConnectionInfo = previous.mediaConnectionInfo;
+      retainedFields.push("mediaConnectionInfo");
+    }
+  }
+
+  sessionRoutingCache.set(sessionId, routing);
+  return { routing, retainedFields };
 }
 
 function resolveSignaling(response: CloudMatchResponse): {
@@ -491,6 +551,7 @@ function buildSessionInfoFromPayload(
   deviceId?: string,
 ): SessionInfo {
   const signaling = resolveSignaling(payload);
+  const mergedRouting = mergeSessionRoutingInfo(sessionData.sessionId, signaling);
   const queuePosition = extractQueuePosition(payload);
 
   return {
@@ -499,13 +560,13 @@ function buildSessionInfoFromPayload(
     queuePosition,
     zone: "",
     streamingBaseUrl: `https://${effectiveServerIp}`,
-    serverIp: signaling.serverIp,
-    signalingServer: signaling.signalingServer,
-    signalingUrl: signaling.signalingUrl,
+    serverIp: mergedRouting.routing.serverIp,
+    signalingServer: mergedRouting.routing.signalingServer,
+    signalingUrl: mergedRouting.routing.signalingUrl,
     pairingId,
     gpuType: sessionData.gpuType,
     iceServers,
-    mediaConnectionInfo: signaling.mediaConnectionInfo,
+    mediaConnectionInfo: mergedRouting.routing.mediaConnectionInfo,
     clientId,
     deviceId,
   };
@@ -704,11 +765,17 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
   }
 
   const signaling = resolveSignaling(payload);
+  const mergedRouting = mergeSessionRoutingInfo(payload.session.sessionId, signaling);
   const queuePosition = extractQueuePosition(payload);
   const seatSetupStep = extractSeatSetupStep(payload);
+  if (mergedRouting.retainedFields.length > 0) {
+    console.log(
+      `[CloudMatch] Session routing retained session=${payload.session.sessionId} fields=${mergedRouting.retainedFields.join(",")}`,
+    );
+  }
   console.log(
     `[CloudMatch] Session info ready ${summarizeCloudMatchPayload(payload)} ` +
-    `serverIp=${signaling.serverIp} signalingHost=${signaling.signalingServer}`,
+    `serverIp=${mergedRouting.routing.serverIp} signalingHost=${mergedRouting.routing.signalingServer}`,
   );
 
   return {
@@ -718,13 +785,13 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     queuePosition,
     zone,
     streamingBaseUrl,
-    serverIp: signaling.serverIp,
-    signalingServer: signaling.signalingServer,
-    signalingUrl: signaling.signalingUrl,
+    serverIp: mergedRouting.routing.serverIp,
+    signalingServer: mergedRouting.routing.signalingServer,
+    signalingUrl: mergedRouting.routing.signalingUrl,
     pairingId: payload.session.sessionId,
     gpuType: payload.session.gpuType,
     iceServers: await normalizeIceServers(payload),
-    mediaConnectionInfo: signaling.mediaConnectionInfo,
+    mediaConnectionInfo: mergedRouting.routing.mediaConnectionInfo,
     clientId,
     deviceId,
   };
@@ -802,10 +869,11 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
     !isZoneHostname(realServerIp) &&
     realServerIp !== input.serverIp;
 
-  if (polledViaZone && realIpDiffers && (payload.session.status === 2 || payload.session.status === 3)) {
-    // Session is ready and we now know the real server IP — re-poll directly
+  if (polledViaZone && realIpDiffers) {
+    // We now know a real server IP from the zone LB response; re-poll directly so
+    // queue/setup flows can recover better routing metadata earlier than ready state.
     console.log(
-      `[CloudMatch] Session ready: re-polling via real server IP ${realServerIp} (was: ${new URL(base).hostname})`,
+      `[CloudMatch] Session routing upgrade: re-polling via real server IP ${realServerIp} (was: ${new URL(base).hostname}, status=${payload.session.status})`,
     );
     const directBase = `https://${realServerIp}`;
     const directUrl = `${directBase}/v2/session/${input.sessionId}`;
@@ -852,6 +920,8 @@ export async function stopSession(input: SessionStopRequest): Promise<void> {
     // Use SessionError to parse and throw detailed error
     throw SessionError.fromResponse(response.status, text);
   }
+
+  sessionRoutingCache.delete(input.sessionId);
 }
 
 /**
