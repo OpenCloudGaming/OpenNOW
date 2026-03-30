@@ -404,7 +404,12 @@ function buildSignalingUrl(
   if (/^(wss?|https?|rtsps?):\/\//i.test(raw)) {
     try {
       const parsed = new URL(raw.replace(/^rtsps:/i, "https:").replace(/^rtsp:/i, "http:"));
-      const protocol = parsed.protocol === "http:" ? "ws" : "wss";
+      const protocol = raw.startsWith("wss://")
+        || raw.startsWith("https://")
+        || raw.startsWith("rtsp://")
+        || raw.startsWith("rtsps://")
+          ? "wss"
+          : "ws";
       const host = parsed.hostname && !parsed.hostname.startsWith(".")
         ? parsed.hostname
         : explicitIp || serverIp;
