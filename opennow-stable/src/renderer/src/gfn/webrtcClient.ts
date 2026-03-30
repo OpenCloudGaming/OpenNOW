@@ -40,6 +40,12 @@ interface OfferSettings {
   maxBitrateKbps: number;
 }
 
+interface ClientRuntimeInfo {
+  isMacOs: boolean;
+  isElectron: boolean;
+  isMacElectron: boolean;
+}
+
 interface KeyStrokeSpec {
   vk: number;
   scancode: number;
@@ -154,6 +160,46 @@ function applyPresentationSafetyGuardrails(settings: OfferSettings): {
     safeMaxBitrateKbps,
     reason,
   };
+}
+
+function getClientRuntimeInfo(): ClientRuntimeInfo {
+  const platform = navigator.platform?.toLowerCase() ?? "";
+  const ua = navigator.userAgent ?? "";
+  const isMacOs = platform.includes("mac") || ua.includes("Macintosh");
+  const isElectron = /\bElectron\/\d+/i.test(ua);
+  return {
+    isMacOs,
+    isElectron,
+    isMacElectron: isMacOs && isElectron,
+  };
+}
+
+function choosePlaybackParityCodec(
+  settings: OfferSettings,
+  supportedCodecs: string[],
+  runtime: ClientRuntimeInfo,
+): { codec: VideoCodec; reason: string | null } {
+  if (!runtime.isMacElectron || settings.codec !== "AV1") {
+    return { codec: settings.codec, reason: null };
+  }
+
+  // Official GFN web on the same Macs is smoother than our Electron path, while
+  // OpenNOW shows bursty presentation drops on AV1. Treat this as a macOS/Electron
+  // parity issue and prefer a VideoToolbox-backed codec instead of forcing AV1.
+  if (supportedCodecs.includes("H265")) {
+    return {
+      codec: "H265",
+      reason: "mac_electron_av1_fallback_h265",
+    };
+  }
+  if (supportedCodecs.includes("H264")) {
+    return {
+      codec: "H264",
+      reason: "mac_electron_av1_fallback_h264",
+    };
+  }
+
+  return { codec: settings.codec, reason: null };
 }
 
 export interface StreamDiagnostics {
@@ -3753,6 +3799,7 @@ export class GfnWebRtcClient {
     this.cleanupPeerConnection();
     const guardedProfile = applyPresentationSafetyGuardrails(settings);
     const effectiveMaxBitrateKbps = guardedProfile.safeMaxBitrateKbps;
+    const runtimeInfo = getClientRuntimeInfo();
 
     this.log("=== handleOffer START ===");
     this.log(`Session: id=${session.sessionId}, status=${session.status}, serverIp=${session.serverIp}`);
@@ -3915,14 +3962,22 @@ export class GfnWebRtcClient {
     const serverIceUfrag = extractIceUfragFromOffer(processedOffer);
     this.log(`Server ICE ufrag: "${serverIceUfrag}"`);
 
-    const preferredHevcProfileId = hevcPreferredProfileId(settings.colorQuality);
-
     // 3. Filter to preferred codec — but only if the browser actually supports it
-    let effectiveCodec = settings.codec;
     const supported = this.getSupportedVideoCodecs();
     this.log(`Browser supported video codecs: ${supported.join(", ") || "unknown"}`);
+    this.log(
+      `Client runtime: platform=${navigator.platform || "unknown"}, userAgentElectron=${runtimeInfo.isElectron ? "yes" : "no"}, macOS=${runtimeInfo.isMacOs ? "yes" : "no"}`,
+    );
+    const playbackParityCodec = choosePlaybackParityCodec(settings, supported, runtimeInfo);
+    let effectiveCodec = playbackParityCodec.codec;
+    if (playbackParityCodec.reason) {
+      this.log(
+        `Playback parity guardrail applied: ${playbackParityCodec.reason}, codec ${settings.codec} -> ${effectiveCodec}`,
+      );
+    }
+    const preferredHevcProfileId = hevcPreferredProfileId(settings.colorQuality);
 
-    if (settings.codec === "H265") {
+    if (effectiveCodec === "H265") {
       const hevcProfiles = this.getSupportedHevcProfiles();
       if (hevcProfiles.size > 0) {
         this.log(`Browser HEVC profile-id support: ${Array.from(hevcProfiles).join(", ")}`);
@@ -3955,13 +4010,13 @@ export class GfnWebRtcClient {
       }
       if (hevcProfiles.size > 0 && !hevcProfiles.has(String(preferredHevcProfileId))) {
         this.log(
-          `Warning: requested H265 profile-id=${preferredHevcProfileId} not reported in browser capabilities; forcing H265 anyway per user preference`,
+          `Warning: requested H265 profile-id=${preferredHevcProfileId} not reported in browser capabilities; forcing H265 anyway`,
         );
       }
     }
 
-    if (supported.length > 0 && !supported.includes(settings.codec)) {
-      this.log(`Warning: ${settings.codec} not reported in browser codec list; forcing requested codec anyway`);
+    if (supported.length > 0 && !supported.includes(effectiveCodec)) {
+      this.log(`Warning: ${effectiveCodec} not reported in browser codec list; forcing requested codec anyway`);
     }
     this.log(`Effective codec: ${effectiveCodec} (preferred HEVC profile-id=${preferredHevcProfileId})`);
     const filteredOffer = preferCodec(processedOffer, effectiveCodec, {
