@@ -1,15 +1,7 @@
 import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import type {
-  VideoCodec,
-  ColorQuality,
-  VideoAccelerationPreference,
-  MicrophoneMode,
-  GameLanguage,
-  AspectRatio,
-  IceTransportPolicy,
-} from "@shared/gfn";
+import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage, AspectRatio } from "@shared/gfn";
 
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
@@ -75,8 +67,6 @@ export interface Settings {
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
-  /** WebRTC ICE policy: "all" (default) or "relay" (TURN-only) */
-  iceTransportPolicy: IceTransportPolicy;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -118,7 +108,6 @@ const DEFAULT_SETTINGS: Settings = {
   windowHeight: 900,
   gameLanguage: "en_US",
   enableL4S: false,
-  iceTransportPolicy: "all",
 };
 
 export class SettingsManager {

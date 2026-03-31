@@ -426,7 +426,6 @@ export function App(): JSX.Element {
     windowHeight: 900,
     gameLanguage: "en_US",
     enableL4S: false,
-    iceTransportPolicy: "all",
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
@@ -794,13 +793,8 @@ export function App(): JSX.Element {
   }, [providers, providerIdpId, authSession]);
 
   const effectiveStreamingBaseUrl = useMemo(() => {
-    const base = selectedProvider?.streamingServiceUrl?.trim() ?? "";
-    const preferred = settings.region?.trim() ?? "";
-    if (preferred && preferred.startsWith("https://")) {
-      return preferred.endsWith("/") ? preferred : `${preferred}/`;
-    }
-    return base;
-  }, [selectedProvider, settings.region]);
+    return selectedProvider?.streamingServiceUrl ?? "";
+  }, [selectedProvider]);
 
   const loadSubscriptionInfo = useCallback(
     async (session: AuthSession): Promise<void> => {
@@ -1245,7 +1239,6 @@ export function App(): JSX.Element {
               microphoneDeviceId: settings.microphoneDeviceId || undefined,
               mouseSensitivity: settings.mouseSensitivity,
               mouseAcceleration: settings.mouseAcceleration,
-              iceTransportPolicy: settings.iceTransportPolicy,
               onLog: (line: string) => console.log(`[WebRTC] ${line}`),
               onStats: (stats) => diagnosticsStore.set(stats),
               onEscHoldProgress: (visible, progress) => {
@@ -1305,20 +1298,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [
-    resetLaunchRuntime,
-    settings.microphoneMode,
-    settings.microphoneDeviceId,
-    settings.mouseSensitivity,
-    settings.mouseAcceleration,
-    settings.codec,
-    settings.colorQuality,
-    settings.resolution,
-    settings.fps,
-    settings.maxBitrateMbps,
-    settings.iceTransportPolicy,
-    (settings as { autoFullScreen?: boolean }).autoFullScreen,
-  ]);
+  }, [resetLaunchRuntime, settings]);
 
   // Save settings when changed
   const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {
@@ -1344,13 +1324,6 @@ export function App(): JSX.Element {
     if (key === "maxBitrateMbps") {
       try {
         void (clientRef.current as any)?.setMaxBitrateKbps?.((value as number) * 1000);
-      } catch {
-        // ignore
-      }
-    }
-    if (key === "iceTransportPolicy") {
-      try {
-        (clientRef.current as any)?.setIceTransportPolicy?.(value);
       } catch {
         // ignore
       }

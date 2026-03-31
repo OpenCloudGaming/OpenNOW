@@ -5,7 +5,6 @@ import type {
   SessionInfo,
   VideoCodec,
   MicrophoneMode,
-  IceTransportPolicy,
 } from "@shared/gfn";
 
 import {
@@ -209,8 +208,6 @@ interface ClientOptions {
   onEscHoldProgress?: (visible: boolean, progress: number) => void;
   onTimeWarning?: (warning: StreamTimeWarning) => void;
   onMicStateChange?: (state: MicStateChange) => void;
-  /** ICE gathering policy — "relay" forces TURN-only (VPN / strict NAT). Default "all". */
-  iceTransportPolicy?: IceTransportPolicy;
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
@@ -568,7 +565,6 @@ export class GfnWebRtcClient {
   private videoDecodeStallWarningSent = false;
   private serverRegion = "";
   private gpuType = "";
-  private iceTransportPolicy: IceTransportPolicy = "all";
 
   private diagnostics: StreamDiagnostics = {
     connectionState: "closed",
@@ -612,7 +608,6 @@ export class GfnWebRtcClient {
     options.audioElement.muted = true;
     this.mouseSensitivity = options.mouseSensitivity ?? 1;
     this.mouseAccelerationPercent = Math.max(1, Math.min(150, Math.round(options.mouseAcceleration ?? 1)));
-    this.iceTransportPolicy = options.iceTransportPolicy === "relay" ? "relay" : "all";
 
     // Configure video element for lowest latency playback
     this.configureVideoElementForLowLatency(options.videoElement);
@@ -662,15 +657,6 @@ export class GfnWebRtcClient {
   }
 
   /** Update mouse sensitivity multiplier at runtime. */
-  public setIceTransportPolicy(policy: IceTransportPolicy): void {
-    const next = policy === "relay" ? "relay" : "all";
-    if (this.iceTransportPolicy === next) {
-      return;
-    }
-    this.iceTransportPolicy = next;
-    this.log(`ICE transport policy updated to ${next} (applies on next stream)`);
-  }
-
   public setMouseSensitivity(value: number): void {
     const v = Number.isFinite(value) ? value : 1;
     this.mouseSensitivity = Math.max(0.01, v);
@@ -3305,7 +3291,6 @@ export class GfnWebRtcClient {
       iceServers: toRtcIceServers(session.iceServers),
       bundlePolicy: "max-bundle",
       rtcpMuxPolicy: "require",
-      iceTransportPolicy: this.iceTransportPolicy,
     };
 
     const pc = new RTCPeerConnection(rtcConfig);

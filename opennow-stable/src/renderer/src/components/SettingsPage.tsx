@@ -307,30 +307,17 @@ function loadStoredCodecResults(): CodecTestResult[] | null {
 interface PingCacheEntry {
   url: string;
   pingMs: number | null;
-  minMs?: number;
-  maxMs?: number;
-  jitterMs?: number;
-  samples?: number;
-  error?: string;
 }
 
-function loadStoredPingResults(): Map<string, PingResult> | null {
+function loadStoredPingResults(): Map<string, number | null> | null {
   try {
     const raw = window.sessionStorage.getItem(PING_RESULTS_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return null;
-    const results = new Map<string, PingResult>();
+    const results = new Map<string, number | null>();
     for (const entry of parsed as PingCacheEntry[]) {
-      results.set(entry.url, {
-        url: entry.url,
-        pingMs: entry.pingMs,
-        minMs: entry.minMs,
-        maxMs: entry.maxMs,
-        jitterMs: entry.jitterMs,
-        samples: entry.samples,
-        error: entry.error,
-      });
+      results.set(entry.url, entry.pingMs);
     }
     return results;
   } catch {
@@ -338,19 +325,11 @@ function loadStoredPingResults(): Map<string, PingResult> | null {
   }
 }
 
-function saveStoredPingResults(results: Map<string, PingResult>): void {
+function saveStoredPingResults(results: Map<string, number | null>): void {
   try {
     const entries: PingCacheEntry[] = [];
-    results.forEach((r, url) => {
-      entries.push({
-        url,
-        pingMs: r.pingMs,
-        minMs: r.minMs,
-        maxMs: r.maxMs,
-        jitterMs: r.jitterMs,
-        samples: r.samples,
-        error: r.error,
-      });
+    results.forEach((pingMs, url) => {
+      entries.push({ url, pingMs });
     });
     window.sessionStorage.setItem(PING_RESULTS_STORAGE_KEY, JSON.stringify(entries));
   } catch {
@@ -533,10 +512,6 @@ async function testCodecSupport(): Promise<CodecTestResult[]> {
   return results;
 }
 
-function getRegionPingMs(map: Map<string, PingResult>, url: string): number | null | undefined {
-  return map.get(url)?.pingMs;
-}
-
 /* ── Component ────────────────────────────────────────────────────── */
 
 export function SettingsPage({ settings, regions, onSettingChange }: SettingsPageProps): JSX.Element {
@@ -552,14 +527,13 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
 
   // Region ping state
   const initialPingResults = useMemo(() => loadStoredPingResults(), []);
-  const [pingResults, setPingResults] = useState<Map<string, PingResult>>(initialPingResults ?? new Map());
+  const [pingResults, setPingResults] = useState<Map<string, number | null>>(initialPingResults ?? new Map());
   const [isPinging, setIsPinging] = useState(false);
   const [bestRegionUrl, setBestRegionUrl] = useState<string | null>(() => {
     if (!initialPingResults) return null;
     let bestUrl: string | null = null;
     let bestPing = Infinity;
-    initialPingResults.forEach((entry, url) => {
-      const pingMs = entry.pingMs;
+    initialPingResults.forEach((pingMs, url) => {
       if (pingMs !== null && pingMs < bestPing) {
         bestPing = pingMs;
         bestUrl = url;
@@ -573,12 +547,12 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     setIsPinging(true);
     try {
       const results = await window.openNow.pingRegions(regions);
-      const pingMap = new Map<string, PingResult>();
+      const pingMap = new Map<string, number | null>();
       let bestUrl: string | null = null;
       let bestPing = Infinity;
 
       for (const result of results) {
-        pingMap.set(result.url, result);
+        pingMap.set(result.url, result.pingMs);
         if (result.pingMs !== null && result.pingMs < bestPing) {
           bestPing = result.pingMs;
           bestUrl = result.url;
@@ -821,8 +795,8 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
 
     // Sort by ping (best first), then by name
     filtered.sort((a, b) => {
-      const pingA = getRegionPingMs(pingResults, a.url);
-      const pingB = getRegionPingMs(pingResults, b.url);
+      const pingA = pingResults.get(a.url);
+      const pingB = pingResults.get(b.url);
 
       // If both have ping results, sort by ping
       if (pingA !== undefined && pingB !== undefined && pingA !== null && pingB !== null) {
@@ -984,7 +958,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 {!settings.region && bestRegionUrl && (
                   (() => {
                     const bestRegion = regions.find(r => r.url === bestRegionUrl);
-                    const pingValue = getRegionPingMs(pingResults, bestRegionUrl);
+                    const pingValue = pingResults.get(bestRegionUrl);
                     if (bestRegion && pingValue !== undefined && pingValue !== null) {
                       return (
                         <span className="region-selected-best-info">
@@ -997,7 +971,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 )}
                 {settings.region && (
                   (() => {
-                    const pingValue = getRegionPingMs(pingResults, settings.region);
+                    const pingValue = pingResults.get(settings.region);
                     if (pingValue !== undefined && pingValue !== null) {
                       return (
                         <span className={`region-selected-ping ${pingValue <= 50 ? 'good' : pingValue <= 100 ? 'medium' : 'poor'}`}>
@@ -1066,7 +1040,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                         <span>Auto (Best)</span>
                         {bestRegionUrl && (() => {
                           const bestRegion = regions.find(r => r.url === bestRegionUrl);
-                          const bestPing = getRegionPingMs(pingResults, bestRegionUrl);
+                          const bestPing = pingResults.get(bestRegionUrl);
                           if (bestRegion && bestPing !== undefined && bestPing !== null) {
                             return (
                               <span className="region-auto-best-details">
@@ -1103,31 +1077,15 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                             <span className="region-ping-loading">...</span>
                           ) : (
                             (() => {
-                              const pr = pingResults.get(region.url);
-                              const pingValue = pr?.pingMs;
-                              const jitterHint =
-                                pr?.jitterMs != null || pr?.minMs != null || pr?.maxMs != null
-                                  ? [
-                                      pr.jitterMs != null ? `Jitter ~${pr.jitterMs}ms` : null,
-                                      pr.minMs != null && pr.maxMs != null ? `${pr.minMs}–${pr.maxMs}ms` : null,
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" · ")
-                                  : undefined;
+                              const pingValue = pingResults.get(region.url);
                               if (pingValue === undefined) {
                                 return <span className="region-ping-unavailable">-</span>;
                               } else if (pingValue === null) {
                                 return <span className="region-ping-error">Failed</span>;
                               } else {
                                 return (
-                                  <span
-                                    className={`region-ping-value ${pingValue <= 50 ? 'good' : pingValue <= 100 ? 'medium' : 'poor'}`}
-                                    title={jitterHint}
-                                  >
+                                  <span className={`region-ping-value ${pingValue <= 50 ? 'good' : pingValue <= 100 ? 'medium' : 'poor'}`}>
                                     {pingValue}ms
-                                    {pr?.jitterMs != null && pr.jitterMs > 0 ? (
-                                      <span className="region-ping-jitter"> ±{pr.jitterMs}</span>
-                                    ) : null}
                                   </span>
                                 );
                               }
@@ -1145,9 +1103,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 </div>
               )}
             </div>
-            <span className="settings-subtle-hint settings-subtle-hint--region">
-              Choosing a region (or Auto) sets which GeForce NOW data center CloudMatch uses. This is the main in-app way to optimize latency; it is not a VPN or custom routing product like ExitLag.
-            </span>
           </div>
         </section>
 
@@ -1362,33 +1317,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               </div>
               <span className="settings-subtle-hint">
                 Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path.
-              </span>
-            </div>
-
-            <div className="settings-row settings-row--column">
-              <label className="settings-label settings-label--wrap">
-                <span className="settings-label-title">ICE path</span>
-              </label>
-              <div className="settings-chip-row">
-                {(
-                  [
-                    { value: "all" as const, label: "Default", title: "Try direct and relay candidates (typical home networks)" },
-                    { value: "relay" as const, label: "Relay only", title: "Force TURN — can help with VPNs or strict NAT (may add latency)" },
-                  ] as const
-                ).map((opt) => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    className={`settings-chip ${settings.iceTransportPolicy === opt.value ? "active" : ""}`}
-                    title={opt.title}
-                    onClick={() => handleChange("iceTransportPolicy", opt.value)}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-              <span className="settings-subtle-hint">
-                Controls WebRTC candidate gathering. This is not a full &ldquo;game booster&rdquo; VPN; it only affects how OpenNOW connects to GeForce NOW.
               </span>
             </div>
 
