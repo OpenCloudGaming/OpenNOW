@@ -32,6 +32,13 @@ import {
 } from "./sdp";
 import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
 
+/** Returns true when running on macOS (Electron/Chromium userAgent). */
+function isMacOS(): boolean {
+  const ua = navigator.userAgent?.toLowerCase() ?? "";
+  const platform = navigator.platform?.toLowerCase() ?? "";
+  return platform.includes("mac") || ua.includes("macintosh");
+}
+
 interface OfferSettings {
   codec: VideoCodec;
   colorQuality: ColorQuality;
@@ -478,8 +485,10 @@ export class GfnWebRtcClient {
   private static readonly RELIABLE_MOUSE_BACKPRESSURE_BYTES = 64 * 1024;
   private static readonly BACKPRESSURE_LOG_INTERVAL_MS = 2000;
   private static readonly VIDEO_BASE_JITTER_TARGET_MS = 12;
+  private static readonly VIDEO_BASE_JITTER_TARGET_MAC_MS = 20;
   private static readonly AUDIO_BASE_JITTER_TARGET_MS = 20;
   private static readonly VIDEO_PRESSURE_JITTER_TARGET_MS = 30;
+  private static readonly VIDEO_PRESSURE_JITTER_TARGET_MAC_MS = 38;
   private static readonly AUDIO_PRESSURE_JITTER_TARGET_MS = 32;
   private static readonly DECODER_PRESSURE_CONSECUTIVE_POLLS = 3;
   private static readonly DECODER_STABLE_CONSECUTIVE_POLLS = 6;
@@ -538,6 +547,7 @@ export class GfnWebRtcClient {
   private inputQueueMaxSchedulingDelayMsWindow = 0;
   private inputQueuePressureLoggedAtMs = 0;
   private inputQueueDropCount = 0;
+  private readonly platformIsMac: boolean = isMacOS();
 
   // Decoder pressure detection + recovery state.
   private decoderPressureActive = false;
@@ -549,7 +559,9 @@ export class GfnWebRtcClient {
   private negotiatedMaxBitrateKbps = 0;
   private currentBitrateCeilingKbps = 0;
   private receiverLatencyTargets = {
-    video: GfnWebRtcClient.VIDEO_BASE_JITTER_TARGET_MS,
+    video: isMacOS()
+      ? GfnWebRtcClient.VIDEO_BASE_JITTER_TARGET_MAC_MS
+      : GfnWebRtcClient.VIDEO_BASE_JITTER_TARGET_MS,
     audio: GfnWebRtcClient.AUDIO_BASE_JITTER_TARGET_MS,
   };
   private activeReceivers: Array<{ receiver: RTCRtpReceiver; kind: "audio" | "video" }> = [];
@@ -782,8 +794,12 @@ export class GfnWebRtcClient {
     this.decoderPressureActive = active;
     this.diagnostics.decoderPressureActive = active;
     this.receiverLatencyTargets.video = active
-      ? GfnWebRtcClient.VIDEO_PRESSURE_JITTER_TARGET_MS
-      : GfnWebRtcClient.VIDEO_BASE_JITTER_TARGET_MS;
+      ? (this.platformIsMac
+          ? GfnWebRtcClient.VIDEO_PRESSURE_JITTER_TARGET_MAC_MS
+          : GfnWebRtcClient.VIDEO_PRESSURE_JITTER_TARGET_MS)
+      : (this.platformIsMac
+          ? GfnWebRtcClient.VIDEO_BASE_JITTER_TARGET_MAC_MS
+          : GfnWebRtcClient.VIDEO_BASE_JITTER_TARGET_MS);
     this.receiverLatencyTargets.audio = active
       ? GfnWebRtcClient.AUDIO_PRESSURE_JITTER_TARGET_MS
       : GfnWebRtcClient.AUDIO_BASE_JITTER_TARGET_MS;
@@ -812,7 +828,9 @@ export class GfnWebRtcClient {
     this.lastDecoderKeyframeRequestAtMs = 0;
     this.negotiatedMaxBitrateKbps = 0;
     this.currentBitrateCeilingKbps = 0;
-    this.receiverLatencyTargets.video = GfnWebRtcClient.VIDEO_BASE_JITTER_TARGET_MS;
+    this.receiverLatencyTargets.video = this.platformIsMac
+      ? GfnWebRtcClient.VIDEO_BASE_JITTER_TARGET_MAC_MS
+      : GfnWebRtcClient.VIDEO_BASE_JITTER_TARGET_MS;
     this.receiverLatencyTargets.audio = GfnWebRtcClient.AUDIO_BASE_JITTER_TARGET_MS;
     this.activeReceivers = [];
     this.diagnostics.decoderPressureActive = false;

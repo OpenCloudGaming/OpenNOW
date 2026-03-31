@@ -505,12 +505,29 @@ async function createMainWindow(): Promise<void> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      backgroundThrottling: false,
     },
   });
 
   if (process.platform === "win32") {
     // Keep native window fullscreen in sync with HTML fullscreen so Windows treats
     // stream playback like a real fullscreen window instead of only DOM fullscreen.
+    mainWindow.webContents.on("enter-html-full-screen", () => {
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFullScreen()) {
+        mainWindow.setFullScreen(true);
+      }
+    });
+
+    mainWindow.webContents.on("leave-html-full-screen", () => {
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()) {
+        mainWindow.setFullScreen(false);
+      }
+    });
+  }
+
+  if (process.platform === "darwin") {
+    // On macOS, sync native window fullscreen with HTML fullscreen to prevent
+    // the compositor hiccup that causes frame drop bursts on fullscreen transitions.
     mainWindow.webContents.on("enter-html-full-screen", () => {
       if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFullScreen()) {
         mainWindow.setFullScreen(true);
