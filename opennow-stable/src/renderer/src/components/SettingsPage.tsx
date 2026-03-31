@@ -1151,41 +1151,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
           </div>
         </section>
 
-        {/* ── Connection (WebRTC) ───────────────────────── */}
-        <section className="settings-section">
-          <div className="settings-section-header">
-            <h2>Connection</h2>
-          </div>
-          <div className="settings-rows">
-            <div className="settings-row settings-row--column">
-              <label className="settings-label settings-label--wrap">
-                <span className="settings-label-title">ICE path</span>
-              </label>
-              <div className="settings-chip-row">
-                {(
-                  [
-                    { value: "all" as const, label: "Default", title: "Try direct and relay candidates (typical home networks)" },
-                    { value: "relay" as const, label: "Relay only", title: "Force TURN — can help with VPNs or strict NAT (may add latency)" },
-                  ] as const
-                ).map((opt) => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    className={`settings-chip ${settings.iceTransportPolicy === opt.value ? "active" : ""}`}
-                    title={opt.title}
-                    onClick={() => handleChange("iceTransportPolicy", opt.value)}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-              <span className="settings-subtle-hint">
-                Controls WebRTC candidate gathering. This is not a full &ldquo;game booster&rdquo; VPN; it only affects how OpenNOW connects to GeForce NOW.
-              </span>
-            </div>
-          </div>
-        </section>
-
         {/* ── Game ───────────────────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
@@ -1397,6 +1362,33 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               </div>
               <span className="settings-subtle-hint">
                 Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path.
+              </span>
+            </div>
+
+            <div className="settings-row settings-row--column">
+              <label className="settings-label settings-label--wrap">
+                <span className="settings-label-title">ICE path</span>
+              </label>
+              <div className="settings-chip-row">
+                {(
+                  [
+                    { value: "all" as const, label: "Default", title: "Try direct and relay candidates (typical home networks)" },
+                    { value: "relay" as const, label: "Relay only", title: "Force TURN — can help with VPNs or strict NAT (may add latency)" },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    className={`settings-chip ${settings.iceTransportPolicy === opt.value ? "active" : ""}`}
+                    title={opt.title}
+                    onClick={() => handleChange("iceTransportPolicy", opt.value)}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <span className="settings-subtle-hint">
+                Controls WebRTC candidate gathering. This is not a full &ldquo;game booster&rdquo; VPN; it only affects how OpenNOW connects to GeForce NOW.
               </span>
             </div>
 
