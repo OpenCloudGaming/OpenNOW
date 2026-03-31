@@ -35,6 +35,9 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
 
+/** WebRTC ICE candidate gathering policy — "relay" can help when only TURN works reliably (e.g. VPN / strict NAT). */
+export type IceTransportPolicy = "all" | "relay";
+
 export interface Settings {
   resolution: string;
   aspectRatio: AspectRatio;
@@ -72,6 +75,10 @@ export interface Settings {
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
+  /**
+   * WebRTC ICE transport policy for streaming. "relay" uses TURN only (often needed with VPNs or strict NAT).
+   */
+  iceTransportPolicy: IceTransportPolicy;
 }
 
 export interface LoginProvider {
@@ -180,6 +187,14 @@ export interface PingResult {
   url: string;
   pingMs: number | null;
   error?: string;
+  /** Lowest TCP connect time in the sample (ms), when measured */
+  minMs?: number;
+  /** Highest TCP connect time in the sample (ms), when measured */
+  maxMs?: number;
+  /** Approximate jitter: standard deviation of samples (ms), when measured */
+  jitterMs?: number;
+  /** Number of successful connect samples (e.g. 5) */
+  samples?: number;
 }
 
 export interface GamesFetchRequest {
