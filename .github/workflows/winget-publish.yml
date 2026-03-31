@@ -1,0 +1,24 @@
+name: winget-publish
+
+# Publishes each GitHub release to the Windows Package Manager community repo via PR.
+# Prerequisites:
+# - One-time: merge an initial manifest for OpenCloudGaming.OpenNOW into microsoft/winget-pkgs
+#   (copy from winget/manifests/ in this repo).
+# - Add repo secret WINGET_TOKEN: classic PAT with public_repo; fork microsoft/winget-pkgs under the org/account.
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Publish to WinGet
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: OpenCloudGaming.OpenNOW
+          installers-regex: 'setup-x64\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
