@@ -2805,12 +2805,6 @@ button.game-card-store-chip.active:hover {
   background: rgba(239, 68, 68, 0.15);
 }
 
-.region-ping-jitter {
-  font-size: 0.72em;
-  opacity: 0.85;
-  font-weight: 500;
-}
-
 .region-ping-loading {
   color: var(--ink-muted);
   font-style: italic;

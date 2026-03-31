@@ -1091,58 +1091,45 @@ function registerIpcHandlers(): void {
     });
   }
 
-  // Ping regions IPC handler — TCP connect timing (like ExitLag-style route probes: latency + stability)
+  // Ping regions IPC handler - uses TCP connection timing for accurate latency measurement
+  // Runs 3 tests and averages the results
   ipcMain.handle(IPC_CHANNELS.PING_REGIONS, async (_event, regions: StreamRegion[]): Promise<PingResult[]> => {
     const pingPromises = regions.map(async (region) => {
       try {
         const url = new URL(region.url);
         const hostname = url.hostname;
-        const port = url.protocol === "https:" ? 443 : 80;
-
+        const port = url.protocol === 'https:' ? 443 : 80;
+        
         const validPings: number[] = [];
-        const sampleCount = 5;
-        for (let i = 0; i < sampleCount; i++) {
+        
+        // Run 3 ping tests
+        for (let i = 0; i < 3; i++) {
           const pingMs = await tcpPing(hostname, port, 3000);
           if (pingMs !== null) {
             validPings.push(pingMs);
           }
         }
-
+        
+        // Calculate average of successful pings
         if (validPings.length > 0) {
-          const sum = validPings.reduce((a, b) => a + b, 0);
-          const avgPing = Math.round(sum / validPings.length);
-          const minMs = Math.min(...validPings);
-          const maxMs = Math.max(...validPings);
-          let jitterMs: number | undefined;
-          if (validPings.length >= 2) {
-            const mean = sum / validPings.length;
-            const variance =
-              validPings.reduce((acc, v) => acc + (v - mean) * (v - mean), 0) / validPings.length;
-            jitterMs = Math.round(Math.sqrt(variance));
-          }
-          return {
-            url: region.url,
-            pingMs: avgPing,
-            minMs,
-            maxMs,
-            jitterMs,
-            samples: validPings.length,
+          const avgPing = Math.round(validPings.reduce((a, b) => a + b, 0) / validPings.length);
+          return { url: region.url, pingMs: avgPing };
+        } else {
+          return { 
+            url: region.url, 
+            pingMs: null, 
+            error: 'All ping tests failed'
           };
         }
-        return {
-          url: region.url,
-          pingMs: null,
-          error: "All ping tests failed",
-        };
       } catch {
-        return {
-          url: region.url,
-          pingMs: null,
-          error: "Invalid URL",
+        return { 
+          url: region.url, 
+          pingMs: null, 
+          error: 'Invalid URL'
         };
       }
     });
-
+    
     return Promise.all(pingPromises);
   });
 
