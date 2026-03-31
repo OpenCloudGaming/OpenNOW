@@ -399,7 +399,7 @@ export function App(): JSX.Element {
     fps: 60,
     maxBitrateMbps: 75,
     codec: "H264",
-    colorQuality: "10bit_420",
+    colorQuality: "8bit_420",
     region: "",
     clipboardPaste: false,
     mouseSensitivity: 1,

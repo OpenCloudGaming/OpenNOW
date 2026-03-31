@@ -745,6 +745,16 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     [handleChange, settings.codec]
   );
 
+  const handleCodecChange = useCallback(
+    (codec: VideoCodec) => {
+      handleChange("codec", codec);
+      if (codec === "H264" && settings.colorQuality !== "8bit_420") {
+        handleChange("colorQuality", "8bit_420");
+      }
+    },
+    [handleChange, settings.colorQuality]
+  );
+
   // Microphone devices
   const [microphoneDevices, setMicrophoneDevices] = useState<MediaDeviceInfo[]>([]);
   const [microphonePermissionError, setMicrophonePermissionError] = useState<string | null>(null);
@@ -1250,7 +1260,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                   <button
                     key={codec}
                     className={`settings-chip ${settings.codec === codec ? "active" : ""}`}
-                    onClick={() => handleChange("codec", codec)}
+                    onClick={() => handleCodecChange(codec)}
                   >
                     {codec}
                   </button>

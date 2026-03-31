@@ -459,7 +459,7 @@ export function buildNvstSdp(params: NvstParams): string {
   const is120Fps = params.fps === 120;
   const is240Fps = params.fps >= 240;
   const isAv1 = params.codec === "AV1";
-  const bitDepth = params.colorQuality.startsWith("10bit") ? 10 : 8;
+  const bitDepth = params.colorQuality.startsWith("10bit") && params.codec !== "H264" ? 10 : 8;
 
   const lines: string[] = [
     "v=0",
