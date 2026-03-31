@@ -648,6 +648,7 @@ export function App(): JSX.Element {
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
+  const launchAbortRef = useRef(false);
   const streamStatusRef = useRef<StreamStatus>(streamStatus);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
@@ -1552,6 +1553,7 @@ export function App(): JSX.Element {
     }
 
     launchInFlightRef.current = true;
+    launchAbortRef.current = false;
     let loadingStep: StreamLoadingStatus = "queue";
     const updateLoadingStep = (next: StreamLoadingStatus): void => {
       loadingStep = next;
@@ -1674,6 +1676,10 @@ export function App(): JSX.Element {
         attempt++;
         await sleep(SESSION_READY_POLL_INTERVAL_MS);
 
+        if (launchAbortRef.current) {
+          return;
+        }
+
         const polled = await window.openNow.pollSession({
           token: token || undefined,
           streamingBaseUrl: newSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
@@ -1683,6 +1689,10 @@ export function App(): JSX.Element {
           clientId: newSession.clientId,
           deviceId: newSession.deviceId,
         });
+
+        if (launchAbortRef.current) {
+          return;
+        }
 
         setSession(polled);
         setQueuePosition(polled.queuePosition);
@@ -1821,6 +1831,10 @@ export function App(): JSX.Element {
   const handleStopStream = useCallback(async () => {
     try {
       resolveExitPrompt(false);
+      const status = streamStatusRef.current;
+      if (status !== "idle" && status !== "streaming") {
+        launchAbortRef.current = true;
+      }
       await window.openNow.disconnectSignaling();
 
       const current = sessionRef.current;
@@ -1921,6 +1935,13 @@ export function App(): JSX.Element {
     }
 
     await releasePointerLockIfNeeded();
+
+    const loadingPhases: StreamStatus[] = ["queue", "setup", "starting", "connecting"];
+    if (loadingPhases.includes(streamStatus)) {
+      launchAbortRef.current = true;
+      await handleStopStream();
+      return;
+    }
 
     const gameName = (streamingGame?.title || "this game").trim();
     const shouldExit = await requestExitPrompt(gameName);

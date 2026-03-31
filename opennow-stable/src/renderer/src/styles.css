@@ -4068,7 +4068,8 @@ button.game-card-store-chip.active:hover {
 .sload {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  /* Above StreamView (.sv, z-index 1000) so queue/setup Cancel receives clicks */
+  z-index: 1100;
   display: flex;
   align-items: center;
   justify-content: center;
