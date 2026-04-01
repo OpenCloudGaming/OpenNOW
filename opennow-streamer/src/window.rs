@@ -7,10 +7,13 @@ use sdl2::{
     audio::{AudioQueue, AudioSpecDesired},
     controller::Button as ControllerButton,
     event::Event,
+    hint,
     keyboard::{Mod, Scancode},
+    mouse::MouseUtil,
     pixels::PixelFormatEnum,
     rect::Rect,
-    render::TextureCreator,
+    render::{Canvas, TextureCreator},
+    video::Window,
     video::WindowContext,
 };
 
@@ -20,9 +23,19 @@ use crate::{
 };
 
 pub fn run(_session: SharedSession, media_rx: Receiver<MediaEvent>, input_tx: UnboundedSender<InputPayload>, width: u32, height: u32) -> anyhow::Result<()> {
+    hint::set("SDL_MOUSE_AUTO_CAPTURE", "0");
+    hint::set("SDL_MOUSE_FOCUS_CLICKTHROUGH", "1");
+    hint::set("SDL_MOUSE_RELATIVE_MODE_WARP", "0");
+    hint::set("SDL_MOUSE_RELATIVE_WARP_MOTION", "0");
+    hint::set("SDL_MOUSE_RELATIVE_SYSTEM_SCALE", "0");
+    hint::set("SDL_MOUSE_RELATIVE_SPEED_SCALE", "1");
+    hint::set("SDL_MOUSE_TOUCH_EVENTS", "0");
+    hint::set_video_minimize_on_focus_loss(false);
+
     let sdl = sdl2::init().map_err(|e| anyhow::anyhow!(e)).context("sdl init")?;
     let video = sdl.video().map_err(|e| anyhow::anyhow!(e)).context("sdl video")?;
     let audio = sdl.audio().map_err(|e| anyhow::anyhow!(e)).context("sdl audio")?;
+    let mouse = sdl.mouse();
     let game_controller = sdl.game_controller().ok();
     let mut opened_controllers: HashMap<u32, sdl2::controller::GameController> = HashMap::new();
     if let Some(gc) = &game_controller {
@@ -56,6 +69,7 @@ pub fn run(_session: SharedSession, media_rx: Receiver<MediaEvent>, input_tx: Un
     let mut event_pump = sdl.event_pump().map_err(|e| anyhow::anyhow!(e)).context("event pump")?;
     let mut latest_frame: Option<VideoFrame> = None;
     let mut connected_slots = HashSet::<u8>::new();
+    let mut mouse_captured = false;
     let mut running = true;
     while running {
         while let Ok(event) = media_rx.try_recv() {
@@ -77,6 +91,28 @@ pub fn run(_session: SharedSession, media_rx: Receiver<MediaEvent>, input_tx: Un
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. } => running = false,
+                Event::Window { win_event, .. } => match win_event {
+                    sdl2::event::WindowEvent::FocusLost | sdl2::event::WindowEvent::Leave | sdl2::event::WindowEvent::Close => {
+                        if mouse_captured {
+                            set_mouse_capture(&mouse, &mut canvas, false);
+                            mouse_captured = false;
+                        }
+                    }
+                    _ => {}
+                },
+                Event::KeyDown { scancode: Some(Scancode::Escape), repeat: false, .. } => {
+                    if mouse_captured {
+                        set_mouse_capture(&mouse, &mut canvas, false);
+                        mouse_captured = false;
+                    } else if let Some((vk, code)) = map_scancode(Scancode::Escape) {
+                        send_input(&input_tx, InputPayload::Key {
+                            key_code: vk,
+                            scan_code: code,
+                            modifiers: 0,
+                            down: true,
+                        });
+                    }
+                }
                 Event::KeyDown { scancode: Some(scancode), keymod, repeat, .. } => {
                     if !repeat {
                         if let Some((vk, code)) = map_scancode(scancode) {
@@ -102,23 +138,31 @@ pub fn run(_session: SharedSession, media_rx: Receiver<MediaEvent>, input_tx: Un
                     }
                 }
                 Event::MouseMotion { xrel, yrel, .. } => {
-                    if xrel != 0 || yrel != 0 {
+                    if mouse_captured && (xrel != 0 || yrel != 0) {
                         send_input(&input_tx, InputPayload::MouseMove { dx: xrel.clamp(i16::MIN as i32, i16::MAX as i32) as i16, dy: yrel.clamp(i16::MIN as i32, i16::MAX as i32) as i16 });
                     }
                 }
                 Event::MouseButtonDown { mouse_btn, .. } => {
+                    if !mouse_captured {
+                        set_mouse_capture(&mouse, &mut canvas, true);
+                        mouse_captured = true;
+                    }
                     if let Some(button) = map_mouse_button(mouse_btn) {
                         send_input(&input_tx, InputPayload::MouseButton { button, down: true });
                     }
                 }
                 Event::MouseButtonUp { mouse_btn, .. } => {
-                    if let Some(button) = map_mouse_button(mouse_btn) {
-                        send_input(&input_tx, InputPayload::MouseButton { button, down: false });
+                    if mouse_captured {
+                        if let Some(button) = map_mouse_button(mouse_btn) {
+                            send_input(&input_tx, InputPayload::MouseButton { button, down: false });
+                        }
                     }
                 }
                 Event::MouseWheel { y, .. } => {
-                    let delta = (-y).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-                    send_input(&input_tx, InputPayload::MouseWheel { delta });
+                    if mouse_captured {
+                        let delta = (-y).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                        send_input(&input_tx, InputPayload::MouseWheel { delta });
+                    }
                 }
                 Event::ControllerDeviceAdded { which, .. } => {
                     if let Some(gc) = &game_controller {
@@ -153,6 +197,16 @@ pub fn run(_session: SharedSession, media_rx: Receiver<MediaEvent>, input_tx: Un
     }
 
     Ok(())
+}
+
+fn set_mouse_capture(mouse: &MouseUtil, canvas: &mut Canvas<Window>, captured: bool) {
+    mouse.capture(captured);
+    mouse.set_relative_mouse_mode(captured);
+    mouse.show_cursor(!captured);
+    let window = canvas.window_mut();
+    window.set_grab(captured);
+    window.set_mouse_grab(captured);
+    window.set_keyboard_grab(captured);
 }
 
 fn send_input(input_tx: &UnboundedSender<InputPayload>, payload: InputPayload) {
