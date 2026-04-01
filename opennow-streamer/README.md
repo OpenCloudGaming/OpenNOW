@@ -17,15 +17,21 @@ Why loopback socket IPC instead of stdio:
 Current MVP responsibilities implemented here:
 - native control bridge to Electron main
 - native WebRTC peer connection, offer handling, answer generation, and ICE forwarding
-- GFN-specific SDP handling for server IP fixing, codec filtering, answer munging, NVST SDP generation, and manual media endpoint ICE injection
+- GFN-specific SDP handling for server IP fixing, codec filtering, answer munging, NVST SDP generation, native-bundle V2 fingerprint fields, and manual media endpoint ICE injection
 - native SDL2 play surface for decoded video
 - native SDL2 audio output for decoded Opus audio
-- native keyboard / mouse / controller capture using the existing GFN input packet semantics
+- native keyboard / mouse / controller capture using the existing GFN input packet semantics, including protocol-version handshake and gamepad PR framing
 
 Current media implementation:
 - video RTP is depacketized in-process and decoded through an FFmpeg child pipeline into RGB frames rendered in the SDL window
 - audio RTP is depacketized in-process and decoded with libopus, then queued to SDL audio output
 - the MVP decode path currently targets the practical GFN desktop path first: H.264 and H.265 video plus Opus audio
+
+Recent native-parity adjustments from the official GFN desktop client:
+- dedicated `gamepad_channel_v1` plus `input_channel_v1` / `input_channel_partially_reliable`
+- protocol-version detection from the input-channel handshake and native heartbeats on the reliable channel
+- gamepad packet bitmap / controller-id / sequence framing aligned with the browser/native protocol observations
+- NVST attributes for `general.dtlsFingerprintV2`, `general.icePasswordV2`, `general.iceUserNameFragmentV2`, `general.rtcDataChannelOnNativeBundle`, and related native-bundle flags
 
 Still intentionally out of scope for this phase:
 - recording / screenshots migration

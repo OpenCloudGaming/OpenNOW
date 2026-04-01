@@ -1,4 +1,4 @@
-use std::{sync::mpsc::Receiver, time::Duration};
+use std::{collections::{HashMap, HashSet}, sync::mpsc::Receiver, time::Duration};
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -24,13 +24,12 @@ pub fn run(_session: SharedSession, media_rx: Receiver<MediaEvent>, input_tx: Un
     let video = sdl.video().map_err(|e| anyhow::anyhow!(e)).context("sdl video")?;
     let audio = sdl.audio().map_err(|e| anyhow::anyhow!(e)).context("sdl audio")?;
     let game_controller = sdl.game_controller().ok();
-    let mut opened_controller = None;
+    let mut opened_controllers: HashMap<u32, sdl2::controller::GameController> = HashMap::new();
     if let Some(gc) = &game_controller {
         for idx in 0_u32..gc.num_joysticks().unwrap_or(0) {
             if gc.is_game_controller(idx) {
                 if let Ok(controller) = gc.open(idx) {
-                    opened_controller = Some(controller);
-                    break;
+                    opened_controllers.insert(controller.instance_id(), controller);
                 }
             }
         }
@@ -56,6 +55,7 @@ pub fn run(_session: SharedSession, media_rx: Receiver<MediaEvent>, input_tx: Un
 
     let mut event_pump = sdl.event_pump().map_err(|e| anyhow::anyhow!(e)).context("event pump")?;
     let mut latest_frame: Option<VideoFrame> = None;
+    let mut connected_slots = HashSet::<u8>::new();
     let mut running = true;
     while running {
         while let Ok(event) = media_rx.try_recv() {
@@ -116,21 +116,34 @@ pub fn run(_session: SharedSession, media_rx: Receiver<MediaEvent>, input_tx: Un
                         send_input(&input_tx, InputPayload::MouseButton { button, down: false });
                     }
                 }
-                Event::ControllerAxisMotion { .. }
-                | Event::ControllerButtonDown { .. }
-                | Event::ControllerButtonUp { .. }
-                | Event::ControllerDeviceAdded { .. }
-                | Event::ControllerDeviceRemoved { .. } => {
-                    if let Some(controller) = opened_controller.as_ref() {
-                        send_input(&input_tx, InputPayload::Gamepad {
-                            buttons: map_controller_buttons(controller),
-                            left_trigger: axis_to_u8(controller.axis(sdl2::controller::Axis::TriggerLeft)),
-                            right_trigger: axis_to_u8(controller.axis(sdl2::controller::Axis::TriggerRight)),
-                            left_x: controller.axis(sdl2::controller::Axis::LeftX),
-                            left_y: -controller.axis(sdl2::controller::Axis::LeftY),
-                            right_x: controller.axis(sdl2::controller::Axis::RightX),
-                            right_y: -controller.axis(sdl2::controller::Axis::RightY),
-                        });
+                Event::MouseWheel { y, .. } => {
+                    let delta = (-y).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                    send_input(&input_tx, InputPayload::MouseWheel { delta });
+                }
+                Event::ControllerDeviceAdded { which, .. } => {
+                    if let Some(gc) = &game_controller {
+                        if let Ok(controller) = gc.open(which) {
+                            let instance_id = controller.instance_id();
+                            opened_controllers.insert(instance_id, controller);
+                            let controller_id = slot_for_instance(instance_id, &opened_controllers);
+                            connected_slots.insert(controller_id);
+                            send_controller_state(&input_tx, &opened_controllers, controller_id, Some(instance_id), &connected_slots);
+                        }
+                    }
+                }
+                Event::ControllerDeviceRemoved { which, .. } => {
+                    let controller_id = slot_for_instance(which, &opened_controllers);
+                    opened_controllers.remove(&which);
+                    connected_slots.remove(&controller_id);
+                    send_controller_state(&input_tx, &opened_controllers, controller_id, None, &connected_slots);
+                }
+                Event::ControllerAxisMotion { which, .. }
+                | Event::ControllerButtonDown { which, .. }
+                | Event::ControllerButtonUp { which, .. } => {
+                    if opened_controllers.contains_key(&which) {
+                        let controller_id = slot_for_instance(which, &opened_controllers);
+                        connected_slots.insert(controller_id);
+                        send_controller_state(&input_tx, &opened_controllers, controller_id, Some(which), &connected_slots);
                     }
                 }
                 _ => {}
@@ -144,6 +157,53 @@ pub fn run(_session: SharedSession, media_rx: Receiver<MediaEvent>, input_tx: Un
 
 fn send_input(input_tx: &UnboundedSender<InputPayload>, payload: InputPayload) {
     let _ = input_tx.send(payload);
+}
+
+fn send_controller_state(
+    input_tx: &UnboundedSender<InputPayload>,
+    controllers: &HashMap<u32, sdl2::controller::GameController>,
+    controller_id: u8,
+    instance_id: Option<u32>,
+    connected_slots: &HashSet<u8>,
+) {
+    let bitmap = connected_slots.iter().fold(0_u16, |bitmap, slot| bitmap | (1_u16 << slot));
+    if let Some(instance_id) = instance_id {
+        if let Some(controller) = controllers.get(&instance_id) {
+            send_input(input_tx, InputPayload::Gamepad {
+                controller_id,
+                bitmap,
+                buttons: map_controller_buttons(controller),
+                left_trigger: axis_to_u8(controller.axis(sdl2::controller::Axis::TriggerLeft)),
+                right_trigger: axis_to_u8(controller.axis(sdl2::controller::Axis::TriggerRight)),
+                left_x: controller.axis(sdl2::controller::Axis::LeftX),
+                left_y: -controller.axis(sdl2::controller::Axis::LeftY),
+                right_x: controller.axis(sdl2::controller::Axis::RightX),
+                right_y: -controller.axis(sdl2::controller::Axis::RightY),
+            });
+            return;
+        }
+    }
+    send_input(input_tx, InputPayload::Gamepad {
+        controller_id,
+        bitmap,
+        buttons: 0,
+        left_trigger: 0,
+        right_trigger: 0,
+        left_x: 0,
+        left_y: 0,
+        right_x: 0,
+        right_y: 0,
+    });
+}
+
+fn slot_for_instance(instance_id: u32, controllers: &HashMap<u32, sdl2::controller::GameController>) -> u8 {
+    let mut sorted = controllers.keys().copied().collect::<Vec<_>>();
+    sorted.sort_unstable();
+    sorted
+        .iter()
+        .position(|value| *value == instance_id)
+        .unwrap_or(0)
+        .min(3) as u8
 }
 
 fn queue_audio(queue: &AudioQueue<i16>, frame: AudioFrame) {

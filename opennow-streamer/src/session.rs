@@ -1,4 +1,4 @@
-use std::{sync::{Arc, mpsc::Sender as StdSender}};
+use std::{collections::HashMap, sync::{atomic::{AtomicBool, AtomicU16, Ordering}, Arc, mpsc::Sender as StdSender}};
 
 use anyhow::{anyhow, Context};
 use interceptor::registry::Registry;
@@ -22,7 +22,10 @@ use crate::{
 pub struct StreamSession {
     peer: Arc<RTCPeerConnection>,
     reliable: Arc<RTCDataChannel>,
-    partially_reliable: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    hid_partially_reliable: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    gamepad_channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    input_protocol_version: Arc<AtomicU16>,
+    gamepad_sequence: Arc<Mutex<HashMap<u8, u16>>>,
     control_tx: mpsc::Sender<StreamerMessage>,
     session: SessionInfo,
     settings: StreamSettings,
@@ -61,7 +64,10 @@ impl StreamSession {
         };
         let peer = Arc::new(api.new_peer_connection(config).await.context("new_peer_connection")?);
         let reliable = peer.create_data_channel("input_channel_v1", Some(RTCDataChannelInit { ordered: Some(true), ..Default::default() })).await?;
-        let partially_reliable = Arc::new(Mutex::new(None));
+        let hid_partially_reliable = Arc::new(Mutex::new(None));
+        let gamepad_channel = Arc::new(Mutex::new(None));
+        let input_protocol_version = Arc::new(AtomicU16::new(2));
+        let gamepad_sequence = Arc::new(Mutex::new(HashMap::new()));
 
         let width = settings.resolution.split('x').next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(1920);
         let height = settings.resolution.split('x').nth(1).and_then(|v| v.parse::<u32>().ok()).unwrap_or(1080);
@@ -75,8 +81,60 @@ impl StreamSession {
                 settings.fps,
                 settings.codec,
                 settings.max_bitrate_mbps,
-            ),
+                ),
         }).await.ok();
+
+        let handshake_log_tx = control_tx.clone();
+        let handshake_channel = reliable.clone();
+        let handshake_protocol_version = input_protocol_version.clone();
+        let heartbeat_started = Arc::new(AtomicBool::new(false));
+        let heartbeat_started_for_handler = heartbeat_started.clone();
+        reliable.on_message(Box::new(move |message| {
+            let sender = handshake_log_tx.clone();
+            let channel = handshake_channel.clone();
+            let protocol_version = handshake_protocol_version.clone();
+            let heartbeat_started = heartbeat_started_for_handler.clone();
+            Box::pin(async move {
+                if let Some(version) = input::parse_input_handshake(message.data.as_ref()) {
+                    protocol_version.store(version, Ordering::Relaxed);
+                    let _ = sender.send(StreamerMessage::Log {
+                        level: "info".into(),
+                        message: format!("input handshake complete (protocol v{version})"),
+                    }).await;
+                    if !heartbeat_started.swap(true, Ordering::SeqCst) {
+                        let sender = sender.clone();
+                        tokio::spawn(async move {
+                            let mut interval = tokio::time::interval(Duration::from_secs(2));
+                            loop {
+                                interval.tick().await;
+                                if channel.ready_state().to_string().as_str() != "open" {
+                                    break;
+                                }
+                                if channel.send(&input::encode_heartbeat().into()).await.is_err() {
+                                    break;
+                                }
+                            }
+                            let _ = sender.send(StreamerMessage::Log {
+                                level: "debug".into(),
+                                message: "input heartbeat loop stopped".into(),
+                            }).await;
+                        });
+                    }
+                    return;
+                }
+                let hex = message
+                    .data
+                    .iter()
+                    .take(16)
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let _ = sender.send(StreamerMessage::Log {
+                    level: "debug".into(),
+                    message: format!("input channel message {} bytes [{}]", message.data.len(), hex),
+                }).await;
+            })
+        }));
 
         let control_clone = control_tx.clone();
         peer.on_ice_candidate(Box::new(move |candidate| {
@@ -168,6 +226,33 @@ impl StreamSession {
                         }).await;
                     })
                 }));
+                let message_sender = sender.clone();
+                let message_label = label.clone();
+                channel.on_message(Box::new(move |message| {
+                    let sender = message_sender.clone();
+                    let label = message_label.clone();
+                    Box::pin(async move {
+                        if message.is_string {
+                            let text = String::from_utf8_lossy(message.data.as_ref()).into_owned();
+                            let _ = sender.send(StreamerMessage::Log {
+                                level: "info".into(),
+                                message: format!("remote data channel {label}: {text}"),
+                            }).await;
+                            return;
+                        }
+                        let hex = message
+                            .data
+                            .iter()
+                            .take(16)
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let _ = sender.send(StreamerMessage::Log {
+                            level: "debug".into(),
+                            message: format!("remote data channel {label}: {} bytes [{}]", message.data.len(), hex),
+                        }).await;
+                    })
+                }));
             })
         }));
 
@@ -191,7 +276,18 @@ impl StreamSession {
             })
         }));
 
-        Ok(Self { peer, reliable, partially_reliable, control_tx, session, settings, media })
+        Ok(Self {
+            peer,
+            reliable,
+            hid_partially_reliable,
+            gamepad_channel,
+            input_protocol_version,
+            gamepad_sequence,
+            control_tx,
+            session,
+            settings,
+            media,
+        })
     }
 
     pub async fn apply_offer(&self, offer_sdp: String) -> anyhow::Result<()> {
@@ -200,9 +296,19 @@ impl StreamSession {
             message: format!("applying remote offer ({} chars)", offer_sdp.len()),
         }).await.ok();
         let partial_reliable = parse_partial_reliable_threshold_ms(&offer_sdp).unwrap_or(30);
-        if self.partially_reliable.lock().await.is_none() {
-            let channel = self.peer.create_data_channel("input_channel_partially_reliable", Some(RTCDataChannelInit { ordered: Some(false), max_packet_life_time: Some(partial_reliable), ..Default::default() })).await?;
-            *self.partially_reliable.lock().await = Some(channel);
+        if self.hid_partially_reliable.lock().await.is_none() {
+            let channel = self.peer.create_data_channel(
+                "input_channel_partially_reliable",
+                Some(RTCDataChannelInit { ordered: Some(false), max_packet_life_time: Some(partial_reliable), ..Default::default() }),
+            ).await?;
+            *self.hid_partially_reliable.lock().await = Some(channel);
+        }
+        if self.gamepad_channel.lock().await.is_none() {
+            let channel = self.peer.create_data_channel(
+                "gamepad_channel_v1",
+                Some(RTCDataChannelInit { ordered: Some(false), max_packet_life_time: Some(partial_reliable), ..Default::default() }),
+            ).await?;
+            *self.gamepad_channel.lock().await = Some(channel);
         }
         let server_ip_for_sdp = self.session.media_connection_info.as_ref().map(|m| m.ip.as_str()).unwrap_or(self.session.server_ip.as_str());
         let mut processed = fix_server_ip(&offer_sdp, server_ip_for_sdp);
@@ -381,20 +487,42 @@ impl StreamSession {
     pub async fn send_input(&self, payload: InputPayload) {
         match payload {
             InputPayload::Key { key_code, scan_code, modifiers, down } => {
-                let bytes = input::encode_key(key_code, scan_code, modifiers, down);
+                let bytes = input::encode_key(key_code, scan_code, modifiers, down, self.input_protocol_version.load(Ordering::Relaxed));
                 let _ = self.reliable.send(&bytes.into()).await;
             }
             InputPayload::MouseMove { dx, dy } => {
-                let bytes = input::encode_mouse_move(dx, dy);
+                let bytes = input::encode_mouse_move(dx, dy, self.input_protocol_version.load(Ordering::Relaxed));
                 let _ = self.reliable.send(&bytes.into()).await;
             }
             InputPayload::MouseButton { button, down } => {
-                let bytes = input::encode_mouse_button(button, down);
+                let bytes = input::encode_mouse_button(button, down, self.input_protocol_version.load(Ordering::Relaxed));
                 let _ = self.reliable.send(&bytes.into()).await;
             }
-            InputPayload::Gamepad { buttons, left_trigger, right_trigger, left_x, left_y, right_x, right_y } => {
-                let bytes = input::encode_gamepad(buttons, left_trigger, right_trigger, left_x, left_y, right_x, right_y);
-                if let Some(channel) = self.partially_reliable.lock().await.clone() {
+            InputPayload::MouseWheel { delta } => {
+                let bytes = input::encode_mouse_wheel(delta, self.input_protocol_version.load(Ordering::Relaxed));
+                let _ = self.reliable.send(&bytes.into()).await;
+            }
+            InputPayload::Gamepad { controller_id, bitmap, buttons, left_trigger, right_trigger, left_x, left_y, right_x, right_y } => {
+                let protocol_version = self.input_protocol_version.load(Ordering::Relaxed);
+                let use_partially_reliable = self.gamepad_channel.lock().await.is_some();
+                let sequence = {
+                    let mut sequences = self.gamepad_sequence.lock().await;
+                    let current = sequences.get(&controller_id).copied().unwrap_or(1);
+                    sequences.insert(controller_id, current.wrapping_add(1));
+                    current
+                };
+                let bytes = input::encode_gamepad(&input::GamepadState {
+                    controller_id,
+                    bitmap,
+                    buttons,
+                    left_trigger,
+                    right_trigger,
+                    left_x,
+                    left_y,
+                    right_x,
+                    right_y,
+                }, use_partially_reliable, sequence, protocol_version);
+                if let Some(channel) = self.gamepad_channel.lock().await.clone() {
                     let _ = channel.send(&bytes.into()).await;
                 } else {
                     let _ = self.reliable.send(&bytes.into()).await;
@@ -413,7 +541,8 @@ pub enum InputPayload {
     Key { key_code: u16, scan_code: u16, modifiers: u16, down: bool },
     MouseMove { dx: i16, dy: i16 },
     MouseButton { button: u8, down: bool },
-    Gamepad { buttons: u16, left_trigger: u8, right_trigger: u8, left_x: i16, left_y: i16, right_x: i16, right_y: i16 },
+    MouseWheel { delta: i16 },
+    Gamepad { controller_id: u8, bitmap: u16, buttons: u16, left_trigger: u8, right_trigger: u8, left_x: i16, left_y: i16, right_x: i16, right_y: i16 },
 }
 
 pub type SharedSession = Arc<Mutex<Option<Arc<StreamSession>>>>;
