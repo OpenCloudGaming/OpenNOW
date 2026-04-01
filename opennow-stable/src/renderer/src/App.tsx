@@ -2400,6 +2400,7 @@ export function App(): JSX.Element {
                 resolution: settings.resolution,
                 fps: settings.fps,
                 codec: settings.codec,
+                enableL4S: settings.enableL4S,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
