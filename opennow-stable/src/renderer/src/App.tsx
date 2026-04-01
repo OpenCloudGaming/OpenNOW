@@ -1748,6 +1748,9 @@ export function App(): JSX.Element {
         signalingUrl: sessionToConnect.signalingUrl,
       });
     } catch (error) {
+      if (launchAbortRef.current) {
+        return;
+      }
       console.error("Launch failed:", error);
       setLaunchError(toLaunchErrorState(error, loadingStep));
       await window.openNow.disconnectSignaling().catch(() => {});
