@@ -9,7 +9,7 @@ license = "MIT"
 anyhow = "1"
 bytes = "1"
 opus = "0.3"
-sdl2 = { version = "0.36", features = ["bundled"] }
+sdl2 = { version = "0.38", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 gilrs = "0.11"
