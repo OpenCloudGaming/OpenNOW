@@ -26,9 +26,14 @@ use crate::messages::StreamerMessage;
 pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
-    pub y_plane: Vec<u8>,
-    pub u_plane: Vec<u8>,
-    pub v_plane: Vec<u8>,
+    pub pixel_format: VideoPixelFormat,
+    pub data: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoPixelFormat {
+    I420,
+    Nv12,
 }
 
 #[derive(Clone)]
@@ -359,6 +364,7 @@ struct DecoderCandidate {
     name: String,
     input_args: Vec<String>,
     output_args: Vec<String>,
+    output_pixel_format: VideoPixelFormat,
 }
 
 fn spawn_decoder_process(
@@ -382,7 +388,10 @@ fn spawn_decoder_process(
         .arg("-sn")
         .arg("-dn")
         .arg("-pix_fmt")
-        .arg("yuv420p")
+        .arg(match candidate.output_pixel_format {
+            VideoPixelFormat::I420 => "yuv420p",
+            VideoPixelFormat::Nv12 => "nv12",
+        })
         .arg("-f")
         .arg("rawvideo")
         .arg("pipe:1")
@@ -394,9 +403,11 @@ fn spawn_decoder_process(
         .spawn()
         .with_context(|| format!("spawn ffmpeg decoder backend {}", candidate.name))?;
 
-    let y_size = (width * height) as usize;
+        let y_size = (width * height) as usize;
     let uv_size = ((width / 2) * (height / 2)) as usize;
-    let frame_size = y_size + uv_size + uv_size;
+    let frame_size = match candidate.output_pixel_format {
+        VideoPixelFormat::I420 | VideoPixelFormat::Nv12 => y_size + uv_size + uv_size,
+    };
     let mut stdout = child
         .stdout
         .take()
@@ -406,6 +417,7 @@ fn spawn_decoder_process(
         .take()
         .ok_or_else(|| anyhow!("missing ffmpeg stderr"))?;
     let backend_name = candidate.name.clone();
+    let output_pixel_format = candidate.output_pixel_format;
     send_streamer_log(
         &log_tx,
         "info",
@@ -414,15 +426,12 @@ fn spawn_decoder_process(
     thread::spawn(move || {
         let mut buffer = vec![0_u8; frame_size];
         while stdout.read_exact(&mut buffer).is_ok() {
-            let y_plane = buffer[..y_size].to_vec();
-            let u_plane = buffer[y_size..(y_size + uv_size)].to_vec();
-            let v_plane = buffer[(y_size + uv_size)..].to_vec();
+            let frame = std::mem::replace(&mut buffer, vec![0_u8; frame_size]);
             let _ = event_tx.send(MediaEvent::Video(VideoFrame {
                 width,
                 height,
-                y_plane,
-                u_plane,
-                v_plane,
+                pixel_format: output_pixel_format,
+                data: frame,
             }));
         }
     });
@@ -471,6 +480,7 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
                     "d3d11",
                 ]),
                 output_args: ffmpeg_output_args(&["-vf", "hwdownload,format=yuv420p"]),
+                output_pixel_format: VideoPixelFormat::I420,
             });
         }
         if hwaccels.contains("qsv") {
@@ -483,16 +493,28 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
                     "qsv",
                 ]),
                 output_args: ffmpeg_output_args(&["-vf", "hwdownload,format=yuv420p"]),
+                output_pixel_format: VideoPixelFormat::I420,
             });
         }
     }
 
     #[cfg(target_os = "macos")]
     {
+        let decoder = match demuxer {
+            "hevc" => "hevc_videotoolbox",
+            "h264" => "h264_videotoolbox",
+            _ => "hevc_videotoolbox",
+        };
         candidates.push(DecoderCandidate {
             name: "macos-videotoolbox-copyback".into(),
-            input_args: base_ffmpeg_input_args(&["-hwaccel", "videotoolbox"]),
-            output_args: ffmpeg_output_args(&["-vf", "format=yuv420p"]),
+            input_args: base_ffmpeg_input_args(&[
+                "-hwaccel",
+                "videotoolbox",
+                "-c:v",
+                decoder,
+            ]),
+            output_args: ffmpeg_output_args(&["-pix_fmt", "nv12"]),
+            output_pixel_format: VideoPixelFormat::Nv12,
         });
     }
 
@@ -514,6 +536,7 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
                     "8",
                 ]),
                 output_args: ffmpeg_output_args(&["-vf", "hwdownload,format=yuv420p"]),
+                output_pixel_format: VideoPixelFormat::I420,
             });
         }
         if hwaccels.contains("vaapi") {
@@ -531,6 +554,7 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
                         "8",
                     ]),
                     output_args: ffmpeg_output_args(&["-vf", "hwdownload,format=yuv420p"]),
+                    output_pixel_format: VideoPixelFormat::I420,
                 });
             }
         }
@@ -546,6 +570,7 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
                     "8",
                 ]),
                 output_args: ffmpeg_output_args(&["-vf", "hwdownload,format=yuv420p"]),
+                output_pixel_format: VideoPixelFormat::I420,
             });
         }
         if hwaccels.contains("drm") {
@@ -553,6 +578,7 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
                 name: "linux-drm-copyback".into(),
                 input_args: base_ffmpeg_input_args(&["-hwaccel", "drm"]),
                 output_args: ffmpeg_output_args(&["-vf", "format=yuv420p"]),
+                output_pixel_format: VideoPixelFormat::I420,
             });
         }
     }
@@ -569,6 +595,7 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
         } else {
             ffmpeg_output_args(&[])
         },
+        output_pixel_format: VideoPixelFormat::I420,
     });
 
     if let Ok(force_backend) = env::var("OPENNOW_STREAMER_DECODER_BACKEND") {

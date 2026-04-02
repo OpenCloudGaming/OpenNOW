@@ -23,7 +23,7 @@ use sdl2::{
 };
 
 use crate::{
-    media::{AudioFrame, MediaEvent, VideoFrame},
+    media::{AudioFrame, MediaEvent, VideoFrame, VideoPixelFormat},
     session::{InputPayload, SharedSession},
 };
 
@@ -76,15 +76,17 @@ pub fn run(
     let mut canvas = window
         .into_canvas()
         .accelerated()
+        .present_vsync()
         .build()
         .context("create SDL canvas")?;
     let texture_creator: TextureCreator<WindowContext> = canvas.texture_creator();
     let mut texture = texture_creator
-        .create_texture_streaming(PixelFormatEnum::IYUV, width, height)
+        .create_texture_streaming(PixelFormatEnum::NV12, width, height)
         .context("create texture")?;
     texture.set_blend_mode(BlendMode::None);
     let mut texture_width = width;
     let mut texture_height = height;
+    let mut texture_format = VideoPixelFormat::Nv12;
 
     let queue: AudioQueue<i16> = audio
         .open_queue::<i16, _>(
@@ -107,44 +109,73 @@ pub fn run(
     let mut connected_slots = HashSet::<u8>::new();
     let mut mouse_captured = false;
     let mut running = true;
+    let mut frame_dirty = false;
     while running {
         while let Ok(event) = media_rx.try_recv() {
             match event {
-                MediaEvent::Video(frame) => latest_frame = Some(frame),
+                MediaEvent::Video(frame) => {
+                    latest_frame = Some(frame);
+                    frame_dirty = true;
+                }
                 MediaEvent::Audio(frame) => queue_audio(&queue, frame),
             }
         }
 
         if let Some(frame) = latest_frame.take() {
-            if frame.width != texture_width || frame.height != texture_height {
+            if frame.width != texture_width
+                || frame.height != texture_height
+                || frame.pixel_format != texture_format
+            {
+                let pixel_format = match frame.pixel_format {
+                    VideoPixelFormat::I420 => PixelFormatEnum::IYUV,
+                    VideoPixelFormat::Nv12 => PixelFormatEnum::NV12,
+                };
                 texture = texture_creator
-                    .create_texture_streaming(PixelFormatEnum::IYUV, frame.width, frame.height)
+                    .create_texture_streaming(pixel_format, frame.width, frame.height)
                     .context("recreate texture")?;
                 texture.set_blend_mode(BlendMode::None);
                 texture_width = frame.width;
                 texture_height = frame.height;
+                texture_format = frame.pixel_format;
                 let window = canvas.window_mut();
                 let _ = window.set_size(frame.width.max(640), frame.height.max(360));
             }
-            texture
-                .update_yuv(
-                    None,
-                    &frame.y_plane,
-                    frame.width as usize,
-                    &frame.u_plane,
-                    (frame.width / 2) as usize,
-                    &frame.v_plane,
-                    (frame.width / 2) as usize,
-                )
-                .context("texture update yuv")?;
+            match frame.pixel_format {
+                VideoPixelFormat::I420 => {
+                    let y_len = (frame.width * frame.height) as usize;
+                    let uv_len = ((frame.width / 2) * (frame.height / 2)) as usize;
+                    let y_plane = &frame.data[..y_len];
+                    let u_plane = &frame.data[y_len..(y_len + uv_len)];
+                    let v_plane = &frame.data[(y_len + uv_len)..(y_len + uv_len + uv_len)];
+                    texture
+                        .update_yuv(
+                            None,
+                            y_plane,
+                            frame.width as usize,
+                            u_plane,
+                            (frame.width / 2) as usize,
+                            v_plane,
+                            (frame.width / 2) as usize,
+                        )
+                        .context("texture update yuv")?;
+                }
+                VideoPixelFormat::Nv12 => {
+                    texture
+                        .update(None, &frame.data, frame.width as usize)
+                        .context("texture update nv12")?;
+                }
+            }
         }
 
-        canvas.clear();
-        let (out_w, out_h) = canvas.output_size().unwrap_or((width, height));
-        canvas
-            .copy(&texture, None, Some(Rect::new(0, 0, out_w, out_h)))
-            .ok();
-        canvas.present();
+        if frame_dirty {
+            canvas.clear();
+            let (out_w, out_h) = canvas.output_size().unwrap_or((width, height));
+            canvas
+                .copy(&texture, None, Some(Rect::new(0, 0, out_w, out_h)))
+                .ok();
+            canvas.present();
+            frame_dirty = false;
+        }
 
         for event in event_pump.poll_iter() {
             match event {
@@ -306,7 +337,7 @@ pub fn run(
                 _ => {}
             }
         }
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(4));
     }
 
     Ok(())
