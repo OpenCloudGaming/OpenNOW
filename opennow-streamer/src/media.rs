@@ -1,8 +1,9 @@
 use std::{
+    collections::HashSet,
     env,
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, ChildStdin, Command, ExitStatus, Stdio},
     sync::{mpsc::Sender, Arc},
     thread,
 };
@@ -159,8 +160,16 @@ async fn run_audio_track(
 }
 
 struct FfmpegVideoDecoder {
+    ffmpeg: PathBuf,
+    demuxer: String,
+    width: u32,
+    height: u32,
+    event_tx: Sender<MediaEvent>,
+    log_tx: tokio::sync::mpsc::Sender<StreamerMessage>,
+    candidates: Vec<DecoderCandidate>,
+    current_index: usize,
     stdin: ChildStdin,
-    _child: Child,
+    child: Child,
 }
 
 impl FfmpegVideoDecoder {
@@ -172,67 +181,335 @@ impl FfmpegVideoDecoder {
         log_tx: tokio::sync::mpsc::Sender<StreamerMessage>,
     ) -> anyhow::Result<Self> {
         let ffmpeg = resolve_ffmpeg_binary()?;
-        let mut command = Command::new(ffmpeg);
-        command.args([
-            "-loglevel", "warning",
-            "-fflags", "nobuffer",
-            "-flags", "low_delay",
-            "-flags2", "fast",
-            "-probesize", "32",
-            "-analyzeduration", "0",
-            "-thread_queue_size", "4",
-        ]);
-        #[cfg(target_os = "linux")]
-        command.args([
-            "-hwaccel", "auto",
-            "-extra_hw_frames", "8",
-        ]);
-        command
-            .args([
-                "-f", demuxer,
-                "-i", "pipe:0",
-                "-vf", "setpts=PTS-STARTPTS",
-                "-pix_fmt", "yuv420p",
-                "-f", "rawvideo",
-                "pipe:1",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            ;
-        let mut child = command.spawn().context("spawn ffmpeg video decoder")?;
-        let y_size = (width * height) as usize;
-        let uv_size = ((width / 2) * (height / 2)) as usize;
-        let frame_size = y_size + uv_size + uv_size;
-        let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("missing ffmpeg stdout"))?;
-        let mut stderr = child.stderr.take().ok_or_else(|| anyhow!("missing ffmpeg stderr"))?;
-        let _ = log_tx.blocking_send(StreamerMessage::Log {
-            level: "info".into(),
-            message: format!("spawned ffmpeg decoder for {demuxer} {}x{} (linux_hwaccel={})", width, height, cfg!(target_os = "linux")),
-        });
-        thread::spawn(move || {
-            let mut buffer = vec![0_u8; frame_size];
-            while stdout.read_exact(&mut buffer).is_ok() {
-                let y_plane = buffer[..y_size].to_vec();
-                let u_plane = buffer[y_size..(y_size + uv_size)].to_vec();
-                let v_plane = buffer[(y_size + uv_size)..].to_vec();
-                let _ = event_tx.send(MediaEvent::Video(VideoFrame { width, height, y_plane, u_plane, v_plane }));
-            }
-        });
-        thread::spawn(move || {
-            let mut stderr_buf = String::new();
-            let _ = stderr.read_to_string(&mut stderr_buf);
-            if !stderr_buf.trim().is_empty() {
-                let _ = log_tx.blocking_send(StreamerMessage::Log { level: "stderr".into(), message: stderr_buf });
-            }
-        });
-        let stdin = child.stdin.take().ok_or_else(|| anyhow!("missing ffmpeg stdin"))?;
-        Ok(Self { stdin, _child: child })
+        let candidates = build_decoder_candidates(&ffmpeg, demuxer);
+        let (child, stdin) = spawn_decoder_process(
+            &ffmpeg,
+            &candidates[0],
+            demuxer,
+            width,
+            height,
+            event_tx.clone(),
+            log_tx.clone(),
+        )?;
+        Ok(Self {
+            ffmpeg,
+            demuxer: demuxer.to_string(),
+            width,
+            height,
+            event_tx,
+            log_tx,
+            candidates,
+            current_index: 0,
+            stdin,
+            child,
+        })
     }
 
     fn write(&mut self, payload: &[u8]) -> anyhow::Result<()> {
-        self.stdin.write_all(payload).context("write ffmpeg stdin")?;
+        loop {
+            self.ensure_backend()?;
+            match self.stdin.write_all(payload) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    self.log_blocking("warn", format!("decoder backend {} write failed: {error}", self.candidates[self.current_index].name));
+                    if !self.advance_backend(None)? {
+                        return Err(error).context("write ffmpeg stdin");
+                    }
+                }
+            }
+        }
+    }
+
+    fn ensure_backend(&mut self) -> anyhow::Result<()> {
+        if let Some(status) = self.child.try_wait().context("try_wait ffmpeg decoder")? {
+            self.log_blocking(
+                "warn",
+                format!(
+                    "decoder backend {} exited early with {}",
+                    self.candidates[self.current_index].name,
+                    format_exit_status(status)
+                ),
+            );
+            if !self.advance_backend(Some(status))? {
+                return Err(anyhow!("all decoder backends exhausted"));
+            }
+        }
         Ok(())
+    }
+
+    fn advance_backend(&mut self, _status: Option<ExitStatus>) -> anyhow::Result<bool> {
+        while self.current_index + 1 < self.candidates.len() {
+            self.current_index += 1;
+            let candidate = self.candidates[self.current_index].clone();
+            match spawn_decoder_process(
+                &self.ffmpeg,
+                &candidate,
+                &self.demuxer,
+                self.width,
+                self.height,
+                self.event_tx.clone(),
+                self.log_tx.clone(),
+            ) {
+                Ok((child, stdin)) => {
+                    self.child = child;
+                    self.stdin = stdin;
+                    return Ok(true);
+                }
+                Err(error) => {
+                    self.log_blocking("warn", format!("decoder backend {} failed to start: {error:#}", candidate.name));
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn log_blocking(&self, level: &str, message: String) {
+        let _ = self.log_tx.blocking_send(StreamerMessage::Log {
+            level: level.to_string(),
+            message,
+        });
+    }
+}
+
+#[derive(Clone)]
+struct DecoderCandidate {
+    name: String,
+    args: Vec<String>,
+}
+
+fn spawn_decoder_process(
+    ffmpeg: &Path,
+    candidate: &DecoderCandidate,
+    demuxer: &str,
+    width: u32,
+    height: u32,
+    event_tx: Sender<MediaEvent>,
+    log_tx: tokio::sync::mpsc::Sender<StreamerMessage>,
+) -> anyhow::Result<(Child, ChildStdin)> {
+    let mut command = Command::new(ffmpeg);
+    command
+        .args(&candidate.args)
+        .arg("-f")
+        .arg(demuxer)
+        .arg("-i")
+        .arg("pipe:0")
+        .arg("-an")
+        .arg("-sn")
+        .arg("-dn")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-f")
+        .arg("rawvideo")
+        .arg("pipe:1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("spawn ffmpeg decoder backend {}", candidate.name))?;
+
+    let y_size = (width * height) as usize;
+    let uv_size = ((width / 2) * (height / 2)) as usize;
+    let frame_size = y_size + uv_size + uv_size;
+    let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("missing ffmpeg stdout"))?;
+    let mut stderr = child.stderr.take().ok_or_else(|| anyhow!("missing ffmpeg stderr"))?;
+    let backend_name = candidate.name.clone();
+    let _ = log_tx.blocking_send(StreamerMessage::Log {
+        level: "info".into(),
+        message: format!("starting decoder backend {}", backend_name),
+    });
+    thread::spawn(move || {
+        let mut buffer = vec![0_u8; frame_size];
+        while stdout.read_exact(&mut buffer).is_ok() {
+            let y_plane = buffer[..y_size].to_vec();
+            let u_plane = buffer[y_size..(y_size + uv_size)].to_vec();
+            let v_plane = buffer[(y_size + uv_size)..].to_vec();
+            let _ = event_tx.send(MediaEvent::Video(VideoFrame { width, height, y_plane, u_plane, v_plane }));
+        }
+    });
+    thread::spawn(move || {
+        let mut stderr_buf = String::new();
+        let _ = stderr.read_to_string(&mut stderr_buf);
+        if !stderr_buf.trim().is_empty() {
+            let _ = log_tx.blocking_send(StreamerMessage::Log {
+                level: "stderr".into(),
+                message: format!("[{}] {}", backend_name, stderr_buf.trim()),
+            });
+        }
+    });
+    let stdin = child.stdin.take().ok_or_else(|| anyhow!("missing ffmpeg stdin"))?;
+    Ok((child, stdin))
+}
+
+fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidate> {
+    let hwaccels = query_hwaccels(ffmpeg);
+    let mut candidates = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        if hwaccels.contains("d3d11va") || hwaccels.contains("qsv") || hwaccels.is_empty() {
+            candidates.push(DecoderCandidate {
+                name: "windows-d3d11va-copyback".into(),
+                args: base_ffmpeg_args(&[
+                    "-hwaccel", "d3d11va",
+                    "-hwaccel_output_format", "d3d11",
+                    "-vf", "hwdownload,format=yuv420p",
+                ]),
+            });
+        }
+        if hwaccels.contains("qsv") {
+            candidates.push(DecoderCandidate {
+                name: "windows-qsv-copyback".into(),
+                args: base_ffmpeg_args(&[
+                    "-hwaccel", "qsv",
+                    "-hwaccel_output_format", "qsv",
+                    "-vf", "hwdownload,format=yuv420p",
+                ]),
+            });
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        candidates.push(DecoderCandidate {
+            name: "macos-videotoolbox-copyback".into(),
+            args: base_ffmpeg_args(&[
+                "-hwaccel", "videotoolbox",
+                "-vf", "format=yuv420p",
+            ]),
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if hwaccels.contains("vulkan") {
+            candidates.push(DecoderCandidate {
+                name: "linux-vulkan-copyback".into(),
+                args: base_ffmpeg_args(&[
+                    "-init_hw_device", "vulkan=vk:0",
+                    "-filter_hw_device", "vk",
+                    "-hwaccel", "vulkan",
+                    "-hwaccel_output_format", "vulkan",
+                    "-extra_hw_frames", "8",
+                    "-vf", "hwdownload,format=yuv420p",
+                ]),
+            });
+        }
+        if hwaccels.contains("vaapi") {
+            if let Some(render_node) = linux_render_node() {
+                candidates.push(DecoderCandidate {
+                    name: "linux-vaapi-copyback".into(),
+                    args: base_ffmpeg_args(&[
+                        "-vaapi_device", render_node.as_str(),
+                        "-hwaccel", "vaapi",
+                        "-hwaccel_output_format", "vaapi",
+                        "-extra_hw_frames", "8",
+                        "-vf", "hwdownload,format=yuv420p",
+                    ]),
+                });
+            }
+        }
+        if hwaccels.contains("cuda") {
+            candidates.push(DecoderCandidate {
+                name: "linux-cuda-copyback".into(),
+                args: base_ffmpeg_args(&[
+                    "-hwaccel", "cuda",
+                    "-hwaccel_output_format", "cuda",
+                    "-extra_hw_frames", "8",
+                    "-vf", "hwdownload,format=yuv420p",
+                ]),
+            });
+        }
+        if hwaccels.contains("drm") {
+            candidates.push(DecoderCandidate {
+                name: "linux-drm-copyback".into(),
+                args: base_ffmpeg_args(&[
+                    "-hwaccel", "drm",
+                    "-vf", "format=yuv420p",
+                ]),
+            });
+        }
+    }
+
+    candidates.push(DecoderCandidate {
+        name: if demuxer == "av1" {
+            "software-dav1d".into()
+        } else {
+            format!("software-{demuxer}")
+        },
+        args: if demuxer == "av1" {
+            base_ffmpeg_args(&["-c:v", "libdav1d"])
+        } else {
+            base_ffmpeg_args(&[])
+        },
+    });
+
+    if let Ok(force_backend) = env::var("OPENNOW_STREAMER_DECODER_BACKEND") {
+        let force_backend = force_backend.to_lowercase();
+        candidates.sort_by_key(|candidate| if candidate.name.to_lowercase().contains(&force_backend) { 0 } else { 1 });
+    }
+
+    candidates
+}
+
+fn base_ffmpeg_args(extra: &[&str]) -> Vec<String> {
+    let mut args = vec![
+        "-loglevel".into(),
+        "warning".into(),
+        "-fflags".into(),
+        "nobuffer".into(),
+        "-flags".into(),
+        "low_delay".into(),
+        "-flags2".into(),
+        "fast".into(),
+        "-probesize".into(),
+        "32".into(),
+        "-analyzeduration".into(),
+        "0".into(),
+        "-thread_queue_size".into(),
+        "4".into(),
+        "-threads".into(),
+        "1".into(),
+    ];
+    args.extend(extra.iter().map(|value| value.to_string()));
+    args
+}
+
+fn query_hwaccels(ffmpeg: &Path) -> HashSet<String> {
+    Command::new(ffmpeg)
+        .arg("-hide_banner")
+        .arg("-hwaccels")
+        .output()
+        .ok()
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .skip(1)
+                .map(|line| line.trim().to_lowercase())
+                .filter(|line| !line.is_empty())
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_render_node() -> Option<String> {
+    ["/dev/dri/renderD128", "/dev/dri/renderD129"]
+        .into_iter()
+        .find(|path| Path::new(path).exists())
+        .map(ToString::to_string)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_render_node() -> Option<String> {
+    None
+}
+
+fn format_exit_status(status: ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!("exit code {code}"),
+        None => "terminated by signal".into(),
     }
 }
 
