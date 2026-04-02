@@ -357,7 +357,8 @@ impl FfmpegVideoDecoder {
 #[derive(Clone)]
 struct DecoderCandidate {
     name: String,
-    args: Vec<String>,
+    input_args: Vec<String>,
+    output_args: Vec<String>,
 }
 
 fn spawn_decoder_process(
@@ -371,11 +372,12 @@ fn spawn_decoder_process(
 ) -> anyhow::Result<(Child, ChildStdin)> {
     let mut command = Command::new(ffmpeg);
     command
-        .args(&candidate.args)
+        .args(&candidate.input_args)
         .arg("-f")
         .arg(demuxer)
         .arg("-i")
         .arg("pipe:0")
+        .args(&candidate.output_args)
         .arg("-an")
         .arg("-sn")
         .arg("-dn")
@@ -462,27 +464,25 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
         if hwaccels.contains("d3d11va") || hwaccels.contains("qsv") || hwaccels.is_empty() {
             candidates.push(DecoderCandidate {
                 name: "windows-d3d11va-copyback".into(),
-                args: base_ffmpeg_args(&[
+                input_args: base_ffmpeg_input_args(&[
                     "-hwaccel",
                     "d3d11va",
                     "-hwaccel_output_format",
                     "d3d11",
-                    "-vf",
-                    "hwdownload,format=yuv420p",
                 ]),
+                output_args: ffmpeg_output_args(&["-vf", "hwdownload,format=yuv420p"]),
             });
         }
         if hwaccels.contains("qsv") {
             candidates.push(DecoderCandidate {
                 name: "windows-qsv-copyback".into(),
-                args: base_ffmpeg_args(&[
+                input_args: base_ffmpeg_input_args(&[
                     "-hwaccel",
                     "qsv",
                     "-hwaccel_output_format",
                     "qsv",
-                    "-vf",
-                    "hwdownload,format=yuv420p",
                 ]),
+                output_args: ffmpeg_output_args(&["-vf", "hwdownload,format=yuv420p"]),
             });
         }
     }
@@ -491,7 +491,8 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
     {
         candidates.push(DecoderCandidate {
             name: "macos-videotoolbox-copyback".into(),
-            args: base_ffmpeg_args(&["-hwaccel", "videotoolbox", "-vf", "format=yuv420p"]),
+            input_args: base_ffmpeg_input_args(&["-hwaccel", "videotoolbox"]),
+            output_args: ffmpeg_output_args(&["-vf", "format=yuv420p"]),
         });
     }
 
@@ -500,7 +501,7 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
         if hwaccels.contains("vulkan") {
             candidates.push(DecoderCandidate {
                 name: "linux-vulkan-copyback".into(),
-                args: base_ffmpeg_args(&[
+                input_args: base_ffmpeg_input_args(&[
                     "-init_hw_device",
                     "vulkan=vk:0",
                     "-filter_hw_device",
@@ -511,16 +512,15 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
                     "vulkan",
                     "-extra_hw_frames",
                     "8",
-                    "-vf",
-                    "hwdownload,format=yuv420p",
                 ]),
+                output_args: ffmpeg_output_args(&["-vf", "hwdownload,format=yuv420p"]),
             });
         }
         if hwaccels.contains("vaapi") {
             if let Some(render_node) = linux_render_node() {
                 candidates.push(DecoderCandidate {
                     name: "linux-vaapi-copyback".into(),
-                    args: base_ffmpeg_args(&[
+                    input_args: base_ffmpeg_input_args(&[
                         "-vaapi_device",
                         render_node.as_str(),
                         "-hwaccel",
@@ -529,31 +529,30 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
                         "vaapi",
                         "-extra_hw_frames",
                         "8",
-                        "-vf",
-                        "hwdownload,format=yuv420p",
                     ]),
+                    output_args: ffmpeg_output_args(&["-vf", "hwdownload,format=yuv420p"]),
                 });
             }
         }
         if hwaccels.contains("cuda") {
             candidates.push(DecoderCandidate {
                 name: "linux-cuda-copyback".into(),
-                args: base_ffmpeg_args(&[
+                input_args: base_ffmpeg_input_args(&[
                     "-hwaccel",
                     "cuda",
                     "-hwaccel_output_format",
                     "cuda",
                     "-extra_hw_frames",
                     "8",
-                    "-vf",
-                    "hwdownload,format=yuv420p",
                 ]),
+                output_args: ffmpeg_output_args(&["-vf", "hwdownload,format=yuv420p"]),
             });
         }
         if hwaccels.contains("drm") {
             candidates.push(DecoderCandidate {
                 name: "linux-drm-copyback".into(),
-                args: base_ffmpeg_args(&["-hwaccel", "drm", "-vf", "format=yuv420p"]),
+                input_args: base_ffmpeg_input_args(&["-hwaccel", "drm"]),
+                output_args: ffmpeg_output_args(&["-vf", "format=yuv420p"]),
             });
         }
     }
@@ -564,10 +563,11 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
         } else {
             format!("software-{demuxer}")
         },
-        args: if demuxer == "av1" {
-            base_ffmpeg_args(&["-c:v", "libdav1d"])
+        input_args: base_ffmpeg_input_args(&[]),
+        output_args: if demuxer == "av1" {
+            ffmpeg_output_args(&["-c:v", "libdav1d"])
         } else {
-            base_ffmpeg_args(&[])
+            ffmpeg_output_args(&[])
         },
     });
 
@@ -585,7 +585,7 @@ fn build_decoder_candidates(ffmpeg: &Path, demuxer: &str) -> Vec<DecoderCandidat
     candidates
 }
 
-fn base_ffmpeg_args(extra: &[&str]) -> Vec<String> {
+fn base_ffmpeg_input_args(extra: &[&str]) -> Vec<String> {
     let mut args = vec![
         "-loglevel".into(),
         "warning".into(),
@@ -601,9 +601,13 @@ fn base_ffmpeg_args(extra: &[&str]) -> Vec<String> {
         "0".into(),
         "-thread_queue_size".into(),
         "4".into(),
-        "-threads".into(),
-        "1".into(),
     ];
+    args.extend(extra.iter().map(|value| value.to_string()));
+    args
+}
+
+fn ffmpeg_output_args(extra: &[&str]) -> Vec<String> {
+    let mut args = vec!["-threads".into(), "1".into()];
     args.extend(extra.iter().map(|value| value.to_string()));
     args
 }
