@@ -2418,6 +2418,12 @@ export class GfnWebRtcClient {
     this.mouseFlushTimer = window.setInterval(flushMouse, this.mouseFlushIntervalMs);
 
     const tryAutoLock = (): void => {
+      try {
+        if (document?.body?.dataset?.sidebarOpen === "1") {
+          return;
+        }
+      } catch {}
+
       if (autoLockPending || isPointerLockActive() || !mouseInStreamView || !this.inputReady) {
         return;
       }
@@ -2540,6 +2546,9 @@ export class GfnWebRtcClient {
     };
 
     const onPointerMove = (event: PointerEvent) => {
+      try {
+        if (document?.body?.dataset?.sidebarOpen === "1") return;
+      } catch {}
       if (this.inputPaused) return;
       if (event.pointerType && event.pointerType !== "mouse") {
         return;
@@ -2570,6 +2579,9 @@ export class GfnWebRtcClient {
     };
 
     const onMouseMove = (event: MouseEvent) => {
+      try {
+        if (document?.body?.dataset?.sidebarOpen === "1") return;
+      } catch {}
       if (this.inputPaused) return;
       if (isPointerLockActive()) {
         queueMouseMovement(event.movementX, event.movementY, event.timeStamp);

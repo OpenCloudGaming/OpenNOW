@@ -886,7 +886,16 @@ export function StreamView({
 
   useEffect(() => {
     if (showSideBar) {
-      document.exitPointerLock();
+      // Mark sidebar open so input auto-lock code can avoid re-requesting.
+      try {
+        document.body.dataset.sidebarOpen = "1";
+      } catch {}
+
+      if (onReleasePointerLock) {
+        void onReleasePointerLock();
+      } else {
+        document.exitPointerLock();
+      }
       void refreshScreenshots();
       void refreshRecordings();
       return;
@@ -899,6 +908,9 @@ export function StreamView({
         localVideoRef.current.focus();
       }
     }, 50);
+    try {
+      delete (document.body.dataset as DOMStringMap).sidebarOpen;
+    } catch {}
     return () => clearTimeout(timer);
   }, [refreshRecordings, refreshScreenshots, showSideBar]);
 
