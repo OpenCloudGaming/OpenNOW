@@ -25,6 +25,7 @@ interface ControllerLibraryPageProps {
   currentStreamingGame?: GameInfo | null;
   onResumeGame?: (game: GameInfo) => void;
   onCloseGame?: () => void;
+  onExitApp?: () => void;
   pendingSwitchGameCover?: string | null;
   settings?: {
     resolution?: string;
@@ -61,6 +62,12 @@ function sanitizeGenreName(raw: string): string {
   return raw
     .replace(/_/g, " ")
     .replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
 }
 
 function getCategoryLabel(categoryId: string, currentGameTitle?: string): { label: string } {
@@ -102,6 +109,7 @@ export function ControllerLibraryPage({
   currentStreamingGame,
   onResumeGame,
   onCloseGame,
+  onExitApp,
   pendingSwitchGameCover,
   userName = "Player One",
   userAvatarUrl,
@@ -314,7 +322,7 @@ export function ControllerLibraryPage({
         { id: "audio", label: "Audio", value: "" },
         { id: "video", label: "Video", value: "" },
         { id: "system", label: "System", value: "" },
-        { id: "exit", label: "Exit Controller Mode", value: "" },
+        { id: "exitApp", label: "Exit", value: "" },
       ],
       Network: [
         { id: "bandwidth", label: "Max Bitrate", value: `${(settings.maxBitrateMbps ?? 75)} Mbps` },
@@ -334,6 +342,7 @@ export function ControllerLibraryPage({
         { id: "autoFullScreen", label: "Auto Full Screen", value: (settings as any).autoFullScreen ? "On" : "Off" },
         { id: "autoLoad", label: "Auto-Load Library", value: (settings as any).autoLoadControllerLibrary ? "On" : "Off" },
         { id: "backgroundAnimations", label: "Background Animations", value: ((settings as any).controllerBackgroundAnimations ? "On" : "Off") },
+        { id: "exitControllerMode", label: "Exit Controller Mode", value: "" },
       ],
     } as Record<string, Array<{ id: string; label: string; value: string }>>;
   }, [settings, microphoneDevices]);
@@ -622,21 +631,30 @@ export function ControllerLibraryPage({
           playUiSound("confirm");
           return;
         }
-        // In subcategory, A toggles values like X does
-        if (settingsSubcategory !== "root") {
-          secondaryActivateHandler();
-          return;
-        }
-        if (setting?.id === "exit") {
-          if (onExitControllerMode) {
-            onExitControllerMode();
-          } else if (onSettingChange) {
-            onSettingChange("controllerMode" as any, false as any);
+        if (settingsSubcategory === "root" && setting?.id === "exitApp") {
+          if (onExitApp) {
+            onExitApp();
+          } else if (window.openNow?.quitApp) {
+            void window.openNow.quitApp();
           }
           playUiSound("confirm");
-          const nextSettingsIndex = currentStreamingGame ? 0 : 1;
-          setCategoryIndex(nextSettingsIndex);
-          setSelectedSettingIndex(0);
+          return;
+        }
+        // In subcategory, A toggles values like X does
+        if (settingsSubcategory !== "root") {
+          if (setting?.id === "exitControllerMode") {
+            if (onExitControllerMode) {
+              onExitControllerMode();
+            } else if (onSettingChange) {
+              onSettingChange("controllerMode" as any, false as any);
+            }
+            playUiSound("confirm");
+            const nextSettingsIndex = currentStreamingGame ? 0 : 1;
+            setCategoryIndex(nextSettingsIndex);
+            setSelectedSettingIndex(0);
+            return;
+          }
+          secondaryActivateHandler();
           return;
         }
         playUiSound("confirm");
@@ -672,10 +690,10 @@ export function ControllerLibraryPage({
           return;
         }
         if (topCategory === "settings") {
-          // X button cycles through setting values (no-op for Exit or subcategory items at root)
+          // X button cycles through setting values (no-op for exit actions or subcategory items at root)
           const setting = displayItems[selectedSettingIndex];
           if (!setting || !onSettingChange) return;
-          if (setting.id === "exit") return;
+          if (setting.id === "exitApp" || setting.id === "exitControllerMode") return;
           // Skip X cycling for subcategory items at root
           if (settingsSubcategory === "root" && (setting.id === "network" || setting.id === "audio" || setting.id === "video" || setting.id === "system")) return;
 
@@ -773,18 +791,58 @@ export function ControllerLibraryPage({
     };
 
     const kbdHandler = (e: KeyboardEvent) => {
-      if (e.repeat) return;
-      if (e.key === "ArrowLeft") applyDirection("left");
-      else if (e.key === "ArrowRight") applyDirection("right");
-      else if (e.key === "ArrowUp") applyDirection("up");
-      else if (e.key === "ArrowDown") applyDirection("down");
-      else if (e.key === "Enter") activateHandler();
-      else if (e.key.toLowerCase() === "x") secondaryActivateHandler();
-      else if (e.key.toLowerCase() === "y") tertiaryActivateHandler();
-      else if (e.key.toLowerCase() === "c" || e.key.toLowerCase() === "b") cancelHandler(e);
-      else if (e.key === "Escape") {
+      if (e.repeat || e.altKey || e.ctrlKey || e.metaKey || isEditableTarget(e.target)) return;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        applyDirection("left");
+        return;
+      }
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        applyDirection("right");
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        applyDirection("up");
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        applyDirection("down");
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        activateHandler();
+        return;
+      }
+      if (e.key.toLowerCase() === "x") {
+        e.preventDefault();
+        secondaryActivateHandler();
+        return;
+      }
+      if (e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        tertiaryActivateHandler();
+        return;
+      }
+      if (e.key === "Backspace" || e.key === "Escape") {
+        if (topCategory === "settings" && settingsSubcategory !== "root") {
+          cancelHandler(e);
+          return;
+        }
+        if (topCategory === "media" && mediaSubcategory !== "root") {
+          cancelHandler(e);
+          return;
+        }
+        e.preventDefault();
         if (topCategory === "current" || topCategory === "settings") {
           setCategoryIndex((prev) => (prev - 1 + TOP_CATEGORIES.length) % TOP_CATEGORIES.length);
+          setSelectedSettingIndex(0);
+          setSettingsSubcategory("root");
+          setSelectedMediaIndex(0);
+          setMediaSubcategory("root");
         } else {
           onOpenSettings?.();
         }
@@ -805,7 +863,7 @@ export function ControllerLibraryPage({
       window.removeEventListener("opennow:controller-cancel", cancelHandler);
       window.removeEventListener("keydown", kbdHandler);
     };
-  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, displayItems, mediaAssetItems.length, mediaSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, editingBandwidth]);
+  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, displayItems, mediaAssetItems.length, mediaSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth]);
 
   const wrapperClassName = `xmb-wrapper ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"}`;
 
@@ -867,6 +925,8 @@ export function ControllerLibraryPage({
       <div
         ref={itemsContainerRef}
         className="xmb-items-container"
+        role="listbox"
+        aria-label="Game library"
         style={{
           transform: `translate(${-GAME_ACTIVE_CENTER_OFFSET_X_PX}px, ${listTranslateY}px)`,
         }}
@@ -883,12 +943,12 @@ export function ControllerLibraryPage({
           const tierLabel = game.membershipTierLabel;
 
           return (
-            <div key={game.id} className={`xmb-game-item ${isActive ? 'active' : ''}`}>
+            <div key={game.id} className={`xmb-game-item ${isActive ? 'active' : ''}`} role="option" aria-selected={isActive}>
               {favoriteGameIdSet.has(game.id) && (
               <Star className="xmb-game-favorite-icon" />
             )}
             <div className="xmb-game-poster-container">
-                <img src={game.imageUrl} className="xmb-game-poster" />
+                <img src={game.imageUrl} alt={game.title} className="xmb-game-poster" />
             </div>
               <div className="xmb-game-info">
                 <div className="xmb-game-title">{game.title}</div>
@@ -941,6 +1001,8 @@ export function ControllerLibraryPage({
       <div
         ref={itemsContainerRef}
         className="xmb-items-container"
+        role="listbox"
+        aria-label={topCategory === "current" ? "Current game actions" : topCategory === "settings" ? "Controller settings" : "Media categories"}
         style={{
           transform: `translate(${-GAME_ACTIVE_CENTER_OFFSET_X_PX}px, ${-(topCategory === "media" ? selectedMediaIndex : selectedSettingIndex) * 120}px)`,
         }}
@@ -953,6 +1015,8 @@ export function ControllerLibraryPage({
             <div 
               key={item.id} 
               className={`xmb-game-item ${isActive ? 'active' : ''}`}
+              role="option"
+              aria-selected={isActive}
               data-subcategory-id={isSubcategoryItem || isMediaSubcategoryItem ? item.id : undefined}
             >
               <div className="xmb-game-info">
@@ -989,6 +1053,8 @@ export function ControllerLibraryPage({
       <div
         ref={itemsContainerRef}
         className="xmb-items-container"
+        role="listbox"
+        aria-label={`${mediaSubcategory} media`}
         style={{
           transform: `translate(${-GAME_ACTIVE_CENTER_OFFSET_X_PX}px, ${-selectedMediaIndex * 120}px)`,
         }}
@@ -1026,9 +1092,9 @@ export function ControllerLibraryPage({
           const durationLabel = hasDuration ? `${Math.max(1, Math.round(durationMs / 1000))}s` : "Screenshot";
 
           return (
-            <div key={item.id} className={`xmb-game-item ${isActive ? "active" : ""}`}>
+            <div key={item.id} className={`xmb-game-item ${isActive ? "active" : ""}`} role="option" aria-selected={isActive}>
               <div className="xmb-game-poster-container">
-                {thumb ? <img src={thumb} className="xmb-game-poster" /> : <div className="xmb-game-poster" />}
+                {thumb ? <img src={thumb} alt={item.gameTitle || item.fileName} className="xmb-game-poster" /> : <div className="xmb-game-poster" />}
               </div>
               <div className="xmb-game-info">
                 <div className="xmb-game-title">{item.gameTitle || item.fileName}</div>
@@ -1193,8 +1259,8 @@ export function ControllerLibraryPage({
                 const Top = controllerType === "ps" ? ButtonPSTriangle : ButtonY;
                 return (
                   <>
-                    <div className="xmb-btn-hint"><Primary className="xmb-btn-icon" size={24} /> <span>Start</span></div>
-                    <div className="xmb-btn-hint"><Left className="xmb-btn-icon" size={24} /> <span>Store</span></div>
+                    <div className="xmb-btn-hint"><Primary className="xmb-btn-icon" size={24} /> <span>Play</span></div>
+                    <div className="xmb-btn-hint"><Left className="xmb-btn-icon" size={24} /> <span>Variant</span></div>
                     <div className="xmb-btn-hint"><Top className="xmb-btn-icon" size={24} /> <span>Favorite</span></div>
                   </>
                 );

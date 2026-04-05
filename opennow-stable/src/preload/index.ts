@@ -79,6 +79,7 @@ const api: OpenNowApi = {
       ipcRenderer.off("app:toggle-fullscreen", wrapped);
     };
   },
+  quitApp: () => ipcRenderer.invoke(IPC_CHANNELS.QUIT_APP),
   toggleFullscreen: () => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_FULLSCREEN),
   setFullscreen: (v: boolean) => ipcRenderer.invoke(IPC_CHANNELS.SET_FULLSCREEN, v),
   togglePointerLock: () => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_POINTER_LOCK),

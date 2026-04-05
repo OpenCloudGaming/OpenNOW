@@ -794,6 +794,10 @@ function registerIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle(IPC_CHANNELS.QUIT_APP, async () => {
+    app.quit();
+  });
+
   // Settings IPC handlers
   ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async (): Promise<Settings> => {
     return settingsManager.getAll();
