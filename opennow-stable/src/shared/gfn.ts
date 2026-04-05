@@ -377,6 +377,7 @@ export interface OpenNowApi {
   onSignalingEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void;
   /** Listen for F11 fullscreen toggle from main process */
   onToggleFullscreen(listener: () => void): () => void;
+  quitApp(): Promise<void>;
   setFullscreen(v: boolean): Promise<void>;
   toggleFullscreen(): Promise<void>;
   togglePointerLock(): Promise<void>;

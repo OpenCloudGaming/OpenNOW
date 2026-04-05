@@ -1363,6 +1363,12 @@ export function App(): JSX.Element {
     }
   }, [settingsLoaded]);
 
+  const handleExitApp = useCallback(() => {
+    void window.openNow.quitApp().catch((error) => {
+      console.warn("Failed to quit application:", error);
+    });
+  }, []);
+
   const handleMicrophoneModeChange = useCallback((value: import("@shared/gfn").MicrophoneMode) => {
     // Keep UI responsive while still surfacing persistence failures.
     void updateSetting("microphoneMode", value).catch((error) => {
@@ -2414,6 +2420,7 @@ export function App(): JSX.Element {
               aspectRatioOptions={aspectRatioOptions as unknown as string[]}
               onSettingChange={updateSetting}
               onExitControllerMode={handleExitControllerMode}
+              onExitApp={handleExitApp}
             />
           ) : (
             <LibraryPage
