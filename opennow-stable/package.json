@@ -35,7 +35,7 @@
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.3.4",
     "cross-env": "^7.0.3",
-    "electron": "^40.4.1",
+    "electron": "^40.8.5",
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
     "typescript": "^5.7.2",
