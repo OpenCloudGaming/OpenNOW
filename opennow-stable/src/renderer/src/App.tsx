@@ -589,6 +589,8 @@ export function App(): JSX.Element {
   const [switchingPhase, setSwitchingPhase] = useState<null | "cleaning" | "creating">(null);
   const [pendingSwitchGameTitle, setPendingSwitchGameTitle] = useState<string | null>(null);
   const [pendingSwitchGameCover, setPendingSwitchGameCover] = useState<string | null>(null);
+  const [pendingSwitchGameDescription, setPendingSwitchGameDescription] = useState<string | null>(null);
+  const [pendingSwitchGameId, setPendingSwitchGameId] = useState<string | null>(null);
   const controllerDesktopModeActive = Boolean(authSession)
     && streamStatus === "idle"
     && settings.controllerMode
@@ -1875,6 +1877,8 @@ export function App(): JSX.Element {
     setControllerOverlayOpen(false);
     setPendingSwitchGameTitle(game.title ?? null);
     setPendingSwitchGameCover(game.imageUrl ?? null);
+    setPendingSwitchGameDescription(game.description ?? null);
+    setPendingSwitchGameId(game.id ?? null);
     setIsSwitchingGame(true);
     setSwitchingPhase("cleaning");
     // allow overlay to paint
@@ -1913,6 +1917,8 @@ export function App(): JSX.Element {
     setSwitchingPhase(null);
     setPendingSwitchGameTitle(null);
     setPendingSwitchGameCover(null);
+    setPendingSwitchGameDescription(null);
+    setPendingSwitchGameId(null);
   }, [handleStopStream, handlePlayGame]);
 
   const handleDismissLaunchError = useCallback(async () => {
@@ -2208,11 +2214,11 @@ export function App(): JSX.Element {
           <ControllerStreamLoading
             gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? "Game"}
             gamePoster={pendingSwitchGameCover ?? streamingGame?.imageUrl}
-            gameDescription={streamingGame?.description}
+            gameDescription={pendingSwitchGameDescription ?? streamingGame?.description}
             status={switchingPhase === "cleaning" ? "setup" : "starting"}
             queuePosition={queuePosition}
             playtimeData={playtime}
-            gameId={streamingGame?.id}
+            gameId={pendingSwitchGameId ?? streamingGame?.id}
             enableBackgroundAnimations={settings.controllerBackgroundAnimations}
           />
         )}
@@ -2275,6 +2281,7 @@ export function App(): JSX.Element {
                 fps: settings.fps,
                 codec: settings.codec,
                 enableL4S: settings.enableL4S,
+                microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
@@ -2407,6 +2414,7 @@ export function App(): JSX.Element {
                 fps: settings.fps,
                 codec: settings.codec,
                 enableL4S: settings.enableL4S,
+                microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
