@@ -546,6 +546,25 @@ export function App(): JSX.Element {
     return false;
   }, [authSession, currentPage, settings.controllerMode, streamStatus]);
 
+  const handleControllerStartInput = useCallback((): boolean => {
+    if (controllerOverlayOpenRef.current) {
+      window.dispatchEvent(new CustomEvent("opennow:controller-start"));
+      return true;
+    }
+    if (!authSession || streamStatus !== "idle") {
+      return false;
+    }
+    if (settings.controllerMode && currentPage === "library") {
+      window.dispatchEvent(new CustomEvent("opennow:controller-start"));
+      return true;
+    }
+    if (settings.controllerMode && currentPage === "settings") {
+      window.dispatchEvent(new CustomEvent("opennow:controller-start"));
+      return true;
+    }
+    return false;
+  }, [authSession, currentPage, settings.controllerMode, streamStatus]);
+
   const handleControllerSecondaryActivateInput = useCallback((): boolean => {
     if (controllerOverlayOpenRef.current) {
       window.dispatchEvent(new CustomEvent("opennow:controller-secondary-activate"));
@@ -603,6 +622,7 @@ export function App(): JSX.Element {
     onBackAction: handleControllerBackAction,
     onDirectionInput: handleControllerDirectionInput,
     onActivateInput: handleControllerActivateInput,
+    onStartInput: handleControllerStartInput,
     onSecondaryActivateInput: handleControllerSecondaryActivateInput,
     onTertiaryActivateInput: handleControllerTertiaryActivateInput,
   });

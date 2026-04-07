@@ -9,6 +9,7 @@ interface UseControllerNavigationOptions {
   onBackAction?: () => boolean;
   onDirectionInput?: (direction: Direction) => boolean;
   onActivateInput?: () => boolean;
+  onStartInput?: () => boolean;
   onSecondaryActivateInput?: () => boolean;
   onTertiaryActivateInput?: () => boolean;
 }
@@ -261,6 +262,7 @@ export function useControllerNavigation({
   onBackAction,
   onDirectionInput,
   onActivateInput,
+  onStartInput,
   onSecondaryActivateInput,
   onTertiaryActivateInput,
 }: UseControllerNavigationOptions): boolean {
@@ -277,6 +279,7 @@ export function useControllerNavigation({
 
   const actionStateRef = useRef({
     a: false,
+    start: false,
     x: false,
     y: false,
     b: false,
@@ -312,7 +315,7 @@ export function useControllerNavigation({
         for (const state of Object.values(directionStateRef.current)) {
           state.pressed = false;
         }
-        actionStateRef.current = { a: false, x: false, y: false, b: false, lb: false, rb: false };
+        actionStateRef.current = { a: false, start: false, x: false, y: false, b: false, lb: false, rb: false };
         frameRef.current = window.requestAnimationFrame(tick);
         return;
       }
@@ -364,7 +367,15 @@ export function useControllerNavigation({
 
       if (a && !actionStateRef.current.a) {
         if (onActivateInput?.()) {
-          actionStateRef.current = { a, x, y, b, lb, rb };
+          actionStateRef.current = { a, start: actionStateRef.current.start, x, y, b, lb, rb };
+          frameRef.current = window.requestAnimationFrame(tick);
+          return;
+        }
+        activateFocusedElement();
+      }
+      if (pad.buttons[9]?.pressed && !actionStateRef.current.start) {
+        if (onStartInput?.()) {
+          actionStateRef.current = { a, start: true, x, y, b, lb, rb };
           frameRef.current = window.requestAnimationFrame(tick);
           return;
         }
@@ -386,7 +397,7 @@ export function useControllerNavigation({
         onNavigatePage?.("next");
       }
 
-      actionStateRef.current = { a, x, y, b, lb, rb };
+      actionStateRef.current = { a, start: Boolean(pad.buttons[9]?.pressed), x, y, b, lb, rb };
       frameRef.current = window.requestAnimationFrame(tick);
     };
 
@@ -400,7 +411,7 @@ export function useControllerNavigation({
         node.classList.remove("controller-focus");
       });
     };
-  }, [enabled, onActivateInput, onBackAction, onDirectionInput, onNavigatePage, onSecondaryActivateInput, onTertiaryActivateInput]);
+  }, [enabled, onActivateInput, onBackAction, onDirectionInput, onNavigatePage, onSecondaryActivateInput, onStartInput, onTertiaryActivateInput]);
 
   return controllerConnected;
 }

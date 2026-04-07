@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
-import type { GameInfo, MediaListingEntry, Settings } from "@shared/gfn";
-import { Star, Clock, Calendar, Repeat2 } from "lucide-react";
+import type { GameInfo, MediaListingEntry, MediaSessionSummary, Settings } from "@shared/gfn";
+import { Star, Clock, Calendar, Repeat2, FolderOpen, Share2, Trash2 } from "lucide-react";
 import { ButtonA, ButtonB, ButtonX, ButtonY, ButtonPSCross, ButtonPSCircle, ButtonPSSquare, ButtonPSTriangle } from "./ControllerButtons";
 import { getStoreDisplayName } from "./GameCard";
 import { type PlaytimeStore, formatPlaytime, formatLastPlayed } from "../utils/usePlaytime";
@@ -95,6 +95,24 @@ function getCategoryLabel(categoryId: string, currentGameTitle?: string): { labe
   return { label: display };
 }
 
+function formatMediaBitrate(kbps: number | undefined): string | null {
+  if (typeof kbps !== "number" || !Number.isFinite(kbps) || kbps <= 0) return null;
+  if (kbps >= 1000) return `${(kbps / 1000).toFixed(1)} Mbps`;
+  return `${Math.round(kbps)} kbps`;
+}
+
+function formatSessionElapsedCompact(totalSeconds: number | undefined): string | null {
+  if (typeof totalSeconds !== "number" || !Number.isFinite(totalSeconds) || totalSeconds < 0) return null;
+
+  const safe = Math.floor(totalSeconds);
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+
+  if (hours > 0) return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${safe}s`;
+}
+
 
 export function ControllerLibraryPage({
   games,
@@ -176,7 +194,12 @@ export function ControllerLibraryPage({
   const [mediaScreenshots, setMediaScreenshots] = useState<MediaListingEntry[]>([]);
   const [mediaThumbById, setMediaThumbById] = useState<Record<string, string>>({});
   const [gameHubMedia, setGameHubMedia] = useState<GameHubMediaItem[]>([]);
+  const [gameHubSummary, setGameHubSummary] = useState<MediaSessionSummary | null>(null);
   const [gameHubMediaLoading, setGameHubMediaLoading] = useState(false);
+  const [selectedGameHubMediaIndex, setSelectedGameHubMediaIndex] = useState(0);
+  const [gameHubActionBusy, setGameHubActionBusy] = useState<"reveal" | "export" | "delete" | null>(null);
+  const [gameHubActionMessage, setGameHubActionMessage] = useState<string | null>(null);
+  const [isGameHubExpanded, setIsGameHubExpanded] = useState(false);
   const [controllerType, setControllerType] = useState<"ps" | "xbox" | "nintendo" | "generic">("generic");
   const [editingBandwidth, setEditingBandwidth] = useState(false);
 
@@ -491,55 +514,198 @@ export function ControllerLibraryPage({
     if (currentStreamingGame.id === selectedGame.id) return "Active Session";
     return "Ready To Switch";
   }, [currentStreamingGame, selectedGame]);
+  const handleStartSelectedGame = useCallback((): void => {
+    if (showGameHub && selectedGame) {
+      if (currentStreamingGame && currentStreamingGame.id === selectedGame.id && onResumeGame) {
+        onResumeGame(currentStreamingGame);
+        return;
+      }
+      onPlayGame(selectedGame);
+      return;
+    }
+
+    if (topCategory === "current") {
+      if (currentStreamingGame && onResumeGame) {
+        onResumeGame(currentStreamingGame);
+      }
+      return;
+    }
+
+    if (topCategory !== "settings" && topCategory !== "media" && selectedGame) {
+      onPlayGame(selectedGame);
+    }
+  }, [currentStreamingGame, onPlayGame, onResumeGame, selectedGame, showGameHub, topCategory]);
+  const selectedGameHubMedia = useMemo(
+    () => gameHubMedia[selectedGameHubMediaIndex] ?? null,
+    [gameHubMedia, selectedGameHubMediaIndex],
+  );
+  const gameHubSnapshotChips = useMemo(() => {
+    if (!gameHubSummary) return [];
+
+    const chips: string[] = [`${gameHubSummary.totalCaptures} Moment${gameHubSummary.totalCaptures === 1 ? "" : "s"}`];
+
+    if (gameHubSummary.latestResolution) {
+      const fpsLabel =
+        typeof gameHubSummary.latestDecodeFps === "number" && Number.isFinite(gameHubSummary.latestDecodeFps) && gameHubSummary.latestDecodeFps > 0
+          ? ` @ ${Math.round(gameHubSummary.latestDecodeFps)} FPS`
+          : "";
+      chips.push(`${gameHubSummary.latestResolution}${fpsLabel}`);
+    }
+
+    const bitrateLabel = formatMediaBitrate(gameHubSummary.latestBitrateKbps);
+    if (bitrateLabel) chips.push(bitrateLabel);
+
+    if (
+      typeof gameHubSummary.latestRttMs === "number" &&
+      Number.isFinite(gameHubSummary.latestRttMs) &&
+      gameHubSummary.latestRttMs >= 0
+    ) {
+      chips.push(`${Math.round(gameHubSummary.latestRttMs)} ms RTT`);
+    }
+
+    return chips;
+  }, [gameHubSummary]);
+  const gameHubSnapshotCaption = useMemo(() => {
+    if (!gameHubSummary) return null;
+
+    const parts: string[] = [
+      `${gameHubSummary.videos} clip${gameHubSummary.videos === 1 ? "" : "s"}`,
+      `${gameHubSummary.screenshots} shot${gameHubSummary.screenshots === 1 ? "" : "s"}`,
+    ];
+
+    const elapsedLabel = formatSessionElapsedCompact(gameHubSummary.latestSessionElapsedSeconds);
+    if (elapsedLabel) parts.push(`session ${elapsedLabel}`);
+
+    if (gameHubSummary.lastCapturedAtMs > 0) {
+      parts.push(
+        `updated ${new Date(gameHubSummary.lastCapturedAtMs).toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+        })}`,
+      );
+    }
+
+    return parts.join(" • ");
+  }, [gameHubSummary]);
+
+  const loadGameHubMedia = useCallback(async (gameTitle: string, cancelled?: () => boolean) => {
+    const listing = await window.openNow.listMediaByGame({ gameTitle });
+    if (cancelled?.()) return;
+
+    const recentItems: GameHubMediaItem[] = [
+      ...(listing.videos ?? []).map((item) => ({ ...item, kind: "video" as const })),
+      ...(listing.screenshots ?? []).map((item) => ({ ...item, kind: "screenshot" as const })),
+    ]
+      .sort((left, right) => right.createdAtMs - left.createdAtMs)
+      .slice(0, 2);
+
+    setGameHubMedia(recentItems);
+    setGameHubSummary(listing.summary ?? null);
+
+    const thumbEntries = await Promise.all(
+      recentItems.map(async (item): Promise<[string, string | null]> => {
+        if (item.thumbnailDataUrl) return [item.id, item.thumbnailDataUrl];
+        if (item.dataUrl) return [item.id, item.dataUrl];
+        if (typeof window.openNow?.getMediaThumbnail === "function") {
+          const generated = await window.openNow.getMediaThumbnail({ filePath: item.filePath });
+          return [item.id, generated];
+        }
+        return [item.id, null];
+      }),
+    );
+
+    if (cancelled?.()) return;
+    setMediaThumbById((prev) => {
+      const next = { ...prev };
+      for (const [id, url] of thumbEntries) {
+        if (url) next[id] = url;
+      }
+      return next;
+    });
+  }, []);
+
+  const handleGameHubReveal = useCallback(async () => {
+    if (!selectedGameHubMedia || typeof window.openNow?.showMediaInFolder !== "function") return;
+    setGameHubActionBusy("reveal");
+    setGameHubActionMessage(null);
+    try {
+      await window.openNow.showMediaInFolder({ filePath: selectedGameHubMedia.filePath });
+      playUiSound("confirm");
+    } catch {
+      setGameHubActionMessage("Unable to reveal moment.");
+    } finally {
+      setGameHubActionBusy(null);
+    }
+  }, [playUiSound, selectedGameHubMedia]);
+
+  const handleGameHubExport = useCallback(async () => {
+    if (!selectedGameHubMedia || typeof window.openNow?.exportMedia !== "function") return;
+    setGameHubActionBusy("export");
+    setGameHubActionMessage(null);
+    try {
+      const result = await window.openNow.exportMedia({
+        filePath: selectedGameHubMedia.filePath,
+        fileName: selectedGameHubMedia.fileName,
+      });
+      if (result.saved) {
+        playUiSound("confirm");
+      }
+    } catch {
+      setGameHubActionMessage("Unable to export moment.");
+    } finally {
+      setGameHubActionBusy(null);
+    }
+  }, [playUiSound, selectedGameHubMedia]);
+
+  const handleGameHubDelete = useCallback(async () => {
+    if (!selectedGameHubMedia) return;
+    setGameHubActionBusy("delete");
+    setGameHubActionMessage(null);
+    try {
+      if (selectedGameHubMedia.kind === "screenshot") {
+        await window.openNow.deleteScreenshot({ id: selectedGameHubMedia.id });
+      } else {
+        await window.openNow.deleteRecording({ id: selectedGameHubMedia.id });
+      }
+
+      if (selectedGame?.title && typeof window.openNow?.listMediaByGame === "function") {
+        await loadGameHubMedia(selectedGame.title);
+      } else {
+        setGameHubMedia((prev) => prev.filter((item) => item.id !== selectedGameHubMedia.id));
+      }
+      playUiSound("confirm");
+    } catch {
+      setGameHubActionMessage("Unable to delete moment.");
+    } finally {
+      setGameHubActionBusy(null);
+    }
+  }, [loadGameHubMedia, playUiSound, selectedGame?.title, selectedGameHubMedia]);
 
   useEffect(() => {
     if (!showGameHub || !selectedGame?.title || typeof window.openNow?.listMediaByGame !== "function") {
       setGameHubMedia([]);
+      setGameHubSummary(null);
+      setSelectedGameHubMediaIndex(0);
+      setGameHubActionMessage(null);
+      setIsGameHubExpanded(false);
       setGameHubMediaLoading(false);
       return;
     }
 
     let cancelled = false;
     setGameHubMedia([]);
+    setGameHubSummary(null);
     setGameHubMediaLoading(true);
 
     const timeoutId = window.setTimeout(() => {
       void (async () => {
         try {
-          const listing = await window.openNow.listMediaByGame({ gameTitle: selectedGame.title });
-          if (cancelled) return;
-
-          const recentItems: GameHubMediaItem[] = [
-            ...(listing.videos ?? []).map((item) => ({ ...item, kind: "video" as const })),
-            ...(listing.screenshots ?? []).map((item) => ({ ...item, kind: "screenshot" as const })),
-          ]
-            .sort((left, right) => right.createdAtMs - left.createdAtMs)
-            .slice(0, 2);
-
-          setGameHubMedia(recentItems);
-
-          const thumbEntries = await Promise.all(
-            recentItems.map(async (item): Promise<[string, string | null]> => {
-              if (item.thumbnailDataUrl) return [item.id, item.thumbnailDataUrl];
-              if (item.dataUrl) return [item.id, item.dataUrl];
-              if (typeof window.openNow?.getMediaThumbnail === "function") {
-                const generated = await window.openNow.getMediaThumbnail({ filePath: item.filePath });
-                return [item.id, generated];
-              }
-              return [item.id, null];
-            }),
-          );
-
-          if (cancelled) return;
-          setMediaThumbById((prev) => {
-            const next = { ...prev };
-            for (const [id, url] of thumbEntries) {
-              if (url) next[id] = url;
-            }
-            return next;
-          });
+          await loadGameHubMedia(selectedGame.title, () => cancelled);
         } catch {
-          if (!cancelled) setGameHubMedia([]);
+          if (!cancelled) {
+            setGameHubMedia([]);
+            setGameHubSummary(null);
+          }
         } finally {
           if (!cancelled) setGameHubMediaLoading(false);
         }
@@ -550,7 +716,37 @@ export function ControllerLibraryPage({
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [selectedGame?.id, selectedGame?.title, showGameHub]);
+  }, [loadGameHubMedia, selectedGame?.id, selectedGame?.title, showGameHub]);
+
+  useEffect(() => {
+    setSelectedGameHubMediaIndex((prev) => Math.min(prev, Math.max(0, gameHubMedia.length - 1)));
+  }, [gameHubMedia.length]);
+
+  useEffect(() => {
+    if (!showGameHub || !isGameHubExpanded) {
+      document.querySelectorAll<HTMLElement>(".xmb-game-hub .controller-focus").forEach((node) => {
+        node.classList.remove("controller-focus");
+      });
+      return;
+    }
+
+    const buttons = getGameHubButtons();
+    if (buttons.length === 0) return;
+
+    const active = document.activeElement instanceof HTMLButtonElement && buttons.includes(document.activeElement)
+      ? document.activeElement
+      : null;
+    const selectedCapture = buttons.find((button) => button.dataset.hubMediaIndex === String(selectedGameHubMediaIndex)) ?? null;
+    const nextButton = active ?? selectedCapture ?? buttons[0];
+    focusGameHubButton(nextButton);
+    syncGameHubSelectionFromButton(nextButton);
+  }, [focusGameHubButton, getGameHubButtons, isGameHubExpanded, selectedGameHubMediaIndex, showGameHub, syncGameHubSelectionFromButton, gameHubMedia.length]);
+
+  useEffect(() => {
+    setSelectedGameHubMediaIndex(0);
+    setGameHubActionMessage(null);
+    setIsGameHubExpanded(false);
+  }, [selectedGame?.id]);
 
 
 
@@ -577,6 +773,53 @@ export function ControllerLibraryPage({
     }
   }, [onToggleFavoriteGame, playUiSound, selectedGame]);
 
+  function getGameHubButtons(): HTMLButtonElement[] {
+    return Array.from(document.querySelectorAll<HTMLButtonElement>(".xmb-game-hub button:not([disabled])")).filter((button) => button.offsetParent !== null);
+  }
+
+  function focusGameHubButton(button: HTMLButtonElement): void {
+    document.querySelectorAll<HTMLElement>(".controller-focus").forEach((node) => {
+      node.classList.remove("controller-focus");
+    });
+    button.classList.add("controller-focus");
+    button.focus({ preventScroll: true });
+  }
+
+  function syncGameHubSelectionFromButton(button: HTMLButtonElement): void {
+    const mediaIndex = button.dataset.hubMediaIndex;
+    if (mediaIndex === undefined) return;
+    const nextIndex = Number.parseInt(mediaIndex, 10);
+    if (Number.isFinite(nextIndex)) {
+      setSelectedGameHubMediaIndex(nextIndex);
+    }
+  }
+
+  function moveGameHubFocus(direction: Direction): boolean {
+    const buttons = getGameHubButtons();
+    if (buttons.length === 0) return false;
+
+    const active = document.activeElement instanceof HTMLButtonElement && buttons.includes(document.activeElement)
+      ? document.activeElement
+      : null;
+
+    if (!active) {
+      playUiSound("move");
+      focusGameHubButton(buttons[0]);
+      syncGameHubSelectionFromButton(buttons[0]);
+      return true;
+    }
+
+    const currentIndex = buttons.indexOf(active);
+    const step = direction === "up" || direction === "left" ? -1 : 1;
+    const nextButton = buttons[(currentIndex + step + buttons.length) % buttons.length];
+    if (nextButton === active) return true;
+
+    playUiSound("move");
+    focusGameHubButton(nextButton);
+    syncGameHubSelectionFromButton(nextButton);
+    return true;
+  }
+
   useEffect(() => {
     const applyDirection = (direction: Direction): void => {
       // When editing the bandwidth slider, use left/right to adjust value
@@ -595,6 +838,10 @@ export function ControllerLibraryPage({
           playUiSound("move");
           return;
         }
+      }
+      if (showGameHub && isGameHubExpanded) {
+        moveGameHubFocus(direction);
+        return;
       }
       if (isLoading && topCategory !== "settings" && topCategory !== "current") return;
       if (direction === "left") {
@@ -768,6 +1015,11 @@ export function ControllerLibraryPage({
     };
 
     const secondaryActivateHandler = () => {
+      if (showGameHub) {
+        setIsGameHubExpanded((prev) => !prev);
+        playUiSound("confirm");
+        return;
+      }
         if (topCategory === "current") {
           // X button does nothing on current game menu items
           return;
@@ -843,7 +1095,16 @@ export function ControllerLibraryPage({
       }
     };
 
+    const startHandler = () => {
+      handleStartSelectedGame();
+      playUiSound("confirm");
+    };
+
     const tertiaryActivateHandler = () => {
+      if (showGameHub && isGameHubExpanded && selectedGameHubMedia) {
+        void handleGameHubDelete();
+        return;
+      }
       if (topCategory !== "settings" && topCategory !== "current") {
         toggleFavoriteForSelected();
       }
@@ -861,6 +1122,14 @@ export function ControllerLibraryPage({
         }
         setSettingsSubcategory("root");
         setSelectedSettingIndex(lastRootSettingIndex);
+        playUiSound("move");
+        e.preventDefault();
+        return;
+      }
+      if (showGameHub) {
+        if (isGameHubExpanded) {
+          setIsGameHubExpanded(false);
+        }
         playUiSound("move");
         e.preventDefault();
         return;
@@ -934,6 +1203,7 @@ export function ControllerLibraryPage({
 
     window.addEventListener("opennow:controller-direction", handler);
     window.addEventListener("opennow:controller-activate", activateHandler);
+    window.addEventListener("opennow:controller-start", startHandler);
     window.addEventListener("opennow:controller-secondary-activate", secondaryActivateHandler);
     window.addEventListener("opennow:controller-tertiary-activate", tertiaryActivateHandler);
     window.addEventListener("opennow:controller-cancel", cancelHandler);
@@ -941,12 +1211,13 @@ export function ControllerLibraryPage({
     return () => {
       window.removeEventListener("opennow:controller-direction", handler);
       window.removeEventListener("opennow:controller-activate", activateHandler);
+      window.removeEventListener("opennow:controller-start", startHandler);
       window.removeEventListener("opennow:controller-secondary-activate", secondaryActivateHandler);
       window.removeEventListener("opennow:controller-tertiary-activate", tertiaryActivateHandler);
       window.removeEventListener("opennow:controller-cancel", cancelHandler);
       window.removeEventListener("keydown", kbdHandler);
     };
-  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, displayItems, mediaAssetItems.length, mediaSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth]);
+  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, displayItems, mediaAssetItems.length, mediaSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth, showGameHub, selectedGameHubMedia, handleGameHubReveal, handleGameHubExport, handleGameHubDelete, gameHubMedia.length, selectedGameHubMediaIndex, moveGameHubFocus]);
 
   const renderFaceButton = (kind: "primary" | "secondary" | "tertiary", className: string, size: number): JSX.Element => {
     if (kind === "primary") {
@@ -1271,7 +1542,7 @@ export function ControllerLibraryPage({
               </div>
             </div>
           )}
-          {showGameHub && selectedGame && (
+          {showGameHub && isGameHubExpanded && selectedGame && (
             <div className="xmb-game-hub">
               <div className="xmb-game-hub-panel">
                 <div className="xmb-game-hub-eyebrow">{topCategory === "all" ? "Game Hub" : selectedCategoryLabel}</div>
@@ -1284,6 +1555,20 @@ export function ControllerLibraryPage({
                   {selectedGameSessionState && <span className="xmb-game-meta-chip xmb-game-meta-chip--session">{selectedGameSessionState}</span>}
                 </div>
 
+                {gameHubSummary && (
+                  <div className="xmb-game-hub-snapshot">
+                    <div className="xmb-game-hub-section-title">Session Snapshot</div>
+                    <div className="xmb-game-meta xmb-game-hub-meta">
+                      {gameHubSnapshotChips.map((chip, index) => (
+                        <span key={`${index}-${chip}`} className="xmb-game-meta-chip">
+                          {chip}
+                        </span>
+                      ))}
+                    </div>
+                    {gameHubSnapshotCaption && <div className="xmb-game-hub-snapshot-caption">{gameHubSnapshotCaption}</div>}
+                  </div>
+                )}
+
                 <div className="xmb-game-hub-captures">
                   {gameHubMediaLoading ? (
                     <div className="xmb-game-hub-capture-empty">Scanning recent captures...</div>
@@ -1293,23 +1578,79 @@ export function ControllerLibraryPage({
                     <>
                       <div className="xmb-game-hub-section-title">Recent Captures</div>
                       <div className="xmb-game-hub-capture-grid">
-                      {gameHubMedia.map((item) => {
+                        {gameHubMedia.map((item, index) => {
+                        const isActiveMoment = selectedGameHubMedia?.id === item.id;
                         const thumb = mediaThumbById[item.id] ?? item.thumbnailDataUrl ?? item.dataUrl;
                         const captureLabel = item.kind === "video"
                           ? `${Math.max(1, Math.round((item.durationMs ?? 0) / 1000))}s Clip`
                           : "Screenshot";
+                        const captureStats = [
+                          item.sessionSnapshot?.resolution,
+                          formatMediaBitrate(item.sessionSnapshot?.bitrateKbps),
+                          typeof item.sessionSnapshot?.rttMs === "number" && Number.isFinite(item.sessionSnapshot.rttMs)
+                            ? `${Math.round(item.sessionSnapshot.rttMs)} ms`
+                            : null,
+                        ].filter((value): value is string => Boolean(value));
 
                         return (
-                          <div key={item.id} className="xmb-game-hub-capture">
+                          <button
+                            key={item.id}
+                            type="button"
+                            className={`xmb-game-hub-capture ${isActiveMoment ? "active" : ""}`}
+                            data-hub-media-index={index}
+                            onClick={() => {
+                              setSelectedGameHubMediaIndex(gameHubMedia.findIndex((media) => media.id === item.id));
+                              setGameHubActionMessage(null);
+                            }}
+                          >
                             {thumb && <img src={thumb} alt={item.fileName} className="xmb-game-hub-capture-image" />}
                             <div className="xmb-game-hub-capture-meta">
                               <div className="xmb-game-hub-capture-name">{captureLabel}</div>
+                              {captureStats.length > 0 && <div className="xmb-game-hub-capture-stats">{captureStats.join(" • ")}</div>}
                               <div className="xmb-game-hub-capture-date">{new Date(item.createdAtMs).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</div>
                             </div>
-                          </div>
+                          </button>
                         );
                       })}
                       </div>
+
+                      {selectedGameHubMedia && (
+                        <div className="xmb-game-hub-actions-wrap">
+                          <div className="xmb-game-hub-actions-header">
+                            Selected Moment: {selectedGameHubMedia.gameTitle || selectedGameHubMedia.fileName}
+                          </div>
+                          <div className="xmb-game-hub-actions">
+                            <button
+                              type="button"
+                              className="xmb-game-hub-action"
+                              onClick={() => { void handleGameHubReveal(); }}
+                              disabled={gameHubActionBusy !== null}
+                            >
+                              <FolderOpen size={14} />
+                              <span>{gameHubActionBusy === "reveal" ? "Opening..." : "Reveal in Finder"}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="xmb-game-hub-action"
+                              onClick={() => { void handleGameHubExport(); }}
+                              disabled={gameHubActionBusy !== null}
+                            >
+                              <Share2 size={14} />
+                              <span>{gameHubActionBusy === "export" ? "Exporting..." : "Export / Share"}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="xmb-game-hub-action xmb-game-hub-action--danger"
+                              onClick={() => { void handleGameHubDelete(); }}
+                              disabled={gameHubActionBusy !== null}
+                            >
+                              <Trash2 size={14} />
+                              <span>{gameHubActionBusy === "delete" ? "Deleting..." : "Delete"}</span>
+                            </button>
+                          </div>
+                          {gameHubActionMessage && <div className="xmb-game-hub-action-message">{gameHubActionMessage}</div>}
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
@@ -1399,10 +1740,15 @@ export function ControllerLibraryPage({
         ) : (
           <>
             <div className="xmb-btn-hint">{renderFaceButton("primary", "xmb-btn-icon", 24)} <span>{currentStreamingGame && selectedGame && currentStreamingGame.id !== selectedGame.id ? "Switch" : "Play"}</span></div>
-            {selectedGame?.variants.length && selectedGame.variants.length > 1 && (
+            {showGameHub ? (
+              <>
+                <div className="xmb-btn-hint">{renderFaceButton("secondary", "xmb-btn-icon", 24)} <span>{isGameHubExpanded ? "Close Hub" : "Toggle Hub"}</span></div>
+                <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>{isGameHubExpanded && selectedGameHubMedia ? "Delete Moment" : "Favorite"}</span></div>
+              </>
+            ) : selectedGame?.variants.length && selectedGame.variants.length > 1 ? (
               <div className="xmb-btn-hint">{renderFaceButton("secondary", "xmb-btn-icon", 24)} <span>Variant</span></div>
-            )}
-            {selectedGame && (
+            ) : null}
+            {selectedGame && !showGameHub && (
               <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>{favoriteGameIdSet.has(selectedGame.id) ? "Unfavorite" : "Favorite"}</span></div>
             )}
           </>

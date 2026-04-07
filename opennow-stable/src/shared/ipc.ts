@@ -49,6 +49,7 @@ export const IPC_CHANNELS = {
   MEDIA_LIST_BY_GAME: "media:list-by-game",
   MEDIA_THUMBNAIL: "media:thumbnail",
   MEDIA_SHOW_IN_FOLDER: "media:show-in-folder",
+  MEDIA_EXPORT: "media:export",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

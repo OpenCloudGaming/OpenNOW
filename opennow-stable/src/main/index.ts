@@ -56,6 +56,11 @@ import type {
   RecordingFinishRequest,
   RecordingAbortRequest,
   RecordingDeleteRequest,
+  MediaListingResult,
+  MediaExportRequest,
+  MediaExportResult,
+  MediaSessionSnapshot,
+  MediaSessionSummary,
 } from "@shared/gfn";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
@@ -227,6 +232,116 @@ function buildScreenshotDataUrl(ext: string, buffer: Buffer): string {
   return `data:${mime};base64,${buffer.toString("base64")}`;
 }
 
+interface StoredMediaMetadata {
+  version: 1;
+  gameTitle?: string;
+  sessionSnapshot?: MediaSessionSnapshot;
+}
+
+function getMediaMetadataPath(filePath: string): string {
+  return `${filePath}.json`;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeSessionSnapshot(value: unknown): MediaSessionSnapshot | undefined {
+  if (!value || typeof value !== "object") return undefined;
+
+  const source = value as Record<string, unknown>;
+  const snapshot: MediaSessionSnapshot = {};
+
+  const resolution = normalizeOptionalString(source.resolution);
+  if (resolution) snapshot.resolution = resolution;
+
+  const codec = normalizeOptionalString(source.codec);
+  if (codec) snapshot.codec = codec;
+
+  const bitrateKbps = normalizeOptionalNumber(source.bitrateKbps);
+  if (bitrateKbps !== undefined) snapshot.bitrateKbps = bitrateKbps;
+
+  const decodeFps = normalizeOptionalNumber(source.decodeFps);
+  if (decodeFps !== undefined) snapshot.decodeFps = decodeFps;
+
+  const renderFps = normalizeOptionalNumber(source.renderFps);
+  if (renderFps !== undefined) snapshot.renderFps = renderFps;
+
+  const rttMs = normalizeOptionalNumber(source.rttMs);
+  if (rttMs !== undefined) snapshot.rttMs = rttMs;
+
+  const packetLossPercent = normalizeOptionalNumber(source.packetLossPercent);
+  if (packetLossPercent !== undefined) snapshot.packetLossPercent = packetLossPercent;
+
+  const connectedControllers = normalizeOptionalNumber(source.connectedControllers);
+  if (connectedControllers !== undefined) snapshot.connectedControllers = connectedControllers;
+
+  const sessionElapsedSeconds = normalizeOptionalNumber(source.sessionElapsedSeconds);
+  if (sessionElapsedSeconds !== undefined) snapshot.sessionElapsedSeconds = sessionElapsedSeconds;
+
+  const serverRegion = normalizeOptionalString(source.serverRegion);
+  if (serverRegion) snapshot.serverRegion = serverRegion;
+
+  return Object.keys(snapshot).length > 0 ? snapshot : undefined;
+}
+
+function buildStoredMediaMetadata(
+  gameTitle?: string,
+  sessionSnapshot?: MediaSessionSnapshot,
+): StoredMediaMetadata | null {
+  const metadata: StoredMediaMetadata = { version: 1 };
+  const normalizedTitle = normalizeOptionalString(gameTitle);
+  const normalizedSnapshot = normalizeSessionSnapshot(sessionSnapshot);
+
+  if (normalizedTitle) metadata.gameTitle = normalizedTitle;
+  if (normalizedSnapshot) metadata.sessionSnapshot = normalizedSnapshot;
+
+  return metadata.gameTitle || metadata.sessionSnapshot ? metadata : null;
+}
+
+async function readMediaMetadata(filePath: string): Promise<StoredMediaMetadata | null> {
+  try {
+    const raw = await readFile(getMediaMetadataPath(filePath), "utf8");
+    const parsed = JSON.parse(raw) as { gameTitle?: unknown; sessionSnapshot?: unknown } | null;
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+
+    return buildStoredMediaMetadata(
+      normalizeOptionalString(parsed.gameTitle),
+      normalizeSessionSnapshot(parsed.sessionSnapshot),
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function writeMediaMetadata(
+  filePath: string,
+  gameTitle?: string,
+  sessionSnapshot?: MediaSessionSnapshot,
+): Promise<void> {
+  const metadata = buildStoredMediaMetadata(gameTitle, sessionSnapshot);
+  const metadataPath = getMediaMetadataPath(filePath);
+
+  if (!metadata) {
+    await unlink(metadataPath).catch(() => undefined);
+    return;
+  }
+
+  await writeFile(metadataPath, JSON.stringify(metadata, null, 2), "utf8");
+}
+
+async function deleteMediaMetadata(filePath: string): Promise<void> {
+  await unlink(getMediaMetadataPath(filePath)).catch(() => undefined);
+}
+
 function assertSafeScreenshotId(id: string): void {
   if (!id || id.includes("/") || id.includes("\\") || id.includes("..")) {
     throw new Error("Invalid screenshot id");
@@ -247,6 +362,7 @@ async function listScreenshots(): Promise<ScreenshotEntry[]> {
       try {
         const fileStats = await stat(filePath);
         const fileBuffer = await readFile(filePath);
+        const metadata = await readMediaMetadata(filePath);
         const extMatch = /\.([^.]+)$/.exec(fileName);
         const ext = (extMatch?.[1] ?? "png").toLowerCase();
 
@@ -257,6 +373,8 @@ async function listScreenshots(): Promise<ScreenshotEntry[]> {
           createdAtMs: fileStats.birthtimeMs || fileStats.mtimeMs,
           sizeBytes: fileStats.size,
           dataUrl: buildScreenshotDataUrl(ext, fileBuffer),
+          gameTitle: metadata?.gameTitle,
+          sessionSnapshot: metadata?.sessionSnapshot,
         };
       } catch {
         return null;
@@ -279,6 +397,7 @@ async function saveScreenshot(input: ScreenshotSaveRequest): Promise<ScreenshotE
   const filePath = join(dir, fileName);
 
   await writeFile(filePath, buffer);
+  await writeMediaMetadata(filePath, input.gameTitle, input.sessionSnapshot);
 
   return {
     id: fileName,
@@ -287,6 +406,8 @@ async function saveScreenshot(input: ScreenshotSaveRequest): Promise<ScreenshotE
     createdAtMs: Date.now(),
     sizeBytes: buffer.byteLength,
     dataUrl: buildScreenshotDataUrl(ext, buffer),
+    gameTitle: input.gameTitle,
+    sessionSnapshot: normalizeSessionSnapshot(input.sessionSnapshot),
   };
 }
 
@@ -295,6 +416,7 @@ async function deleteScreenshot(input: ScreenshotDeleteRequest): Promise<void> {
   const dir = await ensureScreenshotDirectory();
   const filePath = join(dir, input.id);
   await unlink(filePath);
+  await deleteMediaMetadata(filePath);
 }
 
 async function saveScreenshotAs(input: ScreenshotSaveAsRequest): Promise<ScreenshotSaveAsResult> {
@@ -311,6 +433,37 @@ async function saveScreenshotAs(input: ScreenshotSaveAsRequest): Promise<Screens
       { name: "WebP Image", extensions: ["webp"] },
       { name: "All Files", extensions: ["*"] },
     ],
+  };
+  const target =
+    mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showSaveDialog(mainWindow, saveDialogOptions)
+      : await dialog.showSaveDialog(saveDialogOptions);
+
+  if (target.canceled || !target.filePath) {
+    return { saved: false };
+  }
+
+  await copyFile(sourcePath, target.filePath);
+  return { saved: true, filePath: target.filePath };
+}
+
+async function exportMedia(input: MediaExportRequest): Promise<MediaExportResult> {
+  const rawPath = input?.filePath;
+  if (typeof rawPath !== "string" || rawPath.length === 0 || rawPath.length > 4096) {
+    throw new Error("Invalid media file path");
+  }
+
+  const sourcePath = resolve(rawPath);
+  const sourceStats = await stat(sourcePath);
+  if (!sourceStats.isFile()) {
+    throw new Error("Media file not found");
+  }
+
+  const defaultName = normalizeOptionalString(input.fileName) ?? sourcePath.split(/[/\\]/).pop() ?? "OpenNOW-media";
+  const saveDialogOptions = {
+    title: "Export Media",
+    defaultPath: join(app.getPath("downloads"), defaultName),
+    filters: [{ name: "All Files", extensions: ["*"] }],
   };
   const target =
     mainWindow && !mainWindow.isDestroyed()
@@ -438,6 +591,7 @@ async function listRecordings(): Promise<RecordingEntry[]> {
       const filePath = join(dir, fileName);
       try {
         const fileStats = await stat(filePath);
+        const metadata = await readMediaMetadata(filePath);
         const stem = fileName.replace(/\.webm$/i, "");
         const thumbName = `${stem}-thumb.jpg`;
         const thumbPath = join(dir, thumbName);
@@ -465,8 +619,9 @@ async function listRecordings(): Promise<RecordingEntry[]> {
           createdAtMs: fileStats.birthtimeMs || fileStats.mtimeMs,
           sizeBytes: fileStats.size,
           durationMs,
-          gameTitle,
+          gameTitle: metadata?.gameTitle ?? gameTitle,
           thumbnailDataUrl,
+          sessionSnapshot: metadata?.sessionSnapshot,
         };
       } catch {
         return null;
@@ -478,6 +633,37 @@ async function listRecordings(): Promise<RecordingEntry[]> {
     .filter((item): item is RecordingEntry => item !== null)
     .sort((a, b) => b.createdAtMs - a.createdAtMs)
     .slice(0, RECORDING_LIMIT);
+}
+
+function buildMediaListingSummary(
+  screenshots: ScreenshotEntry[],
+  videos: RecordingEntry[],
+): MediaSessionSummary | undefined {
+  const combined = [...videos, ...screenshots].sort((left, right) => right.createdAtMs - left.createdAtMs);
+  if (combined.length === 0) {
+    return undefined;
+  }
+
+  const latest = combined[0];
+  const snapshot = latest.sessionSnapshot;
+  const summary: MediaSessionSummary = {
+    totalCaptures: combined.length,
+    screenshots: screenshots.length,
+    videos: videos.length,
+    lastCapturedAtMs: latest.createdAtMs,
+  };
+
+  if (snapshot?.resolution) summary.latestResolution = snapshot.resolution;
+  if (snapshot?.codec) summary.latestCodec = snapshot.codec;
+  if (snapshot?.bitrateKbps !== undefined) summary.latestBitrateKbps = snapshot.bitrateKbps;
+  if (snapshot?.decodeFps !== undefined) summary.latestDecodeFps = snapshot.decodeFps;
+  if (snapshot?.rttMs !== undefined) summary.latestRttMs = snapshot.rttMs;
+  if (snapshot?.packetLossPercent !== undefined) summary.latestPacketLossPercent = snapshot.packetLossPercent;
+  if (snapshot?.connectedControllers !== undefined) summary.latestConnectedControllers = snapshot.connectedControllers;
+  if (snapshot?.sessionElapsedSeconds !== undefined) summary.latestSessionElapsedSeconds = snapshot.sessionElapsedSeconds;
+  if (snapshot?.serverRegion) summary.latestServerRegion = snapshot.serverRegion;
+
+  return summary;
 }
 
 function emitToRenderer(event: MainToRendererSignalingEvent): void {
@@ -836,7 +1022,7 @@ function registerIpcHandlers(): void {
   });
 
   // Media: per-game listing (screenshots + recordings). Best-effort title matching.
-  ipcMain.handle(IPC_CHANNELS.MEDIA_LIST_BY_GAME, async (_event, payload: { gameTitle?: string } = {}) => {
+  ipcMain.handle(IPC_CHANNELS.MEDIA_LIST_BY_GAME, async (_event, payload: { gameTitle?: string } = {}): Promise<MediaListingResult> => {
     const title = (payload?.gameTitle || "").trim().toLowerCase();
     const screenshots = await listScreenshots();
     const recordings = await listRecordings();
@@ -846,19 +1032,20 @@ function registerIpcHandlers(): void {
 
     const matchedScreens = screenshots.filter((s) => {
       if (!needle) return true;
-      const candidate = normalize(s.fileName) + normalize(s.filePath || "");
+      const candidate = normalize(s.gameTitle ?? "") + normalize(s.fileName) + normalize(s.filePath || "");
       return candidate.includes(needle);
     });
 
     const matchedRecordings = recordings.filter((r) => {
       if (!needle) return true;
-      const candidate = normalize(r.gameTitle ?? r.fileName ?? "");
+      const candidate = normalize(r.gameTitle ?? "") + normalize(r.fileName ?? "") + normalize(r.filePath || "");
       return candidate.includes(needle);
     });
 
     return {
       screenshots: matchedScreens,
       videos: matchedRecordings,
+      summary: buildMediaListingSummary(matchedScreens, matchedRecordings),
     };
   });
 
@@ -935,6 +1122,8 @@ function registerIpcHandlers(): void {
       }
     }
 
+    await writeMediaMetadata(finalPath, input.gameTitle, input.sessionSnapshot);
+
     // Enforce recording limit: delete oldest entries beyond RECORDING_LIMIT
     const all = await listRecordings();
     if (all.length > RECORDING_LIMIT) {
@@ -944,6 +1133,7 @@ function registerIpcHandlers(): void {
           await unlink(entry.filePath).catch(() => undefined);
           const stem = entry.fileName.replace(/\.(mp4|webm)$/i, "");
           await unlink(join(dir, `${stem}-thumb.jpg`)).catch(() => undefined);
+          await deleteMediaMetadata(entry.filePath);
         }),
       );
     }
@@ -958,6 +1148,7 @@ function registerIpcHandlers(): void {
       durationMs: input.durationMs,
       gameTitle: input.gameTitle,
       thumbnailDataUrl,
+      sessionSnapshot: normalizeSessionSnapshot(input.sessionSnapshot),
     };
   });
 
@@ -982,6 +1173,7 @@ function registerIpcHandlers(): void {
     await unlink(filePath);
     const stem = input.id.replace(/\.(mp4|webm)$/i, "");
     await unlink(join(dir, `${stem}-thumb.jpg`)).catch(() => undefined);
+    await deleteMediaMetadata(filePath);
   });
 
   ipcMain.handle(IPC_CHANNELS.RECORDING_SHOW_IN_FOLDER, async (_event, id: string): Promise<void> => {
@@ -1056,6 +1248,10 @@ function registerIpcHandlers(): void {
     } catch {
       return;
     }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.MEDIA_EXPORT, async (_event, payload: MediaExportRequest): Promise<MediaExportResult> => {
+    return exportMedia(payload);
   });
 
   ipcMain.handle(IPC_CHANNELS.CACHE_REFRESH_MANUAL, async (): Promise<void> => {

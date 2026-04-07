@@ -5,9 +5,9 @@ import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, M
 import SideBar from "./SideBar";
 import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
-import type { StreamLagReason } from "../gfn/webrtcClient";
+import type { StreamDiagnostics, StreamLagReason } from "../gfn/webrtcClient";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
-import type { MicrophoneMode, ScreenshotEntry, RecordingEntry } from "@shared/gfn";
+import type { MediaSessionSnapshot, MicrophoneMode, ScreenshotEntry, RecordingEntry } from "@shared/gfn";
 import { isShortcutMatch, normalizeShortcut } from "../shortcuts";
 
 interface StreamViewProps {
@@ -152,6 +152,35 @@ function formatWarningSeconds(value: number | undefined): string | null {
     return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
   }
   return `${seconds}s`;
+}
+
+function buildMediaSessionSnapshot(
+  stats: StreamDiagnostics,
+  serverRegion: string | undefined,
+  sessionElapsedSeconds: number,
+): MediaSessionSnapshot {
+  const snapshot: MediaSessionSnapshot = {};
+
+  if (Number.isFinite(sessionElapsedSeconds) && sessionElapsedSeconds >= 0) {
+    snapshot.sessionElapsedSeconds = Math.floor(sessionElapsedSeconds);
+  }
+  if (stats.resolution) snapshot.resolution = stats.resolution;
+  if (stats.codec) snapshot.codec = stats.codec;
+  if (Number.isFinite(stats.bitrateKbps) && stats.bitrateKbps > 0) snapshot.bitrateKbps = Math.round(stats.bitrateKbps);
+  if (Number.isFinite(stats.decodeFps) && stats.decodeFps > 0) snapshot.decodeFps = Math.round(stats.decodeFps);
+  if (Number.isFinite(stats.renderFps) && stats.renderFps > 0) snapshot.renderFps = Math.round(stats.renderFps);
+  if (Number.isFinite(stats.rttMs) && stats.rttMs >= 0) snapshot.rttMs = Math.round(stats.rttMs * 10) / 10;
+  if (Number.isFinite(stats.packetLossPercent) && stats.packetLossPercent >= 0) {
+    snapshot.packetLossPercent = Number(stats.packetLossPercent.toFixed(2));
+  }
+  if (Number.isFinite(stats.connectedGamepads) && stats.connectedGamepads > 0) {
+    snapshot.connectedControllers = stats.connectedGamepads;
+  }
+
+  const resolvedServerRegion = stats.serverRegion.trim() || serverRegion?.trim() || "";
+  if (resolvedServerRegion) snapshot.serverRegion = resolvedServerRegion;
+
+  return snapshot;
 }
 
 function useMicMeter(
@@ -307,6 +336,7 @@ export function StreamView({
   className,
 }: StreamViewProps): JSX.Element {
   const stats = useStreamDiagnosticsStore(diagnosticsStore);
+  const liveSessionContextRef = useRef({ serverRegion, sessionElapsedSeconds });
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
@@ -338,6 +368,19 @@ export function StreamView({
   const recordingStartTimeRef = useRef<number>(0);
   const recordingTimerRef = useRef<number | undefined>(undefined);
   const thumbnailDataUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    liveSessionContextRef.current = { serverRegion, sessionElapsedSeconds };
+  }, [serverRegion, sessionElapsedSeconds]);
+
+  const captureSessionSnapshot = useCallback((): MediaSessionSnapshot => {
+    const liveContext = liveSessionContextRef.current;
+    return buildMediaSessionSnapshot(
+      diagnosticsStore.getSnapshot(),
+      liveContext.serverRegion,
+      liveContext.sessionElapsedSeconds,
+    );
+  }, [diagnosticsStore]);
   const recCarouselRef = useRef<HTMLDivElement | null>(null);
   const recordingApiAvailable =
     typeof window.openNow?.beginRecording === "function" &&
@@ -585,7 +628,11 @@ export function StreamView({
 
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
       const dataUrl = canvas.toDataURL("image/png");
-      const saved = await window.openNow.saveScreenshot({ dataUrl, gameTitle });
+      const saved = await window.openNow.saveScreenshot({
+        dataUrl,
+        gameTitle,
+        sessionSnapshot: captureSessionSnapshot(),
+      });
       setScreenshots((prev) => [saved, ...prev.filter((item) => item.id !== saved.id)].slice(0, 60));
     } catch (error) {
       console.error("[StreamView] Failed to capture screenshot:", error);
@@ -593,7 +640,7 @@ export function StreamView({
     } finally {
       setIsSavingScreenshot(false);
     }
-  }, [gameTitle, isSavingScreenshot, screenshotApiAvailable]);
+  }, [captureSessionSnapshot, gameTitle, isSavingScreenshot, screenshotApiAvailable]);
 
   const scrollGallery = useCallback((direction: "left" | "right") => {
     const strip = galleryStripRef.current;
@@ -810,6 +857,7 @@ export function StreamView({
           durationMs,
           gameTitle,
           thumbnailDataUrl: thumbnailDataUrlRef.current ?? undefined,
+          sessionSnapshot: captureSessionSnapshot(),
         })
         .then((entry) => {
           setRecordings((prev) => [entry, ...prev].slice(0, 20));
@@ -838,7 +886,7 @@ export function StreamView({
 
     mediaRecorderRef.current = recorder;
     recorder.start(2000);
-  }, [gameTitle, isRecording, micTrack, recordingApiAvailable]);
+  }, [captureSessionSnapshot, gameTitle, isRecording, micTrack, recordingApiAvailable]);
 
   // Cleanup: abort any active recording on unmount
   useEffect(() => {

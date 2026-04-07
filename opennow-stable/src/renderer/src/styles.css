@@ -5599,6 +5599,24 @@ button.game-card-store-chip.active:hover {
   justify-content: flex-end;
 }
 
+.xmb-game-hub-snapshot {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.xmb-game-hub-snapshot-caption {
+  width: 100%;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(214, 255, 227, 0.62);
+  text-align: right;
+}
+
 .xmb-game-hub-capture-grid {
   width: 100%;
   display: grid;
@@ -5631,8 +5649,21 @@ button.game-card-store-chip.active:hover {
 }
 
 .xmb-game-hub-capture {
+  appearance: none;
+  width: 100%;
   position: relative;
   min-height: 76px;
+  padding: 0;
+  text-align: inherit;
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.xmb-game-hub-capture:hover,
+.xmb-game-hub-capture.active {
+  border-color: rgba(205, 255, 220, 0.58);
+  box-shadow: 0 0 0 1px rgba(205, 255, 220, 0.28), 0 18px 30px rgba(0, 0, 0, 0.24);
+  transform: translateY(-1px);
 }
 
 .xmb-game-hub-capture::after {
@@ -5672,6 +5703,18 @@ button.game-card-store-chip.active:hover {
   text-overflow: ellipsis;
 }
 
+.xmb-game-hub-capture-stats {
+  max-width: 100%;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(220, 255, 231, 0.72);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .xmb-game-hub-capture-date {
   font-size: 0.58rem;
   font-weight: 700;
@@ -5686,6 +5729,82 @@ button.game-card-store-chip.active:hover {
   font-size: 0.7rem;
   font-weight: 700;
   color: rgba(232, 255, 239, 0.72);
+}
+
+.xmb-game-hub-actions-wrap {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.xmb-game-hub-actions-header {
+  width: 100%;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(220, 255, 231, 0.68);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xmb-game-hub-actions {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.xmb-game-hub-action {
+  appearance: none;
+  border: 1px solid rgba(205, 255, 220, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(248, 255, 250, 0.9);
+  border-radius: 999px;
+  padding: 8px 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease, color 180ms ease;
+}
+
+.xmb-game-hub-action:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(205, 255, 220, 0.44);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.xmb-game-hub-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.xmb-game-hub-action--danger {
+  border-color: rgba(255, 190, 190, 0.18);
+  color: rgba(255, 222, 222, 0.94);
+}
+
+.xmb-game-hub-action--danger:hover:not(:disabled) {
+  border-color: rgba(255, 160, 160, 0.46);
+  background: rgba(143, 31, 31, 0.16);
+}
+
+.xmb-game-hub-action-message {
+  width: 100%;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: rgba(255, 205, 205, 0.88);
+  text-align: right;
 }
 
 @media (max-width: 1500px) {

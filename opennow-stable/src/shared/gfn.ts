@@ -434,12 +434,26 @@ export interface OpenNowApi {
   /** Reveal a media file path in the system file manager */
   showMediaInFolder(input: { filePath: string }): Promise<void>;
 
+  /** Export a media file to a user-selected path */
+  exportMedia(input: MediaExportRequest): Promise<MediaExportResult>;
+
   deleteCache(): Promise<void>;
+}
+
+export interface MediaExportRequest {
+  filePath: string;
+  fileName?: string;
+}
+
+export interface MediaExportResult {
+  saved: boolean;
+  filePath?: string;
 }
 
 export interface ScreenshotSaveRequest {
   dataUrl: string;
   gameTitle?: string;
+  sessionSnapshot?: MediaSessionSnapshot;
 }
 
 export interface ScreenshotDeleteRequest {
@@ -462,6 +476,8 @@ export interface ScreenshotEntry {
   createdAtMs: number;
   sizeBytes: number;
   dataUrl: string;
+  gameTitle?: string;
+  sessionSnapshot?: MediaSessionSnapshot;
 }
 
 export interface RecordingEntry {
@@ -473,6 +489,7 @@ export interface RecordingEntry {
   durationMs: number;
   gameTitle?: string;
   thumbnailDataUrl?: string;
+  sessionSnapshot?: MediaSessionSnapshot;
 }
 
 export interface RecordingBeginRequest {
@@ -493,6 +510,7 @@ export interface RecordingFinishRequest {
   durationMs: number;
   gameTitle?: string;
   thumbnailDataUrl?: string;
+  sessionSnapshot?: MediaSessionSnapshot;
 }
 
 export interface RecordingAbortRequest {
@@ -513,9 +531,40 @@ export interface MediaListingEntry {
   durationMs?: number;
   thumbnailDataUrl?: string;
   dataUrl?: string;
+  sessionSnapshot?: MediaSessionSnapshot;
+}
+
+export interface MediaSessionSnapshot {
+  sessionElapsedSeconds?: number;
+  resolution?: string;
+  codec?: string;
+  bitrateKbps?: number;
+  decodeFps?: number;
+  renderFps?: number;
+  rttMs?: number;
+  packetLossPercent?: number;
+  connectedControllers?: number;
+  serverRegion?: string;
+}
+
+export interface MediaSessionSummary {
+  totalCaptures: number;
+  screenshots: number;
+  videos: number;
+  lastCapturedAtMs: number;
+  latestResolution?: string;
+  latestCodec?: string;
+  latestBitrateKbps?: number;
+  latestDecodeFps?: number;
+  latestRttMs?: number;
+  latestPacketLossPercent?: number;
+  latestConnectedControllers?: number;
+  latestSessionElapsedSeconds?: number;
+  latestServerRegion?: string;
 }
 
 export interface MediaListingResult {
   screenshots: MediaListingEntry[];
   videos: MediaListingEntry[];
+  summary?: MediaSessionSummary;
 }
