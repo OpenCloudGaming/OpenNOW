@@ -1564,12 +1564,12 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               </label>
             </div>
 
-            <div className="settings-row">
-              <label className="settings-label">
+            <div className="settings-row settings-row--top-aligned">
+              <label className="settings-label settings-label--wrap">
                 Keyboard Layout
                 <span className="settings-hint">Controls how your physical keyboard is mapped inside the remote session. Separate from the in-game language setting.</span>
               </label>
-              <div className="settings-dropdown" ref={keyboardLayoutDropdownRef}>
+              <div className="settings-dropdown settings-dropdown--constrained" ref={keyboardLayoutDropdownRef}>
                 <button
                   type="button"
                   className={`settings-dropdown-selected ${keyboardLayoutDropdownOpen ? "open" : ""}`}
@@ -1581,7 +1581,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                   </svg>
                 </button>
                 {keyboardLayoutDropdownOpen && (
-                  <div className="settings-dropdown-menu">
+                  <div className="settings-dropdown-menu settings-dropdown-menu--tall">
                     {keyboardLayoutOptions.map((option) => (
                       <button
                         key={option.value}
