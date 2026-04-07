@@ -1,52 +1,38 @@
 # OpenNOW Stable (Electron)
 
-> For features, comparison, and downloads, see the [main README](../README.md).
+This directory contains the active Electron-based OpenNOW client.
 
-Developer reference for the Electron-based OpenNOW client.
+For user-facing project information, downloads, and the high-level overview, start with the [main README](../README.md). For local setup and architecture notes, see the [development guide](../docs/development.md).
 
-## Development
+## Quick Commands
 
 ```bash
 npm install
 npm run dev
-```
-
-## Build
-
-```bash
+npm run typecheck
 npm run build
 npm run dist
 ```
 
+## What Lives Here
+
+- `src/main/`: Electron main process, auth, sessions, signaling, caching, media handling
+- `src/preload/`: secure renderer bridge
+- `src/renderer/src/`: React UI, stream playback, controls, diagnostics, settings
+- `src/shared/`: shared types, IPC channels, and utilities
+
 ## Packaging Targets
 
 | Platform | Formats |
-|----------|---------|
-| Windows | NSIS installer + portable |
-| macOS | dmg + zip (x64 and arm64 universal) |
-| Linux x64 | AppImage + deb |
-| Linux ARM64 | AppImage + deb (Raspberry Pi 4/5) |
-
-## CI/CD
-
-Workflow: `.github/workflows/auto-build.yml`
-
-- Triggers on pushes to `dev`/`main` and PRs
-- Builds: Windows, macOS (x64/arm64), Linux x64, Linux arm64
-- Artifacts uploaded to GitHub Releases
-
-## Tagged Releases
-
-Release workflow: `.github/workflows/release.yml`
-
-- Run it manually with `workflow_dispatch`
-- Provide a version like `1.2.3` or `v1.2.3`
-- Optional tag pushes matching `v*.*.*` or `opennow-stable-v*.*.*` also trigger releases
-- The workflow builds all platforms, publishes the GitHub Release, then commits the version bump back to the triggering release branch; manual/tagged runs fall back to `dev` when no branch context is available
+| --- | --- |
+| Windows | NSIS installer, portable executable |
+| macOS | `dmg`, `zip` |
+| Linux x64 | `AppImage`, `deb` |
+| Linux ARM64 | `AppImage`, `deb` |
 
 ## Technical Notes
 
-- `ws` runs in the Electron main process for custom signaling behavior and relaxed TLS handling
-- WebRTC uses Chromium's built-in stack (no external dependencies)
-- OAuth PKCE flow with localhost callback
-- Persistent settings stored via `electron-store`
+- WebRTC relies on Chromium's built-in stack
+- `ws` is used in the main process for custom signaling behavior
+- Authentication uses an OAuth PKCE flow with a localhost callback
+- Settings are persisted locally through `electron-store`

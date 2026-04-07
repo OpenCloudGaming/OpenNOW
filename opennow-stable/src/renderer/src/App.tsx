@@ -399,7 +399,7 @@ export function App(): JSX.Element {
     fps: 60,
     maxBitrateMbps: 75,
     codec: "H264",
-    colorQuality: "10bit_420",
+    colorQuality: "8bit_420",
     region: "",
     clipboardPaste: false,
     mouseSensitivity: 1,
@@ -648,6 +648,7 @@ export function App(): JSX.Element {
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
+  const launchAbortRef = useRef(false);
   const streamStatusRef = useRef<StreamStatus>(streamStatus);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
@@ -1362,6 +1363,12 @@ export function App(): JSX.Element {
     }
   }, [settingsLoaded]);
 
+  const handleExitApp = useCallback(() => {
+    void window.openNow.quitApp().catch((error) => {
+      console.warn("Failed to quit application:", error);
+    });
+  }, []);
+
   const handleMicrophoneModeChange = useCallback((value: import("@shared/gfn").MicrophoneMode) => {
     // Keep UI responsive while still surfacing persistence failures.
     void updateSetting("microphoneMode", value).catch((error) => {
@@ -1552,6 +1559,7 @@ export function App(): JSX.Element {
     }
 
     launchInFlightRef.current = true;
+    launchAbortRef.current = false;
     let loadingStep: StreamLoadingStatus = "queue";
     const updateLoadingStep = (next: StreamLoadingStatus): void => {
       loadingStep = next;
@@ -1674,6 +1682,10 @@ export function App(): JSX.Element {
         attempt++;
         await sleep(SESSION_READY_POLL_INTERVAL_MS);
 
+        if (launchAbortRef.current) {
+          return;
+        }
+
         const polled = await window.openNow.pollSession({
           token: token || undefined,
           streamingBaseUrl: newSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
@@ -1683,6 +1695,10 @@ export function App(): JSX.Element {
           clientId: newSession.clientId,
           deviceId: newSession.deviceId,
         });
+
+        if (launchAbortRef.current) {
+          return;
+        }
 
         setSession(polled);
         setQueuePosition(polled.queuePosition);
@@ -1738,6 +1754,9 @@ export function App(): JSX.Element {
         signalingUrl: sessionToConnect.signalingUrl,
       });
     } catch (error) {
+      if (launchAbortRef.current) {
+        return;
+      }
       console.error("Launch failed:", error);
       setLaunchError(toLaunchErrorState(error, loadingStep));
       await window.openNow.disconnectSignaling().catch(() => {});
@@ -1821,6 +1840,10 @@ export function App(): JSX.Element {
   const handleStopStream = useCallback(async () => {
     try {
       resolveExitPrompt(false);
+      const status = streamStatusRef.current;
+      if (status !== "idle" && status !== "streaming") {
+        launchAbortRef.current = true;
+      }
       await window.openNow.disconnectSignaling();
 
       const current = sessionRef.current;
@@ -1921,6 +1944,13 @@ export function App(): JSX.Element {
     }
 
     await releasePointerLockIfNeeded();
+
+    const loadingPhases: StreamStatus[] = ["queue", "setup", "starting", "connecting"];
+    if (loadingPhases.includes(streamStatus)) {
+      launchAbortRef.current = true;
+      await handleStopStream();
+      return;
+    }
 
     const gameName = (streamingGame?.title || "this game").trim();
     const shouldExit = await requestExitPrompt(gameName);
@@ -2174,7 +2204,7 @@ export function App(): JSX.Element {
             }}
           />
         )}
-        {isSwitchingGame && settings.controllerMode && (
+        {isSwitchingGame && settings.controllerMode && streamStatus !== "connecting" && (
           <ControllerStreamLoading
             gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? "Game"}
             gamePoster={pendingSwitchGameCover ?? streamingGame?.imageUrl}
@@ -2260,7 +2290,7 @@ export function App(): JSX.Element {
             />
           </div>
         )}
-        {streamStatus !== "idle" && streamStatus !== "streaming" && settings.controllerMode && (
+        {streamStatus !== "idle" && streamStatus !== "streaming" && streamStatus !== "connecting" && settings.controllerMode && !isSwitchingGame && (
           <ControllerStreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
             gamePoster={streamingGame?.imageUrl}
@@ -2272,7 +2302,7 @@ export function App(): JSX.Element {
             enableBackgroundAnimations={settings.controllerBackgroundAnimations}
           />
         )}
-        {streamStatus !== "idle" && streamStatus !== "streaming" && !settings.controllerMode && (
+        {streamStatus !== "idle" && streamStatus !== "streaming" && !settings.controllerMode && !isSwitchingGame && (
           <StreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
             gameCover={streamingGame?.imageUrl}
@@ -2376,6 +2406,7 @@ export function App(): JSX.Element {
                 resolution: settings.resolution,
                 fps: settings.fps,
                 codec: settings.codec,
+                enableL4S: settings.enableL4S,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
@@ -2389,6 +2420,7 @@ export function App(): JSX.Element {
               aspectRatioOptions={aspectRatioOptions as unknown as string[]}
               onSettingChange={updateSetting}
               onExitControllerMode={handleExitControllerMode}
+              onExitApp={handleExitApp}
             />
           ) : (
             <LibraryPage

@@ -441,8 +441,9 @@ export const ERROR_MESSAGES: Map<number, ErrorMessageEntry> = new Map([
   [
     3237093695,
     {
-      title: "Region Not Supported",
-      description: "Streaming is not supported in your region.",
+      title: "GeForce NOW Unavailable in Your Region",
+      description:
+        "GeForce NOW has restricted streaming in your region. This is not an OpenNOW issue — NVIDIA has blocked access from your location. You may need to use a VPN or check GeForce NOW's supported countries list.",
     },
   ],
   [

@@ -81,7 +81,7 @@ const DEFAULT_SETTINGS: Settings = {
   fps: 60,
   maxBitrateMbps: 75,
   codec: "H264",
-  colorQuality: "10bit_420",
+  colorQuality: "8bit_420",
   region: "",
   clipboardPaste: false,
   mouseSensitivity: 1,
@@ -125,7 +125,9 @@ export class SettingsManager {
   private load(): Settings {
     try {
       if (!existsSync(this.settingsPath)) {
-        return { ...DEFAULT_SETTINGS };
+        const defaults = { ...DEFAULT_SETTINGS };
+        this.enforceCompatibility(defaults);
+        return defaults;
       }
 
       const content = readFileSync(this.settingsPath, "utf-8");
@@ -138,6 +140,7 @@ export class SettingsManager {
       };
 
       let migrated = this.migrateLegacyShortcutDefaults(merged);
+      migrated = this.enforceCompatibility(merged) || migrated;
 
       // Migrate legacy boolean accelerator setting to percentage slider.
       if (typeof (parsed as { mouseAcceleration?: unknown }).mouseAcceleration === "boolean") {
@@ -153,8 +156,22 @@ export class SettingsManager {
       return merged;
     } catch (error) {
       console.error("Failed to load settings, using defaults:", error);
-      return { ...DEFAULT_SETTINGS };
+      const defaults = { ...DEFAULT_SETTINGS };
+      this.enforceCompatibility(defaults);
+      return defaults;
     }
+  }
+
+  private enforceCompatibility(settings: Settings): boolean {
+    if (settings.codec === "H264" && settings.colorQuality !== "8bit_420") {
+      console.warn(
+        `[Settings] colorQuality "${settings.colorQuality}" is incompatible with H264; resetting to 8bit_420`,
+      );
+      settings.colorQuality = "8bit_420";
+      return true;
+    }
+
+    return false;
   }
 
   private migrateLegacyShortcutDefaults(settings: Settings): boolean {
@@ -231,6 +248,7 @@ export class SettingsManager {
    */
   reset(): Settings {
     this.settings = { ...DEFAULT_SETTINGS };
+    this.enforceCompatibility(this.settings);
     this.save();
     return { ...this.settings };
   }
@@ -239,7 +257,9 @@ export class SettingsManager {
    * Get the default settings
    */
   getDefaults(): Settings {
-    return { ...DEFAULT_SETTINGS };
+    const defaults = { ...DEFAULT_SETTINGS };
+    this.enforceCompatibility(defaults);
+    return defaults;
   }
 }
 

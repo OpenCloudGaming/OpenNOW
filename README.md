@@ -5,11 +5,11 @@
 </p>
 
 <p align="center">
-  <strong>An open-source GeForce NOW client — play your games, your way.</strong>
+  <strong>An open-source desktop client for GeForce NOW.</strong>
 </p>
 
 <p align="center">
-  <img src="img.png" alt="OpenNOW" />
+  Browse the catalog, tune your stream, and launch sessions from a community-built app.
 </p>
 
 
@@ -36,202 +36,123 @@
   <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
     <img src="https://img.shields.io/github/downloads/OpenCloudGaming/OpenNOW/total?style=flat-square" alt="Downloads">
   </a>
-  <a href="https://github.com/OpenCloudGaming/OpenNOW/blob/dev/LICENSE">
+  <a href="LICENSE">
     <img src="https://img.shields.io/github/license/OpenCloudGaming/OpenNOW?style=flat-square" alt="License">
   </a>
 </p>
 
----
+<p align="center">
+  <img src="img.png" alt="OpenNOW application preview" />
+</p>
 
-> **Warning**  
-> OpenNOW is under active development. Bugs and performance issues are expected while features are finalized.
+> [!WARNING]
+> OpenNOW is under active development. Expect occasional bugs, rough edges, and platform-specific issues while the client matures.
 
-> **Trademark & Affiliation Notice**  
-> OpenNOW is an independent community project and is **not affiliated with, endorsed by, or sponsored by NVIDIA Corporation**.  
-> **NVIDIA** and **GeForce NOW** are trademarks of NVIDIA Corporation. You must use your own GeForce NOW account.
+> [!IMPORTANT]
+> OpenNOW is an independent community project and is not affiliated with, endorsed by, or sponsored by NVIDIA. NVIDIA and GeForce NOW are trademarks of NVIDIA Corporation. You must use your own GeForce NOW account.
 
----
+## Overview
 
-## What is OpenNOW?
+OpenNOW is a community-built Electron app for playing GeForce NOW from an open-source desktop client. The active implementation lives in [`opennow-stable/`](opennow-stable) and uses Electron, React, and TypeScript across the main, preload, and renderer processes.
 
-OpenNOW is an independent, community-built desktop client for [NVIDIA GeForce NOW](https://www.nvidia.com/en-us/geforce-now/), built with Electron and TypeScript. It provides a fully open-source, cross-platform alternative to the official app with zero telemetry, full transparency, and power-user features.
+The project aims to give players a transparent, customizable alternative to the official client without hiding the technical parts from contributors.
 
-- 🔓 **Fully open source** — audit every line, fork it, improve it
-- 🚫 **No telemetry** — OpenNOW collects nothing
-- 🖥️ **Cross-platform** — Windows, macOS, Linux, and ARM64
-- ⚡ **Community-driven** — faster fixes, transparent development
-- 🎮 **Anti-AFK, Stats Overlay, Adjustable Shortcuts** — power-user features built in
+## Highlights
 
-## Gameplay Video (Ball X Pit) (Controller Mode)
-OS: Linux
-Distro: CachyOS 
-
-[![Watch the video](https://img.youtube.com/vi/N2X7VBKp4jg/maxresdefault.jpg)](https://www.youtube.com/watch?v=N2X7VBKp4jg)
-
-## OpenNOW vs Official GeForce NOW
-
-| Feature | OpenNOW | Official GFN | Notes |
-|---------|:-------:|:------------:|-------|
-| **Streaming** | | | |
-| WebRTC Streaming | ✅ | ✅ | Chromium-based in OpenNOW |
-| H.264 Codec | ✅ | ✅ | |
-| H.265 / HEVC Codec | ✅ | ✅ | Full support |
-| AV1 Codec | ✅ | ✅ | |
-| Up to 1080p | ✅ | ✅ | |
-| Up to 4K | ✅ | ✅ | Configurable in settings |
-| 5K Resolution | ✅ | ✅ | Up to 5K@120fps |
-| 120+ FPS | ✅ | ✅ | Configurable: 30/60/120/144/240 |
-| HDR Streaming | 📋 | ✅ | 10-bit color supported, full HDR pipeline planned |
-| AI-Enhanced Stream Mode | ❌ | ✅ | NVIDIA Cinematic Quality — not available |
-| Adjustable Bitrate | ✅ | ✅ | Up to 200 Mbps in OpenNOW |
-| Color Quality (8/10-bit, 4:2:0/4:4:4) | ✅ | ✅ | Full chroma/bit-depth control |
-| **Input** | | | |
-| Keyboard + Mouse | ✅ | ✅ | Full input over GFN data channels |
-| Gamepad Support | ✅ | ✅ | Up to 4 controllers simultaneously |
-| Flight Controls | ❌ | ✅ | Added in official client v2.0.81 |
-| Mouse Sensitivity | ✅ | ❌ | OpenNOW-exclusive setting |
-| Clipboard Paste | ✅ | ❌ | Paste text into cloud session |
-| **Features** | | | |
-| Authentication + Session Restore | ✅ | ✅ | OAuth PKCE, auto-restore on startup |
-| Game Library + Catalog | ✅ | ✅ | Main catalog, library, and public games |
-| Alliance Partners | ✅ | ✅ | NVIDIA + partner providers |
-| Audio Playback | ✅ | ✅ | |
-| Microphone Support | ✅ | ✅ | Voice chat with mute/unmute toggle |
-| Instant Replay | 📋 | ✅ | Planned for future release |
-| Screenshots | 📋 | ✅ | Planned for future release |
-| Stats Overlay | ✅ | ✅ | Detailed: RTT, decode, render, jitter, loss, input queue |
-| Anti-AFK | ✅ | ❌ | OpenNOW-exclusive — prevents idle disconnects |
-| Adjustable Shortcuts | ✅ | 🚧 | Fully customizable in OpenNOW |
-| Session Conflict Resolution | ✅ | ✅ | Resume / New / Cancel existing sessions |
-| Subscription Info | ✅ | ✅ | Hours, tier, entitled resolutions |
-| Region Selection | ✅ | ✅ | Dynamic region discovery |
-| Install-to-Play | ✅ | ✅ | For games not in standard catalog |
-| Discord Integration | ❌ | ✅ | |
-| **Platform Support** | | | |
-| Windows | ✅ | ✅ | NSIS installer + portable |
-| macOS (x64 + ARM) | ✅ | ✅ | Universal builds |
-| Linux | ✅ | 🚧 | Official client has beta native app |
-| ARM64 / Raspberry Pi | ✅ | ❌ | OpenNOW builds for ARM64 Linux |
-| Steam Deck | 📋 | ✅ | |
-| Android / iOS / TV | ❌ | ✅ | Desktop-only for now |
-| **Privacy & Openness** | | | |
-| Open Source | ✅ | ❌ | MIT licensed |
-| No Telemetry | ✅ | ❌ | Zero data collection |
-| Auditable Code | ✅ | ❌ | |
-
-> 💡 **Legend:** ✅ Working  ·  🚧 In Progress  ·  📋 Planned  ·  ❌ Not Available
-
-## Roadmap
-
-| Priority | Feature | Status | Description |
-|:--------:|---------|:------:|-------------|
-| 🔴 | ~~H.265 codec tuning~~ | ✅ Completed | Full HEVC support implemented |
-| 🔴 | ~~Microphone support~~ | ✅ Completed | Voice chat with mute/unmute toggle |
-| 🟡 | Instant replay | 📋 Planned | Clip and save gameplay moments |
-| 🟡 | Screenshots | 📋 Planned | Capture in-stream screenshots |
-| 🟡 | HDR streaming pipeline | 📋 Planned | Full HDR end-to-end support |
-| 🟢 | Latency optimizations | 🚧 Ongoing | Input and render path improvements |
-| 🟢 | Platform stability | 🚧 Ongoing | Cross-platform bug fixes |
-
-> 🔴 High priority · 🟡 Medium priority · 🟢 Ongoing effort
-
-## Features
-
-**Streaming**
-`H.264` `AV1` `H.265 (WIP)` · Up to 4K@240fps · Adjustable bitrate · 8/10-bit color · 4:2:0/4:4:4 chroma
-
-**Input**
-`Keyboard` `Mouse` `Gamepad ×4` · Mouse sensitivity · Clipboard paste
-
-**Client**
-`Stats Overlay` `Anti-AFK` `Adjustable Shortcuts` · OAuth + session restore · Region selection · Alliance partners
-
-**Platforms**
-`Windows` `macOS` `Linux` `ARM64` · Installer, portable, AppImage, deb, dmg
-
-## Platform Support
-
-| Platform | Status | Builds |
-|----------|:------:|--------|
-| Windows | ✅ Working | NSIS installer + portable |
-| macOS | ✅ Working | dmg + zip (x64 and arm64) |
-| Linux x64 | ✅ Working | AppImage + deb |
-| Linux ARM64 | 🚧 Experimental | AppImage + deb (Raspberry Pi 4/5) |
+- Open-source desktop client for Windows, macOS, and Linux
+- Catalog and public game browsing with search and library-aware session handling
+- Stream controls for codec, resolution, FPS, aspect ratio, region, and quality preferences
+- In-stream diagnostics overlay with latency, packet loss, decode, and render stats
+- Built-in screenshots, recording, microphone controls, and controller-friendly navigation
+- Local settings storage and zero-telemetry project direction
 
 ## Quick Start
 
+### Download
+
+Grab the latest build from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases).
+
+Current packaging targets:
+
+| Platform | Formats |
+| --- | --- |
+| Windows | NSIS installer, portable executable |
+| macOS | `dmg`, `zip` |
+| Linux x64 | `AppImage`, `deb` |
+| Linux ARM64 | `AppImage`, `deb` |
+
+### Develop Locally
+
+From the repository root:
+
 ```bash
-git clone https://github.com/OpenCloudGaming/OpenNOW.git
-cd OpenNOW/opennow-stable
+cd opennow-stable
 npm install
+cd ..
 npm run dev
 ```
 
-See [opennow-stable/README.md](./opennow-stable/README.md) for build and packaging details.
+Useful root scripts:
 
-## Download
-
-Grab the latest release for your platform:
-
-👉 **[Download from GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases)**
-
-| Platform | File |
-|----------|------|
-| Windows (installer) | `OpenNOW-v0.2.4-setup-x64.exe` |
-| Windows (portable) | `OpenNOW-v0.2.4-portable-x64.exe` |
-| macOS (x64) | `OpenNOW-v0.2.4-mac-x64.dmg` |
-| macOS (ARM) | `OpenNOW-v0.2.4-mac-arm64.dmg` |
-| Linux (x64) | `OpenNOW-v0.2.4-linux-x86_64.AppImage` |
-| Linux (ARM64) | `OpenNOW-v0.2.4-linux-arm64.AppImage` |
-
-## Architecture
-
-OpenNOW is an Electron app with three processes:
-
-| Layer | Technology | Role |
-|-------|-----------|------|
-| **Main** | Node.js + Electron | OAuth, CloudMatch API, WebSocket signaling, settings |
-| **Renderer** | React 19 + TypeScript | UI, WebRTC streaming, input encoding, stats |
-| **Preload** | Electron contextBridge | Secure IPC between main and renderer |
-
-```
-opennow-stable/src/
-├── main/           # Electron main process
-│   ├── gfn/        # Auth, CloudMatch, signaling, games, subscription
-│   ├── index.ts    # Entry point, IPC handlers, window management
-│   └── settings.ts # Persistent user settings
-├── renderer/src/   # React UI
-│   ├── components/ # Login, Home, Library, Settings, StreamView
-│   ├── gfn/        # WebRTC client, SDP, input protocol
-│   └── App.tsx     # Root component with routing and state
-├── shared/         # Shared types and IPC channel definitions
-│   ├── gfn.ts      # All TypeScript interfaces
-│   └── ipc.ts      # IPC channel constants
-└── preload/        # Context bridge (safe API exposure)
+```bash
+npm run dev
+npm run build
+npm run typecheck
+npm run dist
 ```
 
-## FAQ
+For a fuller setup guide, see [docs/development.md](docs/development.md).
 
-**Is this the official GeForce NOW client?**
-No. OpenNOW is an independent third-party client and is not affiliated with, endorsed by, or sponsored by NVIDIA. NVIDIA and GeForce NOW are trademarks of NVIDIA Corporation.
+## Repository Layout
 
-**Was this project built in Rust before?**
-Yes. OpenNOW originally used Rust/Tauri but switched to Electron for better cross-platform compatibility and faster development.
+```text
+.
+├── opennow-stable/   Electron app workspace
+├── docs/             Local project documentation
+├── .github/          Workflows, templates, contributing docs
+├── logo.png          Project logo
+└── img.png           App preview image
+```
 
-**Does OpenNOW collect any data?**
-No. OpenNOW has zero telemetry. Your credentials are stored locally and only sent to NVIDIA's authentication servers.
+## Documentation
+
+- [Development Guide](docs/development.md)
+- [Contributing Guide](.github/CONTRIBUTING.md)
+- [Project Website](https://opennow.zortos.me)
+
+## Architecture At A Glance
+
+OpenNOW is split into three Electron layers:
+
+| Layer | Tech | Responsibility |
+| --- | --- | --- |
+| Main | Electron + Node.js | OAuth, CloudMatch/session orchestration, signaling, caching, local file handling |
+| Preload | Electron `contextBridge` | Safe IPC bridge between the app shell and UI |
+| Renderer | React + TypeScript | Login flow, browsing, settings, WebRTC playback, diagnostics, controls |
+
+The code lives under [`opennow-stable/src/`](opennow-stable/src), with shared TypeScript types and IPC contracts in [`opennow-stable/src/shared/`](opennow-stable/src/shared).
 
 ## Contributing
 
-Contributions are welcome! Open an issue or PR on [GitHub](https://github.com/OpenCloudGaming/OpenNOW).
+Contributions are welcome. If you want to help:
 
-## Support Me
+1. Read the [contributing guide](.github/CONTRIBUTING.md).
+2. Run `npm run typecheck` and `npm run build` before opening a PR.
+3. Keep changes focused and explain user-facing impact clearly.
 
-<p align="center">
-  <a href="https://github.com/sponsors/zortos293">
-    <img src="https://img.shields.io/badge/Support%20Me-GitHub%20Sponsors-ea4aaa?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Support Me">
-  </a>
-</p>
+## FAQ
+
+### Is this the official GeForce NOW client?
+
+No. OpenNOW is a third-party, community-maintained client.
+
+### Does OpenNOW collect telemetry?
+
+The current project direction is zero telemetry. Settings and media stay on the local machine, and authentication is performed against NVIDIA services.
+
+### What happened to the earlier Tauri/Rust version?
+
+The active client in this repository is the Electron-based app in [`opennow-stable/`](opennow-stable).
 
 ## Star History
 
@@ -245,4 +166,4 @@ Contributions are welcome! Open an issue or PR on [GitHub](https://github.com/Op
 
 ## License
 
-[MIT](./LICENSE) © Zortos
+OpenNOW is licensed under the [MIT License](LICENSE).
