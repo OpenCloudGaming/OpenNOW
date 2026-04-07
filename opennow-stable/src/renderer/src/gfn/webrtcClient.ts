@@ -2,10 +2,12 @@ import type {
   IceCandidatePayload,
   ColorQuality,
   IceServer,
+  NegotiatedStreamProfile,
   SessionInfo,
   VideoCodec,
   MicrophoneMode,
 } from "@shared/gfn";
+import { colorQualityRequiresHevc } from "@shared/gfn";
 
 import {
   InputEncoder,
@@ -439,6 +441,65 @@ function normalizeCodecName(codecId: string): string {
   }
 
   return codecId;
+}
+
+function resolveOfferSettings(settings: OfferSettings, negotiated?: NegotiatedStreamProfile): OfferSettings {
+  if (!negotiated) {
+    return settings;
+  }
+
+  const resolved: OfferSettings = {
+    ...settings,
+    resolution: negotiated.resolution ?? settings.resolution,
+    fps: negotiated.fps ?? settings.fps,
+    colorQuality: negotiated.colorQuality ?? settings.colorQuality,
+  };
+
+  if (colorQualityRequiresHevc(resolved.colorQuality) && resolved.codec === "H264") {
+    resolved.codec = "H265";
+  }
+
+  return resolved;
+}
+
+function extractNegotiatedVideoCodec(sdp: string): VideoCodec | undefined {
+  const lines = sdp.split(/\r?\n/);
+  const payloadToCodec = new Map<string, VideoCodec>();
+  let videoPayloadOrder: string[] = [];
+  let inVideoSection = false;
+
+  for (const line of lines) {
+    if (line.startsWith("m=video")) {
+      inVideoSection = true;
+      videoPayloadOrder = line.split(/\s+/).slice(3);
+      continue;
+    }
+    if (line.startsWith("m=") && inVideoSection) {
+      break;
+    }
+    if (!inVideoSection || !line.startsWith("a=rtpmap:")) {
+      continue;
+    }
+
+    const match = line.match(/^a=rtpmap:(\d+)\s+([^/\s]+)/i);
+    if (!match) {
+      continue;
+    }
+
+    const normalized = normalizeCodecName(match[2]);
+    if (normalized === "H264" || normalized === "H265" || normalized === "AV1") {
+      payloadToCodec.set(match[1], normalized);
+    }
+  }
+
+  for (const payload of videoPayloadOrder) {
+    const codec = payloadToCodec.get(payload);
+    if (codec) {
+      return codec;
+    }
+  }
+
+  return undefined;
 }
 
 export class GfnWebRtcClient {
@@ -3259,14 +3320,18 @@ export class GfnWebRtcClient {
 
   async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
     this.cleanupPeerConnection();
+    const effectiveSettings = resolveOfferSettings(settings, session.negotiatedStreamProfile);
 
     this.log("=== handleOffer START ===");
     this.log(`Session: id=${session.sessionId}, status=${session.status}, serverIp=${session.serverIp}`);
     this.log(`Signaling: server=${session.signalingServer}, url=${session.signalingUrl}`);
     this.log(`MediaConnectionInfo: ${session.mediaConnectionInfo ? `ip=${session.mediaConnectionInfo.ip}, port=${session.mediaConnectionInfo.port}` : "NONE"}`);
     this.log(
-      `Settings: codec=${settings.codec}, colorQuality=${settings.colorQuality}, resolution=${settings.resolution}, fps=${settings.fps}, maxBitrate=${settings.maxBitrateKbps}kbps`,
+      `Settings: codec=${effectiveSettings.codec}, colorQuality=${effectiveSettings.colorQuality}, resolution=${effectiveSettings.resolution}, fps=${effectiveSettings.fps}, maxBitrate=${effectiveSettings.maxBitrateKbps}kbps`,
     );
+    if (session.negotiatedStreamProfile) {
+      this.log(`Negotiated stream profile override: ${JSON.stringify(session.negotiatedStreamProfile)}`);
+    }
     this.log(`ICE servers: ${session.iceServers.length} (${session.iceServers.map(s => s.urls.join(",")).join(" | ")})`);
     this.log(`Offer SDP length: ${offerSdp.length} chars`);
     // Log full offer SDP for ICE debugging
@@ -3280,7 +3345,7 @@ export class GfnWebRtcClient {
     this.partialReliableThresholdMs = negotiatedPartialReliable ?? GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
     this.negotiatedMaxBitrateKbps = Math.max(
       GfnWebRtcClient.DECODER_MIN_RECOVERY_BITRATE_KBPS,
-      Math.floor(settings.maxBitrateKbps),
+      Math.floor(effectiveSettings.maxBitrateKbps),
     );
     this.currentBitrateCeilingKbps = this.negotiatedMaxBitrateKbps;
     this.log(
@@ -3416,14 +3481,14 @@ export class GfnWebRtcClient {
     const serverIceUfrag = extractIceUfragFromOffer(processedOffer);
     this.log(`Server ICE ufrag: "${serverIceUfrag}"`);
 
-    const preferredHevcProfileId = hevcPreferredProfileId(settings.colorQuality);
+    const preferredHevcProfileId = hevcPreferredProfileId(effectiveSettings.colorQuality);
 
     // 3. Filter to preferred codec — but only if the browser actually supports it
-    let effectiveCodec = settings.codec;
+    let effectiveCodec = effectiveSettings.codec;
     const supported = this.getSupportedVideoCodecs();
     this.log(`Browser supported video codecs: ${supported.join(", ") || "unknown"}`);
 
-    if (settings.codec === "H265") {
+    if (effectiveSettings.codec === "H265") {
       const hevcProfiles = this.getSupportedHevcProfiles();
       if (hevcProfiles.size > 0) {
         this.log(`Browser HEVC profile-id support: ${Array.from(hevcProfiles).join(", ")}`);
@@ -3461,8 +3526,8 @@ export class GfnWebRtcClient {
       }
     }
 
-    if (supported.length > 0 && !supported.includes(settings.codec)) {
-      this.log(`Warning: ${settings.codec} not reported in browser codec list; forcing requested codec anyway`);
+    if (supported.length > 0 && !supported.includes(effectiveSettings.codec)) {
+      this.log(`Warning: ${effectiveSettings.codec} not reported in browser codec list; forcing requested codec anyway`);
     }
     this.log(`Effective codec: ${effectiveCodec} (preferred HEVC profile-id=${preferredHevcProfileId})`);
     const filteredOffer = preferCodec(processedOffer, effectiveCodec, {
@@ -3493,8 +3558,8 @@ export class GfnWebRtcClient {
 
     // Munge answer SDP: inject b=AS: bitrate limits and stereo=1 for opus
     if (answer.sdp) {
-      answer.sdp = mungeAnswerSdp(answer.sdp, settings.maxBitrateKbps);
-      this.log(`Answer SDP munged (b=AS:${settings.maxBitrateKbps}, stereo=1)`);
+      answer.sdp = mungeAnswerSdp(answer.sdp, effectiveSettings.maxBitrateKbps);
+      this.log(`Answer SDP munged (b=AS:${effectiveSettings.maxBitrateKbps}, stereo=1)`);
     }
 
     await pc.setLocalDescription(answer);
@@ -3539,7 +3604,12 @@ export class GfnWebRtcClient {
 
     const credentials = extractIceCredentials(finalSdp);
     this.log(`Extracted ICE credentials: ufrag=${credentials.ufrag}, pwd=${credentials.pwd.slice(0, 8)}...`);
-    const { width, height } = parseResolution(settings.resolution);
+    const negotiatedVideoCodec = extractNegotiatedVideoCodec(finalSdp);
+    if (negotiatedVideoCodec) {
+      effectiveCodec = negotiatedVideoCodec;
+      this.log(`Negotiated video codec from local SDP: ${effectiveCodec}`);
+    }
+    const { width, height } = parseResolution(effectiveSettings.resolution);
     const viewportRect = this.options.videoElement.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     const baseCssViewportWidth = Math.max(viewportRect.width, window.innerWidth || 0);
@@ -3564,11 +3634,11 @@ export class GfnWebRtcClient {
       height,
       clientViewportWidth,
       clientViewportHeight,
-      fps: settings.fps,
-      maxBitrateKbps: settings.maxBitrateKbps,
+      fps: effectiveSettings.fps,
+      maxBitrateKbps: effectiveSettings.maxBitrateKbps,
       partialReliableThresholdMs: this.partialReliableThresholdMs,
       codec: effectiveCodec,
-      colorQuality: settings.colorQuality,
+      colorQuality: effectiveSettings.colorQuality,
       credentials,
     });
 

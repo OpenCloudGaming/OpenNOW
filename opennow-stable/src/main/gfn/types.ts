@@ -112,6 +112,23 @@ export interface CloudMatchResponse {
         credential?: string;
       }>;
     };
+    sessionRequestData?: {
+      clientRequestMonitorSettings?: Array<{
+        widthInPixels?: number;
+        heightInPixels?: number;
+        framesPerSecond?: number;
+      }>;
+      requestedStreamingFeatures?: {
+        bitDepth?: number;
+        chromaFormat?: number;
+        enabledL4S?: boolean;
+      };
+    };
+    finalizedStreamingFeatures?: {
+      bitDepth?: number;
+      chromaFormat?: number;
+      enabledL4S?: boolean;
+    };
   };
 }
 
