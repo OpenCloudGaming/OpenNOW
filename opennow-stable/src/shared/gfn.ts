@@ -275,6 +275,13 @@ export interface MediaConnectionInfo {
   port: number;
 }
 
+export interface NegotiatedStreamProfile {
+  resolution?: string;
+  fps?: number;
+  colorQuality?: ColorQuality;
+  enableL4S?: boolean;
+}
+
 export interface SessionInfo {
   sessionId: string;
   status: number;
@@ -288,6 +295,7 @@ export interface SessionInfo {
   gpuType?: string;
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
+  negotiatedStreamProfile?: NegotiatedStreamProfile;
   clientId?: string;
   deviceId?: string;
 }
