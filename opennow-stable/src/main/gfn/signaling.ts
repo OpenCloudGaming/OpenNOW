@@ -26,6 +26,58 @@ interface SignalingMessage {
   };
 }
 
+interface PeerInfoPayload {
+  browser: string;
+  browserVersion: string;
+  connected: boolean;
+  id: number;
+  name: string;
+  peerRole: number;
+  resolution: string;
+  version: number;
+}
+
+export function buildSignInUrl(options: {
+  signalingServer: string;
+  sessionId: string;
+  peerName: string;
+  signalingUrl?: string;
+  pairingId?: string;
+}): string {
+  const fallbackHost = options.signalingServer.includes(":")
+    ? options.signalingServer
+    : `${options.signalingServer}:443`;
+  const baseUrl = options.signalingUrl?.trim() || `wss://${fallbackHost}/nvst/`;
+  const signInUrl = new URL(baseUrl);
+
+  signInUrl.protocol = "wss:";
+  signInUrl.pathname = `${signInUrl.pathname.replace(/\/?$/, "/")}sign_in`;
+  signInUrl.search = "";
+  signInUrl.searchParams.set("peer_id", options.peerName);
+  signInUrl.searchParams.set("version", "2");
+  signInUrl.searchParams.set("peer_role", "1");
+  signInUrl.searchParams.set("pairing_id", options.pairingId ?? options.sessionId);
+
+  return signInUrl.toString();
+}
+
+export function buildPeerInfoPayload(options: {
+  peerId: number;
+  peerName: string;
+  resolution?: string;
+}): PeerInfoPayload {
+  return {
+    browser: "Chrome",
+    browserVersion: "131",
+    connected: true,
+    id: options.peerId,
+    name: options.peerName,
+    peerRole: 1,
+    resolution: options.resolution ?? "1920x1080",
+    version: 2,
+  };
+}
+
 export class GfnSignalingClient {
   private ws: WebSocket | null = null;
   private peerId = 2;
@@ -33,27 +85,31 @@ export class GfnSignalingClient {
   private ackCounter = 0;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private listeners = new Set<(event: MainToRendererSignalingEvent) => void>();
+  private readonly signalingServer: string;
+  private readonly sessionId: string;
+  private readonly signalingUrl?: string;
+  private readonly pairingId?: string;
 
   constructor(
-    private readonly signalingServer: string,
-    private readonly sessionId: string,
-    private readonly signalingUrl?: string,
-  ) {}
+    signalingServer: string,
+    sessionId: string,
+    signalingUrl?: string,
+    pairingId?: string,
+  ) {
+    this.signalingServer = signalingServer;
+    this.sessionId = sessionId;
+    this.signalingUrl = signalingUrl;
+    this.pairingId = pairingId;
+  }
 
   private buildSignInUrl(): string {
-    const fallbackHost = this.signalingServer.includes(":")
-      ? this.signalingServer
-      : `${this.signalingServer}:443`;
-    const baseUrl = this.signalingUrl?.trim() || `wss://${fallbackHost}/nvst/`;
-    const signInUrl = new URL(baseUrl);
-
-    signInUrl.protocol = "wss:";
-    signInUrl.pathname = `${signInUrl.pathname.replace(/\/?$/, "/")}sign_in`;
-    signInUrl.search = "";
-    signInUrl.searchParams.set("peer_id", this.peerName);
-    signInUrl.searchParams.set("version", "2");
-
-    const url = signInUrl.toString();
+    const url = buildSignInUrl({
+      signalingServer: this.signalingServer,
+      sessionId: this.sessionId,
+      peerName: this.peerName,
+      signalingUrl: this.signalingUrl,
+      pairingId: this.pairingId,
+    });
     console.log("[Signaling] URL:", url, "(server:", this.signalingServer, ", signalingUrl:", this.signalingUrl, ")");
     return url;
   }
@@ -98,16 +154,10 @@ export class GfnSignalingClient {
   private sendPeerInfo(): void {
     this.sendJson({
       ackid: this.nextAckId(),
-      peer_info: {
-        browser: "Chrome",
-        browserVersion: "131",
-        connected: true,
-        id: this.peerId,
-        name: this.peerName,
-        peerRole: 0,
-        resolution: "1920x1080",
-        version: 2,
-      },
+      peer_info: buildPeerInfoPayload({
+        peerId: this.peerId,
+        peerName: this.peerName,
+      }),
     });
   }
 
