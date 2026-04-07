@@ -1,7 +1,8 @@
 import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage, AspectRatio } from "@shared/gfn";
+import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage, AspectRatio, KeyboardLayout } from "@shared/gfn";
+import { DEFAULT_KEYBOARD_LAYOUT } from "@shared/gfn";
 
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
@@ -63,6 +64,8 @@ export interface Settings {
   windowWidth: number;
   /** Window height */
   windowHeight: number;
+  /** Keyboard layout for mapping physical keys inside the remote session */
+  keyboardLayout: KeyboardLayout;
   /** In-game language setting (sent to GFN servers via languageCode parameter) */
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
@@ -106,6 +109,7 @@ const DEFAULT_SETTINGS: Settings = {
   sessionClockShowDurationSeconds: 30,
   windowWidth: 1400,
   windowHeight: 900,
+  keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
   gameLanguage: "en_US",
   enableL4S: false,
 };

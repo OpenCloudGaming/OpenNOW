@@ -15,8 +15,10 @@ import type {
 } from "@shared/gfn";
 
 import {
+  DEFAULT_KEYBOARD_LAYOUT,
   colorQualityBitDepth,
   colorQualityChromaFormat,
+  resolveGfnKeyboardLayout,
 } from "@shared/gfn";
 
 import type { CloudMatchRequest, CloudMatchResponse, GetSessionsResponse } from "./types";
@@ -726,8 +728,9 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   const body = buildSessionRequestBody(input);
 
   const base = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
+  const keyboardLayout = resolveGfnKeyboardLayout(input.settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);
   const languageCode = input.settings.gameLanguage ?? "en_US";
-  const url = `${base}/v2/session?keyboardLayout=en-US&languageCode=${languageCode}`;
+  const url = `${base}/v2/session?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`;
   const response = await fetch(url, {
     method: "POST",
     headers: requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: true }),
@@ -1008,10 +1011,12 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     maxBitrateMbps: 75,
     codec: "H264",
     colorQuality: "8bit_420",
+    keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
     gameLanguage: "en_US",
     enableL4S: false,
   };
 
+  const keyboardLayout = resolveGfnKeyboardLayout(settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);
   const languageCode = settings.gameLanguage ?? "en_US";
 
   // The session list endpoint returns the zone LB hostname in sessionControlInfo.ip.
@@ -1048,7 +1053,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     }
   }
 
-  const claimUrl = `https://${effectiveServerIp}/v2/session/${input.sessionId}?keyboardLayout=en-US&languageCode=${languageCode}`;
+  const claimUrl = `https://${effectiveServerIp}/v2/session/${input.sessionId}?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`;
 
   // Pre-claim validation: verify the session is still alive and in ready state before attempting claim
   // This prevents sending a claim to an expired/dead session
