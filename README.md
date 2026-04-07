@@ -12,6 +12,8 @@
   Browse the catalog, tune your stream, and launch sessions from a community-built app.
 </p>
 
+
+
 <p align="center">
   <a href="https://github.com/OpenCloudGaming/OpenNOW/releases">
     <img src="https://img.shields.io/github/v/tag/OpenCloudGaming/OpenNOW?style=for-the-badge&label=Download&color=brightgreen" alt="Download">
@@ -151,6 +153,16 @@ The current project direction is zero telemetry. Settings and media stay on the 
 ### What happened to the earlier Tauri/Rust version?
 
 The active client in this repository is the Electron-based app in [`opennow-stable/`](opennow-stable).
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=OpenCloudGaming%2FOpenNOW&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## License
 
