@@ -7,7 +7,8 @@ import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import type { StreamLagReason } from "../gfn/webrtcClient";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
-import type { MicrophoneMode, ScreenshotEntry, RecordingEntry } from "@shared/gfn";
+import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
+import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
 import { isShortcutMatch, normalizeShortcut } from "../shortcuts";
 
 interface StreamViewProps {
@@ -34,7 +35,8 @@ interface StreamViewProps {
     open: boolean;
     gameTitle: string;
   };
-  sessionElapsedSeconds: number;
+  sessionStartedAtMs: number | null;
+  isStreaming: boolean;
   sessionClockShowEveryMinutes: number;
   sessionClockShowDurationSeconds: number;
   streamWarning: {
@@ -61,7 +63,7 @@ interface StreamViewProps {
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   onScreenshotShortcutChange: (value: string) => void;
   onRecordingShortcutChange: (value: string) => void;
-  remainingPlaytimeText: string;
+  subscriptionInfo: SubscriptionInfo | null;
   micTrack?: MediaStreamTrack | null;
   className?: string;
 }
@@ -279,7 +281,8 @@ export function StreamView({
   antiAfkEnabled,
   escHoldReleaseIndicator,
   exitPrompt,
-  sessionElapsedSeconds,
+  sessionStartedAtMs,
+  isStreaming,
   sessionClockShowEveryMinutes,
   sessionClockShowDurationSeconds,
   streamWarning,
@@ -301,7 +304,7 @@ export function StreamView({
   onMicrophoneModeChange,
   onScreenshotShortcutChange,
   onRecordingShortcutChange,
-  remainingPlaytimeText,
+  subscriptionInfo,
   micTrack,
   hideStreamButtons = false,
   className,
@@ -448,7 +451,6 @@ export function StreamView({
   const inputQueueColor = getInputQueueColor(stats.inputQueueBufferedBytes, stats.inputQueueDropCount);
   const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
   const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
-  const sessionTimeText = formatElapsed(sessionElapsedSeconds);
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
   const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
   const isMacClient = navigator.platform?.toLowerCase().includes("mac") || navigator.userAgent.includes("Macintosh");
@@ -1017,7 +1019,7 @@ export function StreamView({
           <SideBar title="Settings" className="sv-sidebar" onClose={() => setShowSideBar(false)}>
             <div className="sidebar-stat-line" title="Total remaining playtime from subscription">
               <span className="sidebar-stat-label">Remaining Playtime</span>
-              <span className="settings-value-badge">{remainingPlaytimeText}</span>
+              <RemainingPlaytimeIndicator subscriptionInfo={subscriptionInfo} startedAtMs={sessionStartedAtMs} active={isStreaming} className="settings-value-badge" />
             </div>
             <div className="sidebar-tabs" role="tablist" aria-label="Sidebar sections">
               <button
@@ -1487,8 +1489,7 @@ export function StreamView({
           title="Current gaming session elapsed time"
           aria-hidden={!showSessionClock}
         >
-          <Clock3 size={14} />
-          <span>Session {sessionTimeText}</span>
+          <SessionElapsedIndicator startedAtMs={sessionStartedAtMs} active={isStreaming} />
         </div>
       )}
 

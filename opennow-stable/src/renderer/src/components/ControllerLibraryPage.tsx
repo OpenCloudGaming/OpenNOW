@@ -4,6 +4,7 @@ import type { GameInfo, MediaListingEntry, Settings } from "@shared/gfn";
 import { Star, Clock, Calendar, Repeat2 } from "lucide-react";
 import { ButtonA, ButtonB, ButtonX, ButtonY, ButtonPSCross, ButtonPSCircle, ButtonPSSquare, ButtonPSTriangle } from "./ControllerButtons";
 import { getStoreDisplayName } from "./GameCard";
+import { SessionElapsedIndicator, RemainingPlaytimeIndicator, CurrentClock } from "./ElapsedSessionIndicators";
 import { type PlaytimeStore, formatPlaytime, formatLastPlayed } from "../utils/usePlaytime";
 
 interface ControllerLibraryPageProps {
@@ -15,7 +16,7 @@ interface ControllerLibraryPageProps {
   favoriteGameIds: string[];
   userName?: string;
   userAvatarUrl?: string;
-  remainingPlaytimeText?: string;
+  subscriptionInfo: import("@shared/gfn").SubscriptionInfo | null;
   playtimeData?: PlaytimeStore;
   onSelectGame: (id: string) => void;
   onSelectGameVariant: (gameId: string, variantId: string) => void;
@@ -45,7 +46,8 @@ interface ControllerLibraryPageProps {
   aspectRatioOptions?: string[];
   onSettingChange?: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   onExitControllerMode?: () => void;
-  sessionElapsedSeconds?: number;
+  sessionStartedAtMs?: number | null;
+  isStreaming?: boolean;
 }
 
 type Direction = "up" | "down" | "left" | "right";
@@ -113,7 +115,7 @@ export function ControllerLibraryPage({
   pendingSwitchGameCover,
   userName = "Player One",
   userAvatarUrl,
-  remainingPlaytimeText = "--",
+  subscriptionInfo,
   playtimeData = {},
   settings = {},
   resolutionOptions = [],
@@ -122,7 +124,8 @@ export function ControllerLibraryPage({
   aspectRatioOptions = [],
   onSettingChange,
   onExitControllerMode,
-  sessionElapsedSeconds = 0,
+  sessionStartedAtMs = null,
+  isStreaming = false,
 }: ControllerLibraryPageProps): JSX.Element {
   const [isEntering, setIsEntering] = useState(true);
   const initialCategoryIndex = (() => {
@@ -160,7 +163,6 @@ export function ControllerLibraryPage({
   };
   const [listTranslateY, setListTranslateY] = useState(0);
   const favoriteGameIdSet = useMemo(() => new Set(favoriteGameIds), [favoriteGameIds]);
-  const [time, setTime] = useState(new Date());
   const [selectedSettingIndex, setSelectedSettingIndex] = useState(0);
   const [microphoneDevices, setMicrophoneDevices] = useState<{ deviceId: string; label: string }[]>([]);
   const [settingsSubcategory, setSettingsSubcategory] = useState<SettingsSubcategory>("root");
@@ -196,10 +198,6 @@ export function ControllerLibraryPage({
     };
   }, []);
 
-  useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
 
   // poster measurement handled by `attachPosterRef` callback ref
 
@@ -878,8 +876,8 @@ export function ControllerLibraryPage({
 
       <div className="xmb-top-right">
         <div className="xmb-clock-wrap">
-          <div className="xmb-clock">{formatTime(time)}</div>
-          <div className="xmb-remaining-playtime">{remainingPlaytimeText} left</div>
+          <CurrentClock className="xmb-clock" />
+          <div className="xmb-remaining-playtime"><RemainingPlaytimeIndicator subscriptionInfo={subscriptionInfo} startedAtMs={sessionStartedAtMs} active={isStreaming} className="xmb-remaining-playtime-text" /></div>
         </div>
         <div className="xmb-user-badge">
           {userAvatarUrl ? (
@@ -1142,8 +1140,7 @@ export function ControllerLibraryPage({
                       <>
                         {storeName && <span className="xmb-game-meta-chip xmb-game-meta-chip--store">{storeName}</span>}
                         <span className="xmb-game-meta-chip xmb-game-meta-chip--session">
-                          <Clock size={12} className="xmb-meta-icon" />
-                          {formatElapsed(sessionElapsedSeconds)}
+                          <SessionElapsedIndicator startedAtMs={sessionStartedAtMs ?? null} active={isStreaming} />
                         </span>
                         <span className="xmb-game-meta-chip xmb-game-meta-chip--playtime">
                           <Clock size={10} className="xmb-meta-icon" />
