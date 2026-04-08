@@ -749,6 +749,37 @@ function extractSeatSetupStep(payload: CloudMatchResponse): number | undefined {
   return undefined;
 }
 
+function extractNegotiatedStreamProfile(payload: CloudMatchResponse): NegotiatedStreamProfile | undefined {
+  const monitor = payload.session.monitorSettings?.[0];
+  const features = payload.session.finalizedStreamingFeatures;
+
+  const width = monitor?.widthInPixels;
+  const height = monitor?.heightInPixels;
+  const fps = monitor?.framesPerSecond;
+  const bitDepth = features?.bitDepth;
+  const chromaFormat = features?.chromaFormat;
+
+  const resolution =
+    typeof width === "number" && width > 0 && typeof height === "number" && height > 0
+      ? `${width}x${height}`
+      : undefined;
+
+  let colorQuality: ColorQuality | undefined;
+  if (typeof bitDepth === "number" && typeof chromaFormat === "number") {
+    const is10bit = bitDepth === 10;
+    const is444 = chromaFormat === 2;
+    colorQuality = is10bit
+      ? is444 ? "10bit_444" : "10bit_420"
+      : is444 ? "8bit_444" : "8bit_420";
+  }
+
+  if (resolution === undefined && fps === undefined && colorQuality === undefined) {
+    return undefined;
+  }
+
+  return { resolution, fps: typeof fps === "number" && fps > 0 ? fps : undefined, colorQuality };
+}
+
 function normalizeSessionAdInfo(ad: NonNullable<CloudMatchResponse["session"]["sessionAds"]>[number], index: number): SessionAdInfo | null {
   const adId = toOptionalString(ad.adId);
 

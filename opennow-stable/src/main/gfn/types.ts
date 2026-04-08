@@ -164,6 +164,11 @@ export interface CloudMatchResponse {
       chromaFormat?: number;
       enabledL4S?: boolean;
     };
+    monitorSettings?: Array<{
+      widthInPixels?: number;
+      heightInPixels?: number;
+      framesPerSecond?: number;
+    }>;
   };
 }
 

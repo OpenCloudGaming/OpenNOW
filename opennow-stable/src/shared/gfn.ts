@@ -333,6 +333,13 @@ export interface MediaConnectionInfo {
   port: number;
 }
 
+/** Server-negotiated stream profile received from CloudMatch after session ready */
+export interface NegotiatedStreamProfile {
+  resolution?: string;
+  fps?: number;
+  colorQuality?: ColorQuality;
+}
+
 export interface SessionAdInfo {
   adId: string;
   state?: number;
