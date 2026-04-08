@@ -1,17 +1,17 @@
 {
-  "capturedAt": "2026-04-08T05:41:31.133Z",
-  "mode": "poll-session",
-  "sourceHost": "prod.cloudmatchbeta.nvidiagrid.net",
-  "effectiveHost": "66-22-133-150.cloudmatchbeta.nvidiagrid.net",
+  "capturedAt": "2026-04-08T07:22:52.168Z",
+  "mode": "claim-session-poll",
+  "sourceHost": "66-22-133-150.cloudmatchbeta.nvidiagrid.net",
+  "effectiveHost": "66-22-133-151.cloudmatchbeta.nvidiagrid.net",
   "repolledDirectly": false,
-  "resolvedServerIp": "66-22-133-150.cloudmatchbeta.nvidiagrid.net",
+  "resolvedServerIp": "66-22-133-151.cloudmatchbeta.nvidiagrid.net",
   "payload": {
     "requestStatus": {
       "statusCode": 1,
       "statusDescription": "SUCCESS_STATUS",
       "unifiedErrorCode": 0,
-      "requestId": "91977428-86c6-4bed-897f-f26d1622422f",
-      "serverId": "NP-ATL-03",
+      "requestId": "8c544a83-7c2c-44bd-8381-e27575c44890",
+      "serverId": "NP-MIA-03",
       "countryCode": null
     },
     "session": {
@@ -19,18 +19,18 @@
       "status": 2,
       "seatSetupInfo": {
         "queuePosition": 0,
-        "seatSetupEta": 20000,
-        "seatSetupStep": 3
+        "seatSetupEta": 0,
+        "seatSetupStep": 4
       },
       "sessionAdsRequired": false,
       "errorCode": 1,
-      "gpuType": "3050b / L40G-6",
+      "gpuType": "3050b / L40-6",
       "sessionControlInfo": {
         "ip": "np-mia-03.cloudmatchbeta.nvidiagrid.net",
         "port": 443,
         "protocol": 0,
         "appLevelProtocol": 5,
-        "resourcePath": "/v2/session/96e9d71d-2aa3-1569-d89a-fa6fa7a0ed21",
+        "resourcePath": "/v2/session/26e64707-751b-a676-45d3-31ca17099e03",
         "usage": 10
       },
       "connectionInfo": [
@@ -39,7 +39,7 @@
           "port": 322,
           "protocol": 1,
           "appLevelProtocol": 6,
-          "resourcePath": "rtsps://66-22-133-150.cloudmatchbeta.nvidiagrid.net:322",
+          "resourcePath": "rtsps://66-22-133-151.cloudmatchbeta.nvidiagrid.net:322",
           "usage": 14
         },
         {
@@ -47,7 +47,7 @@
           "port": 48322,
           "protocol": 1,
           "appLevelProtocol": 6,
-          "resourcePath": "rtsps://66-22-133-150.cloudmatchbeta.nvidiagrid.net:48322",
+          "resourcePath": "rtsps://66-22-133-151.cloudmatchbeta.nvidiagrid.net:48322",
           "usage": 14
         }
       ],

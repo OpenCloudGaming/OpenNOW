@@ -338,6 +338,7 @@ export interface NegotiatedStreamProfile {
   resolution?: string;
   fps?: number;
   colorQuality?: ColorQuality;
+  enableL4S?: boolean;
 }
 
 export interface SessionAdInfo {

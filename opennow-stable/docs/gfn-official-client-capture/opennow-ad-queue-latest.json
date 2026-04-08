@@ -1,36 +1,36 @@
 {
-  "capturedAt": "2026-04-08T06:02:41.024Z",
+  "capturedAt": "2026-04-08T07:48:10.138Z",
   "source": "OpenNOW ad-queue poll",
   "sourceHost": "prod.cloudmatchbeta.nvidiagrid.net",
   "sessionId": "<redacted>",
   "sessionStatus": 1,
   "sessionAdsRequired": true,
-  "queuePosition": 3,
+  "queuePosition": 6,
   "seatSetupInfo": {
-    "queuePosition": 3,
+    "queuePosition": 6,
     "seatSetupEta": 30000,
     "seatSetupStep": 1
   },
   "sessionAdsRaw": [
     {
-      "adId": "eyJhbGciOiJIUzI1NiIsImtpZCI6IkEiLCJ0eXAiOiJKV1QifQ.eyJleHAiOjE3NzU2Mjk4MzksImp0aSI6ImE4ZDllMjhjLTVjN2MtNDkwOC1hMDNhLWE2YWVmMDI1ZTJhOC9QY3RvNnRQMWdxdE9EZG53d0lJblg4UU9keEowWkNuVFhyRDR1US9yakVINzlWcCJ9.aKcIhadVemFh6kLzhL4te3wCsvQQ52fycxEX23wSc80",
-      "adUrl": "https://creative-f1.simulmedia-apis.com/3a6ddb09-655d-45e1-9dbe-58d70c17ebc1.mp4",
+      "adId": "eyJhbGciOiJIUzI1NiIsImtpZCI6IkEiLCJ0eXAiOiJKV1QifQ.eyJleHAiOjE3NzU2MzYyNTgsImp0aSI6ImE4ZDllMjhjLTVjN2MtNDkwOC1hMDNhLWE2YWVmMDI1ZTJhOC9LMkM4bVc3NHVyUXgzQkUzWGFrT0NJb1lZZGRibjBnZmxMLWZPUS9WaVVhQ05acCJ9.PiGYwJKo6vPXUdGQX1MlrRcTEeCmkrfGtmntOJun-t4",
+      "adUrl": "https://creative-f1.simulmedia-apis.com/50830146-1cc9-4a0a-ac78-142a7b95c730.mp4",
       "adLengthInSeconds": 30,
       "adMediaFiles": [
         {
-          "mediaFileUrl": "https://creative-f1.simulmedia-apis.com/3a6ddb09-655d-45e1-9dbe-58d70c17ebc1.mp4",
+          "mediaFileUrl": "https://creative-f1.simulmedia-apis.com/50830146-1cc9-4a0a-ac78-142a7b95c730.mp4",
           "encodingProfile": "mp4deinterlaced720p"
         },
         {
-          "mediaFileUrl": "https://creative-f1.simulmedia-apis.com/cf13fd1f-e445-4cbe-b678-3f5e80ebc3ef/creative.m3u8",
+          "mediaFileUrl": "https://creative-f1.simulmedia-apis.com/8eaf4e01-dde1-4dee-8146-91f1d4ca5f23/creative.m3u8",
           "encodingProfile": "hlsadaptive"
         },
         {
-          "mediaFileUrl": "https://creative-f1.simulmedia-apis.com/ea68cd64-0a25-410e-af9b-48ab8e349025.webm",
+          "mediaFileUrl": "https://creative-f1.simulmedia-apis.com/065898ee-0966-4dca-a516-509feb89ea78.webm",
           "encodingProfile": "webm"
         }
       ],
-      "adState": 2
+      "adState": 1
     }
   ],
   "opportunity": null,

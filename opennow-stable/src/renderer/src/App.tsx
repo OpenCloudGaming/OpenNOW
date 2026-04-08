@@ -323,6 +323,15 @@ function getEffectiveAdState(
     return session.adState;
   }
 
+  if ((session.status === 1 || session.status === 2 || session.status === 3) && session.queuePosition !== undefined) {
+    return {
+      isAdsRequired: true,
+      message: "Free-tier queue ads begin as soon as you enter queue.",
+      ads: [],
+      serverSentEmptyAds: true,
+    };
+  }
+
   if (!shouldShowQueueAdsForMembership(subscription, authSession)) {
     return undefined;
   }
@@ -1030,13 +1039,31 @@ export function App(): JSX.Element {
 
   const handleQueueAdPlaybackEvent = useCallback((event: "playing" | "paused" | "ended", adId: string): void => {
     const lastAction = adReportStateRef.current[adId];
-    const nextAction = getNextAdReportAction(lastAction, event);
-    if (!nextAction) {
+
+    if (event === "playing") {
+      if (lastAction) {
+        return;
+      }
+      adReportStateRef.current[adId] = "start";
+      reportQueueAdAction(adId, "start");
       return;
     }
 
-    adReportStateRef.current[adId] = nextAction;
-    reportQueueAdAction(adId, nextAction);
+    if (event === "paused") {
+      if (lastAction === "start" || lastAction === "resume") {
+        adReportStateRef.current[adId] = "pause";
+        reportQueueAdAction(adId, "pause");
+      }
+      return;
+    }
+
+    if (event === "ended") {
+      if (lastAction === "finish" || lastAction === "cancel") {
+        return;
+      }
+      adReportStateRef.current[adId] = "finish";
+      reportQueueAdAction(adId, "finish");
+    }
   }, [reportQueueAdAction]);
 
   // Keep the ref in sync so timer callbacks always use the latest auth state.
