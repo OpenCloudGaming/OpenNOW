@@ -76,11 +76,11 @@ std::string BuildEnvelope(std::string_view type, std::string_view payloadJson) {
 }
 
 std::optional<std::string> FindJsonString(std::string_view json, std::string_view key) {
-  const auto pattern = std::string("\\\"") + std::string(key) + "\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"";
+  const auto pattern = std::string("\\\"") + std::string(key) + "\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"";
   std::smatch match;
   const std::string value(json);
   if (std::regex_search(value, match, std::regex(pattern))) {
-    return match[1].str();
+    return UnescapeJsonString(match[1].str());
   }
   return std::nullopt;
 }
