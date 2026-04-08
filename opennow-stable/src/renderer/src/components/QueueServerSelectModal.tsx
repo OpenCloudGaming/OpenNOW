@@ -171,9 +171,6 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
     return withPing.reduce((best, z) => (z.pingMs! < best.pingMs! ? z : best));
   }, [zones]);
 
-  const autoIsSameAsClosest =
-    autoZone && closestZone && autoZone.zoneId === closestZone.zoneId;
-
   // ── Grouped list ──────────────────────────────────────────────────────────
   const groupedZones = useMemo<Record<string, ZoneInfo[]>>(() => {
     const g: Record<string, ZoneInfo[]> = {};
@@ -269,48 +266,44 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
           {/* Main content */}
           {!isLoading && zones.length > 0 && (
             <>
-              {/* Recommended */}
+              {/* Recommended — always two cards side by side */}
               <div style={{ marginBottom: 20 }}>
                 <SectionLabel>Recommended</SectionLabel>
-                <div style={{
-                  display: "grid",
-                  gridTemplateColumns:
-                    (closestZone && !autoIsSameAsClosest) || isPinging
-                      ? "1fr 1fr"
-                      : "1fr",
-                  gap: 10,
-                }}>
-                  {/* Auto Selected */}
-                  {autoZone && (
-                    <RecommendCard
-                      label="⚡ Auto Selected"
-                      sublabel={
-                        isPinging
-                          ? "Lowest queue · pinging…"
-                          : zonePings
-                          ? "Best ping + queue balance"
-                          : "Lowest queue position"
-                      }
-                      zone={autoZone}
-                      selected={selected === "auto"}
-                      accent="#76b900"
-                      onClick={() => setSelected("auto")}
-                    />
-                  )}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
 
-                  {/* Closest / Pinging placeholder */}
-                  {(closestZone || isPinging) && !autoIsSameAsClosest && (
-                    <RecommendCard
-                      label="📍 Closest Server"
-                      sublabel={isPinging ? "Measuring latency…" : "Lowest latency to you"}
-                      zone={closestZone ?? autoZone!}
-                      selected={selected === "closest"}
-                      accent="#3b82f6"
-                      faded={isPinging || !closestZone}
-                      onClick={() => { if (closestZone) setSelected("closest"); }}
-                      pinging={isPinging && !closestZone}
-                    />
-                  )}
+                  {/* Auto Selected */}
+                  <RecommendCard
+                    label="⚡ Auto Selected"
+                    sublabel={
+                      isPinging
+                        ? "Lowest queue · pinging…"
+                        : zonePings
+                        ? "Best ping + queue balance"
+                        : "Lowest queue position"
+                    }
+                    zone={autoZone}
+                    selected={selected === "auto"}
+                    accent="#76b900"
+                    onClick={() => setSelected("auto")}
+                  />
+
+                  {/* Closest Server — always visible; shows spinner while pinging */}
+                  <RecommendCard
+                    label="📍 Closest Server"
+                    sublabel={
+                      isPinging
+                        ? "Measuring latency…"
+                        : closestZone
+                        ? "Lowest latency to you"
+                        : "Ping unavailable"
+                    }
+                    zone={closestZone}
+                    selected={selected === "closest"}
+                    accent="#3b82f6"
+                    pinging={isPinging}
+                    disabled={!closestZone && !isPinging}
+                    onClick={() => { if (closestZone) setSelected("closest"); }}
+                  />
                 </div>
               </div>
 
@@ -406,17 +399,19 @@ function CenteredNote({ children }: { children: React.ReactNode }): JSX.Element 
 interface RecommendCardProps {
   label: string;
   sublabel: string;
-  zone: ZoneInfo;
+  zone: ZoneInfo | null;
   selected: boolean;
   accent: string;
-  faded?: boolean;
   pinging?: boolean;
+  disabled?: boolean;
   onClick: () => void;
 }
 
-function RecommendCard({ label, sublabel, zone, selected, accent, faded, pinging, onClick }: RecommendCardProps): JSX.Element {
+function RecommendCard({ label, sublabel, zone, selected, accent, pinging, disabled, onClick }: RecommendCardProps): JSX.Element {
   const [hovered, setHovered] = useState(false);
-  const regionMeta = REGION_META[zone.pwRegion] ?? { label: zone.pwRegion, flag: "🌐" };
+  const regionMeta = zone ? (REGION_META[zone.pwRegion] ?? { label: zone.pwRegion, flag: "🌐" }) : null;
+
+  const isInteractive = !disabled && !pinging;
 
   return (
     <button
@@ -424,15 +419,24 @@ function RecommendCard({ label, sublabel, zone, selected, accent, faded, pinging
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        background: selected ? `${accent}18` : hovered ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.02)",
-        border: `1px solid ${selected ? accent : hovered ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.07)"}`,
+        background: selected
+          ? `${accent}18`
+          : hovered && isInteractive
+          ? "rgba(255,255,255,0.05)"
+          : "rgba(255,255,255,0.02)",
+        border: `1px solid ${
+          selected ? accent
+          : hovered && isInteractive ? "rgba(255,255,255,0.14)"
+          : "rgba(255,255,255,0.07)"
+        }`,
         borderRadius: 10,
         padding: "13px 14px",
-        cursor: faded ? "default" : "pointer",
+        cursor: isInteractive ? "pointer" : "default",
         textAlign: "left",
         width: "100%",
-        opacity: faded ? 0.55 : 1,
+        opacity: disabled ? 0.4 : 1,
         transition: "border-color 0.12s, background 0.12s, opacity 0.12s",
+        minHeight: 110,
       }}
     >
       <div style={{ fontSize: 11, fontWeight: 700, color: selected ? accent : "#6b7280", marginBottom: 1, textTransform: "uppercase", letterSpacing: "0.05em" }}>
@@ -442,15 +446,25 @@ function RecommendCard({ label, sublabel, zone, selected, accent, faded, pinging
         {pinging && <MiniSpinner color={accent} />}
         {sublabel}
       </div>
-      <div style={{ fontSize: 14, fontWeight: 600, color: "#e5e7eb", marginBottom: 8 }}>
-        {regionMeta.flag} {pinging ? "—" : zone.zoneId}
-      </div>
-      {!pinging && (
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {zone.pingMs !== null && <Chip color={getPingColor(zone.pingMs)}>{zone.pingMs}ms</Chip>}
-          <Chip color={getQueueColor(zone.queuePosition)}>Queue: {zone.queuePosition}</Chip>
-          {zone.etaMs !== undefined && <Chip color="#6b7280">{formatWait(zone.etaMs)} wait</Chip>}
-        </div>
+
+      {pinging ? (
+        <>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "#6b7280", marginBottom: 8 }}>—</div>
+          <div style={{ fontSize: 11, color: "#374151" }}>Pinging servers…</div>
+        </>
+      ) : zone ? (
+        <>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "#e5e7eb", marginBottom: 8 }}>
+            {regionMeta?.flag} {zone.zoneId}
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {zone.pingMs !== null && <Chip color={getPingColor(zone.pingMs)}>{zone.pingMs}ms</Chip>}
+            <Chip color={getQueueColor(zone.queuePosition)}>Queue: {zone.queuePosition}</Chip>
+            {zone.etaMs !== undefined && <Chip color="#6b7280">{formatWait(zone.etaMs)} wait</Chip>}
+          </div>
+        </>
+      ) : (
+        <div style={{ fontSize: 12, color: "#374151" }}>No ping data available</div>
       )}
     </button>
   );
