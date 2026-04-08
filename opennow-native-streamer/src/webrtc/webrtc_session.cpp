@@ -162,7 +162,7 @@ bool WebRtcSession::HandleOffer(const std::string& offer_sdp, std::string& error
     Log("setRemoteDescription completed successfully");
     EmitState("connecting", "Remote offer applied");
     Log("Invoking setLocalDescription(answer)");
-    peer_connection_->setLocalDescription("answer");
+    peer_connection_->setLocalDescription(rtc::Description::Type::Answer);
     return true;
   } catch (const std::exception& ex) {
     error = ex.what();
