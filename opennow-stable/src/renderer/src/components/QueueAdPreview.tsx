@@ -76,8 +76,8 @@ function getPlaybackPresentation(state: QueueAdPlaybackState): PlaybackPresentat
     case "loading":
     default:
       return {
-        label: "Loading",
-        message: "Preparing playback…",
+        label: "",
+        message: "",
         icon: Loader2,
       };
   }
@@ -262,26 +262,25 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
           <div className="queue-ad-preview-overlay" aria-hidden="true">
             <div className="queue-ad-preview-overlay-inner">
               <StatusIcon className={`queue-ad-preview-overlay-icon${playbackState === "loading" ? " queue-ad-preview-icon--spinning" : ""}`} size={18} />
-              <span className="queue-ad-preview-overlay-title">{title ?? "Advertisement"}</span>
             </div>
           </div>
         )}
       </div>
-      <div className="queue-ad-preview-status" aria-live="polite">
-        <div className="queue-ad-preview-status-main">
-          <StatusIcon className={`queue-ad-preview-icon${playbackState === "loading" ? " queue-ad-preview-icon--spinning" : ""}`} size={16} />
-          <div className="queue-ad-preview-copy">
-            <span className="queue-ad-preview-label">{presentation.label}</span>
-            {presentation.message && <span className="queue-ad-preview-message">{presentation.message}</span>}
+      {presentation.retryLabel && (
+        <div className="queue-ad-preview-status" aria-live="polite">
+          <div className="queue-ad-preview-status-main">
+            <StatusIcon className="queue-ad-preview-icon" size={16} />
+            <div className="queue-ad-preview-copy">
+              <span className="queue-ad-preview-label">{presentation.label}</span>
+              {presentation.message && <span className="queue-ad-preview-message">{presentation.message}</span>}
+            </div>
           </div>
-        </div>
-        {presentation.retryLabel && (
           <button className="queue-ad-preview-retry" onClick={() => void attemptPlayback()} type="button">
             <RefreshCcw size={14} />
             <span>{presentation.retryLabel}</span>
           </button>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 });

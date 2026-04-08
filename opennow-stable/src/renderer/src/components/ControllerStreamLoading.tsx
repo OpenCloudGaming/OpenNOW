@@ -149,14 +149,7 @@ export function ControllerStreamLoading({
                 <div className={`csl-ad-panel${isSessionQueuePaused(adState) ? " csl-ad-panel--paused" : ""}`}>
                   <div className="csl-ad-copy">
                     <span className="csl-ad-chip">Ad Queue</span>
-                    <div className="csl-ad-title">
-                      {activeAd.title ?? "Advertisement in progress"}
-                    </div>
                     {adMessage && <div className="csl-ad-message">{adMessage}</div>}
-                    <div className="csl-ad-meta">
-                      {adDurationSeconds && <span>{adDurationSeconds}s spot</span>}
-                      {gracePeriodSeconds && <span>{gracePeriodSeconds}s grace window</span>}
-                    </div>
                   </div>
                   <div className="csl-ad-media">
                     <QueueAdPreview

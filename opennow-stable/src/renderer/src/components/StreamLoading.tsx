@@ -196,12 +196,7 @@ export function StreamLoading({
               <div className={`sload-ad${isSessionQueuePaused(adState) ? " sload-ad--paused" : ""}`}>
                 <div className="sload-ad-copy">
                   <span className="sload-ad-chip">Ad Queue</span>
-                  <p className="sload-ad-title">{activeAd.title ?? "Advertisement in progress"}</p>
                   {adSummary && <p className="sload-ad-message">{adSummary}</p>}
-                  <div className="sload-ad-meta">
-                    {activeAdDurationSeconds && <span>{activeAdDurationSeconds}s spot</span>}
-                    {gracePeriodSeconds && <span>{gracePeriodSeconds}s grace window</span>}
-                  </div>
                 </div>
                 <div className="sload-ad-media">
                   <QueueAdPreview
