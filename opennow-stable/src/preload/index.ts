@@ -31,6 +31,7 @@ import type {
   RecordingEntry,
   RecordingDeleteRequest,
   MediaListingResult,
+  PrintedWasteQueueData,
 } from "@shared/gfn";
 
 const api: OpenNowApi = {
@@ -121,6 +122,8 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.MEDIA_SHOW_IN_FOLDER, input),
   deleteCache: (): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.CACHE_DELETE_ALL),
+  fetchPrintedWasteQueue: (): Promise<PrintedWasteQueueData> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PRINTEDWASTE_QUEUE_FETCH),
 };
 
 contextBridge.exposeInMainWorld("openNow", api);

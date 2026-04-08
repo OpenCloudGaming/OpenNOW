@@ -36,6 +36,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { StreamLoading } from "./components/StreamLoading";
 import { ControllerStreamLoading } from "./components/ControllerStreamLoading";
 import { StreamView } from "./components/StreamView";
+import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
 
 const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
 const allResolutionOptions = ["1280x720", "1280x800", "1440x900", "1680x1050", "1920x1080", "1920x1200", "2560x1080", "2560x1440", "2560x1600", "3440x1440", "3840x2160", "3840x2400"];
@@ -450,6 +451,7 @@ export function App(): JSX.Element {
   const [navbarActiveSession, setNavbarActiveSession] = useState<ActiveSessionInfo | null>(null);
   const [isResumingNavbarSession, setIsResumingNavbarSession] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
+  const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
   const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState(0);
   const [streamWarning, setStreamWarning] = useState<StreamWarningState | null>(null);
@@ -1540,7 +1542,7 @@ export function App(): JSX.Element {
   }, [authSession, effectiveStreamingBaseUrl, findGameContextForSession, settings]);
 
   // Play game handler
-  const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean }) => {
+  const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
     if (!selectedProvider) return;
 
     console.log("handlePlayGame entry", {
@@ -1650,7 +1652,7 @@ export function App(): JSX.Element {
       // Create new session
       const newSession = await window.openNow.createSession({
         token: token || undefined,
-        streamingBaseUrl: effectiveStreamingBaseUrl,
+        streamingBaseUrl: options?.streamingBaseUrl || effectiveStreamingBaseUrl,
         appId,
         internalTitle: game.title,
         accountLinked: game.playType !== "INSTALL_TO_PLAY",
@@ -1779,6 +1781,28 @@ export function App(): JSX.Element {
     streamStatus,
     variantByGameId,
   ]);
+
+  // Gate handler: shows queue server modal for FREE-tier users before launching
+  const handleInitiatePlay = useCallback((game: GameInfo) => {
+    const isFreeUser = subscriptionInfo?.membershipTier === "FREE";
+    if (isFreeUser && streamStatus === "idle" && !launchInFlightRef.current) {
+      setQueueModalGame(game);
+      return;
+    }
+    void handlePlayGame(game);
+  }, [subscriptionInfo, streamStatus, handlePlayGame]);
+
+  const handleQueueModalConfirm = useCallback((zoneUrl: string | null) => {
+    const game = queueModalGame;
+    setQueueModalGame(null);
+    if (game) {
+      void handlePlayGame(game, { streamingBaseUrl: zoneUrl ?? undefined });
+    }
+  }, [queueModalGame, handlePlayGame]);
+
+  const handleQueueModalCancel = useCallback(() => {
+    setQueueModalGame(null);
+  }, []);
 
   const handleResumeFromNavbar = useCallback(async () => {
     if (!selectedProvider || !navbarActiveSession || isResumingNavbarSession) {
@@ -2370,7 +2394,7 @@ export function App(): JSX.Element {
             onSourceChange={loadGames}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
-            onPlayGame={handlePlayGame}
+            onPlayGame={handleInitiatePlay}
             isLoading={isLoadingGames}
             selectedGameId={selectedGameId}
             onSelectGame={setSelectedGameId}
@@ -2383,7 +2407,7 @@ export function App(): JSX.Element {
           settings.controllerMode ? (
             <ControllerLibraryPage
               games={filteredLibraryGames}
-              onPlayGame={handlePlayGame}
+              onPlayGame={handleInitiatePlay}
               isLoading={isLoadingGames}
               selectedGameId={selectedGameId}
               onSelectGame={setSelectedGameId}
@@ -2427,7 +2451,7 @@ export function App(): JSX.Element {
               games={filteredLibraryGames}
               searchQuery={searchQuery}
               onSearchChange={setSearchQuery}
-              onPlayGame={handlePlayGame}
+              onPlayGame={handleInitiatePlay}
               isLoading={isLoadingGames}
               selectedGameId={selectedGameId}
               onSelectGame={setSelectedGameId}
@@ -2452,6 +2476,15 @@ export function App(): JSX.Element {
           <span>B Back</span>
           <span>LB/RB Tabs</span>
         </div>
+      )}
+
+      {queueModalGame && streamStatus === "idle" && (
+        <QueueServerSelectModal
+          game={queueModalGame}
+          regions={regions}
+          onConfirm={handleQueueModalConfirm}
+          onCancel={handleQueueModalCancel}
+        />
       )}
     </div>
   );

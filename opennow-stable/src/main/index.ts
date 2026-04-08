@@ -1137,6 +1137,25 @@ function registerIpcHandlers(): void {
     return Promise.all(pingPromises);
   });
 
+  // PrintedWaste queue API — fetched from main process so User-Agent can be set
+  ipcMain.handle(IPC_CHANNELS.PRINTEDWASTE_QUEUE_FETCH, async () => {
+    const version = app.getVersion();
+    const response = await fetch("https://api.printedwaste.com/gfn/queue/", {
+      headers: {
+        "User-Agent": `opennow/${version}`,
+        Accept: "application/json",
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`PrintedWaste API returned HTTP ${response.status}`);
+    }
+    const body = (await response.json()) as { status: boolean; data: Record<string, unknown> };
+    if (!body.status) {
+      throw new Error("PrintedWaste API returned status:false");
+    }
+    return body.data;
+  });
+
   // Save window size when it changes
   mainWindow?.on("resize", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
