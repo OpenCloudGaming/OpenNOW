@@ -32,6 +32,7 @@ export class GfnSignalingClient {
   private peerName = `peer-${Math.floor(Math.random() * 10_000_000_000)}`;
   private ackCounter = 0;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private isDisconnecting = false;
   private listeners = new Set<(event: MainToRendererSignalingEvent) => void>();
 
   constructor(
@@ -119,6 +120,8 @@ export class GfnSignalingClient {
     const url = this.buildSignInUrl();
     const protocol = `x-nv-sessionid.${this.sessionId}`;
 
+    this.isDisconnecting = false;
+
     console.log("[Signaling] Connecting to:", url);
     console.log("[Signaling] Session ID:", this.sessionId);
     console.log("[Signaling] Protocol:", protocol);
@@ -158,6 +161,12 @@ export class GfnSignalingClient {
 
       ws.on("close", (_code, reason) => {
         this.clearHeartbeat();
+        this.ws = null;
+
+        if (this.isDisconnecting) {
+          return;
+        }
+
         const reasonText = typeof reason === "string" ? reason : reason.toString("utf8");
         this.emit({ type: "disconnected", reason: reasonText || "socket closed" });
       });
@@ -287,6 +296,7 @@ export class GfnSignalingClient {
 
   disconnect(): void {
     this.clearHeartbeat();
+    this.isDisconnecting = true;
     if (this.ws) {
       this.ws.close();
       this.ws = null;

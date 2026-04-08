@@ -6,6 +6,10 @@ import type {
   ColorQuality,
   NegotiatedStreamProfile,
   IceServer,
+  SessionAdAction,
+  SessionAdInfo,
+  SessionAdReportRequest,
+  SessionAdState,
   SessionClaimRequest,
   SessionCreateRequest,
   SessionInfo,
@@ -27,6 +31,26 @@ import { SessionError } from "./errorCodes";
 const GFN_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
 const GFN_CLIENT_VERSION = "2.0.80.173";
+const SESSION_MODIFY_ACTION_AD_UPDATE = 6;
+const READY_SESSION_STATUSES = new Set([2, 3]);
+
+const AD_ACTION_CODES: Record<SessionAdAction, number> = {
+  start: 1,
+  pause: 2,
+  resume: 3,
+  finish: 4,
+  cancel: 5,
+};
+
+const GFN_AD_MEDIA_PROFILE_ORDER = new Map<string, number>([
+  ["mp4deinterlaced720p", 0],
+  ["webm", 1],
+  ["hlsadaptive", 2],
+]);
+
+function isReadySessionStatus(status: number): boolean {
+  return READY_SESSION_STATUSES.has(status);
+}
 
 async function resolveHostnameWithFallback(hostname: string): Promise<string | null> {
   // Try system resolver first, then fall back to Cloudflare (1.1.1.1) and Google (8.8.8.8)
@@ -234,7 +258,9 @@ function resolveSignaling(response: CloudMatchResponse): {
     serverIp,
     signalingServer,
     signalingUrl,
-    mediaConnectionInfo: resolveMediaConnectionInfo(connections, serverIp),
+    mediaConnectionInfo: resolveMediaConnectionInfo(connections, serverIp, {
+      logMissing: isReadySessionStatus(response.session.status),
+    }),
   };
 }
 
@@ -254,6 +280,7 @@ function resolveSignaling(response: CloudMatchResponse): {
 function resolveMediaConnectionInfo(
   connections: Array<{ ip?: string; port: number; usage: number; protocol?: number; resourcePath?: string }>,
   serverIp: string,
+  options?: { logMissing?: boolean },
 ): { ip: string; port: number } | undefined {
   // Helper: extract IP from a connection entry
   const extractIp = (conn: { ip?: string; resourcePath?: string }): string | null => {
@@ -319,7 +346,9 @@ function resolveMediaConnectionInfo(
     if (ip && port > 0) return { ip, port };
   }
 
-  console.log("[CloudMatch] resolveMediaConnectionInfo: NO valid media connection info found");
+  if (options?.logMissing ?? true) {
+    console.log("[CloudMatch] resolveMediaConnectionInfo: NO valid media connection info found");
+  }
   return undefined;
 }
 
@@ -535,10 +564,17 @@ function shouldUseServerIp(baseUrl: string): boolean {
 
 function resolvePollStopBase(zone: string, provided?: string, serverIp?: string): string {
   const base = resolveStreamingBaseUrl(zone, provided);
-  // Only use serverIp if it's a real server IP (not a zone hostname).
-  // The Rust version checks: if we're NOT an alliance partner AND we have a server_ip, use it.
-  // But if the "serverIp" is actually the zone hostname (from an early poll when connectionInfo
-  // was empty), using it is circular and doesn't help.
+  // CloudMatch queue/ad/session endpoints are host-pinned once the session control
+  // host is known. Official captures show `/v2/session/<id>` moving from generic
+  // provider hosts like `prod.cloudmatchbeta...` onto specific zone hosts such as
+  // `np-mia-04.cloudmatchbeta...` before ad updates are sent. Keep the provider
+  // base only until CloudMatch gives us a different host.
+  if (serverIp && shouldUseServerIp(base)) {
+    const baseHost = extractHostFromUrl(base) ?? base.replace(/^https?:\/\//, "").split("/")[0] ?? "";
+    if (serverIp !== baseHost) {
+      return `https://${serverIp}`;
+    }
+  }
   if (serverIp && shouldUseServerIp(base) && !isZoneHostname(serverIp)) {
     return `https://${serverIp}`;
   }
@@ -555,6 +591,33 @@ function toPositiveInt(value: unknown): number | undefined {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
   }
   return undefined;
+}
+
+function toBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1") {
+      return true;
+    }
+    if (normalized === "false" || normalized === "0") {
+      return false;
+    }
+  }
+  return undefined;
+}
+
+function toOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function extractQueuePosition(payload: CloudMatchResponse): number | undefined {
@@ -596,6 +659,136 @@ function extractSeatSetupStep(payload: CloudMatchResponse): number | undefined {
     return Math.trunc(raw);
   }
   return undefined;
+}
+
+function normalizeSessionAdInfo(ad: NonNullable<CloudMatchResponse["session"]["sessionAds"]>[number], index: number): SessionAdInfo | null {
+  const adId = toOptionalString(ad.adId);
+  const adMediaFiles = (ad.adMediaFiles ?? [])
+    .map((file) => ({
+      mediaFileUrl: toOptionalString(file.mediaFileUrl),
+      encodingProfile: toOptionalString(file.encodingProfile),
+    }))
+    .filter((file) => file.mediaFileUrl || file.encodingProfile)
+    .sort((left, right) => {
+      const leftRank = left.encodingProfile ? GFN_AD_MEDIA_PROFILE_ORDER.get(left.encodingProfile) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+      const rightRank = right.encodingProfile ? GFN_AD_MEDIA_PROFILE_ORDER.get(right.encodingProfile) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+      return leftRank - rightRank;
+    });
+
+  // Match the official browser config preference order: MP4, WebM, then HLS.
+  const preferredMediaFile = adMediaFiles.find((file) => file.mediaFileUrl);
+  const mediaUrl =
+    preferredMediaFile?.mediaFileUrl ??
+    toOptionalString(ad.adUrl) ??
+    toOptionalString(ad.mediaUrl) ??
+    toOptionalString(ad.videoUrl) ??
+    toOptionalString(ad.url);
+
+  const adUrl = toOptionalString(ad.adUrl);
+  const clickThroughUrl = toOptionalString(ad.clickThroughUrl);
+  const title = toOptionalString(ad.title);
+  const description = toOptionalString(ad.description);
+  const adLengthInSeconds =
+    typeof ad.adLengthInSeconds === "number" && Number.isFinite(ad.adLengthInSeconds) && ad.adLengthInSeconds > 0
+      ? ad.adLengthInSeconds
+      : undefined;
+
+  // adLengthInSeconds is the confirmed live field (value is in seconds, convert to ms).
+  // Fall back to legacy durationMs / durationInMs which are already in ms.
+  const durationMs =
+    (adLengthInSeconds !== undefined
+      ? Math.round(adLengthInSeconds * 1000)
+      : undefined) ??
+    toPositiveInt(ad.durationMs) ??
+    toPositiveInt(ad.durationInMs);
+
+  const adState = typeof ad.adState === "number" && Number.isFinite(ad.adState) ? Math.trunc(ad.adState) : undefined;
+
+  if (!adId && !mediaUrl && !adUrl && adMediaFiles.length === 0 && !title && !description) {
+    return null;
+  }
+
+  return {
+    adId: adId ?? `ad-${index + 1}`,
+    state: adState,
+    adState,
+    adUrl,
+    mediaUrl,
+    adMediaFiles,
+    clickThroughUrl,
+    adLengthInSeconds,
+    durationMs,
+    title,
+    description,
+  };
+}
+
+function extractAdState(payload: CloudMatchResponse): SessionAdState | undefined {
+  const sessionAdsRequired =
+    toBoolean(payload.session.sessionAdsRequired) ??
+    toBoolean(payload.session.isAdsRequired) ??
+    toBoolean(payload.session.sessionProgress?.isAdsRequired) ??
+    toBoolean(payload.session.progressInfo?.isAdsRequired);
+
+  // Log raw sessionAds whenever the server signals ads are required so field names
+  // can be verified when creative URLs are expected but the ads[] array stays empty.
+  if (sessionAdsRequired) {
+    console.log(
+      `[CloudMatch] extractAdState: sessionAdsRequired=${payload.session.sessionAdsRequired}, ` +
+      `isAdsRequired=${payload.session.isAdsRequired}, ` +
+      `sessionAds=${JSON.stringify(payload.session.sessionAds ?? null)}, ` +
+      `opportunity=${JSON.stringify(payload.session.opportunity ?? null)}`,
+    );
+  }
+
+  const ads = (payload.session.sessionAds ?? [])
+    .map((ad, index) => normalizeSessionAdInfo(ad, index))
+    .filter((ad): ad is SessionAdInfo => ad !== null);
+
+  const opportunity = payload.session.opportunity;
+  const normalizedOpportunity = opportunity
+    ? {
+        state: toOptionalString(opportunity.state),
+        queuePaused: toBoolean(opportunity.queuePaused),
+        gracePeriodSeconds: toPositiveInt(opportunity.gracePeriodSeconds),
+        message: toOptionalString(opportunity.message),
+        title: toOptionalString(opportunity.title),
+        description: toOptionalString(opportunity.description),
+      }
+    : undefined;
+  const queuePaused =
+    normalizedOpportunity?.queuePaused ??
+    (typeof normalizedOpportunity?.state === "string" ? normalizedOpportunity.state.toLowerCase() === "graceperiodstart" : undefined);
+  const gracePeriodSeconds = normalizedOpportunity?.gracePeriodSeconds;
+  const effectiveIsAdsRequired = sessionAdsRequired ?? ads.length > 0;
+  const message =
+    normalizedOpportunity?.message ??
+    normalizedOpportunity?.description ??
+    (queuePaused
+      ? "Resume ads to stay in queue."
+      : effectiveIsAdsRequired
+        ? "Finish ads to stay in queue."
+        : undefined);
+
+  if (!effectiveIsAdsRequired && ads.length === 0 && !queuePaused && !message) {
+    return undefined;
+  }
+
+  return {
+    isAdsRequired: effectiveIsAdsRequired,
+    sessionAdsRequired,
+    isQueuePaused: queuePaused,
+    gracePeriodSeconds,
+    message,
+    sessionAds: ads,
+    ads,
+    opportunity: normalizedOpportunity,
+    // Mark whether the server sent sessionAds=null (transient gap) so the
+    // renderer's mergeAdState can safely restore the previous ad list for the
+    // ad player, while NOT restoring it after an explicit client-side clear
+    // that follows a rejected finish action.
+    serverSentEmptyAds: payload.session.sessionAds == null,
+  };
 }
 
 function toColorQuality(bitDepth?: number, chromaFormat?: number): ColorQuality | undefined {
@@ -674,9 +867,16 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
   const signaling = resolveSignaling(payload);
   const queuePosition = extractQueuePosition(payload);
   const seatSetupStep = extractSeatSetupStep(payload);
+  const adState = extractAdState(payload);
 
   // Debug logging to trace signaling resolution
   const connections = payload.session.connectionInfo ?? [];
+  const connectionSummary = connections
+    .map((conn) => {
+      const rawIp = Array.isArray(conn.ip) ? conn.ip[0] : conn.ip;
+      return `{usage=${conn.usage},ip=${rawIp ?? "null"},port=${conn.port},resourcePath=${conn.resourcePath ?? "null"}}`;
+    })
+    .join(", ");
   console.log(
     `[CloudMatch] toSessionInfo: status=${payload.session.status}, ` +
     `seatSetupStep=${seatSetupStep ?? "n/a"}, ` +
@@ -684,20 +884,16 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     `connectionInfo=${connections.length} entries, ` +
     `serverIp=${signaling.serverIp}, ` +
     `signalingServer=${signaling.signalingServer}, ` +
-    `signalingUrl=${signaling.signalingUrl}`,
+    `signalingUrl=${signaling.signalingUrl}, ` +
+    `connections=[${connectionSummary}]`,
   );
-  for (const conn of connections) {
-    console.log(
-      `[CloudMatch]   conn: usage=${conn.usage} ip=${conn.ip ?? "null"} port=${conn.port} ` +
-      `resourcePath=${conn.resourcePath ?? "null"}`,
-    );
-  }
 
   return {
     sessionId: payload.session.sessionId,
     status: payload.session.status,
     seatSetupStep,
     queuePosition,
+    adState,
     zone,
     streamingBaseUrl,
     serverIp: signaling.serverIp,
@@ -771,6 +967,7 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   }
 
   const payload = JSON.parse(text) as CloudMatchResponse;
+  const baseHost = new URL(base).hostname;
 
   // Match Rust behavior: if the poll was routed through the zone load balancer
   // and the response now contains a real server IP in connectionInfo, re-poll
@@ -778,17 +975,17 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   // connection info are correct (the zone LB may return different data than
   // a direct server poll).
   const realServerIp = streamingServerIp(payload);
-  const polledViaZone = isZoneHostname(new URL(base).hostname);
+  const polledViaZone = isZoneHostname(baseHost);
   const realIpDiffers =
     realServerIp &&
     realServerIp.length > 0 &&
     !isZoneHostname(realServerIp) &&
     realServerIp !== input.serverIp;
 
-  if (polledViaZone && realIpDiffers && (payload.session.status === 2 || payload.session.status === 3)) {
+  if (polledViaZone && realIpDiffers && isReadySessionStatus(payload.session.status)) {
     // Session is ready and we now know the real server IP — re-poll directly
     console.log(
-      `[CloudMatch] Session ready: re-polling via real server IP ${realServerIp} (was: ${new URL(base).hostname})`,
+      `[CloudMatch] Session ready: re-polling via real server IP ${realServerIp} (was: ${baseHost})`,
     );
     const directBase = `https://${realServerIp}`;
     const directUrl = `${directBase}/v2/session/${input.sessionId}`;
@@ -810,6 +1007,74 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
       console.warn("[CloudMatch] Direct re-poll failed, using zone LB response:", e);
     }
   }
+
+  return await toSessionInfo({ zone: input.zone, streamingBaseUrl: base, payload, clientId, deviceId });
+}
+
+export async function reportSessionAd(input: SessionAdReportRequest): Promise<SessionInfo> {
+  if (!input.token) {
+    throw new Error("Missing token for ad update");
+  }
+
+  const clientId = input.clientId ?? crypto.randomUUID();
+  const deviceId = input.deviceId ?? crypto.randomUUID();
+  const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
+  const url = `${base}/v2/session/${input.sessionId}`;
+  const clientTimestamp = input.clientTimestamp ?? Math.floor(Date.now() / 1000);
+  const adUpdate = {
+    adId: input.adId,
+    adAction: AD_ACTION_CODES[input.action],
+    clientTimestamp,
+    ...(typeof input.watchedTimeInMs === "number"
+      ? { watchedTimeInMs: Math.max(0, Math.round(input.watchedTimeInMs)) }
+      : {}),
+    ...(typeof input.pausedTimeInMs === "number"
+      ? { pausedTimeInMs: Math.max(0, Math.round(input.pausedTimeInMs)) }
+      : {}),
+    ...(input.cancelReason ? { cancelReason: input.cancelReason } : {}),
+  };
+  const requestBody = {
+    action: SESSION_MODIFY_ACTION_AD_UPDATE,
+    adUpdates: [adUpdate],
+  };
+
+  console.log(
+    `[CloudMatch] reportSessionAd: sending action=${input.action}(${requestBody.adUpdates[0].adAction}), adId=${input.adId}, ` +
+      `sessionId=${input.sessionId}, zone=${input.zone}, url=${url}, ` +
+      `cancelReason=${input.cancelReason ?? "n/a"}, errorInfo=${input.errorInfo ?? "n/a"}`,
+  );
+
+  const response = await fetch(url, {
+    method: "PUT",
+    // Official browser requests include Origin/Referer on cross-origin ad updates.
+    headers: requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: true }),
+    body: JSON.stringify(requestBody),
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    console.warn(
+      `[CloudMatch] reportSessionAd: backend error status=${response.status}, sessionId=${input.sessionId}, ` +
+        `adId=${input.adId}, action=${input.action}, body=${text.slice(0, 500)}`,
+    );
+    throw SessionError.fromResponse(response.status, text);
+  }
+
+  const payload = JSON.parse(text) as CloudMatchResponse;
+  if (payload.requestStatus.statusCode !== 1) {
+    console.warn(
+      `[CloudMatch] reportSessionAd: API error requestStatus=${payload.requestStatus.statusCode}, ` +
+        `description=${payload.requestStatus.statusDescription ?? "unknown"}, sessionId=${input.sessionId}, ` +
+        `adId=${input.adId}, action=${input.action}`,
+    );
+    throw SessionError.fromResponse(200, text);
+  }
+
+  console.log(
+    `[CloudMatch] reportSessionAd: success sessionId=${input.sessionId}, adId=${input.adId}, action=${input.action}, ` +
+      `status=${payload.session.status}, queuePosition=${extractQueuePosition(payload) ?? "n/a"}, ` +
+      `adsRequired=${extractAdState(payload)?.isAdsRequired ?? false}`,
+  );
 
   return await toSessionInfo({ zone: input.zone, streamingBaseUrl: base, payload, clientId, deviceId });
 }
@@ -879,9 +1144,12 @@ export async function getActiveSessions(
     return [];
   }
 
-  // Filter active sessions (status 2 = Ready, status 3 = Streaming)
+  // Filter active sessions:
+  //   1 = Setup/Queuing (counts against SESSION_LIMIT — must be included for resume logic)
+  //   2 = Ready
+  //   3 = Streaming
   const activeSessions: ActiveSessionInfo[] = sessionsResponse.sessions
-    .filter((s) => s.status === 2 || s.status === 3)
+    .filter((s) => s.status === 1 || s.status === 2 || s.status === 3)
     .map((s) => {
       // Extract appId from sessionRequestData
       const appId = s.sessionRequestData?.appId ? Number(s.sessionRequestData.appId) : 0;
@@ -1055,8 +1323,11 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
 
   const claimUrl = `https://${effectiveServerIp}/v2/session/${input.sessionId}?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`;
 
-  // Pre-claim validation: verify the session is still alive and in ready state before attempting claim
-  // This prevents sending a claim to an expired/dead session
+  // Pre-claim validation: check session status before deciding whether to send a RESUME claim.
+  // Status 1 (setup/launching/queuing) sessions cannot be RESUME'd — the server will reject
+  // with SESSION_NOT_PAUSED. For these sessions we skip the claim PUT and poll directly.
+  // Status 2/3 (ready/streaming) sessions are paused and can be RESUME'd normally.
+  let preClaimStatus: number | null = null;
   try {
     const validationUrl = `https://${effectiveServerIp}/v2/session/${input.sessionId}`;
     const validationHeaders = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
@@ -1064,12 +1335,14 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     if (validationResp.ok) {
       const validationText = await validationResp.text();
       const validationPayload = JSON.parse(validationText) as CloudMatchResponse;
-      const sessionStatus = validationPayload.session?.status ?? 0;
+      preClaimStatus = validationPayload.session?.status ?? 0;
       const errorCode = validationPayload.session?.errorCode ?? 0;
-      console.log(`[CloudMatch] claimSession: pre-claim validation status=${sessionStatus}, errorCode=${errorCode}`);
+      console.log(`[CloudMatch] claimSession: pre-claim validation status=${preClaimStatus}, errorCode=${errorCode}`);
       console.log(`[CloudMatch] claimSession: validation response (first 1000 chars): ${validationText.slice(0, 1000)}`);
-      if (sessionStatus !== 2 && sessionStatus !== 3) {
-        console.warn(`[CloudMatch] claimSession: session not in ready state (status=${sessionStatus}), claim may fail`);
+      if (preClaimStatus === 1) {
+        console.log(`[CloudMatch] claimSession: session is still launching (status=1), skipping RESUME claim — polling directly to ready state`);
+      } else if (preClaimStatus !== 2 && preClaimStatus !== 3) {
+        console.warn(`[CloudMatch] claimSession: session not in ready state (status=${preClaimStatus}), claim may fail`);
       }
     } else {
       console.warn(`[CloudMatch] claimSession: pre-claim validation returned HTTP ${validationResp.status}`);
@@ -1078,46 +1351,48 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     console.warn("[CloudMatch] claimSession: pre-claim validation failed:", e);
   }
 
-  const payload = buildClaimRequestBody(input.sessionId, appId, settings);
+  // Only send the RESUME claim PUT if the session is in a paused state (status 2 or 3).
+  // For status=1 (still launching) we bypass the claim and fall through to the polling loop.
+  if (preClaimStatus !== 1) {
+    const payload = buildClaimRequestBody(input.sessionId, appId, settings);
 
-  const headers: Record<string, string> = {
-    "User-Agent": GFN_USER_AGENT,
-    Authorization: `GFNJWT ${input.token}`,
-    "Content-Type": "application/json",
-    Origin: "https://play.geforcenow.com",
-    Referer: "https://play.geforcenow.com/",
-    "nv-client-id": clientId,
-    "nv-client-streamer": "NVIDIA-CLASSIC",
-    "nv-client-type": "NATIVE",
-    "nv-client-version": GFN_CLIENT_VERSION,
-    "nv-device-os": process.platform === "win32" ? "WINDOWS" : process.platform === "darwin" ? "MACOS" : "LINUX",
-    "nv-device-type": "DESKTOP",
-    "x-device-id": deviceId,
-  };
+    const headers: Record<string, string> = {
+      "User-Agent": GFN_USER_AGENT,
+      Authorization: `GFNJWT ${input.token}`,
+      "Content-Type": "application/json",
+      Origin: "https://play.geforcenow.com",
+      Referer: "https://play.geforcenow.com/",
+      "nv-client-id": clientId,
+      "nv-client-streamer": "NVIDIA-CLASSIC",
+      "nv-client-type": "NATIVE",
+      "nv-client-version": GFN_CLIENT_VERSION,
+      "nv-device-os": process.platform === "win32" ? "WINDOWS" : process.platform === "darwin" ? "MACOS" : "LINUX",
+      "nv-device-type": "DESKTOP",
+      "x-device-id": deviceId,
+    };
 
-  // Send claim request
-  console.log(`[CloudMatch] claimSession PUT ${claimUrl}`);
-  console.log(`[CloudMatch] claimSession body: ${JSON.stringify(payload)}`);
-  const response = await fetch(claimUrl, {
-    method: "PUT",
-    headers,
-    body: JSON.stringify(payload),
-  });
+    console.log(`[CloudMatch] claimSession PUT ${claimUrl}`);
+    console.log(`[CloudMatch] claimSession body: ${JSON.stringify(payload)}`);
+    const response = await fetch(claimUrl, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify(payload),
+    });
 
-  const text = await response.text();
-  
-  // Log full response body for debugging (not truncated)
-  console.log(`[CloudMatch] claimSession response: HTTP ${response.status}`);
-  console.log(`[CloudMatch] claimSession response body FULL: ${text}`);
+    const text = await response.text();
 
-  if (!response.ok) {
-    throw SessionError.fromResponse(response.status, text);
-  }
+    console.log(`[CloudMatch] claimSession response: HTTP ${response.status}`);
+    console.log(`[CloudMatch] claimSession response body FULL: ${text}`);
 
-  const apiResponse = JSON.parse(text) as CloudMatchResponse;
+    if (!response.ok) {
+      throw SessionError.fromResponse(response.status, text);
+    }
 
-  if (apiResponse.requestStatus.statusCode !== 1) {
-    throw SessionError.fromResponse(200, text);
+    const apiResponse = JSON.parse(text) as CloudMatchResponse;
+
+    if (apiResponse.requestStatus.statusCode !== 1) {
+      throw SessionError.fromResponse(200, text);
+    }
   }
 
   // Poll until session is ready (status 2 or 3)
@@ -1129,10 +1404,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
-    // Build headers without Origin/Referer for polling
-    const pollHeaders: Record<string, string> = { ...headers };
-    delete pollHeaders["Origin"];
-    delete pollHeaders["Referer"];
+    const pollHeaders = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
 
     const pollResponse = await fetch(getUrl, {
       method: "GET",
