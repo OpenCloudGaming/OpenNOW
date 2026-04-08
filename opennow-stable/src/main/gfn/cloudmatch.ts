@@ -1,7 +1,5 @@
 import crypto from "node:crypto";
 import dns from "node:dns";
-import fs from "node:fs/promises";
-import path from "node:path";
 
 import type {
   ActiveSessionInfo,
@@ -35,19 +33,6 @@ const GFN_USER_AGENT =
 const GFN_CLIENT_VERSION = "2.0.80.173";
 const SESSION_MODIFY_ACTION_AD_UPDATE = 6;
 const READY_SESSION_STATUSES = new Set([2, 3]);
-const READY_TRANSITION_CAPTURE_PATH = path.join(
-  process.cwd(),
-  "docs",
-  "gfn-official-client-capture",
-  "opennow-ready-transition-latest.json",
-);
-
-const AD_QUEUE_CAPTURE_PATH = path.join(
-  process.cwd(),
-  "docs",
-  "gfn-official-client-capture",
-  "opennow-ad-queue-latest.json",
-);
 
 const AD_ACTION_CODES: Record<SessionAdAction, number> = {
   start: 1,
@@ -65,92 +50,6 @@ const GFN_AD_MEDIA_PROFILE_ORDER = new Map<string, number>([
 
 function isReadySessionStatus(status: number): boolean {
   return READY_SESSION_STATUSES.has(status);
-}
-
-function sanitizeReadyTransitionPayload(payload: CloudMatchResponse): Record<string, unknown> {
-  return {
-    requestStatus: {
-      ...payload.requestStatus,
-    },
-    session: {
-      sessionId: payload.session.sessionId ? "<redacted-session-id>" : undefined,
-      status: payload.session.status,
-      queuePosition: payload.session.queuePosition,
-      seatSetupInfo: payload.session.seatSetupInfo,
-      sessionAdsRequired: payload.session.sessionAdsRequired,
-      isAdsRequired: payload.session.isAdsRequired,
-      progressState: payload.session.progressState,
-      eta: payload.session.eta,
-      sessionProgress: payload.session.sessionProgress,
-      progressInfo: payload.session.progressInfo,
-      errorCode: payload.session.errorCode,
-      gpuType: payload.session.gpuType,
-      sessionControlInfo: payload.session.sessionControlInfo,
-      connectionInfo: payload.session.connectionInfo ?? [],
-      iceServerConfiguration: {
-        iceServersCount: payload.session.iceServerConfiguration?.iceServers?.length ?? 0,
-      },
-    },
-  };
-}
-
-async function writeReadyTransitionCapture(options: {
-  mode: string;
-  sourceHost: string;
-  effectiveHost: string;
-  repolledDirectly: boolean;
-  payload: CloudMatchResponse;
-}): Promise<void> {
-  const capture = {
-    capturedAt: new Date().toISOString(),
-    mode: options.mode,
-    sourceHost: options.sourceHost,
-    effectiveHost: options.effectiveHost,
-    repolledDirectly: options.repolledDirectly,
-    resolvedServerIp: streamingServerIp(options.payload),
-    payload: sanitizeReadyTransitionPayload(options.payload),
-  };
-
-  try {
-    await fs.mkdir(path.dirname(READY_TRANSITION_CAPTURE_PATH), { recursive: true });
-    await fs.writeFile(READY_TRANSITION_CAPTURE_PATH, JSON.stringify(capture, null, 2));
-    console.log(`[CloudMatch] Wrote ready transition capture: ${READY_TRANSITION_CAPTURE_PATH}`);
-  } catch (error) {
-    console.warn("[CloudMatch] Failed to write ready transition capture:", error);
-  }
-}
-
-async function writeAdQueueCapture(options: {
-  sourceHost: string;
-  sessionId: string;
-  payload: CloudMatchResponse;
-}): Promise<void> {
-  const session = options.payload.session;
-  const capture = {
-    capturedAt: new Date().toISOString(),
-    source: "OpenNOW ad-queue poll",
-    sourceHost: options.sourceHost,
-    sessionId: "<redacted>",
-    sessionStatus: session.status,
-    sessionAdsRequired: session.sessionAdsRequired,
-    isAdsRequired: session.isAdsRequired,
-    queuePosition: session.queuePosition ?? session.seatSetupInfo?.queuePosition ?? null,
-    seatSetupInfo: session.seatSetupInfo ?? null,
-    // Raw sessionAds — full structure preserved (no creative URLs redacted) so field
-    // names can be verified against the normalizeSessionAdInfo field mapping.
-    sessionAdsRaw: session.sessionAds ?? null,
-    opportunity: session.opportunity ?? null,
-    sessionProgress: session.sessionProgress ?? null,
-    progressInfo: session.progressInfo ?? null,
-  };
-
-  try {
-    await fs.mkdir(path.dirname(AD_QUEUE_CAPTURE_PATH), { recursive: true });
-    await fs.writeFile(AD_QUEUE_CAPTURE_PATH, JSON.stringify(capture, null, 2));
-    console.log(`[CloudMatch] Wrote ad-queue capture: ${AD_QUEUE_CAPTURE_PATH}`);
-  } catch (error) {
-    console.warn("[CloudMatch] Failed to write ad-queue capture:", error);
-  }
 }
 
 async function resolveHostnameWithFallback(hostname: string): Promise<string | null> {
@@ -1100,13 +999,6 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
         const directPayload = JSON.parse(directText) as CloudMatchResponse;
         if (directPayload.requestStatus.statusCode === 1) {
           console.log("[CloudMatch] Direct re-poll succeeded, using direct response for signaling info");
-          await writeReadyTransitionCapture({
-            mode: "poll-session-direct-repoll",
-            sourceHost: baseHost,
-            effectiveHost: realServerIp,
-            repolledDirectly: true,
-            payload: directPayload,
-          });
           return await toSessionInfo({ zone: input.zone, streamingBaseUrl: directBase, payload: directPayload, clientId, deviceId });
         }
       }
@@ -1114,30 +1006,6 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
       // Direct poll failed — fall through to use the original zone LB response
       console.warn("[CloudMatch] Direct re-poll failed, using zone LB response:", e);
     }
-  }
-
-  if (isReadySessionStatus(payload.session.status)) {
-    await writeReadyTransitionCapture({
-      mode: "poll-session",
-      sourceHost: baseHost,
-      effectiveHost: realServerIp ?? baseHost,
-      repolledDirectly: false,
-      payload,
-    });
-  }
-
-  // Write a diagnostic capture when ads are required AND sessionAds is non-null.
-  // The server only populates sessionAds in the first poll; subsequent polls return
-  // null. Never overwrite the capture with a null payload so the creative URL
-  // field names are preserved for the full ad session.
-  const adsRequiredOnPoll =
-    payload.session.sessionAdsRequired === true || payload.session.isAdsRequired === true;
-  if (adsRequiredOnPoll && payload.session.sessionAds != null) {
-    void writeAdQueueCapture({
-      sourceHost: baseHost,
-      sessionId: payload.session.sessionId,
-      payload,
-    });
   }
 
   return await toSessionInfo({ zone: input.zone, streamingBaseUrl: base, payload, clientId, deviceId });
@@ -1562,14 +1430,6 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       // Session is ready
       const signaling = resolveSignaling(pollApiResponse);
       const queuePosition = extractQueuePosition(pollApiResponse);
-
-      await writeReadyTransitionCapture({
-        mode: "claim-session-poll",
-        sourceHost: effectiveServerIp,
-        effectiveHost: signaling.serverIp,
-        repolledDirectly: false,
-        payload: pollApiResponse,
-      });
 
       return {
         sessionId: sessionData.sessionId,
