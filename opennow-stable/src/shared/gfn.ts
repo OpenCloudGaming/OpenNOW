@@ -104,6 +104,7 @@ export interface Settings {
   /** When true, the app will automatically enter fullscreen when controller mode triggers it */
   autoFullScreen: boolean;
   favoriteGameIds: string[];
+  sessionCounterEnabled: boolean;
   sessionClockShowEveryMinutes: number;
   sessionClockShowDurationSeconds: number;
   windowWidth: number;

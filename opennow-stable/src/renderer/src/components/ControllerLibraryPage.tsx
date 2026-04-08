@@ -48,6 +48,7 @@ interface ControllerLibraryPageProps {
   onExitControllerMode?: () => void;
   sessionStartedAtMs?: number | null;
   isStreaming?: boolean;
+  sessionCounterEnabled?: boolean;
 }
 
 type Direction = "up" | "down" | "left" | "right";
@@ -126,6 +127,7 @@ export function ControllerLibraryPage({
   onExitControllerMode,
   sessionStartedAtMs = null,
   isStreaming = false,
+  sessionCounterEnabled = false,
 }: ControllerLibraryPageProps): JSX.Element {
   const [isEntering, setIsEntering] = useState(true);
   const initialCategoryIndex = (() => {
@@ -1139,9 +1141,11 @@ export function ControllerLibraryPage({
                     return (
                       <>
                         {storeName && <span className="xmb-game-meta-chip xmb-game-meta-chip--store">{storeName}</span>}
-                        <span className="xmb-game-meta-chip xmb-game-meta-chip--session">
-                          <SessionElapsedIndicator startedAtMs={sessionStartedAtMs ?? null} active={isStreaming} />
-                        </span>
+                        {sessionCounterEnabled && (
+                          <span className="xmb-game-meta-chip xmb-game-meta-chip--session">
+                            <SessionElapsedIndicator startedAtMs={sessionStartedAtMs ?? null} active={isStreaming} />
+                          </span>
+                        )}
                         <span className="xmb-game-meta-chip xmb-game-meta-chip--playtime">
                           <Clock size={10} className="xmb-meta-icon" />
                           {playtimeLabel}
