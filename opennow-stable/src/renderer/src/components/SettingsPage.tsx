@@ -1894,13 +1894,30 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               </div>
             )}
 
+            <div className="settings-row">
+              <label className="settings-label">
+                Session Elapsed Counter
+                <span className="settings-hint">Enable or disable the live session elapsed counter while streaming.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.sessionCounterEnabled}
+                  onChange={(e) => handleChange("sessionCounterEnabled", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+
             <div className="settings-row settings-row--column">
               <div className="settings-row-top">
                 <label className="settings-label">Session Timer Reappear</label>
                 <span className="settings-value-badge">
-                  {settings.sessionClockShowEveryMinutes === 0
-                    ? "Off"
-                    : `Every ${settings.sessionClockShowEveryMinutes} min`}
+                  {!settings.sessionCounterEnabled
+                    ? "Disabled"
+                    : settings.sessionClockShowEveryMinutes === 0
+                      ? "Off"
+                      : `Every ${settings.sessionClockShowEveryMinutes} min`}
                 </span>
               </div>
               <input
@@ -1911,6 +1928,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 step={5}
                 value={settings.sessionClockShowEveryMinutes}
                 onChange={(e) => handleChange("sessionClockShowEveryMinutes", parseInt(e.target.value, 10))}
+                disabled={!settings.sessionCounterEnabled}
               />
               <span className="settings-subtle-hint">
                 How often the session timer pops back up while streaming (0 disables repeats).
@@ -1920,7 +1938,9 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             <div className="settings-row settings-row--column">
               <div className="settings-row-top">
                 <label className="settings-label">Session Timer Visible Time</label>
-                <span className="settings-value-badge">{settings.sessionClockShowDurationSeconds}s</span>
+                <span className="settings-value-badge">
+                  {settings.sessionCounterEnabled ? `${settings.sessionClockShowDurationSeconds}s` : "Disabled"}
+                </span>
               </div>
               <input
                 type="range"
@@ -1930,9 +1950,16 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 step={5}
                 value={settings.sessionClockShowDurationSeconds}
                 onChange={(e) => handleChange("sessionClockShowDurationSeconds", parseInt(e.target.value, 10))}
+                disabled={!settings.sessionCounterEnabled}
               />
               <span className="settings-subtle-hint">
                 How long the session timer stays visible each time it appears.
+              </span>
+            </div>
+
+            <div className="settings-row settings-row--column">
+              <span className="settings-subtle-hint">
+                Disabling the session elapsed counter stops the live elapsed timer from rendering at all. Remaining playtime indicators stay unchanged.
               </span>
             </div>
           </div>

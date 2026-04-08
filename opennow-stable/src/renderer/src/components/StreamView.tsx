@@ -37,6 +37,7 @@ interface StreamViewProps {
   };
   sessionStartedAtMs: number | null;
   isStreaming: boolean;
+  sessionCounterEnabled: boolean;
   sessionClockShowEveryMinutes: number;
   sessionClockShowDurationSeconds: number;
   streamWarning: {
@@ -283,6 +284,7 @@ export function StreamView({
   exitPrompt,
   sessionStartedAtMs,
   isStreaming,
+  sessionCounterEnabled,
   sessionClockShowEveryMinutes,
   sessionClockShowDurationSeconds,
   streamWarning,
@@ -392,6 +394,11 @@ export function StreamView({
   }, []);
 
   useEffect(() => {
+    if (!sessionCounterEnabled) {
+      setShowSessionClock(false);
+      return;
+    }
+
     if (isConnecting) {
       setShowSessionClock(false);
       return;
@@ -432,7 +439,7 @@ export function StreamView({
         window.clearInterval(periodicTimer);
       }
     };
-  }, [isConnecting, sessionClockShowDurationSeconds, sessionClockShowEveryMinutes]);
+  }, [isConnecting, sessionClockShowDurationSeconds, sessionClockShowEveryMinutes, sessionCounterEnabled]);
 
   const bitrateMbps = (stats.bitrateKbps / 1000).toFixed(1);
   const hasResolution = stats.resolution && stats.resolution !== "";
@@ -1483,7 +1490,7 @@ export function StreamView({
         </div>
       )}
 
-      {!isConnecting && (
+      {sessionCounterEnabled && !isConnecting && (
         <div
           className={`sv-session-clock${showSessionClock ? " is-visible" : ""}`}
           title="Current gaming session elapsed time"

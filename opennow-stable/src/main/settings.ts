@@ -60,6 +60,8 @@ export interface Settings {
   /** Automatically enter fullscreen when controller-mode triggers it */
   autoFullScreen: boolean;
   favoriteGameIds: string[];
+  /** Enable the live elapsed session counter */
+  sessionCounterEnabled: boolean;
   /** Window width */
   windowWidth: number;
   /** Window height */
@@ -105,6 +107,7 @@ const DEFAULT_SETTINGS: Settings = {
   autoLoadControllerLibrary: false,
   autoFullScreen: false,
   favoriteGameIds: [],
+  sessionCounterEnabled: false,
   sessionClockShowEveryMinutes: 60,
   sessionClockShowDurationSeconds: 30,
   windowWidth: 1400,

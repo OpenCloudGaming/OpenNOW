@@ -398,6 +398,7 @@ export function App(): JSX.Element {
     autoLoadControllerLibrary: false,
     autoFullScreen: false,
     favoriteGameIds: [],
+    sessionCounterEnabled: false,
     sessionClockShowEveryMinutes: 60,
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
@@ -2120,6 +2121,7 @@ export function App(): JSX.Element {
             escHoldReleaseIndicator={escHoldReleaseIndicator}
             exitPrompt={exitPrompt}
             sessionStartedAtMs={sessionStartedAtMs}
+            sessionCounterEnabled={settings.sessionCounterEnabled}
             sessionClockShowEveryMinutes={settings.sessionClockShowEveryMinutes}
             sessionClockShowDurationSeconds={settings.sessionClockShowDurationSeconds}
             streamWarning={streamWarning}
@@ -2229,6 +2231,7 @@ export function App(): JSX.Element {
               playtimeData={playtime}
               sessionStartedAtMs={sessionStartedAtMs}
               isStreaming={isStreaming}
+              sessionCounterEnabled={settings.sessionCounterEnabled}
               settings={{
                 resolution: settings.resolution,
                 fps: settings.fps,
@@ -2362,6 +2365,7 @@ export function App(): JSX.Element {
               playtimeData={playtime}
               sessionStartedAtMs={sessionStartedAtMs}
               isStreaming={isStreaming}
+              sessionCounterEnabled={settings.sessionCounterEnabled}
               settings={{
                 resolution: settings.resolution,
                 fps: settings.fps,
