@@ -784,7 +784,7 @@ export function App(): JSX.Element {
   const adReportQueueRef = useRef<Promise<void>>(Promise.resolve());
   const adReportStateRef = useRef<Record<string, SessionAdAction>>({});
   const adMediaUrlCacheRef = useRef<Record<string, string>>({});
-  const [activeAdIndex, setActiveAdIndex] = useState(0);
+  const queueAdPlaybackRef = useRef<{ adId: string; phase: "playing" | "finishing" } | null>(null);
   // Timer-driven finish timers keyed by adId. Each fires (durationMs − 3 s) after the
   // start PUT is ACKed, sending finish inside the server's per-ad token window even when
   // video buffering or load time extends total playback past adLengthInSeconds.
@@ -868,7 +868,7 @@ export function App(): JSX.Element {
     adReportStateRef.current = {};
     adReportQueueRef.current = Promise.resolve();
     adMediaUrlCacheRef.current = {};
-    setActiveAdIndex(0);
+    queueAdPlaybackRef.current = null;
     // Clear any pending timer-driven finish callbacks when the session changes.
     Object.values(adFinishTimersRef.current).forEach(clearTimeout);
     adFinishTimersRef.current = {};
@@ -1012,6 +1012,9 @@ export function App(): JSX.Element {
               clearTimeout(t);
               delete adFinishTimersRef.current[adId];
             }
+            if (queueAdPlaybackRef.current?.adId === adId) {
+              queueAdPlaybackRef.current = null;
+            }
           }
         } catch (error) {
           console.warn(`[QueueAds] Failed to report ${action} for ${adId}:`, error);
@@ -1025,6 +1028,9 @@ export function App(): JSX.Element {
             // state captured in the polling loop's latestSession snapshot.
             console.log(`[QueueAds] finish rejected — clearing local ad list for adId=${adId}`);
             delete adReportStateRef.current[adId];
+            if (queueAdPlaybackRef.current?.adId === adId) {
+              queueAdPlaybackRef.current = null;
+            }
             setSession((previous) => {
               if (!previous || !previous.adState) {
                 return previous;
@@ -1040,34 +1046,28 @@ export function App(): JSX.Element {
   }, [authSession, effectiveStreamingBaseUrl]);
 
   const handleQueueAdPlaybackEvent = useCallback((event: "playing" | "paused" | "ended", adId: string): void => {
+    const currentSession = sessionRef.current;
+    const currentAd = currentSession?.adState?.ads.find((ad) => ad.adId === adId);
+    if (!currentAd) {
+      return;
+    }
+
     const lastAction = adReportStateRef.current[adId];
 
     if (event === "playing") {
       if (lastAction) {
         return;
       }
+      queueAdPlaybackRef.current = { adId, phase: "playing" };
       adReportStateRef.current[adId] = "start";
       reportQueueAdAction(adId, "start");
-      const currentSession = sessionRef.current;
-      const remainingAds = currentSession?.adState?.ads ?? [];
-      const currentAdIndex = remainingAds.findIndex((ad) => ad.adId === adId);
-      if (currentAdIndex >= 0) {
-        setActiveAdIndex(currentAdIndex);
-      }
-      for (const ad of remainingAds) {
-        if (ad.adId === adId) {
-          continue;
-        }
-        if (adReportStateRef.current[ad.adId] === "finish" || adReportStateRef.current[ad.adId] === "cancel") {
-          continue;
-        }
-        adReportStateRef.current[ad.adId] = "finish";
-        reportQueueAdAction(ad.adId, "finish");
-      }
       return;
     }
 
     if (event === "paused") {
+      if (queueAdPlaybackRef.current?.adId === adId) {
+        queueAdPlaybackRef.current = null;
+      }
       if (lastAction === "start" || lastAction === "resume") {
         adReportStateRef.current[adId] = "pause";
         reportQueueAdAction(adId, "pause");
@@ -1079,6 +1079,7 @@ export function App(): JSX.Element {
       if (lastAction === "finish" || lastAction === "cancel") {
         return;
       }
+      queueAdPlaybackRef.current = { adId, phase: "finishing" };
       adReportStateRef.current[adId] = "finish";
       reportQueueAdAction(adId, "finish");
     }
@@ -2009,6 +2010,16 @@ export function App(): JSX.Element {
           await sleep(pollIntervalMs);
         }
 
+        if (shouldUseQueueAdPolling(latestSession, subscriptionInfo, authSession) && queueAdPlaybackRef.current) {
+          const graceDeadline = Date.now() + 5000;
+          while (queueAdPlaybackRef.current && Date.now() < graceDeadline) {
+            await sleep(200);
+            if (launchAbortRef.current) {
+              return;
+            }
+          }
+        }
+
         if (launchAbortRef.current) {
           return;
         }
@@ -2550,7 +2561,6 @@ export function App(): JSX.Element {
             status={switchingPhase === "cleaning" ? "setup" : "starting"}
             queuePosition={queuePosition}
             adState={effectiveAdState}
-            activeAdIndex={activeAdIndex}
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             playtimeData={playtime}
             gameId={pendingSwitchGameId ?? streamingGame?.id}
@@ -2565,7 +2575,6 @@ export function App(): JSX.Element {
             status={switchingPhase === "cleaning" ? "setup" : "starting"}
             queuePosition={queuePosition}
             adState={effectiveAdState}
-            activeAdIndex={activeAdIndex}
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             error={
               launchError
@@ -2643,7 +2652,6 @@ export function App(): JSX.Element {
             status={loadingStatus}
             queuePosition={queuePosition}
             adState={effectiveAdState}
-            activeAdIndex={activeAdIndex}
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             playtimeData={playtime}
             gameId={streamingGame?.id}
@@ -2658,7 +2666,6 @@ export function App(): JSX.Element {
             status={loadingStatus}
             queuePosition={queuePosition}
             adState={effectiveAdState}
-            activeAdIndex={activeAdIndex}
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             error={
               launchError

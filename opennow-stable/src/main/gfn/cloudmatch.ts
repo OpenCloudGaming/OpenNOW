@@ -929,6 +929,12 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
 
   // Debug logging to trace signaling resolution
   const connections = payload.session.connectionInfo ?? [];
+  const connectionSummary = connections
+    .map((conn) => {
+      const rawIp = Array.isArray(conn.ip) ? conn.ip[0] : conn.ip;
+      return `{usage=${conn.usage},ip=${rawIp ?? "null"},port=${conn.port},resourcePath=${conn.resourcePath ?? "null"}}`;
+    })
+    .join(", ");
   console.log(
     `[CloudMatch] toSessionInfo: status=${payload.session.status}, ` +
     `seatSetupStep=${seatSetupStep ?? "n/a"}, ` +
@@ -936,14 +942,9 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     `connectionInfo=${connections.length} entries, ` +
     `serverIp=${signaling.serverIp}, ` +
     `signalingServer=${signaling.signalingServer}, ` +
-    `signalingUrl=${signaling.signalingUrl}`,
+    `signalingUrl=${signaling.signalingUrl}, ` +
+    `connections=[${connectionSummary}]`,
   );
-  for (const conn of connections) {
-    console.log(
-      `[CloudMatch]   conn: usage=${conn.usage} ip=${conn.ip ?? "null"} port=${conn.port} ` +
-      `resourcePath=${conn.resourcePath ?? "null"}`,
-    );
-  }
 
   return {
     sessionId: payload.session.sessionId,

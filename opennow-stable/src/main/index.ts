@@ -709,16 +709,30 @@ function registerIpcHandlers(): void {
           console.log(
             `[CreateSession] Found launching session (id=${launchingCandidate.sessionId}, appId=${launchingCandidate.appId}, status=1); returning for renderer queue/ad polling.`,
           );
-          return {
-            sessionId: launchingCandidate.sessionId,
-            status: 1,
-            zone: "",
-            streamingBaseUrl,
-            serverIp: launchingCandidate.serverIp!,
-            signalingServer: launchingCandidate.serverIp!,
-            signalingUrl: launchingCandidate.signalingUrl ?? `wss://${launchingCandidate.serverIp}:443/nvst/`,
-            iceServers: [],
-          } satisfies SessionInfo;
+          try {
+            return await pollSession({
+              token,
+              streamingBaseUrl,
+              serverIp: launchingCandidate.serverIp!,
+              zone: payload.zone,
+              sessionId: launchingCandidate.sessionId,
+            });
+          } catch (hydrateError) {
+            console.warn(
+              `[CreateSession] Failed to hydrate launching session ${launchingCandidate.sessionId}; falling back to minimal handoff:`,
+              hydrateError,
+            );
+            return {
+              sessionId: launchingCandidate.sessionId,
+              status: 1,
+              zone: payload.zone,
+              streamingBaseUrl,
+              serverIp: launchingCandidate.serverIp!,
+              signalingServer: launchingCandidate.serverIp!,
+              signalingUrl: launchingCandidate.signalingUrl ?? `wss://${launchingCandidate.serverIp}:443/nvst/`,
+              iceServers: [],
+            } satisfies SessionInfo;
+          }
         }
 
         return null;
