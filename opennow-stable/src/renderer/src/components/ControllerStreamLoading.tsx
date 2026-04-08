@@ -21,6 +21,11 @@ export interface ControllerStreamLoadingProps {
   adState?: SessionAdState;
   activeAd?: SessionAdInfo;
   activeAdMediaUrl?: string;
+  error?: {
+    title: string;
+    description: string;
+    code?: string;
+  };
   onAdPlaybackEvent?: (event: QueueAdPlaybackEvent, adId: string) => void;
   adPreviewRef?: Ref<QueueAdPreviewHandle>;
   playtimeData?: PlaytimeStore;
@@ -75,6 +80,7 @@ export function ControllerStreamLoading({
   adState,
   activeAd,
   activeAdMediaUrl,
+  error,
   onAdPlaybackEvent,
   adPreviewRef,
   playtimeData = {},
@@ -91,6 +97,7 @@ export function ControllerStreamLoading({
   const adDurationSeconds = adDurationMs ? Math.round(adDurationMs / 1000) : undefined;
   const adMessage = getSessionAdMessage(adState) ?? (isSessionQueuePaused(adState) ? "Resume ads to stay in queue." : undefined);
   const gracePeriodSeconds = getSessionAdGracePeriodSeconds(adState);
+  const hasError = Boolean(error);
 
   return (
     <div className="controller-stream-loading">
@@ -145,7 +152,7 @@ export function ControllerStreamLoading({
             <div className="csl-status-container">
               <div className="csl-status-message">{statusMessage}</div>
 
-              {activeAd && cachedAdMediaUrl && (
+              {!hasError && activeAd && cachedAdMediaUrl && (
                 <div className={`csl-ad-panel${isSessionQueuePaused(adState) ? " csl-ad-panel--paused" : ""}`}>
                   <div className="csl-ad-copy">
                     <span className="csl-ad-chip">Ad Queue</span>
@@ -159,6 +166,14 @@ export function ControllerStreamLoading({
                       onPlaybackEvent={(event) => onAdPlaybackEvent?.(event, activeAd.adId)}
                     />
                   </div>
+                </div>
+              )}
+
+              {hasError && error && (
+                <div className="csl-error-panel" role="alert">
+                  <div className="csl-error-title">{error.title}</div>
+                  <div className="csl-error-description">{error.description}</div>
+                  {error.code && <div className="csl-error-code">{error.code}</div>}
                 </div>
               )}
 

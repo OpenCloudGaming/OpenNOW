@@ -6617,6 +6617,36 @@ button.game-card-store-chip.active:hover {
   background: rgba(255, 255, 255, 0.08);
 }
 
+.csl-error-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 119, 119, 0.24);
+  background: rgba(44, 10, 10, 0.76);
+}
+
+.csl-error-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #ffb1b1;
+}
+
+.csl-error-description {
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.csl-error-code {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 /* Progress Indicator */
 .csl-progress-indicator {
   display: grid;

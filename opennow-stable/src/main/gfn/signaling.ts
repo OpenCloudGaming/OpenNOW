@@ -32,7 +32,7 @@ export class GfnSignalingClient {
   private peerName = `peer-${Math.floor(Math.random() * 10_000_000_000)}`;
   private ackCounter = 0;
   private heartbeatTimer: NodeJS.Timeout | null = null;
-  private isDisconnecting = false;
+  private connectionGeneration = 0;
   private listeners = new Set<(event: MainToRendererSignalingEvent) => void>();
 
   constructor(
@@ -119,8 +119,7 @@ export class GfnSignalingClient {
 
     const url = this.buildSignInUrl();
     const protocol = `x-nv-sessionid.${this.sessionId}`;
-
-    this.isDisconnecting = false;
+    const generation = ++this.connectionGeneration;
 
     console.log("[Signaling] Connecting to:", url);
     console.log("[Signaling] Session ID:", this.sessionId);
@@ -142,12 +141,20 @@ export class GfnSignalingClient {
 
       this.ws = ws;
 
+      const isCurrentSocket = (): boolean => this.ws === ws && this.connectionGeneration === generation;
+
       ws.once("error", (error) => {
+        if (!isCurrentSocket()) {
+          return;
+        }
         this.emit({ type: "error", message: `Signaling connect failed: ${String(error)}` });
         reject(error);
       });
 
       ws.once("open", () => {
+        if (!isCurrentSocket()) {
+          return;
+        }
         this.sendPeerInfo();
         this.setupHeartbeat();
         this.emit({ type: "connected" });
@@ -155,17 +162,21 @@ export class GfnSignalingClient {
       });
 
       ws.on("message", (raw) => {
+        if (!isCurrentSocket()) {
+          return;
+        }
         const text = typeof raw === "string" ? raw : raw.toString("utf8");
         this.handleMessage(text);
       });
 
       ws.on("close", (_code, reason) => {
         this.clearHeartbeat();
-        this.ws = null;
 
-        if (this.isDisconnecting) {
+        if (!isCurrentSocket()) {
           return;
         }
+
+        this.ws = null;
 
         const reasonText = typeof reason === "string" ? reason : reason.toString("utf8");
         this.emit({ type: "disconnected", reason: reasonText || "socket closed" });
@@ -295,11 +306,12 @@ export class GfnSignalingClient {
   }
 
   disconnect(): void {
+    this.connectionGeneration += 1;
     this.clearHeartbeat();
-    this.isDisconnecting = true;
     if (this.ws) {
-      this.ws.close();
+      const socket = this.ws;
       this.ws = null;
+      socket.close();
     }
   }
 }
