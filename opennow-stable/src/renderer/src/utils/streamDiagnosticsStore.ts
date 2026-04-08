@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useRef, useSyncExternalStore } from "react";
 
 import type { StreamDiagnostics } from "../gfn/webrtcClient";
 
@@ -38,4 +38,28 @@ export function createStreamDiagnosticsStore(initial: StreamDiagnostics): Stream
 
 export function useStreamDiagnosticsStore(store: StreamDiagnosticsStore): StreamDiagnostics {
   return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getServerSnapshot);
+}
+
+export function useStreamDiagnosticsSelector<T>(
+  store: StreamDiagnosticsStore,
+  selector: (value: StreamDiagnostics) => T,
+  isEqual: (prev: T, next: T) => boolean = Object.is,
+): T {
+  const selectionRef = useRef<T | null>(null);
+
+  const getSelection = (snapshot: StreamDiagnostics): T => {
+    const nextSelection = selector(snapshot);
+    const previousSelection = selectionRef.current;
+    if (previousSelection !== null && isEqual(previousSelection, nextSelection)) {
+      return previousSelection;
+    }
+    selectionRef.current = nextSelection;
+    return nextSelection;
+  };
+
+  return useSyncExternalStore(
+    store.subscribe,
+    () => getSelection(store.getSnapshot()),
+    () => getSelection(store.getServerSnapshot()),
+  );
 }

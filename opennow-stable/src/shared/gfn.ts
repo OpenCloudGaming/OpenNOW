@@ -12,6 +12,46 @@ export type GameLanguage =
   | "el_GR" | "hu_HU" | "ro_RO" | "uk_UA" | "nl_NL" | "sv_SE" | "da_DK"
   | "fi_FI" | "no_NO";
 
+/** Keyboard layout codes for physical key mapping in remote sessions */
+export type KeyboardLayout =
+  | "en-US" | "en-GB" | "tr-TR" | "de-DE" | "fr-FR" | "es-ES" | "es-MX" | "it-IT"
+  | "pt-PT" | "pt-BR" | "pl-PL" | "ru-RU" | "ja-JP" | "ko-KR" | "zh-CN" | "zh-TW";
+
+export interface KeyboardLayoutOption {
+  value: KeyboardLayout;
+  label: string;
+  macValue?: string;
+}
+
+export const DEFAULT_KEYBOARD_LAYOUT: KeyboardLayout = "en-US";
+
+export const keyboardLayoutOptions: readonly KeyboardLayoutOption[] = [
+  { value: "en-US", label: "English (US)", macValue: "m-us" },
+  { value: "en-GB", label: "English (UK)", macValue: "m-brit" },
+  { value: "tr-TR", label: "Turkish Q", macValue: "m-tr-qty" },
+  { value: "de-DE", label: "German" },
+  { value: "fr-FR", label: "French" },
+  { value: "es-ES", label: "Spanish" },
+  { value: "es-MX", label: "Spanish (Latin America)" },
+  { value: "it-IT", label: "Italian" },
+  { value: "pt-PT", label: "Portuguese (Portugal)" },
+  { value: "pt-BR", label: "Portuguese (Brazil)" },
+  { value: "pl-PL", label: "Polish" },
+  { value: "ru-RU", label: "Russian" },
+  { value: "ja-JP", label: "Japanese" },
+  { value: "ko-KR", label: "Korean" },
+  { value: "zh-CN", label: "Chinese (Simplified)" },
+  { value: "zh-TW", label: "Chinese (Traditional)" },
+] as const;
+
+export function resolveGfnKeyboardLayout(layout: KeyboardLayout, platform: string): string {
+  const option = keyboardLayoutOptions.find((candidate) => candidate.value === layout);
+  if (platform === "darwin" && option?.macValue) {
+    return option.macValue;
+  }
+  return option?.value ?? DEFAULT_KEYBOARD_LAYOUT;
+}
+
 /** Helper: get CloudMatch bitDepth value (0 = 8-bit SDR, 10 = 10-bit HDR capable) */
 export function colorQualityBitDepth(cq: ColorQuality): number {
   return cq.startsWith("10bit") ? 10 : 0;
@@ -64,10 +104,13 @@ export interface Settings {
   /** When true, the app will automatically enter fullscreen when controller mode triggers it */
   autoFullScreen: boolean;
   favoriteGameIds: string[];
+  sessionCounterEnabled: boolean;
   sessionClockShowEveryMinutes: number;
   sessionClockShowDurationSeconds: number;
   windowWidth: number;
   windowHeight: number;
+  /** Keyboard layout for mapping physical keys inside the remote session */
+  keyboardLayout: KeyboardLayout;
   /** In-game language setting (sent to GFN servers via languageCode parameter) */
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
@@ -228,6 +271,8 @@ export interface StreamSettings {
   maxBitrateMbps: number;
   codec: VideoCodec;
   colorQuality: ColorQuality;
+  /** Keyboard layout for mapping physical keys inside the remote session */
+  keyboardLayout: KeyboardLayout;
   /** In-game language setting (sent to GFN servers via languageCode parameter) */
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
@@ -275,6 +320,13 @@ export interface MediaConnectionInfo {
   port: number;
 }
 
+export interface NegotiatedStreamProfile {
+  resolution?: string;
+  fps?: number;
+  colorQuality?: ColorQuality;
+  enableL4S?: boolean;
+}
+
 export interface SessionInfo {
   sessionId: string;
   status: number;
@@ -288,6 +340,7 @@ export interface SessionInfo {
   gpuType?: string;
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
+  negotiatedStreamProfile?: NegotiatedStreamProfile;
   clientId?: string;
   deviceId?: string;
 }
