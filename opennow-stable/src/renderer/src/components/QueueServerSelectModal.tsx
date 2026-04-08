@@ -364,16 +364,34 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
             <button
               onClick={onCancel}
               style={ghostBtn}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "var(--card-hover)"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = ghostBtn.background as string; }}
+              onMouseEnter={(e) => {
+                const btn = e.currentTarget as HTMLButtonElement;
+                btn.style.background = "var(--accent-surface)";
+                btn.style.borderColor = "var(--accent)";
+                btn.style.color = "var(--accent)";
+              }}
+              onMouseLeave={(e) => {
+                const btn = e.currentTarget as HTMLButtonElement;
+                btn.style.background = ghostBtn.background as string;
+                btn.style.border = ghostBtn.border as string;
+                btn.style.color = ghostBtn.color as string;
+              }}
             >Cancel</button>
             <button
               onClick={handleConfirm}
               style={launchBtn}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = "0.88"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = "1"; }}
+              onMouseEnter={(e) => {
+                const btn = e.currentTarget as HTMLButtonElement;
+                btn.style.background = "linear-gradient(135deg, var(--accent-hover), var(--accent))";
+                btn.style.boxShadow = "0 6px 20px var(--accent-glow)";
+              }}
+              onMouseLeave={(e) => {
+                const btn = e.currentTarget as HTMLButtonElement;
+                btn.style.background = launchBtn.background as string;
+                btn.style.boxShadow = launchBtn.boxShadow as string;
+              }}
             >
-              Launch <span style={{ marginLeft: 4 }}>→</span>
+              Launch
             </button>
           </div>
         </div>
