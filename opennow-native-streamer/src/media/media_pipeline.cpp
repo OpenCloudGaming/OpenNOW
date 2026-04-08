@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <sstream>
 
 #if defined(OPENNOW_HAS_FFMPEG)
 extern "C" {
@@ -296,9 +295,7 @@ void MediaPipeline::StageFrame(AVFrame* frame) {
     std::lock_guard<std::mutex> lock(pending_video_mutex_);
     pending_video_frame_ = std::move(pending);
   }
-  std::ostringstream thread_id;
-  thread_id << std::this_thread::get_id();
-  Log("Staged decoded video frame on worker thread " + thread_id.str());
+  Log("Staged decoded video frame on worker thread");
 }
 
 void MediaPipeline::UploadPendingFrame(const PendingVideoFrame& frame) {
@@ -323,9 +320,7 @@ void MediaPipeline::UploadPendingFrame(const PendingVideoFrame& frame) {
     Log(SDL_GetError());
     return;
   }
-  std::ostringstream thread_id;
-  thread_id << std::this_thread::get_id();
-  Log("Uploaded staged video frame on render thread " + thread_id.str());
+  Log("Uploaded staged video frame on render thread");
 }
 #endif
 

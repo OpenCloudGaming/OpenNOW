@@ -34,7 +34,9 @@ class IpcClient {
   std::atomic<bool> running_{false};
   std::thread read_thread_;
   std::intptr_t socket_fd_{-1};
+#if defined(_WIN32)
   bool winsock_started_{false};
+#endif
 };
 
 }  // namespace opennow::native
