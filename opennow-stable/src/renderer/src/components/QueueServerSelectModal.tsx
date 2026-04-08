@@ -33,14 +33,14 @@ function formatWait(etaMs: number): string {
 
 function getPingColor(ms: number | null): string {
   if (ms === null) return "#6b7280";
-  if (ms < 30)  return "#22c55e";
+  if (ms < 30)  return "#58d98a";
   if (ms < 80)  return "#84cc16";
   if (ms < 150) return "#eab308";
   return "#ef4444";
 }
 
 function getQueueColor(q: number): string {
-  if (q <= 5)  return "#22c55e";
+  if (q <= 5)  return "#58d98a";
   if (q <= 15) return "#84cc16";
   if (q <= 30) return "#eab308";
   return "#ef4444";
@@ -225,16 +225,16 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
         <div style={{ padding: "20px 24px 0", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
             <div>
-              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "#f9fafb" }}>
+              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "var(--ink)" }}>
                 Select Server
               </h2>
-              <p style={{ margin: "3px 0 0", fontSize: 13, color: "#6b7280" }}>
+              <p style={{ margin: "3px 0 0", fontSize: 13, color: "var(--ink-muted)" }}>
                 {game.title} · Free tier server queue
               </p>
             </div>
             <button onClick={onCancel} style={closeBtn} aria-label="Close">✕</button>
           </div>
-          <div style={{ height: 1, background: "rgba(255,255,255,0.06)", margin: "16px 0 0" }} />
+          <div style={{ height: 1, background: "var(--panel-border)", margin: "16px 0 0" }} />
         </div>
 
         {/* Scrollable body */}
@@ -244,7 +244,7 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
           {isLoading && (
             <CenteredNote>
               <Spinner />
-              <span style={{ marginTop: 10, display: "block", fontSize: 14, color: "#6b7280" }}>
+              <span style={{ marginTop: 10, display: "block", fontSize: 14, color: "var(--ink-muted)" }}>
                 Fetching live queue data…
               </span>
             </CenteredNote>
@@ -283,7 +283,7 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
                     }
                     zone={autoZone}
                     selected={selected === "auto"}
-                    accent="#76b900"
+                    accent="#58d98a"
                     onClick={() => setSelected("auto")}
                   />
 
@@ -299,7 +299,7 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
                     }
                     zone={closestZone}
                     selected={selected === "closest"}
-                    accent="#3b82f6"
+                    accent="#58d98a"
                     pinging={isPinging}
                     disabled={!closestZone && !isPinging}
                     onClick={() => { if (closestZone) setSelected("closest"); }}
@@ -317,7 +317,7 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
                     <div key={region} style={{ marginBottom: 14 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
                         <span style={{ fontSize: 15 }}>{meta.flag}</span>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: "#6b7280", letterSpacing: "0.03em" }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-muted)", letterSpacing: "0.03em" }}>
                           {meta.label}
                         </span>
                       </div>
@@ -343,7 +343,7 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
 
           {!isLoading && !fetchError && zones.length === 0 && (
             <CenteredNote>
-              <span style={{ fontSize: 13, color: "#6b7280" }}>No server data available.</span>
+              <span style={{ fontSize: 13, color: "var(--ink-muted)" }}>No server data available.</span>
             </CenteredNote>
           )}
         </div>
@@ -354,9 +354,9 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
             href="https://printedwaste.com/gfn"
             target="_blank"
             rel="noopener noreferrer"
-            style={{ fontSize: 11, color: "#4b5563", textDecoration: "none" }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = "#9ca3af"; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = "#4b5563"; }}
+            style={{ fontSize: 11, color: "var(--ink-dim)", textDecoration: "none" }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = "var(--ink-soft)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = "var(--ink-dim)"; }}
           >
             Powered by <strong style={{ color: "inherit" }}>PrintedWaste</strong>
           </a>
@@ -364,7 +364,7 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
             <button
               onClick={onCancel}
               style={ghostBtn}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.10)"; }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "var(--card-hover)"; }}
               onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = ghostBtn.background as string; }}
             >Cancel</button>
             <button
@@ -386,7 +386,7 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
 
 function SectionLabel({ children }: { children: React.ReactNode }): JSX.Element {
   return (
-    <p style={{ margin: "0 0 10px", fontSize: 11, fontWeight: 600, color: "#4b5563", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+    <p style={{ margin: "0 0 10px", fontSize: 11, fontWeight: 600, color: "var(--ink-dim)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
       {children}
     </p>
   );
@@ -420,14 +420,14 @@ function RecommendCard({ label, sublabel, zone, selected, accent, pinging, disab
       onMouseLeave={() => setHovered(false)}
       style={{
         background: selected
-          ? `${accent}18`
+          ? "var(--accent-surface-strong)"
           : hovered && isInteractive
-          ? "rgba(255,255,255,0.05)"
-          : "rgba(255,255,255,0.02)",
+          ? "var(--accent-surface)"
+          : "var(--bg-c)",
         border: `1px solid ${
-          selected ? accent
-          : hovered && isInteractive ? "rgba(255,255,255,0.14)"
-          : "rgba(255,255,255,0.07)"
+          selected ? "var(--accent)"
+          : hovered && isInteractive ? "var(--panel-border-solid)"
+          : "var(--panel-border)"
         }`,
         borderRadius: 10,
         padding: "13px 14px",
@@ -439,22 +439,22 @@ function RecommendCard({ label, sublabel, zone, selected, accent, pinging, disab
         minHeight: 110,
       }}
     >
-      <div style={{ fontSize: 11, fontWeight: 700, color: selected ? accent : "#6b7280", marginBottom: 1, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: selected ? "var(--accent)" : "var(--ink-muted)", marginBottom: 1, textTransform: "uppercase", letterSpacing: "0.05em" }}>
         {label}
       </div>
-      <div style={{ fontSize: 11, color: "#4b5563", marginBottom: 10, display: "flex", alignItems: "center", gap: 5 }}>
+      <div style={{ fontSize: 11, color: "var(--ink-dim)", marginBottom: 10, display: "flex", alignItems: "center", gap: 5 }}>
         {pinging && <MiniSpinner color={accent} />}
         {sublabel}
       </div>
 
       {pinging ? (
         <>
-          <div style={{ fontSize: 14, fontWeight: 600, color: "#6b7280", marginBottom: 8 }}>—</div>
-          <div style={{ fontSize: 11, color: "#374151" }}>Pinging servers…</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ink-muted)", marginBottom: 8 }}>—</div>
+          <div style={{ fontSize: 11, color: "var(--ink-dim)" }}>Pinging servers…</div>
         </>
       ) : zone ? (
         <>
-          <div style={{ fontSize: 14, fontWeight: 600, color: "#e5e7eb", marginBottom: 8 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ink)", marginBottom: 8 }}>
             {regionMeta?.flag} {zone.zoneId}
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -464,7 +464,7 @@ function RecommendCard({ label, sublabel, zone, selected, accent, pinging, disab
           </div>
         </>
       ) : (
-        <div style={{ fontSize: 12, color: "#374151" }}>No ping data available</div>
+        <div style={{ fontSize: 12, color: "var(--ink-dim)" }}>No ping data available</div>
       )}
     </button>
   );
@@ -488,8 +488,14 @@ function ZoneRow({ zone, isAuto, isClosest, isPinging, selected, onClick }: Zone
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        background: selected ? "rgba(118,185,0,0.08)" : hovered ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.02)",
-        border: `1px solid ${selected ? "rgba(118,185,0,0.38)" : hovered ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.05)"}`,
+        background: selected ? "var(--accent-surface)" : hovered ? "var(--card-hover)" : "var(--bg-c)",
+        border: `1px solid ${
+          selected
+            ? "color-mix(in srgb, var(--accent) 45%, var(--panel-border))"
+            : hovered
+            ? "var(--panel-border-solid)"
+            : "var(--panel-border)"
+        }`,
         borderRadius: 7,
         padding: "7px 11px",
         cursor: "pointer",
@@ -507,19 +513,19 @@ function ZoneRow({ zone, isAuto, isClosest, isPinging, selected, onClick }: Zone
         <span style={{
           fontSize: 12,
           fontWeight: 600,
-          color: selected ? "#d1fae5" : "#d1d5db",
+          color: selected ? "var(--accent)" : "var(--ink-soft)",
           fontFamily: "'Roboto Mono', 'Courier New', monospace",
           letterSpacing: "0.02em",
         }}>
           {zone.zoneId}
         </span>
         {isAuto && (
-          <span style={{ fontSize: 10, background: "rgba(118,185,0,0.15)", color: "#76b900", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>
+          <span style={{ fontSize: 10, background: "var(--accent-surface-strong)", color: "var(--accent)", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>
             AUTO
           </span>
         )}
         {isClosest && !isAuto && (
-          <span style={{ fontSize: 10, background: "rgba(59,130,246,0.15)", color: "#60a5fa", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>
+          <span style={{ fontSize: 10, background: "var(--accent-surface)", color: "var(--accent)", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>
             NEAREST
           </span>
         )}
@@ -528,7 +534,7 @@ function ZoneRow({ zone, isAuto, isClosest, isPinging, selected, onClick }: Zone
       {/* Right */}
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexShrink: 0 }}>
         {isPinging ? (
-          <span style={{ fontSize: 11, color: "#4b5563", fontStyle: "italic" }}>pinging…</span>
+          <span style={{ fontSize: 11, color: "var(--ink-dim)", fontStyle: "italic" }}>pinging…</span>
         ) : zone.pingMs !== null ? (
           <span style={{ fontSize: 12, color: getPingColor(zone.pingMs), fontWeight: 600, minWidth: 46, textAlign: "right" }}>
             {zone.pingMs}ms
@@ -538,7 +544,7 @@ function ZoneRow({ zone, isAuto, isClosest, isPinging, selected, onClick }: Zone
           Q:{zone.queuePosition}
         </span>
         {zone.etaMs !== undefined && (
-          <span style={{ fontSize: 11, color: "#6b7280", minWidth: 44, textAlign: "right" }}>
+          <span style={{ fontSize: 11, color: "var(--ink-muted)", minWidth: 44, textAlign: "right" }}>
             {formatWait(zone.etaMs)}
           </span>
         )}
@@ -573,7 +579,7 @@ function Spinner(): JSX.Element {
         width: 26,
         height: 26,
         border: "3px solid rgba(255,255,255,0.08)",
-        borderTop: "3px solid #76b900",
+        borderTop: "3px solid var(--accent)",
         borderRadius: "50%",
         animation: "on-spin 0.75s linear infinite",
       }} />
@@ -604,21 +610,21 @@ const overlayStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  background: "rgba(0,0,0,0.82)",
+  background: "rgba(4, 6, 10, 0.78)",
   backdropFilter: "blur(8px)",
   WebkitBackdropFilter: "blur(8px)",
 };
 
 const cardStyle: React.CSSProperties = {
-  background: "linear-gradient(160deg, #111827 0%, #0d1117 100%)",
-  border: "1px solid rgba(255,255,255,0.08)",
+  background: "linear-gradient(180deg, var(--bg-a), var(--bg-b))",
+  border: "1px solid var(--panel-border-solid)",
   borderRadius: 16,
   width: "min(700px, 94vw)",
   maxHeight: "86vh",
   display: "flex",
   flexDirection: "column",
   overflow: "hidden",
-  boxShadow: "0 28px 72px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.03)",
+  boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
 };
 
 const scrollBody: React.CSSProperties = {
@@ -632,7 +638,7 @@ const scrollBody: React.CSSProperties = {
 const footerStyle: React.CSSProperties = {
   padding: "12px 24px 20px",
   flexShrink: 0,
-  borderTop: "1px solid rgba(255,255,255,0.06)",
+  borderTop: "1px solid var(--panel-border)",
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
@@ -640,10 +646,10 @@ const footerStyle: React.CSSProperties = {
 };
 
 const closeBtn: React.CSSProperties = {
-  background: "rgba(255,255,255,0.06)",
-  border: "none",
+  background: "var(--bg-c)",
+  border: "1px solid var(--panel-border)",
   borderRadius: 8,
-  color: "#9ca3af",
+  color: "var(--ink-muted)",
   cursor: "pointer",
   fontSize: 16,
   lineHeight: 1,
@@ -652,10 +658,10 @@ const closeBtn: React.CSSProperties = {
 };
 
 const ghostBtn: React.CSSProperties = {
-  background: "rgba(255,255,255,0.06)",
-  border: "1px solid rgba(255,255,255,0.08)",
+  background: "var(--bg-c)",
+  border: "1px solid var(--panel-border-solid)",
   borderRadius: 8,
-  color: "#9ca3af",
+  color: "var(--ink-soft)",
   cursor: "pointer",
   fontSize: 13,
   fontWeight: 500,
@@ -664,16 +670,17 @@ const ghostBtn: React.CSSProperties = {
 };
 
 const launchBtn: React.CSSProperties = {
-  background: "linear-gradient(135deg, #76b900 0%, #4d7a00 100%)",
+  background: "linear-gradient(135deg, var(--accent), var(--accent-press))",
   border: "none",
   borderRadius: 8,
-  color: "#fff",
+  color: "var(--accent-on)",
   cursor: "pointer",
   fontSize: 13,
   fontWeight: 700,
   padding: "8px 22px",
   display: "flex",
   alignItems: "center",
-  transition: "opacity 0.12s",
+  transition: "opacity 0.12s, transform 0.12s, box-shadow 0.12s",
   letterSpacing: "0.02em",
+  boxShadow: "0 4px 16px var(--accent-glow)",
 };
