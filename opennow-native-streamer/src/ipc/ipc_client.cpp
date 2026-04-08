@@ -1,5 +1,7 @@
 #include "opennow/native/ipc_client.hpp"
 
+#include <algorithm>
+#include <climits>
 #if defined(_WIN32)
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -26,7 +28,51 @@ constexpr SocketHandle kInvalidSocket = INVALID_SOCKET;
 using SocketHandle = int;
 constexpr SocketHandle kInvalidSocket = -1;
 #endif
+
+bool SendAll(SocketHandle socket_fd, const std::uint8_t* data, std::size_t size) {
+  std::size_t sent_total = 0;
+  while (sent_total < size) {
+#if defined(_WIN32)
+    const auto remaining = static_cast<int>(std::min<std::size_t>(size - sent_total, static_cast<std::size_t>(INT_MAX)));
+    const auto sent = ::send(
+        socket_fd,
+        reinterpret_cast<const char*>(data + sent_total),
+        remaining,
+        0);
+#else
+    const auto sent = ::send(
+        socket_fd,
+        reinterpret_cast<const void*>(data + sent_total),
+        size - sent_total,
+        0);
+#endif
+    if (sent <= 0) {
+      return false;
+    }
+    sent_total += static_cast<std::size_t>(sent);
+  }
+  return true;
 }
+
+void CloseSocket(SocketHandle socket_fd) {
+#if defined(_WIN32)
+  ::shutdown(socket_fd, SD_BOTH);
+  ::closesocket(socket_fd);
+#else
+  ::shutdown(socket_fd, SHUT_RDWR);
+  ::close(socket_fd);
+#endif
+}
+
+int ReceiveChunk(SocketHandle socket_fd, std::uint8_t* buffer, std::size_t size) {
+#if defined(_WIN32)
+  return ::recv(socket_fd, reinterpret_cast<char*>(buffer), static_cast<int>(size), 0);
+#else
+  return static_cast<int>(::recv(socket_fd, reinterpret_cast<void*>(buffer), size, 0));
+#endif
+}
+
+}  // namespace
 
 IpcClient::IpcClient() = default;
 
@@ -43,13 +89,15 @@ bool IpcClient::Connect(const std::string& host, std::uint16_t port) {
     EmitStatus("WSAStartup failed");
     return false;
   }
+  winsock_started_ = true;
 #endif
 
-  socket_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (socket_fd_ == kInvalidSocket) {
+  const auto socket_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (socket_fd == kInvalidSocket) {
     EmitStatus("Failed to create IPC socket");
     return false;
   }
+  socket_fd_ = static_cast<std::intptr_t>(socket_fd);
 
   sockaddr_in address{};
   address.sin_family = AF_INET;
@@ -60,7 +108,7 @@ bool IpcClient::Connect(const std::string& host, std::uint16_t port) {
     return false;
   }
 
-  if (::connect(socket_fd_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+  if (::connect(static_cast<SocketHandle>(socket_fd_), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
     EmitStatus("Failed to connect to Electron IPC server");
     Disconnect();
     return false;
@@ -73,25 +121,24 @@ bool IpcClient::Connect(const std::string& host, std::uint16_t port) {
 
 void IpcClient::Disconnect() {
   running_.store(false);
-  if (socket_fd_ != kInvalidSocket) {
-#if defined(_WIN32)
-    ::shutdown(socket_fd_, SD_BOTH);
-    ::closesocket(socket_fd_);
-    WSACleanup();
-#else
-    ::shutdown(socket_fd_, SHUT_RDWR);
-    ::close(socket_fd_);
-#endif
-    socket_fd_ = kInvalidSocket;
+  if (socket_fd_ != static_cast<std::intptr_t>(kInvalidSocket)) {
+    CloseSocket(static_cast<SocketHandle>(socket_fd_));
+    socket_fd_ = static_cast<std::intptr_t>(kInvalidSocket);
   }
   if (read_thread_.joinable()) {
     read_thread_.join();
   }
+#if defined(_WIN32)
+  if (winsock_started_) {
+    WSACleanup();
+    winsock_started_ = false;
+  }
+#endif
 }
 
 bool IpcClient::SendJson(const std::string& json) {
   std::lock_guard<std::mutex> lock(write_mutex_);
-  if (socket_fd_ == kInvalidSocket) {
+  if (socket_fd_ == static_cast<std::intptr_t>(kInvalidSocket)) {
     return false;
   }
 
@@ -103,10 +150,13 @@ bool IpcClient::SendJson(const std::string& json) {
       static_cast<std::uint8_t>(size & 0xff),
   };
 
-  if (::send(socket_fd_, header.data(), header.size(), 0) != static_cast<ssize_t>(header.size())) {
+  if (!SendAll(static_cast<SocketHandle>(socket_fd_), header.data(), header.size())) {
     return false;
   }
-  if (::send(socket_fd_, json.data(), json.size(), 0) != static_cast<ssize_t>(json.size())) {
+  if (!SendAll(
+          static_cast<SocketHandle>(socket_fd_),
+          reinterpret_cast<const std::uint8_t*>(json.data()),
+          json.size())) {
     return false;
   }
   return true;
@@ -126,11 +176,11 @@ void IpcClient::ReadLoop() {
   std::array<std::uint8_t, kReadChunkSize> chunk{};
 
   while (running_.load()) {
-    const auto received = ::recv(socket_fd_, chunk.data(), chunk.size(), 0);
+    const auto received = ReceiveChunk(static_cast<SocketHandle>(socket_fd_), chunk.data(), chunk.size());
     if (received <= 0) {
       break;
     }
-    buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + received);
+    buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + static_cast<std::size_t>(received));
 
     while (buffer.size() >= 4) {
       const std::uint32_t size =

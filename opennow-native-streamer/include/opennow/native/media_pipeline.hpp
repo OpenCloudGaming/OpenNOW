@@ -7,6 +7,15 @@
 #include <string>
 #include <vector>
 
+#if defined(OPENNOW_HAS_FFMPEG)
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavutil/frame.h>
+#include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
+}
+#endif
+
 #if defined(OPENNOW_HAS_SDL3)
 #include <SDL3/SDL.h>
 #else
@@ -44,7 +53,7 @@ class MediaPipeline {
   bool EnsureAudioDecoder(std::string& error);
   void DecodeVideoFrame(const std::vector<std::uint8_t>& encoded_frame);
   void DecodeAudioFrame(const std::vector<std::uint8_t>& encoded_frame);
-  void UploadFrame(struct AVFrame* frame);
+  void UploadFrame(::AVFrame* frame);
 #endif
 
   LogFn logger_;
@@ -60,13 +69,13 @@ class MediaPipeline {
   int audio_channels_ = 2;
   std::uint64_t rendered_frames_ = 0;
 #if defined(OPENNOW_HAS_SDL3) && defined(OPENNOW_HAS_FFMPEG)
-  struct AVCodecContext* video_decoder_ctx_ = nullptr;
-  struct AVCodecContext* audio_decoder_ctx_ = nullptr;
-  struct AVFrame* video_frame_ = nullptr;
-  struct AVFrame* audio_frame_ = nullptr;
-  struct AVPacket* packet_ = nullptr;
-  struct SwsContext* sws_context_ = nullptr;
-  struct SwrContext* swr_context_ = nullptr;
+  ::AVCodecContext* video_decoder_ctx_ = nullptr;
+  ::AVCodecContext* audio_decoder_ctx_ = nullptr;
+  ::AVFrame* video_frame_ = nullptr;
+  ::AVFrame* audio_frame_ = nullptr;
+  ::AVPacket* packet_ = nullptr;
+  ::SwsContext* sws_context_ = nullptr;
+  ::SwrContext* swr_context_ = nullptr;
   int texture_width_ = 0;
   int texture_height_ = 0;
 #endif
