@@ -163,13 +163,13 @@ export function QueueServerSelectModal({ game, regions, onConfirm, onCancel }: P
     const maxPing  = Math.max(...scoring.map((z) => z.pingMs ?? 999), 1);
     const maxQueue = Math.max(...scoring.map((z) => z.queuePosition), 1);
 
-    return scoring.reduce<ZoneInfo>((best, z) => {
+    return scoring.reduce((best, z) => {
       const np = (z.pingMs ?? maxPing) / maxPing;
       const nq = z.queuePosition / maxQueue;
       const bp = (best.pingMs ?? maxPing) / maxPing;
       const bq = best.queuePosition / maxQueue;
       return (np * 0.4 + nq * 0.6) < (bp * 0.4 + bq * 0.6) ? z : best;
-    });
+    }, scoring[0]!);
   }, [zones]);
 
   // ── Closest: lowest ping (only if ping data available) ───────────────────
