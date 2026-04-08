@@ -791,7 +791,13 @@ export function StreamView({
   }, [isConnecting, sessionClockShowDurationSeconds, sessionClockShowEveryMinutes, sessionCounterEnabled]);
 
   const escHoldProgress = Math.max(0, Math.min(1, escHoldReleaseIndicator.progress));
-  const escHoldSecondsLeft = Math.max(0, 5 - Math.floor(escHoldProgress * 5));
+  const escHoldCountdownSeconds = Math.max(0, 5 * (1 - escHoldProgress));
+  const escHoldCountdownLabel = escHoldCountdownSeconds > 0
+    ? `${escHoldCountdownSeconds.toFixed(1)}s`
+    : "0.0s";
+  const escHoldRingRadius = 54;
+  const escHoldRingCircumference = 2 * Math.PI * escHoldRingRadius;
+  const escHoldRingOffset = escHoldRingCircumference * escHoldProgress;
   const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
   const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
@@ -1872,19 +1878,38 @@ export function StreamView({
         recordingDurationMs={recordingDurationMs}
       />
 
-      {/* Hold-Esc release indicator (appears after 1s hold) */}
+      {/* Hold-Esc release indicator */}
       {escHoldReleaseIndicator.visible && !isConnecting && (
         <>
           <div className="sv-esc-hold-backdrop" />
-          <div className="sv-esc-hold" title="Keep holding Escape to release mouse lock">
-            <div className="sv-esc-hold-title">Hold Escape to Release Mouse</div>
-            <div className="sv-esc-hold-head">
-              <span>Keep holding…</span>
-              <span>{escHoldSecondsLeft}s</span>
+          <div
+            className="sv-esc-hold"
+            role="status"
+            aria-label="Hold Escape to release mouse lock. Keep holding until the timer reaches zero."
+            title="Keep holding Escape to release mouse lock"
+          >
+            <div className="sv-esc-hold-kicker">Mouse lock</div>
+            <div className="sv-esc-hold-ring" aria-hidden="true">
+              <svg className="sv-esc-hold-ring-svg" viewBox="0 0 140 140">
+                <circle className="sv-esc-hold-ring-track" cx="70" cy="70" r={escHoldRingRadius} />
+                <circle
+                  className="sv-esc-hold-ring-progress"
+                  cx="70"
+                  cy="70"
+                  r={escHoldRingRadius}
+                  style={{
+                    strokeDasharray: escHoldRingCircumference,
+                    strokeDashoffset: escHoldRingOffset,
+                  }}
+                />
+              </svg>
+              <div className="sv-esc-hold-ring-core">
+                <span className="sv-esc-hold-time">{escHoldCountdownLabel}</span>
+                <span className="sv-esc-hold-caption">to release</span>
+              </div>
             </div>
-            <div className="sv-esc-hold-track">
-              <span className="sv-esc-hold-fill" style={{ transform: `scaleX(${escHoldProgress})` }} />
-            </div>
+            <div className="sv-esc-hold-title">Hold Escape</div>
+            <p className="sv-esc-hold-text">Keep holding until the timer reaches zero.</p>
           </div>
         </>
       )}
