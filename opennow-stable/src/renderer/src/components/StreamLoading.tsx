@@ -1,6 +1,8 @@
 import { Loader2, Monitor, Cpu, Wifi, X, XCircle } from "lucide-react";
 import type { JSX } from "react";
+import type { SessionAdState } from "@shared/gfn";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
+import { QueueAdPreview } from "./QueueAdPreview";
 
 export interface StreamLoadingProps {
   gameTitle: string;
@@ -9,11 +11,13 @@ export interface StreamLoadingProps {
   status: "queue" | "setup" | "starting" | "connecting";
   queuePosition?: number;
   estimatedWait?: string;
+  adState?: SessionAdState;
   error?: {
     title: string;
     description: string;
     code?: string;
   };
+  onAdPlaybackEvent?: (event: "playing" | "paused" | "ended", adId: string) => void;
   onCancel: () => void;
 }
 
@@ -26,10 +30,17 @@ const steps = [
 function getStatusMessage(
   status: StreamLoadingProps["status"],
   queuePosition?: number,
+  adState?: SessionAdState,
   isError = false,
 ): string {
   if (isError) {
     return "Game launch failed";
+  }
+  if (adState?.isQueuePaused) {
+    return "Session queue paused";
+  }
+  if (status === "queue" && adState?.isAdsRequired) {
+    return queuePosition ? `Watching ads to keep position #${queuePosition}` : "Watching ads to keep your place in queue";
   }
   switch (status) {
     case "queue":
@@ -59,6 +70,21 @@ function getActiveStepIndex(status: StreamLoadingProps["status"]): number {
   }
 }
 
+function getAdSummary(adState?: SessionAdState): string | null {
+  if (!adState?.isAdsRequired) {
+    return null;
+  }
+  if (adState.message) {
+    return adState.message;
+  }
+  if (adState.isQueuePaused) {
+    return "Resume ads to stay in queue.";
+  }
+  return adState.ads.length > 0
+    ? `${adState.ads.length} ad${adState.ads.length === 1 ? "" : "s"} available for queue progression.`
+    : "Ad playback is required while your session is queued.";
+}
+
 export function StreamLoading({
   gameTitle,
   gameCover,
@@ -66,14 +92,19 @@ export function StreamLoading({
   status,
   queuePosition,
   estimatedWait,
+  adState,
   error,
+  onAdPlaybackEvent,
   onCancel,
 }: StreamLoadingProps): JSX.Element {
   const hasError = Boolean(error);
   const activeStepIndex = getActiveStepIndex(status);
-  const statusMessage = getStatusMessage(status, queuePosition, hasError);
+  const statusMessage = getStatusMessage(status, queuePosition, adState, hasError);
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
   const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
+  const adSummary = getAdSummary(adState);
+  const activeAd = adState?.ads[0];
+  const activeAdDurationSeconds = activeAd?.durationMs ? Math.round(activeAd.durationMs / 1000) : undefined;
 
   return (
     <div className={`sload${hasError ? " sload--error" : ""}`}>
@@ -145,6 +176,26 @@ export function StreamLoading({
           {hasError ? <XCircle size={28} className="sload-error-icon" /> : <Loader2 size={28} className="sload-spin" />}
           <div className="sload-status-text">
             <p className="sload-message">{statusMessage}</p>
+            {!hasError && activeAd?.mediaUrl && (
+              <div className={`sload-ad${adState?.isQueuePaused ? " sload-ad--paused" : ""}`}>
+                <div className="sload-ad-copy">
+                  <span className="sload-ad-chip">Ad Queue</span>
+                  <p className="sload-ad-title">{activeAd.title ?? "Advertisement in progress"}</p>
+                  {adSummary && <p className="sload-ad-message">{adSummary}</p>}
+                  <div className="sload-ad-meta">
+                    {activeAdDurationSeconds && <span>{activeAdDurationSeconds}s spot</span>}
+                    {adState?.gracePeriodSeconds && <span>{adState.gracePeriodSeconds}s grace window</span>}
+                  </div>
+                </div>
+                <div className="sload-ad-media">
+                  <QueueAdPreview
+                    mediaUrl={activeAd.mediaUrl}
+                    title={activeAd.title}
+                    onPlaybackEvent={(event) => onAdPlaybackEvent?.(event, activeAd.adId)}
+                  />
+                </div>
+              </div>
+            )}
             {hasError && error && (
               <>
                 <p className="sload-error-title">{error.title}</p>

@@ -81,17 +81,52 @@ export interface CloudMatchResponse {
       queuePosition?: number;
       seatSetupEta?: number;
     };
+    sessionAdsRequired?: boolean;
+    isAdsRequired?: boolean;
+    sessionAds?: Array<{
+      adId?: string;
+      adState?: number;
+      /** Top-level direct URL (server field name confirmed from live capture) */
+      adUrl?: string;
+      /** Legacy field names retained for forward-compat */
+      mediaUrl?: string;
+      videoUrl?: string;
+      url?: string;
+      /** Multi-format media source list (mp4deinterlaced720p, hlsadaptive, webm) */
+      adMediaFiles?: Array<{
+        mediaFileUrl?: string;
+        encodingProfile?: string;
+      }>;
+      clickThroughUrl?: string;
+      /** Duration in seconds (live field name: adLengthInSeconds) */
+      adLengthInSeconds?: number;
+      /** Legacy duration field names */
+      durationMs?: number;
+      durationInMs?: number;
+      title?: string;
+      description?: string;
+    }>;
+    opportunity?: {
+      state?: string;
+      queuePaused?: boolean;
+      gracePeriodSeconds?: number;
+      message?: string;
+      title?: string;
+      description?: string;
+    };
     progressState?: number;
     eta?: number;
     sessionProgress?: {
       queuePosition?: number;
       progressState?: number;
       eta?: number;
+      isAdsRequired?: boolean;
     };
     progressInfo?: {
       queuePosition?: number;
       progressState?: number;
       eta?: number;
+      isAdsRequired?: boolean;
     };
     errorCode?: number;
     gpuType?: string;

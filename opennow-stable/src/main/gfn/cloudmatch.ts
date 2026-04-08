@@ -1,9 +1,15 @@
 import crypto from "node:crypto";
 import dns from "node:dns";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 import type {
   ActiveSessionInfo,
   IceServer,
+  SessionAdAction,
+  SessionAdInfo,
+  SessionAdReportRequest,
+  SessionAdState,
   SessionClaimRequest,
   SessionCreateRequest,
   SessionInfo,
@@ -23,6 +29,119 @@ import { SessionError } from "./errorCodes";
 const GFN_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
 const GFN_CLIENT_VERSION = "2.0.80.173";
+const SESSION_MODIFY_ACTION_AD_UPDATE = 6;
+const READY_SESSION_STATUSES = new Set([2, 3]);
+const READY_TRANSITION_CAPTURE_PATH = path.join(
+  process.cwd(),
+  "docs",
+  "gfn-official-client-capture",
+  "opennow-ready-transition-latest.json",
+);
+
+const AD_QUEUE_CAPTURE_PATH = path.join(
+  process.cwd(),
+  "docs",
+  "gfn-official-client-capture",
+  "opennow-ad-queue-latest.json",
+);
+
+const AD_ACTION_CODES: Record<SessionAdAction, number> = {
+  start: 1,
+  pause: 2,
+  resume: 3,
+  finish: 4,
+  cancel: 5,
+};
+
+function isReadySessionStatus(status: number): boolean {
+  return READY_SESSION_STATUSES.has(status);
+}
+
+function sanitizeReadyTransitionPayload(payload: CloudMatchResponse): Record<string, unknown> {
+  return {
+    requestStatus: {
+      ...payload.requestStatus,
+    },
+    session: {
+      sessionId: payload.session.sessionId ? "<redacted-session-id>" : undefined,
+      status: payload.session.status,
+      queuePosition: payload.session.queuePosition,
+      seatSetupInfo: payload.session.seatSetupInfo,
+      sessionAdsRequired: payload.session.sessionAdsRequired,
+      isAdsRequired: payload.session.isAdsRequired,
+      progressState: payload.session.progressState,
+      eta: payload.session.eta,
+      sessionProgress: payload.session.sessionProgress,
+      progressInfo: payload.session.progressInfo,
+      errorCode: payload.session.errorCode,
+      gpuType: payload.session.gpuType,
+      sessionControlInfo: payload.session.sessionControlInfo,
+      connectionInfo: payload.session.connectionInfo ?? [],
+      iceServerConfiguration: {
+        iceServersCount: payload.session.iceServerConfiguration?.iceServers?.length ?? 0,
+      },
+    },
+  };
+}
+
+async function writeReadyTransitionCapture(options: {
+  mode: string;
+  sourceHost: string;
+  effectiveHost: string;
+  repolledDirectly: boolean;
+  payload: CloudMatchResponse;
+}): Promise<void> {
+  const capture = {
+    capturedAt: new Date().toISOString(),
+    mode: options.mode,
+    sourceHost: options.sourceHost,
+    effectiveHost: options.effectiveHost,
+    repolledDirectly: options.repolledDirectly,
+    resolvedServerIp: streamingServerIp(options.payload),
+    payload: sanitizeReadyTransitionPayload(options.payload),
+  };
+
+  try {
+    await fs.mkdir(path.dirname(READY_TRANSITION_CAPTURE_PATH), { recursive: true });
+    await fs.writeFile(READY_TRANSITION_CAPTURE_PATH, JSON.stringify(capture, null, 2));
+    console.log(`[CloudMatch] Wrote ready transition capture: ${READY_TRANSITION_CAPTURE_PATH}`);
+  } catch (error) {
+    console.warn("[CloudMatch] Failed to write ready transition capture:", error);
+  }
+}
+
+async function writeAdQueueCapture(options: {
+  sourceHost: string;
+  sessionId: string;
+  payload: CloudMatchResponse;
+}): Promise<void> {
+  const session = options.payload.session;
+  const capture = {
+    capturedAt: new Date().toISOString(),
+    source: "OpenNOW ad-queue poll",
+    sourceHost: options.sourceHost,
+    sessionId: "<redacted>",
+    sessionStatus: session.status,
+    sessionAdsRequired: session.sessionAdsRequired,
+    isAdsRequired: session.isAdsRequired,
+    queuePosition: session.queuePosition ?? session.seatSetupInfo?.queuePosition ?? null,
+    seatSetupInfo: session.seatSetupInfo ?? null,
+    // Raw sessionAds — full structure preserved (no creative URLs redacted) so field
+    // names can be verified against the normalizeSessionAdInfo field mapping.
+    sessionAdsRaw: session.sessionAds ?? null,
+    opportunity: session.opportunity ?? null,
+    sessionProgress: session.sessionProgress ?? null,
+    progressInfo: session.progressInfo ?? null,
+  };
+
+  try {
+    await fs.mkdir(path.dirname(AD_QUEUE_CAPTURE_PATH), { recursive: true });
+    await fs.writeFile(AD_QUEUE_CAPTURE_PATH, JSON.stringify(capture, null, 2));
+    console.log(`[CloudMatch] Wrote ad-queue capture: ${AD_QUEUE_CAPTURE_PATH}`);
+  } catch (error) {
+    console.warn("[CloudMatch] Failed to write ad-queue capture:", error);
+  }
+}
 
 async function resolveHostnameWithFallback(hostname: string): Promise<string | null> {
   // Try system resolver first, then fall back to Cloudflare (1.1.1.1) and Google (8.8.8.8)
@@ -230,7 +349,9 @@ function resolveSignaling(response: CloudMatchResponse): {
     serverIp,
     signalingServer,
     signalingUrl,
-    mediaConnectionInfo: resolveMediaConnectionInfo(connections, serverIp),
+    mediaConnectionInfo: resolveMediaConnectionInfo(connections, serverIp, {
+      logMissing: isReadySessionStatus(response.session.status),
+    }),
   };
 }
 
@@ -250,6 +371,7 @@ function resolveSignaling(response: CloudMatchResponse): {
 function resolveMediaConnectionInfo(
   connections: Array<{ ip?: string; port: number; usage: number; protocol?: number; resourcePath?: string }>,
   serverIp: string,
+  options?: { logMissing?: boolean },
 ): { ip: string; port: number } | undefined {
   // Helper: extract IP from a connection entry
   const extractIp = (conn: { ip?: string; resourcePath?: string }): string | null => {
@@ -315,7 +437,9 @@ function resolveMediaConnectionInfo(
     if (ip && port > 0) return { ip, port };
   }
 
-  console.log("[CloudMatch] resolveMediaConnectionInfo: NO valid media connection info found");
+  if (options?.logMissing ?? true) {
+    console.log("[CloudMatch] resolveMediaConnectionInfo: NO valid media connection info found");
+  }
   return undefined;
 }
 
@@ -553,6 +677,33 @@ function toPositiveInt(value: unknown): number | undefined {
   return undefined;
 }
 
+function toBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1") {
+      return true;
+    }
+    if (normalized === "false" || normalized === "0") {
+      return false;
+    }
+  }
+  return undefined;
+}
+
+function toOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 function extractQueuePosition(payload: CloudMatchResponse): number | undefined {
   const direct = toPositiveInt(payload.session.queuePosition);
   if (direct !== undefined) {
@@ -594,6 +745,106 @@ function extractSeatSetupStep(payload: CloudMatchResponse): number | undefined {
   return undefined;
 }
 
+function normalizeSessionAdInfo(ad: NonNullable<CloudMatchResponse["session"]["sessionAds"]>[number], index: number): SessionAdInfo | null {
+  const adId = toOptionalString(ad.adId);
+
+  // Prefer the progressive MP4 from adMediaFiles (most compatible in Electron),
+  // then HLS, then the top-level adUrl, then legacy field names.
+  const mp4Source = ad.adMediaFiles?.find((f) => f.encodingProfile === "mp4deinterlaced720p")?.mediaFileUrl;
+  const hlsSource = ad.adMediaFiles?.find((f) => f.encodingProfile === "hlsadaptive")?.mediaFileUrl;
+  const mediaUrl =
+    toOptionalString(mp4Source) ??
+    toOptionalString(hlsSource) ??
+    toOptionalString(ad.adUrl) ??
+    toOptionalString(ad.mediaUrl) ??
+    toOptionalString(ad.videoUrl) ??
+    toOptionalString(ad.url);
+
+  const clickThroughUrl = toOptionalString(ad.clickThroughUrl);
+  const title = toOptionalString(ad.title);
+  const description = toOptionalString(ad.description);
+
+  // adLengthInSeconds is the confirmed live field (value is in seconds, convert to ms).
+  // Fall back to legacy durationMs / durationInMs which are already in ms.
+  const durationMs =
+    (typeof ad.adLengthInSeconds === "number" && Number.isFinite(ad.adLengthInSeconds) && ad.adLengthInSeconds > 0
+      ? Math.round(ad.adLengthInSeconds * 1000)
+      : undefined) ??
+    toPositiveInt(ad.durationMs) ??
+    toPositiveInt(ad.durationInMs);
+
+  const state = typeof ad.adState === "number" && Number.isFinite(ad.adState) ? Math.trunc(ad.adState) : undefined;
+
+  if (!adId && !mediaUrl && !title && !description) {
+    return null;
+  }
+
+  return {
+    adId: adId ?? `ad-${index + 1}`,
+    state,
+    mediaUrl,
+    clickThroughUrl,
+    durationMs,
+    title,
+    description,
+  };
+}
+
+function extractAdState(payload: CloudMatchResponse): SessionAdState | undefined {
+  const isAdsRequired =
+    toBoolean(payload.session.sessionAdsRequired) ??
+    toBoolean(payload.session.isAdsRequired) ??
+    toBoolean(payload.session.sessionProgress?.isAdsRequired) ??
+    toBoolean(payload.session.progressInfo?.isAdsRequired);
+
+  // Log raw sessionAds whenever the server signals ads are required so field names
+  // can be verified when creative URLs are expected but the ads[] array stays empty.
+  if (isAdsRequired) {
+    console.log(
+      `[CloudMatch] extractAdState: sessionAdsRequired=${payload.session.sessionAdsRequired}, ` +
+      `isAdsRequired=${payload.session.isAdsRequired}, ` +
+      `sessionAds=${JSON.stringify(payload.session.sessionAds ?? null)}, ` +
+      `opportunity=${JSON.stringify(payload.session.opportunity ?? null)}`,
+    );
+  }
+
+  const ads = (payload.session.sessionAds ?? [])
+    .map((ad, index) => normalizeSessionAdInfo(ad, index))
+    .filter((ad): ad is SessionAdInfo => ad !== null);
+
+  const opportunity = payload.session.opportunity;
+  const queuePaused =
+    toBoolean(opportunity?.queuePaused) ??
+    (typeof opportunity?.state === "string" ? opportunity.state.toLowerCase() === "graceperiodstart" : undefined);
+  const gracePeriodSeconds = toPositiveInt(opportunity?.gracePeriodSeconds);
+  const effectiveIsAdsRequired = isAdsRequired ?? ads.length > 0;
+  const message =
+    toOptionalString(opportunity?.message) ??
+    toOptionalString(opportunity?.description) ??
+    (queuePaused
+      ? "Resume ads to stay in queue."
+      : effectiveIsAdsRequired
+        ? "Finish ads to stay in queue."
+        : undefined);
+
+  if (!effectiveIsAdsRequired && ads.length === 0 && !queuePaused && !message) {
+    return undefined;
+  }
+
+  return {
+    isAdsRequired: effectiveIsAdsRequired,
+    isQueuePaused: queuePaused,
+    gracePeriodSeconds,
+    message,
+    ads,
+    // Mark whether the server sent sessionAds=null (transient gap) so the
+    // renderer's mergeAdState can safely restore the previous ad list for the
+    // ad player, while NOT restoring it after an explicit client-side clear
+    // that follows a rejected finish action.
+    serverSentEmptyAds: payload.session.sessionAds == null,
+  };
+}
+
 interface ToSessionInfoOptions {
   zone: string;
   streamingBaseUrl: string;
@@ -613,6 +864,7 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
   const signaling = resolveSignaling(payload);
   const queuePosition = extractQueuePosition(payload);
   const seatSetupStep = extractSeatSetupStep(payload);
+  const adState = extractAdState(payload);
 
   // Debug logging to trace signaling resolution
   const connections = payload.session.connectionInfo ?? [];
@@ -637,6 +889,7 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     status: payload.session.status,
     seatSetupStep,
     queuePosition,
+    adState,
     zone,
     streamingBaseUrl,
     serverIp: signaling.serverIp,
@@ -708,6 +961,7 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   }
 
   const payload = JSON.parse(text) as CloudMatchResponse;
+  const baseHost = new URL(base).hostname;
 
   // Match Rust behavior: if the poll was routed through the zone load balancer
   // and the response now contains a real server IP in connectionInfo, re-poll
@@ -715,17 +969,17 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   // connection info are correct (the zone LB may return different data than
   // a direct server poll).
   const realServerIp = streamingServerIp(payload);
-  const polledViaZone = isZoneHostname(new URL(base).hostname);
+  const polledViaZone = isZoneHostname(baseHost);
   const realIpDiffers =
     realServerIp &&
     realServerIp.length > 0 &&
     !isZoneHostname(realServerIp) &&
     realServerIp !== input.serverIp;
 
-  if (polledViaZone && realIpDiffers && (payload.session.status === 2 || payload.session.status === 3)) {
+  if (polledViaZone && realIpDiffers && isReadySessionStatus(payload.session.status)) {
     // Session is ready and we now know the real server IP — re-poll directly
     console.log(
-      `[CloudMatch] Session ready: re-polling via real server IP ${realServerIp} (was: ${new URL(base).hostname})`,
+      `[CloudMatch] Session ready: re-polling via real server IP ${realServerIp} (was: ${baseHost})`,
     );
     const directBase = `https://${realServerIp}`;
     const directUrl = `${directBase}/v2/session/${input.sessionId}`;
@@ -739,6 +993,13 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
         const directPayload = JSON.parse(directText) as CloudMatchResponse;
         if (directPayload.requestStatus.statusCode === 1) {
           console.log("[CloudMatch] Direct re-poll succeeded, using direct response for signaling info");
+          await writeReadyTransitionCapture({
+            mode: "poll-session-direct-repoll",
+            sourceHost: baseHost,
+            effectiveHost: realServerIp,
+            repolledDirectly: true,
+            payload: directPayload,
+          });
           return await toSessionInfo({ zone: input.zone, streamingBaseUrl: directBase, payload: directPayload, clientId, deviceId });
         }
       }
@@ -747,6 +1008,87 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
       console.warn("[CloudMatch] Direct re-poll failed, using zone LB response:", e);
     }
   }
+
+  if (isReadySessionStatus(payload.session.status)) {
+    await writeReadyTransitionCapture({
+      mode: "poll-session",
+      sourceHost: baseHost,
+      effectiveHost: realServerIp ?? baseHost,
+      repolledDirectly: false,
+      payload,
+    });
+  }
+
+  // Write a diagnostic capture when ads are required AND sessionAds is non-null.
+  // The server only populates sessionAds in the first poll; subsequent polls return
+  // null. Never overwrite the capture with a null payload so the creative URL
+  // field names are preserved for the full ad session.
+  const adsRequiredOnPoll =
+    payload.session.sessionAdsRequired === true || payload.session.isAdsRequired === true;
+  if (adsRequiredOnPoll && payload.session.sessionAds != null) {
+    void writeAdQueueCapture({
+      sourceHost: baseHost,
+      sessionId: payload.session.sessionId,
+      payload,
+    });
+  }
+
+  return await toSessionInfo({ zone: input.zone, streamingBaseUrl: base, payload, clientId, deviceId });
+}
+
+export async function reportSessionAd(input: SessionAdReportRequest): Promise<SessionInfo> {
+  if (!input.token) {
+    throw new Error("Missing token for ad update");
+  }
+
+  const clientId = input.clientId ?? crypto.randomUUID();
+  const deviceId = input.deviceId ?? crypto.randomUUID();
+  const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
+  const url = `${base}/v2/session/${input.sessionId}`;
+  const requestBody = {
+    action: SESSION_MODIFY_ACTION_AD_UPDATE,
+    adUpdates: [{
+      adId: input.adId,
+      adAction: AD_ACTION_CODES[input.action],
+      clientTimestamp: Math.round(Date.now() / 1000),
+    }],
+  };
+
+  console.log(
+    `[CloudMatch] reportSessionAd: sending action=${input.action}(${requestBody.adUpdates[0].adAction}), adId=${input.adId}, ` +
+      `sessionId=${input.sessionId}, zone=${input.zone}, url=${url}`,
+  );
+
+  const response = await fetch(url, {
+    method: "PUT",
+    headers: requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false }),
+    body: JSON.stringify(requestBody),
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    console.warn(
+      `[CloudMatch] reportSessionAd: backend error status=${response.status}, sessionId=${input.sessionId}, ` +
+        `adId=${input.adId}, action=${input.action}, body=${text.slice(0, 500)}`,
+    );
+    throw SessionError.fromResponse(response.status, text);
+  }
+
+  const payload = JSON.parse(text) as CloudMatchResponse;
+  if (payload.requestStatus.statusCode !== 1) {
+    console.warn(
+      `[CloudMatch] reportSessionAd: API error requestStatus=${payload.requestStatus.statusCode}, ` +
+        `description=${payload.requestStatus.statusDescription ?? "unknown"}, sessionId=${input.sessionId}, ` +
+        `adId=${input.adId}, action=${input.action}`,
+    );
+    throw SessionError.fromResponse(200, text);
+  }
+
+  console.log(
+    `[CloudMatch] reportSessionAd: success sessionId=${input.sessionId}, adId=${input.adId}, action=${input.action}, ` +
+      `status=${payload.session.status}, queuePosition=${extractQueuePosition(payload) ?? "n/a"}, ` +
+      `adsRequired=${extractAdState(payload)?.isAdsRequired ?? false}`,
+  );
 
   return await toSessionInfo({ zone: input.zone, streamingBaseUrl: base, payload, clientId, deviceId });
 }
@@ -816,9 +1158,12 @@ export async function getActiveSessions(
     return [];
   }
 
-  // Filter active sessions (status 2 = Ready, status 3 = Streaming)
+  // Filter active sessions:
+  //   1 = Setup/Queuing (counts against SESSION_LIMIT — must be included for resume logic)
+  //   2 = Ready
+  //   3 = Streaming
   const activeSessions: ActiveSessionInfo[] = sessionsResponse.sessions
-    .filter((s) => s.status === 2 || s.status === 3)
+    .filter((s) => s.status === 1 || s.status === 2 || s.status === 3)
     .map((s) => {
       // Extract appId from sessionRequestData
       const appId = s.sessionRequestData?.appId ? Number(s.sessionRequestData.appId) : 0;
@@ -1093,6 +1438,14 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       // Session is ready
       const signaling = resolveSignaling(pollApiResponse);
       const queuePosition = extractQueuePosition(pollApiResponse);
+
+      await writeReadyTransitionCapture({
+        mode: "claim-session-poll",
+        sourceHost: effectiveServerIp,
+        effectiveHost: signaling.serverIp,
+        repolledDirectly: false,
+        payload: pollApiResponse,
+      });
 
       return {
         sessionId: sessionData.sessionId,

@@ -9,6 +9,8 @@ import type {
   GameVariant,
   LoginProvider,
   MainToRendererSignalingEvent,
+  SessionAdAction,
+  SessionAdState,
   SessionInfo,
   Settings,
   SubscriptionInfo,
@@ -63,6 +65,7 @@ const getResolutionsByAspectRatio = (aspectRatio: string): string[] => {
 };
 const resolutionOptions = getResolutionsByAspectRatio("16:9");
 const SESSION_READY_POLL_INTERVAL_MS = 2000;
+const SESSION_AD_POLL_INTERVAL_MS = 30000;
 const SESSION_READY_TIMEOUT_MS = 180000;
 const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
 const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
@@ -280,6 +283,141 @@ function formatRemainingPlaytimeFromSubscription(
     return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
   }
   return `${minutes}m`;
+}
+
+function normalizeMembershipTier(tier: string | null | undefined): string | null {
+  if (!tier) {
+    return null;
+  }
+  const normalized = tier.trim().toUpperCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function shouldShowQueueAdsForMembership(
+  subscription: SubscriptionInfo | null,
+  authSession: AuthSession | null,
+): boolean {
+  const effectiveTier = normalizeMembershipTier(subscription?.membershipTier ?? authSession?.user.membershipTier);
+  return effectiveTier === null || effectiveTier === "FREE";
+}
+
+function shouldUseQueueAdPolling(session: SessionInfo, subscription: SubscriptionInfo | null, authSession: AuthSession | null): boolean {
+  return (
+    shouldShowQueueAdsForMembership(subscription, authSession) &&
+    isSessionInQueue(session) &&
+    (session.adState?.isAdsRequired ?? false)
+  );
+}
+
+function getEffectiveAdState(
+  session: SessionInfo | null,
+  subscription: SubscriptionInfo | null,
+  authSession: AuthSession | null,
+): SessionAdState | undefined {
+  if (!session) {
+    return undefined;
+  }
+
+  if (session.adState) {
+    return session.adState;
+  }
+
+  if (!shouldShowQueueAdsForMembership(subscription, authSession)) {
+    return undefined;
+  }
+
+  if (!isSessionInQueue(session)) {
+    return undefined;
+  }
+
+  return {
+    isAdsRequired: true,
+    message: "Free-tier queue ads begin as soon as you enter queue.",
+    ads: [
+      {
+        adId: "queue-ad-placeholder",
+        title: "Advertisement in progress",
+        description: "Ad media will appear here as soon as it is available.",
+      },
+    ],
+  };
+}
+
+/**
+ * Extracts the `exp` Unix timestamp (seconds) from a JWT without verifying
+ * the signature. Used to compute how much of the server-side ad token window
+ * remains so the finish timer fires before the token expires regardless of
+ * how long the previous ad took to complete.
+ */
+function decodeAdTokenExp(jwt: string): number | null {
+  try {
+    const part = jwt.split(".")[1];
+    if (!part) {
+      return null;
+    }
+    // Base64url → base64 → binary string → JSON
+    const padded = part.replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(padded)) as Record<string, unknown>;
+    return typeof payload["exp"] === "number" ? (payload["exp"] as number) : null;
+  } catch {
+    return null;
+  }
+}
+
+function mergeAdState(
+  previous: SessionAdState | undefined,
+  next: SessionAdState | undefined,
+): SessionAdState | undefined {
+  if (!next) {
+    return previous;
+  }
+  // Server only populates sessionAds in the first poll after session creation.
+  // Later polls return sessionAdsRequired=true but sessionAds=null (serverSentEmptyAds=true),
+  // which produces an empty ads array. Preserve the ad list from the most recent poll that
+  // had URLs so the ad player can continue.
+  // Do NOT restore when serverSentEmptyAds is false — that signals an explicit client-side
+  // clear after a rejected finish action, and we must NOT bring the stale ad back.
+  if (
+    next.isAdsRequired &&
+    next.serverSentEmptyAds === true &&
+    next.ads.length === 0 &&
+    previous?.ads &&
+    previous.ads.length > 0
+  ) {
+    return { ...next, ads: previous.ads };
+  }
+  return next;
+}
+
+function mergePolledSessionState(previous: SessionInfo, next: SessionInfo): SessionInfo {
+  if (isSessionReadyForConnect(next.status)) {
+    return next;
+  }
+
+  return {
+    ...next,
+    adState: mergeAdState(previous.adState, next.adState),
+    mediaConnectionInfo: next.mediaConnectionInfo ?? previous.mediaConnectionInfo,
+  };
+}
+
+function getNextAdReportAction(
+  lastAction: SessionAdAction | undefined,
+  playbackEvent: "playing" | "paused" | "ended",
+): SessionAdAction | null {
+  switch (playbackEvent) {
+    case "playing":
+      if (!lastAction) {
+        return "start";
+      }
+      return lastAction === "pause" ? "resume" : null;
+    case "paused":
+      return lastAction === "start" || lastAction === "resume" ? "pause" : null;
+    case "ended":
+      return lastAction === "finish" || lastAction === "cancel" ? null : "finish";
+    default:
+      return null;
+  }
 }
 
 function toLoadingStatus(status: StreamStatus): StreamLoadingStatus {
@@ -653,6 +791,15 @@ export function App(): JSX.Element {
   const launchAbortRef = useRef(false);
   const streamStatusRef = useRef<StreamStatus>(streamStatus);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const adReportQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const adReportStateRef = useRef<Record<string, SessionAdAction>>({});
+  // Timer-driven finish timers keyed by adId. Each fires (durationMs − 3 s) after the
+  // start PUT is ACKed, sending finish inside the server's per-ad token window even when
+  // video buffering or load time extends total playback past adLengthInSeconds.
+  const adFinishTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Stable ref so timer callbacks can call the latest reportQueueAdAction without
+  // capturing a stale closure (auth state can change between scheduling and firing).
+  const reportQueueAdActionRef = useRef<(adId: string, action: SessionAdAction) => void>(() => {});
 
   useEffect(() => {
     controllerOverlayOpenRef.current = controllerOverlayOpen;
@@ -724,6 +871,14 @@ export function App(): JSX.Element {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    adReportStateRef.current = {};
+    adReportQueueRef.current = Promise.resolve();
+    // Clear any pending timer-driven finish callbacks when the session changes.
+    Object.values(adFinishTimersRef.current).forEach(clearTimeout);
+    adFinishTimersRef.current = {};
+  }, [session?.sessionId]);
 
   // Keep a ref copy of `streamStatus` so async callbacks can observe latest value
   useEffect(() => {
@@ -798,6 +953,140 @@ export function App(): JSX.Element {
   const effectiveStreamingBaseUrl = useMemo(() => {
     return selectedProvider?.streamingServiceUrl ?? "";
   }, [selectedProvider]);
+
+  const reportQueueAdAction = useCallback((adId: string, action: SessionAdAction): void => {
+    const currentSession = sessionRef.current;
+    if (!currentSession) {
+      return;
+    }
+
+    const request = {
+      token: authSession?.tokens.idToken ?? authSession?.tokens.accessToken ?? undefined,
+      streamingBaseUrl: currentSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
+      serverIp: currentSession.serverIp,
+      zone: currentSession.zone,
+      sessionId: currentSession.sessionId,
+      clientId: currentSession.clientId,
+      deviceId: currentSession.deviceId,
+      adId,
+      action,
+    };
+
+    adReportQueueRef.current = adReportQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (sessionRef.current?.sessionId !== request.sessionId) {
+          return;
+        }
+
+        try {
+          console.log(
+            `[QueueAds] Sending ad update: action=${action}, adId=${adId}, sessionId=${request.sessionId}, zone=${request.zone}, ` +
+              `serverIp=${request.serverIp}, queuePosition=${sessionRef.current?.queuePosition ?? "n/a"}`,
+          );
+          const updated = await window.openNow.reportSessionAd(request);
+          if (sessionRef.current?.sessionId !== updated.sessionId) {
+            return;
+          }
+
+          console.log(
+            `[QueueAds] Ad update succeeded: action=${action}, adId=${adId}, sessionId=${updated.sessionId}, ` +
+              `status=${updated.status}, queuePosition=${updated.queuePosition ?? "n/a"}`,
+          );
+          console.log(
+            `[QueueAds] Returned ad state: sessionId=${updated.sessionId}, adsRequired=${updated.adState?.isAdsRequired ?? false}, ` +
+              `queuePaused=${updated.adState?.isQueuePaused ?? false}, gracePeriodSeconds=${updated.adState?.gracePeriodSeconds ?? "n/a"}, ` +
+              `adCount=${updated.adState?.ads.length ?? 0}`,
+          );
+
+          setSession((previous) => {
+            if (!previous || previous.sessionId !== updated.sessionId) {
+              return previous;
+            }
+            return mergePolledSessionState(previous, updated);
+          });
+          setQueuePosition(updated.queuePosition);
+
+          // Timer management: ad tokens carry a fixed expiry window issued
+          // server-side at poll time, not when our start is received. We decode
+          // the JWT `exp` from the adId and fire finish at `exp - 4s` from now
+          // so the request arrives before the token closes regardless of how
+          // much window was consumed by prior ads or network latency.
+          if (action === "start") {
+            const ackAd =
+              updated.adState?.ads.find((a) => a.adId === adId) ??
+              sessionRef.current?.adState?.ads.find((a) => a.adId === adId);
+            const durMs = ackAd?.durationMs;
+            if (durMs && durMs > 0) {
+              const existing = adFinishTimersRef.current[adId];
+              if (existing) clearTimeout(existing);
+              // Prefer JWT-based delay so we account for pre-issued token windows.
+              const jwtExp = decodeAdTokenExp(adId);
+              const delay = jwtExp
+                ? Math.max((jwtExp * 1000) - Date.now() - 4000, 500)
+                : Math.max(durMs - 3000, 1000);
+              console.log(`[QueueAds] Scheduling timer-driven finish for adId=${adId} in ${delay}ms (jwtExp=${jwtExp ?? "n/a"})`);
+              adFinishTimersRef.current[adId] = setTimeout(() => {
+                delete adFinishTimersRef.current[adId];
+                if (
+                  sessionRef.current?.sessionId === request.sessionId &&
+                  adReportStateRef.current[adId] === "start"
+                ) {
+                  console.log(`[QueueAds] Timer-driven finish firing for adId=${adId}`);
+                  adReportStateRef.current[adId] = "finish";
+                  reportQueueAdActionRef.current(adId, "finish");
+                }
+              }, delay);
+            }
+          } else if (action === "finish" || action === "cancel") {
+            // Clear the timer if the video-event path already sent finish first.
+            const t = adFinishTimersRef.current[adId];
+            if (t) {
+              clearTimeout(t);
+              delete adFinishTimersRef.current[adId];
+            }
+          }
+        } catch (error) {
+          console.warn(`[QueueAds] Failed to report ${action} for ${adId}:`, error);
+
+          if (action === "finish") {
+            // The server rejected the finish (e.g. session was re-queued mid-ad,
+            // invalidating the ad token). Clear the local ad list so the player
+            // falls back to the placeholder card while the server sends fresh
+            // creatives in the next poll. Setting serverSentEmptyAds=false prevents
+            // mergeAdState from restoring the now-stale ad URLs from the previous
+            // state captured in the polling loop's latestSession snapshot.
+            console.log(`[QueueAds] finish rejected — clearing local ad list for adId=${adId}`);
+            delete adReportStateRef.current[adId];
+            setSession((previous) => {
+              if (!previous || !previous.adState) {
+                return previous;
+              }
+              return {
+                ...previous,
+                adState: { ...previous.adState, ads: [], serverSentEmptyAds: false },
+              };
+            });
+          }
+        }
+      });
+  }, [authSession, effectiveStreamingBaseUrl]);
+
+  const handleQueueAdPlaybackEvent = useCallback((event: "playing" | "paused" | "ended", adId: string): void => {
+    const lastAction = adReportStateRef.current[adId];
+    const nextAction = getNextAdReportAction(lastAction, event);
+    if (!nextAction) {
+      return;
+    }
+
+    adReportStateRef.current[adId] = nextAction;
+    reportQueueAdAction(adId, nextAction);
+  }, [reportQueueAdAction]);
+
+  // Keep the ref in sync so timer callbacks always use the latest auth state.
+  useEffect(() => {
+    reportQueueAdActionRef.current = reportQueueAdAction;
+  }, [reportQueueAdAction]);
 
   const loadSubscriptionInfo = useCallback(
     async (session: AuthSession): Promise<void> => {
@@ -1675,14 +1964,43 @@ export function App(): JSX.Element {
       // Queue mode: no timeout - users wait indefinitely and see position updates.
       // Setup/Starting mode: 180s timeout applies while machine is being allocated.
       let finalSession: SessionInfo | null = null;
+      let latestSession = newSession;
       let isInQueueMode = isSessionInQueue(newSession);
-      let timeoutStartAttempt = 1;
-      const maxAttempts = Math.ceil(SESSION_READY_TIMEOUT_MS / SESSION_READY_POLL_INTERVAL_MS);
+      let setupTimeoutStartAt: number | null = isInQueueMode ? null : Date.now();
       let attempt = 0;
 
       while (true) {
         attempt++;
-        await sleep(SESSION_READY_POLL_INTERVAL_MS);
+
+        const pollIntervalMs = shouldUseQueueAdPolling(latestSession, subscriptionInfo, authSession)
+          ? SESSION_AD_POLL_INTERVAL_MS
+          : SESSION_READY_POLL_INTERVAL_MS;
+
+        // Sleep in small ticks during ad-polling intervals so the loop can react
+        // quickly when reportSessionAd clears isAdsRequired (which only updates
+        // sessionRef, not the local latestSession variable).  Standard 2 s intervals
+        // are kept as a single sleep since they're already short.
+        if (pollIntervalMs > SESSION_READY_POLL_INTERVAL_MS) {
+          const tickMs = 500;
+          let elapsed = 0;
+          while (elapsed < pollIntervalMs) {
+            await sleep(tickMs);
+            elapsed += tickMs;
+            if (launchAbortRef.current) return;
+            // Sync ad-action responses from sessionRef into the local tracking variable
+            // so shouldUseQueueAdPolling sees the updated adState immediately.
+            const refSession = sessionRef.current;
+            if (refSession && refSession.sessionId === latestSession.sessionId) {
+              latestSession = mergePolledSessionState(latestSession, refSession);
+            }
+            // Break out of the sleep early when ads are no longer required.
+            if (!shouldUseQueueAdPolling(latestSession, subscriptionInfo, authSession)) {
+              break;
+            }
+          }
+        } else {
+          await sleep(pollIntervalMs);
+        }
 
         if (launchAbortRef.current) {
           return;
@@ -1702,35 +2020,38 @@ export function App(): JSX.Element {
           return;
         }
 
-        setSession(polled);
-        setQueuePosition(polled.queuePosition);
+        const mergedSession = mergePolledSessionState(latestSession, polled);
+        latestSession = mergedSession;
+
+        setSession(mergedSession);
+        setQueuePosition(mergedSession.queuePosition);
 
         // Check if queue just cleared - transition from queue mode to setup mode
         const wasInQueueMode = isInQueueMode;
-        isInQueueMode = isSessionInQueue(polled);
+        isInQueueMode = isSessionInQueue(mergedSession);
         if (wasInQueueMode && !isInQueueMode) {
-          // Queue just cleared, start timeout counting from now
-          timeoutStartAttempt = attempt;
+          // Queue just cleared, start timeout counting from now.
+          setupTimeoutStartAt = Date.now();
         }
 
         console.log(
-          `Poll attempt ${attempt}: status=${polled.status}, seatSetupStep=${polled.seatSetupStep ?? "n/a"}, queuePosition=${polled.queuePosition ?? "n/a"}, serverIp=${polled.serverIp}, queueMode=${isInQueueMode}`,
+          `Poll attempt ${attempt}: status=${mergedSession.status}, seatSetupStep=${mergedSession.seatSetupStep ?? "n/a"}, queuePosition=${mergedSession.queuePosition ?? "n/a"}, serverIp=${mergedSession.serverIp}, queueMode=${isInQueueMode}, adsRequired=${mergedSession.adState?.isAdsRequired ?? false}`,
         );
 
-        if (isSessionReadyForConnect(polled.status)) {
-          finalSession = polled;
+        if (isSessionReadyForConnect(mergedSession.status)) {
+          finalSession = mergedSession;
           break;
         }
 
         // Update status based on session state
         if (isInQueueMode) {
           updateLoadingStep("queue");
-        } else if (polled.status === 1) {
+        } else if (mergedSession.status === 1) {
           updateLoadingStep("setup");
         }
 
         // Only check timeout when NOT in queue mode (i.e., during setup/starting)
-        if (!isInQueueMode && attempt - timeoutStartAttempt >= maxAttempts) {
+        if (!isInQueueMode && setupTimeoutStartAt !== null && Date.now() - setupTimeoutStartAt >= SESSION_READY_TIMEOUT_MS) {
           throw new Error(`Session did not become ready in time (${Math.round(SESSION_READY_TIMEOUT_MS / 1000)}s)`);
         }
       }
@@ -2142,6 +2463,7 @@ export function App(): JSX.Element {
       ? Math.floor(sessionElapsedSeconds / 60) / 60
       : 0;
   const remainingPlaytimeText = formatRemainingPlaytimeFromSubscription(subscriptionInfo, consumedHours);
+  const effectiveAdState = getEffectiveAdState(session, subscriptionInfo, authSession);
 
   // Show stream lifecycle (waiting/connecting/streaming/failure)
   if (showLaunchOverlay) {
@@ -2217,6 +2539,8 @@ export function App(): JSX.Element {
             gameDescription={pendingSwitchGameDescription ?? streamingGame?.description}
             status={switchingPhase === "cleaning" ? "setup" : "starting"}
             queuePosition={queuePosition}
+            adState={effectiveAdState}
+            onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             playtimeData={playtime}
             gameId={pendingSwitchGameId ?? streamingGame?.id}
             enableBackgroundAnimations={settings.controllerBackgroundAnimations}
@@ -2229,6 +2553,8 @@ export function App(): JSX.Element {
             platformStore={streamingStore ?? undefined}
             status={switchingPhase === "cleaning" ? "setup" : "starting"}
             queuePosition={queuePosition}
+            adState={effectiveAdState}
+            onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             error={
               launchError
                 ? {
@@ -2304,6 +2630,8 @@ export function App(): JSX.Element {
             gameDescription={streamingGame?.description}
             status={loadingStatus}
             queuePosition={queuePosition}
+            adState={effectiveAdState}
+            onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             playtimeData={playtime}
             gameId={streamingGame?.id}
             enableBackgroundAnimations={settings.controllerBackgroundAnimations}
@@ -2316,6 +2644,8 @@ export function App(): JSX.Element {
             platformStore={streamingStore ?? undefined}
             status={loadingStatus}
             queuePosition={queuePosition}
+            adState={effectiveAdState}
+            onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             error={
               launchError
                 ? {

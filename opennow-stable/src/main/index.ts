@@ -26,10 +26,12 @@ import {
 import type {
   MainToRendererSignalingEvent,
   AuthLoginRequest,
+  SessionInfo,
   AuthSessionRequest,
   GamesFetchRequest,
   ResolveLaunchIdRequest,
   RegionsFetchRequest,
+  SessionAdReportRequest,
   SessionCreateRequest,
   SessionPollRequest,
   SessionStopRequest,
@@ -60,7 +62,7 @@ import type {
 
 import { getSettingsManager, type SettingsManager } from "./settings";
 
-import { createSession, pollSession, stopSession, getActiveSessions, claimSession } from "./gfn/cloudmatch";
+import { createSession, pollSession, reportSessionAd, stopSession, getActiveSessions, claimSession } from "./gfn/cloudmatch";
 import { AuthService } from "./gfn/auth";
 import {
   fetchLibraryGames,
@@ -655,15 +657,59 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.CREATE_SESSION, async (_event, payload: SessionCreateRequest) => {
+    const token = await resolveJwt(payload.token);
+    const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+
+    /**
+     * Attempt to find and claim an existing active session.
+     * Prefers a session whose appId matches the requested game; falls back to
+     * any claimable session (serverIp present) if no exact match is found.
+     * Returns null when no claimable session exists or the lookup fails.
+     */
+    const tryClaimExisting = async (): Promise<SessionInfo | null> => {
+      if (!token) return null;
+      try {
+        const activeSessions = await getActiveSessions(token, streamingBaseUrl);
+        if (activeSessions.length === 0) return null;
+        const numericAppId = parseInt(payload.appId, 10);
+        const candidate =
+          activeSessions.find((s) => s.serverIp && s.appId === numericAppId) ??
+          activeSessions.find((s) => s.serverIp) ??
+          null;
+        if (!candidate) return null;
+        console.log(
+          `[CreateSession] Resuming existing session (id=${candidate.sessionId}, appId=${candidate.appId}, status=${candidate.status}) instead of creating new.`,
+        );
+        return claimSession({
+          token,
+          streamingBaseUrl,
+          sessionId: candidate.sessionId,
+          serverIp: candidate.serverIp!,
+          appId: payload.appId,
+          settings: payload.settings,
+        });
+      } catch (claimError) {
+        console.warn("[CreateSession] Failed to claim existing session:", claimError);
+        return null;
+      }
+    };
+
+    // Pre-flight check: resume an active session before trying to create a new one.
+    const preChecked = await tryClaimExisting();
+    if (preChecked) return preChecked;
+
     try {
-      const token = await resolveJwt(payload.token);
-      const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-      return createSession({
-        ...payload,
-        token,
-        streamingBaseUrl,
-      });
+      return await createSession({ ...payload, token, streamingBaseUrl });
     } catch (error) {
+      // If the backend rejected the create because a session is already running,
+      // attempt a claim now (the pre-flight may have missed a session whose appId
+      // was not populated in the list response, or that had no serverIp at the
+      // time of the pre-flight but is ready now).
+      if (error instanceof SessionError && error.statusCode === 11) {
+        console.warn("[CreateSession] SESSION_LIMIT_EXCEEDED — retrying as session claim.");
+        const fallback = await tryClaimExisting();
+        if (fallback) return fallback;
+      }
       rethrowSerializedSessionError(error);
     }
   });
@@ -672,6 +718,19 @@ function registerIpcHandlers(): void {
     try {
       const token = await resolveJwt(payload.token);
       return pollSession({
+        ...payload,
+        token,
+        streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
+      });
+    } catch (error) {
+      rethrowSerializedSessionError(error);
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.REPORT_SESSION_AD, async (_event, payload: SessionAdReportRequest) => {
+    try {
+      const token = await resolveJwt(payload.token);
+      return reportSessionAd({
         ...payload,
         token,
         streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,

@@ -1,7 +1,9 @@
 import { Loader2, Zap } from "lucide-react";
 import type { JSX } from "react";
+import type { SessionAdState } from "@shared/gfn";
 import { formatPlaytime } from "../utils/usePlaytime";
 import type { PlaytimeStore } from "../utils/usePlaytime";
+import { QueueAdPreview } from "./QueueAdPreview";
 
 export interface ControllerStreamLoadingProps {
   gameTitle: string;
@@ -9,6 +11,8 @@ export interface ControllerStreamLoadingProps {
   gameDescription?: string;
   status: "queue" | "setup" | "starting" | "connecting";
   queuePosition?: number;
+  adState?: SessionAdState;
+  onAdPlaybackEvent?: (event: "playing" | "paused" | "ended", adId: string) => void;
   playtimeData?: PlaytimeStore;
   gameId?: string;
   enableBackgroundAnimations?: boolean;
@@ -17,7 +21,14 @@ export interface ControllerStreamLoadingProps {
 function getStatusMessage(
   status: ControllerStreamLoadingProps["status"],
   queuePosition?: number,
+  adState?: SessionAdState,
 ): string {
+  if (adState?.isQueuePaused) {
+    return "Session queue paused";
+  }
+  if (status === "queue" && adState?.isAdsRequired) {
+    return queuePosition ? `Watching ads to keep position #${queuePosition}` : "Watching ads to keep your place in queue";
+  }
   switch (status) {
     case "queue":
       return queuePosition ? `Position #${queuePosition} in queue` : "Waiting in queue...";
@@ -54,15 +65,20 @@ export function ControllerStreamLoading({
   gameDescription,
   status,
   queuePosition,
+  adState,
+  onAdPlaybackEvent,
   playtimeData = {},
   gameId,
   enableBackgroundAnimations = false,
 }: ControllerStreamLoadingProps): JSX.Element {
-  const statusMessage = getStatusMessage(status, queuePosition);
+  const statusMessage = getStatusMessage(status, queuePosition, adState);
   const statusPhase = getStatusPhase(status);
   const playtimeRecord = gameId ? playtimeData[gameId] : undefined;
   const totalSecs = playtimeRecord?.totalSeconds ?? 0;
   const playtimeLabel = formatPlaytime(totalSecs);
+  const activeAd = adState?.ads[0];
+  const adDurationSeconds = activeAd?.durationMs ? Math.round(activeAd.durationMs / 1000) : undefined;
+  const adMessage = adState?.message ?? (adState?.isQueuePaused ? "Resume ads to stay in queue." : undefined);
 
   return (
     <div className="controller-stream-loading">
@@ -116,6 +132,29 @@ export function ControllerStreamLoading({
             {/* Network Status Section */}
             <div className="csl-status-container">
               <div className="csl-status-message">{statusMessage}</div>
+
+              {activeAd?.mediaUrl && (
+                <div className={`csl-ad-panel${adState?.isQueuePaused ? " csl-ad-panel--paused" : ""}`}>
+                  <div className="csl-ad-copy">
+                    <span className="csl-ad-chip">Ad Queue</span>
+                    <div className="csl-ad-title">
+                      {activeAd.title ?? "Advertisement in progress"}
+                    </div>
+                    {adMessage && <div className="csl-ad-message">{adMessage}</div>}
+                    <div className="csl-ad-meta">
+                      {adDurationSeconds && <span>{adDurationSeconds}s spot</span>}
+                      {adState?.gracePeriodSeconds && <span>{adState.gracePeriodSeconds}s grace window</span>}
+                    </div>
+                  </div>
+                  <div className="csl-ad-media">
+                    <QueueAdPreview
+                      mediaUrl={activeAd.mediaUrl}
+                      title={activeAd.title}
+                      onPlaybackEvent={(event) => onAdPlaybackEvent?.(event, activeAd.adId)}
+                    />
+                  </div>
+                </div>
+              )}
 
               {/* Status Progress Indicator */}
               <div className="csl-progress-indicator">

@@ -4333,6 +4333,343 @@ button.game-card-store-chip.active:hover {
   gap: 5px;
 }
 
+.sload-ad {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  width: min(100%, 520px);
+  padding: 14px;
+  border-radius: var(--r-md);
+  border: 1px solid rgba(88, 217, 138, 0.2);
+  background: rgba(7, 15, 11, 0.72);
+  text-align: left;
+}
+
+.sload-ad--paused {
+  border-color: rgba(255, 204, 102, 0.28);
+  background: rgba(25, 16, 4, 0.72);
+}
+
+.sload-ad-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sload-ad-chip {
+  display: inline-flex;
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(88, 217, 138, 0.16);
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sload-ad--paused .sload-ad-chip {
+  background: rgba(255, 204, 102, 0.18);
+  color: #ffd166;
+}
+
+.sload-ad-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.sload-ad-message {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.sload-ad-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+}
+
+.sload-ad-media {
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.sload-ad-media--placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 180px;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.sload-ad-video {
+  display: block;
+  width: 100%;
+  max-height: 200px;
+  object-fit: cover;
+}
+
+.queue-ad-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.queue-ad-fallback {
+  position: relative;
+  width: 100%;
+  min-height: 180px;
+  overflow: hidden;
+  background: linear-gradient(135deg, rgba(11, 20, 14, 0.98), rgba(4, 8, 6, 0.98));
+}
+
+.queue-ad-fallback--compact {
+  min-height: 160px;
+}
+
+.queue-ad-fallback-bg {
+  position: absolute;
+  inset: 0;
+}
+
+.queue-ad-fallback-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.28;
+  filter: saturate(1.1) blur(0px);
+}
+
+.queue-ad-fallback-gradient {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at top right, rgba(118, 185, 0, 0.22), transparent 42%),
+    linear-gradient(180deg, rgba(2, 6, 4, 0.2), rgba(2, 6, 4, 0.82));
+}
+
+.queue-ad-fallback-grid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.12;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.18) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.18) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.9), transparent 100%);
+}
+
+.queue-ad-fallback-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 180px;
+  padding: 18px;
+}
+
+.queue-ad-fallback--compact .queue-ad-fallback-content {
+  min-height: 160px;
+  padding: 16px;
+}
+
+.queue-ad-fallback-badge {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(118, 185, 0, 0.14);
+  color: #c9ff6a;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.queue-ad-fallback-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 420px;
+}
+
+.queue-ad-fallback-title {
+  margin: 0;
+  color: #fff;
+  font-size: 1.05rem;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.queue-ad-fallback--compact .queue-ad-fallback-title {
+  font-size: 0.95rem;
+}
+
+.queue-ad-fallback-message {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.queue-ad-preview-frame {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at top, rgba(88, 217, 138, 0.16), transparent 60%),
+    linear-gradient(180deg, rgba(8, 15, 11, 0.96), rgba(4, 7, 6, 0.98));
+  min-height: 180px;
+}
+
+.queue-ad-preview-video {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+}
+
+.queue-ad-preview-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.22), rgba(0, 0, 0, 0.58));
+}
+
+.queue-ad-preview-overlay-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 280px;
+  text-align: center;
+}
+
+.queue-ad-preview-overlay-icon {
+  color: var(--accent);
+  filter: drop-shadow(0 0 10px rgba(88, 217, 138, 0.35));
+}
+
+.queue-ad-preview--blocked .queue-ad-preview-overlay-icon,
+.queue-ad-preview--stalled .queue-ad-preview-overlay-icon,
+.queue-ad-preview--timeout .queue-ad-preview-overlay-icon {
+  color: #ffd166;
+  filter: drop-shadow(0 0 10px rgba(255, 209, 102, 0.28));
+}
+
+.queue-ad-preview--error .queue-ad-preview-overlay-icon {
+  color: #f87171;
+  filter: drop-shadow(0 0 10px rgba(248, 113, 113, 0.28));
+}
+
+.queue-ad-preview-overlay-title {
+  color: #fff;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.queue-ad-preview-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.queue-ad-preview-status-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.queue-ad-preview-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.queue-ad-preview-label {
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.queue-ad-preview-message {
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.queue-ad-preview-icon {
+  flex: 0 0 auto;
+  color: var(--accent);
+  margin-top: 1px;
+}
+
+.queue-ad-preview-icon--spinning {
+  animation: spin 1s linear infinite;
+}
+
+.queue-ad-preview--blocked .queue-ad-preview-icon,
+.queue-ad-preview--stalled .queue-ad-preview-icon,
+.queue-ad-preview--timeout .queue-ad-preview-icon {
+  color: #ffd166;
+}
+
+.queue-ad-preview--error .queue-ad-preview-icon {
+  color: #f87171;
+}
+
+.queue-ad-preview-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--t-normal), border-color var(--t-normal), transform var(--t-normal);
+}
+
+.queue-ad-preview-retry:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.queue-ad-preview-retry:active {
+  transform: translateY(0);
+}
+
 .sload-message {
   margin: 0;
   font-size: 0.95rem;
@@ -6071,6 +6408,104 @@ button.game-card-store-chip.active:hover {
   font-weight: 600;
   color: var(--accent);
   animation: csl-pulse 2s ease-in-out infinite;
+}
+
+.csl-ad-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(88, 217, 138, 0.18);
+  background: rgba(6, 15, 10, 0.72);
+}
+
+.csl-ad-panel--paused {
+  border-color: rgba(255, 204, 102, 0.28);
+  background: rgba(24, 15, 4, 0.76);
+}
+
+.csl-ad-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.csl-ad-chip {
+  display: inline-flex;
+  width: fit-content;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(88, 217, 138, 0.16);
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.csl-ad-panel--paused .csl-ad-chip {
+  background: rgba(255, 204, 102, 0.18);
+  color: #ffd166;
+}
+
+.csl-ad-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.csl-ad-message {
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.csl-ad-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+}
+
+.csl-ad-media {
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.csl-ad-media--placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 180px;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.34);
+}
+
+.csl-ad-video {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+}
+
+.csl-ad-media .queue-ad-preview-status {
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.csl-ad-media .queue-ad-preview-label {
+  font-size: 0.82rem;
+}
+
+.csl-ad-media .queue-ad-preview-message {
+  font-size: 0.78rem;
+}
+
+.csl-ad-media .queue-ad-preview-retry {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 /* Progress Indicator */
