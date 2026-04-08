@@ -4,8 +4,9 @@ import type { JSX } from "react";
 import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen } from "lucide-react";
 import SideBar from "./SideBar";
 import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
-import { useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
+import { useStreamDiagnosticsSelector, useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import type { StreamLagReason } from "../gfn/webrtcClient";
+import type { MicState } from "../gfn/microphoneManager";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
@@ -155,6 +156,360 @@ function formatWarningSeconds(value: number | undefined): string | null {
     return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
   }
   return `${seconds}s`;
+}
+
+type MicBadgeState = {
+  connectedGamepads: number;
+  micState: MicState;
+  micEnabled: boolean;
+};
+
+function isMicBadgeStateEqual(prev: MicBadgeState, next: MicBadgeState): boolean {
+  return (
+    prev.connectedGamepads === next.connectedGamepads &&
+    prev.micState === next.micState &&
+    prev.micEnabled === next.micEnabled
+  );
+}
+
+function StreamStatsHud({
+  diagnosticsStore,
+  serverRegion,
+}: {
+  diagnosticsStore: StreamDiagnosticsStore;
+  serverRegion?: string;
+}): JSX.Element {
+  const stats = useStreamDiagnosticsStore(diagnosticsStore);
+  const bitrateMbps = (stats.bitrateKbps / 1000).toFixed(1);
+  const hasResolution = stats.resolution && stats.resolution !== "";
+  const hasCodec = stats.codec && stats.codec !== "";
+  const regionLabel = stats.serverRegion || serverRegion || "";
+  const decodeColor = getTimingColor(stats.decodeTimeMs, 8, 16);
+  const renderColor = getTimingColor(stats.renderTimeMs, 12, 22);
+  const jitterBufferColor = getTimingColor(stats.jitterBufferDelayMs, 10, 24);
+  const lossColor = getPacketLossColor(stats.packetLossPercent);
+  const dText = stats.decodeTimeMs > 0 ? `${stats.decodeTimeMs.toFixed(1)}ms` : "--";
+  const rText = stats.renderTimeMs > 0 ? `${stats.renderTimeMs.toFixed(1)}ms` : "--";
+  const jbText = stats.jitterBufferDelayMs > 0 ? `${stats.jitterBufferDelayMs.toFixed(1)}ms` : "--";
+  const inputLive = stats.inputReady && stats.connectionState === "connected";
+  const inputQueueColor = getInputQueueColor(stats.inputQueueBufferedBytes, stats.inputQueueDropCount);
+  const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
+
+  return (
+    <div className="sv-stats">
+      <div className="sv-stats-head">
+        {hasResolution ? (
+          <span className="sv-stats-primary">{stats.resolution} · {stats.decodeFps}fps</span>
+        ) : (
+          <span className="sv-stats-primary sv-stats-wait">Connecting...</span>
+        )}
+        <span className={`sv-stats-live ${inputLive ? "is-live" : "is-pending"}`}>
+          {inputLive ? "Live" : "Sync"}
+        </span>
+      </div>
+
+      <div className="sv-stats-sub">
+        <span className="sv-stats-sub-left">
+          {hasCodec ? stats.codec : "N/A"}
+          {stats.isHdr && <span className="sv-stats-hdr">HDR</span>}
+        </span>
+        <span className="sv-stats-sub-right">{bitrateMbps} Mbps</span>
+      </div>
+
+      <div className="sv-stats-metrics">
+        <span className="sv-stats-chip" title="Round-trip network latency">
+          RTT <span className="sv-stats-chip-val" style={{ color: getRttColor(stats.rttMs) }}>{stats.rttMs > 0 ? `${stats.rttMs.toFixed(0)}ms` : "--"}</span>
+        </span>
+        <span className="sv-stats-chip" title="D = decode time">
+          D <span className="sv-stats-chip-val" style={{ color: decodeColor }}>{dText}</span>
+        </span>
+        <span className="sv-stats-chip" title="R = render time">
+          R <span className="sv-stats-chip-val" style={{ color: renderColor }}>{rText}</span>
+        </span>
+        <span className="sv-stats-chip" title="JB = jitter buffer delay">
+          JB <span className="sv-stats-chip-val" style={{ color: jitterBufferColor }}>{jbText}</span>
+        </span>
+        <span className="sv-stats-chip" title="Packet loss percentage">
+          Loss <span className="sv-stats-chip-val" style={{ color: lossColor }}>{stats.packetLossPercent.toFixed(2)}%</span>
+        </span>
+        <span className="sv-stats-chip" title="Input queue pressure (buffered bytes and delayed flush)">
+          IQ <span className="sv-stats-chip-val" style={{ color: inputQueueColor }}>{inputQueueText}</span>
+        </span>
+        {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
+          <span className="sv-stats-chip" title={stats.lagReasonDetail}>
+            Lag <span className="sv-stats-chip-val" style={{ color: getLagReasonColor(stats.lagReason) }}>{getLagReasonLabel(stats.lagReason)}</span>
+          </span>
+        )}
+      </div>
+
+      <div className="sv-stats-foot">
+        Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms
+      </div>
+
+      {(stats.decoderPressureActive || stats.decoderRecoveryAttempts > 0) && (
+        <div className="sv-stats-foot">
+          Decoder recovery {stats.decoderPressureActive ? "active" : "idle"} · attempts {stats.decoderRecoveryAttempts} · action {stats.decoderRecoveryAction}
+        </div>
+      )}
+
+      {(stats.gpuType || regionLabel) && (
+        <div className="sv-stats-foot">
+          {[stats.gpuType, regionLabel].filter(Boolean).join(" · ")}
+        </div>
+      )}
+
+      {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
+        <div className="sv-stats-foot">
+          Lag source {getLagReasonLabel(stats.lagReason).toLowerCase()} · {stats.lagReasonDetail}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ControllerIndicator({
+  diagnosticsStore,
+  isConnecting,
+}: {
+  diagnosticsStore: StreamDiagnosticsStore;
+  isConnecting: boolean;
+}): JSX.Element | null {
+  const connectedGamepads = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => stats.connectedGamepads,
+  );
+
+  if (isConnecting || connectedGamepads <= 0) {
+    return null;
+  }
+
+  return (
+    <div className="sv-ctrl" title={`${connectedGamepads} controller(s) connected`}>
+      <Gamepad2 size={18} />
+      {connectedGamepads > 1 && <span className="sv-ctrl-n">{connectedGamepads}</span>}
+    </div>
+  );
+}
+
+function MicrophoneIndicator({
+  diagnosticsStore,
+  antiAfkEnabled,
+  hideStreamButtons,
+  isConnecting,
+  onToggleMicrophone,
+}: {
+  diagnosticsStore: StreamDiagnosticsStore;
+  antiAfkEnabled: boolean;
+  hideStreamButtons: boolean;
+  isConnecting: boolean;
+  onToggleMicrophone?: () => void;
+}): JSX.Element | null {
+  const { connectedGamepads, micState, micEnabled } = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats): MicBadgeState => ({
+      connectedGamepads: stats.connectedGamepads,
+      micState: stats.micState ?? "uninitialized",
+      micEnabled: stats.micEnabled ?? false,
+    }),
+    isMicBadgeStateEqual,
+  );
+  const hasMicrophone = micState === "started" || micState === "stopped";
+  const showMicIndicator = hasMicrophone && !isConnecting && !hideStreamButtons;
+
+  if (!showMicIndicator || !onToggleMicrophone) {
+    return null;
+  }
+
+  return (
+    <button
+      type="button"
+      className={`sv-mic${connectedGamepads > 0 || antiAfkEnabled ? " sv-mic--stacked" : ""}`}
+      onClick={onToggleMicrophone}
+      data-enabled={micEnabled}
+      title={micEnabled ? "Mute microphone" : "Unmute microphone"}
+      aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
+      aria-pressed={micEnabled}
+    >
+      {micEnabled ? <Mic size={18} /> : <MicOff size={18} />}
+    </button>
+  );
+}
+
+function AntiAfkIndicator({
+  diagnosticsStore,
+  antiAfkEnabled,
+  isConnecting,
+}: {
+  diagnosticsStore: StreamDiagnosticsStore;
+  antiAfkEnabled: boolean;
+  isConnecting: boolean;
+}): JSX.Element | null {
+  const hasController = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => stats.connectedGamepads > 0,
+  );
+
+  if (!antiAfkEnabled || isConnecting) {
+    return null;
+  }
+
+  return (
+    <div className={`sv-afk${hasController ? " sv-afk--stacked" : ""}`} title="Anti-AFK is enabled">
+      <span className="sv-afk-dot" />
+      <span className="sv-afk-label">ANTI-AFK ON</span>
+    </div>
+  );
+}
+
+function RecordingIndicator({
+  diagnosticsStore,
+  antiAfkEnabled,
+  hideStreamButtons,
+  isConnecting,
+  isRecording,
+  onToggleMicrophone,
+  recordingDurationMs,
+}: {
+  diagnosticsStore: StreamDiagnosticsStore;
+  antiAfkEnabled: boolean;
+  hideStreamButtons: boolean;
+  isConnecting: boolean;
+  isRecording: boolean;
+  onToggleMicrophone?: () => void;
+  recordingDurationMs: number;
+}): JSX.Element | null {
+  const { connectedGamepads, micState } = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => ({
+      connectedGamepads: stats.connectedGamepads,
+      micState: stats.micState ?? "uninitialized",
+    }),
+    (prev, next) => prev.connectedGamepads === next.connectedGamepads && prev.micState === next.micState,
+  );
+  const hasMicrophone = micState === "started" || micState === "stopped";
+  const showMicIndicator = hasMicrophone && !isConnecting && !hideStreamButtons && Boolean(onToggleMicrophone);
+  const stackedBadges = [connectedGamepads > 0, antiAfkEnabled, showMicIndicator].filter(Boolean).length;
+
+  if (!isRecording || isConnecting) {
+    return null;
+  }
+
+  return (
+    <div
+      className="sv-rec"
+      style={{ top: 14 + 42 * stackedBadges }}
+      title={`Recording · ${formatElapsed(Math.round(recordingDurationMs / 1000))}`}
+    >
+      <span className="sv-rec-dot" />
+      <span className="sv-rec-label">REC {formatElapsed(Math.round(recordingDurationMs / 1000))}</span>
+    </div>
+  );
+}
+
+function StreamTitleBar({
+  diagnosticsStore,
+  gameTitle,
+  platformName,
+  PlatformIcon,
+  showHints,
+}: {
+  diagnosticsStore: StreamDiagnosticsStore;
+  gameTitle: string;
+  platformName: string;
+  PlatformIcon: (() => JSX.Element) | null;
+  showHints: boolean;
+}): JSX.Element | null {
+  const hasResolution = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => stats.resolution !== "",
+  );
+
+  if (!hasResolution || !showHints) {
+    return null;
+  }
+
+  return (
+    <div className="sv-title-bar">
+      <span className="sv-title-game">{gameTitle}</span>
+      {PlatformIcon && (
+        <span className="sv-title-platform" title={platformName}>
+          <span className="sv-title-platform-icon">
+            <PlatformIcon />
+          </span>
+          <span>{platformName}</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+function StreamEmptyState({
+  diagnosticsStore,
+}: {
+  diagnosticsStore: StreamDiagnosticsStore;
+}): JSX.Element | null {
+  const hasResolution = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => stats.resolution !== "",
+  );
+
+  if (hasResolution) {
+    return null;
+  }
+
+  return (
+    <div className="sv-empty">
+      <div className="sv-empty-grad" />
+    </div>
+  );
+}
+
+function SidebarMicMutedBadge({
+  diagnosticsStore,
+  micTrack,
+}: {
+  diagnosticsStore: StreamDiagnosticsStore;
+  micTrack?: MediaStreamTrack | null;
+}): JSX.Element | null {
+  const micEnabled = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => stats.micEnabled ?? false,
+  );
+
+  if (!micTrack || micEnabled) {
+    return null;
+  }
+
+  return <span className="settings-value-badge">Muted</span>;
+}
+
+function VideoFocusOnReady({
+  diagnosticsStore,
+  isConnecting,
+  videoRef,
+}: {
+  diagnosticsStore: StreamDiagnosticsStore;
+  isConnecting: boolean;
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+}): null {
+  const hasResolution = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => stats.resolution !== "",
+  );
+
+  useEffect(() => {
+    if (!isConnecting && videoRef.current && hasResolution) {
+      const timer = window.setTimeout(() => {
+        if (videoRef.current && document.activeElement !== videoRef.current) {
+          videoRef.current.focus();
+          console.log("[StreamView] Focused video element");
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [hasResolution, isConnecting, videoRef]);
+
+  return null;
 }
 
 function useMicMeter(
@@ -311,7 +666,6 @@ export function StreamView({
   hideStreamButtons = false,
   className,
 }: StreamViewProps): JSX.Element {
-  const stats = useStreamDiagnosticsStore(diagnosticsStore);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
@@ -352,11 +706,6 @@ export function StreamView({
     typeof window.openNow?.listRecordings === "function" &&
     typeof window.openNow?.deleteRecording === "function";
 
-  // Microphone state
-  const micState = stats.micState ?? "uninitialized";
-  const micEnabled = stats.micEnabled ?? false;
-  const hasMicrophone = micState === "started" || micState === "stopped";
-  const showMicIndicator = hasMicrophone && !isConnecting && !hideStreamButtons;
   const microphoneModes = useMemo(
     () => [
       { value: "disabled" as MicrophoneMode, label: "Disabled", description: "No microphone input" },
@@ -441,22 +790,8 @@ export function StreamView({
     };
   }, [isConnecting, sessionClockShowDurationSeconds, sessionClockShowEveryMinutes, sessionCounterEnabled]);
 
-  const bitrateMbps = (stats.bitrateKbps / 1000).toFixed(1);
-  const hasResolution = stats.resolution && stats.resolution !== "";
-  const hasCodec = stats.codec && stats.codec !== "";
-  const regionLabel = stats.serverRegion || serverRegion || "";
-  const decodeColor = getTimingColor(stats.decodeTimeMs, 8, 16);
-  const renderColor = getTimingColor(stats.renderTimeMs, 12, 22);
-  const jitterBufferColor = getTimingColor(stats.jitterBufferDelayMs, 10, 24);
-  const lossColor = getPacketLossColor(stats.packetLossPercent);
-  const dText = stats.decodeTimeMs > 0 ? `${stats.decodeTimeMs.toFixed(1)}ms` : "--";
-  const rText = stats.renderTimeMs > 0 ? `${stats.renderTimeMs.toFixed(1)}ms` : "--";
-  const jbText = stats.jitterBufferDelayMs > 0 ? `${stats.jitterBufferDelayMs.toFixed(1)}ms` : "--";
-  const inputLive = stats.inputReady && stats.connectionState === "connected";
   const escHoldProgress = Math.max(0, Math.min(1, escHoldReleaseIndicator.progress));
   const escHoldSecondsLeft = Math.max(0, 5 - Math.floor(escHoldProgress * 5));
-  const inputQueueColor = getInputQueueColor(stats.inputQueueBufferedBytes, stats.inputQueueDropCount);
-  const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
   const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
   const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
@@ -930,18 +1265,6 @@ export function StreamView({
     }
   }, [screenshots, selectedScreenshotId]);
 
-  useEffect(() => {
-    if (!isConnecting && localVideoRef.current && hasResolution) {
-      const timer = window.setTimeout(() => {
-        if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
-          localVideoRef.current.focus();
-          console.log("[StreamView] Focused video element");
-        }
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [isConnecting, hasResolution]);
-
   const handleToggleSideBar = useCallback(() => {
     setShowSideBar((s) => {
       if (!s && document.pointerLockElement) {
@@ -1015,6 +1338,11 @@ export function StreamView({
         }}
       />
       <audio ref={setAudioRef} autoPlay playsInline />
+      <VideoFocusOnReady
+        diagnosticsStore={diagnosticsStore}
+        isConnecting={isConnecting}
+        videoRef={localVideoRef}
+      />
 
       {showSideBar && (
         <>
@@ -1133,7 +1461,7 @@ export function StreamView({
                     <div className="sidebar-row sidebar-row--column">
                       <div className="sidebar-row-top">
                         <span className="sidebar-label">Input Level</span>
-                        {micTrack && !micEnabled && <span className="settings-value-badge">Muted</span>}
+                        <SidebarMicMutedBadge diagnosticsStore={diagnosticsStore} micTrack={micTrack} />
                       </div>
                       <canvas
                         ref={micMeterRef}
@@ -1465,11 +1793,7 @@ export function StreamView({
       )}
 
       {/* Gradient background when no video */}
-      {!hasResolution && (
-        <div className="sv-empty">
-          <div className="sv-empty-grad" />
-        </div>
-      )}
+      <StreamEmptyState diagnosticsStore={diagnosticsStore} />
 
       {/* Connecting overlay */}
       {isConnecting && (
@@ -1515,118 +1839,38 @@ export function StreamView({
 
       {/* Stats HUD (top-right) */}
       {showStats && !isConnecting && (
-        <div className="sv-stats">
-          <div className="sv-stats-head">
-            {hasResolution ? (
-              <span className="sv-stats-primary">{stats.resolution} · {stats.decodeFps}fps</span>
-            ) : (
-              <span className="sv-stats-primary sv-stats-wait">Connecting...</span>
-            )}
-            <span className={`sv-stats-live ${inputLive ? "is-live" : "is-pending"}`}>
-              {inputLive ? "Live" : "Sync"}
-            </span>
-          </div>
-
-          <div className="sv-stats-sub">
-            <span className="sv-stats-sub-left">
-              {hasCodec ? stats.codec : "N/A"}
-              {stats.isHdr && <span className="sv-stats-hdr">HDR</span>}
-            </span>
-            <span className="sv-stats-sub-right">{bitrateMbps} Mbps</span>
-          </div>
-
-          <div className="sv-stats-metrics">
-            <span className="sv-stats-chip" title="Round-trip network latency">
-              RTT <span className="sv-stats-chip-val" style={{ color: getRttColor(stats.rttMs) }}>{stats.rttMs > 0 ? `${stats.rttMs.toFixed(0)}ms` : "--"}</span>
-            </span>
-            <span className="sv-stats-chip" title="D = decode time">
-              D <span className="sv-stats-chip-val" style={{ color: decodeColor }}>{dText}</span>
-            </span>
-            <span className="sv-stats-chip" title="R = render time">
-              R <span className="sv-stats-chip-val" style={{ color: renderColor }}>{rText}</span>
-            </span>
-            <span className="sv-stats-chip" title="JB = jitter buffer delay">
-              JB <span className="sv-stats-chip-val" style={{ color: jitterBufferColor }}>{jbText}</span>
-            </span>
-            <span className="sv-stats-chip" title="Packet loss percentage">
-              Loss <span className="sv-stats-chip-val" style={{ color: lossColor }}>{stats.packetLossPercent.toFixed(2)}%</span>
-            </span>
-            <span className="sv-stats-chip" title="Input queue pressure (buffered bytes and delayed flush)">
-              IQ <span className="sv-stats-chip-val" style={{ color: inputQueueColor }}>{inputQueueText}</span>
-            </span>
-            {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
-              <span className="sv-stats-chip" title={stats.lagReasonDetail}>
-                Lag <span className="sv-stats-chip-val" style={{ color: getLagReasonColor(stats.lagReason) }}>{getLagReasonLabel(stats.lagReason)}</span>
-              </span>
-            )}
-          </div>
-
-          <div className="sv-stats-foot">
-            Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms
-          </div>
-
-          {(stats.decoderPressureActive || stats.decoderRecoveryAttempts > 0) && (
-            <div className="sv-stats-foot">
-              Decoder recovery {stats.decoderPressureActive ? "active" : "idle"} · attempts {stats.decoderRecoveryAttempts} · action {stats.decoderRecoveryAction}
-            </div>
-          )}
-
-          {(stats.gpuType || regionLabel) && (
-            <div className="sv-stats-foot">
-              {[stats.gpuType, regionLabel].filter(Boolean).join(" · ")}
-            </div>
-          )}
-
-          {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
-            <div className="sv-stats-foot">
-              Lag source {getLagReasonLabel(stats.lagReason).toLowerCase()} · {stats.lagReasonDetail}
-            </div>
-          )}
-        </div>
+        <StreamStatsHud diagnosticsStore={diagnosticsStore} serverRegion={serverRegion} />
       )}
 
       {/* Controller indicator (top-left) */}
-      {stats.connectedGamepads > 0 && !isConnecting && (
-        <div className="sv-ctrl" title={`${stats.connectedGamepads} controller(s) connected`}>
-          <Gamepad2 size={18} />
-          {stats.connectedGamepads > 1 && <span className="sv-ctrl-n">{stats.connectedGamepads}</span>}
-        </div>
-      )}
+      <ControllerIndicator diagnosticsStore={diagnosticsStore} isConnecting={isConnecting} />
 
       {/* Microphone toggle button (top-left, below controller badge when present) */}
-      {showMicIndicator && onToggleMicrophone && (
-        <button
-          type="button"
-          className={`sv-mic${stats.connectedGamepads > 0 || antiAfkEnabled ? " sv-mic--stacked" : ""}`}
-          onClick={onToggleMicrophone}
-          data-enabled={micEnabled}
-          title={micEnabled ? "Mute microphone" : "Unmute microphone"}
-          aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
-          aria-pressed={micEnabled}
-        >
-          {micEnabled ? <Mic size={18} /> : <MicOff size={18} />}
-        </button>
-      )}
+      <MicrophoneIndicator
+        diagnosticsStore={diagnosticsStore}
+        antiAfkEnabled={antiAfkEnabled}
+        hideStreamButtons={hideStreamButtons}
+        isConnecting={isConnecting}
+        onToggleMicrophone={onToggleMicrophone}
+      />
 
       {/* Anti-AFK indicator (top-left, below controller badge when present) */}
-      {antiAfkEnabled && !isConnecting && (
-        <div className={`sv-afk${stats.connectedGamepads > 0 ? " sv-afk--stacked" : ""}`} title="Anti-AFK is enabled">
-          <span className="sv-afk-dot" />
-          <span className="sv-afk-label">ANTI-AFK ON</span>
-        </div>
-      )}
+      <AntiAfkIndicator
+        diagnosticsStore={diagnosticsStore}
+        antiAfkEnabled={antiAfkEnabled}
+        isConnecting={isConnecting}
+      />
 
       {/* Recording indicator (top-left, stacked below other badges) */}
-      {isRecording && !isConnecting && (
-        <div
-          className="sv-rec"
-          style={{ top: 14 + 42 * ([stats.connectedGamepads > 0, antiAfkEnabled, showMicIndicator].filter(Boolean).length) }}
-          title={`Recording · ${formatElapsed(Math.round(recordingDurationMs / 1000))}`}
-        >
-          <span className="sv-rec-dot" />
-          <span className="sv-rec-label">REC {formatElapsed(Math.round(recordingDurationMs / 1000))}</span>
-        </div>
-      )}
+      <RecordingIndicator
+        diagnosticsStore={diagnosticsStore}
+        antiAfkEnabled={antiAfkEnabled}
+        hideStreamButtons={hideStreamButtons}
+        isConnecting={isConnecting}
+        isRecording={isRecording}
+        onToggleMicrophone={onToggleMicrophone}
+        recordingDurationMs={recordingDurationMs}
+      />
 
       {/* Hold-Esc release indicator (appears after 1s hold) */}
       {escHoldReleaseIndicator.visible && !isConnecting && (
@@ -1711,19 +1955,13 @@ export function StreamView({
       )}
 
       {/* Game title (bottom-center, fades) */}
-      {hasResolution && showHints && (
-        <div className="sv-title-bar">
-          <span className="sv-title-game">{gameTitle}</span>
-          {PlatformIcon && (
-            <span className="sv-title-platform" title={platformName}>
-              <span className="sv-title-platform-icon">
-                <PlatformIcon />
-              </span>
-              <span>{platformName}</span>
-            </span>
-          )}
-        </div>
-      )}
+      <StreamTitleBar
+        diagnosticsStore={diagnosticsStore}
+        gameTitle={gameTitle}
+        platformName={platformName}
+        PlatformIcon={PlatformIcon}
+        showHints={showHints}
+      />
     </div>
   );
 }
