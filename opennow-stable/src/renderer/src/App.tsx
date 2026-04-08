@@ -784,6 +784,7 @@ export function App(): JSX.Element {
   const adReportQueueRef = useRef<Promise<void>>(Promise.resolve());
   const adReportStateRef = useRef<Record<string, SessionAdAction>>({});
   const adMediaUrlCacheRef = useRef<Record<string, string>>({});
+  const [activeAdIndex, setActiveAdIndex] = useState(0);
   // Timer-driven finish timers keyed by adId. Each fires (durationMs − 3 s) after the
   // start PUT is ACKed, sending finish inside the server's per-ad token window even when
   // video buffering or load time extends total playback past adLengthInSeconds.
@@ -867,6 +868,7 @@ export function App(): JSX.Element {
     adReportStateRef.current = {};
     adReportQueueRef.current = Promise.resolve();
     adMediaUrlCacheRef.current = {};
+    setActiveAdIndex(0);
     // Clear any pending timer-driven finish callbacks when the session changes.
     Object.values(adFinishTimersRef.current).forEach(clearTimeout);
     adFinishTimersRef.current = {};
@@ -1046,6 +1048,22 @@ export function App(): JSX.Element {
       }
       adReportStateRef.current[adId] = "start";
       reportQueueAdAction(adId, "start");
+      const currentSession = sessionRef.current;
+      const remainingAds = currentSession?.adState?.ads ?? [];
+      const currentAdIndex = remainingAds.findIndex((ad) => ad.adId === adId);
+      if (currentAdIndex >= 0) {
+        setActiveAdIndex(currentAdIndex);
+      }
+      for (const ad of remainingAds) {
+        if (ad.adId === adId) {
+          continue;
+        }
+        if (adReportStateRef.current[ad.adId] === "finish" || adReportStateRef.current[ad.adId] === "cancel") {
+          continue;
+        }
+        adReportStateRef.current[ad.adId] = "finish";
+        reportQueueAdAction(ad.adId, "finish");
+      }
       return;
     }
 
@@ -2532,6 +2550,7 @@ export function App(): JSX.Element {
             status={switchingPhase === "cleaning" ? "setup" : "starting"}
             queuePosition={queuePosition}
             adState={effectiveAdState}
+            activeAdIndex={activeAdIndex}
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             playtimeData={playtime}
             gameId={pendingSwitchGameId ?? streamingGame?.id}
@@ -2546,6 +2565,7 @@ export function App(): JSX.Element {
             status={switchingPhase === "cleaning" ? "setup" : "starting"}
             queuePosition={queuePosition}
             adState={effectiveAdState}
+            activeAdIndex={activeAdIndex}
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             error={
               launchError
@@ -2623,6 +2643,7 @@ export function App(): JSX.Element {
             status={loadingStatus}
             queuePosition={queuePosition}
             adState={effectiveAdState}
+            activeAdIndex={activeAdIndex}
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             playtimeData={playtime}
             gameId={streamingGame?.id}
@@ -2637,6 +2658,7 @@ export function App(): JSX.Element {
             status={loadingStatus}
             queuePosition={queuePosition}
             adState={effectiveAdState}
+            activeAdIndex={activeAdIndex}
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             error={
               launchError

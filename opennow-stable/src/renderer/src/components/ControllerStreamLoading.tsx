@@ -12,7 +12,7 @@ export interface ControllerStreamLoadingProps {
   status: "queue" | "setup" | "starting" | "connecting";
   queuePosition?: number;
   adState?: SessionAdState;
-  activeAdMediaUrl?: string;
+  activeAdIndex?: number;
   onAdPlaybackEvent?: (event: "playing" | "paused" | "ended", adId: string) => void;
   playtimeData?: PlaytimeStore;
   gameId?: string;
@@ -64,7 +64,7 @@ export function ControllerStreamLoading({
   status,
   queuePosition,
   adState,
-  activeAdMediaUrl,
+  activeAdIndex = 0,
   onAdPlaybackEvent,
   playtimeData = {},
   gameId,
@@ -75,8 +75,8 @@ export function ControllerStreamLoading({
   const playtimeRecord = gameId ? playtimeData[gameId] : undefined;
   const totalSecs = playtimeRecord?.totalSeconds ?? 0;
   const playtimeLabel = formatPlaytime(totalSecs);
-  const activeAd = adState?.ads[0];
-  const cachedAdMediaUrl = activeAdMediaUrl ?? activeAd?.mediaUrl;
+  const activeAd = adState?.ads[activeAdIndex];
+  const cachedAdMediaUrl = activeAd?.mediaUrl;
   const adDurationSeconds = activeAd?.durationMs ? Math.round(activeAd.durationMs / 1000) : undefined;
   const adMessage = adState?.message ?? (adState?.isQueuePaused ? "Resume ads to stay in queue." : undefined);
 

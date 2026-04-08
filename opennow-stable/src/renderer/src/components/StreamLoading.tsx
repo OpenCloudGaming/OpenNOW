@@ -12,7 +12,7 @@ export interface StreamLoadingProps {
   queuePosition?: number;
   estimatedWait?: string;
   adState?: SessionAdState;
-  activeAdMediaUrl?: string;
+  activeAdIndex?: number;
   error?: {
     title: string;
     description: string;
@@ -91,7 +91,7 @@ export function StreamLoading({
   queuePosition,
   estimatedWait,
   adState,
-  activeAdMediaUrl,
+  activeAdIndex = 0,
   error,
   onAdPlaybackEvent,
   onCancel,
@@ -102,8 +102,8 @@ export function StreamLoading({
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
   const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
   const adSummary = getAdSummary(adState);
-  const activeAd = adState?.ads[0];
-  const cachedAdMediaUrl = activeAdMediaUrl ?? activeAd?.mediaUrl;
+  const activeAd = adState?.ads[activeAdIndex];
+  const cachedAdMediaUrl = activeAd?.mediaUrl;
   const activeAdDurationSeconds = activeAd?.durationMs ? Math.round(activeAd.durationMs / 1000) : undefined;
 
   return (
