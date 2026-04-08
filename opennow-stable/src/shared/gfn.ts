@@ -363,6 +363,7 @@ export interface SessionAdState {
    * Used by mergeAdState to decide whether to restore the previous ad list.
    */
   serverSentEmptyAds?: boolean;
+  enableL4S?: boolean;
 }
 
 export interface SessionInfo {
