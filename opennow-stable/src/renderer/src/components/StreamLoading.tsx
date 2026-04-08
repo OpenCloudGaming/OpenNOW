@@ -1,8 +1,8 @@
 import { Loader2, Monitor, Cpu, Wifi, X, XCircle } from "lucide-react";
-import type { JSX } from "react";
-import type { SessionAdState } from "@shared/gfn";
+import type { JSX, Ref } from "react";
+import type { SessionAdInfo, SessionAdState } from "@shared/gfn";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
-import { QueueAdPreview } from "./QueueAdPreview";
+import { QueueAdPreview, type QueueAdPlaybackEvent, type QueueAdPreviewHandle } from "./QueueAdPreview";
 
 export interface StreamLoadingProps {
   gameTitle: string;
@@ -12,13 +12,15 @@ export interface StreamLoadingProps {
   queuePosition?: number;
   estimatedWait?: string;
   adState?: SessionAdState;
+  activeAd?: SessionAdInfo;
   activeAdMediaUrl?: string;
   error?: {
     title: string;
     description: string;
     code?: string;
   };
-  onAdPlaybackEvent?: (event: "playing" | "paused" | "ended", adId: string) => void;
+  onAdPlaybackEvent?: (event: QueueAdPlaybackEvent, adId: string) => void;
+  adPreviewRef?: Ref<QueueAdPreviewHandle>;
   onCancel: () => void;
 }
 
@@ -91,9 +93,11 @@ export function StreamLoading({
   queuePosition,
   estimatedWait,
   adState,
+  activeAd,
   activeAdMediaUrl,
   error,
   onAdPlaybackEvent,
+  adPreviewRef,
   onCancel,
 }: StreamLoadingProps): JSX.Element {
   const hasError = Boolean(error);
@@ -102,7 +106,6 @@ export function StreamLoading({
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
   const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
   const adSummary = getAdSummary(adState);
-  const activeAd = adState?.ads[0];
   const cachedAdMediaUrl = activeAdMediaUrl ?? activeAd?.mediaUrl;
   const activeAdDurationSeconds = activeAd?.durationMs ? Math.round(activeAd.durationMs / 1000) : undefined;
 
@@ -189,6 +192,7 @@ export function StreamLoading({
                 </div>
                 <div className="sload-ad-media">
                   <QueueAdPreview
+                    ref={adPreviewRef}
                     mediaUrl={cachedAdMediaUrl}
                     title={activeAd.title}
                     onPlaybackEvent={(event) => onAdPlaybackEvent?.(event, activeAd.adId)}

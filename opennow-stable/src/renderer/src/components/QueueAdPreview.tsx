@@ -1,8 +1,21 @@
 import { AlertTriangle, Loader2, PauseCircle, PlayCircle, RefreshCcw, XCircle } from "lucide-react";
-import { useEffect, useRef, useState, type JSX } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type JSX } from "react";
 
 type QueueAdPlaybackState = "loading" | "playing" | "paused" | "stalled" | "blocked" | "timeout" | "error";
-type QueueAdPlaybackEvent = "playing" | "paused" | "ended";
+export type QueueAdPlaybackEvent = "loadstart" | "playing" | "paused" | "ended" | "timeupdate";
+
+export interface QueueAdPreviewHandle {
+  attemptPlayback: () => Promise<void>;
+  pause: () => void;
+  resume: () => Promise<void>;
+  getSnapshot: () => {
+    currentTime: number;
+    paused: boolean;
+    ended: boolean;
+    readyState: number;
+    muted: boolean;
+  } | null;
+}
 
 interface QueueAdPreviewProps {
   mediaUrl: string;
@@ -16,10 +29,6 @@ interface PlaybackPresentation {
   retryLabel?: string;
   icon: typeof Loader2;
 }
-
-const INITIAL_PLAY_TIMEOUT_MS = 8000;
-const STALL_THRESHOLD_MS = 4000;
-const STALL_CHECK_INTERVAL_MS = 1000;
 
 function getPlaybackPresentation(state: QueueAdPlaybackState): PlaybackPresentation {
   switch (state) {
@@ -74,10 +83,12 @@ function getPlaybackPresentation(state: QueueAdPlaybackState): PlaybackPresentat
   }
 }
 
-export function QueueAdPreview({ mediaUrl, title, onPlaybackEvent }: QueueAdPreviewProps): JSX.Element {
+export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewProps>(function QueueAdPreview(
+  { mediaUrl, title, onPlaybackEvent }: QueueAdPreviewProps,
+  ref,
+): JSX.Element {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playbackStateRef = useRef<QueueAdPlaybackState>("loading");
-  const progressRef = useRef({ currentTime: 0, unchangedMs: 0 });
   // Guards against firing "ended" twice when the proactive timeupdate path
   // already fired it before the native ended event arrives.
   const finishFiredRef = useRef(false);
@@ -127,9 +138,31 @@ export function QueueAdPreview({ mediaUrl, title, onPlaybackEvent }: QueueAdPrev
     }
   };
 
+  useImperativeHandle(ref, () => ({
+    attemptPlayback,
+    pause: () => {
+      videoRef.current?.pause();
+    },
+    resume: async () => {
+      await attemptPlayback();
+    },
+    getSnapshot: () => {
+      const video = videoRef.current;
+      if (!video) {
+        return null;
+      }
+      return {
+        currentTime: video.currentTime,
+        paused: video.paused,
+        ended: video.ended,
+        readyState: video.readyState,
+        muted: video.muted,
+      };
+    },
+  }));
+
   useEffect(() => {
     setPlayback("loading");
-    progressRef.current = { currentTime: 0, unchangedMs: 0 };
     finishFiredRef.current = false;
   }, [mediaUrl]);
 
@@ -139,21 +172,15 @@ export function QueueAdPreview({ mediaUrl, title, onPlaybackEvent }: QueueAdPrev
       return;
     }
 
-    let disposed = false;
-    let startupTimeoutId = 0;
-
-    const clearStartupTimeout = (): void => {
-      if (startupTimeoutId) {
-        window.clearTimeout(startupTimeoutId);
-        startupTimeoutId = 0;
-      }
-    };
-
     const handlePlaying = (): void => {
-      clearStartupTimeout();
-      progressRef.current = { currentTime: video.currentTime, unchangedMs: 0 };
       setPlayback("playing");
       onPlaybackEventRef.current?.("playing");
+    };
+
+    const handleLoadStart = (): void => {
+      finishFiredRef.current = false;
+      setPlayback("loading");
+      onPlaybackEventRef.current?.("loadstart");
     };
 
     const handlePause = (): void => {
@@ -163,20 +190,19 @@ export function QueueAdPreview({ mediaUrl, title, onPlaybackEvent }: QueueAdPrev
       }
     };
 
-      const handleTimeUpdate = (): void => {
-        if (finishFiredRef.current) {
-          return;
-        }
-        const d = video.duration;
-        if (isFinite(d) && d > 0 && video.currentTime >= d) {
-          finishFiredRef.current = true;
-          clearStartupTimeout();
-          onPlaybackEventRef.current?.("ended");
-        }
-      };
+    const handleTimeUpdate = (): void => {
+      onPlaybackEventRef.current?.("timeupdate");
+      if (finishFiredRef.current) {
+        return;
+      }
+      const d = video.duration;
+      if (isFinite(d) && d > 0 && video.currentTime >= d) {
+        finishFiredRef.current = true;
+        onPlaybackEventRef.current?.("ended");
+      }
+    };
 
     const handleEnded = (): void => {
-      clearStartupTimeout();
       // Only fire if the proactive timeupdate path hasn't already done so.
       if (!finishFiredRef.current) {
         finishFiredRef.current = true;
@@ -197,10 +223,10 @@ export function QueueAdPreview({ mediaUrl, title, onPlaybackEvent }: QueueAdPrev
     };
 
     const handleError = (): void => {
-      clearStartupTimeout();
       setPlayback("error");
     };
 
+    video.addEventListener("loadstart", handleLoadStart);
     video.addEventListener("playing", handlePlaying);
     video.addEventListener("pause", handlePause);
     video.addEventListener("timeupdate", handleTimeUpdate);
@@ -209,37 +235,10 @@ export function QueueAdPreview({ mediaUrl, title, onPlaybackEvent }: QueueAdPrev
     video.addEventListener("stalled", handleStalled);
     video.addEventListener("error", handleError);
 
-    startupTimeoutId = window.setTimeout(() => {
-      if (!disposed && playbackStateRef.current !== "playing") {
-        setPlayback("timeout");
-      }
-    }, INITIAL_PLAY_TIMEOUT_MS);
-
-    const stallIntervalId = window.setInterval(() => {
-      if (disposed || video.paused || video.ended || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-        return;
-      }
-
-      const progress = progressRef.current;
-      const delta = Math.abs(video.currentTime - progress.currentTime);
-      if (delta < 0.05) {
-        progress.unchangedMs += STALL_CHECK_INTERVAL_MS;
-      } else {
-        progress.unchangedMs = 0;
-      }
-      progress.currentTime = video.currentTime;
-
-      if (progress.unchangedMs >= STALL_THRESHOLD_MS && playbackStateRef.current === "playing") {
-        setPlayback("stalled");
-      }
-    }, STALL_CHECK_INTERVAL_MS);
-
     void attemptPlayback();
 
     return () => {
-      disposed = true;
-      clearStartupTimeout();
-      window.clearInterval(stallIntervalId);
+      video.removeEventListener("loadstart", handleLoadStart);
       video.removeEventListener("playing", handlePlaying);
       video.removeEventListener("pause", handlePause);
       video.removeEventListener("timeupdate", handleTimeUpdate);
@@ -292,4 +291,4 @@ export function QueueAdPreview({ mediaUrl, title, onPlaybackEvent }: QueueAdPrev
       </div>
     </div>
   );
-}
+});

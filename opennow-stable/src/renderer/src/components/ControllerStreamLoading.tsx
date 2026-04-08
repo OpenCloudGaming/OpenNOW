@@ -1,9 +1,9 @@
 import { Loader2, Zap } from "lucide-react";
-import type { JSX } from "react";
-import type { SessionAdState } from "@shared/gfn";
+import type { JSX, Ref } from "react";
+import type { SessionAdInfo, SessionAdState } from "@shared/gfn";
 import { formatPlaytime } from "../utils/usePlaytime";
 import type { PlaytimeStore } from "../utils/usePlaytime";
-import { QueueAdPreview } from "./QueueAdPreview";
+import { QueueAdPreview, type QueueAdPlaybackEvent, type QueueAdPreviewHandle } from "./QueueAdPreview";
 
 export interface ControllerStreamLoadingProps {
   gameTitle: string;
@@ -12,8 +12,10 @@ export interface ControllerStreamLoadingProps {
   status: "queue" | "setup" | "starting" | "connecting";
   queuePosition?: number;
   adState?: SessionAdState;
+  activeAd?: SessionAdInfo;
   activeAdMediaUrl?: string;
-  onAdPlaybackEvent?: (event: "playing" | "paused" | "ended", adId: string) => void;
+  onAdPlaybackEvent?: (event: QueueAdPlaybackEvent, adId: string) => void;
+  adPreviewRef?: Ref<QueueAdPreviewHandle>;
   playtimeData?: PlaytimeStore;
   gameId?: string;
   enableBackgroundAnimations?: boolean;
@@ -64,8 +66,10 @@ export function ControllerStreamLoading({
   status,
   queuePosition,
   adState,
+  activeAd,
   activeAdMediaUrl,
   onAdPlaybackEvent,
+  adPreviewRef,
   playtimeData = {},
   gameId,
   enableBackgroundAnimations = false,
@@ -75,7 +79,6 @@ export function ControllerStreamLoading({
   const playtimeRecord = gameId ? playtimeData[gameId] : undefined;
   const totalSecs = playtimeRecord?.totalSeconds ?? 0;
   const playtimeLabel = formatPlaytime(totalSecs);
-  const activeAd = adState?.ads[0];
   const cachedAdMediaUrl = activeAdMediaUrl ?? activeAd?.mediaUrl;
   const adDurationSeconds = activeAd?.durationMs ? Math.round(activeAd.durationMs / 1000) : undefined;
   const adMessage = adState?.message ?? (adState?.isQueuePaused ? "Resume ads to stay in queue." : undefined);
@@ -148,6 +151,7 @@ export function ControllerStreamLoading({
                   </div>
                   <div className="csl-ad-media">
                     <QueueAdPreview
+                      ref={adPreviewRef}
                       mediaUrl={cachedAdMediaUrl}
                       title={activeAd.title}
                       onPlaybackEvent={(event) => onAdPlaybackEvent?.(event, activeAd.adId)}
