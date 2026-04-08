@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
+import reactScan from "@react-scan/vite-plugin-react-scan";
 
 export default defineConfig({
   main: {
@@ -30,7 +31,13 @@ export default defineConfig({
     build: {
       outDir: "dist",
     },
-    plugins: [react()],
+    plugins: [
+      react(),
+      reactScan({
+        enable: process.env.NODE_ENV === "development",
+        autoDisplayNames: true,
+      }),
+    ],
     resolve: {
       alias: {
         "@shared": resolve("src/shared"),
