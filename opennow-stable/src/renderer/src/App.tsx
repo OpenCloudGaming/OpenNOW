@@ -2481,7 +2481,6 @@ export function App(): JSX.Element {
       {queueModalGame && streamStatus === "idle" && (
         <QueueServerSelectModal
           game={queueModalGame}
-          regions={regions}
           onConfirm={handleQueueModalConfirm}
           onCancel={handleQueueModalCancel}
         />
