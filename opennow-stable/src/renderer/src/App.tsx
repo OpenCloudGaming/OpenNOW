@@ -18,6 +18,7 @@ import type {
   StreamRegion,
   VideoCodec,
 } from "@shared/gfn";
+import { DEFAULT_KEYBOARD_LAYOUT } from "@shared/gfn";
 
 import {
   GfnWebRtcClient,
@@ -376,6 +377,7 @@ function buildStreamSettings(settings: Settings): StreamSettings {
     maxBitrateMbps: settings.maxBitrateMbps,
     codec: settings.codec,
     colorQuality: settings.colorQuality,
+    keyboardLayout: settings.keyboardLayout,
     gameLanguage: settings.gameLanguage,
     enableL4S: settings.enableL4S,
   };
@@ -444,10 +446,12 @@ export function App(): JSX.Element {
     autoLoadControllerLibrary: false,
     autoFullScreen: false,
     favoriteGameIds: [],
+    sessionCounterEnabled: false,
     sessionClockShowEveryMinutes: 60,
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
+    keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
     gameLanguage: "en_US",
     enableL4S: false,
     enableNativeStreamer: false,
@@ -482,6 +486,7 @@ export function App(): JSX.Element {
   const [nativeStreamerState, setNativeStreamerState] = useState<NativeStreamerStateSnapshot | null>(null);
 
   const { playtime, startSession: startPlaytimeSession, endSession: endPlaytimeSession } = usePlaytime();
+  const isStreaming = streamStatus === "streaming";
 
   const controllerOverlayOpenRef = useRef(false);
 
@@ -732,7 +737,6 @@ export function App(): JSX.Element {
     setStreamStatus("idle");
     setQueuePosition(undefined);
     setSessionStartedAtMs(null);
-    setSessionElapsedSeconds(0);
     setStreamWarning(null);
     setEscHoldReleaseIndicator({ visible: false, progress: 0 });
     setStreamBackend(null);
@@ -1206,21 +1210,6 @@ export function App(): JSX.Element {
     }
   }, [currentPage, streamStatus]);
 
-  useEffect(() => {
-    if (streamStatus === "idle" || sessionStartedAtMs === null) {
-      setSessionElapsedSeconds(0);
-      return;
-    }
-
-    const updateElapsed = () => {
-      const elapsed = Math.max(0, Math.floor((Date.now() - sessionStartedAtMs) / 1000));
-      setSessionElapsedSeconds(elapsed);
-    };
-
-    updateElapsed();
-    const timer = window.setInterval(updateElapsed, 1000);
-    return () => window.clearInterval(timer);
-  }, [sessionStartedAtMs, streamStatus]);
 
   useEffect(() => {
     if (streamStatus !== "streaming" || sessionStartedAtMs !== null) {
@@ -1593,6 +1582,7 @@ export function App(): JSX.Element {
         maxBitrateMbps: settings.maxBitrateMbps,
         codec: settings.codec,
         colorQuality: settings.colorQuality,
+        keyboardLayout: settings.keyboardLayout,
         gameLanguage: settings.gameLanguage,
         enableL4S: settings.enableL4S,
       },
@@ -1658,7 +1648,6 @@ export function App(): JSX.Element {
     };
 
     setSessionStartedAtMs(null);
-    setSessionElapsedSeconds(0);
     setStreamWarning(null);
     setLaunchError(null);
     const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
@@ -1752,6 +1741,7 @@ export function App(): JSX.Element {
           maxBitrateMbps: settings.maxBitrateMbps,
           codec: settings.codec,
           colorQuality: settings.colorQuality,
+          keyboardLayout: settings.keyboardLayout,
           gameLanguage: settings.gameLanguage,
           enableL4S: settings.enableL4S,
         },
@@ -1904,7 +1894,6 @@ export function App(): JSX.Element {
     setLaunchError(null);
     setQueuePosition(undefined);
     setSessionStartedAtMs(null);
-    setSessionElapsedSeconds(0);
     setStreamWarning(null);
     const matchedContext = findGameContextForSession(navbarActiveSession);
     if (matchedContext) {
@@ -2274,11 +2263,13 @@ export function App(): JSX.Element {
             antiAfkEnabled={antiAfkEnabled}
             escHoldReleaseIndicator={escHoldReleaseIndicator}
             exitPrompt={exitPrompt}
-            sessionElapsedSeconds={sessionElapsedSeconds}
+            sessionStartedAtMs={sessionStartedAtMs}
+            sessionCounterEnabled={settings.sessionCounterEnabled}
             sessionClockShowEveryMinutes={settings.sessionClockShowEveryMinutes}
             sessionClockShowDurationSeconds={settings.sessionClockShowDurationSeconds}
             streamWarning={streamWarning}
             isConnecting={streamStatus === "connecting"}
+            isStreaming={isStreaming}
             gameTitle={streamingGame?.title ?? "Game"}
             platformStore={streamingStore ?? undefined}
             onToggleFullscreen={() => {
@@ -2308,7 +2299,7 @@ export function App(): JSX.Element {
             onRecordingShortcutChange={(value) => {
               void updateSetting("shortcutToggleRecording", value);
             }}
-            remainingPlaytimeText={remainingPlaytimeText}
+            subscriptionInfo={subscriptionInfo}
             micTrack={clientRef.current?.getMicTrack() ?? null}
             onRequestPointerLock={handleRequestPointerLock}
             onReleasePointerLock={() => {
@@ -2331,6 +2322,7 @@ export function App(): JSX.Element {
                 <span>{streamingGame?.title ?? "Game"}</span>
                 {nativeStreamerState?.pid && <span>PID {nativeStreamerState.pid}</span>}
                 <span>Backend native-streamer</span>
+                <span>Remaining playtime {remainingPlaytimeText}</span>
               </div>
               <div className="native-streamer-shell__actions">
                 <button
@@ -2418,9 +2410,11 @@ export function App(): JSX.Element {
               pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
-              remainingPlaytimeText={remainingPlaytimeText}
+              subscriptionInfo={subscriptionInfo}
               playtimeData={playtime}
-              sessionElapsedSeconds={sessionElapsedSeconds}
+              sessionStartedAtMs={sessionStartedAtMs}
+              isStreaming={isStreaming}
+              sessionCounterEnabled={settings.sessionCounterEnabled}
               settings={{
                 resolution: settings.resolution,
                 fps: settings.fps,
@@ -2550,9 +2544,11 @@ export function App(): JSX.Element {
               pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
-              remainingPlaytimeText={remainingPlaytimeText}
+              subscriptionInfo={subscriptionInfo}
               playtimeData={playtime}
-              sessionElapsedSeconds={sessionElapsedSeconds}
+              sessionStartedAtMs={sessionStartedAtMs}
+              isStreaming={isStreaming}
+              sessionCounterEnabled={settings.sessionCounterEnabled}
               settings={{
                 resolution: settings.resolution,
                 fps: settings.fps,

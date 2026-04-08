@@ -36,6 +36,7 @@ npm run dist
 - `ws` is used in the main process for custom signaling behavior
 - Authentication uses an OAuth PKCE flow with a localhost callback
 - Settings are persisted locally through `electron-store`
+- React Scan is available in renderer development builds for performance debugging
 - A dedicated main-process native streamer manager now lives under `src/main/services/nativeStreamerManager.ts`
 - The settings UI exposes a beta toggle for `OpenNOW Native Streamer`
 - When the toggle is off, the existing Chromium/WebRTC renderer path remains unchanged

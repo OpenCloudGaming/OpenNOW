@@ -2011,6 +2011,10 @@ button.game-card-store-chip.active:hover {
   align-items: stretch;
 }
 
+.settings-row--top-aligned {
+  align-items: flex-start;
+}
+
 .settings-row-top {
   display: flex;
   align-items: center;
@@ -2392,6 +2396,12 @@ button.game-card-store-chip.active:hover {
 .settings-dropdown {
   position: relative;
   width: 100%;
+  min-width: 0;
+}
+
+.settings-dropdown--constrained {
+  flex: 0 1 320px;
+  width: min(320px, 100%);
 }
 
 .settings-dropdown-selected {
