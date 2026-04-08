@@ -26,6 +26,7 @@ import {
 } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { useControllerNavigation } from "./controllerNavigation";
+import { useElapsedSeconds } from "./utils/useElapsedSeconds";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
 
@@ -67,6 +68,8 @@ const getResolutionsByAspectRatio = (aspectRatio: string): string[] => {
 const resolutionOptions = getResolutionsByAspectRatio("16:9");
 const SESSION_READY_POLL_INTERVAL_MS = 2000;
 const SESSION_AD_POLL_INTERVAL_MS = 30000;
+const SESSION_AD_FINISH_EARLY_BUFFER_MS = 3000;
+const SESSION_AD_FINISH_MIN_DELAY_MS = 1000;
 const SESSION_READY_TIMEOUT_MS = 180000;
 const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
 const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
@@ -582,6 +585,7 @@ export function App(): JSX.Element {
   const [streamWarning, setStreamWarning] = useState<StreamWarningState | null>(null);
 
   const { playtime, startSession: startPlaytimeSession, endSession: endPlaytimeSession } = usePlaytime();
+  const sessionElapsedSeconds = useElapsedSeconds(sessionStartedAtMs, streamStatus === "streaming");
   const isStreaming = streamStatus === "streaming";
 
   const controllerOverlayOpenRef = useRef(false);
@@ -1002,6 +1006,40 @@ export function App(): JSX.Element {
           const updatedAd = updated.adState?.ads.find((candidate) => candidate.adId === adId);
           if (updatedAd?.mediaUrl) {
             adMediaUrlCacheRef.current[adId] = updatedAd.mediaUrl;
+          }
+
+          if (action === "start" && updatedAd?.durationMs) {
+            const existingTimer = adFinishTimersRef.current[adId];
+            if (existingTimer) {
+              clearTimeout(existingTimer);
+            }
+
+            const delayMs = Math.max(
+              updatedAd.durationMs - SESSION_AD_FINISH_EARLY_BUFFER_MS,
+              SESSION_AD_FINISH_MIN_DELAY_MS,
+            );
+
+            console.log(
+              `[QueueAds] Arming early finish timer for ${adId}: duration=${updatedAd.durationMs}ms, delay=${delayMs}ms`,
+            );
+
+            adFinishTimersRef.current[adId] = window.setTimeout(() => {
+              delete adFinishTimersRef.current[adId];
+
+              if (sessionRef.current?.sessionId !== updated.sessionId) {
+                return;
+              }
+
+              const lastQueuedAction = adReportStateRef.current[adId];
+              if (lastQueuedAction === "finish" || lastQueuedAction === "cancel") {
+                return;
+              }
+
+              console.log(`[QueueAds] Early finish timer fired for ${adId}`);
+              queueAdPlaybackRef.current = { adId, phase: "finishing" };
+              adReportStateRef.current[adId] = "finish";
+              reportQueueAdActionRef.current(adId, "finish");
+            }, delayMs);
           }
 
           if (action === "finish" || action === "cancel") {
