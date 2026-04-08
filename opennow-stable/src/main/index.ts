@@ -1263,9 +1263,6 @@ app.whenReady().then(async () => {
 
   // Set up permission handlers for getUserMedia, fullscreen, pointer lock
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    const url = webContents.getURL();
-    console.log(`[Main] Permission request: ${permission} from ${url}`);
-
     const allowedPermissions = new Set([
       "media",
       "microphone",
@@ -1277,7 +1274,6 @@ app.whenReady().then(async () => {
     ]);
 
     if (allowedPermissions.has(permission)) {
-      console.log(`[Main] Granting permission: ${permission}`);
       callback(true);
       return;
     }

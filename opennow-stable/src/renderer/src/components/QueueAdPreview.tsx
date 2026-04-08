@@ -163,21 +163,17 @@ export function QueueAdPreview({ mediaUrl, title, onPlaybackEvent }: QueueAdPrev
       }
     };
 
-    const handleTimeUpdate = (): void => {
-      if (finishFiredRef.current) {
-        return;
-      }
-      const d = video.duration;
-      // Fire "ended" 1 second before the video naturally ends so the server
-      // receives the finish action before the adId's 30-second server-side
-      // window expires. Falls through to handleEnded only if duration is
-      // unavailable or the ad is shorter than 2 seconds.
-      if (isFinite(d) && d > 2 && video.currentTime >= d - 1.0) {
-        finishFiredRef.current = true;
-        clearStartupTimeout();
-        onPlaybackEventRef.current?.("ended");
-      }
-    };
+      const handleTimeUpdate = (): void => {
+        if (finishFiredRef.current) {
+          return;
+        }
+        const d = video.duration;
+        if (isFinite(d) && d > 0 && video.currentTime >= d) {
+          finishFiredRef.current = true;
+          clearStartupTimeout();
+          onPlaybackEventRef.current?.("ended");
+        }
+      };
 
     const handleEnded = (): void => {
       clearStartupTimeout();

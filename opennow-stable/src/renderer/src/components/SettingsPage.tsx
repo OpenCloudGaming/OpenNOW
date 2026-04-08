@@ -12,7 +12,7 @@ import type {
   PingResult,
   GameLanguage,
 } from "@shared/gfn";
-import { colorQualityRequiresHevc } from "@shared/gfn";
+import { colorQualityRequiresHevc, keyboardLayoutOptions } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
 
 interface SettingsPageProps {
@@ -632,6 +632,9 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [toggleMicrophoneError, setToggleMicrophoneError] = useState(false);
   const [screenshotError, setScreenshotError] = useState(false);
 
+  const [keyboardLayoutDropdownOpen, setKeyboardLayoutDropdownOpen] = useState(false);
+  const keyboardLayoutDropdownRef = useRef<HTMLDivElement | null>(null);
+
   // Game language dropdown state
   const [gameLanguageDropdownOpen, setGameLanguageDropdownOpen] = useState(false);
   const gameLanguageDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -843,6 +846,10 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     return gameLanguageOptions.find((option) => option.value === settings.gameLanguage)?.label ?? "English (US)";
   }, [settings.gameLanguage]);
 
+  const selectedKeyboardLayoutName = useMemo(() => {
+    return keyboardLayoutOptions.find((option) => option.value === settings.keyboardLayout)?.label ?? "English (US)";
+  }, [settings.keyboardLayout]);
+
   useEffect(() => {
     if (settings.microphoneMode === "disabled") {
       setMicrophoneDeviceDropdownOpen(false);
@@ -857,6 +864,9 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       }
       if (microphoneDeviceDropdownRef.current && !microphoneDeviceDropdownRef.current.contains(target)) {
         setMicrophoneDeviceDropdownOpen(false);
+      }
+      if (keyboardLayoutDropdownRef.current && !keyboardLayoutDropdownRef.current.contains(target)) {
+        setKeyboardLayoutDropdownOpen(false);
       }
       if (gameLanguageDropdownRef.current && !gameLanguageDropdownRef.current.contains(target)) {
         setGameLanguageDropdownOpen(false);
@@ -1552,6 +1562,43 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                 />
                 <span className="settings-toggle-track" />
               </label>
+            </div>
+
+            <div className="settings-row settings-row--top-aligned">
+              <label className="settings-label settings-label--wrap">
+                Keyboard Layout
+                <span className="settings-hint">Controls how your physical keyboard is mapped inside the remote session. Separate from the in-game language setting.</span>
+              </label>
+              <div className="settings-dropdown settings-dropdown--constrained" ref={keyboardLayoutDropdownRef}>
+                <button
+                  type="button"
+                  className={`settings-dropdown-selected ${keyboardLayoutDropdownOpen ? "open" : ""}`}
+                  onClick={() => setKeyboardLayoutDropdownOpen((open) => !open)}
+                >
+                  <span className="settings-dropdown-selected-name">{selectedKeyboardLayoutName}</span>
+                  <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${keyboardLayoutDropdownOpen ? "flipped" : ""}`}>
+                    <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
+                  </svg>
+                </button>
+                {keyboardLayoutDropdownOpen && (
+                  <div className="settings-dropdown-menu settings-dropdown-menu--tall">
+                    {keyboardLayoutOptions.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={`settings-dropdown-item ${settings.keyboardLayout === option.value ? "active" : ""}`}
+                        onClick={() => {
+                          handleChange("keyboardLayout", option.value);
+                          setKeyboardLayoutDropdownOpen(false);
+                        }}
+                      >
+                        <span>{option.label}</span>
+                        {settings.keyboardLayout === option.value && <Check size={14} className="settings-dropdown-check" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Mouse Sensitivity */}

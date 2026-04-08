@@ -17,6 +17,7 @@ import type {
   StreamRegion,
   VideoCodec,
 } from "@shared/gfn";
+import { DEFAULT_KEYBOARD_LAYOUT } from "@shared/gfn";
 
 import {
   GfnWebRtcClient,
@@ -541,6 +542,7 @@ export function App(): JSX.Element {
     sessionClockShowDurationSeconds: 30,
     windowWidth: 1400,
     windowHeight: 900,
+    keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
     gameLanguage: "en_US",
     enableL4S: false,
   });
@@ -992,25 +994,7 @@ export function App(): JSX.Element {
             adMediaUrlCacheRef.current[adId] = updatedAd.mediaUrl;
           }
 
-          // Schedule finish 1 second after start is ACKed.
-          if (action === "start") {
-            const existing = adFinishTimersRef.current[adId];
-            if (existing) {
-              clearTimeout(existing);
-            }
-            console.log(`[QueueAds] Scheduling finish for adId=${adId} in 1000ms`);
-            adFinishTimersRef.current[adId] = setTimeout(() => {
-              delete adFinishTimersRef.current[adId];
-              if (
-                sessionRef.current?.sessionId === request.sessionId &&
-                adReportStateRef.current[adId] === "start"
-              ) {
-                console.log(`[QueueAds] Timer finish firing for adId=${adId}`);
-                adReportStateRef.current[adId] = "finish";
-                reportQueueAdActionRef.current(adId, "finish");
-              }
-            }, 1000);
-          } else if (action === "finish" || action === "cancel") {
+          if (action === "finish" || action === "cancel") {
             // Clear the timer if the video-event path already sent finish first.
             const t = adFinishTimersRef.current[adId];
             if (t) {
@@ -1059,21 +1043,6 @@ export function App(): JSX.Element {
   useEffect(() => {
     reportQueueAdActionRef.current = reportQueueAdAction;
   }, [reportQueueAdAction]);
-
-  // Auto-acknowledge ads: as soon as an ad appears in session state, send start
-  // immediately then finish after 1 second, fully decoupled from video playback.
-  useEffect(() => {
-    const ads = session?.adState?.ads;
-    if (!ads || ads.length === 0) {
-      return;
-    }
-    for (const ad of ads) {
-      if (!adReportStateRef.current[ad.adId]) {
-        adReportStateRef.current[ad.adId] = "start";
-        reportQueueAdAction(ad.adId, "start");
-      }
-    }
-  }, [session, reportQueueAdAction]);
 
   const loadSubscriptionInfo = useCallback(
     async (session: AuthSession): Promise<void> => {
@@ -1792,6 +1761,7 @@ export function App(): JSX.Element {
         maxBitrateMbps: settings.maxBitrateMbps,
         codec: settings.codec,
         colorQuality: settings.colorQuality,
+        keyboardLayout: settings.keyboardLayout,
         gameLanguage: settings.gameLanguage,
         enableL4S: settings.enableL4S,
       },
@@ -1943,6 +1913,7 @@ export function App(): JSX.Element {
           maxBitrateMbps: settings.maxBitrateMbps,
           codec: settings.codec,
           colorQuality: settings.colorQuality,
+          keyboardLayout: settings.keyboardLayout,
           gameLanguage: settings.gameLanguage,
           enableL4S: settings.enableL4S,
         },
