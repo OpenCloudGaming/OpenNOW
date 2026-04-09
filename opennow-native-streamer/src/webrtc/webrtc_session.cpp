@@ -81,6 +81,7 @@ void WebRtcSession::SetEmitter(EmitJson emitter) {
 
 void WebRtcSession::SetLogger(LogFn logger) {
   logger_ = std::move(logger);
+  av1_depacketizer_.SetLogger([this](const std::string& message) { Log(message); });
 }
 
 void WebRtcSession::SetMediaPipeline(MediaPipeline* media_pipeline) {
@@ -126,6 +127,7 @@ bool WebRtcSession::ConfigureFromSession(const std::string& session_json, std::s
   if (media_pipeline_) {
     media_pipeline_->ConfigureVideoCodec(preferred_codec_);
   }
+  av1_depacketizer_.Reset();
   error.clear();
   return true;
 }
@@ -224,6 +226,7 @@ void WebRtcSession::Disconnect() {
   input_ready_ = false;
   media_failure_emitted_ = false;
   manual_media_candidate_injected_ = false;
+  av1_depacketizer_.Reset();
 }
 
 bool WebRtcSession::SendInputPacket(const InputPacket& packet) {
@@ -426,26 +429,36 @@ void WebRtcSession::ConfigureTrackHandlers() {
       video_track_ = track;
       if (preferred_codec_ == "H265") {
         track->setMediaHandler(std::make_shared<rtc::H265RtpDepacketizer>());
-      } else if (preferred_codec_ == "AV1") {
-        if (!media_failure_emitted_) {
-          media_failure_emitted_ = true;
-          Log("AV1 video tracks are not supported by the current native libdatachannel media handler build; failing native AV1 session instead of routing through H264");
-          EmitState(
-              "failed",
-              "Native AV1 streaming is unsupported in this build",
-              "libdatachannel AV1 depacketizer/media receive support is unavailable; disable native streamer or use H264/H265");
-        }
-        return;
-      } else {
+      } else if (preferred_codec_ == "H264") {
         track->setMediaHandler(std::make_shared<rtc::H264RtpDepacketizer>());
       }
       track->chainMediaHandler(std::make_shared<rtc::RtcpReceivingSession>());
-      track->onFrame([this](rtc::binary frame, rtc::FrameInfo info) {
-        if (media_pipeline_) {
-          const auto us = static_cast<std::uint64_t>(info.timestampSeconds ? info.timestampSeconds->count() * 1000000.0 : 0.0);
-          media_pipeline_->PushVideoFrame(BytesFromRtcBinary(frame), us);
-        }
-      });
+      if (preferred_codec_ == "AV1") {
+        Log("Using native AV1 RTP depacketizer path for video track");
+        track->onMessage([this](rtc::message_variant message) {
+          if (!media_pipeline_) {
+            return;
+          }
+          std::vector<std::uint8_t> packet;
+          if (const auto* bytes = std::get_if<rtc::binary>(&message)) {
+            packet = BytesFromRtcBinary(*bytes);
+          } else if (const auto* text = std::get_if<std::string>(&message)) {
+            packet.assign(text->begin(), text->end());
+          } else {
+            return;
+          }
+          if (const auto frame = av1_depacketizer_.PushRtpPacket(packet, 0)) {
+            media_pipeline_->PushVideoFrame(frame->bitstream, frame->timestamp_us);
+          }
+        });
+      } else {
+        track->onFrame([this](rtc::binary frame, rtc::FrameInfo info) {
+          if (media_pipeline_) {
+            const auto us = static_cast<std::uint64_t>(info.timestampSeconds ? info.timestampSeconds->count() * 1000000.0 : 0.0);
+            media_pipeline_->PushVideoFrame(BytesFromRtcBinary(frame), us);
+          }
+        });
+      }
       return;
     }
     audio_track_ = track;

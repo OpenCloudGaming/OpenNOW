@@ -18,6 +18,7 @@ set(OPENNOW_SOURCES
   src/input/input_bridge.cpp
   src/media/media_pipeline.cpp
   src/platform/platform_info.cpp
+  src/webrtc/av1_rtp_depacketizer.cpp
   src/webrtc/sdp_helpers.cpp
   src/webrtc/webrtc_session.cpp
 )
