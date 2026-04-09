@@ -14,8 +14,6 @@ import type {
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36";
-const HEARTBEAT_INTERVAL_MS = 5000;
-const HEARTBEAT_STALE_MS = 20000;
 const RECONNECT_DELAY_MS = 1000;
 const MAX_RECONNECT_ATTEMPTS = 3;
 const HOST_PEER_ID = 1;
@@ -60,7 +58,7 @@ export class GfnSignalingClient {
   private isDisconnecting = false;
   private socketGeneration = 0;
   private nextOutboundAckId = 0;
-  private lastInboundAckId = 0;
+  private maxReceivedAckId = 0;
   private sessionPhase: SignalingSessionPhase = "sign-in";
   private hasEverOpened = false;
   private reconnectAttempt = 0;
@@ -68,7 +66,6 @@ export class GfnSignalingClient {
   private connectResolve: (() => void) | null = null;
   private connectReject: ((error: Error) => void) | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
-  private heartbeatTimer: NodeJS.Timeout | null = null;
   private lastMessageAt = 0;
   private queuedOutbound: OutboundEnvelope[] = [];
   private unackedOutbound = new Map<number, OutboundEnvelope>();
@@ -146,25 +143,8 @@ export class GfnSignalingClient {
     };
   }
 
-  private setupHeartbeat(): void {
-    this.clearHeartbeat();
-    this.lastMessageAt = Date.now();
-    this.heartbeatTimer = setInterval(() => {
-      const idleForMs = Date.now() - this.lastMessageAt;
-      if (idleForMs >= HEARTBEAT_STALE_MS) {
-        this.log(
-          `Heartbeat stale: idle=${idleForMs}ms gen=${this.socketGeneration} phase=${this.sessionPhase} lastInAck=${this.lastInboundAckId} lastOutAck=${this.nextOutboundAckId}`,
-        );
-      }
-      this.sendImmediate({ hb: 1 });
-    }, HEARTBEAT_INTERVAL_MS);
-  }
-
   private clearHeartbeat(): void {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
+    return;
   }
 
   private clearReconnectTimer(): void {
@@ -175,7 +155,7 @@ export class GfnSignalingClient {
   }
 
   private describeState(): string {
-    return `gen=${this.socketGeneration} attempt=${this.reconnectAttempt} phase=${this.sessionPhase} establishedBy=${this.establishmentReason ?? "none"} lastInAck=${this.lastInboundAckId} lastOutAck=${this.nextOutboundAckId} queued=${this.queuedOutbound.length} unacked=${this.unackedOutbound.size}`;
+    return `gen=${this.socketGeneration} attempt=${this.reconnectAttempt} phase=${this.sessionPhase} establishedBy=${this.establishmentReason ?? "none"} maxInAck=${this.maxReceivedAckId} lastOutAck=${this.nextOutboundAckId} queued=${this.queuedOutbound.length} unacked=${this.unackedOutbound.size}`;
   }
 
   private describeOutboundList(items: OutboundEnvelope[]): string {
@@ -273,7 +253,7 @@ export class GfnSignalingClient {
 
   private sendAck(ackId: number): void {
     const sent = this.sendImmediate({ ack: ackId });
-    this.log(`Sent ack=${ackId} sent=${sent} ${this.describeState()}`);
+    this.log(`Emitted ack=${ackId} sent=${sent} maxReceivedAckId=${this.maxReceivedAckId} ${this.describeState()}`);
   }
 
   private ackOutbound(ackId: number): void {
@@ -371,8 +351,8 @@ export class GfnSignalingClient {
       }
 
       this.hasEverOpened = true;
-      this.setupHeartbeat();
       this.lastMessageAt = Date.now();
+      this.log(`Proactive signaling heartbeat disabled; waiting for inbound traffic ${this.describeState()}`);
 
       let replayedCount = 0;
       if (isReconnect) {
@@ -478,7 +458,7 @@ export class GfnSignalingClient {
       willRetry,
       socketGeneration: generation,
       sessionPhase: this.sessionPhase,
-      lastInboundAckId: this.lastInboundAckId,
+      lastInboundAckId: this.maxReceivedAckId,
       lastOutboundAckId: this.nextOutboundAckId,
     };
   }
@@ -531,7 +511,7 @@ export class GfnSignalingClient {
     }
 
     if (typeof parsed.hb === "number") {
-      this.sendImmediate({ hb: 1 });
+      this.log(`Inbound signaling heartbeat ignored ${this.describeState()}`);
       return;
     }
 
@@ -539,9 +519,22 @@ export class GfnSignalingClient {
       this.ackOutbound(parsed.ack);
     }
 
+    let isDuplicateInboundAckId = false;
     if (typeof parsed.ackid === "number") {
-      this.lastInboundAckId = Math.max(this.lastInboundAckId, parsed.ackid);
-      this.sendAck(this.lastInboundAckId);
+      isDuplicateInboundAckId = parsed.ackid <= this.maxReceivedAckId;
+      const previousMaxReceivedAckId = this.maxReceivedAckId;
+      this.maxReceivedAckId = Math.max(this.maxReceivedAckId, parsed.ackid);
+      this.log(
+        `Inbound ackid=${parsed.ackid} maxReceivedAckId=${this.maxReceivedAckId} duplicate=${isDuplicateInboundAckId} prevMax=${previousMaxReceivedAckId} ${this.describeState()}`,
+      );
+      this.sendAck(this.maxReceivedAckId);
+      if (isDuplicateInboundAckId) {
+        this.log(`Ignoring duplicate inbound ackid=${parsed.ackid} ${this.describeState()}`);
+      }
+    }
+
+    if (isDuplicateInboundAckId) {
+      return;
     }
 
     if (!parsed.peer_msg?.msg) {
@@ -662,7 +655,7 @@ export class GfnSignalingClient {
     }
     this.queuedOutbound = [];
     this.unackedOutbound.clear();
-    this.lastInboundAckId = 0;
+    this.maxReceivedAckId = 0;
     this.nextOutboundAckId = 0;
     this.establishmentReason = null;
   }
