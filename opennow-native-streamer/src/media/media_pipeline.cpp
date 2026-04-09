@@ -284,7 +284,8 @@ void MediaPipeline::MaybeLogVideoDiagnostics(std::uint64_t now_us) {
               << ", uploaded=" << uploaded_video_frames_ << ", presented_unique=" << presented_video_frames_
               << ", presented_duplicate=" << duplicate_present_cycles_ << ", dropped_pending=" << dropped_pending_video_frames_
               << ", dropped_catchup=" << dropped_catchup_video_frames_ << ", decode_stall_packets="
-              << consecutive_video_packets_without_frame_;
+              << consecutive_video_packets_without_frame_ << ", decoder_flushes=" << decoder_flushes_
+              << ", software_fallbacks=" << software_decode_fallbacks_;
   {
     std::lock_guard<std::mutex> lock(pending_video_mutex_);
     diagnostics << ", pending_queue=" << pending_video_frames_.size();
@@ -309,7 +310,7 @@ void MediaPipeline::MaybeLogVideoDiagnostics(std::uint64_t now_us) {
 }
 
 void MediaPipeline::ResetVideoDecoder(const std::string& reason, bool force_software) {
-#if defined(OPENNOW_HAS_FFMPEG)
+#if defined(OPENNOW_HAS_SDL3) && defined(OPENNOW_HAS_FFMPEG)
   Log(std::string(force_software ? "Switching video decode path to software after stall: " : "Resetting video decoder after stall: ") +
       reason);
   if (video_decoder_ctx_) {
@@ -321,6 +322,7 @@ void MediaPipeline::ResetVideoDecoder(const std::string& reason, bool force_soft
   using_hardware_decode_ = false;
   hw_pixel_format_ = AV_PIX_FMT_NONE;
   consecutive_video_packets_without_frame_ = 0;
+  decode_stall_flush_attempted_ = false;
   logged_decoder_path_ = false;
   if (force_software) {
     force_software_decode_ = true;
@@ -338,30 +340,61 @@ void MediaPipeline::ResetVideoDecoder(const std::string& reason, bool force_soft
 
 void MediaPipeline::NoteDecodedVideoFrame() {
   consecutive_video_packets_without_frame_ = 0;
+  decode_stall_flush_attempted_ = false;
   if (using_hardware_decode_) {
     hardware_decode_resets_ = 0;
   }
 }
 
 void MediaPipeline::HandleVideoDecodeFailure(const std::string& reason) {
-  if (!using_hardware_decode_) {
-    return;
-  }
+#if defined(OPENNOW_HAS_SDL3) && defined(OPENNOW_HAS_FFMPEG)
   consecutive_video_packets_without_frame_ += 1;
   if (consecutive_video_packets_without_frame_ == 1 || consecutive_video_packets_without_frame_ == kMaxPacketsWithoutDecodedFrameBeforeReset) {
     std::ostringstream message;
-    message << "VideoToolbox decode produced no frame (" << consecutive_video_packets_without_frame_ << " consecutive packet"
+    message << (using_hardware_decode_ ? "VideoToolbox" : "Software") << " decode produced no frame ("
+            << consecutive_video_packets_without_frame_ << " consecutive packet"
             << (consecutive_video_packets_without_frame_ == 1 ? "" : "s") << "): " << reason;
     Log(message.str());
   }
+  if (!video_decoder_ctx_) {
+    return;
+  }
+
+  const bool missing_reference_chain =
+      reason.find("Could not find ref") != std::string::npos || reason.find("frame RPS") != std::string::npos ||
+      reason.find("undecodable NALU") != std::string::npos || reason.find("No frame decoded") != std::string::npos;
+
+  if (missing_reference_chain && !decode_stall_flush_attempted_ &&
+      consecutive_video_packets_without_frame_ >= (kMaxPacketsWithoutDecodedFrameBeforeReset / 3)) {
+    Log(std::string("Decoder stall suggests missing HEVC reference chain; flushing decoder state and awaiting recovery/keyframe: ") +
+        reason);
+    avcodec_flush_buffers(video_decoder_ctx_);
+    decode_stall_flush_attempted_ = true;
+    decoder_flushes_ += 1;
+    return;
+  }
+
   if (consecutive_video_packets_without_frame_ < kMaxPacketsWithoutDecodedFrameBeforeReset) {
     return;
   }
-  if (hardware_decode_resets_ >= kMaxHardwareDecodeResetsBeforeSoftwareFallback) {
-    ResetVideoDecoder(reason, true);
+
+  if (using_hardware_decode_) {
+    if (hardware_decode_resets_ >= kMaxHardwareDecodeResetsBeforeSoftwareFallback) {
+      ResetVideoDecoder(reason, true);
+      return;
+    }
+    ResetVideoDecoder(reason, false);
     return;
   }
-  ResetVideoDecoder(reason, false);
+
+  Log(std::string("Software decoder stalled after prior recovery attempts; flushing decoder state again: ") + reason);
+  avcodec_flush_buffers(video_decoder_ctx_);
+  decoder_flushes_ += 1;
+  consecutive_video_packets_without_frame_ = 0;
+  decode_stall_flush_attempted_ = true;
+#else
+  (void)reason;
+#endif
 }
 
 #if defined(OPENNOW_HAS_SDL3) && defined(OPENNOW_HAS_FFMPEG)

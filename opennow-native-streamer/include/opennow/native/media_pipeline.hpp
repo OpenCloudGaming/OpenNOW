@@ -132,6 +132,7 @@ class MediaPipeline {
   std::uint64_t last_diagnostics_log_us_ = 0;
   std::uint64_t last_presented_at_us_ = 0;
   std::uint64_t consecutive_video_packets_without_frame_ = 0;
+  std::uint64_t decoder_flushes_ = 0;
   std::uint64_t hardware_decode_resets_ = 0;
   std::uint64_t software_decode_fallbacks_ = 0;
   bool logged_stage_thread_ = false;
@@ -139,6 +140,7 @@ class MediaPipeline {
   bool logged_decoder_path_ = false;
   bool using_hardware_decode_ = false;
   bool force_software_decode_ = false;
+  bool decode_stall_flush_attempted_ = false;
   bool prefer_rgba_upload_ = false;
   std::string video_path_ = "video path: awaiting decoder initialization";
   std::string decoder_name_ = "unknown";
