@@ -48,7 +48,7 @@
 
           src = ./opennow-stable;
 
-          npmDepsHash = "sha256-l2ZC4lUztIv2kq5QHKV1KSiwXqSvFH1x3CuT9RGa28o=";
+          npmDepsHash = "sha256-rd6DcBubFSl2MFWdkVlj+2WGI7vxhr361sMzyjcrst0=";
 
           ELECTRON_SKIP_BINARY_DOWNLOAD = "1";
 
