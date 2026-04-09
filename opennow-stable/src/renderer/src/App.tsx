@@ -2300,6 +2300,10 @@ export function App(): JSX.Element {
           return;
         }
 
+        if (launchAbortRef.current) {
+          return;
+        }
+
         const polled = await window.openNow.pollSession({
           token: token || undefined,
           streamingBaseUrl: newSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
