@@ -33,6 +33,7 @@ type Client struct {
 	reliableChannel   *pion.DataChannel
 	mouseChannel      *pion.DataChannel
 	partialReliableMs int
+	mediaStartedOnce  sync.Once
 }
 
 func New(events EventSink) *Client {
@@ -60,6 +61,7 @@ func (c *Client) StartSession(ctx context.Context, req protocol.StartSessionRequ
 		Width:       c.window.Width,
 		Height:      c.window.Height,
 		Codec:       c.settings.Codec,
+		InputSink:   c.handleWindowInput,
 	})
 }
 
@@ -69,6 +71,7 @@ func (c *Client) HandleOffer(offer protocol.SignalOffer) error {
 	if c.pc != nil {
 		_ = c.pc.Close()
 	}
+	c.mediaStartedOnce = sync.Once{}
 	config := pion.Configuration{ICEServers: toICEServers(c.session.IceServers)}
 	pc, err := pion.NewPeerConnection(config)
 	if err != nil {
@@ -209,6 +212,10 @@ func (c *Client) HandleInput(message protocol.InputMessage) error {
 	}
 }
 
+func (c *Client) handleWindowInput(message protocol.InputMessage) error {
+	return c.HandleInput(message)
+}
+
 func (c *Client) RequestKeyframe() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -252,6 +259,12 @@ func (c *Client) consumeTrack(track *pion.TrackRemote, _ *pion.RTPReceiver) {
 		if err != nil {
 			continue
 		}
+		c.mediaStartedOnce.Do(func() {
+			_ = c.events.Emit("state", protocol.NativeState{
+				Status:  "media-ready",
+				Message: fmt.Sprintf("first %s RTP packet received", codec),
+			})
+		})
 		if strings.Contains(codec, "VIDEO") {
 			_ = c.media.PushVideoRTP(raw)
 		} else {

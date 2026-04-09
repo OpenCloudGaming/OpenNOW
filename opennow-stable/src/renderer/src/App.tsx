@@ -34,15 +34,6 @@ import {
   type StreamDiagnostics,
   type StreamTimeWarning,
 } from "./gfn/webrtcClient";
-import {
-  mapKeyboardEvent,
-  modifierFlags,
-  toMouseButton,
-  mapGamepadButtons,
-  readGamepadAxes,
-  normalizeToInt16,
-  normalizeToUint8,
-} from "./gfn/inputProtocol";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { useControllerNavigation } from "./controllerNavigation";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";
@@ -1922,19 +1913,20 @@ export function App(): JSX.Element {
       if (event.type === "ready") {
         setNativeStreamerActive(true);
         setLaunchError(null);
-        setStreamStatus("streaming");
         diagnosticsStore.set({
           ...defaultDiagnostics(),
           connectionState: "connecting",
-          inputReady: true,
+          inputReady: false,
         });
         return;
       }
       if (event.type === "state") {
-        if (event.status === "connected") {
+        if (event.status === "media-ready" || event.status === "connected") {
           setStreamStatus("streaming");
         } else if (event.status === "connecting") {
           setStreamStatus("connecting");
+        } else if (event.status === "connected-backend") {
+          setNativeStreamerActive(true);
         }
         return;
       }
@@ -2698,124 +2690,6 @@ export function App(): JSX.Element {
     resetLaunchRuntime();
     void refreshNavbarActiveSession();
   }, [refreshNavbarActiveSession, resetLaunchRuntime]);
-
-  useEffect(() => {
-    if (!settings.enableNativeStreamer || !nativeStreamerActive || streamStatus !== "streaming") {
-      return;
-    }
-
-    const activeKeys = new Set<string>();
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      const mapped = mapKeyboardEvent(event);
-      if (!mapped || activeKeys.has(event.code)) {
-        return;
-      }
-      activeKeys.add(event.code);
-      void window.openNow.sendNativeStreamerInput({
-        kind: "keyboard",
-        payload: {
-          keycode: mapped.vk,
-          scancode: mapped.scancode,
-          modifiers: modifierFlags(event),
-          down: true,
-        },
-      }).catch(() => {});
-    };
-
-    const handleKeyUp = (event: KeyboardEvent): void => {
-      const mapped = mapKeyboardEvent(event);
-      if (!mapped) {
-        return;
-      }
-      activeKeys.delete(event.code);
-      void window.openNow.sendNativeStreamerInput({
-        kind: "keyboard",
-        payload: {
-          keycode: mapped.vk,
-          scancode: mapped.scancode,
-          modifiers: modifierFlags(event),
-          down: false,
-        },
-      }).catch(() => {});
-    };
-
-    const handleMouseMove = (event: MouseEvent): void => {
-      void window.openNow.sendNativeStreamerInput({
-        kind: "mouse-move",
-        payload: {
-          dx: Math.max(-32768, Math.min(32767, Math.round(event.movementX * settings.mouseSensitivity))),
-          dy: Math.max(-32768, Math.min(32767, Math.round(event.movementY * settings.mouseSensitivity))),
-        },
-      }).catch(() => {});
-    };
-
-    const handleMouseButton = (event: MouseEvent, down: boolean): void => {
-      const button = toMouseButton(event.button);
-      if (button <= 0) {
-        return;
-      }
-      void window.openNow.sendNativeStreamerInput({
-        kind: "mouse-button",
-        payload: {
-          button,
-          down,
-        },
-      }).catch(() => {});
-    };
-
-    const handleWheel = (event: WheelEvent): void => {
-      void window.openNow.sendNativeStreamerInput({
-        kind: "mouse-wheel",
-        payload: {
-          delta: Math.max(-32768, Math.min(32767, Math.round(event.deltaY))),
-        },
-      }).catch(() => {});
-    };
-
-    const gamepadTimer = window.setInterval(() => {
-      const pads = navigator.getGamepads?.() ?? [];
-      pads.slice(0, 4).forEach((pad, index) => {
-        if (!pad) {
-          return;
-        }
-        const axes = readGamepadAxes(pad);
-        void window.openNow.sendNativeStreamerInput({
-          kind: "gamepad",
-          payload: {
-            controllerId: index,
-            buttons: mapGamepadButtons(pad),
-            leftTrigger: normalizeToUint8(axes.leftTrigger),
-            rightTrigger: normalizeToUint8(axes.rightTrigger),
-            leftStickX: normalizeToInt16(axes.leftStickX),
-            leftStickY: normalizeToInt16(axes.leftStickY),
-            rightStickX: normalizeToInt16(axes.rightStickX),
-            rightStickY: normalizeToInt16(axes.rightStickY),
-            connected: true,
-          },
-        }).catch(() => {});
-      });
-    }, 16);
-
-    const handleMouseDown = (event: MouseEvent): void => handleMouseButton(event, true);
-    const handleMouseUp = (event: MouseEvent): void => handleMouseButton(event, false);
-
-    window.addEventListener("keydown", handleKeyDown, true);
-    window.addEventListener("keyup", handleKeyUp, true);
-    window.addEventListener("mousemove", handleMouseMove, true);
-    window.addEventListener("mousedown", handleMouseDown, true);
-    window.addEventListener("mouseup", handleMouseUp, true);
-    window.addEventListener("wheel", handleWheel, { capture: true });
-
-    return () => {
-      window.clearInterval(gamepadTimer);
-      window.removeEventListener("keydown", handleKeyDown, true);
-      window.removeEventListener("keyup", handleKeyUp, true);
-      window.removeEventListener("mousemove", handleMouseMove, true);
-      window.removeEventListener("mousedown", handleMouseDown, true);
-      window.removeEventListener("mouseup", handleMouseUp, true);
-      window.removeEventListener("wheel", handleWheel, true);
-    };
-  }, [nativeStreamerActive, settings.enableNativeStreamer, settings.mouseSensitivity, streamStatus]);
 
   const releasePointerLockIfNeeded = useCallback(async () => {
     if (document.pointerLockElement) {

@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/OpenCloudGaming/OpenNOW/opennow-native-streamer/internal/platform"
+	"github.com/OpenCloudGaming/OpenNOW/opennow-native-streamer/pkg/protocol"
 )
 
 type Config struct {
@@ -13,6 +14,7 @@ type Config struct {
 	Height      int
 	Codec       string
 	Platform    platform.Capabilities
+	InputSink   func(protocol.InputMessage) error
 }
 
 type Player interface {
