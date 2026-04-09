@@ -97,6 +97,116 @@ Raspberry Pi 4 decoder selection now prefers:
 
 On Raspberry Pi 4, AV1 is not advertised as a hardware-decoded path. The native streamer logs that limitation and falls back to software AV1 decode when AV1 is negotiated. Diagnostics and the native overlay report the actual FFmpeg decoder/backend name, whether the path is hardware or software, and the active render/upload path.
 
+## Raspberry Pi 4 / Linux ARM64
+
+The native streamer now includes an explicit Linux ARM64 decoder-selection ladder aimed at Raspberry Pi 4:
+
+- `H264` → prefer FFmpeg `h264_v4l2m2m`
+- `H265/HEVC` → prefer FFmpeg `hevc_v4l2m2m` when the Pi runtime exposes it cleanly
+- `AV1` → no fake Pi 4 hardware path; log the limitation and fall back to software decode
+- if Pi-specific hardware decode cannot initialize, fall back to the next supported path and finally to software decode
+
+Runtime diagnostics, logs, and the native overlay report:
+- negotiated codec
+- actual FFmpeg decoder/backend name in use
+- `hardware` vs `software`
+- active render/upload path
+
+Typical Pi 4 paths look like:
+- `video path: Raspberry Pi 4 V4L2 M2M H264 hardware decode + SDL YUV/RGBA upload`
+- `video path: Raspberry Pi 4 V4L2 M2M HEVC hardware decode + SDL YUV/RGBA upload`
+- `video path: software AV1 decode + SDL YUV/RGBA upload fallback`
+
+The current Pi/Linux ARM64 implementation does **not** claim a zero-copy renderer. The Pi-optimized work in this PR is decoder selection/fallback and honest diagnostics; presentation still uses the existing SDL upload path.
+
+### Local build on Raspberry Pi 4 / Linux ARM64
+
+Install practical host/build dependencies first:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential \
+  cmake \
+  ninja-build \
+  pkg-config \
+  nasm \
+  libsdl3-dev \
+  libavcodec-dev \
+  libavformat-dev \
+  libavutil-dev \
+  libswresample-dev \
+  libswscale-dev
+```
+
+`libdatachannel` is expected via `vcpkg` in CI and is the most reliable local path too:
+
+```bash
+git clone https://github.com/microsoft/vcpkg.git ~/vcpkg
+~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+```
+
+Then configure/build the native streamer:
+
+```bash
+cmake \
+  -S opennow-native-streamer \
+  -B opennow-native-streamer/build \
+  -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+  -DVCPKG_TARGET_TRIPLET=arm64-linux
+
+cmake --build opennow-native-streamer/build --config Release
+```
+
+Resulting binary:
+
+```bash
+./opennow-native-streamer/build/opennow-native-streamer
+```
+
+### Manual native binary smoke run on Pi / Linux ARM64
+
+The binary is normally launched by Electron main over loopback IPC. For a manual smoke check you can start it directly:
+
+```bash
+./opennow-native-streamer/build/opennow-native-streamer \
+  --ipc-host=127.0.0.1 \
+  --ipc-port=9000 \
+  --session-id=pi-smoke-test
+```
+
+That only verifies process startup and window/runtime initialization. A real stream still requires the Electron app to create the session, own signaling, and connect to the native helper.
+
+For end-to-end testing with the Electron shell, point OpenNOW at the built binary:
+
+```bash
+export OPENNOW_NATIVE_STREAMER_BIN="$PWD/opennow-native-streamer/build/opennow-native-streamer"
+```
+
+Then launch the Electron app, enable the `OpenNOW Native Streamer` beta toggle in settings, and start a session.
+
+### GitHub Actions Linux ARM64 artifact
+
+The native streamer CI workflow now builds a Linux ARM64 artifact on a GitHub-hosted ARM runner:
+
+- workflow artifact name: `opennow-native-streamer-linux-arm64`
+- contained binary: `opennow-native-streamer`
+
+Practical usage on a Pi 4:
+
+1. Download the `linux-arm64` artifact from the PR or workflow run.
+2. Extract it onto the Pi, for example into `~/OpenNOW-native/`.
+3. Ensure runtime libraries are installed (`SDL3`, FFmpeg shared libraries, standard C++ runtime).
+4. Point OpenNOW at the extracted binary:
+
+```bash
+export OPENNOW_NATIVE_STREAMER_BIN="$HOME/OpenNOW-native/opennow-native-streamer"
+```
+
+5. Launch OpenNOW and enable the native streamer toggle.
+
 Still intentionally partial in this task:
 - decoder/hwaccel selection is conservative and software-first
 - microphone parity is not migrated yet

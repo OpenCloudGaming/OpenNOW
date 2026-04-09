@@ -29,9 +29,15 @@ jobs:
           - label: macos-arm64
             runner: macos-14
             triplet: arm64-osx
+            artifact_path: opennow-native-streamer/build/opennow-native-streamer
           - label: windows-x64
             runner: blacksmith-4vcpu-windows-2025
             triplet: x64-windows
+            artifact_path: opennow-native-streamer/build/opennow-native-streamer.exe
+          - label: linux-arm64
+            runner: ubuntu-24.04-arm
+            triplet: arm64-linux
+            artifact_path: opennow-native-streamer/build/opennow-native-streamer
 
     env:
       VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
@@ -48,6 +54,10 @@ jobs:
       - name: Install macOS host tools
         if: runner.os == 'macOS'
         run: brew install ninja pkg-config nasm
+
+      - name: Install Linux host tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build pkg-config nasm
 
       - name: Install Windows host tools
         if: runner.os == 'Windows'
@@ -97,7 +107,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: opennow-native-streamer-${{ matrix.label }}
-          path: |
-            opennow-native-streamer/build/opennow-native-streamer
-            opennow-native-streamer/build/opennow-native-streamer.exe
+          path: ${{ matrix.artifact_path }}
           if-no-files-found: error
