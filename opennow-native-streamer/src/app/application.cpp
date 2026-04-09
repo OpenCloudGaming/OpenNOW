@@ -1,5 +1,6 @@
 #include "opennow/native/app.hpp"
 
+#include <iostream>
 #include <sstream>
 
 #include "opennow/native/platform_info.hpp"
@@ -73,7 +74,10 @@ bool Application::Initialize(std::string& error) {
     HandleIncomingJson(json);
   });
   if (!ipc_client_.Connect(ipc_host_, static_cast<std::uint16_t>(ipc_port_))) {
-    error = "Could not connect to Electron native-streamer manager";
+    const auto connect_error = ipc_client_.GetLastStatus();
+    error = "Could not connect to Electron native-streamer manager at " + ipc_host_ + ":" + std::to_string(ipc_port_) +
+            (connect_error.empty() ? std::string() : " (" + connect_error + ")");
+    std::cerr << "[OpenNOW Native Streamer] " << error << std::endl;
     return false;
   }
 

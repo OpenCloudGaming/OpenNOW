@@ -1,4 +1,5 @@
 #include <string>
+#include <iostream>
 
 #include "opennow/native/app.hpp"
 
@@ -25,6 +26,9 @@ int main(int argc, char** argv) {
   opennow::native::Application app(ipc_host, ipc_port, session_id);
   std::string error;
   if (!app.Initialize(error)) {
+    if (!error.empty()) {
+      std::cerr << "[OpenNOW Native Streamer] " << error << std::endl;
+    }
     return error.empty() ? 1 : 2;
   }
   return app.Run();

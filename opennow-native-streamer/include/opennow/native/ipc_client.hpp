@@ -23,6 +23,7 @@ class IpcClient {
   bool SendJson(const std::string& json);
   void SetMessageHandler(MessageHandler handler);
   void SetStatusHandler(StatusHandler handler);
+  std::string GetLastStatus() const;
 
  private:
   void ReadLoop();
@@ -34,9 +35,8 @@ class IpcClient {
   std::atomic<bool> running_{false};
   std::thread read_thread_;
   std::intptr_t socket_fd_{-1};
-#if defined(_WIN32)
-  bool winsock_started_{false};
-#endif
+  mutable std::mutex status_mutex_;
+  std::string last_status_;
 };
 
 }  // namespace opennow::native

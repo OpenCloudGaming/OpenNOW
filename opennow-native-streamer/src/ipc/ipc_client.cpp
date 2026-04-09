@@ -2,11 +2,15 @@
 
 #include <algorithm>
 #include <climits>
+#include <chrono>
+#include <iostream>
+#include <thread>
 #if defined(_WIN32)
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
+#include <cerrno>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -20,6 +24,8 @@ namespace opennow::native {
 
 namespace {
 constexpr std::size_t kReadChunkSize = 4096;
+constexpr int kInitialConnectRetryCount = 10;
+constexpr int kInitialConnectBackoffMs = 100;
 
 #if defined(_WIN32)
 using SocketHandle = SOCKET;
@@ -72,6 +78,15 @@ int ReceiveChunk(SocketHandle socket_fd, std::uint8_t* buffer, std::size_t size)
 #endif
 }
 
+std::string LastSocketErrorString() {
+#if defined(_WIN32)
+  const int code = WSAGetLastError();
+  return "WSA error " + std::to_string(code);
+#else
+  return std::string(std::strerror(errno));
+#endif
+}
+
 }  // namespace
 
 IpcClient::IpcClient() = default;
@@ -89,34 +104,50 @@ bool IpcClient::Connect(const std::string& host, std::uint16_t port) {
     EmitStatus("WSAStartup failed");
     return false;
   }
-  winsock_started_ = true;
 #endif
-
-  const auto socket_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (socket_fd == kInvalidSocket) {
-    EmitStatus("Failed to create IPC socket");
-    return false;
-  }
-  socket_fd_ = static_cast<std::intptr_t>(socket_fd);
 
   sockaddr_in address{};
   address.sin_family = AF_INET;
   address.sin_port = htons(port);
   if (::inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1) {
-    EmitStatus("Failed to parse IPC host address");
+    EmitStatus("Failed to parse IPC host address: " + host);
     Disconnect();
     return false;
   }
 
-  if (::connect(static_cast<SocketHandle>(socket_fd_), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
-    EmitStatus("Failed to connect to Electron IPC server");
-    Disconnect();
-    return false;
+  std::string last_connect_error;
+  for (int attempt = 1; attempt <= kInitialConnectRetryCount; ++attempt) {
+    const auto socket_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (socket_fd == kInvalidSocket) {
+      last_connect_error = "Failed to create IPC socket: " + LastSocketErrorString();
+      break;
+    }
+
+    if (::connect(socket_fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
+      socket_fd_ = static_cast<std::intptr_t>(socket_fd);
+      running_.store(true);
+      read_thread_ = std::thread([this]() { ReadLoop(); });
+      if (attempt > 1) {
+        EmitStatus(
+            "Connected to Electron IPC server after retry " + std::to_string(attempt) + " at " + host + ":" + std::to_string(port));
+      }
+      return true;
+    }
+
+    last_connect_error = "IPC connect attempt " + std::to_string(attempt) + "/" + std::to_string(kInitialConnectRetryCount) + " to " + host +
+                         ":" + std::to_string(port) + " failed: " + LastSocketErrorString();
+    EmitStatus(last_connect_error);
+    CloseSocket(socket_fd);
+
+    if (attempt < kInitialConnectRetryCount) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(kInitialConnectBackoffMs * attempt));
+    }
   }
 
-  running_.store(true);
-  read_thread_ = std::thread([this]() { ReadLoop(); });
-  return true;
+  EmitStatus("Failed to connect to Electron IPC server after " + std::to_string(kInitialConnectRetryCount) + " attempts to " + host + ":" +
+             std::to_string(port) + (last_connect_error.empty() ? std::string() : " (" + last_connect_error + ")"));
+  Disconnect();
+  return false;
 }
 
 void IpcClient::Disconnect() {
@@ -129,10 +160,7 @@ void IpcClient::Disconnect() {
     read_thread_.join();
   }
 #if defined(_WIN32)
-  if (winsock_started_) {
-    WSACleanup();
-    winsock_started_ = false;
-  }
+  WSACleanup();
 #endif
 }
 
@@ -170,6 +198,11 @@ void IpcClient::SetStatusHandler(StatusHandler handler) {
   status_handler_ = std::move(handler);
 }
 
+std::string IpcClient::GetLastStatus() const {
+  std::lock_guard<std::mutex> lock(status_mutex_);
+  return last_status_;
+}
+
 void IpcClient::ReadLoop() {
   std::vector<std::uint8_t> buffer;
   buffer.reserve(kReadChunkSize * 2);
@@ -204,6 +237,11 @@ void IpcClient::ReadLoop() {
 }
 
 void IpcClient::EmitStatus(const std::string& message) {
+  {
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    last_status_ = message;
+  }
+  std::cerr << "[OpenNOW Native Streamer][IPC] " << message << std::endl;
   if (status_handler_) {
     status_handler_(message);
   }
