@@ -426,6 +426,16 @@ void WebRtcSession::ConfigureTrackHandlers() {
       video_track_ = track;
       if (preferred_codec_ == "H265") {
         track->setMediaHandler(std::make_shared<rtc::H265RtpDepacketizer>());
+      } else if (preferred_codec_ == "AV1") {
+        if (!media_failure_emitted_) {
+          media_failure_emitted_ = true;
+          Log("AV1 video tracks are not supported by the current native libdatachannel media handler build; failing native AV1 session instead of routing through H264");
+          EmitState(
+              "failed",
+              "Native AV1 streaming is unsupported in this build",
+              "libdatachannel AV1 depacketizer/media receive support is unavailable; disable native streamer or use H264/H265");
+        }
+        return;
       } else {
         track->setMediaHandler(std::make_shared<rtc::H264RtpDepacketizer>());
       }

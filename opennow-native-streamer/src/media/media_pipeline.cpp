@@ -362,7 +362,7 @@ void MediaPipeline::HandleVideoDecodeFailure(const std::string& reason) {
 
   const bool missing_reference_chain =
       reason.find("Could not find ref") != std::string::npos || reason.find("frame RPS") != std::string::npos ||
-      reason.find("undecodable NALU") != std::string::npos || reason.find("No frame decoded") != std::string::npos;
+      reason.find("undecodable NALU") != std::string::npos;
 
   if (missing_reference_chain && !decode_stall_flush_attempted_ &&
       consecutive_video_packets_without_frame_ >= (kMaxPacketsWithoutDecodedFrameBeforeReset / 3)) {
@@ -558,6 +558,7 @@ void MediaPipeline::DecodeVideoFrame(const std::vector<std::uint8_t>& encoded_fr
     return;
   }
   bool decoded_frame = false;
+  bool counted_failure_for_packet = false;
   while (true) {
     const int receive_result = avcodec_receive_frame(video_decoder_ctx_, video_frame_);
     if (receive_result == 0) {
@@ -570,9 +571,10 @@ void MediaPipeline::DecodeVideoFrame(const std::vector<std::uint8_t>& encoded_fr
       break;
     }
     HandleVideoDecodeFailure(std::string("avcodec_receive_frame failed with code ") + std::to_string(receive_result));
+    counted_failure_for_packet = true;
     break;
   }
-  if (!decoded_frame) {
+  if (!decoded_frame && !counted_failure_for_packet) {
     HandleVideoDecodeFailure("No frame decoded");
   }
   decode_time_total_us_ += TimestampUs() - decode_started_at_us;
