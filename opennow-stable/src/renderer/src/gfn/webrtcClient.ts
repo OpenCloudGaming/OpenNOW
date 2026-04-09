@@ -194,6 +194,17 @@ export interface StreamTimeWarning {
   secondsLeft?: number;
 }
 
+export interface WebRtcSessionSnapshot {
+  peerConnectionState: RTCPeerConnectionState | "closed";
+  peerConnected: boolean;
+  iceConnectionState: RTCIceConnectionState | "closed";
+  controlChannelOpen: boolean;
+  answerSent: boolean;
+  mediaLive: boolean;
+  videoTrackLive: boolean;
+  audioTrackLive: boolean;
+}
+
 interface ClientOptions {
   videoElement: HTMLVideoElement;
   audioElement: HTMLAudioElement;
@@ -618,6 +629,7 @@ export class GfnWebRtcClient {
   // Microphone
   private micManager: MicrophoneManager | null = null;
   private micState: MicState = "uninitialized";
+  private answerSent = false;
 
   // Stream info
   private currentCodec = "";
@@ -858,6 +870,25 @@ export class GfnWebRtcClient {
     this.options.onLog(message);
   }
 
+  public getSessionSnapshot(): WebRtcSessionSnapshot {
+    const videoTrackLive = this.videoStream.getVideoTracks().some((track) => track.readyState === "live");
+    const audioTrackLive = this.audioStream.getAudioTracks().some((track) => track.readyState === "live");
+    const peerConnectionState = this.pc?.connectionState ?? "closed";
+    const iceConnectionState = this.pc?.iceConnectionState ?? "closed";
+    const peerConnected = peerConnectionState === "connected" || iceConnectionState === "connected" || iceConnectionState === "completed";
+    const controlChannelOpen = this.controlChannel?.readyState === "open";
+    return {
+      peerConnectionState,
+      iceConnectionState,
+      peerConnected,
+      controlChannelOpen,
+      answerSent: this.answerSent,
+      mediaLive: videoTrackLive || audioTrackLive,
+      videoTrackLive,
+      audioTrackLive,
+    };
+  }
+
   private emitStats(): void {
     if (this.options.onStats) {
       this.options.onStats({ ...this.diagnostics });
@@ -928,6 +959,7 @@ export class GfnWebRtcClient {
 
   private resetInputState(): void {
     this.inputReady = false;
+    this.answerSent = false;
     this.inputProtocolVersion = 2;
     this.inputEncoder.setProtocolVersion(2);
     this.diagnostics.inputReady = false;
@@ -3419,6 +3451,9 @@ export class GfnWebRtcClient {
 
       this.controlChannel = channel;
       this.controlChannel.binaryType = "arraybuffer";
+      this.controlChannel.onopen = () => {
+        this.log("Control channel open");
+      };
       this.controlChannel.onmessage = (msgEvent) => {
         void this.onControlChannelMessage(msgEvent.data as string | Blob | ArrayBuffer);
       };
@@ -3646,6 +3681,7 @@ export class GfnWebRtcClient {
       sdp: finalSdp,
       nvstSdp,
     });
+    this.answerSent = true;
     this.log("Sent SDP answer and nvstSdp");
 
     // 5. Inject manual ICE candidate from mediaConnectionInfo AFTER answer is sent

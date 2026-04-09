@@ -545,9 +545,38 @@ export interface KeyframeRequest {
   attempt: number;
 }
 
+export type SignalingSessionPhase = "sign-in" | "established";
+
+export interface SignalingDisconnectInfo {
+  code: number;
+  reason: string;
+  wasClean: boolean;
+  error: boolean;
+  attempt: number;
+  willRetry: boolean;
+  socketGeneration: number;
+  sessionPhase: SignalingSessionPhase;
+  lastInboundAckId: number;
+  lastOutboundAckId: number;
+}
+
 export type MainToRendererSignalingEvent =
-  | { type: "connected" }
-  | { type: "disconnected"; reason: string }
+  | { type: "connected"; socketGeneration: number; sessionPhase: SignalingSessionPhase }
+  | {
+      type: "reconnecting";
+      socketGeneration: number;
+      attempt: number;
+      queuedReplayCount: number;
+      sessionPhase: SignalingSessionPhase;
+    }
+  | {
+      type: "reconnected";
+      socketGeneration: number;
+      attempt: number;
+      replayedCount: number;
+      sessionPhase: SignalingSessionPhase;
+    }
+  | { type: "disconnected"; detail: SignalingDisconnectInfo }
   | { type: "offer"; sdp: string }
   | { type: "remote-ice"; candidate: IceCandidatePayload }
   | { type: "error"; message: string }

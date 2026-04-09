@@ -35,6 +35,7 @@ import {
   GfnWebRtcClient,
   type StreamDiagnostics,
   type StreamTimeWarning,
+  type WebRtcSessionSnapshot,
 } from "./gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { useControllerNavigation } from "./controllerNavigation";
@@ -113,6 +114,7 @@ type QueueAdMetrics = {
   startedAtMs: number | null;
   wasPausedAtLeastOnce: boolean;
 };
+type SignalingConnectionState = "connected" | "reconnecting" | "disconnected";
 type QueueAdReportOptions = {
   cancelReason?: QueueAdCancelReason;
   errorInfo?: QueueAdErrorInfo;
@@ -894,6 +896,16 @@ export function App(): JSX.Element {
   const reportQueueAdActionRef = useRef<
     (adId: string, action: SessionAdAction, options?: QueueAdReportOptions) => void
   >(() => {});
+  const signalingStateRef = useRef<SignalingConnectionState>("disconnected");
+
+  const getWebRtcSnapshot = useCallback((): WebRtcSessionSnapshot | null => {
+    return clientRef.current?.getSessionSnapshot() ?? null;
+  }, []);
+
+  const shouldKeepStreamingSessionAlive = useCallback((): boolean => {
+    const snapshot = getWebRtcSnapshot();
+    return !!snapshot && (snapshot.peerConnected || snapshot.controlChannelOpen || (snapshot.answerSent && snapshot.mediaLive));
+  }, [getWebRtcSnapshot]);
 
   useEffect(() => {
     controllerOverlayOpenRef.current = controllerOverlayOpen;
@@ -1112,6 +1124,15 @@ export function App(): JSX.Element {
       setLaunchError(null);
     }
   }, [diagnosticsStore]);
+
+  const teardownStreamFromTerminalSignaling = useCallback((context: string): void => {
+    console.warn(`[App] Terminal signaling teardown: ${context}`);
+    clientRef.current?.dispose();
+    clientRef.current = null;
+    signalingStateRef.current = "disconnected";
+    resetLaunchRuntime();
+    launchInFlightRef.current = false;
+  }, [resetLaunchRuntime]);
 
   // Session ref sync
   useEffect(() => {
@@ -1875,12 +1896,49 @@ export function App(): JSX.Element {
           }
         } else if (event.type === "remote-ice") {
           await clientRef.current?.addRemoteCandidate(event.candidate);
+        } else if (event.type === "connected") {
+          signalingStateRef.current = "connected";
+          console.log("[App] Signaling connected", event);
+        } else if (event.type === "reconnecting") {
+          signalingStateRef.current = "reconnecting";
+          const snapshot = getWebRtcSnapshot();
+          console.warn("[App] Signaling reconnecting", {
+            ...event,
+            streamStatus: streamStatusRef.current,
+            peerConnected: snapshot?.peerConnected ?? false,
+            controlChannelOpen: snapshot?.controlChannelOpen ?? false,
+            answerSent: snapshot?.answerSent ?? false,
+            mediaLive: snapshot?.mediaLive ?? false,
+          });
+        } else if (event.type === "reconnected") {
+          signalingStateRef.current = "connected";
+          const snapshot = getWebRtcSnapshot();
+          console.log("[App] Signaling reconnected", {
+            ...event,
+            streamStatus: streamStatusRef.current,
+            peerConnected: snapshot?.peerConnected ?? false,
+            controlChannelOpen: snapshot?.controlChannelOpen ?? false,
+            mediaLive: snapshot?.mediaLive ?? false,
+          });
         } else if (event.type === "disconnected") {
-          console.warn("Signaling disconnected:", event.reason);
-          clientRef.current?.dispose();
-          clientRef.current = null;
-          resetLaunchRuntime();
-          launchInFlightRef.current = false;
+          signalingStateRef.current = event.detail.willRetry ? "reconnecting" : "disconnected";
+          const snapshot = getWebRtcSnapshot();
+          const keepAlive = event.detail.willRetry && shouldKeepStreamingSessionAlive();
+          console.warn("[App] Signaling disconnected", {
+            ...event.detail,
+            streamStatus: streamStatusRef.current,
+            peerConnectionState: snapshot?.peerConnectionState ?? "closed",
+            peerConnected: snapshot?.peerConnected ?? false,
+            controlChannelOpen: snapshot?.controlChannelOpen ?? false,
+            answerSent: snapshot?.answerSent ?? false,
+            mediaLive: snapshot?.mediaLive ?? false,
+            keepAlive,
+          });
+          if (!keepAlive) {
+            teardownStreamFromTerminalSignaling(
+              `code=${event.detail.code} reason=${event.detail.reason || "socket closed"} willRetry=${event.detail.willRetry} phase=${event.detail.sessionPhase}`,
+            );
+          }
         } else if (event.type === "error") {
           console.error("Signaling error:", event.message);
         }
@@ -1890,7 +1948,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [resetLaunchRuntime, settings]);
+  }, [getWebRtcSnapshot, settings, shouldKeepStreamingSessionAlive, teardownStreamFromTerminalSignaling]);
 
   // Save settings when changed
   const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {
