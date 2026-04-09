@@ -2,7 +2,7 @@ import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage, AspectRatio, KeyboardLayout } from "@shared/gfn";
-import { DEFAULT_KEYBOARD_LAYOUT, normalizeStreamPreferences } from "@shared/gfn";
+import { DEFAULT_KEYBOARD_LAYOUT, getDefaultStreamPreferences, normalizeStreamPreferences } from "@shared/gfn";
 
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
@@ -80,13 +80,15 @@ const defaultMicShortcut = "Ctrl+Shift+M";
 const LEGACY_STOP_SHORTCUTS = new Set(["META+SHIFT+Q", "CMD+SHIFT+Q"]);
 const LEGACY_ANTI_AFK_SHORTCUTS = new Set(["META+SHIFT+F10", "CMD+SHIFT+F10", "CTRL+SHIFT+F10"]);
 
+const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
+
 const DEFAULT_SETTINGS: Settings = {
   resolution: "1920x1080",
   aspectRatio: "16:9",
   fps: 60,
   maxBitrateMbps: 75,
-  codec: "H264",
-  colorQuality: "8bit_420",
+  codec: DEFAULT_STREAM_PREFERENCES.codec,
+  colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
   region: "",
   clipboardPaste: false,
   mouseSensitivity: 1,

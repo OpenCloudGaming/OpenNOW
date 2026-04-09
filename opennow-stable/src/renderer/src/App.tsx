@@ -20,6 +20,7 @@ import type {
 } from "@shared/gfn";
 import {
   DEFAULT_KEYBOARD_LAYOUT,
+  getDefaultStreamPreferences,
   USER_FACING_VIDEO_CODEC_OPTIONS,
   normalizeStreamPreferences,
   getPreferredSessionAdMediaUrl,
@@ -54,6 +55,7 @@ import type { QueueAdPlaybackEvent, QueueAdPreviewHandle } from "./components/Qu
 import { StreamView } from "./components/StreamView";
 
 const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
+const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 const allResolutionOptions = ["1280x720", "1280x800", "1440x900", "1680x1050", "1920x1080", "1920x1200", "2560x1080", "2560x1440", "2560x1600", "3440x1440", "3840x2160", "3840x2400"];
 const fpsOptions = [30, 60, 120, 144, 240];
 const aspectRatioOptions = ["16:9", "16:10", "21:9", "32:9"] as const;
@@ -612,8 +614,8 @@ export function App(): JSX.Element {
     aspectRatio: "16:9",
     fps: 60,
     maxBitrateMbps: 75,
-    codec: "H264",
-    colorQuality: "8bit_420",
+    codec: DEFAULT_STREAM_PREFERENCES.codec,
+    colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
     region: "",
     clipboardPaste: false,
     mouseSensitivity: 1,

@@ -104,6 +104,19 @@ export function normalizeStreamPreferences(codec: VideoCodec, colorQuality: Colo
   };
 }
 
+export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
+  codec: "H264",
+  colorQuality: "8bit_420",
+});
+
+export function getDefaultStreamPreferences(): Pick<Settings, "codec" | "colorQuality"> {
+  const normalized = normalizeStreamPreferences(DEFAULT_STREAM_PREFERENCES.codec, DEFAULT_STREAM_PREFERENCES.colorQuality);
+  return {
+    codec: normalized.codec,
+    colorQuality: normalized.colorQuality,
+  };
+}
+
 /** Helper: is this a 10-bit (HDR-capable) mode? */
 export function colorQualityIs10Bit(cq: ColorQuality): boolean {
   return cq.startsWith("10bit");

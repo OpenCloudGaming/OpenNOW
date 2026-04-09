@@ -20,6 +20,7 @@ import type {
 
 import {
   DEFAULT_KEYBOARD_LAYOUT,
+  getDefaultStreamPreferences,
   colorQualityBitDepth,
   colorQualityChromaFormat,
   normalizeStreamPreferences,
@@ -1277,12 +1278,13 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
 
   // Provide default values for optional parameters
   const appId = input.appId ?? "0";
+  const defaultStreamPreferences = getDefaultStreamPreferences();
   const settings = input.settings ?? {
     resolution: "1920x1080",
     fps: 60,
     maxBitrateMbps: 75,
-    codec: "H264",
-    colorQuality: "8bit_420",
+    codec: defaultStreamPreferences.codec,
+    colorQuality: defaultStreamPreferences.colorQuality,
     keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
     gameLanguage: "en_US",
     enableL4S: false,
