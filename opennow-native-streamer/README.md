@@ -208,7 +208,7 @@ export OPENNOW_NATIVE_STREAMER_BIN="$HOME/OpenNOW-native/opennow-native-streamer
 5. Launch OpenNOW and enable the native streamer toggle.
 
 Still intentionally partial in this task:
-- decoder/hwaccel selection is conservative and software-first
+- Raspberry Pi 4/Linux ARM64 prefers explicit FFmpeg backend ladders (`h264_v4l2m2m`, `hevc_v4l2m2m` when available) but still falls back to software when the runtime cannot sustain the hardware path
 - microphone parity is not migrated yet
 - recording/screenshot/overlay parity is not migrated yet
 - H265/AV1 platform capability handling is structured but will need more real-device validation

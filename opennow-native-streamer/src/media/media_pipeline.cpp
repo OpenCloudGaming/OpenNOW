@@ -559,18 +559,25 @@ bool MediaPipeline::EnsureVideoDecoder(std::string& error) {
   };
 
   const auto candidates = BuildVideoDecoderCandidates(video_codec_, force_software_decode_, prefer_rgba_upload_);
-  if (IsRaspberryPi4Runtime() && video_codec_ == "AV1") {
-    Log("Raspberry Pi 4 has no practical hardware AV1 decoder; selecting software AV1 decode fallback");
+  if (IsRaspberryPi4Runtime()) {
+    if (video_codec_ == "AV1") {
+      Log("Raspberry Pi 4 has no practical hardware AV1 decoder; selecting software AV1 decode fallback");
+    } else {
+      Log(std::string("Raspberry Pi 4 decoder ladder active for codec ") + video_codec_ +
+          ": preferring V4L2 M2M hardware decode before software fallback");
+    }
   }
 
   std::string last_error;
   for (const auto& candidate : candidates) {
     std::string attempt_error;
+    const auto backend_name = candidate.decoder_name.empty() ? std::string("default decoder") : candidate.decoder_name;
+    Log(std::string("Trying decoder candidate (") + backend_name + ") -> " + candidate.path_description);
     if (initialize_decoder(candidate, attempt_error)) {
+      Log(std::string("Selected decoder candidate (") + backend_name + ") -> " + candidate.path_description);
       return true;
     }
     last_error = attempt_error;
-    const auto backend_name = candidate.decoder_name.empty() ? std::string("default decoder") : candidate.decoder_name;
     Log(std::string("Decoder candidate rejected (") + backend_name + "): " + attempt_error);
   }
   error = last_error.empty() ? "Failed to initialize any video decoder candidate" : last_error;
