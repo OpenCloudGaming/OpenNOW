@@ -85,6 +85,11 @@ const SESSION_AD_STUCK_TIMEOUT_MS = 30000;
 const SESSION_READY_TIMEOUT_MS = 180000;
 const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
 const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
+const FREE_TIER_SESSION_LIMIT_SECONDS = 60 * 60;
+const FREE_TIER_30_MIN_WARNING_SECONDS = 30 * 60;
+const FREE_TIER_15_MIN_WARNING_SECONDS = 15 * 60;
+const FREE_TIER_FINAL_MINUTE_WARNING_SECONDS = 60;
+const STREAM_WARNING_VISIBILITY_MS = 15 * 1000;
 
 type GameSource = "main" | "library" | "public";
 type AppPage = "home" | "library" | "settings";
@@ -96,6 +101,10 @@ type StreamWarningState = {
   message: string;
   tone: "warn" | "critical";
   secondsLeft?: number;
+};
+type LocalSessionTimerWarningState = {
+  stage: "free-tier-30m" | "free-tier-15m" | "free-tier-final-minute";
+  shownAtMs: number;
 };
 type LaunchErrorState = {
   stage: StreamLoadingStatus;
@@ -325,6 +334,49 @@ function shouldShowQueueAdsForMembership(
 ): boolean {
   const effectiveTier = normalizeMembershipTier(subscription?.membershipTier ?? authSession?.user.membershipTier);
   return effectiveTier === null || effectiveTier === "FREE";
+}
+
+function shouldShowFreeTierSessionWarnings(subscription: SubscriptionInfo | null): boolean {
+  return normalizeMembershipTier(subscription?.membershipTier) === "FREE";
+}
+
+function hasCrossedWarningThreshold(
+  previousSeconds: number | null,
+  currentSeconds: number,
+  thresholdSeconds: number,
+): boolean {
+  if (previousSeconds === null) {
+    return currentSeconds === thresholdSeconds;
+  }
+  return previousSeconds > thresholdSeconds && currentSeconds <= thresholdSeconds;
+}
+
+function getLocalSessionTimerWarning(
+  stage: LocalSessionTimerWarningState["stage"],
+  secondsLeft: number,
+): StreamWarningState {
+  if (stage === "free-tier-30m") {
+    return {
+      code: 1,
+      message: "30 minutes remaining in this free-tier session",
+      tone: "warn",
+    };
+  }
+
+  if (stage === "free-tier-15m") {
+    return {
+      code: 1,
+      message: "15 minutes remaining in this free-tier session",
+      tone: "warn",
+    };
+  }
+
+  return {
+    code: 1,
+    message: "This free-tier session ends soon",
+    tone: "critical",
+    secondsLeft: Math.max(0, secondsLeft),
+  };
 }
 
 function shouldUseQueueAdPolling(session: SessionInfo, subscription: SubscriptionInfo | null, authSession: AuthSession | null): boolean {
@@ -658,12 +710,32 @@ export function App(): JSX.Element {
   const [isResumingNavbarSession, setIsResumingNavbarSession] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
-  const [streamWarning, setStreamWarning] = useState<StreamWarningState | null>(null);
+  const [remoteStreamWarning, setRemoteStreamWarning] = useState<StreamWarningState | null>(null);
+  const [localSessionTimerWarning, setLocalSessionTimerWarning] = useState<LocalSessionTimerWarningState | null>(null);
   const [activeQueueAdId, setActiveQueueAdId] = useState<string | null>(null);
+  const previousFreeTierRemainingSecondsRef = useRef<number | null>(null);
 
   const { playtime, startSession: startPlaytimeSession, endSession: endPlaytimeSession } = usePlaytime();
   const sessionElapsedSeconds = useElapsedSeconds(sessionStartedAtMs, streamStatus === "streaming");
   const isStreaming = streamStatus === "streaming";
+  const freeTierSessionWarningsActive =
+    isStreaming && sessionStartedAtMs !== null && shouldShowFreeTierSessionWarnings(subscriptionInfo);
+  const freeTierSessionRemainingSeconds = freeTierSessionWarningsActive
+    ? Math.max(0, FREE_TIER_SESSION_LIMIT_SECONDS - sessionElapsedSeconds)
+    : null;
+  const visibleLocalSessionTimerWarning = useMemo(() => {
+    if (localSessionTimerWarning === null || freeTierSessionRemainingSeconds === null) {
+      return null;
+    }
+
+    return getLocalSessionTimerWarning(localSessionTimerWarning.stage, freeTierSessionRemainingSeconds);
+  }, [freeTierSessionRemainingSeconds, localSessionTimerWarning]);
+  const streamWarning = useMemo(() => {
+    if (visibleLocalSessionTimerWarning?.tone === "critical") {
+      return visibleLocalSessionTimerWarning;
+    }
+    return remoteStreamWarning ?? visibleLocalSessionTimerWarning;
+  }, [remoteStreamWarning, visibleLocalSessionTimerWarning]);
 
   const controllerOverlayOpenRef = useRef(false);
 
@@ -1087,7 +1159,8 @@ export function App(): JSX.Element {
     setStreamStatus("idle");
     setQueuePosition(undefined);
     setSessionStartedAtMs(null);
-    setStreamWarning(null);
+    setRemoteStreamWarning(null);
+    setLocalSessionTimerWarning(null);
     setEscHoldReleaseIndicator({ visible: false, progress: 0 });
     resetStatsOverlayToPreference();
     diagnosticsStore.set(defaultDiagnostics());
@@ -1782,13 +1855,45 @@ export function App(): JSX.Element {
   }, [sessionStartedAtMs, streamStatus]);
 
   useEffect(() => {
-    if (!streamWarning) return;
-    const warning = streamWarning;
+    if (freeTierSessionRemainingSeconds === null) {
+      previousFreeTierRemainingSecondsRef.current = null;
+      setLocalSessionTimerWarning(null);
+      return;
+    }
+
+    const previousSeconds = previousFreeTierRemainingSecondsRef.current;
+
+    if (hasCrossedWarningThreshold(previousSeconds, freeTierSessionRemainingSeconds, FREE_TIER_FINAL_MINUTE_WARNING_SECONDS)) {
+      setLocalSessionTimerWarning({ stage: "free-tier-final-minute", shownAtMs: Date.now() });
+    } else if (hasCrossedWarningThreshold(previousSeconds, freeTierSessionRemainingSeconds, FREE_TIER_15_MIN_WARNING_SECONDS)) {
+      setLocalSessionTimerWarning({ stage: "free-tier-15m", shownAtMs: Date.now() });
+    } else if (hasCrossedWarningThreshold(previousSeconds, freeTierSessionRemainingSeconds, FREE_TIER_30_MIN_WARNING_SECONDS)) {
+      setLocalSessionTimerWarning({ stage: "free-tier-30m", shownAtMs: Date.now() });
+    }
+
+    previousFreeTierRemainingSecondsRef.current = freeTierSessionRemainingSeconds;
+  }, [freeTierSessionRemainingSeconds]);
+
+  useEffect(() => {
+    if (!localSessionTimerWarning) return;
+
+    const warning = localSessionTimerWarning;
+    const remainingMs = Math.max(0, warning.shownAtMs + STREAM_WARNING_VISIBILITY_MS - Date.now());
     const timer = window.setTimeout(() => {
-      setStreamWarning((current) => (current === warning ? null : current));
-    }, 12000);
+      setLocalSessionTimerWarning((current) => (current === warning ? null : current));
+    }, remainingMs);
     return () => window.clearTimeout(timer);
-  }, [streamWarning]);
+  }, [localSessionTimerWarning]);
+
+  useEffect(() => {
+    if (!remoteStreamWarning) return;
+
+    const warning = remoteStreamWarning;
+    const timer = window.setTimeout(() => {
+      setRemoteStreamWarning((current) => (current === warning ? null : current));
+    }, STREAM_WARNING_VISIBILITY_MS);
+    return () => window.clearTimeout(timer);
+  }, [remoteStreamWarning]);
 
   // Signaling events
   useEffect(() => {
@@ -1823,7 +1928,7 @@ export function App(): JSX.Element {
                 setEscHoldReleaseIndicator({ visible, progress });
               },
               onTimeWarning: (warning) => {
-                setStreamWarning({
+                setRemoteStreamWarning({
                   code: warning.code,
                   message: warningMessage(warning.code),
                   tone: warningTone(warning.code),
@@ -2145,7 +2250,8 @@ export function App(): JSX.Element {
     };
 
     setSessionStartedAtMs(null);
-    setStreamWarning(null);
+  setRemoteStreamWarning(null);
+  setLocalSessionTimerWarning(null);
     setLaunchError(null);
     resetStatsOverlayToPreference();
     const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
@@ -2432,7 +2538,8 @@ export function App(): JSX.Element {
     setLaunchError(null);
     setQueuePosition(undefined);
     setSessionStartedAtMs(null);
-    setStreamWarning(null);
+    setRemoteStreamWarning(null);
+    setLocalSessionTimerWarning(null);
     resetStatsOverlayToPreference();
     const matchedContext = findGameContextForSession(navbarActiveSession);
     if (matchedContext) {
