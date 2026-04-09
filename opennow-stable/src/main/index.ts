@@ -26,10 +26,12 @@ import {
 import type {
   MainToRendererSignalingEvent,
   AuthLoginRequest,
+  SessionInfo,
   AuthSessionRequest,
   GamesFetchRequest,
   ResolveLaunchIdRequest,
   RegionsFetchRequest,
+  SessionAdReportRequest,
   SessionCreateRequest,
   SessionPollRequest,
   SessionStopRequest,
@@ -60,7 +62,7 @@ import type {
 
 import { getSettingsManager, type SettingsManager } from "./settings";
 
-import { createSession, pollSession, stopSession, getActiveSessions, claimSession } from "./gfn/cloudmatch";
+import { createSession, pollSession, reportSessionAd, stopSession, getActiveSessions, claimSession } from "./gfn/cloudmatch";
 import { AuthService } from "./gfn/auth";
 import {
   fetchLibraryGames,
@@ -655,15 +657,107 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.CREATE_SESSION, async (_event, payload: SessionCreateRequest) => {
+    const token = await resolveJwt(payload.token);
+    const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+
+    /**
+     * Attempt to find and claim an existing active session.
+     * Prefers a session whose appId matches the requested game; falls back to
+     * any claimable session (serverIp present) if no exact match is found.
+     * Returns null when no claimable session exists or the lookup fails.
+     *
+     * IMPORTANT: Only status=2/3 (ready/streaming) sessions are sent a RESUME claim PUT.
+     * Status=1 sessions (still in queue/setup) must NOT receive a RESUME — the server
+     * rejects it with SESSION_NOT_PAUSED, and even if we polled past it internally we
+     * would bypass the renderer's queue/ad polling loop entirely. Instead, status=1
+     * sessions are returned as a minimal SessionInfo so the renderer enters its own
+     * polling loop which shows queue position and ads correctly.
+     */
+    const tryClaimExisting = async (): Promise<SessionInfo | null> => {
+      if (!token) return null;
+      try {
+        const activeSessions = await getActiveSessions(token, streamingBaseUrl);
+        if (activeSessions.length === 0) return null;
+        const numericAppId = parseInt(payload.appId, 10);
+
+        // First prefer a paused/ready session (status 2 or 3) that can be RESUME'd.
+        const readyCandidate =
+          activeSessions.find((s) => s.serverIp && s.appId === numericAppId && (s.status === 2 || s.status === 3)) ??
+          activeSessions.find((s) => s.serverIp && (s.status === 2 || s.status === 3)) ??
+          null;
+        if (readyCandidate) {
+          console.log(
+            `[CreateSession] Resuming existing session (id=${readyCandidate.sessionId}, appId=${readyCandidate.appId}, status=${readyCandidate.status}) instead of creating new.`,
+          );
+          return claimSession({
+            token,
+            streamingBaseUrl,
+            sessionId: readyCandidate.sessionId,
+            serverIp: readyCandidate.serverIp!,
+            appId: payload.appId,
+            settings: payload.settings,
+          });
+        }
+
+        // A status=1 session is still in queue/setup. Return it so the renderer's
+        // polling loop handles queue position and ads — do NOT send a RESUME claim.
+        const launchingCandidate =
+          activeSessions.find((s) => s.serverIp && s.appId === numericAppId && s.status === 1) ??
+          activeSessions.find((s) => s.serverIp && s.status === 1) ??
+          null;
+        if (launchingCandidate) {
+          console.log(
+            `[CreateSession] Found launching session (id=${launchingCandidate.sessionId}, appId=${launchingCandidate.appId}, status=1); returning for renderer queue/ad polling.`,
+          );
+          try {
+            return await pollSession({
+              token,
+              streamingBaseUrl,
+              serverIp: launchingCandidate.serverIp!,
+              zone: payload.zone,
+              sessionId: launchingCandidate.sessionId,
+            });
+          } catch (hydrateError) {
+            console.warn(
+              `[CreateSession] Failed to hydrate launching session ${launchingCandidate.sessionId}; falling back to minimal handoff:`,
+              hydrateError,
+            );
+            return {
+              sessionId: launchingCandidate.sessionId,
+              status: 1,
+              zone: payload.zone,
+              streamingBaseUrl,
+              serverIp: launchingCandidate.serverIp!,
+              signalingServer: launchingCandidate.serverIp!,
+              signalingUrl: launchingCandidate.signalingUrl ?? `wss://${launchingCandidate.serverIp}:443/nvst/`,
+              iceServers: [],
+            } satisfies SessionInfo;
+          }
+        }
+
+        return null;
+      } catch (claimError) {
+        console.warn("[CreateSession] Failed to claim existing session:", claimError);
+        return null;
+      }
+    };
+
+    // Pre-flight check: resume an active session before trying to create a new one.
+    const preChecked = await tryClaimExisting();
+    if (preChecked) return preChecked;
+
     try {
-      const token = await resolveJwt(payload.token);
-      const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-      return createSession({
-        ...payload,
-        token,
-        streamingBaseUrl,
-      });
+      return await createSession({ ...payload, token, streamingBaseUrl });
     } catch (error) {
+      // If the backend rejected the create because a session is already running,
+      // attempt a claim now (the pre-flight may have missed a session whose appId
+      // was not populated in the list response, or that had no serverIp at the
+      // time of the pre-flight but is ready now).
+      if (error instanceof SessionError && error.statusCode === 11) {
+        console.warn("[CreateSession] SESSION_LIMIT_EXCEEDED — retrying as session claim.");
+        const fallback = await tryClaimExisting();
+        if (fallback) return fallback;
+      }
       rethrowSerializedSessionError(error);
     }
   });
@@ -672,6 +766,19 @@ function registerIpcHandlers(): void {
     try {
       const token = await resolveJwt(payload.token);
       return pollSession({
+        ...payload,
+        token,
+        streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
+      });
+    } catch (error) {
+      rethrowSerializedSessionError(error);
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.REPORT_SESSION_AD, async (_event, payload: SessionAdReportRequest) => {
+    try {
+      const token = await resolveJwt(payload.token);
+      return reportSessionAd({
         ...payload,
         token,
         streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
@@ -1170,9 +1277,6 @@ app.whenReady().then(async () => {
 
   // Set up permission handlers for getUserMedia, fullscreen, pointer lock
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    const url = webContents.getURL();
-    console.log(`[Main] Permission request: ${permission} from ${url}`);
-
     const allowedPermissions = new Set([
       "media",
       "microphone",
@@ -1184,7 +1288,6 @@ app.whenReady().then(async () => {
     ]);
 
     if (allowedPermissions.has(permission)) {
-      console.log(`[Main] Granting permission: ${permission}`);
       callback(true);
       return;
     }

@@ -12,6 +12,7 @@ export const IPC_CHANNELS = {
   GAMES_RESOLVE_LAUNCH_ID: "games:resolve-launch-id",
   CREATE_SESSION: "gfn:create-session",
   POLL_SESSION: "gfn:poll-session",
+  REPORT_SESSION_AD: "gfn:report-session-ad",
   STOP_SESSION: "gfn:stop-session",
   GET_ACTIVE_SESSIONS: "gfn:get-active-sessions",
   CLAIM_SESSION: "gfn:claim-session",

@@ -9,6 +9,7 @@ import type {
   RegionsFetchRequest,
   MainToRendererSignalingEvent,
   OpenNowApi,
+  SessionAdReportRequest,
   SessionCreateRequest,
   SessionPollRequest,
   SessionStopRequest,
@@ -49,6 +50,7 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, input),
   createSession: (input: SessionCreateRequest) => ipcRenderer.invoke(IPC_CHANNELS.CREATE_SESSION, input),
   pollSession: (input: SessionPollRequest) => ipcRenderer.invoke(IPC_CHANNELS.POLL_SESSION, input),
+  reportSessionAd: (input: SessionAdReportRequest) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_SESSION_AD, input),
   stopSession: (input: SessionStopRequest) => ipcRenderer.invoke(IPC_CHANNELS.STOP_SESSION, input),
   getActiveSessions: (token?: string, streamingBaseUrl?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.GET_ACTIVE_SESSIONS, token, streamingBaseUrl),

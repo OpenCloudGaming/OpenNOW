@@ -4,6 +4,7 @@ import type { GameInfo, MediaListingEntry, Settings } from "@shared/gfn";
 import { Star, Clock, Calendar, Repeat2 } from "lucide-react";
 import { ButtonA, ButtonB, ButtonX, ButtonY, ButtonPSCross, ButtonPSCircle, ButtonPSSquare, ButtonPSTriangle } from "./ControllerButtons";
 import { getStoreDisplayName } from "./GameCard";
+import { SessionElapsedIndicator, RemainingPlaytimeIndicator, CurrentClock } from "./ElapsedSessionIndicators";
 import { type PlaytimeStore, formatPlaytime, formatLastPlayed } from "../utils/usePlaytime";
 
 interface ControllerLibraryPageProps {
@@ -15,7 +16,7 @@ interface ControllerLibraryPageProps {
   favoriteGameIds: string[];
   userName?: string;
   userAvatarUrl?: string;
-  remainingPlaytimeText?: string;
+  subscriptionInfo: import("@shared/gfn").SubscriptionInfo | null;
   playtimeData?: PlaytimeStore;
   onSelectGame: (id: string) => void;
   onSelectGameVariant: (gameId: string, variantId: string) => void;
@@ -32,6 +33,7 @@ interface ControllerLibraryPageProps {
     fps?: number;
     codec?: string;
     enableL4S?: boolean;
+    microphoneDeviceId?: string;
     controllerUiSounds?: boolean;
     controllerBackgroundAnimations?: boolean;
     autoLoadControllerLibrary?: boolean;
@@ -45,7 +47,9 @@ interface ControllerLibraryPageProps {
   aspectRatioOptions?: string[];
   onSettingChange?: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   onExitControllerMode?: () => void;
-  sessionElapsedSeconds?: number;
+  sessionStartedAtMs?: number | null;
+  isStreaming?: boolean;
+  sessionCounterEnabled?: boolean;
 }
 
 type Direction = "up" | "down" | "left" | "right";
@@ -53,6 +57,7 @@ type TopCategory = "current" | "all" | "settings" | "media" | "favorites" | `gen
 type SoundKind = "move" | "confirm";
 type SettingsSubcategory = "root" | "Network" | "Audio" | "Video" | "System";
 type MediaSubcategory = "root" | "Videos" | "Screenshots";
+type GameHubMediaItem = MediaListingEntry & { kind: "video" | "screenshot" };
 
 const CATEGORY_STEP_PX = 160;
 const CATEGORY_ACTIVE_HALF_WIDTH_PX = 60;
@@ -113,7 +118,7 @@ export function ControllerLibraryPage({
   pendingSwitchGameCover,
   userName = "Player One",
   userAvatarUrl,
-  remainingPlaytimeText = "--",
+  subscriptionInfo,
   playtimeData = {},
   settings = {},
   resolutionOptions = [],
@@ -122,7 +127,9 @@ export function ControllerLibraryPage({
   aspectRatioOptions = [],
   onSettingChange,
   onExitControllerMode,
-  sessionElapsedSeconds = 0,
+  sessionStartedAtMs = null,
+  isStreaming = false,
+  sessionCounterEnabled = false,
 }: ControllerLibraryPageProps): JSX.Element {
   const [isEntering, setIsEntering] = useState(true);
   const initialCategoryIndex = (() => {
@@ -160,7 +167,6 @@ export function ControllerLibraryPage({
   };
   const [listTranslateY, setListTranslateY] = useState(0);
   const favoriteGameIdSet = useMemo(() => new Set(favoriteGameIds), [favoriteGameIds]);
-  const [time, setTime] = useState(new Date());
   const [selectedSettingIndex, setSelectedSettingIndex] = useState(0);
   const [microphoneDevices, setMicrophoneDevices] = useState<{ deviceId: string; label: string }[]>([]);
   const [settingsSubcategory, setSettingsSubcategory] = useState<SettingsSubcategory>("root");
@@ -173,6 +179,8 @@ export function ControllerLibraryPage({
   const [mediaVideos, setMediaVideos] = useState<MediaListingEntry[]>([]);
   const [mediaScreenshots, setMediaScreenshots] = useState<MediaListingEntry[]>([]);
   const [mediaThumbById, setMediaThumbById] = useState<Record<string, string>>({});
+  const [gameHubMedia, setGameHubMedia] = useState<GameHubMediaItem[]>([]);
+  const [gameHubMediaLoading, setGameHubMediaLoading] = useState(false);
   const [controllerType, setControllerType] = useState<"ps" | "xbox" | "nintendo" | "generic">("generic");
   const [editingBandwidth, setEditingBandwidth] = useState(false);
 
@@ -196,10 +204,6 @@ export function ControllerLibraryPage({
     };
   }, []);
 
-  useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
 
   // poster measurement handled by `attachPosterRef` callback ref
 
@@ -297,6 +301,7 @@ export function ControllerLibraryPage({
     categories.push({ id: "settings", label: "Settings" });
     categories.push({ id: "all", label: "All" });
     categories.push({ id: "favorites", label: "Favorites" });
+    categories.push({ id: "media", label: "Media" });
     for (const genre of allGenres) categories.push({ id: `genre:${genre}`, label: sanitizeGenreName(genre) });
     return categories;
   }, [allGenres, currentStreamingGame]);
@@ -468,6 +473,84 @@ export function ControllerLibraryPage({
     const current = selectedVariantByGameId[selectedGame.id];
     return current ?? selectedGame.variants[0]?.id ?? "";
   }, [selectedGame, selectedVariantByGameId]);
+
+  const isGameHubCategory = topCategory !== "settings" && topCategory !== "current" && topCategory !== "media";
+  const showGameHub = isGameHubCategory && Boolean(selectedGame);
+  const showCurrentDetail = topCategory === "current" && Boolean(currentStreamingGame);
+  const detailVisible = showCurrentDetail || showGameHub;
+
+  const selectedCategoryLabel = useMemo(() => getCategoryLabel(topCategory, currentStreamingGame?.title).label, [topCategory, currentStreamingGame?.title]);
+  const selectedGameDescription = useMemo(() => {
+    if (!selectedGame) return "";
+    const description = selectedGame.longDescription?.trim() || selectedGame.description?.trim();
+    return description || `${selectedGame.title} is ready to launch from your XMB library.`;
+  }, [selectedGame]);
+  const selectedGameSessionState = useMemo(() => {
+    if (!selectedGame) return null;
+    if (!currentStreamingGame) return "Ready To Launch";
+    if (currentStreamingGame.id === selectedGame.id) return "Active Session";
+    return "Ready To Switch";
+  }, [currentStreamingGame, selectedGame]);
+
+  useEffect(() => {
+    if (!showGameHub || !selectedGame?.title || typeof window.openNow?.listMediaByGame !== "function") {
+      setGameHubMedia([]);
+      setGameHubMediaLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setGameHubMedia([]);
+    setGameHubMediaLoading(true);
+
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const listing = await window.openNow.listMediaByGame({ gameTitle: selectedGame.title });
+          if (cancelled) return;
+
+          const recentItems: GameHubMediaItem[] = [
+            ...(listing.videos ?? []).map((item) => ({ ...item, kind: "video" as const })),
+            ...(listing.screenshots ?? []).map((item) => ({ ...item, kind: "screenshot" as const })),
+          ]
+            .sort((left, right) => right.createdAtMs - left.createdAtMs)
+            .slice(0, 2);
+
+          setGameHubMedia(recentItems);
+
+          const thumbEntries = await Promise.all(
+            recentItems.map(async (item): Promise<[string, string | null]> => {
+              if (item.thumbnailDataUrl) return [item.id, item.thumbnailDataUrl];
+              if (item.dataUrl) return [item.id, item.dataUrl];
+              if (typeof window.openNow?.getMediaThumbnail === "function") {
+                const generated = await window.openNow.getMediaThumbnail({ filePath: item.filePath });
+                return [item.id, generated];
+              }
+              return [item.id, null];
+            }),
+          );
+
+          if (cancelled) return;
+          setMediaThumbById((prev) => {
+            const next = { ...prev };
+            for (const [id, url] of thumbEntries) {
+              if (url) next[id] = url;
+            }
+            return next;
+          });
+        } catch {
+          if (!cancelled) setGameHubMedia([]);
+        } finally {
+          if (!cancelled) setGameHubMediaLoading(false);
+        }
+      })();
+    }, 140);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [selectedGame?.id, selectedGame?.title, showGameHub]);
 
 
 
@@ -865,6 +948,24 @@ export function ControllerLibraryPage({
     };
   }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, displayItems, mediaAssetItems.length, mediaSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth]);
 
+  const renderFaceButton = (kind: "primary" | "secondary" | "tertiary", className: string, size: number): JSX.Element => {
+    if (kind === "primary") {
+      return controllerType === "ps"
+        ? <ButtonPSCross className={className} size={size} />
+        : <ButtonA className={className} size={size} />;
+    }
+
+    if (kind === "secondary") {
+      return controllerType === "ps"
+        ? <ButtonPSSquare className={className} size={size} />
+        : <ButtonX className={className} size={size} />;
+    }
+
+    return controllerType === "ps"
+      ? <ButtonPSTriangle className={className} size={size} />
+      : <ButtonY className={className} size={size} />;
+  };
+
   const wrapperClassName = `xmb-wrapper ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"}`;
 
   if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") return <div className={wrapperClassName}><div className="xmb-bg-layer"><div className="xmb-bg-gradient" /></div><div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh'}}>Loading...</div></div>;
@@ -878,8 +979,8 @@ export function ControllerLibraryPage({
 
       <div className="xmb-top-right">
         <div className="xmb-clock-wrap">
-          <div className="xmb-clock">{formatTime(time)}</div>
-          <div className="xmb-remaining-playtime">{remainingPlaytimeText} left</div>
+          <CurrentClock className="xmb-clock" />
+          <div className="xmb-remaining-playtime"><RemainingPlaytimeIndicator subscriptionInfo={subscriptionInfo} startedAtMs={sessionStartedAtMs} active={isStreaming} className="xmb-remaining-playtime-text" /></div>
         </div>
         <div className="xmb-user-badge">
           {userAvatarUrl ? (
@@ -1109,7 +1210,7 @@ export function ControllerLibraryPage({
       </div>
       )}
 
-      <div className={`xmb-detail-layer ${selectedGame ? 'visible' : ''}`}>
+      <div className={`xmb-detail-layer ${detailVisible ? 'visible' : ''}`}>
           {topCategory === "current" && (
             <div className="xmb-current-detail">
               <div className="xmb-current-poster">
@@ -1141,10 +1242,11 @@ export function ControllerLibraryPage({
                     return (
                       <>
                         {storeName && <span className="xmb-game-meta-chip xmb-game-meta-chip--store">{storeName}</span>}
-                        <span className="xmb-game-meta-chip xmb-game-meta-chip--session">
-                          <Clock size={12} className="xmb-meta-icon" />
-                          {formatElapsed(sessionElapsedSeconds)}
-                        </span>
+                        {sessionCounterEnabled && (
+                          <span className="xmb-game-meta-chip xmb-game-meta-chip--session">
+                            <SessionElapsedIndicator startedAtMs={sessionStartedAtMs ?? null} active={isStreaming} />
+                          </span>
+                        )}
                         <span className="xmb-game-meta-chip xmb-game-meta-chip--playtime">
                           <Clock size={10} className="xmb-meta-icon" />
                           {playtimeLabel}
@@ -1166,6 +1268,51 @@ export function ControllerLibraryPage({
                       </>
                     );
                   })()}
+                </div>
+              </div>
+            </div>
+          )}
+          {showGameHub && selectedGame && (
+            <div className="xmb-game-hub">
+              <div className="xmb-game-hub-panel">
+                <div className="xmb-game-hub-eyebrow">{topCategory === "all" ? "Game Hub" : selectedCategoryLabel}</div>
+                <div className="xmb-game-hub-title-row">
+                  {favoriteGameIdSet.has(selectedGame.id) && <Star className="xmb-game-hub-favorite" />}
+                  <div className="xmb-game-hub-title">{selectedGame.title}</div>
+                </div>
+                <p className="xmb-game-hub-description">{selectedGameDescription}</p>
+                <div className="xmb-game-meta xmb-game-hub-meta">
+                  {selectedGameSessionState && <span className="xmb-game-meta-chip xmb-game-meta-chip--session">{selectedGameSessionState}</span>}
+                </div>
+
+                <div className="xmb-game-hub-captures">
+                  {gameHubMediaLoading ? (
+                    <div className="xmb-game-hub-capture-empty">Scanning recent captures...</div>
+                  ) : gameHubMedia.length === 0 ? (
+                    <div className="xmb-game-hub-capture-empty">No recent captures.</div>
+                  ) : (
+                    <>
+                      <div className="xmb-game-hub-section-title">Recent Captures</div>
+                      <div className="xmb-game-hub-capture-grid">
+                      {gameHubMedia.map((item) => {
+                        const thumb = mediaThumbById[item.id] ?? item.thumbnailDataUrl ?? item.dataUrl;
+                        const captureLabel = item.kind === "video"
+                          ? `${Math.max(1, Math.round((item.durationMs ?? 0) / 1000))}s Clip`
+                          : "Screenshot";
+
+                        return (
+                          <div key={item.id} className="xmb-game-hub-capture">
+                            {thumb && <img src={thumb} alt={item.fileName} className="xmb-game-hub-capture-image" />}
+                            <div className="xmb-game-hub-capture-meta">
+                              <div className="xmb-game-hub-capture-name">{captureLabel}</div>
+                              <div className="xmb-game-hub-capture-date">{new Date(item.createdAtMs).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -1252,20 +1399,13 @@ export function ControllerLibraryPage({
           </>
         ) : (
           <>
-            {
-              (() => {
-                const Primary = controllerType === "ps" ? ButtonPSCross : ButtonA;
-                const Left = controllerType === "ps" ? ButtonPSSquare : ButtonX;
-                const Top = controllerType === "ps" ? ButtonPSTriangle : ButtonY;
-                return (
-                  <>
-                    <div className="xmb-btn-hint"><Primary className="xmb-btn-icon" size={24} /> <span>Play</span></div>
-                    <div className="xmb-btn-hint"><Left className="xmb-btn-icon" size={24} /> <span>Variant</span></div>
-                    <div className="xmb-btn-hint"><Top className="xmb-btn-icon" size={24} /> <span>Favorite</span></div>
-                  </>
-                );
-              })()
-            }
+            <div className="xmb-btn-hint">{renderFaceButton("primary", "xmb-btn-icon", 24)} <span>{currentStreamingGame && selectedGame && currentStreamingGame.id !== selectedGame.id ? "Switch" : "Play"}</span></div>
+            {selectedGame?.variants.length && selectedGame.variants.length > 1 && (
+              <div className="xmb-btn-hint">{renderFaceButton("secondary", "xmb-btn-icon", 24)} <span>Variant</span></div>
+            )}
+            {selectedGame && (
+              <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>{favoriteGameIdSet.has(selectedGame.id) ? "Unfavorite" : "Favorite"}</span></div>
+            )}
           </>
         )}
       </div>

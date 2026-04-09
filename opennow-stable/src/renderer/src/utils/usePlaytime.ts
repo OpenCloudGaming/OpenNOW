@@ -62,6 +62,29 @@ export function formatLastPlayed(isoString: string | null): string {
   return `${Math.floor(diffDays / 365)} yr ago`;
 }
 
+export function formatRemainingPlaytimeFromSubscription(
+  subscription: { isUnlimited: boolean; remainingHours: number } | null,
+  consumedHours = 0,
+): string {
+  if (!subscription) {
+    return "--";
+  }
+  if (subscription.isUnlimited) {
+    return "Unlimited";
+  }
+
+  const baseHours = Number.isFinite(subscription.remainingHours) ? subscription.remainingHours : 0;
+  const safeHours = Math.max(0, baseHours - Math.max(0, consumedHours));
+  const totalMinutes = Math.round(safeHours * 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
+  }
+  return `${minutes}m`;
+}
+
 export interface UsePlaytimeReturn {
   playtime: PlaytimeStore;
   startSession: (gameId: string) => void;
