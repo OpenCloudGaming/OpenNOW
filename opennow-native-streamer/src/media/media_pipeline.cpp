@@ -6,6 +6,7 @@
 
 #include "opennow/native/input_protocol.hpp"
 #include "opennow/native/macos_surface_renderer.hpp"
+#include "opennow/native/video_decoder_selector.hpp"
 
 #if defined(OPENNOW_HAS_FFMPEG)
 extern "C" {
@@ -503,11 +504,6 @@ bool MediaPipeline::EnsureVideoDecoder(std::string& error) {
   if (video_decoder_ctx_) {
     return true;
   }
-  const AVCodec* codec = FindVideoDecoder(video_codec_);
-  if (!codec) {
-    error = "Requested video decoder is unavailable in FFmpeg";
-    return false;
-  }
 
   auto cleanup_decoder = [this]() {
     if (video_decoder_ctx_) {
@@ -520,8 +516,15 @@ bool MediaPipeline::EnsureVideoDecoder(std::string& error) {
     hw_pixel_format_ = AV_PIX_FMT_NONE;
   };
 
-  auto initialize_decoder = [&](bool allow_hardware, std::string& init_error) -> bool {
+  auto initialize_decoder = [&](const VideoDecoderCandidate& candidate, std::string& init_error) -> bool {
     cleanup_decoder();
+    const AVCodec* codec = candidate.decoder_name.empty() ? FindVideoDecoder(video_codec_)
+                                                          : avcodec_find_decoder_by_name(candidate.decoder_name.c_str());
+    if (!codec) {
+      init_error = candidate.decoder_name.empty() ? "Requested video decoder is unavailable in FFmpeg"
+                                                  : "FFmpeg decoder backend was not found: " + candidate.decoder_name;
+      return false;
+    }
     video_decoder_ctx_ = avcodec_alloc_context3(codec);
     if (!video_decoder_ctx_) {
       init_error = "Failed to allocate video decoder context";
@@ -529,26 +532,24 @@ bool MediaPipeline::EnsureVideoDecoder(std::string& error) {
     }
     video_decoder_ctx_->opaque = this;
     decoder_name_ = codec->name ? codec->name : "unknown";
-    if (allow_hardware && !force_software_decode_) {
+    if (candidate.use_hw_device && candidate.hardware) {
       std::string hardware_error;
       TryInitializeHardwareDecode(codec, hardware_error);
       if (using_hardware_decode_) {
         video_decoder_ctx_->get_format = &MediaPipeline::SelectHardwarePixelFormat;
         video_decoder_ctx_->hw_device_ctx = av_buffer_ref(hw_device_ctx_);
-        if (using_native_surface_present_) {
-          LogVideoPath("video path: macOS VideoToolbox + Metal/CVPixelBuffer direct presentation");
-        } else {
-          LogVideoPath("video path: macOS VideoToolbox hardware decode + SDL YUV GPU upload");
-        }
       } else if (!hardware_error.empty()) {
-        Log(std::string("VideoToolbox initialization unavailable, using fallback path: ") + hardware_error);
+        init_error = hardware_error;
+        return false;
       }
     } else {
-      using_hardware_decode_ = false;
+      using_hardware_decode_ = candidate.hardware;
       hw_pixel_format_ = AV_PIX_FMT_NONE;
     }
-    if (!using_hardware_decode_) {
-      LogVideoPath(prefer_rgba_upload_ ? "video path: software decode + RGBA upload fallback" : "video path: software decode + SDL YUV/RGBA upload fallback");
+    if (using_hardware_decode_ && candidate.use_hw_device && using_native_surface_present_) {
+      LogVideoPath("video path: macOS VideoToolbox + Metal/CVPixelBuffer direct presentation");
+    } else {
+      LogVideoPath(candidate.path_description);
     }
     if (avcodec_open2(video_decoder_ctx_, codec, nullptr) < 0) {
       init_error = using_hardware_decode_ ? "Failed to open hardware-accelerated video decoder" : "Failed to open video decoder";
@@ -557,18 +558,22 @@ bool MediaPipeline::EnsureVideoDecoder(std::string& error) {
     return true;
   };
 
-  std::string hardware_attempt_error;
-  if (initialize_decoder(true, hardware_attempt_error)) {
-    return true;
+  const auto candidates = BuildVideoDecoderCandidates(video_codec_, force_software_decode_, prefer_rgba_upload_);
+  if (IsRaspberryPi4Runtime() && video_codec_ == "AV1") {
+    Log("Raspberry Pi 4 has no practical hardware AV1 decoder; selecting software AV1 decode fallback");
   }
-  if (!force_software_decode_ && (using_hardware_decode_ || !hardware_attempt_error.empty())) {
-    Log(std::string("Retrying video decoder with software fallback after hardware init/open failure: ") + hardware_attempt_error);
+
+  std::string last_error;
+  for (const auto& candidate : candidates) {
+    std::string attempt_error;
+    if (initialize_decoder(candidate, attempt_error)) {
+      return true;
+    }
+    last_error = attempt_error;
+    const auto backend_name = candidate.decoder_name.empty() ? std::string("default decoder") : candidate.decoder_name;
+    Log(std::string("Decoder candidate rejected (") + backend_name + "): " + attempt_error);
   }
-  std::string software_attempt_error;
-  if (initialize_decoder(false, software_attempt_error)) {
-    return true;
-  }
-  error = software_attempt_error.empty() ? hardware_attempt_error : software_attempt_error;
+  error = last_error.empty() ? "Failed to initialize any video decoder candidate" : last_error;
   cleanup_decoder();
   return false;
 }

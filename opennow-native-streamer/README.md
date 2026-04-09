@@ -90,6 +90,13 @@ macOS presentation paths now prefer:
 
 The macOS direct path removes the previous mandatory `av_hwframe_transfer_data(...) -> CPU plane staging -> SDL_UpdateNVTexture/SDL_UpdateYUVTexture(...)` hot path for VideoToolbox-backed frames. Remaining copies in the preferred path are limited to the native surface/Metal presentation plumbing needed to bind `CVPixelBuffer` planes as Metal textures for final draw. If native-surface presentation fails at runtime, the fallback to the SDL upload path is sticky and immediately reflected in diagnostics and overlay path reporting.
 
+Raspberry Pi 4 decoder selection now prefers:
+- `h264_v4l2m2m` for H.264 when the Pi 4 V4L2 M2M decoder is available
+- `hevc_v4l2m2m` for H.265/HEVC when the Pi 4 V4L2 M2M decoder is available
+- software decode fallback when the Pi hardware path is unavailable or fails to initialize
+
+On Raspberry Pi 4, AV1 is not advertised as a hardware-decoded path. The native streamer logs that limitation and falls back to software AV1 decode when AV1 is negotiated. Diagnostics and the native overlay report the actual FFmpeg decoder/backend name, whether the path is hardware or software, and the active render/upload path.
+
 Still intentionally partial in this task:
 - decoder/hwaccel selection is conservative and software-first
 - microphone parity is not migrated yet

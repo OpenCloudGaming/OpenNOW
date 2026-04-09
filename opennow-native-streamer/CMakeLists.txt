@@ -17,6 +17,7 @@ set(OPENNOW_SOURCES
   src/input/input_protocol.cpp
   src/input/input_bridge.cpp
   src/media/media_pipeline.cpp
+  src/media/video_decoder_selector.cpp
   src/platform/macos_surface_renderer_stub.cpp
   src/platform/platform_info.cpp
   src/webrtc/av1_rtp_depacketizer.cpp
