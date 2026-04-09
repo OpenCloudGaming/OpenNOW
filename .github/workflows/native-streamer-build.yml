@@ -21,16 +21,16 @@ concurrency:
 jobs:
   build-native-streamer:
     name: native-${{ matrix.label }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - label: macos-arm64
-            os: macos-14
+            runner: macos-14
             triplet: arm64-osx
           - label: windows-x64
-            os: windows-2022
+            runner: blacksmith-4vcpu-windows-2025
             triplet: x64-windows
 
     env:
