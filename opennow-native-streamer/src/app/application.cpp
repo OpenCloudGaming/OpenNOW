@@ -356,7 +356,7 @@ void Application::RenderDebugOverlay() {
     std::ostringstream fps;
     fps.setf(std::ios::fixed);
     fps.precision(1);
-    fps << "FPS: " << snapshot.presented_fps;
+    fps << "Present FPS: " << snapshot.presented_fps;
     lines.emplace_back(fps.str());
   }
   lines.emplace_back("Resolution: " + std::to_string(snapshot.width) + "x" + std::to_string(snapshot.height));

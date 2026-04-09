@@ -28,7 +28,6 @@ std::mutex g_ffmpeg_log_mutex;
 bool g_suppressed_deprecated_pixel_format_warning = false;
 constexpr std::size_t kMaxPendingVideoFrames = 3;
 constexpr std::size_t kTargetBufferedVideoFrames = 1;
-constexpr std::uint64_t kMaxSingleBufferedFrameAgeUs = 20000;
 
 void OpenNowFfmpegLogCallback(void* avcl, int level, const char* fmt, va_list args) {
   if (fmt != nullptr && std::strstr(fmt, "deprecated pixel format used") != nullptr) {
@@ -193,11 +192,7 @@ void MediaPipeline::RenderFrame() {
       dropped_pending_video_frames_ += 1;
       dropped_catchup_video_frames_ += 1;
     }
-    const bool should_upload_next_frame = !pending_video_frames_.empty() &&
-                                          (!video_texture_ || pending_video_frames_.size() > kTargetBufferedVideoFrames ||
-                                           (render_started_at_us - pending_video_frames_.front().staged_at_us) >=
-                                               kMaxSingleBufferedFrameAgeUs);
-    if (should_upload_next_frame) {
+    if (!pending_video_frames_.empty()) {
       pending_frame = std::move(pending_video_frames_.front());
       pending_video_frames_.pop_front();
     }
