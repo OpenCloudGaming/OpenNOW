@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <iostream>
 #include <sstream>
 
 namespace opennow::native {
@@ -206,6 +207,7 @@ bool WebRtcSession::HandleOffer(const std::string& offer_sdp, std::string& error
   pending_offer_sdp_ = offer_sdp;
   media_failure_emitted_ = false;
   manual_media_candidate_injected_ = false;
+  Log(std::string("HandleOffer invoked with raw offer length=") + std::to_string(offer_sdp.size()));
   auto fixed_offer = FixServerIp(offer_sdp, !media_connection_ip_.empty() ? media_connection_ip_ : server_ip_);
   last_server_ice_ufrag_ = ExtractIceUfragFromOffer(fixed_offer);
   fixed_offer = RewriteH265LevelIdByProfile(fixed_offer, 153, 153);
@@ -221,14 +223,16 @@ bool WebRtcSession::HandleOffer(const std::string& offer_sdp, std::string& error
   }
 
   ConfigureTracksFromOffer(fixed_offer);
+  Log("Configured negotiated media parameters from remote offer");
   if (!EnsurePeerConnection(error)) {
+    Log(std::string("EnsurePeerConnection failed before offer apply: ") + error);
     EmitState("failed", "Peer connection setup failed", error);
     return false;
   }
 
   try {
     answer_sent_ = false;
-    Log(std::string("Applying remote offer SDP (") + std::to_string(fixed_offer.size()) + " chars)");
+    Log(std::string("Entering remote SDP apply (length=") + std::to_string(fixed_offer.size()) + ")");
     peer_connection_->setRemoteDescription(rtc::Description(fixed_offer, rtc::Description::Type::Offer));
     Log("setRemoteDescription completed successfully");
     EmitState("connecting", "Remote offer applied");
@@ -253,6 +257,7 @@ bool WebRtcSession::HandleOffer(const std::string& offer_sdp, std::string& error
 void WebRtcSession::AddRemoteIce(const std::string& candidate_json) {
 #if defined(OPENNOW_HAS_LIBDATACHANNEL)
   if (!peer_connection_) {
+    Log("Ignoring remote ICE candidate because peer connection is not initialized yet");
     return;
   }
   const auto candidate = FindJsonString(candidate_json, "candidate");
@@ -278,6 +283,7 @@ void WebRtcSession::AddRemoteIce(const std::string& candidate_json) {
 
 void WebRtcSession::Disconnect() {
 #if defined(OPENNOW_HAS_LIBDATACHANNEL)
+  Log("Disconnecting native WebRTC session");
   if (reliable_input_channel_) reliable_input_channel_->close();
   if (partial_input_channel_) partial_input_channel_->close();
   if (control_channel_) control_channel_->close();
@@ -323,6 +329,7 @@ void WebRtcSession::Emit(const std::string& json) {
 }
 
 void WebRtcSession::Log(const std::string& message) const {
+  std::cerr << "[OpenNOW Native Streamer][WebRTC] " << message << std::endl;
   if (logger_) {
     logger_(message);
   }
@@ -344,19 +351,30 @@ bool WebRtcSession::EnsurePeerConnection(std::string& error) {
   return false;
 #else
   if (peer_connection_) {
+    Log("Reusing existing native peer connection instance");
     return true;
   }
   try {
     rtc::Configuration config;
     config.disableAutoNegotiation = true;
     config.forceMediaTransport = true;
+    Log("Creating native peer connection");
     peer_connection_ = std::make_shared<rtc::PeerConnection>(config);
+    Log("Native peer connection created successfully");
     ConfigurePeerCallbacks();
+    Log("Configured peer connection callbacks");
     ConfigureInputChannels();
+    Log("Configured local input data channels");
     ConfigureTrackHandlers();
+    Log("Configured media/data track handlers");
     return true;
   } catch (const std::exception& ex) {
     error = ex.what();
+    Log(std::string("Native peer connection creation threw std::exception: ") + error);
+    return false;
+  } catch (...) {
+    error = "Unknown non-standard exception while creating peer connection";
+    Log(error);
     return false;
   }
 #endif
@@ -365,6 +383,7 @@ bool WebRtcSession::EnsurePeerConnection(std::string& error) {
 void WebRtcSession::ConfigurePeerCallbacks() {
 #if defined(OPENNOW_HAS_LIBDATACHANNEL)
   peer_connection_->onStateChange([this](rtc::PeerConnection::State state) {
+    Log(std::string("Peer connection state changed: ") + std::to_string(static_cast<int>(state)));
     switch (state) {
       case rtc::PeerConnection::State::Connected:
         if (!media_receive_supported_) {
@@ -396,51 +415,79 @@ void WebRtcSession::ConfigurePeerCallbacks() {
   });
 
   peer_connection_->onLocalDescription([this](rtc::Description description) {
-    const auto raw_sdp = ExtractLocalDescriptionSdp(description);
-    Log(std::string("Native local description callback fired (type=") + description.typeString() + ", sdpLength=" + std::to_string(raw_sdp.size()) + ")");
-    if (description.typeString() != "answer") {
-      Log(std::string("Ignoring local description callback because type is ") + description.typeString());
-      return;
+    try {
+      const auto raw_sdp = ExtractLocalDescriptionSdp(description);
+      Log(std::string("Native local description callback fired (type=") + description.typeString() + ", sdpLength=" + std::to_string(raw_sdp.size()) + ")");
+      if (description.typeString() != "answer") {
+        Log(std::string("Ignoring local description callback because type is ") + description.typeString());
+        return;
+      }
+      if (answer_sent_) {
+        Log("Ignoring duplicate answer callback because answer was already sent");
+        return;
+      }
+      auto answer = MungeAnswerSdp(raw_sdp, max_bitrate_kbps_);
+      Log(std::string("Generated munged answer SDP (length=") + std::to_string(answer.size()) + ")");
+      const auto credentials = ExtractIceCredentials(answer);
+      const auto nvst = BuildNvstSdp(
+          width_,
+          height_,
+          width_,
+          height_,
+          fps_,
+          max_bitrate_kbps_,
+          preferred_codec_,
+          color_quality_,
+          partial_reliable_threshold_ms_,
+          credentials);
+      Log(std::string("Generated NVST answer SDP (length=") + std::to_string(nvst.size()) + ")");
+      answer_sent_ = true;
+      Emit(BuildEnvelope(
+          "answer",
+          std::string("{\"sdp\":\"") + EscapeJson(answer) + "\",\"nvstSdp\":\"" + EscapeJson(nvst) + "\"}"));
+      Log("Emitted native answer envelope to Electron");
+    } catch (const std::exception& ex) {
+      Log(std::string("Local description callback failed: ") + ex.what());
+      EmitState("failed", "Native answer generation failed", ex.what());
+    } catch (...) {
+      Log("Local description callback failed with unknown non-standard exception");
+      EmitState("failed", "Native answer generation failed", "unknown exception");
     }
-    if (answer_sent_) {
-      Log("Ignoring duplicate answer callback because answer was already sent");
-      return;
-    }
-    auto answer = MungeAnswerSdp(raw_sdp, max_bitrate_kbps_);
-    const auto credentials = ExtractIceCredentials(answer);
-    const auto nvst = BuildNvstSdp(
-        width_,
-        height_,
-        width_,
-        height_,
-        fps_,
-        max_bitrate_kbps_,
-        preferred_codec_,
-        color_quality_,
-        partial_reliable_threshold_ms_,
-        credentials);
-    answer_sent_ = true;
-    Emit(BuildEnvelope(
-        "answer",
-        std::string("{\"sdp\":\"") + EscapeJson(answer) + "\",\"nvstSdp\":\"" + EscapeJson(nvst) + "\"}"));
   });
 
   peer_connection_->onLocalCandidate([this](rtc::Candidate candidate) {
-    Log(std::string("Emitting local ICE candidate (mid=") + candidate.mid() + ", answerSent=" + (answer_sent_ ? std::string("true") : std::string("false")) + "): " + candidate.candidate());
-    std::ostringstream payload;
-    payload << "{\"candidate\":\"" << EscapeJson(candidate.candidate()) << "\",\"sdpMid\":";
-    if (candidate.mid().empty()) {
-      payload << "null";
-    } else {
-      payload << "\"" << EscapeJson(candidate.mid()) << "\"";
+    try {
+      Log(std::string("Local ICE callback fired (mid=") + candidate.mid() + ", answerSent=" + (answer_sent_ ? std::string("true") : std::string("false")) + "): " + candidate.candidate());
+      std::ostringstream payload;
+      payload << "{\"candidate\":\"" << EscapeJson(candidate.candidate()) << "\",\"sdpMid\":";
+      if (candidate.mid().empty()) {
+        payload << "null";
+      } else {
+        payload << "\"" << EscapeJson(candidate.mid()) << "\"";
+      }
+      payload << ",\"sdpMLineIndex\":null,\"usernameFragment\":null}";
+      Emit(BuildEnvelope("local-ice", payload.str()));
+      Log("Emitted local ICE envelope to Electron");
+    } catch (const std::exception& ex) {
+      Log(std::string("Local ICE callback failed: ") + ex.what());
+    } catch (...) {
+      Log("Local ICE callback failed with unknown non-standard exception");
     }
-    payload << ",\"sdpMLineIndex\":null,\"usernameFragment\":null}";
-    Emit(BuildEnvelope("local-ice", payload.str()));
   });
 
   peer_connection_->onDataChannel([this](std::shared_ptr<rtc::DataChannel> channel) {
+    Log(std::string("Remote data channel callback fired for label=") + channel->label());
     if (channel->label() == "control_channel") {
       control_channel_ = channel;
+      channel->onOpen([this]() {
+        Log("Control data channel open callback fired");
+      });
+      channel->onClosed([this]() {
+        Log("Control data channel closed callback fired");
+      });
+      channel->onError([this](std::string error) {
+        Log(std::string("Control data channel error callback fired: ") + error);
+      });
       channel->onMessage([this](rtc::message_variant message) {
         if (std::holds_alternative<std::string>(message)) {
           Log(std::string("Control channel: ") + std::get<std::string>(message));
@@ -462,6 +509,9 @@ void WebRtcSession::ConfigureTracksFromOffer(const std::string& offer_sdp) {
   if (media_pipeline_) {
     media_pipeline_->ConfigureAudioCodec(audio_codec, audio_payload, audio_clock, audio_channels);
   }
+  Log(std::string("Configured track parameters from offer: audioCodec=") + audio_codec + ", audioPayloadType=" +
+      std::to_string(audio_payload_type_) + ", audioClockRate=" + std::to_string(audio_clock_rate_) + ", audioChannels=" +
+      std::to_string(audio_channels_));
 }
 
 void WebRtcSession::ConfigureInputChannels() {
@@ -469,13 +519,22 @@ void WebRtcSession::ConfigureInputChannels() {
   rtc::DataChannelInit reliable{};
   reliable.reliability.unordered = false;
   reliable_input_channel_ = peer_connection_->createDataChannel("input_channel_v1", reliable);
+  Log("Created reliable input data channel");
   reliable_input_channel_->onOpen([this]() {
     input_ready_ = true;
     const std::vector<std::uint8_t> handshake = {0x0e, 0x02};
     reliable_input_channel_->send(RtcBinaryFromBytes(handshake));
+    Log("Reliable input data channel open callback fired; sent handshake");
     EmitState("connecting", "Reliable input channel open");
   });
+  reliable_input_channel_->onClosed([this]() {
+    Log("Reliable input data channel closed callback fired");
+  });
+  reliable_input_channel_->onError([this](std::string error) {
+    Log(std::string("Reliable input data channel error callback fired: ") + error);
+  });
   reliable_input_channel_->onMessage([this](rtc::message_variant message) {
+    Log("Reliable input data channel message callback fired");
     if (const auto* bytes = std::get_if<rtc::binary>(&message)) {
       HandleReliableInputMessage(BytesFromRtcBinary(*bytes));
       return;
@@ -489,6 +548,16 @@ void WebRtcSession::ConfigureInputChannels() {
   partial.reliability.unordered = true;
   partial.reliability.maxPacketLifeTime = std::chrono::milliseconds(partial_reliable_threshold_ms_);
   partial_input_channel_ = peer_connection_->createDataChannel("input_channel_partially_reliable", partial);
+  Log(std::string("Created partially reliable input data channel with maxPacketLifeTimeMs=") + std::to_string(partial_reliable_threshold_ms_));
+  partial_input_channel_->onOpen([this]() {
+    Log("Partially reliable input data channel open callback fired");
+  });
+  partial_input_channel_->onClosed([this]() {
+    Log("Partially reliable input data channel closed callback fired");
+  });
+  partial_input_channel_->onError([this](std::string error) {
+    Log(std::string("Partially reliable input data channel error callback fired: ") + error);
+  });
 #endif
 }
 
@@ -497,6 +566,7 @@ void WebRtcSession::ConfigureTrackHandlers() {
   media_receive_supported_ = true;
   peer_connection_->onTrack([this](std::shared_ptr<rtc::Track> track) {
     const auto description = track->description();
+    Log(std::string("Remote track callback fired (mid=") + description.mid() + ", type=" + description.type() + ")");
     if (description.mid() == "video" || description.type() == "video") {
       video_track_ = track;
       if (negotiated_video_codec_ == "H265") {
@@ -610,6 +680,7 @@ void WebRtcSession::HandleReliableInputMessage(const std::vector<std::uint8_t>& 
   }
   if (version > 0) {
     input_protocol_version_ = version;
+    Log(std::string("Reliable input protocol handshake/version received: ") + std::to_string(version));
     if (input_ready_callback_) {
       input_ready_callback_(version);
     }
