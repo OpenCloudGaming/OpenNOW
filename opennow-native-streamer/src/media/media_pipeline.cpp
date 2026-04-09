@@ -438,8 +438,16 @@ void MediaPipeline::TuneFramePacingTarget(std::uint64_t now_us) {
   const auto drop_ratio =
       received_video_frames_ == 0 ? 0.0 : static_cast<double>(dropped_pending_video_frames_ + dropped_catchup_video_frames_) /
                                         static_cast<double>(received_video_frames_);
+  std::size_t pending_depth = 0;
+  {
+    std::lock_guard<std::mutex> lock(pending_video_mutex_);
+    pending_depth = pending_video_frames_.size();
+  }
+  const bool sustained_queue_growth = pending_depth > kMinBufferedVideoFrames;
+  const bool excessive_duplicate_presents = duplicate_ratio > 0.35;
+  const bool excessive_frame_drops = drop_ratio > 0.015;
   target_buffered_video_frames_ =
-      (using_native_surface_present_ || duplicate_ratio > 0.35 || drop_ratio > 0.015) ? kMaxBufferedVideoFrames : kMinBufferedVideoFrames;
+      (sustained_queue_growth || excessive_duplicate_presents || excessive_frame_drops) ? kMaxBufferedVideoFrames : kMinBufferedVideoFrames;
 }
 
 std::size_t MediaPipeline::TargetBufferedVideoFrames() const {
@@ -900,6 +908,8 @@ bool MediaPipeline::UploadPendingFrame(const PendingVideoFrame& frame) {
     if (!macos_surface_renderer_->PresentNativeSurface(frame.native_surface, frame.width, frame.height, error)) {
       Log(std::string("Native-surface present failed; falling back to staged upload path: ") + error);
       using_native_surface_present_ = false;
+      target_buffered_video_frames_ = kMinBufferedVideoFrames;
+      LogVideoPath("video path: macOS VideoToolbox hardware decode + SDL YUV GPU upload");
       return false;
     }
     upload_time_total_us_ += TimestampUs() - upload_started_at_us;

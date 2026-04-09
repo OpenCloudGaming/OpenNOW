@@ -84,11 +84,11 @@ This project now owns a minimum viable native stream path when `SDL3`, `FFmpeg`,
 - the Chromium/WebRTC renderer backend remains the default fallback when the setting is off
 
 macOS presentation paths now prefer:
-- `VideoToolbox + Metal/CVPixelBuffer direct presentation` when VideoToolbox surfaces can stay GPU/native-surface backed through the final present path
-- `VideoToolbox hardware decode + SDL YUV GPU upload` as the cross-platform hardware fallback when direct native-surface presentation is unavailable
-- `software decode + SDL YUV/RGBA upload fallback` if hardware decode or native-surface presentation cannot be sustained
+- `VideoToolbox + Metal/CVPixelBuffer direct presentation`: native macOS path, where VideoToolbox-decoded `CVPixelBuffer` surfaces are retained, exposed as `CVMetalTexture`, and presented through `CAMetalLayer`
+- `VideoToolbox hardware decode + SDL YUV GPU upload`: fallback hardware path, where decoded frames are transferred to CPU-visible planes and uploaded through SDL YUV textures
+- `software decode + SDL YUV/RGBA upload fallback`: fallback software path, where FFmpeg decodes to CPU-visible frames and the renderer uploads YUV or RGBA textures through SDL
 
-The macOS direct path removes the previous mandatory `av_hwframe_transfer_data(...) -> CPU plane staging -> SDL_UpdateNVTexture/SDL_UpdateYUVTexture(...)` hot path for VideoToolbox-backed frames. The remaining fallback paths are still retained for Windows/Linux/Linux ARM portability and for recovery if native-surface presentation fails at runtime.
+The macOS direct path removes the previous mandatory `av_hwframe_transfer_data(...) -> CPU plane staging -> SDL_UpdateNVTexture/SDL_UpdateYUVTexture(...)` hot path for VideoToolbox-backed frames. Remaining copies in the preferred path are limited to the native surface/Metal presentation plumbing needed to bind `CVPixelBuffer` planes as Metal textures for final draw. If native-surface presentation fails at runtime, the fallback to the SDL upload path is sticky and immediately reflected in diagnostics and overlay path reporting.
 
 Still intentionally partial in this task:
 - decoder/hwaccel selection is conservative and software-first
