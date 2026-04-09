@@ -2813,6 +2813,16 @@ export function App(): JSX.Element {
   }
 
   const showLaunchOverlay = streamStatus !== "idle" || launchError !== null || isSwitchingGame;
+  const hasActiveStreamView = streamStatus !== "idle";
+  const showLaunchErrorOverlay = launchError !== null;
+  const showControllerLaunchLoading =
+    !isSwitchingGame
+    && settings.controllerMode
+    && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming" && streamStatus !== "connecting"));
+  const showDesktopLaunchLoading =
+    !isSwitchingGame
+    && !settings.controllerMode
+    && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming"));
   const consumedHours =
     streamStatus === "streaming"
       ? Math.floor(sessionElapsedSeconds / 60) / 60
@@ -2824,7 +2834,7 @@ export function App(): JSX.Element {
     const loadingStatus = launchError ? launchError.stage : toLoadingStatus(streamStatus);
     return (
       <>
-        {streamStatus !== "idle" && (
+        {hasActiveStreamView && (
           <StreamView
             className={isSwitchingGame ? "sv--switching" : undefined}
             videoRef={videoRef}
@@ -2996,7 +3006,7 @@ export function App(): JSX.Element {
             />
           </div>
         )}
-        {streamStatus !== "idle" && streamStatus !== "streaming" && streamStatus !== "connecting" && settings.controllerMode && !isSwitchingGame && (
+        {showControllerLaunchLoading && (
           <ControllerStreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
             gamePoster={streamingGame?.imageUrl}
@@ -3022,7 +3032,7 @@ export function App(): JSX.Element {
             enableBackgroundAnimations={settings.controllerBackgroundAnimations}
           />
         )}
-        {streamStatus !== "idle" && streamStatus !== "streaming" && !settings.controllerMode && !isSwitchingGame && (
+        {showDesktopLaunchLoading && (
           <StreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
             gameCover={streamingGame?.imageUrl}
