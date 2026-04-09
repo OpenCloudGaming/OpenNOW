@@ -87,6 +87,9 @@ class MediaPipeline {
   void ConfigureFfmpegLogging();
   void LogVideoPath(const std::string& path);
   void MaybeLogVideoDiagnostics(std::uint64_t now_us);
+  void ResetVideoDecoder(const std::string& reason, bool force_software);
+  void NoteDecodedVideoFrame();
+  void HandleVideoDecodeFailure(const std::string& reason);
 
 #if defined(OPENNOW_HAS_SDL3) && defined(OPENNOW_HAS_FFMPEG)
   bool EnsureVideoDecoder(std::string& error);
@@ -128,10 +131,14 @@ class MediaPipeline {
   std::uint64_t queue_depth_total_ = 0;
   std::uint64_t last_diagnostics_log_us_ = 0;
   std::uint64_t last_presented_at_us_ = 0;
+  std::uint64_t consecutive_video_packets_without_frame_ = 0;
+  std::uint64_t hardware_decode_resets_ = 0;
+  std::uint64_t software_decode_fallbacks_ = 0;
   bool logged_stage_thread_ = false;
   bool logged_upload_thread_ = false;
   bool logged_decoder_path_ = false;
   bool using_hardware_decode_ = false;
+  bool force_software_decode_ = false;
   bool prefer_rgba_upload_ = false;
   std::string video_path_ = "video path: awaiting decoder initialization";
   std::string decoder_name_ = "unknown";

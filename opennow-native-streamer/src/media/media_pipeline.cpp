@@ -22,6 +22,11 @@ extern "C" {
 
 namespace opennow::native {
 
+namespace {
+constexpr std::uint64_t kMaxPacketsWithoutDecodedFrameBeforeReset = 30;
+constexpr std::uint64_t kMaxHardwareDecodeResetsBeforeSoftwareFallback = 2;
+}
+
 #if defined(OPENNOW_HAS_FFMPEG)
 namespace {
 std::mutex g_ffmpeg_log_mutex;
@@ -278,7 +283,8 @@ void MediaPipeline::MaybeLogVideoDiagnostics(std::uint64_t now_us) {
   diagnostics << "Video diagnostics: received=" << received_video_frames_ << ", staged=" << staged_video_frames_
               << ", uploaded=" << uploaded_video_frames_ << ", presented_unique=" << presented_video_frames_
               << ", presented_duplicate=" << duplicate_present_cycles_ << ", dropped_pending=" << dropped_pending_video_frames_
-              << ", dropped_catchup=" << dropped_catchup_video_frames_;
+              << ", dropped_catchup=" << dropped_catchup_video_frames_ << ", decode_stall_packets="
+              << consecutive_video_packets_without_frame_;
   {
     std::lock_guard<std::mutex> lock(pending_video_mutex_);
     diagnostics << ", pending_queue=" << pending_video_frames_.size();
@@ -300,6 +306,62 @@ void MediaPipeline::MaybeLogVideoDiagnostics(std::uint64_t now_us) {
   diagnostics << ", path=" << video_path_;
   Log(diagnostics.str());
   last_diagnostics_log_us_ = now_us;
+}
+
+void MediaPipeline::ResetVideoDecoder(const std::string& reason, bool force_software) {
+#if defined(OPENNOW_HAS_FFMPEG)
+  Log(std::string(force_software ? "Switching video decode path to software after stall: " : "Resetting video decoder after stall: ") +
+      reason);
+  if (video_decoder_ctx_) {
+    avcodec_free_context(&video_decoder_ctx_);
+  }
+  if (hw_device_ctx_) {
+    av_buffer_unref(&hw_device_ctx_);
+  }
+  using_hardware_decode_ = false;
+  hw_pixel_format_ = AV_PIX_FMT_NONE;
+  consecutive_video_packets_without_frame_ = 0;
+  logged_decoder_path_ = false;
+  if (force_software) {
+    force_software_decode_ = true;
+    software_decode_fallbacks_ += 1;
+    LogVideoPath(prefer_rgba_upload_ ? "video path: software decode + RGBA upload fallback"
+                                     : "video path: software decode + SDL YUV/RGBA upload fallback");
+  } else {
+    hardware_decode_resets_ += 1;
+  }
+#else
+  (void)reason;
+  (void)force_software;
+#endif
+}
+
+void MediaPipeline::NoteDecodedVideoFrame() {
+  consecutive_video_packets_without_frame_ = 0;
+  if (using_hardware_decode_) {
+    hardware_decode_resets_ = 0;
+  }
+}
+
+void MediaPipeline::HandleVideoDecodeFailure(const std::string& reason) {
+  if (!using_hardware_decode_) {
+    return;
+  }
+  consecutive_video_packets_without_frame_ += 1;
+  if (consecutive_video_packets_without_frame_ == 1 || consecutive_video_packets_without_frame_ == kMaxPacketsWithoutDecodedFrameBeforeReset) {
+    std::ostringstream message;
+    message << "VideoToolbox decode produced no frame (" << consecutive_video_packets_without_frame_ << " consecutive packet"
+            << (consecutive_video_packets_without_frame_ == 1 ? "" : "s") << "): " << reason;
+    Log(message.str());
+  }
+  if (consecutive_video_packets_without_frame_ < kMaxPacketsWithoutDecodedFrameBeforeReset) {
+    return;
+  }
+  if (hardware_decode_resets_ >= kMaxHardwareDecodeResetsBeforeSoftwareFallback) {
+    ResetVideoDecoder(reason, true);
+    return;
+  }
+  ResetVideoDecoder(reason, false);
 }
 
 #if defined(OPENNOW_HAS_SDL3) && defined(OPENNOW_HAS_FFMPEG)
@@ -377,7 +439,7 @@ bool MediaPipeline::EnsureVideoDecoder(std::string& error) {
     }
     video_decoder_ctx_->opaque = this;
     decoder_name_ = codec->name ? codec->name : "unknown";
-    if (allow_hardware) {
+    if (allow_hardware && !force_software_decode_) {
       std::string hardware_error;
       TryInitializeHardwareDecode(codec, hardware_error);
       if (using_hardware_decode_) {
@@ -405,7 +467,7 @@ bool MediaPipeline::EnsureVideoDecoder(std::string& error) {
   if (initialize_decoder(true, hardware_attempt_error)) {
     return true;
   }
-  if (using_hardware_decode_ || !hardware_attempt_error.empty()) {
+  if (!force_software_decode_ && (using_hardware_decode_ || !hardware_attempt_error.empty())) {
     Log(std::string("Retrying video decoder with software fallback after hardware init/open failure: ") + hardware_attempt_error);
   }
   std::string software_attempt_error;
@@ -457,11 +519,28 @@ void MediaPipeline::DecodeVideoFrame(const std::vector<std::uint8_t>& encoded_fr
   packet_->data = const_cast<std::uint8_t*>(encoded_frame.data());
   packet_->size = static_cast<int>(encoded_frame.size());
   const auto decode_started_at_us = TimestampUs();
-  if (avcodec_send_packet(video_decoder_ctx_, packet_) < 0) {
+  const int send_result = avcodec_send_packet(video_decoder_ctx_, packet_);
+  if (send_result < 0) {
+    HandleVideoDecodeFailure(std::string("avcodec_send_packet failed with code ") + std::to_string(send_result));
     return;
   }
-  while (avcodec_receive_frame(video_decoder_ctx_, video_frame_) == 0) {
-    StageFrame(video_frame_);
+  bool decoded_frame = false;
+  while (true) {
+    const int receive_result = avcodec_receive_frame(video_decoder_ctx_, video_frame_);
+    if (receive_result == 0) {
+      decoded_frame = true;
+      NoteDecodedVideoFrame();
+      StageFrame(video_frame_);
+      continue;
+    }
+    if (receive_result == AVERROR(EAGAIN) || receive_result == AVERROR_EOF) {
+      break;
+    }
+    HandleVideoDecodeFailure(std::string("avcodec_receive_frame failed with code ") + std::to_string(receive_result));
+    break;
+  }
+  if (!decoded_frame) {
+    HandleVideoDecodeFailure("No frame decoded");
   }
   decode_time_total_us_ += TimestampUs() - decode_started_at_us;
 }
