@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -36,6 +37,9 @@ struct DebugOverlaySnapshot {
   int width = 0;
   int height = 0;
   double presented_fps = 0.0;
+  std::size_t pending_queue_depth = 0;
+  double average_queue_depth = 0.0;
+  std::uint64_t dropped_frames = 0;
 };
 
 enum class PendingVideoFormat {
@@ -117,6 +121,8 @@ class MediaPipeline {
   std::uint64_t decode_time_total_us_ = 0;
   std::uint64_t upload_time_total_us_ = 0;
   std::uint64_t render_time_total_us_ = 0;
+  std::uint64_t queue_depth_samples_ = 0;
+  std::uint64_t queue_depth_total_ = 0;
   std::uint64_t last_diagnostics_log_us_ = 0;
   std::uint64_t last_presented_at_us_ = 0;
   bool logged_stage_thread_ = false;
@@ -132,7 +138,7 @@ class MediaPipeline {
   std::uint64_t fps_window_frames_ = 0;
   double current_presented_fps_ = 0.0;
   mutable std::mutex pending_video_mutex_;
-  std::optional<PendingVideoFrame> pending_video_frame_;
+  std::deque<PendingVideoFrame> pending_video_frames_;
 #if defined(OPENNOW_HAS_SDL3) && defined(OPENNOW_HAS_FFMPEG)
   ::AVCodecContext* video_decoder_ctx_ = nullptr;
   ::AVCodecContext* audio_decoder_ctx_ = nullptr;

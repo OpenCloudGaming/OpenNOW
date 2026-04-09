@@ -26,6 +26,7 @@ namespace opennow::native {
 namespace {
 std::mutex g_ffmpeg_log_mutex;
 bool g_suppressed_deprecated_pixel_format_warning = false;
+constexpr std::size_t kMaxPendingVideoFrames = 3;
 
 void OpenNowFfmpegLogCallback(void* avcl, int level, const char* fmt, va_list args) {
   if (fmt != nullptr && std::strstr(fmt, "deprecated pixel format used") != nullptr) {
@@ -184,9 +185,11 @@ void MediaPipeline::RenderFrame() {
   std::optional<PendingVideoFrame> pending_frame;
   {
     std::lock_guard<std::mutex> lock(pending_video_mutex_);
-    if (pending_video_frame_) {
-      pending_frame = std::move(pending_video_frame_);
-      pending_video_frame_.reset();
+    if (!pending_video_frames_.empty()) {
+      pending_frame = std::move(pending_video_frames_.front());
+      pending_video_frames_.pop_front();
+      queue_depth_total_ += pending_video_frames_.size();
+      queue_depth_samples_ += 1;
     }
   }
   if (pending_frame) {
@@ -221,6 +224,13 @@ DebugOverlaySnapshot MediaPipeline::GetDebugOverlaySnapshot() const {
   snapshot.width = current_video_width_;
   snapshot.height = current_video_height_;
   snapshot.presented_fps = current_presented_fps_;
+  {
+    std::lock_guard<std::mutex> lock(pending_video_mutex_);
+    snapshot.pending_queue_depth = pending_video_frames_.size();
+  }
+  snapshot.average_queue_depth =
+      queue_depth_samples_ == 0 ? 0.0 : static_cast<double>(queue_depth_total_) / static_cast<double>(queue_depth_samples_);
+  snapshot.dropped_frames = dropped_pending_video_frames_;
   return snapshot;
 }
 
@@ -253,6 +263,14 @@ void MediaPipeline::MaybeLogVideoDiagnostics(std::uint64_t now_us) {
   std::ostringstream diagnostics;
   diagnostics << "Video diagnostics: received=" << received_video_frames_ << ", staged=" << staged_video_frames_
               << ", dropped_pending=" << dropped_pending_video_frames_ << ", presented=" << presented_video_frames_;
+  {
+    std::lock_guard<std::mutex> lock(pending_video_mutex_);
+    diagnostics << ", pending_queue=" << pending_video_frames_.size();
+  }
+  if (queue_depth_samples_ != 0) {
+    diagnostics << ", avg_queue_depth="
+                << (static_cast<double>(queue_depth_total_) / static_cast<double>(queue_depth_samples_));
+  }
   if (staged_video_frames_ != 0) {
     diagnostics << ", avg_decode_ms=" << (static_cast<double>(decode_time_total_us_) / 1000.0 / static_cast<double>(staged_video_frames_));
   }
@@ -536,10 +554,11 @@ bool MediaPipeline::StageFrameDirect(AVFrame* frame) {
   }
   {
     std::lock_guard<std::mutex> lock(pending_video_mutex_);
-    if (pending_video_frame_) {
+    if (pending_video_frames_.size() >= kMaxPendingVideoFrames) {
+      pending_video_frames_.pop_front();
       dropped_pending_video_frames_ += 1;
     }
-    pending_video_frame_ = std::move(pending);
+    pending_video_frames_.push_back(std::move(pending));
   }
   current_video_width_ = pending.width;
   current_video_height_ = pending.height;
@@ -581,10 +600,11 @@ void MediaPipeline::StageFrameRgba(AVFrame* frame) {
   sws_scale(sws_context_, frame->data, frame->linesize, 0, frame->height, dst_data, dst_linesize);
   {
     std::lock_guard<std::mutex> lock(pending_video_mutex_);
-    if (pending_video_frame_) {
+    if (pending_video_frames_.size() >= kMaxPendingVideoFrames) {
+      pending_video_frames_.pop_front();
       dropped_pending_video_frames_ += 1;
     }
-    pending_video_frame_ = std::move(pending);
+    pending_video_frames_.push_back(std::move(pending));
   }
   current_video_width_ = pending.width;
   current_video_height_ = pending.height;
