@@ -98,9 +98,11 @@
       "synopsis": "Open-source cloud gaming client",
       "description": "OpenNOW is an open-source Electron-based client for cloud gaming services.",
       "desktop": {
-        "MimeType": "x-scheme-handler/opennow;",
-        "StartupWMClass": "OpenNOW"
-      }
+        "entry": {
+		"MimeType": "x-scheme-handler/opennow;",
+        	"StartupWMClass": "OpenNOW"
+      		}
+	}
     },
     "rpm": {
       "packageName": "opennow",
