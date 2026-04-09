@@ -1817,6 +1817,21 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
 
             <div className="settings-row">
               <label className="settings-label">
+                Show Stats on Stream Launch
+                <span className="settings-hint">Automatically show the stats overlay when a new stream starts.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.showStatsOnLaunch}
+                  onChange={(e) => handleChange("showStatsOnLaunch", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
                 <span className="settings-label-title">
                   Controller Mode Library
                   <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>

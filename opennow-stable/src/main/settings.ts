@@ -49,6 +49,8 @@ export interface Settings {
   microphoneDeviceId: string;
   /** Hide stream buttons (mic/fullscreen/end-session) while streaming */
   hideStreamButtons: boolean;
+  /** Show the stats overlay automatically when a stream launches */
+  showStatsOnLaunch: boolean;
   /** Enable controller-first media bar layout for library browsing */
   controllerMode: boolean;
   /** Play subtle sounds in controller library mode */
@@ -101,6 +103,7 @@ const DEFAULT_SETTINGS: Settings = {
   microphoneMode: "disabled",
   microphoneDeviceId: "",
   hideStreamButtons: false,
+  showStatsOnLaunch: false,
   controllerMode: false,
   controllerUiSounds: false,
   controllerBackgroundAnimations: false,
