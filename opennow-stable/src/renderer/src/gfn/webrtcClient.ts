@@ -3656,27 +3656,39 @@ export class GfnWebRtcClient {
       const mci = session.mediaConnectionInfo;
       const rawIp = extractPublicIp(mci.ip);
       if (rawIp && mci.port > 0) {
-        const candidateStr = `candidate:1 1 udp 2130706431 ${rawIp} ${mci.port} typ host`;
-        this.log(`Injecting manual ICE candidate: ${rawIp}:${mci.port}`);
+        // Try UDP host candidate first, then a TCP host candidate as a fallback.
+        // Some GFN endpoints advertise rtsps (TCP/TLS) ports; injecting a TCP
+        // candidate can help when UDP is blocked but the server accepts TCP.
+        const candidateUdp = `candidate:1 1 udp 2130706431 ${rawIp} ${mci.port} typ host`;
+        const candidateTcp = `candidate:1 1 tcp 1518149375 ${rawIp} ${mci.port} typ host tcptype active`;
+        const candidatesToTry = [candidateUdp, candidateTcp];
+
+        this.log(`Injecting manual ICE candidates: ${rawIp}:${mci.port} (udp,tcp)`);
 
         // Try sdpMid "0" first, then "1", "2", "3" (matching Rust fallback)
         const mids = ["0", "1", "2", "3"];
         let injected = false;
-        for (const mid of mids) {
-          try {
-            await pc.addIceCandidate({
-              candidate: candidateStr,
-              sdpMid: mid,
-              sdpMLineIndex: parseInt(mid, 10),
-              usernameFragment: serverIceUfrag || undefined,
-            });
-            this.log(`Manual ICE candidate injected (sdpMid=${mid})`);
-            injected = true;
-            break;
-          } catch (error) {
-            this.log(`Manual ICE candidate failed for sdpMid=${mid}: ${String(error)}`);
+
+        for (const cand of candidatesToTry) {
+          const proto = cand.includes("udp") ? "udp" : "tcp";
+          for (const mid of mids) {
+            try {
+              await pc.addIceCandidate({
+                candidate: cand,
+                sdpMid: mid,
+                sdpMLineIndex: parseInt(mid, 10),
+                usernameFragment: serverIceUfrag || undefined,
+              });
+              this.log(`Manual ICE candidate injected (sdpMid=${mid}, proto=${proto})`);
+              injected = true;
+              break;
+            } catch (error) {
+              this.log(`Manual ICE candidate failed for sdpMid=${mid}, proto=${proto}: ${String(error)}`);
+            }
           }
+          if (injected) break;
         }
+
         if (!injected) {
           this.log("Warning: Could not inject manual ICE candidate on any sdpMid");
         }
@@ -3688,6 +3700,170 @@ export class GfnWebRtcClient {
     }
 
     this.log("=== handleOffer COMPLETE — waiting for ICE connectivity and tracks ===");
+
+    // Relay/TURN fallback: if ICE never reaches connected (or fails), and
+    // the session-provided ICE servers include TURN server URLs, attempt to
+    // recreate the PeerConnection with `iceTransportPolicy: 'relay'` to force
+    // use of TURN relays. This helps clients behind restrictive NAT/firewalls.
+    let triedRelay = false;
+    const relayFallbackTimeoutMs = 7000;
+
+    const attemptRelayFallback = async (): Promise<void> => {
+      if (triedRelay) return;
+      triedRelay = true;
+
+      try {
+        const hasTurn = (session.iceServers ?? []).some((s) =>
+          (s.urls ?? []).some((u) => typeof u === "string" && (u.startsWith("turn:") || u.startsWith("turns:"))),
+        );
+        if (!hasTurn) {
+          this.log("Relay fallback: no TURN servers present in session. Skipping relay attempt.");
+          return;
+        }
+
+        this.log("Relay fallback: starting relay/TURN retry (iceTransportPolicy=relay)");
+
+        // Tear down any existing peer connection and create a new one configured
+        // to use only relays.
+        this.cleanupPeerConnection();
+
+        const relayRtcConfig: RTCConfiguration = {
+          iceServers: toRtcIceServers(session.iceServers),
+          bundlePolicy: "max-bundle",
+          rtcpMuxPolicy: "require",
+          iceTransportPolicy: "relay",
+        } as RTCConfiguration;
+
+        const relayPc = new RTCPeerConnection(relayRtcConfig);
+        this.pc = relayPc;
+        this.diagnostics.connectionState = relayPc.connectionState;
+        this.diagnostics.serverRegion = this.serverRegion;
+        this.diagnostics.gpuType = this.gpuType;
+        this.emitStats();
+
+        this.resetInputState();
+        this.resetDiagnostics();
+        this.createDataChannels(relayPc);
+        this.installInputCapture(this.options.videoElement);
+        this.setupStatsPolling();
+
+        relayPc.onicecandidate = (event) => {
+          if (!event.candidate) return;
+          const payload = event.candidate.toJSON();
+          if (!payload.candidate) return;
+          this.log(`Relay PC local ICE candidate: ${payload.candidate}`);
+          const candidate: IceCandidatePayload = {
+            candidate: payload.candidate,
+            sdpMid: payload.sdpMid,
+            sdpMLineIndex: payload.sdpMLineIndex,
+            usernameFragment: payload.usernameFragment,
+          };
+          window.openNow.sendIceCandidate(candidate).catch((error) => {
+            this.log(`Relay PC failed to send local ICE candidate: ${String(error)}`);
+          });
+        };
+
+        relayPc.ontrack = (evt) => {
+          this.log(`Relay PC track received: kind=${evt.track.kind}, id=${evt.track.id}`);
+          this.attachTrack(evt.track);
+          this.configureReceiverForLowLatency(evt.receiver, evt.track.kind);
+        };
+
+        relayPc.onconnectionstatechange = () => {
+          this.diagnostics.connectionState = relayPc.connectionState;
+          this.emitStats();
+          this.log(`Relay PC connection state: ${relayPc.connectionState}`);
+        };
+
+        relayPc.oniceconnectionstatechange = () => {
+          this.log(`Relay PC ICE connection state: ${relayPc.iceConnectionState}`);
+        };
+
+        // Re-run the SDP answer flow against the same (filtered) offer.
+        await relayPc.setRemoteDescription({ type: "offer", sdp: filteredOffer });
+        await this.flushQueuedCandidates();
+
+        if (this.micManager) {
+          this.micManager.setPeerConnection(relayPc);
+          await this.micManager.attachTrackToPeerConnection();
+        }
+
+        // Re-apply codec preferences on the new PC
+        this.applyCodecPreferences(relayPc, effectiveCodec, preferredHevcProfileId);
+
+        const relayAnswer = await relayPc.createAnswer();
+        if (relayAnswer.sdp) {
+          relayAnswer.sdp = mungeAnswerSdp(relayAnswer.sdp, effectiveSettings.maxBitrateKbps);
+        }
+        await relayPc.setLocalDescription(relayAnswer);
+        this.log("Relay PC local description set, waiting for ICE gathering...");
+
+        const finalRelaySdp = await this.waitForIceGathering(relayPc, 5000);
+        this.log(`Relay ICE gathering done, final SDP length: ${finalRelaySdp.length} chars`);
+
+        const relayCredentials = extractIceCredentials(finalRelaySdp);
+        const nvstSdpRelay = buildNvstSdp({
+          width,
+          height,
+          clientViewportWidth,
+          clientViewportHeight,
+          fps: effectiveSettings.fps,
+          maxBitrateKbps: effectiveSettings.maxBitrateKbps,
+          partialReliableThresholdMs: this.partialReliableThresholdMs,
+          codec: effectiveCodec,
+          colorQuality: effectiveSettings.colorQuality,
+          credentials: relayCredentials,
+        });
+
+        await window.openNow.sendAnswer({ sdp: finalRelaySdp, nvstSdp: nvstSdpRelay });
+        this.log("Relay fallback: sent relay answer to signaling");
+
+        // Attempt manual mediaConnectionInfo injection again (UDP/TCP) — server may
+        // accept TCP connections even when UDP fails.
+        if (session.mediaConnectionInfo) {
+          const mci = session.mediaConnectionInfo;
+          const rawIp = extractPublicIp(mci.ip);
+          if (rawIp && mci.port > 0) {
+            const candidateUdp = `candidate:1 1 udp 2130706431 ${rawIp} ${mci.port} typ host`;
+            const candidateTcp = `candidate:1 1 tcp 1518149375 ${rawIp} ${mci.port} typ host tcptype active`;
+            const candidatesToTry = [candidateUdp, candidateTcp];
+            const mids = ["0", "1", "2", "3"];
+            let injectedRelay = false;
+            for (const cand of candidatesToTry) {
+              const proto = cand.includes("udp") ? "udp" : "tcp";
+              for (const mid of mids) {
+                try {
+                  await relayPc.addIceCandidate({ candidate: cand, sdpMid: mid, sdpMLineIndex: parseInt(mid, 10), usernameFragment: relayCredentials.ufrag || undefined });
+                  this.log(`Relay PC manual ICE candidate injected (sdpMid=${mid}, proto=${proto})`);
+                  injectedRelay = true;
+                  break;
+                } catch (e) {
+                  this.log(`Relay PC manual ICE candidate failed for sdpMid=${mid}, proto=${proto}: ${String(e)}`);
+                }
+              }
+              if (injectedRelay) break;
+            }
+            if (!injectedRelay) this.log("Relay PC: could not inject manual media candidate on any sdpMid");
+          }
+        }
+      } catch (e) {
+        this.log(`Relay fallback failed: ${String(e)}`);
+      }
+    };
+
+    // Trigger fallback on ICE failure or timeout
+    pc.oniceconnectionstatechange = () => {
+      this.log(`ICE connection state: ${pc.iceConnectionState}`);
+      if ((pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") && !triedRelay) {
+        void attemptRelayFallback();
+      }
+    };
+
+    setTimeout(() => {
+      if (!triedRelay && this.pc && this.pc.connectionState !== "connected" && this.pc.iceConnectionState !== "connected") {
+        void attemptRelayFallback();
+      }
+    }, relayFallbackTimeoutMs);
   }
 
   async addRemoteCandidate(candidate: IceCandidatePayload): Promise<void> {
