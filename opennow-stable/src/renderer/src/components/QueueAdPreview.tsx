@@ -88,6 +88,7 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
   ref,
 ): JSX.Element {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const originalVolumeRef = useRef<number | null>(null);
   const playbackStateRef = useRef<QueueAdPlaybackState>("loading");
   // Guards against firing "ended" twice when the proactive timeupdate path
   // already fired it before the native ended event arrives.
@@ -172,6 +173,15 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
       return;
     }
 
+    if (originalVolumeRef.current === null) {
+      originalVolumeRef.current = video.volume;
+    }
+    try {
+      video.volume = Math.max(0, Math.min(1, (originalVolumeRef.current ?? 1) * 0.25));
+    } catch {
+      // Ignore if setting volume is not permitted
+    }
+
     const handlePlaying = (): void => {
       setPlayback("playing");
       onPlaybackEventRef.current?.("playing");
@@ -239,6 +249,13 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
       video.removeEventListener("waiting", handleWaiting);
       video.removeEventListener("stalled", handleStalled);
       video.removeEventListener("error", handleError);
+      if (originalVolumeRef.current !== null) {
+        try {
+          video.volume = originalVolumeRef.current;
+        } catch {
+          // ignore
+        }
+      }
     };
   }, [mediaUrl]); // intentionally excludes onPlaybackEvent — stored in ref above
 
