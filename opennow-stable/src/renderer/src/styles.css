@@ -6506,6 +6506,7 @@ button.game-card-store-chip.active:hover {
 .csl-status-container {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 24px;
   margin-top: 16px;
   padding-top: 24px;
@@ -6523,6 +6524,8 @@ button.game-card-store-chip.active:hover {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 16px;
+  width: min(100%, 420px);
+  align-self: flex-start;
   padding: 16px 18px;
   border-radius: 18px;
   border: 1px solid rgba(88, 217, 138, 0.18);
@@ -6579,6 +6582,7 @@ button.game-card-store-chip.active:hover {
 }
 
 .csl-ad-media {
+  width: 100%;
   overflow: hidden;
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -6615,6 +6619,37 @@ button.game-card-store-chip.active:hover {
 
 .csl-ad-media .queue-ad-preview-retry {
   background: rgba(255, 255, 255, 0.08);
+}
+
+.csl-error-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(100%, 420px);
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 119, 119, 0.24);
+  background: rgba(44, 10, 10, 0.76);
+}
+
+.csl-error-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #ffb1b1;
+}
+
+.csl-error-description {
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.csl-error-code {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 /* Progress Indicator */

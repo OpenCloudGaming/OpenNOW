@@ -2883,6 +2883,15 @@ export function App(): JSX.Element {
             adState={effectiveAdState}
             activeAd={activeQueueAd}
             activeAdMediaUrl={activeQueueAdMediaUrl}
+            error={
+              launchError
+                ? {
+                    title: launchError.title,
+                    description: launchError.description,
+                    code: launchError.codeLabel,
+                  }
+                : undefined
+            }
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             adPreviewRef={queueAdPreviewRef}
             playtimeData={playtime}
@@ -2982,6 +2991,15 @@ export function App(): JSX.Element {
             adState={effectiveAdState}
             activeAd={activeQueueAd}
             activeAdMediaUrl={activeQueueAdMediaUrl}
+            error={
+              launchError
+                ? {
+                    title: launchError.title,
+                    description: launchError.description,
+                    code: launchError.codeLabel,
+                  }
+                : undefined
+            }
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             adPreviewRef={queueAdPreviewRef}
             playtimeData={playtime}
