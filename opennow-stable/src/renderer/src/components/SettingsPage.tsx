@@ -24,6 +24,8 @@ interface SettingsPageProps {
   onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
 }
 
+type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
+
 const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
 
 const colorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [
@@ -521,9 +523,10 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [savedIndicator, setSavedIndicator] = useState(false);
   const [activeTab, setActiveTab] = useState<"preferences" | "thanks">("preferences");
   const [thanksData, setThanksData] = useState<ThankYouDataResult | null>(null);
-  const [thanksLoading, setThanksLoading] = useState(false);
+  const [thanksLoadState, setThanksLoadState] = useState<ThanksLoadState>("idle");
   const [thanksFetchError, setThanksFetchError] = useState<string | null>(null);
-  const [thanksRequested, setThanksRequested] = useState(false);
+  const thanksRequestIdRef = useRef(0);
+  const thanksMountedRef = useRef(true);
   const [regionSearch, setRegionSearch] = useState("");
   const [regionDropdownOpen, setRegionDropdownOpen] = useState(false);
 
@@ -959,38 +962,46 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   }, [handleChange, settings]);
 
   useEffect(() => {
-    if (activeTab !== "thanks" || thanksData || thanksLoading || thanksRequested) {
+    return () => {
+      thanksMountedRef.current = false;
+      thanksRequestIdRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== "thanks") {
+      thanksRequestIdRef.current += 1;
+      setThanksLoadState((current) => (current === "loading" ? "idle" : current));
       return;
     }
 
-    let cancelled = false;
-
-    async function loadThanks(): Promise<void> {
-      setThanksLoading(true);
-      setThanksFetchError(null);
-      setThanksRequested(true);
-      try {
-        const data = await window.openNow.getThanksData();
-        if (!cancelled) {
-          setThanksData(data);
-        }
-      } catch (error) {
-        console.error("[SettingsPage] Failed to load thanks data:", error);
-        if (!cancelled) {
-          setThanksFetchError("Unable to load community acknowledgements right now.");
-        }
-      } finally {
-        if (!cancelled) {
-          setThanksLoading(false);
-        }
-      }
+    if (thanksData || thanksLoadState === "loading") {
+      return;
     }
 
-    void loadThanks();
-    return () => {
-      cancelled = true;
-    };
-  }, [activeTab, thanksData, thanksLoading, thanksRequested]);
+    const requestId = ++thanksRequestIdRef.current;
+    setThanksLoadState("loading");
+    setThanksFetchError(null);
+
+    void window.openNow.getThanksData().then(
+      (data) => {
+        if (!thanksMountedRef.current || requestId !== thanksRequestIdRef.current) {
+          return;
+        }
+        setThanksData(data);
+        setThanksLoadState("loaded");
+      },
+      (error) => {
+        console.error("[SettingsPage] Failed to load thanks data:", error);
+        if (!thanksMountedRef.current || requestId !== thanksRequestIdRef.current) {
+          return;
+        }
+        setThanksData(null);
+        setThanksFetchError("Unable to load community acknowledgements right now.");
+        setThanksLoadState("error");
+      },
+    );
+  }, [activeTab, thanksData, thanksLoadState]);
 
   const renderPersonLink = useCallback((person: ThankYouContributor | ThankYouSupporter, content: JSX.Element) => {
     if (!person.profileUrl) {
@@ -1080,7 +1091,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               <p className="settings-section-subtitle">People improving OpenNOW in code, fixes, and features.</p>
             </div>
           </div>
-          {thanksLoading && !thanksData ? (
+          {thanksLoadState === "loading" && !thanksData ? (
             <div className="settings-thanks-state">
               <Loader size={16} className="settings-loading-icon" />
               <span>Loading contributors from GitHub…</span>
@@ -1106,7 +1117,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               <p className="settings-section-subtitle">Public GitHub Sponsors backing the work, plus private supporters when available.</p>
             </div>
           </div>
-          {thanksLoading && !thanksData ? (
+          {thanksLoadState === "loading" && !thanksData ? (
             <div className="settings-thanks-state">
               <Loader size={16} className="settings-loading-icon" />
               <span>Loading supporters from GitHub Sponsors…</span>
