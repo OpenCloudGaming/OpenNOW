@@ -84,6 +84,7 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
+          path-type: inherit
           update: true
           install: >-
             mingw-w64-ucrt-x86_64-gcc
@@ -114,10 +115,33 @@ jobs:
         shell: pwsh
         run: |
           $mingwBin = 'C:\msys64\ucrt64\bin'
+          if (-not (Test-Path $mingwBin)) {
+            throw "Expected MSYS2 UCRT64 bin directory not found: $mingwBin"
+          }
+
+          $pkgConfigExe = @(
+            (Join-Path $mingwBin 'pkgconf.exe'),
+            (Join-Path $mingwBin 'pkg-config.exe')
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $pkgConfigExe) {
+            throw "Could not find pkgconf.exe or pkg-config.exe in $mingwBin"
+          }
+
+          $gccExe = Join-Path $mingwBin 'gcc.exe'
+          $gxxExe = Join-Path $mingwBin 'g++.exe'
+          if (-not (Test-Path $gccExe)) {
+            throw "Could not find gcc.exe in $mingwBin"
+          }
+          if (-not (Test-Path $gxxExe)) {
+            throw "Could not find g++.exe in $mingwBin"
+          }
+
           "PATH=$mingwBin;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "PKG_CONFIG=$mingwBin\pkg-config.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CC=$mingwBin\gcc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CXX=$mingwBin\g++.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PKG_CONFIG=$pkgConfigExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CC=$gccExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CXX=$gxxExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PKG_CONFIG_PATH=C:/msys64/ucrt64/lib/pkgconfig;C:/msys64/ucrt64/share/pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "CGO_CFLAGS=-IC:/msys64/ucrt64/include" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "CGO_LDFLAGS=-LC:/msys64/ucrt64/lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
@@ -142,9 +166,12 @@ jobs:
         shell: pwsh
         run: |
           go version
+          Get-Command $env:PKG_CONFIG | Format-List Source, Name
+          Get-Command $env:CC | Format-List Source, Name
           & $env:PKG_CONFIG --modversion gstreamer-1.0
           & $env:PKG_CONFIG --modversion gstreamer-app-1.0
           & $env:PKG_CONFIG --modversion gstreamer-video-1.0
+          & $env:PKG_CONFIG --modversion sdl2
 
       - name: Build native streamer on Unix
         if: runner.os != 'Windows'
