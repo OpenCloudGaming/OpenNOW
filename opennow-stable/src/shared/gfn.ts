@@ -187,6 +187,27 @@ export interface AuthSession {
   user: AuthUser;
 }
 
+export interface ThankYouContributor {
+  login: string;
+  avatarUrl: string;
+  profileUrl: string;
+  contributions: number;
+}
+
+export interface ThankYouSupporter {
+  name: string;
+  avatarUrl?: string;
+  profileUrl?: string;
+  isPrivate: boolean;
+}
+
+export interface ThankYouDataResult {
+  contributors: ThankYouContributor[];
+  supporters: ThankYouSupporter[];
+  contributorsError?: string;
+  supportersError?: string;
+}
+
 export interface AuthLoginRequest {
   providerIdpId?: string;
 }
@@ -594,6 +615,7 @@ export interface OpenNowApi {
   showMediaInFolder(input: { filePath: string }): Promise<void>;
 
   deleteCache(): Promise<void>;
+  getThanksData(): Promise<ThankYouDataResult>;
 }
 
 export interface ScreenshotSaveRequest {
