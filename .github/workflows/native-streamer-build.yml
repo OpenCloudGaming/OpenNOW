@@ -92,7 +92,6 @@ jobs:
             mingw-w64-ucrt-x86_64-gstreamer
             mingw-w64-ucrt-x86_64-gst-plugins-base
             mingw-w64-ucrt-x86_64-gst-plugins-good
-            mingw-w64-ucrt-x86_64-gst-plugins-bad
             mingw-w64-ucrt-x86_64-SDL2
 
       - name: Install Linux native dependencies
@@ -249,7 +248,7 @@ jobs:
           export GST_REGISTRY="${runtime_root}/registry.bin"
           export GST_REGISTRY_1_0="${runtime_root}/registry.bin"
 
-          for element in appsrc decodebin rtph264depay rtpav1depay rtpopusdepay opusdec; do
+          for element in appsrc decodebin rtph264depay rtpopusdepay opusdec; do
             "${runtime_root}/tools/gst-inspect-1.0.exe" "${element}" >/dev/null
           done
 

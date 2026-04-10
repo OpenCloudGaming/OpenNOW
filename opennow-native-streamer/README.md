@@ -87,12 +87,13 @@ Current CI caveats:
 
 - Linux arm64 / Raspberry Pi is intentionally not greenwashed in CI yet. The codebase treats it as a real target, but the workflow leaves it disabled until runner and dependency provisioning are reproducible.
 - The workflow installs native GStreamer / SDL2 development dependencies per platform before building.
-- Windows builds use MSYS2 UCRT64 packages for the CGO compiler, `pkg-config`, GStreamer, SDL2, and the required GStreamer plugin sets for the shipped RTP media paths, and the workflow bundles the matching runtime DLLs and plugin tree into the artifact so end users do not need a separate MSYS2 installation.
+- Windows builds use MSYS2 UCRT64 packages for the CGO compiler, `pkg-config`, GStreamer, SDL2, and the GStreamer plugin sets required for the currently validated shipped RTP media path, and the workflow bundles the matching runtime DLLs and plugin tree into the artifact so end users do not need a separate MSYS2 installation.
 - A separately installed official GStreamer MSVC runtime does not satisfy the MSYS2/UCRT build produced by CI. Use the bundled Windows artifact contents as-is.
+- The current packaged Windows runtime is validated for the H.264 + Opus path. AV1 RTP depayload support is not asserted in CI on Windows and should be treated as deferred until the MSYS2 runtime ships a reproducible `rtpav1depay` path.
 
 ## Platform notes
 
-- Windows: intended decoder path is Media Foundation / D3D11-backed GStreamer plugins when available. The CI artifact is packaged as a self-contained folder with the matching MSYS2/UCRT runtime and GStreamer plugin set.
+- Windows: intended decoder path is Media Foundation / D3D11-backed GStreamer plugins when available. The CI artifact is packaged as a self-contained folder with the matching MSYS2/UCRT runtime and GStreamer plugin set. Windows packaged artifacts currently validate the H.264 + Opus native path; AV1 remains an explicit follow-up.
 - macOS: intended decoder path is VideoToolbox-backed GStreamer plugins.
 - Linux x64: intended decoder path is VA-API/NVDEC depending on host.
 - Linux ARM / Raspberry Pi: keep decoder selection capability-based. V4L2, VA-API, and software fallback must remain valid options.
