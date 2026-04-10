@@ -12,6 +12,7 @@ export const IPC_CHANNELS = {
   GAMES_RESOLVE_LAUNCH_ID: "games:resolve-launch-id",
   CREATE_SESSION: "gfn:create-session",
   POLL_SESSION: "gfn:poll-session",
+  REPORT_SESSION_AD: "gfn:report-session-ad",
   STOP_SESSION: "gfn:stop-session",
   GET_ACTIVE_SESSIONS: "gfn:get-active-sessions",
   CLAIM_SESSION: "gfn:claim-session",
@@ -29,6 +30,7 @@ export const IPC_CHANNELS = {
   SETTINGS_GET: "settings:get",
   SETTINGS_SET: "settings:set",
   SETTINGS_RESET: "settings:reset",
+  MICROPHONE_PERMISSION_GET: "microphone:permission:get",
   LOGS_EXPORT: "logs:export",
   LOGS_GET_RENDERER: "logs:get-renderer",
   SCREENSHOT_SAVE: "screenshot:save",
@@ -45,6 +47,7 @@ export const IPC_CHANNELS = {
   CACHE_REFRESH_MANUAL: "cache:refresh-manual",
   CACHE_STATUS_UPDATE: "cache:status-update",
   CACHE_DELETE_ALL: "cache:delete-all",
+  COMMUNITY_GET_THANKS: "community:get-thanks",
   // Media browsing
   MEDIA_LIST_BY_GAME: "media:list-by-game",
   MEDIA_THUMBNAIL: "media:thumbnail",

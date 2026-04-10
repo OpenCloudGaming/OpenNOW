@@ -74,6 +74,30 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
 
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
+export type RuntimePlatform =
+  | "aix"
+  | "android"
+  | "cygwin"
+  | "darwin"
+  | "freebsd"
+  | "haiku"
+  | "linux"
+  | "netbsd"
+  | "openbsd"
+  | "sunos"
+  | "win32"
+  | "unknown";
+
+export type MacOsMicrophoneAccessStatus = "not-determined" | "granted" | "denied" | "restricted" | "unknown";
+
+export interface MicrophonePermissionResult {
+  platform: RuntimePlatform;
+  isMacOs: boolean;
+  status: MacOsMicrophoneAccessStatus | "not-applicable";
+  granted: boolean;
+  canRequest: boolean;
+  shouldUseBrowserApi: boolean;
+}
 
 export interface Settings {
   resolution: string;
@@ -96,6 +120,7 @@ export interface Settings {
   microphoneMode: MicrophoneMode;
   microphoneDeviceId: string;
   hideStreamButtons: boolean;
+  showStatsOnLaunch: boolean;
   controllerMode: boolean;
   controllerUiSounds: boolean;
   autoLoadControllerLibrary: boolean;
@@ -184,6 +209,27 @@ export interface AuthSession {
   provider: LoginProvider;
   tokens: AuthTokens;
   user: AuthUser;
+}
+
+export interface ThankYouContributor {
+  login: string;
+  avatarUrl: string;
+  profileUrl: string;
+  contributions: number;
+}
+
+export interface ThankYouSupporter {
+  name: string;
+  avatarUrl?: string;
+  profileUrl?: string;
+  isPrivate: boolean;
+}
+
+export interface ThankYouDataResult {
+  contributors: ThankYouContributor[];
+  supporters: ThankYouSupporter[];
+  contributorsError?: string;
+  supportersError?: string;
 }
 
 export interface AuthLoginRequest {
@@ -309,6 +355,25 @@ export interface SessionStopRequest {
   deviceId?: string;
 }
 
+export type SessionAdAction = "start" | "pause" | "resume" | "finish" | "cancel";
+
+export interface SessionAdReportRequest {
+  token?: string;
+  streamingBaseUrl?: string;
+  serverIp?: string;
+  zone: string;
+  sessionId: string;
+  clientId?: string;
+  deviceId?: string;
+  adId: string;
+  action: SessionAdAction;
+  clientTimestamp?: number;
+  watchedTimeInMs?: number;
+  pausedTimeInMs?: number;
+  cancelReason?: string;
+  errorInfo?: string;
+}
+
 export interface IceServer {
   urls: string[];
   username?: string;
@@ -320,6 +385,7 @@ export interface MediaConnectionInfo {
   port: number;
 }
 
+/** Server-negotiated stream profile received from CloudMatch after session ready */
 export interface NegotiatedStreamProfile {
   resolution?: string;
   fps?: number;
@@ -327,11 +393,95 @@ export interface NegotiatedStreamProfile {
   enableL4S?: boolean;
 }
 
+export interface SessionAdMediaFile {
+  mediaFileUrl?: string;
+  encodingProfile?: string;
+}
+
+export interface SessionOpportunityInfo {
+  state?: string;
+  queuePaused?: boolean;
+  gracePeriodSeconds?: number;
+  message?: string;
+  title?: string;
+  description?: string;
+}
+
+export interface SessionAdInfo {
+  adId: string;
+  state?: number;
+  adState?: number;
+  adUrl?: string;
+  mediaUrl?: string;
+  adMediaFiles?: SessionAdMediaFile[];
+  clickThroughUrl?: string;
+  adLengthInSeconds?: number;
+  durationMs?: number;
+  title?: string;
+  description?: string;
+}
+
+export interface SessionAdState {
+  isAdsRequired: boolean;
+  sessionAdsRequired?: boolean;
+  isQueuePaused?: boolean;
+  gracePeriodSeconds?: number;
+  message?: string;
+  sessionAds: SessionAdInfo[];
+  ads: SessionAdInfo[];
+  opportunity?: SessionOpportunityInfo;
+  /**
+   * True when the server explicitly returned sessionAds=null (transient gap
+   * between polls). False/absent when ads were populated by the server or
+   * when the list was explicitly cleared client-side after a failed ad action.
+   * Used by mergeAdState to decide whether to restore the previous ad list.
+   */
+  serverSentEmptyAds?: boolean;
+  enableL4S?: boolean;
+}
+
+export function getSessionAdItems(adState: SessionAdState | undefined): SessionAdInfo[] {
+  return adState?.sessionAds ?? adState?.ads ?? [];
+}
+
+export function isSessionAdsRequired(adState: SessionAdState | undefined): boolean {
+  return adState?.sessionAdsRequired ?? adState?.isAdsRequired ?? false;
+}
+
+export function getSessionAdOpportunity(adState: SessionAdState | undefined): SessionOpportunityInfo | undefined {
+  return adState?.opportunity;
+}
+
+export function isSessionQueuePaused(adState: SessionAdState | undefined): boolean {
+  return getSessionAdOpportunity(adState)?.queuePaused ?? adState?.isQueuePaused ?? false;
+}
+
+export function getSessionAdGracePeriodSeconds(adState: SessionAdState | undefined): number | undefined {
+  return getSessionAdOpportunity(adState)?.gracePeriodSeconds ?? adState?.gracePeriodSeconds;
+}
+
+export function getSessionAdMessage(adState: SessionAdState | undefined): string | undefined {
+  const opportunity = getSessionAdOpportunity(adState);
+  return opportunity?.message ?? opportunity?.description ?? adState?.message;
+}
+
+export function getPreferredSessionAdMediaUrl(ad: SessionAdInfo | undefined): string | undefined {
+  return ad?.adMediaFiles?.find((mediaFile) => mediaFile.mediaFileUrl)?.mediaFileUrl ?? ad?.adUrl ?? ad?.mediaUrl;
+}
+
+export function getSessionAdDurationMs(ad: SessionAdInfo | undefined): number | undefined {
+  if (typeof ad?.adLengthInSeconds === "number" && Number.isFinite(ad.adLengthInSeconds) && ad.adLengthInSeconds > 0) {
+    return Math.round(ad.adLengthInSeconds * 1000);
+  }
+  return ad?.durationMs;
+}
+
 export interface SessionInfo {
   sessionId: string;
   status: number;
   queuePosition?: number;
   seatSetupStep?: number;
+  adState?: SessionAdState;
   zone: string;
   streamingBaseUrl?: string;
   serverIp: string;
@@ -415,6 +565,7 @@ export interface OpenNowApi {
   resolveLaunchAppId(input: ResolveLaunchIdRequest): Promise<string | null>;
   createSession(input: SessionCreateRequest): Promise<SessionInfo>;
   pollSession(input: SessionPollRequest): Promise<SessionInfo>;
+  reportSessionAd(input: SessionAdReportRequest): Promise<SessionInfo>;
   stopSession(input: SessionStopRequest): Promise<void>;
   /** Get list of active sessions (status 2 or 3) */
   getActiveSessions(token?: string, streamingBaseUrl?: string): Promise<ActiveSessionInfo[]>;
@@ -437,6 +588,7 @@ export interface OpenNowApi {
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
   resetSettings(): Promise<Settings>;
+  getMicrophonePermission(): Promise<MicrophonePermissionResult>;
   /** Export logs in redacted format */
   exportLogs(format?: "text" | "json"): Promise<string>;
   /** Ping all regions and return latency results */
@@ -491,6 +643,7 @@ export interface OpenNowApi {
 
   /** Fetch current GFN queue wait times from the PrintedWaste API */
   fetchPrintedWasteQueue(): Promise<PrintedWasteQueueData>;
+  getThanksData(): Promise<ThankYouDataResult>;
 }
 
 export interface ScreenshotSaveRequest {

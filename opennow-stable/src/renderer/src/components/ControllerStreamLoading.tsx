@@ -1,7 +1,16 @@
 import { Loader2, Zap } from "lucide-react";
-import type { JSX } from "react";
+import type { JSX, Ref } from "react";
+import {
+  getPreferredSessionAdMediaUrl,
+  getSessionAdDurationMs,
+  getSessionAdGracePeriodSeconds,
+  getSessionAdMessage,
+  isSessionQueuePaused,
+} from "@shared/gfn";
+import type { SessionAdInfo, SessionAdState } from "@shared/gfn";
 import { formatPlaytime } from "../utils/usePlaytime";
 import type { PlaytimeStore } from "../utils/usePlaytime";
+import { QueueAdPreview, type QueueAdPlaybackEvent, type QueueAdPreviewHandle } from "./QueueAdPreview";
 
 export interface ControllerStreamLoadingProps {
   gameTitle: string;
@@ -9,6 +18,16 @@ export interface ControllerStreamLoadingProps {
   gameDescription?: string;
   status: "queue" | "setup" | "starting" | "connecting";
   queuePosition?: number;
+  adState?: SessionAdState;
+  activeAd?: SessionAdInfo;
+  activeAdMediaUrl?: string;
+  error?: {
+    title: string;
+    description: string;
+    code?: string;
+  };
+  onAdPlaybackEvent?: (event: QueueAdPlaybackEvent, adId: string) => void;
+  adPreviewRef?: Ref<QueueAdPreviewHandle>;
   playtimeData?: PlaytimeStore;
   gameId?: string;
   enableBackgroundAnimations?: boolean;
@@ -17,7 +36,11 @@ export interface ControllerStreamLoadingProps {
 function getStatusMessage(
   status: ControllerStreamLoadingProps["status"],
   queuePosition?: number,
+  adState?: SessionAdState,
 ): string {
+  if (isSessionQueuePaused(adState)) {
+    return "Session queue paused";
+  }
   switch (status) {
     case "queue":
       return queuePosition ? `Position #${queuePosition} in queue` : "Waiting in queue...";
@@ -54,15 +77,27 @@ export function ControllerStreamLoading({
   gameDescription,
   status,
   queuePosition,
+  adState,
+  activeAd,
+  activeAdMediaUrl,
+  error,
+  onAdPlaybackEvent,
+  adPreviewRef,
   playtimeData = {},
   gameId,
   enableBackgroundAnimations = false,
 }: ControllerStreamLoadingProps): JSX.Element {
-  const statusMessage = getStatusMessage(status, queuePosition);
+  const statusMessage = getStatusMessage(status, queuePosition, adState);
   const statusPhase = getStatusPhase(status);
   const playtimeRecord = gameId ? playtimeData[gameId] : undefined;
   const totalSecs = playtimeRecord?.totalSeconds ?? 0;
   const playtimeLabel = formatPlaytime(totalSecs);
+  const cachedAdMediaUrl = activeAdMediaUrl ?? getPreferredSessionAdMediaUrl(activeAd);
+  const adDurationMs = getSessionAdDurationMs(activeAd);
+  const adDurationSeconds = adDurationMs ? Math.round(adDurationMs / 1000) : undefined;
+  const adMessage = getSessionAdMessage(adState) ?? (isSessionQueuePaused(adState) ? "Resume ads to stay in queue." : undefined);
+  const gracePeriodSeconds = getSessionAdGracePeriodSeconds(adState);
+  const hasError = Boolean(error);
 
   return (
     <div className="controller-stream-loading">
@@ -116,6 +151,31 @@ export function ControllerStreamLoading({
             {/* Network Status Section */}
             <div className="csl-status-container">
               <div className="csl-status-message">{statusMessage}</div>
+
+              {!hasError && activeAd && cachedAdMediaUrl && (
+                <div className={`csl-ad-panel${isSessionQueuePaused(adState) ? " csl-ad-panel--paused" : ""}`}>
+                  <div className="csl-ad-copy">
+                    <span className="csl-ad-chip">Ad Queue</span>
+                    {adMessage && <div className="csl-ad-message">{adMessage}</div>}
+                  </div>
+                  <div className="csl-ad-media">
+                    <QueueAdPreview
+                      ref={adPreviewRef}
+                      mediaUrl={cachedAdMediaUrl}
+                      title={activeAd.title}
+                      onPlaybackEvent={(event) => onAdPlaybackEvent?.(event, activeAd.adId)}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {hasError && error && (
+                <div className="csl-error-panel" role="alert">
+                  <div className="csl-error-title">{error.title}</div>
+                  <div className="csl-error-description">{error.description}</div>
+                  {error.code && <div className="csl-error-code">{error.code}</div>}
+                </div>
+              )}
 
               {/* Status Progress Indicator */}
               <div className="csl-progress-indicator">

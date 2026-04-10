@@ -26,10 +26,12 @@ import {
 import type {
   MainToRendererSignalingEvent,
   AuthLoginRequest,
+  SessionInfo,
   AuthSessionRequest,
   GamesFetchRequest,
   ResolveLaunchIdRequest,
   RegionsFetchRequest,
+  SessionAdReportRequest,
   SessionCreateRequest,
   SessionPollRequest,
   SessionStopRequest,
@@ -56,11 +58,16 @@ import type {
   RecordingFinishRequest,
   RecordingAbortRequest,
   RecordingDeleteRequest,
+  MicrophonePermissionResult,
+  ThankYouContributor,
+  ThankYouDataResult,
+  ThankYouSupporter,
 } from "@shared/gfn";
+import { serializeSessionErrorTransport } from "@shared/sessionError";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
 
-import { createSession, pollSession, stopSession, getActiveSessions, claimSession } from "./gfn/cloudmatch";
+import { createSession, pollSession, reportSessionAd, stopSession, getActiveSessions, claimSession } from "./gfn/cloudmatch";
 import { AuthService } from "./gfn/auth";
 import {
   fetchLibraryGames,
@@ -589,9 +596,240 @@ function isSessionConflictError(error: unknown): boolean {
 
 function rethrowSerializedSessionError(error: unknown): never {
   if (error instanceof SessionError) {
-    throw error.toJSON();
+    throw new Error(serializeSessionErrorTransport(error.toJSON()));
   }
   throw error;
+}
+
+const THANKS_CONTRIBUTORS_URL = "https://api.github.com/repos/OpenCloudGaming/OpenNOW/contributors?per_page=100";
+const THANKS_SUPPORTERS_URL = "https://github.com/sponsors/zortos293";
+const THANKS_REQUEST_HEADERS = {
+  Accept: "application/vnd.github+json",
+  "User-Agent": "OpenNOW-DesktopClient",
+} as const;
+const THANKS_EXCLUDED_PATTERN = /(copilot|claude|cappy)/i;
+const THANKS_FETCH_TIMEOUT_MS = 8000;
+
+interface GitHubContributorResponse {
+  login?: string;
+  avatar_url?: string;
+  html_url?: string;
+  contributions?: number;
+  type?: string;
+  name?: string | null;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, label: string): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if ((error instanceof Error && error.name === "AbortError") || controller.signal.aborted) {
+      const reason = controller.signal.reason;
+      const message = reason instanceof Error ? reason.message : `${label} timed out after ${timeoutMs}ms`;
+      throw new Error(message);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function stripHtml(value: string): string {
+  return decodeHtmlEntities(value.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+}
+
+function normalizeUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const decoded = decodeHtmlEntities(value.trim());
+  if (!decoded) return undefined;
+  if (decoded.startsWith("//")) return `https:${decoded}`;
+  if (decoded.startsWith("/")) return `https://github.com${decoded}`;
+  return decoded;
+}
+
+function shouldExcludeContributor(contributor: GitHubContributorResponse): boolean {
+  const login = contributor.login?.trim() ?? "";
+  const name = contributor.name?.trim() ?? "";
+  if (!login || !contributor.avatar_url || !contributor.html_url) return true;
+  if (contributor.type === "Bot") return true;
+  if (/\[bot\]$/i.test(login)) return true;
+  if (THANKS_EXCLUDED_PATTERN.test(login) || THANKS_EXCLUDED_PATTERN.test(name)) return true;
+  return false;
+}
+
+async function fetchThanksContributors(): Promise<ThankYouContributor[]> {
+  const response = await fetchWithTimeout(
+    THANKS_CONTRIBUTORS_URL,
+    { headers: THANKS_REQUEST_HEADERS },
+    THANKS_FETCH_TIMEOUT_MS,
+    "GitHub contributors request",
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub contributors request failed (${response.status})`);
+  }
+
+  const payload = (await withTimeout(response.json() as Promise<GitHubContributorResponse[]>, THANKS_FETCH_TIMEOUT_MS, "GitHub contributors response")) as GitHubContributorResponse[];
+  if (!Array.isArray(payload)) {
+    throw new Error("GitHub contributors response was not an array");
+  }
+
+  const contributors = payload
+    .filter((contributor) => !shouldExcludeContributor(contributor))
+    .map((contributor) => ({
+      login: contributor.login!.trim(),
+      avatarUrl: contributor.avatar_url!,
+      profileUrl: contributor.html_url!,
+      contributions: typeof contributor.contributions === "number" ? contributor.contributions : 0,
+    }))
+    .sort((a, b) => b.contributions - a.contributions || a.login.localeCompare(b.login));
+  return contributors;
+}
+
+function parseSupporterName(entryHtml: string): { name: string; isPrivate: boolean } {
+  const privateHrefMatch = entryHtml.match(/href="https:\/\/docs\.github\.com\/sponsors\/sponsoring-open-source-contributors\/managing-your-sponsorship#managing-the-privacy-setting-for-your-sponsorship"/i);
+  const privateTooltipMatch = entryHtml.match(/<tool-tip[^>]*>\s*Private Sponsor\s*<\/tool-tip>/i);
+  const privateAriaMatch = entryHtml.match(/aria-label="Private Sponsor"/i);
+  if (privateHrefMatch || privateTooltipMatch || privateAriaMatch) {
+    return { name: "Private", isPrivate: true };
+  }
+
+  const altMatch = entryHtml.match(/<img[^>]+alt="([^"]+)"/i);
+  const altText = altMatch ? stripHtml(altMatch[1]) : "";
+  const normalizedAlt = altText.replace(/^@/, "").trim();
+  if (normalizedAlt) {
+    return { name: normalizedAlt, isPrivate: false };
+  }
+
+  const ariaMatch = entryHtml.match(/aria-label="([^"]+)"/i);
+  const ariaText = ariaMatch ? stripHtml(ariaMatch[1]) : "";
+  const normalizedAria = ariaText.replace(/^@/, "").trim();
+  if (normalizedAria && !/private sponsor/i.test(normalizedAria)) {
+    return { name: normalizedAria, isPrivate: false };
+  }
+
+  const hrefMatch = entryHtml.match(/<a[^>]+href="\/([^"/?#]+)"/i);
+  const normalizedHref = hrefMatch ? decodeHtmlEntities(hrefMatch[1]).trim() : "";
+  if (normalizedHref && !/sponsors/i.test(normalizedHref)) {
+    return { name: normalizedHref.replace(/^@/, ""), isPrivate: false };
+  }
+
+  return { name: "Private", isPrivate: true };
+}
+
+function parseSupportersFromHtml(html: string): ThankYouSupporter[] {
+  const sponsorsSectionMatch = html.match(/<div class="tmp-mt-3 tmp-pb-4" id="sponsors">([\s\S]*?)<\/remote-pagination>/i);
+  if (!sponsorsSectionMatch) {
+    return [];
+  }
+
+  const listHtml = sponsorsSectionMatch[1];
+  const entryMatches = listHtml.match(/<div class="d-flex mb-1 mr-1"[^>]*>[\s\S]*?<\/div>/gi) ?? [];
+  const supporters: ThankYouSupporter[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const entryHtml of entryMatches) {
+    const { name, isPrivate } = parseSupporterName(entryHtml);
+    const hrefMatch = entryHtml.match(/<a[^>]+href="([^"]+)"/i);
+    const profileUrl = isPrivate ? undefined : normalizeUrl(hrefMatch?.[1]);
+    const avatarMatch = entryHtml.match(/<img[^>]+src="([^"]+)"/i);
+    const avatarUrl = normalizeUrl(avatarMatch?.[1]);
+    const dedupeKey = `${name}|${profileUrl ?? ""}|${avatarUrl ?? ""}`;
+    if (seenKeys.has(dedupeKey)) continue;
+    seenKeys.add(dedupeKey);
+    supporters.push({
+      name: name || "Private",
+      avatarUrl,
+      profileUrl,
+      isPrivate: isPrivate || !name,
+    });
+  }
+
+  return supporters;
+}
+
+async function fetchThanksSupporters(): Promise<ThankYouSupporter[]> {
+  const response = await fetchWithTimeout(
+    THANKS_SUPPORTERS_URL,
+    {
+      headers: {
+        ...THANKS_REQUEST_HEADERS,
+        Accept: "text/html,application/xhtml+xml",
+      },
+    },
+    THANKS_FETCH_TIMEOUT_MS,
+    "GitHub sponsors request",
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub sponsors page request failed (${response.status})`);
+  }
+
+  const html = await withTimeout(response.text(), THANKS_FETCH_TIMEOUT_MS, "GitHub sponsors response");
+  const supporters = parseSupportersFromHtml(html);
+  return supporters;
+}
+
+async function fetchThanksData(): Promise<ThankYouDataResult> {
+  const result: ThankYouDataResult = {
+    contributors: [],
+    supporters: [],
+  };
+
+  const [contributorsResult, supportersResult] = await Promise.allSettled([
+    fetchThanksContributors(),
+    fetchThanksSupporters(),
+  ]);
+
+  if (contributorsResult.status === "fulfilled") {
+    result.contributors = contributorsResult.value;
+  } else {
+    result.contributorsError = contributorsResult.reason instanceof Error
+      ? contributorsResult.reason.message
+      : "Unable to load contributors right now.";
+  }
+
+  if (supportersResult.status === "fulfilled") {
+    result.supporters = supportersResult.value;
+    if (result.supporters.length === 0) {
+      result.supportersError = "No public supporters were found on GitHub Sponsors.";
+    }
+  } else {
+    result.supportersError = supportersResult.reason instanceof Error
+      ? supportersResult.reason.message
+      : "Unable to load supporters right now.";
+  }
+
+  return result;
 }
 
 function registerIpcHandlers(): void {
@@ -655,15 +893,107 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.CREATE_SESSION, async (_event, payload: SessionCreateRequest) => {
+    const token = await resolveJwt(payload.token);
+    const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+
+    /**
+     * Attempt to find and claim an existing active session.
+     * Prefers a session whose appId matches the requested game; falls back to
+     * any claimable session (serverIp present) if no exact match is found.
+     * Returns null when no claimable session exists or the lookup fails.
+     *
+     * IMPORTANT: Only status=2/3 (ready/streaming) sessions are sent a RESUME claim PUT.
+     * Status=1 sessions (still in queue/setup) must NOT receive a RESUME — the server
+     * rejects it with SESSION_NOT_PAUSED, and even if we polled past it internally we
+     * would bypass the renderer's queue/ad polling loop entirely. Instead, status=1
+     * sessions are returned as a minimal SessionInfo so the renderer enters its own
+     * polling loop which shows queue position and ads correctly.
+     */
+    const tryClaimExisting = async (): Promise<SessionInfo | null> => {
+      if (!token) return null;
+      try {
+        const activeSessions = await getActiveSessions(token, streamingBaseUrl);
+        if (activeSessions.length === 0) return null;
+        const numericAppId = parseInt(payload.appId, 10);
+
+        // First prefer a paused/ready session (status 2 or 3) that can be RESUME'd.
+        const readyCandidate =
+          activeSessions.find((s) => s.serverIp && s.appId === numericAppId && (s.status === 2 || s.status === 3)) ??
+          activeSessions.find((s) => s.serverIp && (s.status === 2 || s.status === 3)) ??
+          null;
+        if (readyCandidate) {
+          console.log(
+            `[CreateSession] Resuming existing session (id=${readyCandidate.sessionId}, appId=${readyCandidate.appId}, status=${readyCandidate.status}) instead of creating new.`,
+          );
+          return claimSession({
+            token,
+            streamingBaseUrl,
+            sessionId: readyCandidate.sessionId,
+            serverIp: readyCandidate.serverIp!,
+            appId: payload.appId,
+            settings: payload.settings,
+          });
+        }
+
+        // A status=1 session is still in queue/setup. Return it so the renderer's
+        // polling loop handles queue position and ads — do NOT send a RESUME claim.
+        const launchingCandidate =
+          activeSessions.find((s) => s.serverIp && s.appId === numericAppId && s.status === 1) ??
+          activeSessions.find((s) => s.serverIp && s.status === 1) ??
+          null;
+        if (launchingCandidate) {
+          console.log(
+            `[CreateSession] Found launching session (id=${launchingCandidate.sessionId}, appId=${launchingCandidate.appId}, status=1); returning for renderer queue/ad polling.`,
+          );
+          try {
+            return await pollSession({
+              token,
+              streamingBaseUrl,
+              serverIp: launchingCandidate.serverIp!,
+              zone: payload.zone,
+              sessionId: launchingCandidate.sessionId,
+            });
+          } catch (hydrateError) {
+            console.warn(
+              `[CreateSession] Failed to hydrate launching session ${launchingCandidate.sessionId}; falling back to minimal handoff:`,
+              hydrateError,
+            );
+            return {
+              sessionId: launchingCandidate.sessionId,
+              status: 1,
+              zone: payload.zone,
+              streamingBaseUrl,
+              serverIp: launchingCandidate.serverIp!,
+              signalingServer: launchingCandidate.serverIp!,
+              signalingUrl: launchingCandidate.signalingUrl ?? `wss://${launchingCandidate.serverIp}:443/nvst/`,
+              iceServers: [],
+            } satisfies SessionInfo;
+          }
+        }
+
+        return null;
+      } catch (claimError) {
+        console.warn("[CreateSession] Failed to claim existing session:", claimError);
+        return null;
+      }
+    };
+
+    // Pre-flight check: resume an active session before trying to create a new one.
+    const preChecked = await tryClaimExisting();
+    if (preChecked) return preChecked;
+
     try {
-      const token = await resolveJwt(payload.token);
-      const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-      return createSession({
-        ...payload,
-        token,
-        streamingBaseUrl,
-      });
+      return await createSession({ ...payload, token, streamingBaseUrl });
     } catch (error) {
+      // If the backend rejected the create because a session is already running,
+      // attempt a claim now (the pre-flight may have missed a session whose appId
+      // was not populated in the list response, or that had no serverIp at the
+      // time of the pre-flight but is ready now).
+      if (error instanceof SessionError && error.statusCode === 11) {
+        console.warn("[CreateSession] SESSION_LIMIT_EXCEEDED — retrying as session claim.");
+        const fallback = await tryClaimExisting();
+        if (fallback) return fallback;
+      }
       rethrowSerializedSessionError(error);
     }
   });
@@ -672,6 +1002,19 @@ function registerIpcHandlers(): void {
     try {
       const token = await resolveJwt(payload.token);
       return pollSession({
+        ...payload,
+        token,
+        streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
+      });
+    } catch (error) {
+      rethrowSerializedSessionError(error);
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.REPORT_SESSION_AD, async (_event, payload: SessionAdReportRequest) => {
+    try {
+      const token = await resolveJwt(payload.token);
+      return reportSessionAd({
         ...payload,
         token,
         streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
@@ -820,6 +1163,56 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
     return settingsManager.reset();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.MICROPHONE_PERMISSION_GET, async (): Promise<MicrophonePermissionResult> => {
+    if (process.platform !== "darwin") {
+      return {
+        platform: process.platform,
+        isMacOs: false,
+        status: "not-applicable",
+        granted: false,
+        canRequest: false,
+        shouldUseBrowserApi: true,
+      };
+    }
+
+    const currentStatus = systemPreferences.getMediaAccessStatus("microphone");
+    console.log("[Main] macOS microphone permission status:", currentStatus);
+
+    if (currentStatus === "granted") {
+      return {
+        platform: process.platform,
+        isMacOs: true,
+        status: "granted",
+        granted: true,
+        canRequest: false,
+        shouldUseBrowserApi: true,
+      };
+    }
+
+    if (currentStatus === "not-determined") {
+      const granted = await systemPreferences.askForMediaAccess("microphone");
+      const nextStatus = systemPreferences.getMediaAccessStatus("microphone");
+      console.log("[Main] Requested macOS microphone permission:", granted, nextStatus);
+      return {
+        platform: process.platform,
+        isMacOs: true,
+        status: nextStatus,
+        granted,
+        canRequest: nextStatus === "not-determined",
+        shouldUseBrowserApi: granted,
+      };
+    }
+
+    return {
+      platform: process.platform,
+      isMacOs: true,
+      status: currentStatus,
+      granted: false,
+      canRequest: false,
+      shouldUseBrowserApi: false,
+    };
   });
 
   // Logs export IPC handler
@@ -1067,6 +1460,10 @@ function registerIpcHandlers(): void {
     console.log("[IPC] Cache deletion completed successfully");
   });
 
+  ipcMain.handle(IPC_CHANNELS.COMMUNITY_GET_THANKS, async (): Promise<ThankYouDataResult> => {
+    return fetchThanksData();
+  });
+
   // TCP-based ping function - more accurate than HTTP as it only measures connection time
   async function tcpPing(hostname: string, port: number, timeoutMs: number = 3000): Promise<number | null> {
     return new Promise((resolve) => {
@@ -1177,21 +1574,8 @@ app.whenReady().then(async () => {
 
   settingsManager = getSettingsManager();
 
-  // Request microphone permission on macOS at startup
-  if (process.platform === "darwin") {
-    const micStatus = systemPreferences.getMediaAccessStatus("microphone");
-    console.log("[Main] macOS microphone permission status:", micStatus);
-    if (micStatus !== "granted") {
-      const granted = await systemPreferences.askForMediaAccess("microphone");
-      console.log("[Main] Requested microphone permission:", granted);
-    }
-  }
-
   // Set up permission handlers for getUserMedia, fullscreen, pointer lock
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    const url = webContents.getURL();
-    console.log(`[Main] Permission request: ${permission} from ${url}`);
-
     const allowedPermissions = new Set([
       "media",
       "microphone",
@@ -1203,7 +1587,6 @@ app.whenReady().then(async () => {
     ]);
 
     if (allowedPermissions.has(permission)) {
-      console.log(`[Main] Granting permission: ${permission}`);
       callback(true);
       return;
     }
