@@ -1195,8 +1195,11 @@ export function App(): JSX.Element {
   }, [providers, providerIdpId, authSession]);
 
   const effectiveStreamingBaseUrl = useMemo(() => {
+    if (settings.region.trim()) {
+      return settings.region;
+    }
     return selectedProvider?.streamingServiceUrl ?? "";
-  }, [selectedProvider]);
+  }, [selectedProvider, settings.region]);
 
   const reportQueueAdAction = useCallback((adId: string, action: SessionAdAction, options?: QueueAdReportOptions): void => {
     const currentSession = sessionRef.current;
