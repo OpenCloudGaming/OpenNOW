@@ -125,7 +125,7 @@ public class LocalhostAuthPlugin extends Plugin {
             } catch (IOException ignored) {
             }
         }
-        return createServerSocket(0);
+        throw new IOException("No available OAuth callback ports");
     }
 
     private ServerSocket createServerSocket(int port) throws IOException {
