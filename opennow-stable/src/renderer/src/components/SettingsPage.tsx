@@ -1,4 +1,4 @@
-import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2 } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -8,11 +8,21 @@ import type {
   VideoCodec,
   ColorQuality,
   EntitledResolution,
+  VideoAccelerationPreference,
   MicrophoneMode,
   PingResult,
   GameLanguage,
+  MicrophonePermissionResult,
+  ThankYouDataResult,
+  ThankYouContributor,
+  ThankYouSupporter,
 } from "@shared/gfn";
-import { colorQualityRequiresHevc, keyboardLayoutOptions } from "@shared/gfn";
+import {
+  colorQualityRequiresHevc,
+  keyboardLayoutOptions,
+  USER_FACING_COLOR_QUALITY_OPTIONS,
+  USER_FACING_VIDEO_CODEC_OPTIONS,
+} from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
 
 interface SettingsPageProps {
@@ -21,14 +31,24 @@ interface SettingsPageProps {
   onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
 }
 
-const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
+type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 
-const colorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [
-  { value: "8bit_420", label: "8-bit 4:2:0", description: "Most compatible" },
-  { value: "8bit_444", label: "8-bit 4:4:4", description: "Better color" },
-  { value: "10bit_420", label: "10-bit 4:2:0", description: "HDR ready" },
-  { value: "10bit_444", label: "10-bit 4:4:4", description: "Best quality" },
+const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
+
+const accelerationOptions: { value: VideoAccelerationPreference; label: string }[] = [
+  { value: "auto", label: "Auto" },
+  { value: "hardware", label: "Hardware" },
+  { value: "software", label: "Software (CPU)" },
 ];
+
+const allColorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [
+  { value: "8bit_420", label: "8-bit 4:2:0", description: "Most compatible" },
+  { value: "8bit_444", label: "8-bit 4:4:4", description: "Sharper chroma" },
+  { value: "10bit_420", label: "10-bit 4:2:0", description: "Higher bit depth" },
+  { value: "10bit_444", label: "10-bit 4:4:4", description: "Highest chroma and bit depth" },
+];
+
+const colorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [...allColorQualityOptions];
 
 /* ── Static fallbacks (used when MES API is unavailable) ─────────── */
 
@@ -96,6 +116,19 @@ const microphoneModeOptions: Array<{ value: MicrophoneMode; label: string }> = [
   { value: "push-to-talk", label: "Push-to-Talk" },
   { value: "voice-activity", label: "Voice Activity" },
 ];
+
+function getMicrophonePermissionError(result: MicrophonePermissionResult): string {
+  switch (result.status) {
+    case "denied":
+      return "Microphone access was denied. Enable microphone access for OpenNOW in System Settings → Privacy & Security → Microphone.";
+    case "restricted":
+      return "Microphone access is restricted by macOS and cannot be enabled from OpenNOW.";
+    case "unknown":
+      return "Unable to determine microphone permission status. Check macOS microphone privacy settings for OpenNOW.";
+    default:
+      return "Microphone access is not available.";
+  }
+}
 
 const gameLanguageOptions: Array<{ value: GameLanguage; label: string }> = [
   { value: "en_US", label: "English (US)" },
@@ -516,6 +549,12 @@ async function testCodecSupport(): Promise<CodecTestResult[]> {
 
 export function SettingsPage({ settings, regions, onSettingChange }: SettingsPageProps): JSX.Element {
   const [savedIndicator, setSavedIndicator] = useState(false);
+  const [activeTab, setActiveTab] = useState<"preferences" | "thanks">("preferences");
+  const [thanksData, setThanksData] = useState<ThankYouDataResult | null>(null);
+  const [thanksLoadState, setThanksLoadState] = useState<ThanksLoadState>("idle");
+  const [thanksFetchError, setThanksFetchError] = useState<string | null>(null);
+  const thanksRequestIdRef = useRef(0);
+  const thanksMountedRef = useRef(true);
   const [regionSearch, setRegionSearch] = useState("");
   const [regionDropdownOpen, setRegionDropdownOpen] = useState(false);
 
@@ -737,7 +776,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     [onSettingChange]
   );
 
-  /** Change color quality, auto-switching codec to H265 if the mode requires HEVC */
   const handleColorQualityChange = useCallback(
     (cq: ColorQuality) => {
       handleChange("colorQuality", cq);
@@ -765,40 +803,96 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [microphoneDeviceDropdownOpen, setMicrophoneDeviceDropdownOpen] = useState(false);
   const microphoneModeDropdownRef = useRef<HTMLDivElement | null>(null);
   const microphoneDeviceDropdownRef = useRef<HTMLDivElement | null>(null);
+  const latestMicrophoneDeviceIdRef = useRef(settings.microphoneDeviceId);
+
+  useEffect(() => {
+    latestMicrophoneDeviceIdRef.current = settings.microphoneDeviceId;
+  }, [settings.microphoneDeviceId]);
 
   // Enumerate microphone devices when mic mode is enabled
   useEffect(() => {
     if (settings.microphoneMode === "disabled") {
       setMicrophoneDevices([]);
+      setMicrophonePermissionError(null);
       return;
     }
 
     let cancelled = false;
 
     async function enumerateDevices(): Promise<void> {
+      const applyDeviceList = (audioInputs: MediaDeviceInfo[]): void => {
+        if (cancelled) {
+          return;
+        }
+
+        setMicrophoneDevices(audioInputs);
+        setMicrophonePermissionError(null);
+
+        if (
+          latestMicrophoneDeviceIdRef.current
+          && !audioInputs.some((device) => device.deviceId === latestMicrophoneDeviceIdRef.current)
+        ) {
+          handleChange("microphoneDeviceId", "");
+        }
+      };
+
       try {
-        // Request permission first to get device labels
+        if (typeof window.openNow?.getMicrophonePermission === "function") {
+          const permission = await window.openNow.getMicrophonePermission();
+          if (cancelled) {
+            return;
+          }
+
+          if (permission.isMacOs && !permission.granted) {
+            setMicrophoneDevices([]);
+            setMicrophonePermissionError(getMicrophonePermissionError(permission));
+            return;
+          }
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach(t => t.stop()); // Release the stream immediately
+        stream.getTracks().forEach((track) => track.stop());
 
         const devices = await navigator.mediaDevices.enumerateDevices();
-        if (!cancelled) {
-          const audioInputs = devices.filter(d => d.kind === "audioinput");
-          setMicrophoneDevices(audioInputs);
-          setMicrophonePermissionError(null);
-        }
+        applyDeviceList(devices.filter((device) => device.kind === "audioinput"));
       } catch (err) {
         console.error("[SettingsPage] Failed to enumerate microphone devices:", err);
+
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          if (cancelled) {
+            return;
+          }
+
+          const audioInputs = devices.filter((device) => device.kind === "audioinput");
+          if (audioInputs.length > 0) {
+            setMicrophoneDevices(audioInputs);
+            setMicrophonePermissionError("Microphone access is required to show device names and use voice chat. Allow access and try again.");
+            if (
+              latestMicrophoneDeviceIdRef.current
+              && !audioInputs.some((device) => device.deviceId === latestMicrophoneDeviceIdRef.current)
+            ) {
+              handleChange("microphoneDeviceId", "");
+            }
+            return;
+          }
+        } catch {
+          // Ignore secondary enumerate failure and fall through to stable error state.
+        }
+
         if (!cancelled) {
-          setMicrophonePermissionError("Microphone access denied. Please allow microphone permission in your system settings.");
+          const message = err instanceof DOMException && err.name === "NotAllowedError"
+            ? "Microphone access was denied. Allow access for OpenNOW and try again."
+            : "Unable to access microphone devices right now.";
+          setMicrophonePermissionError(message);
           setMicrophoneDevices([]);
         }
       }
     }
 
-    enumerateDevices();
+    void enumerateDevices();
     return () => { cancelled = true; };
-  }, [settings.microphoneMode]);
+  }, [handleChange, settings.microphoneMode]);
 
   const filteredRegions = useMemo(() => {
     const q = regionSearch.trim().toLowerCase();
@@ -950,6 +1044,219 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     }
   }, [handleChange, settings]);
 
+  useEffect(() => {
+    thanksMountedRef.current = true;
+    return () => {
+      thanksMountedRef.current = false;
+      thanksRequestIdRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== "thanks") {
+      thanksRequestIdRef.current += 1;
+      setThanksLoadState((current) => (current === "loading" || current === "error" ? "idle" : current));
+      setThanksFetchError(null);
+      return;
+    }
+
+    if (thanksData || thanksLoadState !== "idle") {
+      return;
+    }
+
+    const requestId = ++thanksRequestIdRef.current;
+    let requestPromise: Promise<ThankYouDataResult>;
+
+    try {
+      const getThanksData = window.openNow?.getThanksData;
+      if (typeof getThanksData !== "function") {
+        throw new Error("openNow.getThanksData is unavailable");
+      }
+      requestPromise = getThanksData();
+    } catch (error) {
+      console.error("[SettingsPage] Failed to start thanks data request:", error);
+      setThanksData(null);
+      setThanksFetchError("Unable to load community acknowledgements right now.");
+      setThanksLoadState("error");
+      return;
+    }
+
+    setThanksLoadState("loading");
+    setThanksFetchError(null);
+
+    void requestPromise.then(
+      (data) => {
+        if (!thanksMountedRef.current || requestId !== thanksRequestIdRef.current) {
+          return;
+        }
+        setThanksData(data);
+        setThanksLoadState("loaded");
+      },
+      (error) => {
+        if (!thanksMountedRef.current || requestId !== thanksRequestIdRef.current) {
+          return;
+        }
+        setThanksData(null);
+        setThanksFetchError("Unable to load community acknowledgements right now.");
+        setThanksLoadState("error");
+      },
+    );
+  }, [activeTab, thanksData, thanksLoadState]);
+
+  const renderPersonLink = useCallback((person: ThankYouContributor | ThankYouSupporter, content: JSX.Element) => {
+    if (!person.profileUrl) {
+      return <div className="settings-person-card">{content}</div>;
+    }
+
+    return (
+      <a className="settings-person-card settings-person-card--link" href={person.profileUrl} target="_blank" rel="noreferrer">
+        {content}
+      </a>
+    );
+  }, []);
+
+  const thanksContributors = thanksData?.contributors ?? [];
+  const thanksSupporters = thanksData?.supporters ?? [];
+  const hasThanksError = Boolean(thanksFetchError || thanksData?.contributorsError || thanksData?.supportersError);
+
+  const handleRetryThanks = useCallback(() => {
+    thanksRequestIdRef.current += 1;
+    setThanksData(null);
+    setThanksFetchError(null);
+    setThanksLoadState("idle");
+  }, []);
+
+  const renderContributorCard = useCallback((contributor: ThankYouContributor) => {
+    return renderPersonLink(
+      contributor,
+      <>
+        <img className="settings-person-avatar" src={contributor.avatarUrl} alt={contributor.login} loading="lazy" />
+        <div className="settings-person-body">
+          <div className="settings-person-title-row">
+            <span className="settings-person-name">{contributor.login}</span>
+            <span className="settings-person-badge">Contributor</span>
+          </div>
+          <div className="settings-person-meta">
+            <span>{contributor.contributions} contribution{contributor.contributions === 1 ? "" : "s"}</span>
+            <ExternalLink size={14} />
+          </div>
+        </div>
+      </>,
+    );
+  }, [renderPersonLink]);
+
+  const renderSupporterCard = useCallback((supporter: ThankYouSupporter) => {
+    return renderPersonLink(
+      supporter,
+      <>
+        <div className={`settings-person-avatar settings-person-avatar--fallback ${supporter.avatarUrl ? "" : "is-placeholder"}`.trim()}>
+          {supporter.avatarUrl ? (
+            <img className="settings-person-avatar" src={supporter.avatarUrl} alt={supporter.name} loading="lazy" />
+          ) : (
+            <Heart size={18} />
+          )}
+        </div>
+        <div className="settings-person-body">
+          <div className="settings-person-title-row">
+            <span className="settings-person-name">{supporter.name || "Private"}</span>
+            <span className="settings-person-badge settings-person-badge--supporter">Supporter</span>
+          </div>
+          <div className="settings-person-meta">
+            <span>{supporter.isPrivate ? "Private sponsor" : "GitHub Sponsors"}</span>
+            {supporter.profileUrl && <ExternalLink size={14} />}
+          </div>
+        </div>
+      </>,
+    );
+  }, [renderPersonLink]);
+
+  const thanksTabContent = (
+    <div className="settings-thanks-layout">
+      <section className="settings-section settings-thanks-hero">
+        <div className="settings-thanks-hero-icon">
+          <Heart size={18} />
+        </div>
+        <div className="settings-thanks-hero-copy">
+          <h2>Thanks for helping OpenNOW grow</h2>
+          <p>OpenNOW is shaped by contributors building the client and supporters backing the project behind the scenes.</p>
+        </div>
+      </section>
+
+      {thanksFetchError && (
+        <section className="settings-section settings-thanks-status settings-thanks-status--error">
+          <strong>Community data unavailable</strong>
+          <span>{thanksFetchError}</span>
+          <div className="settings-thanks-actions">
+            <button type="button" className="settings-chip settings-thanks-retry-btn" onClick={handleRetryThanks}>
+              Retry
+            </button>
+          </div>
+        </section>
+      )}
+
+      <div className="settings-thanks-grid">
+        <section className="settings-section">
+          <div className="settings-section-header settings-section-header--thanks">
+            <Users size={18} />
+            <div>
+              <h2>Contributors</h2>
+              <p className="settings-section-subtitle">People improving OpenNOW in code, fixes, and features.</p>
+            </div>
+          </div>
+          {thanksLoadState === "loading" && !thanksData ? (
+            <div className="settings-thanks-state">
+              <Loader size={16} className="settings-loading-icon" />
+              <span>Loading contributors from GitHub…</span>
+            </div>
+          ) : thanksContributors.length > 0 ? (
+            <div className="settings-people-grid">
+              {thanksContributors.map((contributor) => (
+                <div key={contributor.login}>{renderContributorCard(contributor)}</div>
+              ))}
+            </div>
+          ) : (
+            <div className="settings-thanks-state settings-thanks-state--muted">
+              <span>{thanksData?.contributorsError ?? "No contributors could be shown right now."}</span>
+            </div>
+          )}
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-header settings-section-header--thanks">
+            <Heart size={18} />
+            <div>
+              <h2>Supporters</h2>
+              <p className="settings-section-subtitle">Public GitHub Sponsors backing the work, plus private supporters when available.</p>
+            </div>
+          </div>
+          {thanksLoadState === "loading" && !thanksData ? (
+            <div className="settings-thanks-state">
+              <Loader size={16} className="settings-loading-icon" />
+              <span>Loading supporters from GitHub Sponsors…</span>
+            </div>
+          ) : thanksSupporters.length > 0 ? (
+            <div className="settings-people-grid">
+              {thanksSupporters.map((supporter, index) => (
+                <div key={`${supporter.name}-${supporter.profileUrl ?? index}`}>{renderSupporterCard(supporter)}</div>
+              ))}
+            </div>
+          ) : (
+            <div className="settings-thanks-state settings-thanks-state--muted">
+              <span>{thanksData?.supportersError ?? "No supporters could be shown right now."}</span>
+            </div>
+          )}
+        </section>
+      </div>
+
+      {hasThanksError && thanksData && (
+        <section className="settings-section settings-thanks-status">
+          {thanksData.contributorsError && <span>Contributors: {thanksData.contributorsError}</span>}
+          {thanksData.supportersError && <span>Supporters: {thanksData.supportersError}</span>}
+        </section>
+      )}
+    </div>
+  );
+
   return (
     <div className="settings-page">
       <header className="settings-header">
@@ -960,8 +1267,30 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
         </div>
       </header>
 
-      <div className="settings-sections">
-        {/* ── Region ────────────────────────────────────── */}
+      <div className="settings-tab-row settings-chip-row" role="tablist" aria-label="Settings sections">
+        <button
+          type="button"
+          className={`settings-chip settings-tab-chip ${activeTab === "preferences" ? "active" : ""}`}
+          onClick={() => setActiveTab("preferences")}
+          role="tab"
+          aria-selected={activeTab === "preferences"}
+        >
+          Preferences
+        </button>
+        <button
+          type="button"
+          className={`settings-chip settings-tab-chip ${activeTab === "thanks" ? "active" : ""}`}
+          onClick={() => setActiveTab("thanks")}
+          role="tab"
+          aria-selected={activeTab === "thanks"}
+        >
+          Thanks
+        </button>
+      </div>
+
+      {activeTab === "preferences" ? (
+        <div className="settings-sections">
+          {/* ── Region ────────────────────────────────────── */}
         <section className="settings-section">
           <div className="settings-section-header">
             <h2>Region</h2>
@@ -1276,6 +1605,38 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="settings-row settings-row--column">
+              <label className="settings-label">Decoder</label>
+              <div className="settings-chip-row">
+                {accelerationOptions.map((option) => (
+                  <button
+                    key={`decoder-${option.value}`}
+                    className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
+                    onClick={() => handleChange("decoderPreference", option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <span className="settings-subtle-hint">Applies after app restart.</span>
+            </div>
+
+            <div className="settings-row settings-row--column">
+              <label className="settings-label">Encoder</label>
+              <div className="settings-chip-row">
+                {accelerationOptions.map((option) => (
+                  <button
+                    key={`encoder-${option.value}`}
+                    className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
+                    onClick={() => handleChange("encoderPreference", option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <span className="settings-subtle-hint">Applies after app restart.</span>
             </div>
 
             {/* Color Quality */}
@@ -1817,6 +2178,21 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
 
             <div className="settings-row">
               <label className="settings-label">
+                Show Stats on Stream Launch
+                <span className="settings-hint">Automatically show the stats overlay when a new stream starts.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.showStatsOnLaunch}
+                  onChange={(e) => handleChange("showStatsOnLaunch", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
                 <span className="settings-label-title">
                   Controller Mode Library
                   <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
@@ -2030,7 +2406,12 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             </div>
           </div>
         </section>
-      </div>
+        </div>
+
+      ) : (
+        thanksTabContent
+      )}
+
 
     </div>
   );

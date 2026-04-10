@@ -67,6 +67,32 @@ export function colorQualityRequiresHevc(cq: ColorQuality): boolean {
   return cq !== "8bit_420";
 }
 
+export const USER_FACING_VIDEO_CODEC_OPTIONS: readonly VideoCodec[] = ["H264", "H265", "AV1"];
+export const USER_FACING_COLOR_QUALITY_OPTIONS: readonly ColorQuality[] = ["8bit_420", "8bit_444", "10bit_420", "10bit_444"];
+
+export function isSupportedUserFacingCodec(codec: VideoCodec): boolean {
+  return USER_FACING_VIDEO_CODEC_OPTIONS.includes(codec);
+}
+
+export function normalizeStreamPreferences(codec: VideoCodec, colorQuality: ColorQuality): {
+  codec: VideoCodec;
+  colorQuality: ColorQuality;
+  migrated: boolean;
+} {
+  const normalizedCodec = isSupportedUserFacingCodec(codec)
+    ? codec
+    : USER_FACING_VIDEO_CODEC_OPTIONS[0];
+  const normalizedColorQuality = USER_FACING_COLOR_QUALITY_OPTIONS.includes(colorQuality)
+    ? colorQuality
+    : USER_FACING_COLOR_QUALITY_OPTIONS[0];
+
+  return {
+    codec: normalizedCodec,
+    colorQuality: normalizedColorQuality,
+    migrated: normalizedCodec !== codec || normalizedColorQuality !== colorQuality,
+  };
+}
+
 /** Helper: is this a 10-bit (HDR-capable) mode? */
 export function colorQualityIs10Bit(cq: ColorQuality): boolean {
   return cq.startsWith("10bit");
@@ -74,6 +100,30 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
 
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
+export type RuntimePlatform =
+  | "aix"
+  | "android"
+  | "cygwin"
+  | "darwin"
+  | "freebsd"
+  | "haiku"
+  | "linux"
+  | "netbsd"
+  | "openbsd"
+  | "sunos"
+  | "win32"
+  | "unknown";
+
+export type MacOsMicrophoneAccessStatus = "not-determined" | "granted" | "denied" | "restricted" | "unknown";
+
+export interface MicrophonePermissionResult {
+  platform: RuntimePlatform;
+  isMacOs: boolean;
+  status: MacOsMicrophoneAccessStatus | "not-applicable";
+  granted: boolean;
+  canRequest: boolean;
+  shouldUseBrowserApi: boolean;
+}
 
 export interface Settings {
   resolution: string;
@@ -81,6 +131,8 @@ export interface Settings {
   fps: number;
   maxBitrateMbps: number;
   codec: VideoCodec;
+  decoderPreference: VideoAccelerationPreference;
+  encoderPreference: VideoAccelerationPreference;
   colorQuality: ColorQuality;
   region: string;
   clipboardPaste: boolean;
@@ -96,6 +148,7 @@ export interface Settings {
   microphoneMode: MicrophoneMode;
   microphoneDeviceId: string;
   hideStreamButtons: boolean;
+  showStatsOnLaunch: boolean;
   controllerMode: boolean;
   controllerUiSounds: boolean;
   autoLoadControllerLibrary: boolean;
@@ -115,6 +168,22 @@ export interface Settings {
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
+}
+
+export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
+  codec: "H264",
+  colorQuality: "10bit_420",
+});
+
+export function getDefaultStreamPreferences(): Pick<Settings, "codec" | "colorQuality"> {
+  const normalized = normalizeStreamPreferences(
+    DEFAULT_STREAM_PREFERENCES.codec,
+    DEFAULT_STREAM_PREFERENCES.colorQuality,
+  );
+  return {
+    codec: normalized.codec,
+    colorQuality: normalized.colorQuality,
+  };
 }
 
 export interface LoginProvider {
@@ -184,6 +253,27 @@ export interface AuthSession {
   provider: LoginProvider;
   tokens: AuthTokens;
   user: AuthUser;
+}
+
+export interface ThankYouContributor {
+  login: string;
+  avatarUrl: string;
+  profileUrl: string;
+  contributions: number;
+}
+
+export interface ThankYouSupporter {
+  name: string;
+  avatarUrl?: string;
+  profileUrl?: string;
+  isPrivate: boolean;
+}
+
+export interface ThankYouDataResult {
+  contributors: ThankYouContributor[];
+  supporters: ThankYouSupporter[];
+  contributorsError?: string;
+  supportersError?: string;
 }
 
 export interface AuthLoginRequest {
@@ -542,6 +632,7 @@ export interface OpenNowApi {
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
   resetSettings(): Promise<Settings>;
+  getMicrophonePermission(): Promise<MicrophonePermissionResult>;
   /** Export logs in redacted format */
   exportLogs(format?: "text" | "json"): Promise<string>;
   /** Ping all regions and return latency results */
@@ -593,6 +684,7 @@ export interface OpenNowApi {
   showMediaInFolder(input: { filePath: string }): Promise<void>;
 
   deleteCache(): Promise<void>;
+  getThanksData(): Promise<ThankYouDataResult>;
 }
 
 export interface ScreenshotSaveRequest {

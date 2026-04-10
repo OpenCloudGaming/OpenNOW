@@ -20,6 +20,8 @@ import type {
 } from "@shared/gfn";
 import {
   DEFAULT_KEYBOARD_LAYOUT,
+  getDefaultStreamPreferences,
+  USER_FACING_VIDEO_CODEC_OPTIONS,
   getPreferredSessionAdMediaUrl,
   getSessionAdDurationMs,
   getSessionAdItems,
@@ -51,7 +53,8 @@ import { ControllerStreamLoading } from "./components/ControllerStreamLoading";
 import type { QueueAdPlaybackEvent, QueueAdPreviewHandle } from "./components/QueueAdPreview";
 import { StreamView } from "./components/StreamView";
 
-const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
+const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
+const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 const allResolutionOptions = ["1280x720", "1280x800", "1440x900", "1680x1050", "1920x1080", "1920x1200", "2560x1080", "2560x1440", "2560x1600", "3440x1440", "3840x2160", "3840x2400"];
 const fpsOptions = [30, 60, 120, 144, 240];
 const aspectRatioOptions = ["16:9", "16:10", "21:9", "32:9"] as const;
@@ -127,6 +130,7 @@ const DEFAULT_SHORTCUTS = {
   shortcutScreenshot: "F11",
   shortcutToggleRecording: "F12",
 } as const;
+
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -602,8 +606,10 @@ export function App(): JSX.Element {
     aspectRatio: "16:9",
     fps: 60,
     maxBitrateMbps: 75,
-    codec: "H264",
-    colorQuality: "8bit_420",
+    codec: DEFAULT_STREAM_PREFERENCES.codec,
+    decoderPreference: "auto",
+    encoderPreference: "auto",
+    colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
     region: "",
     clipboardPaste: false,
     mouseSensitivity: 1,
@@ -618,6 +624,7 @@ export function App(): JSX.Element {
     microphoneMode: "disabled",
     microphoneDeviceId: "",
     hideStreamButtons: false,
+    showStatsOnLaunch: false,
     controllerMode: false,
     controllerUiSounds: false,
     controllerBackgroundAnimations: false,
@@ -643,7 +650,7 @@ export function App(): JSX.Element {
   // Stream State
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("idle");
-  const [showStatsOverlay, setShowStatsOverlay] = useState(true);
+  const [showStatsOverlay, setShowStatsOverlay] = useState(false);
   const [antiAfkEnabled, setAntiAfkEnabled] = useState(false);
   const [escHoldReleaseIndicator, setEscHoldReleaseIndicator] = useState<{ visible: boolean; progress: number }>({
     visible: false,
@@ -665,6 +672,10 @@ export function App(): JSX.Element {
   const isStreaming = streamStatus === "streaming";
 
   const controllerOverlayOpenRef = useRef(false);
+
+  const resetStatsOverlayToPreference = useCallback((): void => {
+    setShowStatsOverlay(settings.showStatsOnLaunch);
+  }, [settings.showStatsOnLaunch]);
 
   const handleControllerPageNavigate = useCallback((direction: "prev" | "next"): void => {
     if (controllerOverlayOpenRef.current) {
@@ -1084,6 +1095,7 @@ export function App(): JSX.Element {
     setSessionStartedAtMs(null);
     setStreamWarning(null);
     setEscHoldReleaseIndicator({ visible: false, progress: 0 });
+    resetStatsOverlayToPreference();
     diagnosticsStore.set(defaultDiagnostics());
 
     if (!options?.keepStreamingContext) {
@@ -1094,7 +1106,7 @@ export function App(): JSX.Element {
     if (!options?.keepLaunchError) {
       setLaunchError(null);
     }
-  }, [diagnosticsStore]);
+  }, [diagnosticsStore, resetStatsOverlayToPreference]);
 
   // Session ref sync
   useEffect(() => {
@@ -1183,8 +1195,11 @@ export function App(): JSX.Element {
   }, [providers, providerIdpId, authSession]);
 
   const effectiveStreamingBaseUrl = useMemo(() => {
+    if (settings.region.trim()) {
+      return settings.region;
+    }
     return selectedProvider?.streamingServiceUrl ?? "";
-  }, [selectedProvider]);
+  }, [selectedProvider, settings.region]);
 
   const reportQueueAdAction = useCallback((adId: string, action: SessionAdAction, options?: QueueAdReportOptions): void => {
     const currentSession = sessionRef.current;
@@ -1472,6 +1487,7 @@ export function App(): JSX.Element {
         // Load settings first
         const loadedSettings = await window.openNow.getSettings();
         setSettings(loadedSettings);
+        setShowStatsOverlay(loadedSettings.showStatsOnLaunch);
         setSettingsLoaded(true);
 
         // Load providers and session (refresh only if token is near expiry)
@@ -2108,7 +2124,7 @@ export function App(): JSX.Element {
       signalingServer: claimed.signalingServer,
       signalingUrl: claimed.signalingUrl,
     });
-  }, [authSession, effectiveStreamingBaseUrl, findGameContextForSession, settings]);
+  }, [authSession, effectiveStreamingBaseUrl, findGameContextForSession, resetStatsOverlayToPreference, settings]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean }) => {
@@ -2140,6 +2156,7 @@ export function App(): JSX.Element {
     setSessionStartedAtMs(null);
     setStreamWarning(null);
     setLaunchError(null);
+    resetStatsOverlayToPreference();
     const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
     const selectedVariant = getSelectedVariant(game, selectedVariantId);
     startPlaytimeSession(game.id);
@@ -2398,6 +2415,7 @@ export function App(): JSX.Element {
     effectiveStreamingBaseUrl,
     refreshNavbarActiveSession,
     resetLaunchRuntime,
+    resetStatsOverlayToPreference,
     selectedProvider,
     settings,
     streamStatus,
@@ -2424,6 +2442,7 @@ export function App(): JSX.Element {
     setQueuePosition(undefined);
     setSessionStartedAtMs(null);
     setStreamWarning(null);
+    resetStatsOverlayToPreference();
     const matchedContext = findGameContextForSession(navbarActiveSession);
     if (matchedContext) {
       setStreamingGame(matchedContext.game);
@@ -2455,6 +2474,7 @@ export function App(): JSX.Element {
     findGameContextForSession,
     refreshNavbarActiveSession,
     resetLaunchRuntime,
+    resetStatsOverlayToPreference,
     selectedProvider,
     streamStatus,
   ]);
@@ -2802,6 +2822,16 @@ export function App(): JSX.Element {
   }
 
   const showLaunchOverlay = streamStatus !== "idle" || launchError !== null || isSwitchingGame;
+  const hasActiveStreamView = streamStatus !== "idle";
+  const showLaunchErrorOverlay = launchError !== null;
+  const showControllerLaunchLoading =
+    !isSwitchingGame
+    && settings.controllerMode
+    && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming" && streamStatus !== "connecting"));
+  const showDesktopLaunchLoading =
+    !isSwitchingGame
+    && !settings.controllerMode
+    && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming"));
   const consumedHours =
     streamStatus === "streaming"
       ? Math.floor(sessionElapsedSeconds / 60) / 60
@@ -2813,7 +2843,7 @@ export function App(): JSX.Element {
     const loadingStatus = launchError ? launchError.stage : toLoadingStatus(streamStatus);
     return (
       <>
-        {streamStatus !== "idle" && (
+        {hasActiveStreamView && (
           <StreamView
             className={isSwitchingGame ? "sv--switching" : undefined}
             videoRef={videoRef}
@@ -2985,7 +3015,7 @@ export function App(): JSX.Element {
             />
           </div>
         )}
-        {streamStatus !== "idle" && streamStatus !== "streaming" && streamStatus !== "connecting" && settings.controllerMode && !isSwitchingGame && (
+        {showControllerLaunchLoading && (
           <ControllerStreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
             gamePoster={streamingGame?.imageUrl}
@@ -3011,7 +3041,7 @@ export function App(): JSX.Element {
             enableBackgroundAnimations={settings.controllerBackgroundAnimations}
           />
         )}
-        {streamStatus !== "idle" && streamStatus !== "streaming" && !settings.controllerMode && !isSwitchingGame && (
+        {showDesktopLaunchLoading && (
           <StreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
             gameCover={streamingGame?.imageUrl}

@@ -58,7 +58,12 @@ import type {
   RecordingFinishRequest,
   RecordingAbortRequest,
   RecordingDeleteRequest,
+  MicrophonePermissionResult,
+  ThankYouContributor,
+  ThankYouDataResult,
+  ThankYouSupporter,
 } from "@shared/gfn";
+import { serializeSessionErrorTransport } from "@shared/sessionError";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
 
@@ -78,17 +83,43 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Configure Chromium video and WebRTC behavior before app.whenReady().
-// Video acceleration is always set to "auto" - decoder and encoder preferences removed from settings
 
-const bootstrapVideoPrefs: {
+interface BootstrapVideoPreferences {
   decoderPreference: VideoAccelerationPreference;
   encoderPreference: VideoAccelerationPreference;
-} = {
-  decoderPreference: "auto",
-  encoderPreference: "auto",
-};
+}
+
+function isAccelerationPreference(value: unknown): value is VideoAccelerationPreference {
+  return value === "auto" || value === "hardware" || value === "software";
+}
+
+function loadBootstrapVideoPreferences(): BootstrapVideoPreferences {
+  const defaults: BootstrapVideoPreferences = {
+    decoderPreference: "auto",
+    encoderPreference: "auto",
+  };
+  try {
+    const settingsPath = join(app.getPath("userData"), "settings.json");
+    if (!existsSync(settingsPath)) {
+      return defaults;
+    }
+    const parsed = JSON.parse(readFileSync(settingsPath, "utf-8")) as Partial<BootstrapVideoPreferences>;
+    return {
+      decoderPreference: isAccelerationPreference(parsed.decoderPreference)
+        ? parsed.decoderPreference
+        : defaults.decoderPreference,
+      encoderPreference: isAccelerationPreference(parsed.encoderPreference)
+        ? parsed.encoderPreference
+        : defaults.encoderPreference,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+const bootstrapVideoPrefs = loadBootstrapVideoPreferences();
 console.log(
-  `[Main] Video acceleration: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
+  `[Main] Video acceleration preference: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
 );
 
 // --- Platform-specific HW video decode features ---
@@ -591,9 +622,240 @@ function isSessionConflictError(error: unknown): boolean {
 
 function rethrowSerializedSessionError(error: unknown): never {
   if (error instanceof SessionError) {
-    throw error.toJSON();
+    throw new Error(serializeSessionErrorTransport(error.toJSON()));
   }
   throw error;
+}
+
+const THANKS_CONTRIBUTORS_URL = "https://api.github.com/repos/OpenCloudGaming/OpenNOW/contributors?per_page=100";
+const THANKS_SUPPORTERS_URL = "https://github.com/sponsors/zortos293";
+const THANKS_REQUEST_HEADERS = {
+  Accept: "application/vnd.github+json",
+  "User-Agent": "OpenNOW-DesktopClient",
+} as const;
+const THANKS_EXCLUDED_PATTERN = /(copilot|claude|cappy)/i;
+const THANKS_FETCH_TIMEOUT_MS = 8000;
+
+interface GitHubContributorResponse {
+  login?: string;
+  avatar_url?: string;
+  html_url?: string;
+  contributions?: number;
+  type?: string;
+  name?: string | null;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, label: string): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if ((error instanceof Error && error.name === "AbortError") || controller.signal.aborted) {
+      const reason = controller.signal.reason;
+      const message = reason instanceof Error ? reason.message : `${label} timed out after ${timeoutMs}ms`;
+      throw new Error(message);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function stripHtml(value: string): string {
+  return decodeHtmlEntities(value.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+}
+
+function normalizeUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const decoded = decodeHtmlEntities(value.trim());
+  if (!decoded) return undefined;
+  if (decoded.startsWith("//")) return `https:${decoded}`;
+  if (decoded.startsWith("/")) return `https://github.com${decoded}`;
+  return decoded;
+}
+
+function shouldExcludeContributor(contributor: GitHubContributorResponse): boolean {
+  const login = contributor.login?.trim() ?? "";
+  const name = contributor.name?.trim() ?? "";
+  if (!login || !contributor.avatar_url || !contributor.html_url) return true;
+  if (contributor.type === "Bot") return true;
+  if (/\[bot\]$/i.test(login)) return true;
+  if (THANKS_EXCLUDED_PATTERN.test(login) || THANKS_EXCLUDED_PATTERN.test(name)) return true;
+  return false;
+}
+
+async function fetchThanksContributors(): Promise<ThankYouContributor[]> {
+  const response = await fetchWithTimeout(
+    THANKS_CONTRIBUTORS_URL,
+    { headers: THANKS_REQUEST_HEADERS },
+    THANKS_FETCH_TIMEOUT_MS,
+    "GitHub contributors request",
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub contributors request failed (${response.status})`);
+  }
+
+  const payload = (await withTimeout(response.json() as Promise<GitHubContributorResponse[]>, THANKS_FETCH_TIMEOUT_MS, "GitHub contributors response")) as GitHubContributorResponse[];
+  if (!Array.isArray(payload)) {
+    throw new Error("GitHub contributors response was not an array");
+  }
+
+  const contributors = payload
+    .filter((contributor) => !shouldExcludeContributor(contributor))
+    .map((contributor) => ({
+      login: contributor.login!.trim(),
+      avatarUrl: contributor.avatar_url!,
+      profileUrl: contributor.html_url!,
+      contributions: typeof contributor.contributions === "number" ? contributor.contributions : 0,
+    }))
+    .sort((a, b) => b.contributions - a.contributions || a.login.localeCompare(b.login));
+  return contributors;
+}
+
+function parseSupporterName(entryHtml: string): { name: string; isPrivate: boolean } {
+  const privateHrefMatch = entryHtml.match(/href="https:\/\/docs\.github\.com\/sponsors\/sponsoring-open-source-contributors\/managing-your-sponsorship#managing-the-privacy-setting-for-your-sponsorship"/i);
+  const privateTooltipMatch = entryHtml.match(/<tool-tip[^>]*>\s*Private Sponsor\s*<\/tool-tip>/i);
+  const privateAriaMatch = entryHtml.match(/aria-label="Private Sponsor"/i);
+  if (privateHrefMatch || privateTooltipMatch || privateAriaMatch) {
+    return { name: "Private", isPrivate: true };
+  }
+
+  const altMatch = entryHtml.match(/<img[^>]+alt="([^"]+)"/i);
+  const altText = altMatch ? stripHtml(altMatch[1]) : "";
+  const normalizedAlt = altText.replace(/^@/, "").trim();
+  if (normalizedAlt) {
+    return { name: normalizedAlt, isPrivate: false };
+  }
+
+  const ariaMatch = entryHtml.match(/aria-label="([^"]+)"/i);
+  const ariaText = ariaMatch ? stripHtml(ariaMatch[1]) : "";
+  const normalizedAria = ariaText.replace(/^@/, "").trim();
+  if (normalizedAria && !/private sponsor/i.test(normalizedAria)) {
+    return { name: normalizedAria, isPrivate: false };
+  }
+
+  const hrefMatch = entryHtml.match(/<a[^>]+href="\/([^"/?#]+)"/i);
+  const normalizedHref = hrefMatch ? decodeHtmlEntities(hrefMatch[1]).trim() : "";
+  if (normalizedHref && !/sponsors/i.test(normalizedHref)) {
+    return { name: normalizedHref.replace(/^@/, ""), isPrivate: false };
+  }
+
+  return { name: "Private", isPrivate: true };
+}
+
+function parseSupportersFromHtml(html: string): ThankYouSupporter[] {
+  const sponsorsSectionMatch = html.match(/<div class="tmp-mt-3 tmp-pb-4" id="sponsors">([\s\S]*?)<\/remote-pagination>/i);
+  if (!sponsorsSectionMatch) {
+    return [];
+  }
+
+  const listHtml = sponsorsSectionMatch[1];
+  const entryMatches = listHtml.match(/<div class="d-flex mb-1 mr-1"[^>]*>[\s\S]*?<\/div>/gi) ?? [];
+  const supporters: ThankYouSupporter[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const entryHtml of entryMatches) {
+    const { name, isPrivate } = parseSupporterName(entryHtml);
+    const hrefMatch = entryHtml.match(/<a[^>]+href="([^"]+)"/i);
+    const profileUrl = isPrivate ? undefined : normalizeUrl(hrefMatch?.[1]);
+    const avatarMatch = entryHtml.match(/<img[^>]+src="([^"]+)"/i);
+    const avatarUrl = normalizeUrl(avatarMatch?.[1]);
+    const dedupeKey = `${name}|${profileUrl ?? ""}|${avatarUrl ?? ""}`;
+    if (seenKeys.has(dedupeKey)) continue;
+    seenKeys.add(dedupeKey);
+    supporters.push({
+      name: name || "Private",
+      avatarUrl,
+      profileUrl,
+      isPrivate: isPrivate || !name,
+    });
+  }
+
+  return supporters;
+}
+
+async function fetchThanksSupporters(): Promise<ThankYouSupporter[]> {
+  const response = await fetchWithTimeout(
+    THANKS_SUPPORTERS_URL,
+    {
+      headers: {
+        ...THANKS_REQUEST_HEADERS,
+        Accept: "text/html,application/xhtml+xml",
+      },
+    },
+    THANKS_FETCH_TIMEOUT_MS,
+    "GitHub sponsors request",
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub sponsors page request failed (${response.status})`);
+  }
+
+  const html = await withTimeout(response.text(), THANKS_FETCH_TIMEOUT_MS, "GitHub sponsors response");
+  const supporters = parseSupportersFromHtml(html);
+  return supporters;
+}
+
+async function fetchThanksData(): Promise<ThankYouDataResult> {
+  const result: ThankYouDataResult = {
+    contributors: [],
+    supporters: [],
+  };
+
+  const [contributorsResult, supportersResult] = await Promise.allSettled([
+    fetchThanksContributors(),
+    fetchThanksSupporters(),
+  ]);
+
+  if (contributorsResult.status === "fulfilled") {
+    result.contributors = contributorsResult.value;
+  } else {
+    result.contributorsError = contributorsResult.reason instanceof Error
+      ? contributorsResult.reason.message
+      : "Unable to load contributors right now.";
+  }
+
+  if (supportersResult.status === "fulfilled") {
+    result.supporters = supportersResult.value;
+    if (result.supporters.length === 0) {
+      result.supportersError = "No public supporters were found on GitHub Sponsors.";
+    }
+  } else {
+    result.supportersError = supportersResult.reason instanceof Error
+      ? supportersResult.reason.message
+      : "Unable to load supporters right now.";
+  }
+
+  return result;
 }
 
 function registerIpcHandlers(): void {
@@ -929,6 +1191,56 @@ function registerIpcHandlers(): void {
     return settingsManager.reset();
   });
 
+  ipcMain.handle(IPC_CHANNELS.MICROPHONE_PERMISSION_GET, async (): Promise<MicrophonePermissionResult> => {
+    if (process.platform !== "darwin") {
+      return {
+        platform: process.platform,
+        isMacOs: false,
+        status: "not-applicable",
+        granted: false,
+        canRequest: false,
+        shouldUseBrowserApi: true,
+      };
+    }
+
+    const currentStatus = systemPreferences.getMediaAccessStatus("microphone");
+    console.log("[Main] macOS microphone permission status:", currentStatus);
+
+    if (currentStatus === "granted") {
+      return {
+        platform: process.platform,
+        isMacOs: true,
+        status: "granted",
+        granted: true,
+        canRequest: false,
+        shouldUseBrowserApi: true,
+      };
+    }
+
+    if (currentStatus === "not-determined") {
+      const granted = await systemPreferences.askForMediaAccess("microphone");
+      const nextStatus = systemPreferences.getMediaAccessStatus("microphone");
+      console.log("[Main] Requested macOS microphone permission:", granted, nextStatus);
+      return {
+        platform: process.platform,
+        isMacOs: true,
+        status: nextStatus,
+        granted,
+        canRequest: nextStatus === "not-determined",
+        shouldUseBrowserApi: granted,
+      };
+    }
+
+    return {
+      platform: process.platform,
+      isMacOs: true,
+      status: currentStatus,
+      granted: false,
+      canRequest: false,
+      shouldUseBrowserApi: false,
+    };
+  });
+
   // Logs export IPC handler
   ipcMain.handle(IPC_CHANNELS.LOGS_EXPORT, async (_event, format: "text" | "json" = "text"): Promise<string> => {
     return exportLogs(format);
@@ -1174,6 +1486,10 @@ function registerIpcHandlers(): void {
     console.log("[IPC] Cache deletion completed successfully");
   });
 
+  ipcMain.handle(IPC_CHANNELS.COMMUNITY_GET_THANKS, async (): Promise<ThankYouDataResult> => {
+    return fetchThanksData();
+  });
+
   // TCP-based ping function - more accurate than HTTP as it only measures connection time
   async function tcpPing(hostname: string, port: number, timeoutMs: number = 3000): Promise<number | null> {
     return new Promise((resolve) => {
@@ -1264,16 +1580,6 @@ app.whenReady().then(async () => {
   await authService.initialize();
 
   settingsManager = getSettingsManager();
-
-  // Request microphone permission on macOS at startup
-  if (process.platform === "darwin") {
-    const micStatus = systemPreferences.getMediaAccessStatus("microphone");
-    console.log("[Main] macOS microphone permission status:", micStatus);
-    if (micStatus !== "granted") {
-      const granted = await systemPreferences.askForMediaAccess("microphone");
-      console.log("[Main] Requested microphone permission:", granted);
-    }
-  }
 
   // Set up permission handlers for getUserMedia, fullscreen, pointer lock
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {

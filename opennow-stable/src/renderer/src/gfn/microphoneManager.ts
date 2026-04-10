@@ -107,7 +107,12 @@ export class MicrophoneManager {
    */
   async enumerateDevices(): Promise<MediaDeviceInfo[]> {
     try {
-      // Request permission first to get labels
+      const permission = await this.checkPermissionState();
+      if (permission === "denied") {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        return devices.filter(device => device.kind === "audioinput");
+      }
+
       const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       tempStream.getTracks().forEach(track => track.stop());
 
