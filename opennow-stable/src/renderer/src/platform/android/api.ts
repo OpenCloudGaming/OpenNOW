@@ -151,7 +151,7 @@ class AndroidAuthService {
     await writePreferenceJson(AUTH_STATE_KEY, { session: this.session, selectedProvider: this.selectedProvider });
   }
 
-  private async waitForAuthorizationCodeWithPort(authUrlTemplate: string, timeoutMs = 180000): Promise<{ code: string; port: number }> {
+  private async waitForAuthorizationCode(authUrl: string, port: number, timeoutMs = 180000): Promise<string> {
     let browserFinishedListener: PluginListenerHandle | null = null;
     let settled = false;
 
@@ -165,9 +165,7 @@ class AndroidAuthService {
     };
 
     try {
-      const { port } = await LocalhostAuth.startServer();
-      const authUrl = authUrlTemplate.replace("__PORT__", String(port));
-      return await new Promise<{ code: string; port: number }>(async (resolve, reject) => {
+      return await new Promise<string>(async (resolve, reject) => {
         const settle = (fn: () => void): void => {
           if (settled) return;
           settled = true;
@@ -180,7 +178,7 @@ class AndroidAuthService {
 
         void LocalhostAuth.waitForCode({ timeoutMs })
           .then(({ code }) => {
-            settle(() => resolve({ code, port }));
+            settle(() => resolve(code));
           })
           .catch((error) => {
             const message = error instanceof Error ? error.message : String(error);
@@ -227,9 +225,9 @@ class AndroidAuthService {
     const { identifier } = await Device.getId();
     const deviceId = identifier || `android-${Math.random().toString(16).slice(2)}`;
     const { verifier, challenge } = await createPkce();
-    const portPlaceholder = "__PORT__";
-    const authUrl = buildAuthUrl(this.selectedProvider, challenge, deviceId, 0).replace(":0", `:${portPlaceholder}`);
-    const { code, port } = await this.waitForAuthorizationCodeWithPort(authUrl);
+    const { port } = await LocalhostAuth.startServer();
+    const authUrl = buildAuthUrl(this.selectedProvider, challenge, deviceId, port);
+    const code = await this.waitForAuthorizationCode(authUrl, port);
     const initialTokens = await exchangeAuthorizationCode(code, verifier, port);
     const user = await fetchUserInfo(initialTokens);
     let tokens = initialTokens;

@@ -22,6 +22,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -31,7 +33,8 @@ public class LocalhostAuthPlugin extends Plugin {
     private static final String SUCCESS_HTML = "<!doctype html><html><head><meta charset=\"utf-8\"><title>OpenNOW Login</title></head><body style=\"font-family:Segoe UI,Arial,sans-serif;background:#0b1220;color:#dbe7ff;display:flex;justify-content:center;align-items:center;height:100vh\"><div style=\"background:#111a2c;padding:24px 28px;border:1px solid #30425f;border-radius:12px;max-width:460px\"><h2 style=\"margin-top:0\">OpenNOW Login</h2><p>Login complete. You can close this window and return to OpenNOW Stable.</p></div></body></html>";
     private static final String FAILURE_HTML = "<!doctype html><html><head><meta charset=\"utf-8\"><title>OpenNOW Login</title></head><body style=\"font-family:Segoe UI,Arial,sans-serif;background:#0b1220;color:#dbe7ff;display:flex;justify-content:center;align-items:center;height:100vh\"><div style=\"background:#111a2c;padding:24px 28px;border:1px solid #30425f;border-radius:12px;max-width:460px\"><h2 style=\"margin-top:0\">OpenNOW Login</h2><p>Login failed or was cancelled. You can close this window and return to OpenNOW Stable.</p></div></body></html>";
 
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final ExecutorService acceptExecutor = Executors.newSingleThreadExecutor();
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private final Object lock = new Object();
     private ServerSocket serverSocket;
     private CompletableFuture<AuthCallbackResult> callbackFuture;
@@ -40,17 +43,17 @@ public class LocalhostAuthPlugin extends Plugin {
     @PluginMethod
     public void startServer(PluginCall call) {
         synchronized (lock) {
-            closeServerLocked();
+            closeServerLocked(false, null);
             callbackFuture = new CompletableFuture<>();
             try {
                 serverSocket = bindServerSocket();
                 currentPort = serverSocket.getLocalPort();
-                executor.execute(this::acceptCallback);
+                acceptExecutor.execute(this::acceptCallback);
                 JSObject result = new JSObject();
                 result.put("port", currentPort);
                 call.resolve(result);
             } catch (IOException error) {
-                closeServerLocked();
+                closeServerLocked(true, new IOException("Failed to start localhost OAuth callback server", error));
                 call.reject("Failed to start localhost OAuth callback server", error);
             }
         }
@@ -68,29 +71,36 @@ public class LocalhostAuthPlugin extends Plugin {
         }
 
         final int timeoutMs = call.getInt("timeoutMs", 180000);
-        executor.execute(() -> {
-            try {
-                AuthCallbackResult result = future.get(timeoutMs, TimeUnit.MILLISECONDS);
+        final ScheduledFuture<?> timeoutTask = scheduler.schedule(() -> {
+            synchronized (lock) {
+                if (callbackFuture == future && !future.isDone()) {
+                    closeServerLocked(true, new TimeoutException("Timed out waiting for OAuth callback"));
+                }
+            }
+        }, timeoutMs, TimeUnit.MILLISECONDS);
+
+        future.whenComplete((result, throwable) -> {
+            timeoutTask.cancel(false);
+            if (throwable == null && result != null) {
                 JSObject payload = new JSObject();
                 payload.put("code", result.code);
                 call.resolve(payload);
-            } catch (TimeoutException error) {
-                stopServerInternal();
-                call.reject("Timed out waiting for OAuth callback", error);
-            } catch (ExecutionException error) {
-                stopServerInternal();
-                Throwable cause = error.getCause() != null ? error.getCause() : error;
-                String message = cause.getMessage() != null ? cause.getMessage() : cause.toString();
-                if (cause instanceof Exception) {
-                    call.reject(message, (Exception) cause);
-                } else {
-                    call.reject(message);
-                }
-            } catch (InterruptedException error) {
-                Thread.currentThread().interrupt();
-                stopServerInternal();
-                call.reject("Interrupted while waiting for OAuth callback", error);
+                return;
             }
+
+            Throwable cause = throwable instanceof ExecutionException && throwable.getCause() != null
+                ? throwable.getCause()
+                : throwable;
+            if (cause instanceof TimeoutException) {
+                call.reject("Timed out waiting for OAuth callback", (Exception) cause);
+                return;
+            }
+            if (cause instanceof Exception) {
+                String message = cause.getMessage() != null ? cause.getMessage() : cause.toString();
+                call.reject(message, (Exception) cause);
+                return;
+            }
+            call.reject(cause != null && cause.getMessage() != null ? cause.getMessage() : "Authorization failed");
         });
     }
 
@@ -103,7 +113,8 @@ public class LocalhostAuthPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         stopServerInternal();
-        executor.shutdownNow();
+        acceptExecutor.shutdownNow();
+        scheduler.shutdownNow();
         super.handleOnDestroy();
     }
 
@@ -139,12 +150,16 @@ public class LocalhostAuthPlugin extends Plugin {
             handleClient(client, future);
         } catch (IOException error) {
             synchronized (lock) {
-                if (callbackFuture == future && future != null && !future.isDone()) {
-                    future.completeExceptionally(new IOException("Localhost OAuth callback failed", error));
+                if (callbackFuture == future && !future.isDone()) {
+                    closeServerLocked(true, new IOException("Localhost OAuth callback failed", error));
                 }
             }
         } finally {
-            stopServerInternal();
+            synchronized (lock) {
+                if (callbackFuture == future && future.isDone()) {
+                    closeServerLocked(false, null);
+                }
+            }
         }
     }
 
@@ -201,11 +216,11 @@ public class LocalhostAuthPlugin extends Plugin {
 
     private void stopServerInternal() {
         synchronized (lock) {
-            closeServerLocked();
+            closeServerLocked(true, new IllegalStateException("OAuth callback server stopped before a code was received"));
         }
     }
 
-    private void closeServerLocked() {
+    private void closeServerLocked(boolean completePending, Throwable cause) {
         if (serverSocket != null) {
             try {
                 serverSocket.close();
@@ -214,10 +229,12 @@ public class LocalhostAuthPlugin extends Plugin {
             serverSocket = null;
         }
         currentPort = 0;
-        if (callbackFuture != null && !callbackFuture.isDone()) {
-            callbackFuture.completeExceptionally(new IllegalStateException("OAuth callback server stopped before a code was received"));
+        if (completePending && callbackFuture != null && !callbackFuture.isDone()) {
+            callbackFuture.completeExceptionally(cause != null ? cause : new IllegalStateException("OAuth callback server stopped before a code was received"));
         }
-        callbackFuture = null;
+        if (callbackFuture != null && callbackFuture.isDone()) {
+            callbackFuture = null;
+        }
     }
 
     private static final class AuthCallbackResult {
