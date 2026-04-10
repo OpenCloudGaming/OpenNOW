@@ -1,3 +1,5 @@
+import type { SessionErrorInfo } from "@shared/sessionError";
+
 /**
  * CloudMatch error codes.
  *
@@ -633,26 +635,6 @@ export const ERROR_MESSAGES: Map<number, ErrorMessageEntry> = new Map([
     },
   ],
 ]);
-
-/** Parsed error information from CloudMatch response */
-export interface SessionErrorInfo {
-  /** HTTP status code (e.g., 403) */
-  httpStatus: number;
-  /** CloudMatch status code from requestStatus.statusCode */
-  statusCode: number;
-  /** Status description from requestStatus.statusDescription */
-  statusDescription?: string;
-  /** Unified error code from requestStatus.unifiedErrorCode */
-  unifiedErrorCode?: number;
-  /** Session error code from session.errorCode */
-  sessionErrorCode?: number;
-  /** Computed service error code */
-  gfnErrorCode: number;
-  /** User-friendly title */
-  title: string;
-  /** User-friendly description */
-  description: string;
-}
 
 /** CloudMatch error response structure */
 interface CloudMatchErrorResponse {

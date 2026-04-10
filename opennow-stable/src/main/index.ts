@@ -59,6 +59,7 @@ import type {
   RecordingAbortRequest,
   RecordingDeleteRequest,
 } from "@shared/gfn";
+import { serializeSessionErrorTransport } from "@shared/sessionError";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
 
@@ -591,7 +592,7 @@ function isSessionConflictError(error: unknown): boolean {
 
 function rethrowSerializedSessionError(error: unknown): never {
   if (error instanceof SessionError) {
-    throw error.toJSON();
+    throw new Error(serializeSessionErrorTransport(error.toJSON()));
   }
   throw error;
 }

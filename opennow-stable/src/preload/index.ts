@@ -33,6 +33,22 @@ import type {
   RecordingDeleteRequest,
   MediaListingResult,
 } from "@shared/gfn";
+import { parseSerializedSessionErrorTransport } from "@shared/sessionError";
+
+function unwrapSessionInvokeError(error: unknown): never {
+  if (error instanceof Error) {
+    const sessionError = parseSerializedSessionErrorTransport(error.message);
+    if (sessionError) {
+      throw sessionError;
+    }
+  }
+
+  throw error;
+}
+
+function invokeSessionChannel<T>(channel: string, ...args: unknown[]): Promise<T> {
+  return ipcRenderer.invoke(channel, ...args).catch((error: unknown) => unwrapSessionInvokeError(error)) as Promise<T>;
+}
 
 const api: OpenNowApi = {
   getAuthSession: (input: AuthSessionRequest = {}) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_SESSION, input),
@@ -48,13 +64,13 @@ const api: OpenNowApi = {
   fetchPublicGames: () => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_PUBLIC),
   resolveLaunchAppId: (input: ResolveLaunchIdRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, input),
-  createSession: (input: SessionCreateRequest) => ipcRenderer.invoke(IPC_CHANNELS.CREATE_SESSION, input),
-  pollSession: (input: SessionPollRequest) => ipcRenderer.invoke(IPC_CHANNELS.POLL_SESSION, input),
-  reportSessionAd: (input: SessionAdReportRequest) => ipcRenderer.invoke(IPC_CHANNELS.REPORT_SESSION_AD, input),
-  stopSession: (input: SessionStopRequest) => ipcRenderer.invoke(IPC_CHANNELS.STOP_SESSION, input),
+  createSession: (input: SessionCreateRequest) => invokeSessionChannel(IPC_CHANNELS.CREATE_SESSION, input),
+  pollSession: (input: SessionPollRequest) => invokeSessionChannel(IPC_CHANNELS.POLL_SESSION, input),
+  reportSessionAd: (input: SessionAdReportRequest) => invokeSessionChannel(IPC_CHANNELS.REPORT_SESSION_AD, input),
+  stopSession: (input: SessionStopRequest) => invokeSessionChannel(IPC_CHANNELS.STOP_SESSION, input),
   getActiveSessions: (token?: string, streamingBaseUrl?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.GET_ACTIVE_SESSIONS, token, streamingBaseUrl),
-  claimSession: (input: SessionClaimRequest) => ipcRenderer.invoke(IPC_CHANNELS.CLAIM_SESSION, input),
+  claimSession: (input: SessionClaimRequest) => invokeSessionChannel(IPC_CHANNELS.CLAIM_SESSION, input),
   showSessionConflictDialog: () => ipcRenderer.invoke(IPC_CHANNELS.SESSION_CONFLICT_DIALOG),
   connectSignaling: (input: SignalingConnectRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.CONNECT_SIGNALING, input),

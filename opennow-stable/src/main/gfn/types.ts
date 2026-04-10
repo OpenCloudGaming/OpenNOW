@@ -1,4 +1,5 @@
-import type { SessionError, SessionErrorInfo } from "./errorCodes";
+import type { SessionError } from "./errorCodes";
+import type { SessionErrorInfo } from "@shared/sessionError";
 
 export interface CloudMatchRequest {
   sessionRequestData: {
