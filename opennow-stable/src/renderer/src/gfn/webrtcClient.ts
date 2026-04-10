@@ -2,12 +2,10 @@ import type {
   IceCandidatePayload,
   ColorQuality,
   IceServer,
-  NegotiatedStreamProfile,
   SessionInfo,
   VideoCodec,
   MicrophoneMode,
 } from "@shared/gfn";
-import { colorQualityRequiresHevc } from "@shared/gfn";
 
 import {
   InputEncoder,
@@ -441,65 +439,6 @@ function normalizeCodecName(codecId: string): string {
   }
 
   return codecId;
-}
-
-function resolveOfferSettings(settings: OfferSettings, negotiated?: NegotiatedStreamProfile): OfferSettings {
-  if (!negotiated) {
-    return settings;
-  }
-
-  const resolved: OfferSettings = {
-    ...settings,
-    resolution: negotiated.resolution ?? settings.resolution,
-    fps: negotiated.fps ?? settings.fps,
-    colorQuality: negotiated.colorQuality ?? settings.colorQuality,
-  };
-
-  if (colorQualityRequiresHevc(resolved.colorQuality) && resolved.codec === "H264") {
-    resolved.codec = "H265";
-  }
-
-  return resolved;
-}
-
-function extractNegotiatedVideoCodec(sdp: string): VideoCodec | undefined {
-  const lines = sdp.split(/\r?\n/);
-  const payloadToCodec = new Map<string, VideoCodec>();
-  let videoPayloadOrder: string[] = [];
-  let inVideoSection = false;
-
-  for (const line of lines) {
-    if (line.startsWith("m=video")) {
-      inVideoSection = true;
-      videoPayloadOrder = line.split(/\s+/).slice(3);
-      continue;
-    }
-    if (line.startsWith("m=") && inVideoSection) {
-      break;
-    }
-    if (!inVideoSection || !line.startsWith("a=rtpmap:")) {
-      continue;
-    }
-
-    const match = line.match(/^a=rtpmap:(\d+)\s+([^/\s]+)/i);
-    if (!match) {
-      continue;
-    }
-
-    const normalized = normalizeCodecName(match[2]);
-    if (normalized === "H264" || normalized === "H265" || normalized === "AV1") {
-      payloadToCodec.set(match[1], normalized);
-    }
-  }
-
-  for (const payload of videoPayloadOrder) {
-    const codec = payloadToCodec.get(payload);
-    if (codec) {
-      return codec;
-    }
-  }
-
-  return undefined;
 }
 
 export class GfnWebRtcClient {
@@ -3320,14 +3259,12 @@ export class GfnWebRtcClient {
 
   async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
     this.cleanupPeerConnection();
-    const effectiveSettings = resolveOfferSettings(settings, session.negotiatedStreamProfile);
-
     this.log("=== handleOffer START ===");
     this.log(`Session: id=${session.sessionId}, status=${session.status}, serverIp=${session.serverIp}`);
     this.log(`Signaling: server=${session.signalingServer}, url=${session.signalingUrl}`);
     this.log(`MediaConnectionInfo: ${session.mediaConnectionInfo ? `ip=${session.mediaConnectionInfo.ip}, port=${session.mediaConnectionInfo.port}` : "NONE"}`);
     this.log(
-      `Settings: codec=${effectiveSettings.codec}, colorQuality=${effectiveSettings.colorQuality}, resolution=${effectiveSettings.resolution}, fps=${effectiveSettings.fps}, maxBitrate=${effectiveSettings.maxBitrateKbps}kbps`,
+      `Settings: codec=${settings.codec}, colorQuality=${settings.colorQuality}, resolution=${settings.resolution}, fps=${settings.fps}, maxBitrate=${settings.maxBitrateKbps}kbps`,
     );
     if (session.negotiatedStreamProfile) {
       this.log(`Negotiated stream profile override: ${JSON.stringify(session.negotiatedStreamProfile)}`);
@@ -3345,7 +3282,7 @@ export class GfnWebRtcClient {
     this.partialReliableThresholdMs = negotiatedPartialReliable ?? GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
     this.negotiatedMaxBitrateKbps = Math.max(
       GfnWebRtcClient.DECODER_MIN_RECOVERY_BITRATE_KBPS,
-      Math.floor(effectiveSettings.maxBitrateKbps),
+      Math.floor(settings.maxBitrateKbps),
     );
     this.currentBitrateCeilingKbps = this.negotiatedMaxBitrateKbps;
     this.log(
@@ -3481,14 +3418,14 @@ export class GfnWebRtcClient {
     const serverIceUfrag = extractIceUfragFromOffer(processedOffer);
     this.log(`Server ICE ufrag: "${serverIceUfrag}"`);
 
-    const preferredHevcProfileId = hevcPreferredProfileId(effectiveSettings.colorQuality);
+    const preferredHevcProfileId = hevcPreferredProfileId(settings.colorQuality);
 
     // 3. Filter to preferred codec — but only if the browser actually supports it
-    let effectiveCodec = effectiveSettings.codec;
+    let effectiveCodec = settings.codec;
     const supported = this.getSupportedVideoCodecs();
     this.log(`Browser supported video codecs: ${supported.join(", ") || "unknown"}`);
 
-    if (effectiveSettings.codec === "H265") {
+    if (settings.codec === "H265") {
       const hevcProfiles = this.getSupportedHevcProfiles();
       if (hevcProfiles.size > 0) {
         this.log(`Browser HEVC profile-id support: ${Array.from(hevcProfiles).join(", ")}`);
@@ -3526,8 +3463,8 @@ export class GfnWebRtcClient {
       }
     }
 
-    if (supported.length > 0 && !supported.includes(effectiveSettings.codec)) {
-      this.log(`Warning: ${effectiveSettings.codec} not reported in browser codec list; forcing requested codec anyway`);
+    if (supported.length > 0 && !supported.includes(settings.codec)) {
+      this.log(`Warning: ${settings.codec} not reported in browser codec list; forcing requested codec anyway`);
     }
     this.log(`Effective codec: ${effectiveCodec} (preferred HEVC profile-id=${preferredHevcProfileId})`);
     const filteredOffer = preferCodec(processedOffer, effectiveCodec, {
@@ -3558,8 +3495,8 @@ export class GfnWebRtcClient {
 
     // Munge answer SDP: inject b=AS: bitrate limits and stereo=1 for opus
     if (answer.sdp) {
-      answer.sdp = mungeAnswerSdp(answer.sdp, effectiveSettings.maxBitrateKbps);
-      this.log(`Answer SDP munged (b=AS:${effectiveSettings.maxBitrateKbps}, stereo=1)`);
+      answer.sdp = mungeAnswerSdp(answer.sdp, settings.maxBitrateKbps);
+      this.log(`Answer SDP munged (b=AS:${settings.maxBitrateKbps}, stereo=1)`);
     }
 
     await pc.setLocalDescription(answer);
@@ -3604,41 +3541,16 @@ export class GfnWebRtcClient {
 
     const credentials = extractIceCredentials(finalSdp);
     this.log(`Extracted ICE credentials: ufrag=${credentials.ufrag}, pwd=${credentials.pwd.slice(0, 8)}...`);
-    const negotiatedVideoCodec = extractNegotiatedVideoCodec(finalSdp);
-    if (negotiatedVideoCodec) {
-      effectiveCodec = negotiatedVideoCodec;
-      this.log(`Negotiated video codec from local SDP: ${effectiveCodec}`);
-    }
-    const { width, height } = parseResolution(effectiveSettings.resolution);
-    const viewportRect = this.options.videoElement.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    const baseCssViewportWidth = Math.max(viewportRect.width, window.innerWidth || 0);
-    const baseCssViewportHeight = Math.max(viewportRect.height, window.innerHeight || 0);
-    const screenCssWidth = window.screen?.width ?? baseCssViewportWidth;
-    const screenCssHeight = window.screen?.height ?? baseCssViewportHeight;
-    const shouldUseScreenViewportHint = dpr > 1 && (width >= 3840 || height >= 2160);
-    const resolvedCssViewportWidth = shouldUseScreenViewportHint
-      ? Math.max(baseCssViewportWidth, screenCssWidth)
-      : baseCssViewportWidth;
-    const resolvedCssViewportHeight = shouldUseScreenViewportHint
-      ? Math.max(baseCssViewportHeight, screenCssHeight)
-      : baseCssViewportHeight;
-    const clientViewportWidth = Math.max(1, Math.round(resolvedCssViewportWidth * dpr));
-    const clientViewportHeight = Math.max(1, Math.round(resolvedCssViewportHeight * dpr));
-    this.log(
-      `Client viewport for NVST: ${clientViewportWidth}x${clientViewportHeight} (CSS base ${Math.round(baseCssViewportWidth)}x${Math.round(baseCssViewportHeight)}, screen ${Math.round(screenCssWidth)}x${Math.round(screenCssHeight)}, mode=${shouldUseScreenViewportHint ? "screen-hidpi-4k" : "window"} @ DPR ${dpr.toFixed(2)})`,
-    );
+    const { width, height } = parseResolution(settings.resolution);
 
     const nvstSdp = buildNvstSdp({
       width,
       height,
-      clientViewportWidth,
-      clientViewportHeight,
-      fps: effectiveSettings.fps,
-      maxBitrateKbps: effectiveSettings.maxBitrateKbps,
+      fps: settings.fps,
+      maxBitrateKbps: settings.maxBitrateKbps,
       partialReliableThresholdMs: this.partialReliableThresholdMs,
       codec: effectiveCodec,
-      colorQuality: effectiveSettings.colorQuality,
+      colorQuality: settings.colorQuality,
       credentials,
     });
 
@@ -3656,39 +3568,27 @@ export class GfnWebRtcClient {
       const mci = session.mediaConnectionInfo;
       const rawIp = extractPublicIp(mci.ip);
       if (rawIp && mci.port > 0) {
-        // Try UDP host candidate first, then a TCP host candidate as a fallback.
-        // Some GFN endpoints advertise rtsps (TCP/TLS) ports; injecting a TCP
-        // candidate can help when UDP is blocked but the server accepts TCP.
-        const candidateUdp = `candidate:1 1 udp 2130706431 ${rawIp} ${mci.port} typ host`;
-        const candidateTcp = `candidate:1 1 tcp 1518149375 ${rawIp} ${mci.port} typ host tcptype active`;
-        const candidatesToTry = [candidateUdp, candidateTcp];
-
-        this.log(`Injecting manual ICE candidates: ${rawIp}:${mci.port} (udp,tcp)`);
+        const candidateStr = `candidate:1 1 udp 2130706431 ${rawIp} ${mci.port} typ host`;
+        this.log(`Injecting manual ICE candidate: ${rawIp}:${mci.port}`);
 
         // Try sdpMid "0" first, then "1", "2", "3" (matching Rust fallback)
         const mids = ["0", "1", "2", "3"];
         let injected = false;
-
-        for (const cand of candidatesToTry) {
-          const proto = cand.includes("udp") ? "udp" : "tcp";
-          for (const mid of mids) {
-            try {
-              await pc.addIceCandidate({
-                candidate: cand,
-                sdpMid: mid,
-                sdpMLineIndex: parseInt(mid, 10),
-                usernameFragment: serverIceUfrag || undefined,
-              });
-              this.log(`Manual ICE candidate injected (sdpMid=${mid}, proto=${proto})`);
-              injected = true;
-              break;
-            } catch (error) {
-              this.log(`Manual ICE candidate failed for sdpMid=${mid}, proto=${proto}: ${String(error)}`);
-            }
+        for (const mid of mids) {
+          try {
+            await pc.addIceCandidate({
+              candidate: candidateStr,
+              sdpMid: mid,
+              sdpMLineIndex: parseInt(mid, 10),
+              usernameFragment: serverIceUfrag || undefined,
+            });
+            this.log(`Manual ICE candidate injected (sdpMid=${mid})`);
+            injected = true;
+            break;
+          } catch (error) {
+            this.log(`Manual ICE candidate failed for sdpMid=${mid}: ${String(error)}`);
           }
-          if (injected) break;
         }
-
         if (!injected) {
           this.log("Warning: Could not inject manual ICE candidate on any sdpMid");
         }
@@ -3700,170 +3600,6 @@ export class GfnWebRtcClient {
     }
 
     this.log("=== handleOffer COMPLETE — waiting for ICE connectivity and tracks ===");
-
-    // Relay/TURN fallback: if ICE never reaches connected (or fails), and
-    // the session-provided ICE servers include TURN server URLs, attempt to
-    // recreate the PeerConnection with `iceTransportPolicy: 'relay'` to force
-    // use of TURN relays. This helps clients behind restrictive NAT/firewalls.
-    let triedRelay = false;
-    const relayFallbackTimeoutMs = 7000;
-
-    const attemptRelayFallback = async (): Promise<void> => {
-      if (triedRelay) return;
-      triedRelay = true;
-
-      try {
-        const hasTurn = (session.iceServers ?? []).some((s) =>
-          (s.urls ?? []).some((u) => typeof u === "string" && (u.startsWith("turn:") || u.startsWith("turns:"))),
-        );
-        if (!hasTurn) {
-          this.log("Relay fallback: no TURN servers present in session. Skipping relay attempt.");
-          return;
-        }
-
-        this.log("Relay fallback: starting relay/TURN retry (iceTransportPolicy=relay)");
-
-        // Tear down any existing peer connection and create a new one configured
-        // to use only relays.
-        this.cleanupPeerConnection();
-
-        const relayRtcConfig: RTCConfiguration = {
-          iceServers: toRtcIceServers(session.iceServers),
-          bundlePolicy: "max-bundle",
-          rtcpMuxPolicy: "require",
-          iceTransportPolicy: "relay",
-        } as RTCConfiguration;
-
-        const relayPc = new RTCPeerConnection(relayRtcConfig);
-        this.pc = relayPc;
-        this.diagnostics.connectionState = relayPc.connectionState;
-        this.diagnostics.serverRegion = this.serverRegion;
-        this.diagnostics.gpuType = this.gpuType;
-        this.emitStats();
-
-        this.resetInputState();
-        this.resetDiagnostics();
-        this.createDataChannels(relayPc);
-        this.installInputCapture(this.options.videoElement);
-        this.setupStatsPolling();
-
-        relayPc.onicecandidate = (event) => {
-          if (!event.candidate) return;
-          const payload = event.candidate.toJSON();
-          if (!payload.candidate) return;
-          this.log(`Relay PC local ICE candidate: ${payload.candidate}`);
-          const candidate: IceCandidatePayload = {
-            candidate: payload.candidate,
-            sdpMid: payload.sdpMid,
-            sdpMLineIndex: payload.sdpMLineIndex,
-            usernameFragment: payload.usernameFragment,
-          };
-          window.openNow.sendIceCandidate(candidate).catch((error) => {
-            this.log(`Relay PC failed to send local ICE candidate: ${String(error)}`);
-          });
-        };
-
-        relayPc.ontrack = (evt) => {
-          this.log(`Relay PC track received: kind=${evt.track.kind}, id=${evt.track.id}`);
-          this.attachTrack(evt.track);
-          this.configureReceiverForLowLatency(evt.receiver, evt.track.kind);
-        };
-
-        relayPc.onconnectionstatechange = () => {
-          this.diagnostics.connectionState = relayPc.connectionState;
-          this.emitStats();
-          this.log(`Relay PC connection state: ${relayPc.connectionState}`);
-        };
-
-        relayPc.oniceconnectionstatechange = () => {
-          this.log(`Relay PC ICE connection state: ${relayPc.iceConnectionState}`);
-        };
-
-        // Re-run the SDP answer flow against the same (filtered) offer.
-        await relayPc.setRemoteDescription({ type: "offer", sdp: filteredOffer });
-        await this.flushQueuedCandidates();
-
-        if (this.micManager) {
-          this.micManager.setPeerConnection(relayPc);
-          await this.micManager.attachTrackToPeerConnection();
-        }
-
-        // Re-apply codec preferences on the new PC
-        this.applyCodecPreferences(relayPc, effectiveCodec, preferredHevcProfileId);
-
-        const relayAnswer = await relayPc.createAnswer();
-        if (relayAnswer.sdp) {
-          relayAnswer.sdp = mungeAnswerSdp(relayAnswer.sdp, effectiveSettings.maxBitrateKbps);
-        }
-        await relayPc.setLocalDescription(relayAnswer);
-        this.log("Relay PC local description set, waiting for ICE gathering...");
-
-        const finalRelaySdp = await this.waitForIceGathering(relayPc, 5000);
-        this.log(`Relay ICE gathering done, final SDP length: ${finalRelaySdp.length} chars`);
-
-        const relayCredentials = extractIceCredentials(finalRelaySdp);
-        const nvstSdpRelay = buildNvstSdp({
-          width,
-          height,
-          clientViewportWidth,
-          clientViewportHeight,
-          fps: effectiveSettings.fps,
-          maxBitrateKbps: effectiveSettings.maxBitrateKbps,
-          partialReliableThresholdMs: this.partialReliableThresholdMs,
-          codec: effectiveCodec,
-          colorQuality: effectiveSettings.colorQuality,
-          credentials: relayCredentials,
-        });
-
-        await window.openNow.sendAnswer({ sdp: finalRelaySdp, nvstSdp: nvstSdpRelay });
-        this.log("Relay fallback: sent relay answer to signaling");
-
-        // Attempt manual mediaConnectionInfo injection again (UDP/TCP) — server may
-        // accept TCP connections even when UDP fails.
-        if (session.mediaConnectionInfo) {
-          const mci = session.mediaConnectionInfo;
-          const rawIp = extractPublicIp(mci.ip);
-          if (rawIp && mci.port > 0) {
-            const candidateUdp = `candidate:1 1 udp 2130706431 ${rawIp} ${mci.port} typ host`;
-            const candidateTcp = `candidate:1 1 tcp 1518149375 ${rawIp} ${mci.port} typ host tcptype active`;
-            const candidatesToTry = [candidateUdp, candidateTcp];
-            const mids = ["0", "1", "2", "3"];
-            let injectedRelay = false;
-            for (const cand of candidatesToTry) {
-              const proto = cand.includes("udp") ? "udp" : "tcp";
-              for (const mid of mids) {
-                try {
-                  await relayPc.addIceCandidate({ candidate: cand, sdpMid: mid, sdpMLineIndex: parseInt(mid, 10), usernameFragment: relayCredentials.ufrag || undefined });
-                  this.log(`Relay PC manual ICE candidate injected (sdpMid=${mid}, proto=${proto})`);
-                  injectedRelay = true;
-                  break;
-                } catch (e) {
-                  this.log(`Relay PC manual ICE candidate failed for sdpMid=${mid}, proto=${proto}: ${String(e)}`);
-                }
-              }
-              if (injectedRelay) break;
-            }
-            if (!injectedRelay) this.log("Relay PC: could not inject manual media candidate on any sdpMid");
-          }
-        }
-      } catch (e) {
-        this.log(`Relay fallback failed: ${String(e)}`);
-      }
-    };
-
-    // Trigger fallback on ICE failure or timeout
-    pc.oniceconnectionstatechange = () => {
-      this.log(`ICE connection state: ${pc.iceConnectionState}`);
-      if ((pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") && !triedRelay) {
-        void attemptRelayFallback();
-      }
-    };
-
-    setTimeout(() => {
-      if (!triedRelay && this.pc && this.pc.connectionState !== "connected" && this.pc.iceConnectionState !== "connected") {
-        void attemptRelayFallback();
-      }
-    }, relayFallbackTimeoutMs);
   }
 
   async addRemoteCandidate(candidate: IceCandidatePayload): Promise<void> {

@@ -8,6 +8,7 @@ import type {
   VideoCodec,
   ColorQuality,
   EntitledResolution,
+  VideoAccelerationPreference,
   MicrophoneMode,
   PingResult,
   GameLanguage,
@@ -16,7 +17,12 @@ import type {
   ThankYouContributor,
   ThankYouSupporter,
 } from "@shared/gfn";
-import { colorQualityRequiresHevc, keyboardLayoutOptions } from "@shared/gfn";
+import {
+  colorQualityRequiresHevc,
+  keyboardLayoutOptions,
+  USER_FACING_COLOR_QUALITY_OPTIONS,
+  USER_FACING_VIDEO_CODEC_OPTIONS,
+} from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
 
 interface SettingsPageProps {
@@ -27,14 +33,22 @@ interface SettingsPageProps {
 
 type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 
-const codecOptions: VideoCodec[] = ["H264", "H265", "AV1"];
+const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
 
-const colorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [
-  { value: "8bit_420", label: "8-bit 4:2:0", description: "Most compatible" },
-  { value: "8bit_444", label: "8-bit 4:4:4", description: "Better color" },
-  { value: "10bit_420", label: "10-bit 4:2:0", description: "HDR ready" },
-  { value: "10bit_444", label: "10-bit 4:4:4", description: "Best quality" },
+const accelerationOptions: { value: VideoAccelerationPreference; label: string }[] = [
+  { value: "auto", label: "Auto" },
+  { value: "hardware", label: "Hardware" },
+  { value: "software", label: "Software (CPU)" },
 ];
+
+const allColorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [
+  { value: "8bit_420", label: "8-bit 4:2:0", description: "Most compatible" },
+  { value: "8bit_444", label: "8-bit 4:4:4", description: "Sharper chroma" },
+  { value: "10bit_420", label: "10-bit 4:2:0", description: "Higher bit depth" },
+  { value: "10bit_444", label: "10-bit 4:4:4", description: "Highest chroma and bit depth" },
+];
+
+const colorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [...allColorQualityOptions];
 
 /* ── Static fallbacks (used when MES API is unavailable) ─────────── */
 
@@ -762,7 +776,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
     [onSettingChange]
   );
 
-  /** Change color quality, auto-switching codec to H265 if the mode requires HEVC */
   const handleColorQualityChange = useCallback(
     (cq: ColorQuality) => {
       handleChange("colorQuality", cq);
@@ -1592,6 +1605,38 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="settings-row settings-row--column">
+              <label className="settings-label">Decoder</label>
+              <div className="settings-chip-row">
+                {accelerationOptions.map((option) => (
+                  <button
+                    key={`decoder-${option.value}`}
+                    className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
+                    onClick={() => handleChange("decoderPreference", option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <span className="settings-subtle-hint">Applies after app restart.</span>
+            </div>
+
+            <div className="settings-row settings-row--column">
+              <label className="settings-label">Encoder</label>
+              <div className="settings-chip-row">
+                {accelerationOptions.map((option) => (
+                  <button
+                    key={`encoder-${option.value}`}
+                    className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
+                    onClick={() => handleChange("encoderPreference", option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <span className="settings-subtle-hint">Applies after app restart.</span>
             </div>
 
             {/* Color Quality */}

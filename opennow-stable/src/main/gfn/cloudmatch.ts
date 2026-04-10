@@ -564,17 +564,10 @@ function shouldUseServerIp(baseUrl: string): boolean {
 
 function resolvePollStopBase(zone: string, provided?: string, serverIp?: string): string {
   const base = resolveStreamingBaseUrl(zone, provided);
-  // CloudMatch queue/ad/session endpoints are host-pinned once the session control
-  // host is known. Official captures show `/v2/session/<id>` moving from generic
-  // provider hosts like `prod.cloudmatchbeta...` onto specific zone hosts such as
-  // `np-mia-04.cloudmatchbeta...` before ad updates are sent. Keep the provider
-  // base only until CloudMatch gives us a different host.
-  if (serverIp && shouldUseServerIp(base)) {
-    const baseHost = extractHostFromUrl(base) ?? base.replace(/^https?:\/\//, "").split("/")[0] ?? "";
-    if (serverIp !== baseHost) {
-      return `https://${serverIp}`;
-    }
-  }
+  // Only use serverIp if it's a real server IP (not a zone hostname).
+  // The Rust version checks: if we're NOT an alliance partner AND we have a server_ip, use it.
+  // But if the "serverIp" is actually the zone hostname (from an early poll when connectionInfo
+  // was empty), using it is circular and doesn't help.
   if (serverIp && shouldUseServerIp(base) && !isZoneHostname(serverIp)) {
     return `https://${serverIp}`;
   }
@@ -1283,7 +1276,6 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     gameLanguage: "en_US",
     enableL4S: false,
   };
-
   const keyboardLayout = resolveGfnKeyboardLayout(settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);
   const languageCode = settings.gameLanguage ?? "en_US";
 

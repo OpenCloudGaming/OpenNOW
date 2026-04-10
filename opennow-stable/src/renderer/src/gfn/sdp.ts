@@ -397,8 +397,6 @@ export function preferCodec(sdp: string, codec: VideoCodec, options?: PreferCode
 interface NvstParams {
   width: number;
   height: number;
-  clientViewportWidth: number;
-  clientViewportHeight: number;
   fps: number;
   maxBitrateKbps: number;
   partialReliableThresholdMs: number;
@@ -459,7 +457,7 @@ export function buildNvstSdp(params: NvstParams): string {
   const is120Fps = params.fps === 120;
   const is240Fps = params.fps >= 240;
   const isAv1 = params.codec === "AV1";
-  const bitDepth = params.colorQuality.startsWith("10bit") && params.codec !== "H264" ? 10 : 8;
+  const bitDepth = params.colorQuality.startsWith("10bit") ? 10 : 8;
 
   const lines: string[] = [
     "v=0",
@@ -579,8 +577,8 @@ export function buildNvstSdp(params: NvstParams): string {
 
   // Viewport, FPS, and bitrate
   lines.push(
-    `a=video.clientViewportWd:${params.clientViewportWidth}`,
-    `a=video.clientViewportHt:${params.clientViewportHeight}`,
+    `a=video.clientViewportWd:${params.width}`,
+    `a=video.clientViewportHt:${params.height}`,
     `a=video.maxFPS:${params.fps}`,
     `a=video.initialBitrateKbps:${initialBitrate}`,
     `a=video.initialPeakBitrateKbps:${params.maxBitrateKbps}`,

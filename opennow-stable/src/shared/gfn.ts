@@ -67,6 +67,32 @@ export function colorQualityRequiresHevc(cq: ColorQuality): boolean {
   return cq !== "8bit_420";
 }
 
+export const USER_FACING_VIDEO_CODEC_OPTIONS: readonly VideoCodec[] = ["H264", "H265", "AV1"];
+export const USER_FACING_COLOR_QUALITY_OPTIONS: readonly ColorQuality[] = ["8bit_420", "8bit_444", "10bit_420", "10bit_444"];
+
+export function isSupportedUserFacingCodec(codec: VideoCodec): boolean {
+  return USER_FACING_VIDEO_CODEC_OPTIONS.includes(codec);
+}
+
+export function normalizeStreamPreferences(codec: VideoCodec, colorQuality: ColorQuality): {
+  codec: VideoCodec;
+  colorQuality: ColorQuality;
+  migrated: boolean;
+} {
+  const normalizedCodec = isSupportedUserFacingCodec(codec)
+    ? codec
+    : USER_FACING_VIDEO_CODEC_OPTIONS[0];
+  const normalizedColorQuality = USER_FACING_COLOR_QUALITY_OPTIONS.includes(colorQuality)
+    ? colorQuality
+    : USER_FACING_COLOR_QUALITY_OPTIONS[0];
+
+  return {
+    codec: normalizedCodec,
+    colorQuality: normalizedColorQuality,
+    migrated: normalizedCodec !== codec || normalizedColorQuality !== colorQuality,
+  };
+}
+
 /** Helper: is this a 10-bit (HDR-capable) mode? */
 export function colorQualityIs10Bit(cq: ColorQuality): boolean {
   return cq.startsWith("10bit");
@@ -105,6 +131,8 @@ export interface Settings {
   fps: number;
   maxBitrateMbps: number;
   codec: VideoCodec;
+  decoderPreference: VideoAccelerationPreference;
+  encoderPreference: VideoAccelerationPreference;
   colorQuality: ColorQuality;
   region: string;
   clipboardPaste: boolean;
@@ -140,6 +168,22 @@ export interface Settings {
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
+}
+
+export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
+  codec: "H264",
+  colorQuality: "10bit_420",
+});
+
+export function getDefaultStreamPreferences(): Pick<Settings, "codec" | "colorQuality"> {
+  const normalized = normalizeStreamPreferences(
+    DEFAULT_STREAM_PREFERENCES.codec,
+    DEFAULT_STREAM_PREFERENCES.colorQuality,
+  );
+  return {
+    codec: normalized.codec,
+    colorQuality: normalized.colorQuality,
+  };
 }
 
 export interface LoginProvider {
