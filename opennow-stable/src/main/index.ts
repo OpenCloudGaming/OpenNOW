@@ -716,8 +716,10 @@ async function fetchThanksContributors(): Promise<ThankYouContributor[]> {
 }
 
 function parseSupporterName(entryHtml: string): { name: string; isPrivate: boolean } {
+  const privateHrefMatch = entryHtml.match(/href="https:\/\/docs\.github\.com\/sponsors\/sponsoring-open-source-contributors\/managing-your-sponsorship#managing-the-privacy-setting-for-your-sponsorship"/i);
   const privateTooltipMatch = entryHtml.match(/<tool-tip[^>]*>\s*Private Sponsor\s*<\/tool-tip>/i);
-  if (privateTooltipMatch) {
+  const privateAriaMatch = entryHtml.match(/aria-label="Private Sponsor"/i);
+  if (privateHrefMatch || privateTooltipMatch || privateAriaMatch) {
     return { name: "Private", isPrivate: true };
   }
 
@@ -735,6 +737,12 @@ function parseSupporterName(entryHtml: string): { name: string; isPrivate: boole
     return { name: normalizedAria, isPrivate: false };
   }
 
+  const hrefMatch = entryHtml.match(/<a[^>]+href="\/([^"/?#]+)"/i);
+  const normalizedHref = hrefMatch ? decodeHtmlEntities(hrefMatch[1]).trim() : "";
+  if (normalizedHref && !/sponsors/i.test(normalizedHref)) {
+    return { name: normalizedHref.replace(/^@/, ""), isPrivate: false };
+  }
+
   return { name: "Private", isPrivate: true };
 }
 
@@ -745,7 +753,7 @@ function parseSupportersFromHtml(html: string): ThankYouSupporter[] {
   }
 
   const listHtml = sponsorsSectionMatch[1];
-  const entryMatches = listHtml.match(/<div class="d-flex mb-1 mr-1"[^>]*>[\s\S]*?<\/div>\s*<\/div>/gi) ?? [];
+  const entryMatches = listHtml.match(/<div class="d-flex mb-1 mr-1"[^>]*>[\s\S]*?<\/div>/gi) ?? [];
   const supporters: ThankYouSupporter[] = [];
   const seenKeys = new Set<string>();
 
