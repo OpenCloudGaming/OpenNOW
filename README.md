@@ -82,6 +82,8 @@ Current packaging targets:
 | Linux x64 | `AppImage`, `deb` |
 | Linux ARM64 | `AppImage`, `deb` |
 
+For Android testing, GitHub Actions now builds an unsigned debug APK artifact on pull requests and manual workflow runs. Download it from the `auto-build` workflow artifacts; it is intended for testing, not release distribution.
+
 ### Develop Locally
 
 From the repository root:
@@ -155,6 +157,8 @@ Known Android limitations in this pass:
 - no show-in-folder integration for media
 - screenshot export/save-as remains desktop-only
 - some desktop shortcut UX is hidden or non-applicable on touch devices
+
+CI also produces a testable Android APK artifact from the Capacitor target so reviewers can install and validate the current branch without making a release build.
 
 
 ## Contributing

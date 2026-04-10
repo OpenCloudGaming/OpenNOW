@@ -42,6 +42,8 @@ npm run dist
 npm run dist:signed
 ```
 
+GitHub Actions also builds a testable unsigned Android debug APK artifact in the `auto-build` workflow for pull requests and manual dispatch runs.
+
 ## Workspace Layout
 
 The Android shell lives in [`opennow-stable/android/`](../opennow-stable/android), Capacitor config lives in [`opennow-stable/capacitor.config.ts`](../opennow-stable/capacitor.config.ts), and the renderer platform abstraction lives in [`opennow-stable/src/renderer/src/platform/`](../opennow-stable/src/renderer/src/platform/).
@@ -162,6 +164,12 @@ Current build matrix:
 | Linux x64 | `AppImage`, `deb` |
 | Linux ARM64 | `AppImage`, `deb` |
 
+Additional CI output:
+
+| Target | Output |
+| --- | --- |
+| Android testing | Unsigned debug APK artifact uploaded from `auto-build` |
+
 ## Notes For Contributors
 
 - The active app is the Electron client. If you see older references to previous implementations, prefer `opennow-stable/`.
@@ -180,6 +188,15 @@ cd opennow-stable
 npm run cap:sync:android
 ```
 
+Build a local test APK:
+
+```bash
+cd opennow-stable
+npm run cap:sync:android
+cd android
+./gradlew assembleDebug
+```
+
 Open the Android project in Android Studio:
 
 ```bash
@@ -188,3 +205,5 @@ npm run cap:open:android
 ```
 
 Current Android support is limited to the core cloud-gaming path. Desktop-specific features such as quit app, pointer-lock toggles, log export, cache deletion, show-in-folder actions, and screenshot save-as are intentionally gated or unavailable on Android in this pass.
+
+For CI-based testing, use the APK artifact uploaded by the `auto-build` workflow. It is a debug/testing package and is not release-signed.

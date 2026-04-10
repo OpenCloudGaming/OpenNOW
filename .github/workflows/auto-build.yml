@@ -106,3 +106,53 @@ jobs:
             opennow-stable/dist-release/*.AppImage
             opennow-stable/dist-release/*.deb
           if-no-files-found: error
+
+  android-apk:
+    name: android-apk
+    runs-on: ubuntu-24.04
+
+    defaults:
+      run:
+        working-directory: opennow-stable
+
+    env:
+      npm_config_audit: "false"
+      npm_config_fund: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: "**/package-lock.json"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --progress=false
+
+      - name: Build web assets and sync Android project
+        run: npm run cap:sync:android
+
+      - name: Build debug APK
+        working-directory: opennow-stable/android
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-stable-android-apk
+          path: opennow-stable/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
