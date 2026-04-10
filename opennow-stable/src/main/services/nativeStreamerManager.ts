@@ -142,13 +142,15 @@ export class NativeStreamerManager {
     this.connected = false;
     this.clearStartupWaiters();
     const socket = this.socket;
-    this.socket = null;
     if (socket && !socket.destroyed) {
       try {
         await this.send("stop", {});
       } catch {
       }
+      this.socket = null;
       socket.destroy();
+    } else {
+      this.socket = null;
     }
     if (this.child) {
       this.child.kill();

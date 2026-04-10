@@ -265,11 +265,18 @@ func (c *Client) consumeTrack(track *pion.TrackRemote, _ *pion.RTPReceiver) {
 				Message: fmt.Sprintf("first %s RTP packet received", codec),
 			})
 		})
-		if strings.Contains(codec, "VIDEO") {
-			_ = c.media.PushVideoRTP(raw)
-		} else {
-			_ = c.media.PushAudioRTP(raw)
+		c.mu.Lock()
+		currentMedia := c.media
+		if currentMedia == nil {
+			c.mu.Unlock()
+			return
 		}
+		if strings.Contains(codec, "VIDEO") {
+			_ = currentMedia.PushVideoRTP(raw)
+		} else {
+			_ = currentMedia.PushAudioRTP(raw)
+		}
+		c.mu.Unlock()
 	}
 }
 
