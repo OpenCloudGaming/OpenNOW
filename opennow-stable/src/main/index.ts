@@ -58,6 +58,7 @@ import type {
   RecordingFinishRequest,
   RecordingAbortRequest,
   RecordingDeleteRequest,
+  MicrophonePermissionResult,
   ThankYouContributor,
   ThankYouDataResult,
   ThankYouSupporter,
@@ -1164,6 +1165,56 @@ function registerIpcHandlers(): void {
     return settingsManager.reset();
   });
 
+  ipcMain.handle(IPC_CHANNELS.MICROPHONE_PERMISSION_GET, async (): Promise<MicrophonePermissionResult> => {
+    if (process.platform !== "darwin") {
+      return {
+        platform: process.platform,
+        isMacOs: false,
+        status: "not-applicable",
+        granted: false,
+        canRequest: false,
+        shouldUseBrowserApi: true,
+      };
+    }
+
+    const currentStatus = systemPreferences.getMediaAccessStatus("microphone");
+    console.log("[Main] macOS microphone permission status:", currentStatus);
+
+    if (currentStatus === "granted") {
+      return {
+        platform: process.platform,
+        isMacOs: true,
+        status: "granted",
+        granted: true,
+        canRequest: false,
+        shouldUseBrowserApi: true,
+      };
+    }
+
+    if (currentStatus === "not-determined") {
+      const granted = await systemPreferences.askForMediaAccess("microphone");
+      const nextStatus = systemPreferences.getMediaAccessStatus("microphone");
+      console.log("[Main] Requested macOS microphone permission:", granted, nextStatus);
+      return {
+        platform: process.platform,
+        isMacOs: true,
+        status: nextStatus,
+        granted,
+        canRequest: nextStatus === "not-determined",
+        shouldUseBrowserApi: granted,
+      };
+    }
+
+    return {
+      platform: process.platform,
+      isMacOs: true,
+      status: currentStatus,
+      granted: false,
+      canRequest: false,
+      shouldUseBrowserApi: false,
+    };
+  });
+
   // Logs export IPC handler
   ipcMain.handle(IPC_CHANNELS.LOGS_EXPORT, async (_event, format: "text" | "json" = "text"): Promise<string> => {
     return exportLogs(format);
@@ -1503,16 +1554,6 @@ app.whenReady().then(async () => {
   await authService.initialize();
 
   settingsManager = getSettingsManager();
-
-  // Request microphone permission on macOS at startup
-  if (process.platform === "darwin") {
-    const micStatus = systemPreferences.getMediaAccessStatus("microphone");
-    console.log("[Main] macOS microphone permission status:", micStatus);
-    if (micStatus !== "granted") {
-      const granted = await systemPreferences.askForMediaAccess("microphone");
-      console.log("[Main] Requested microphone permission:", granted);
-    }
-  }
 
   // Set up permission handlers for getUserMedia, fullscreen, pointer lock
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {

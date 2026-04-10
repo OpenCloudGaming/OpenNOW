@@ -74,6 +74,30 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
 
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
+export type RuntimePlatform =
+  | "aix"
+  | "android"
+  | "cygwin"
+  | "darwin"
+  | "freebsd"
+  | "haiku"
+  | "linux"
+  | "netbsd"
+  | "openbsd"
+  | "sunos"
+  | "win32"
+  | "unknown";
+
+export type MacOsMicrophoneAccessStatus = "not-determined" | "granted" | "denied" | "restricted" | "unknown";
+
+export interface MicrophonePermissionResult {
+  platform: RuntimePlatform;
+  isMacOs: boolean;
+  status: MacOsMicrophoneAccessStatus | "not-applicable";
+  granted: boolean;
+  canRequest: boolean;
+  shouldUseBrowserApi: boolean;
+}
 
 export interface Settings {
   resolution: string;
@@ -564,6 +588,7 @@ export interface OpenNowApi {
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
   resetSettings(): Promise<Settings>;
+  getMicrophonePermission(): Promise<MicrophonePermissionResult>;
   /** Export logs in redacted format */
   exportLogs(format?: "text" | "json"): Promise<string>;
   /** Ping all regions and return latency results */

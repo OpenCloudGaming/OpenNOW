@@ -11,6 +11,7 @@ import type {
   MicrophoneMode,
   PingResult,
   GameLanguage,
+  MicrophonePermissionResult,
   ThankYouDataResult,
   ThankYouContributor,
   ThankYouSupporter,
@@ -101,6 +102,19 @@ const microphoneModeOptions: Array<{ value: MicrophoneMode; label: string }> = [
   { value: "push-to-talk", label: "Push-to-Talk" },
   { value: "voice-activity", label: "Voice Activity" },
 ];
+
+function getMicrophonePermissionError(result: MicrophonePermissionResult): string {
+  switch (result.status) {
+    case "denied":
+      return "Microphone access was denied. Enable microphone access for OpenNOW in System Settings → Privacy & Security → Microphone.";
+    case "restricted":
+      return "Microphone access is restricted by macOS and cannot be enabled from OpenNOW.";
+    case "unknown":
+      return "Unable to determine microphone permission status. Check macOS microphone privacy settings for OpenNOW.";
+    default:
+      return "Microphone access is not available.";
+  }
+}
 
 const gameLanguageOptions: Array<{ value: GameLanguage; label: string }> = [
   { value: "en_US", label: "English (US)" },
@@ -776,40 +790,96 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [microphoneDeviceDropdownOpen, setMicrophoneDeviceDropdownOpen] = useState(false);
   const microphoneModeDropdownRef = useRef<HTMLDivElement | null>(null);
   const microphoneDeviceDropdownRef = useRef<HTMLDivElement | null>(null);
+  const latestMicrophoneDeviceIdRef = useRef(settings.microphoneDeviceId);
+
+  useEffect(() => {
+    latestMicrophoneDeviceIdRef.current = settings.microphoneDeviceId;
+  }, [settings.microphoneDeviceId]);
 
   // Enumerate microphone devices when mic mode is enabled
   useEffect(() => {
     if (settings.microphoneMode === "disabled") {
       setMicrophoneDevices([]);
+      setMicrophonePermissionError(null);
       return;
     }
 
     let cancelled = false;
 
     async function enumerateDevices(): Promise<void> {
+      const applyDeviceList = (audioInputs: MediaDeviceInfo[]): void => {
+        if (cancelled) {
+          return;
+        }
+
+        setMicrophoneDevices(audioInputs);
+        setMicrophonePermissionError(null);
+
+        if (
+          latestMicrophoneDeviceIdRef.current
+          && !audioInputs.some((device) => device.deviceId === latestMicrophoneDeviceIdRef.current)
+        ) {
+          handleChange("microphoneDeviceId", "");
+        }
+      };
+
       try {
-        // Request permission first to get device labels
+        if (typeof window.openNow?.getMicrophonePermission === "function") {
+          const permission = await window.openNow.getMicrophonePermission();
+          if (cancelled) {
+            return;
+          }
+
+          if (permission.isMacOs && !permission.granted) {
+            setMicrophoneDevices([]);
+            setMicrophonePermissionError(getMicrophonePermissionError(permission));
+            return;
+          }
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach(t => t.stop()); // Release the stream immediately
+        stream.getTracks().forEach((track) => track.stop());
 
         const devices = await navigator.mediaDevices.enumerateDevices();
-        if (!cancelled) {
-          const audioInputs = devices.filter(d => d.kind === "audioinput");
-          setMicrophoneDevices(audioInputs);
-          setMicrophonePermissionError(null);
-        }
+        applyDeviceList(devices.filter((device) => device.kind === "audioinput"));
       } catch (err) {
         console.error("[SettingsPage] Failed to enumerate microphone devices:", err);
+
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          if (cancelled) {
+            return;
+          }
+
+          const audioInputs = devices.filter((device) => device.kind === "audioinput");
+          if (audioInputs.length > 0) {
+            setMicrophoneDevices(audioInputs);
+            setMicrophonePermissionError("Microphone access is required to show device names and use voice chat. Allow access and try again.");
+            if (
+              latestMicrophoneDeviceIdRef.current
+              && !audioInputs.some((device) => device.deviceId === latestMicrophoneDeviceIdRef.current)
+            ) {
+              handleChange("microphoneDeviceId", "");
+            }
+            return;
+          }
+        } catch {
+          // Ignore secondary enumerate failure and fall through to stable error state.
+        }
+
         if (!cancelled) {
-          setMicrophonePermissionError("Microphone access denied. Please allow microphone permission in your system settings.");
+          const message = err instanceof DOMException && err.name === "NotAllowedError"
+            ? "Microphone access was denied. Allow access for OpenNOW and try again."
+            : "Unable to access microphone devices right now.";
+          setMicrophonePermissionError(message);
           setMicrophoneDevices([]);
         }
       }
     }
 
-    enumerateDevices();
+    void enumerateDevices();
     return () => { cancelled = true; };
-  }, [settings.microphoneMode]);
+  }, [handleChange, settings.microphoneMode]);
 
   const filteredRegions = useMemo(() => {
     const q = regionSearch.trim().toLowerCase();
