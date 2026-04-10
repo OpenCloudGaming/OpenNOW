@@ -32,7 +32,6 @@
     "@capacitor/core": "^8.3.0",
     "@capacitor/device": "^8.0.2",
     "@capacitor/filesystem": "^8.1.2",
-    "@capacitor/http": "^0.0.2",
     "@capacitor/preferences": "^8.0.1",
     "@capacitor/status-bar": "^8.0.2",
     "lucide-react": "^1.7.0",

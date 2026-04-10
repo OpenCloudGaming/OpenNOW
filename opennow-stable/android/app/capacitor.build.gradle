@@ -13,7 +13,6 @@ dependencies {
     implementation project(':capacitor-browser')
     implementation project(':capacitor-device')
     implementation project(':capacitor-filesystem')
-    implementation project(':capacitor-http')
     implementation project(':capacitor-preferences')
     implementation project(':capacitor-status-bar')
 
