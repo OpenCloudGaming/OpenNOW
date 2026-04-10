@@ -962,6 +962,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   }, [handleChange, settings]);
 
   useEffect(() => {
+    thanksMountedRef.current = true;
     return () => {
       thanksMountedRef.current = false;
       thanksRequestIdRef.current += 1;
@@ -1009,7 +1010,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
         setThanksLoadState("loaded");
       },
       (error) => {
-        console.error("[SettingsPage] Failed to load thanks data:", error);
         if (!thanksMountedRef.current || requestId !== thanksRequestIdRef.current) {
           return;
         }
