@@ -91,6 +91,7 @@ jobs:
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-gstreamer
             mingw-w64-ucrt-x86_64-gst-plugins-base
+            mingw-w64-ucrt-x86_64-gst-plugins-good
             mingw-w64-ucrt-x86_64-SDL2
 
       - name: Install Linux native dependencies
