@@ -194,6 +194,7 @@ function StreamStatsHud({
   const inputLive = stats.inputReady && stats.connectionState === "connected";
   const inputQueueColor = getInputQueueColor(stats.inputQueueBufferedBytes, stats.inputQueueDropCount);
   const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
+  const partiallyReliableQueueText = `${(stats.partiallyReliableInputQueueBufferedBytes / 1024).toFixed(1)}KB`;
 
   return (
     <div className="sv-stats">
@@ -235,6 +236,11 @@ function StreamStatsHud({
         <span className="sv-stats-chip" title="Input queue pressure (buffered bytes and delayed flush)">
           IQ <span className="sv-stats-chip-val" style={{ color: inputQueueColor }}>{inputQueueText}</span>
         </span>
+        <span className="sv-stats-chip" title="Partially reliable input channel state and queued bytes">
+          PR <span className="sv-stats-chip-val" style={{ color: stats.partiallyReliableInputOpen ? "var(--success)" : "var(--ink-muted)" }}>
+            {stats.partiallyReliableInputOpen ? `${stats.mouseMoveTransport === "partially_reliable" ? "mouse" : "open"} · ${partiallyReliableQueueText}` : "off"}
+          </span>
+        </span>
         {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
           <span className="sv-stats-chip" title={stats.lagReasonDetail}>
             Lag <span className="sv-stats-chip-val" style={{ color: getLagReasonColor(stats.lagReason) }}>{getLagReasonLabel(stats.lagReason)}</span>
@@ -243,7 +249,7 @@ function StreamStatsHud({
       </div>
 
       <div className="sv-stats-foot">
-        Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms
+        Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · PR peak {(stats.partiallyReliableInputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms
       </div>
 
       {(stats.decoderPressureActive || stats.decoderRecoveryAttempts > 0) && (

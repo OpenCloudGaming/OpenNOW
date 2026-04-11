@@ -9,6 +9,11 @@ import type {
 
 import {
   InputEncoder,
+  INPUT_MOUSE_REL,
+  PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
+  PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
+  partiallyReliableHidMaskForInputType,
+  isPartiallyReliableHidTransferEligible,
   mapKeyboardEvent,
   modifierFlags,
   toMouseButton,
@@ -38,6 +43,13 @@ interface OfferSettings {
   resolution: string;
   fps: number;
   maxBitrateKbps: number;
+}
+
+interface RiInputCapabilities {
+  partialReliableThresholdMs: number | null;
+  hidDeviceMask: number;
+  enablePartiallyReliableTransferGamepad: number;
+  enablePartiallyReliableTransferHid: number;
 }
 
 interface KeyStrokeSpec {
@@ -159,8 +171,12 @@ export interface StreamDiagnostics {
   // Input channel pressure
   inputQueueBufferedBytes: number;
   inputQueuePeakBufferedBytes: number;
+  partiallyReliableInputQueueBufferedBytes: number;
+  partiallyReliableInputQueuePeakBufferedBytes: number;
   inputQueueDropCount: number;
   inputQueueMaxSchedulingDelayMs: number;
+  partiallyReliableInputOpen: boolean;
+  mouseMoveTransport: "reliable" | "partially_reliable";
 
   lagReason: StreamLagReason;
   lagReasonDetail: string;
@@ -228,6 +244,37 @@ function parsePartialReliableThresholdMs(sdp: string): number | null {
     return null;
   }
   return Math.max(1, Math.min(5000, parsed));
+}
+
+function parseRiIntegerAttribute(sdp: string, attribute: string, fallback: number): number {
+  const escapedAttribute = attribute.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = sdp.match(new RegExp(`a=${escapedAttribute}:([^\\r\\n]+)`, "i"));
+  const raw = match?.[1]?.trim();
+  if (!raw) {
+    return fallback;
+  }
+  const normalized = raw.toLowerCase();
+  const parsed = normalized.startsWith("0x")
+    ? Number.parseInt(normalized.slice(2), 16)
+    : Number.parseInt(normalized, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseRiInputCapabilities(sdp: string): RiInputCapabilities {
+  return {
+    partialReliableThresholdMs: parsePartialReliableThresholdMs(sdp),
+    hidDeviceMask: parseRiIntegerAttribute(sdp, "ri.hidDeviceMask", PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL),
+    enablePartiallyReliableTransferGamepad: parseRiIntegerAttribute(
+      sdp,
+      "ri.enablePartiallyReliableTransferGamepad",
+      PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
+    ),
+    enablePartiallyReliableTransferHid: parseRiIntegerAttribute(
+      sdp,
+      "ri.enablePartiallyReliableTransferHid",
+      PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
+    ),
+  };
 }
 
 class MouseDeltaFilter {
@@ -448,7 +495,7 @@ export class GfnWebRtcClient {
 
   private pc: RTCPeerConnection | null = null;
   private reliableInputChannel: RTCDataChannel | null = null;
-  private mouseInputChannel: RTCDataChannel | null = null;
+  private partiallyReliableInputChannel: RTCDataChannel | null = null;
   private controlChannel: RTCDataChannel | null = null;
   private audioContext: AudioContext | null = null;
 
@@ -534,7 +581,14 @@ export class GfnWebRtcClient {
   private mouseAccelerationPercent = 1;
 
   private partialReliableThresholdMs = GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
+  private riInputCapabilities: RiInputCapabilities = {
+    partialReliableThresholdMs: GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS,
+    hidDeviceMask: PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
+    enablePartiallyReliableTransferGamepad: PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
+    enablePartiallyReliableTransferHid: PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
+  };
   private inputQueuePeakBufferedBytesWindow = 0;
+  private partiallyReliableInputQueuePeakBufferedBytesWindow = 0;
   private inputQueueMaxSchedulingDelayMsWindow = 0;
   private inputQueuePressureLoggedAtMs = 0;
   private inputQueueDropCount = 0;
@@ -589,8 +643,12 @@ export class GfnWebRtcClient {
     jitterBufferDelayMs: 0,
     inputQueueBufferedBytes: 0,
     inputQueuePeakBufferedBytes: 0,
+    partiallyReliableInputQueueBufferedBytes: 0,
+    partiallyReliableInputQueuePeakBufferedBytes: 0,
     inputQueueDropCount: 0,
     inputQueueMaxSchedulingDelayMs: 0,
+    partiallyReliableInputOpen: false,
+    mouseMoveTransport: "reliable",
     lagReason: "unknown",
     lagReasonDetail: "Waiting for stream stats",
     gpuType: "",
@@ -850,8 +908,12 @@ export class GfnWebRtcClient {
       jitterBufferDelayMs: 0,
       inputQueueBufferedBytes: 0,
       inputQueuePeakBufferedBytes: 0,
+      partiallyReliableInputQueueBufferedBytes: 0,
+      partiallyReliableInputQueuePeakBufferedBytes: 0,
       inputQueueDropCount: 0,
       inputQueueMaxSchedulingDelayMs: 0,
+      partiallyReliableInputOpen: false,
+      mouseMoveTransport: "reliable",
       lagReason: "unknown",
       lagReasonDetail: "Waiting for stream stats",
       gpuType: this.gpuType,
@@ -870,6 +932,8 @@ export class GfnWebRtcClient {
     this.inputProtocolVersion = 2;
     this.inputEncoder.setProtocolVersion(2);
     this.diagnostics.inputReady = false;
+    this.diagnostics.partiallyReliableInputOpen = false;
+    this.diagnostics.mouseMoveTransport = "reliable";
     this.emitStats();
   }
 
@@ -880,10 +944,10 @@ export class GfnWebRtcClient {
       this.controlChannel.onerror = null;
     }
     this.reliableInputChannel?.close();
-    this.mouseInputChannel?.close();
+    this.partiallyReliableInputChannel?.close();
     this.controlChannel?.close();
     this.reliableInputChannel = null;
-    this.mouseInputChannel = null;
+    this.partiallyReliableInputChannel = null;
     this.controlChannel = null;
   }
 
@@ -1406,15 +1470,26 @@ export class GfnWebRtcClient {
     }
 
     const reliableBufferedAmount = this.reliableInputChannel?.bufferedAmount ?? 0;
+    const partiallyReliableBufferedAmount = this.partiallyReliableInputChannel?.bufferedAmount ?? 0;
     this.inputQueuePeakBufferedBytesWindow = Math.max(
       this.inputQueuePeakBufferedBytesWindow,
       reliableBufferedAmount,
     );
+    this.partiallyReliableInputQueuePeakBufferedBytesWindow = Math.max(
+      this.partiallyReliableInputQueuePeakBufferedBytesWindow,
+      partiallyReliableBufferedAmount,
+    );
     this.diagnostics.inputQueueBufferedBytes = reliableBufferedAmount;
     this.diagnostics.inputQueuePeakBufferedBytes = this.inputQueuePeakBufferedBytesWindow;
+    this.diagnostics.partiallyReliableInputQueueBufferedBytes = partiallyReliableBufferedAmount;
+    this.diagnostics.partiallyReliableInputQueuePeakBufferedBytes = this.partiallyReliableInputQueuePeakBufferedBytesWindow;
     this.diagnostics.inputQueueDropCount = this.inputQueueDropCount;
     this.diagnostics.inputQueueMaxSchedulingDelayMs =
       Math.round(this.inputQueueMaxSchedulingDelayMsWindow * 10) / 10;
+    this.diagnostics.partiallyReliableInputOpen = this.isPartiallyReliableChannelOpen();
+    this.diagnostics.mouseMoveTransport = this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL)
+      ? "partially_reliable"
+      : "reliable";
 
     const lagClassification = this.classifyLagReason({
       framesReceived,
@@ -1444,12 +1519,13 @@ export class GfnWebRtcClient {
       if (nowMs - this.inputQueuePressureLoggedAtMs >= GfnWebRtcClient.BACKPRESSURE_LOG_INTERVAL_MS) {
         this.inputQueuePressureLoggedAtMs = nowMs;
         this.log(
-          `Input queue pressure: buffered=${reliableBufferedAmount}B peak=${this.inputQueuePeakBufferedBytesWindow}B drops=${this.inputQueueDropCount} maxSchedDelay=${this.diagnostics.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms`,
+          `Input queue pressure: reliable=${reliableBufferedAmount}B reliablePeak=${this.inputQueuePeakBufferedBytesWindow}B pr=${partiallyReliableBufferedAmount}B prPeak=${this.partiallyReliableInputQueuePeakBufferedBytesWindow}B drops=${this.inputQueueDropCount} mouseMoveTransport=${this.diagnostics.mouseMoveTransport} maxSchedDelay=${this.diagnostics.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms`,
         );
       }
     }
 
     this.inputQueuePeakBufferedBytesWindow = reliableBufferedAmount;
+    this.partiallyReliableInputQueuePeakBufferedBytesWindow = partiallyReliableBufferedAmount;
     this.inputQueueMaxSchedulingDelayMsWindow = 0;
 
     this.emitStats();
@@ -1514,6 +1590,7 @@ export class GfnWebRtcClient {
     this.mouseDeltaFilter.reset();
     this.mouseFlushLastTickMs = 0;
     this.inputQueuePeakBufferedBytesWindow = 0;
+    this.partiallyReliableInputQueuePeakBufferedBytesWindow = 0;
     this.inputQueueMaxSchedulingDelayMsWindow = 0;
     this.inputQueueDropCount = 0;
     this.inputQueuePressureLoggedAtMs = 0;
@@ -1739,10 +1816,13 @@ export class GfnWebRtcClient {
           && (nowMs - this.lastGamepadSendMs) >= GfnWebRtcClient.GAMEPAD_KEEPALIVE_MS;
 
         if (stateChanged || needsKeepalive) {
-          // Determine if we should use the partially reliable channel
-          const usePR = this.mouseInputChannel?.readyState === "open";
+          const usePR = this.canSendGamepadPartiallyReliable(i);
           const bytes = this.inputEncoder.encodeGamepadState(gamepadInput, this.gamepadBitmap, usePR);
-          this.sendGamepad(bytes);
+          if (usePR) {
+            this.sendGamepad(bytes);
+          } else {
+            this.sendReliable(bytes);
+          }
           this.lastGamepadSendMs = nowMs;
 
           if (stateChanged) {
@@ -1779,9 +1859,13 @@ export class GfnWebRtcClient {
           connected: false,
           timestampUs: timestampUs(),
         };
-        const usePR = this.mouseInputChannel?.readyState === "open";
+        const usePR = this.canSendGamepadPartiallyReliable(i);
         const bytes = this.inputEncoder.encodeGamepadState(disconnectState, this.gamepadBitmap, usePR);
-        this.sendGamepad(bytes);
+        if (usePR) {
+          this.sendGamepad(bytes);
+        } else {
+          this.sendReliable(bytes);
+        }
       }
     }
 
@@ -1832,6 +1916,49 @@ export class GfnWebRtcClient {
     this.log(`Gamepad disconnected event: ${event.gamepad.id}`);
     // The polling loop will detect and handle the disconnection
   };
+
+  private isPartiallyReliableChannelOpen(): boolean {
+    return this.partiallyReliableInputChannel?.readyState === "open";
+  }
+
+  private canSendGamepadPartiallyReliable(controllerId: number): boolean {
+    const mask = 1 << (controllerId & 0x1f);
+    return this.isPartiallyReliableChannelOpen()
+      && (this.riInputCapabilities.enablePartiallyReliableTransferGamepad & mask) !== 0;
+  }
+
+  private canSendInputTypePartiallyReliable(inputType: number): boolean {
+    if (!this.isPartiallyReliableChannelOpen() || !isPartiallyReliableHidTransferEligible(inputType)) {
+      return false;
+    }
+    const hidMask = partiallyReliableHidMaskForInputType(inputType);
+    if (hidMask === 0) {
+      return false;
+    }
+    if ((this.riInputCapabilities.hidDeviceMask & hidMask) === 0) {
+      return false;
+    }
+    return (this.riInputCapabilities.enablePartiallyReliableTransferHid & hidMask) !== 0;
+  }
+
+  private sendPartiallyReliable(payload: Uint8Array): void {
+    if (this.partiallyReliableInputChannel?.readyState === "open") {
+      const safePayload = Uint8Array.from(payload);
+      this.partiallyReliableInputChannel.send(safePayload.buffer);
+      return;
+    }
+
+    this.sendReliable(payload);
+  }
+
+  private sendInputPacket(payload: Uint8Array, inputType: number): void {
+    if (this.canSendInputTypePartiallyReliable(inputType)) {
+      this.sendPartiallyReliable(payload);
+      return;
+    }
+
+    this.sendReliable(payload);
+  }
 
   private onInputHandshakeMessage(bytes: Uint8Array): void {
     if (bytes.length < 2) {
@@ -1890,13 +2017,27 @@ export class GfnWebRtcClient {
       this.onInputHandshakeMessage(bytes);
     };
 
-    this.mouseInputChannel = pc.createDataChannel("input_channel_partially_reliable", {
+    this.partiallyReliableInputChannel = pc.createDataChannel("input_channel_partially_reliable", {
       ordered: false,
       maxPacketLifeTime: this.partialReliableThresholdMs,
     });
 
-    this.mouseInputChannel.onopen = () => {
-      this.log(`Mouse channel open (partially reliable, maxPacketLifeTime=${this.partialReliableThresholdMs}ms)`);
+    this.partiallyReliableInputChannel.onopen = () => {
+      this.diagnostics.partiallyReliableInputOpen = true;
+      this.diagnostics.mouseMoveTransport = this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL)
+        ? "partially_reliable"
+        : "reliable";
+      this.emitStats();
+      this.log(
+        `Partially reliable input channel open (maxPacketLifeTime=${this.partialReliableThresholdMs}ms, mouseMoveTransport=${this.diagnostics.mouseMoveTransport})`,
+      );
+    };
+
+    this.partiallyReliableInputChannel.onclose = () => {
+      this.diagnostics.partiallyReliableInputOpen = false;
+      this.diagnostics.mouseMoveTransport = "reliable";
+      this.emitStats();
+      this.log("Partially reliable input channel closed");
     };
   }
 
@@ -2262,17 +2403,8 @@ export class GfnWebRtcClient {
     return sent;
   }
 
-  /** Send gamepad data on the partially reliable channel (unordered, maxPacketLifeTime).
-   *  Falls back to reliable channel if partially reliable isn't available.
-   *  Official GFN client uses partially reliable ONLY for gamepad, not mouse. */
   private sendGamepad(payload: Uint8Array): void {
-    if (this.mouseInputChannel?.readyState === "open") {
-      const safePayload = Uint8Array.from(payload);
-      this.mouseInputChannel.send(safePayload.buffer);
-      return;
-    }
-    // Fallback to reliable channel if partially reliable not ready
-    this.sendReliable(payload);
+    this.sendPartiallyReliable(payload);
   }
 
   private installInputCapture(videoElement: HTMLVideoElement): void {
@@ -2362,7 +2494,10 @@ export class GfnWebRtcClient {
       }
 
       const reliable = this.reliableInputChannel;
+      const mouseMoveUsesPartiallyReliable = this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL);
       if (
+        !mouseMoveUsesPartiallyReliable
+        && 
         reliable?.readyState === "open"
         && reliable.bufferedAmount > GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES
       ) {
@@ -2407,7 +2542,7 @@ export class GfnWebRtcClient {
       this.pendingMouseDx = 0;
       this.pendingMouseDy = 0;
       this.pendingMouseTimestampUs = null;
-      this.sendReliable(payload);
+      this.sendInputPacket(payload, INPUT_MOUSE_REL);
       // Update simulated absolute pointer (stored in server pixels) if we have a baseline.
       if (simulatedAbsX !== null && simulatedAbsY !== null) {
         simulatedAbsX += dxServer;
@@ -3278,7 +3413,8 @@ export class GfnWebRtcClient {
     }
     this.log(`=== FULL OFFER SDP END ===`);
 
-    const negotiatedPartialReliable = parsePartialReliableThresholdMs(offerSdp);
+    this.riInputCapabilities = parseRiInputCapabilities(offerSdp);
+    const negotiatedPartialReliable = this.riInputCapabilities.partialReliableThresholdMs;
     this.partialReliableThresholdMs = negotiatedPartialReliable ?? GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
     this.negotiatedMaxBitrateKbps = Math.max(
       GfnWebRtcClient.DECODER_MIN_RECOVERY_BITRATE_KBPS,
@@ -3286,7 +3422,7 @@ export class GfnWebRtcClient {
     );
     this.currentBitrateCeilingKbps = this.negotiatedMaxBitrateKbps;
     this.log(
-      `Input channel policy: partial reliable threshold=${this.partialReliableThresholdMs}ms${negotiatedPartialReliable === null ? " (fallback)" : ""}`,
+      `Input channel policy: partial reliable threshold=${this.partialReliableThresholdMs}ms${negotiatedPartialReliable === null ? " (fallback)" : ""}, hidMask=0x${this.riInputCapabilities.hidDeviceMask.toString(16)}, prGamepadMask=0x${this.riInputCapabilities.enablePartiallyReliableTransferGamepad.toString(16)}, prHidMask=0x${this.riInputCapabilities.enablePartiallyReliableTransferHid.toString(16)}`,
     );
 
     // Extract server region from session
@@ -3549,6 +3685,9 @@ export class GfnWebRtcClient {
       fps: settings.fps,
       maxBitrateKbps: settings.maxBitrateKbps,
       partialReliableThresholdMs: this.partialReliableThresholdMs,
+      hidDeviceMask: this.riInputCapabilities.hidDeviceMask,
+      enablePartiallyReliableTransferGamepad: this.riInputCapabilities.enablePartiallyReliableTransferGamepad,
+      enablePartiallyReliableTransferHid: this.riInputCapabilities.enablePartiallyReliableTransferHid,
       codec: effectiveCodec,
       colorQuality: settings.colorQuality,
       credentials,
