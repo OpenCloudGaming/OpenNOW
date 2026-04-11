@@ -692,6 +692,7 @@ export function App(): JSX.Element {
     keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
     gameLanguage: "en_US",
     enableL4S: false,
+    discordRichPresence: false,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [codecResults, setCodecResults] = useState<CodecTestResult[] | null>(() => loadStoredCodecResults());

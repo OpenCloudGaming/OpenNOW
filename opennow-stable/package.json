@@ -23,12 +23,14 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "discord-rpc": "^4.0.1",
     "lucide-react": "^1.7.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@types/discord-rpc": "^4.0.10",
     "@types/node": "^22.19.17",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

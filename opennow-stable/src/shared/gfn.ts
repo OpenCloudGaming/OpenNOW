@@ -168,6 +168,8 @@ export interface Settings {
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
+  /** Show the currently streaming game as Discord Rich Presence activity */
+  discordRichPresence: boolean;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({

@@ -2099,6 +2099,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 Disabling the session elapsed counter stops the live elapsed timer from rendering at all. Remaining playtime indicators stay unchanged.
               </span>
             </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
+                Discord Rich Presence
+                <span className="settings-hint">Show the game you are streaming as your Discord activity, including elapsed time.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.discordRichPresence}
+                  onChange={(e) => handleChange("discordRichPresence", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
           </div>
         </section>
 

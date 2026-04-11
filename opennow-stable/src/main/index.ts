@@ -78,6 +78,7 @@ import {
 import { fetchSubscription, fetchDynamicRegions } from "./gfn/subscription";
 import { GfnSignalingClient } from "./gfn/signaling";
 import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
+import { connectDiscordRpc, setActivity, clearActivity, destroyDiscordRpc } from "./discordRpc";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1006,10 +1007,19 @@ function registerIpcHandlers(): void {
 
     // Pre-flight check: resume an active session before trying to create a new one.
     const preChecked = await tryClaimExisting();
-    if (preChecked) return preChecked;
+    if (preChecked) {
+      if (settingsManager.get("discordRichPresence")) {
+        void setActivity(payload.internalTitle || payload.appId, new Date());
+      }
+      return preChecked;
+    }
 
     try {
-      return await createSession({ ...payload, token, streamingBaseUrl });
+      const sessionResult = await createSession({ ...payload, token, streamingBaseUrl });
+      if (settingsManager.get("discordRichPresence")) {
+        void setActivity(payload.internalTitle || payload.appId, new Date());
+      }
+      return sessionResult;
     } catch (error) {
       // If the backend rejected the create because a session is already running,
       // attempt a claim now (the pre-flight may have missed a session whose appId
@@ -1018,7 +1028,12 @@ function registerIpcHandlers(): void {
       if (error instanceof SessionError && error.statusCode === 11) {
         console.warn("[CreateSession] SESSION_LIMIT_EXCEEDED — retrying as session claim.");
         const fallback = await tryClaimExisting();
-        if (fallback) return fallback;
+        if (fallback) {
+          if (settingsManager.get("discordRichPresence")) {
+            void setActivity(payload.internalTitle || payload.appId, new Date());
+          }
+          return fallback;
+        }
       }
       rethrowSerializedSessionError(error);
     }
@@ -1053,11 +1068,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.STOP_SESSION, async (_event, payload: SessionStopRequest) => {
     try {
       const token = await resolveJwt(payload.token);
-      return stopSession({
+      const result = await stopSession({
         ...payload,
         token,
         streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
       });
+      void clearActivity();
+      return result;
     } catch (error) {
       rethrowSerializedSessionError(error);
     }
@@ -1180,6 +1197,13 @@ function registerIpcHandlers(): void {
         if (mainWindow && !mainWindow.isDestroyed()) {
           const should = Boolean(value as unknown as boolean);
           mainWindow.setFullScreen(should);
+        }
+      }
+      if (key === "discordRichPresence") {
+        if (value) {
+          void connectDiscordRpc();
+        } else {
+          void destroyDiscordRpc();
         }
       }
     } catch (err) {
@@ -1590,6 +1614,11 @@ app.whenReady().then(async () => {
 
   settingsManager = getSettingsManager();
 
+  // Connect Discord Rich Presence if the user has opted in
+  if (settingsManager.get("discordRichPresence")) {
+    void connectDiscordRpc();
+  }
+
   // Set up permission handlers for getUserMedia, fullscreen, pointer lock
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
     const allowedPermissions = new Set([
@@ -1672,6 +1701,7 @@ app.on("before-quit", () => {
   signalingClient?.disconnect();
   signalingClient = null;
   signalingClientKey = null;
+  void destroyDiscordRpc();
 });
 
 // Export for use by other modules
