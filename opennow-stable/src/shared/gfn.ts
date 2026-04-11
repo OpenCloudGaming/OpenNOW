@@ -689,6 +689,8 @@ export interface OpenNowApi {
 
   /** Fetch current GFN queue wait times from the PrintedWaste API */
   fetchPrintedWasteQueue(): Promise<PrintedWasteQueueData>;
+  /** Fetch PrintedWaste server mapping metadata (includes nuked status) */
+  fetchPrintedWasteServerMapping(): Promise<PrintedWasteServerMapping>;
   getThanksData(): Promise<ThankYouDataResult>;
 }
 
@@ -788,3 +790,15 @@ export interface PrintedWasteZone {
 
 /** Full data payload from https://api.printedwaste.com/gfn/queue/ */
 export type PrintedWasteQueueData = Record<string, PrintedWasteZone>;
+
+/** PrintedWaste server metadata entry from remote mapping config */
+export interface PrintedWasteServerMappingEntry {
+  title?: string;
+  region?: string;
+  is4080Server?: boolean;
+  is5080Server?: boolean;
+  nuked?: boolean;
+}
+
+/** Full data payload from PrintedWaste server-to-region mapping config */
+export type PrintedWasteServerMapping = Record<string, PrintedWasteServerMappingEntry>;

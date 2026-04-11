@@ -1670,6 +1670,72 @@ function registerIpcHandlers(): void {
     return normalizedData;
   });
 
+  ipcMain.handle(IPC_CHANNELS.PRINTEDWASTE_SERVER_MAPPING_FETCH, async () => {
+    const PRINTEDWASTE_MAPPING_TIMEOUT_MS = 7000;
+    const version = app.getVersion();
+    const response = await fetchWithTimeout(
+      "https://remote.printedwaste.com/config/GFN_SERVERID_TO_REGION_MAPPING",
+      {
+        headers: {
+          "User-Agent": `opennow/${version}`,
+          Accept: "application/json",
+        },
+      },
+      PRINTEDWASTE_MAPPING_TIMEOUT_MS,
+      "PrintedWaste server mapping request",
+    );
+    if (!response.ok) {
+      throw new Error(`PrintedWaste server mapping returned HTTP ${response.status}`);
+    }
+
+    const body = await withTimeout(
+      response.json() as Promise<unknown>,
+      PRINTEDWASTE_MAPPING_TIMEOUT_MS,
+      "PrintedWaste server mapping response parse",
+    );
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error("PrintedWaste server mapping response was not an object");
+    }
+
+    const apiBody = body as { status?: unknown; data?: unknown };
+    if (typeof apiBody.status !== "boolean") {
+      throw new Error("PrintedWaste server mapping response missing boolean status");
+    }
+    if (!apiBody.status) {
+      throw new Error("PrintedWaste server mapping returned status:false");
+    }
+    if (!apiBody.data || typeof apiBody.data !== "object" || Array.isArray(apiBody.data)) {
+      throw new Error("PrintedWaste server mapping response missing data object");
+    }
+
+    const normalizedData: Record<
+      string,
+      { title?: string; region?: string; is4080Server?: boolean; is5080Server?: boolean; nuked?: boolean }
+    > = {};
+
+    for (const [zoneId, rawZone] of Object.entries(apiBody.data as Record<string, unknown>)) {
+      if (!rawZone || typeof rawZone !== "object" || Array.isArray(rawZone)) {
+        continue;
+      }
+      const zone = rawZone as Record<string, unknown>;
+      const title = zone.title;
+      const region = zone.region;
+      const is4080Server = zone.is4080Server;
+      const is5080Server = zone.is5080Server;
+      const nuked = zone.nuked;
+
+      normalizedData[zoneId] = {
+        ...(typeof title === "string" ? { title } : {}),
+        ...(typeof region === "string" ? { region } : {}),
+        ...(typeof is4080Server === "boolean" ? { is4080Server } : {}),
+        ...(typeof is5080Server === "boolean" ? { is5080Server } : {}),
+        ...(typeof nuked === "boolean" ? { nuked } : {}),
+      };
+    }
+
+    return normalizedData;
+  });
+
   // Save window size when it changes
   mainWindow?.on("resize", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {

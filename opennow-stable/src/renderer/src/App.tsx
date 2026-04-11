@@ -18,6 +18,7 @@ import type {
   StreamRegion,
   VideoCodec,
   PrintedWasteQueueData,
+  PrintedWasteServerMapping,
 } from "@shared/gfn";
 import {
   DEFAULT_KEYBOARD_LAYOUT,
@@ -132,6 +133,19 @@ type QueueAdReportOptions = {
 const APP_PAGE_ORDER: AppPage[] = ["home", "library", "settings"];
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
+
+function isStandardPrintedWasteZone(zoneId: string): boolean {
+  return zoneId.startsWith("NP-") && !zoneId.startsWith("NPA-");
+}
+
+function hasAnyEligiblePrintedWasteZone(
+  queueData: PrintedWasteQueueData,
+  mapping: PrintedWasteServerMapping,
+): boolean {
+  return Object.keys(queueData).some((zoneId) => (
+    isStandardPrintedWasteZone(zoneId) && mapping[zoneId]?.nuked !== true
+  ));
+}
 
 const DEFAULT_SHORTCUTS = {
   shortcutToggleStats: "F3",
@@ -2578,25 +2592,57 @@ export function App(): JSX.Element {
 
   // Gate handler: shows queue server modal for FREE-tier users before launching
   const handleInitiatePlay = useCallback(async (game: GameInfo) => {
-    const isFreeUser = subscriptionInfo?.membershipTier === "FREE";
+    const effectiveTier = normalizeMembershipTier(
+      subscriptionInfo?.membershipTier ?? authSession?.user.membershipTier,
+    );
+    const isFreeUser = effectiveTier === "FREE";
     if (isFreeUser && streamStatus === "idle" && !launchInFlightRef.current) {
       try {
-        const queueData = await window.openNow.fetchPrintedWasteQueue();
-        if (!queueData || Object.keys(queueData).length === 0) {
+        const [queueResult, mappingResult] = await Promise.allSettled([
+          window.openNow.fetchPrintedWasteQueue(),
+          window.openNow.fetchPrintedWasteServerMapping(),
+        ]);
+
+        if (queueResult.status !== "fulfilled" || mappingResult.status !== "fulfilled") {
+          console.warn(
+            "[QueueServerSelect] PrintedWaste unavailable, skipping queue checks and launching with default routing.",
+            {
+              queueStatus: queueResult.status,
+              mappingStatus: mappingResult.status,
+            },
+          );
+          setQueueModalData(null);
           void handlePlayGame(game);
           return;
         }
+
+        const queueData = queueResult.value;
+        if (!queueData || Object.keys(queueData).length === 0) {
+          setQueueModalData(null);
+          void handlePlayGame(game);
+          return;
+        }
+
+        if (!hasAnyEligiblePrintedWasteZone(queueData, mappingResult.value)) {
+          console.warn(
+            "[QueueServerSelect] No eligible non-nuked PrintedWaste zones available, skipping queue checks.",
+          );
+          setQueueModalData(null);
+          void handlePlayGame(game);
+          return;
+        }
+
         setQueueModalData(queueData);
         setQueueModalGame(game);
       } catch (error) {
-        console.warn("[QueueServerSelect] Queue API unavailable, launching without modal.", error);
+        console.warn("[QueueServerSelect] PrintedWaste queue checks failed, launching without modal.", error);
         setQueueModalData(null);
         void handlePlayGame(game);
       }
       return;
     }
     void handlePlayGame(game);
-  }, [subscriptionInfo, streamStatus, handlePlayGame]);
+  }, [subscriptionInfo, authSession, streamStatus, handlePlayGame]);
 
   const handleQueueModalConfirm = useCallback((zoneUrl: string | null) => {
     const game = queueModalGame;
