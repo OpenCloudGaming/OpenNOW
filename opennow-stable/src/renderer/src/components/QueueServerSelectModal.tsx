@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import type { GameInfo, PrintedWasteQueueData, PrintedWasteZone } from "@shared/gfn";
 
@@ -56,6 +56,42 @@ const REGION_META: Record<string, { label: string; flag: string }> = {
   MY:   { label: "Malaysia",       flag: "🇲🇾" },
 };
 const REGION_ORDER = ["US", "CA", "EU", "JP", "KR", "THAI", "MY"];
+const PRINTEDWASTE_PING_CACHE_KEY = "opennow.printedwaste-pings.v1";
+const MAX_PING_ZONES_PER_OPEN = 12;
+const QUEUE_REFRESH_INTERVAL_MS = 2 * 60 * 1000;
+
+interface PingCacheEntry {
+  url: string;
+  pingMs: number | null;
+}
+
+function loadStoredPingResults(): Map<string, number | null> {
+  try {
+    const raw = window.sessionStorage.getItem(PRINTEDWASTE_PING_CACHE_KEY);
+    if (!raw) return new Map();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Map();
+    const results = new Map<string, number | null>();
+    for (const entry of parsed as PingCacheEntry[]) {
+      results.set(entry.url, entry.pingMs);
+    }
+    return results;
+  } catch {
+    return new Map();
+  }
+}
+
+function saveStoredPingResults(results: Map<string, number | null>): void {
+  try {
+    const entries: PingCacheEntry[] = [];
+    results.forEach((pingMs, url) => {
+      entries.push({ url, pingMs });
+    });
+    window.sessionStorage.setItem(PRINTEDWASTE_PING_CACHE_KEY, JSON.stringify(entries));
+  } catch {
+    // Ignore storage failures
+  }
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -72,13 +108,14 @@ interface ZoneInfo {
 
 interface Props {
   game: GameInfo;
+  initialQueueData?: PrintedWasteQueueData | null;
   onConfirm: (zoneUrl: string | null) => void;
   onCancel: () => void;
 }
 
-export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JSX.Element {
-  const [queueData,  setQueueData]  = useState<PrintedWasteQueueData | null>(null);
-  const [queueLoading, setQueueLoading] = useState(true);
+export function QueueServerSelectModal({ game, initialQueueData = null, onConfirm, onCancel }: Props): JSX.Element {
+  const [queueData,  setQueueData]  = useState<PrintedWasteQueueData | null>(initialQueueData);
+  const [queueLoading, setQueueLoading] = useState(initialQueueData === null);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   // Ping state — populated after queue data loads
@@ -86,9 +123,11 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
   const [isPinging,  setIsPinging]  = useState(false);
 
   const [selected, setSelected] = useState<"auto" | "closest" | string>("auto");
+  const dialogRef = useRef<HTMLDivElement | null>(null);
 
   // ── Fetch queue data ──────────────────────────────────────────────────────
   useEffect(() => {
+    if (initialQueueData) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -101,24 +140,99 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
       }
     })();
     return () => { cancelled = true; };
+  }, [initialQueueData]);
+
+  // Keep queue data fresh while modal is open.
+  useEffect(() => {
+    let cancelled = false;
+    let inFlight = false;
+
+    const refreshQueueData = async (): Promise<void> => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const data = await window.openNow.fetchPrintedWasteQueue();
+        if (cancelled) return;
+        setQueueData(data);
+        setFetchError(null);
+      } catch {
+        // Keep last known queue data if refresh fails.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void refreshQueueData();
+    }, QUEUE_REFRESH_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  useEffect(() => {
+    dialogRef.current?.focus();
   }, []);
 
   // ── Ping all standard zones once queue data arrives ───────────────────────
   useEffect(() => {
     if (!queueData) return;
-    const standardIds = Object.keys(queueData).filter(isStandardZone);
-    const regionsToTest = standardIds.map((id) => ({ name: id, url: constructZoneUrl(id) }));
-    if (regionsToTest.length === 0) return;
+    const allStandardZones = Object.entries(queueData)
+      .filter(([zoneId]) => isStandardZone(zoneId))
+      .map(([zoneId, zone]) => ({
+        zoneId,
+        pwRegion: zone.Region,
+        queuePosition: zone.QueuePosition,
+        routingUrl: constructZoneUrl(zoneId),
+      }));
+    if (allStandardZones.length === 0) return;
 
     let cancelled = false;
+    const cachedPings = loadStoredPingResults();
+    const seedMap = new Map<string, number | null>();
+    for (const zone of allStandardZones) {
+      if (cachedPings.has(zone.routingUrl)) {
+        seedMap.set(zone.routingUrl, cachedPings.get(zone.routingUrl) ?? null);
+      }
+    }
+    if (seedMap.size > 0) {
+      setZonePings(seedMap);
+    }
+
+    // Ping at most one best-queue zone per region first, then fill by queue rank.
+    const topPerRegion = new Map<string, (typeof allStandardZones)[number]>();
+    for (const zone of allStandardZones) {
+      const existing = topPerRegion.get(zone.pwRegion);
+      if (!existing || zone.queuePosition < existing.queuePosition) {
+        topPerRegion.set(zone.pwRegion, zone);
+      }
+    }
+
+    const prioritized = [
+      ...topPerRegion.values(),
+      ...allStandardZones
+        .filter((zone) => !topPerRegion.has(zone.pwRegion) || topPerRegion.get(zone.pwRegion)?.zoneId !== zone.zoneId)
+        .sort((a, b) => a.queuePosition - b.queuePosition),
+    ];
+
+    const zonesToPing = prioritized
+      .filter((zone) => !seedMap.has(zone.routingUrl))
+      .slice(0, MAX_PING_ZONES_PER_OPEN);
+
+    if (zonesToPing.length === 0) return;
+    const regionsToTest = zonesToPing.map((zone) => ({ name: zone.zoneId, url: zone.routingUrl }));
+
     setIsPinging(true);
     void (async () => {
       try {
         const results = await window.openNow.pingRegions(regionsToTest);
         if (cancelled) return;
-        const map = new Map<string, number | null>();
+        const map = new Map(seedMap);
         for (const r of results) map.set(r.url, r.pingMs);
         setZonePings(map);
+        saveStoredPingResults(map);
       } catch {
         // Ping failures are non-fatal
       } finally {
@@ -217,7 +331,11 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
       style={overlayStyle}
       onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
       onKeyDown={handleKeyDown}
-      tabIndex={-1}
+      ref={dialogRef}
+      tabIndex={0}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="queue-server-select-title"
     >
       <div style={cardStyle}>
 
@@ -225,7 +343,7 @@ export function QueueServerSelectModal({ game, onConfirm, onCancel }: Props): JS
         <div style={{ padding: "20px 24px 0", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
             <div>
-              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "var(--ink)" }}>
+              <h2 id="queue-server-select-title" style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "var(--ink)" }}>
                 Select Server
               </h2>
               <p style={{ margin: "3px 0 0", fontSize: 13, color: "var(--ink-muted)" }}>

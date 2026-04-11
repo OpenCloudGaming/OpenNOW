@@ -17,6 +17,7 @@ import type {
   SubscriptionInfo,
   StreamRegion,
   VideoCodec,
+  PrintedWasteQueueData,
 } from "@shared/gfn";
 import {
   DEFAULT_KEYBOARD_LAYOUT,
@@ -659,6 +660,7 @@ export function App(): JSX.Element {
   const [isResumingNavbarSession, setIsResumingNavbarSession] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
   const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
+  const [queueModalData, setQueueModalData] = useState<PrintedWasteQueueData | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
   const [streamWarning, setStreamWarning] = useState<StreamWarningState | null>(null);
   const [activeQueueAdId, setActiveQueueAdId] = useState<string | null>(null);
@@ -2416,10 +2418,22 @@ export function App(): JSX.Element {
   ]);
 
   // Gate handler: shows queue server modal for FREE-tier users before launching
-  const handleInitiatePlay = useCallback((game: GameInfo) => {
+  const handleInitiatePlay = useCallback(async (game: GameInfo) => {
     const isFreeUser = subscriptionInfo?.membershipTier === "FREE";
     if (isFreeUser && streamStatus === "idle" && !launchInFlightRef.current) {
-      setQueueModalGame(game);
+      try {
+        const queueData = await window.openNow.fetchPrintedWasteQueue();
+        if (!queueData || Object.keys(queueData).length === 0) {
+          void handlePlayGame(game);
+          return;
+        }
+        setQueueModalData(queueData);
+        setQueueModalGame(game);
+      } catch (error) {
+        console.warn("[QueueServerSelect] Queue API unavailable, launching without modal.", error);
+        setQueueModalData(null);
+        void handlePlayGame(game);
+      }
       return;
     }
     void handlePlayGame(game);
@@ -2428,6 +2442,7 @@ export function App(): JSX.Element {
   const handleQueueModalConfirm = useCallback((zoneUrl: string | null) => {
     const game = queueModalGame;
     setQueueModalGame(null);
+    setQueueModalData(null);
     if (game) {
       void handlePlayGame(game, { streamingBaseUrl: zoneUrl ?? undefined });
     }
@@ -2435,6 +2450,7 @@ export function App(): JSX.Element {
 
   const handleQueueModalCancel = useCallback(() => {
     setQueueModalGame(null);
+    setQueueModalData(null);
   }, []);
 
   const handleResumeFromNavbar = useCallback(async () => {
@@ -3219,6 +3235,7 @@ export function App(): JSX.Element {
       {queueModalGame && streamStatus === "idle" && (
         <QueueServerSelectModal
           game={queueModalGame}
+          initialQueueData={queueModalData}
           onConfirm={handleQueueModalConfirm}
           onCancel={handleQueueModalCancel}
         />
