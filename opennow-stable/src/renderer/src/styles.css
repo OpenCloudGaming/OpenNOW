@@ -2318,6 +2318,28 @@ button.game-card-store-chip.active:hover {
   border-color: rgba(88, 217, 138, 0.24);
 }
 
+.settings-inline-badge--codec {
+  margin-left: 2px;
+}
+
+.settings-inline-badge--codec-gpu {
+  color: var(--accent);
+  background: var(--accent-surface);
+  border-color: rgba(88, 217, 138, 0.24);
+}
+
+.settings-inline-badge--codec-cpu {
+  color: var(--warning);
+  background: rgba(251, 191, 36, 0.1);
+  border-color: rgba(251, 191, 36, 0.22);
+}
+
+.settings-inline-badge--codec-testing {
+  color: var(--ink-soft);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--panel-border);
+}
+
 .settings-hint {
   display: block;
   margin-top: 2px;
@@ -2460,6 +2482,15 @@ button.game-card-store-chip.active:hover {
   background: var(--accent-surface-strong);
   color: var(--accent);
   border-color: rgba(88, 217, 138, 0.25);
+}
+
+.settings-chip--codec {
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.settings-chip--codec .settings-inline-badge {
+  max-width: 100%;
 }
 
 /* Tier indicator on preset chips */

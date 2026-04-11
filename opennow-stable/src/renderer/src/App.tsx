@@ -40,6 +40,7 @@ import { useControllerNavigation } from "./controllerNavigation";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
+import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
@@ -641,6 +642,8 @@ export function App(): JSX.Element {
     enableL4S: false,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [codecResults, setCodecResults] = useState<CodecTestResult[] | null>(() => loadStoredCodecResults());
+  const [codecTesting, setCodecTesting] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
   const diagnosticsStoreRef = useRef<ReturnType<typeof createStreamDiagnosticsStore> | null>(null);
@@ -672,10 +675,38 @@ export function App(): JSX.Element {
   const isStreaming = streamStatus === "streaming";
 
   const controllerOverlayOpenRef = useRef(false);
+  const codecTestPromiseRef = useRef<Promise<CodecTestResult[] | null> | null>(null);
+  const codecStartupTestAttemptedRef = useRef(false);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
     setShowStatsOverlay(settings.showStatsOnLaunch);
   }, [settings.showStatsOnLaunch]);
+
+  const runCodecTest = useCallback(async (): Promise<void> => {
+    if (codecTestPromiseRef.current) {
+      await codecTestPromiseRef.current;
+      return;
+    }
+
+    const testPromise = (async (): Promise<CodecTestResult[] | null> => {
+      setCodecTesting(true);
+      try {
+        const results = await testCodecSupport();
+        setCodecResults(results);
+        saveStoredCodecResults(results);
+        return results;
+      } catch (error) {
+        console.error("Codec test failed:", error);
+        return null;
+      } finally {
+        setCodecTesting(false);
+        codecTestPromiseRef.current = null;
+      }
+    })();
+
+    codecTestPromiseRef.current = testPromise;
+    await testPromise;
+  }, []);
 
   const handleControllerPageNavigate = useCallback((direction: "prev" | "next"): void => {
     if (controllerOverlayOpenRef.current) {
@@ -1595,6 +1626,18 @@ export function App(): JSX.Element {
 
     void initialize();
   }, []);
+
+  useEffect(() => {
+    saveStoredCodecResults(codecResults);
+  }, [codecResults]);
+
+  useEffect(() => {
+    if (codecResults || codecTesting || codecStartupTestAttemptedRef.current) {
+      return;
+    }
+    codecStartupTestAttemptedRef.current = true;
+    void runCodecTest();
+  }, [codecResults, codecTesting, runCodecTest]);
 
   // Auto-load controller library at startup if enabled
   useEffect(() => {
@@ -3188,6 +3231,9 @@ export function App(): JSX.Element {
           <SettingsPage
             settings={settings}
             regions={regions}
+            codecResults={codecResults}
+            codecTesting={codecTesting}
+            onRunCodecTest={runCodecTest}
             onSettingChange={updateSetting}
           />
         )}
