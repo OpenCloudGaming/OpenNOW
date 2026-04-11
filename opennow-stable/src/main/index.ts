@@ -78,6 +78,7 @@ import {
 import { fetchSubscription, fetchDynamicRegions } from "./gfn/subscription";
 import { GfnSignalingClient } from "./gfn/signaling";
 import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
+import { connectDiscordRpc, setActivity, clearActivity, destroyDiscordRpc } from "./discordRpc";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1006,10 +1007,19 @@ function registerIpcHandlers(): void {
 
     // Pre-flight check: resume an active session before trying to create a new one.
     const preChecked = await tryClaimExisting();
-    if (preChecked) return preChecked;
+    if (preChecked) {
+      if (settingsManager.get("discordRichPresence")) {
+        void setActivity(payload.internalTitle || payload.appId, new Date());
+      }
+      return preChecked;
+    }
 
     try {
-      return await createSession({ ...payload, token, streamingBaseUrl });
+      const sessionResult = await createSession({ ...payload, token, streamingBaseUrl });
+      if (settingsManager.get("discordRichPresence")) {
+        void setActivity(payload.internalTitle || payload.appId, new Date());
+      }
+      return sessionResult;
     } catch (error) {
       // If the backend rejected the create because a session is already running,
       // attempt a claim now (the pre-flight may have missed a session whose appId
@@ -1018,7 +1028,12 @@ function registerIpcHandlers(): void {
       if (error instanceof SessionError && error.statusCode === 11) {
         console.warn("[CreateSession] SESSION_LIMIT_EXCEEDED — retrying as session claim.");
         const fallback = await tryClaimExisting();
-        if (fallback) return fallback;
+        if (fallback) {
+          if (settingsManager.get("discordRichPresence")) {
+            void setActivity(payload.internalTitle || payload.appId, new Date());
+          }
+          return fallback;
+        }
       }
       rethrowSerializedSessionError(error);
     }
@@ -1053,11 +1068,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.STOP_SESSION, async (_event, payload: SessionStopRequest) => {
     try {
       const token = await resolveJwt(payload.token);
-      return stopSession({
+      const result = await stopSession({
         ...payload,
         token,
         streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
       });
+      void clearActivity();
+      return result;
     } catch (error) {
       rethrowSerializedSessionError(error);
     }
@@ -1180,6 +1197,13 @@ function registerIpcHandlers(): void {
         if (mainWindow && !mainWindow.isDestroyed()) {
           const should = Boolean(value as unknown as boolean);
           mainWindow.setFullScreen(should);
+        }
+      }
+      if (key === "discordRichPresence") {
+        if (value) {
+          void connectDiscordRpc();
+        } else {
+          void destroyDiscordRpc();
         }
       }
     } catch (err) {
@@ -1528,9 +1552,18 @@ function registerIpcHandlers(): void {
         const port = url.protocol === 'https:' ? 443 : 80;
         
         const validPings: number[] = [];
-        
-        // Run 3 ping tests
+
+        // Warm-up ping (result discarded) to prime the TCP path before measuring.
+        // The first cold-start connect includes DNS resolution and TCP SYN overhead
+        // which inflates subsequent measurements if not accounted for.
+        await tcpPing(hostname, port, 3000);
+
+        // Run 3 measured ping tests with a brief delay between each to allow
+        // the previous socket to fully close before opening the next connection.
         for (let i = 0; i < 3; i++) {
+          if (i > 0) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 100));
+          }
           const pingMs = await tcpPing(hostname, port, 3000);
           if (pingMs !== null) {
             validPings.push(pingMs);
@@ -1560,6 +1593,83 @@ function registerIpcHandlers(): void {
     return Promise.all(pingPromises);
   });
 
+  // PrintedWaste queue API — fetched from main process so User-Agent can be set
+  ipcMain.handle(IPC_CHANNELS.PRINTEDWASTE_QUEUE_FETCH, async () => {
+    const PRINTEDWASTE_QUEUE_TIMEOUT_MS = 7000;
+    const version = app.getVersion();
+    const response = await fetchWithTimeout(
+      "https://api.printedwaste.com/gfn/queue/",
+      {
+        headers: {
+          "User-Agent": `opennow/${version}`,
+          Accept: "application/json",
+        },
+      },
+      PRINTEDWASTE_QUEUE_TIMEOUT_MS,
+      "PrintedWaste queue request",
+    );
+    if (!response.ok) {
+      throw new Error(`PrintedWaste API returned HTTP ${response.status}`);
+    }
+
+    const body = await withTimeout(
+      response.json() as Promise<unknown>,
+      PRINTEDWASTE_QUEUE_TIMEOUT_MS,
+      "PrintedWaste queue response parse",
+    );
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error("PrintedWaste API response was not an object");
+    }
+
+    const apiBody = body as { status?: unknown; data?: unknown };
+    if (typeof apiBody.status !== "boolean") {
+      throw new Error("PrintedWaste API response missing boolean status");
+    }
+    if (!apiBody.status) {
+      throw new Error("PrintedWaste API returned status:false");
+    }
+    if (!apiBody.data || typeof apiBody.data !== "object" || Array.isArray(apiBody.data)) {
+      throw new Error("PrintedWaste API response missing data object");
+    }
+
+    const normalizedData: Record<string, { QueuePosition: number; "Last Updated": number; Region: string; eta?: number }> = {};
+    for (const [zoneId, rawZone] of Object.entries(apiBody.data as Record<string, unknown>)) {
+      if (!rawZone || typeof rawZone !== "object" || Array.isArray(rawZone)) {
+        continue;
+      }
+      const zone = rawZone as Record<string, unknown>;
+      const queuePosition = zone.QueuePosition;
+      const lastUpdated = zone["Last Updated"];
+      const region = zone.Region;
+      const eta = zone.eta;
+
+      if (typeof queuePosition !== "number" || !Number.isFinite(queuePosition)) {
+        continue;
+      }
+      if (typeof lastUpdated !== "number" || !Number.isFinite(lastUpdated)) {
+        continue;
+      }
+      if (typeof region !== "string" || region.length === 0) {
+        continue;
+      }
+      if (eta !== undefined && (typeof eta !== "number" || !Number.isFinite(eta))) {
+        continue;
+      }
+
+      normalizedData[zoneId] = {
+        QueuePosition: queuePosition,
+        "Last Updated": lastUpdated,
+        Region: region,
+        ...(typeof eta === "number" ? { eta } : {}),
+      };
+    }
+
+    if (Object.keys(normalizedData).length === 0) {
+      throw new Error("PrintedWaste API returned no valid zones");
+    }
+    return normalizedData;
+  });
+
   // Save window size when it changes
   mainWindow?.on("resize", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1580,6 +1690,11 @@ app.whenReady().then(async () => {
   await authService.initialize();
 
   settingsManager = getSettingsManager();
+
+  // Connect Discord Rich Presence if the user has opted in
+  if (settingsManager.get("discordRichPresence")) {
+    void connectDiscordRpc();
+  }
 
   // Set up permission handlers for getUserMedia, fullscreen, pointer lock
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
@@ -1663,6 +1778,7 @@ app.on("before-quit", () => {
   signalingClient?.disconnect();
   signalingClient = null;
   signalingClientKey = null;
+  void destroyDiscordRpc();
 });
 
 // Export for use by other modules

@@ -25,10 +25,14 @@ import {
 } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
 import { openNow, platformCapabilities } from "../platform";
+import { getCodecDecodeBadgeState, type CodecTestResult } from "../lib/codecDiagnostics";
 
 interface SettingsPageProps {
   settings: Settings;
   regions: StreamRegion[];
+  codecResults: CodecTestResult[] | null;
+  codecTesting: boolean;
+  onRunCodecTest: () => Promise<void>;
   onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
 }
 
@@ -254,88 +258,12 @@ function getFpsForResolution(entitled: EntitledResolution[], resolution: string)
   return [...new Set(fpsList)].sort((a, b) => a - b);
 }
 
-/* ── Codec diagnostics ────────────────────────────────────────────── */
-
-interface CodecTestResult {
-  codec: string;
-  /** Whether WebRTC can negotiate this codec at all */
-  webrtcSupported: boolean;
-  /** Whether MediaCapabilities reports decode support */
-  decodeSupported: boolean;
-  /** Whether MediaCapabilities says HW-accelerated (powerEfficient) */
-  hwAccelerated: boolean;
-  /** Whether encode is supported */
-  encodeSupported: boolean;
-  /** Whether encode is HW-accelerated */
-  encodeHwAccelerated: boolean;
-  /** Human-readable decode method (e.g. "D3D11", "VAAPI", "VideoToolbox", "Software") */
-  decodeVia: string;
-  /** Human-readable encode method */
-  encodeVia: string;
-  /** Profiles found in WebRTC capabilities */
-  profiles: string[];
-}
-
-/** Map of codec name to MediaCapabilities contentType and profile strings */
-const CODEC_TEST_CONFIGS: {
-  name: string;
-  webrtcMime: string;
-  decodeContentType: string;
-  encodeContentType: string;
-  profiles: { label: string; contentType: string }[];
-}[] = [
-  {
-    name: "H264",
-    webrtcMime: "video/H264",
-    decodeContentType: "video/mp4; codecs=\"avc1.42E01E\"",
-    encodeContentType: "video/mp4; codecs=\"avc1.42E01E\"",
-    profiles: [
-      { label: "Baseline", contentType: "video/mp4; codecs=\"avc1.42E01E\"" },
-      { label: "Main", contentType: "video/mp4; codecs=\"avc1.4D401E\"" },
-      { label: "High", contentType: "video/mp4; codecs=\"avc1.64001E\"" },
-    ],
-  },
-  {
-    name: "H265",
-    webrtcMime: "video/H265",
-    decodeContentType: "video/mp4; codecs=\"hev1.1.6.L93.B0\"",
-    encodeContentType: "video/mp4; codecs=\"hev1.1.6.L93.B0\"",
-    profiles: [
-      { label: "Main", contentType: "video/mp4; codecs=\"hev1.1.6.L93.B0\"" },
-      { label: "Main 10", contentType: "video/mp4; codecs=\"hev1.2.4.L93.B0\"" },
-    ],
-  },
-  {
-    name: "AV1",
-    webrtcMime: "video/AV1",
-    decodeContentType: "video/mp4; codecs=\"av01.0.08M.08\"",
-    encodeContentType: "video/mp4; codecs=\"av01.0.08M.08\"",
-    profiles: [
-      { label: "Main 8-bit", contentType: "video/mp4; codecs=\"av01.0.08M.08\"" },
-      { label: "Main 10-bit", contentType: "video/mp4; codecs=\"av01.0.08M.10\"" },
-    ],
-  },
-];
-
-const CODEC_TEST_RESULTS_STORAGE_KEY = "opennow.codec-test-results.v1";
 const PING_RESULTS_STORAGE_KEY = "opennow.ping-results.v1";
 const ENTITLED_RESOLUTIONS_STORAGE_KEY = "opennow.entitled-resolutions.v1";
 
 interface EntitledResolutionsCache {
   userId: string;
   entitledResolutions: EntitledResolution[];
-}
-
-function loadStoredCodecResults(): CodecTestResult[] | null {
-  try {
-    const raw = window.sessionStorage.getItem(CODEC_TEST_RESULTS_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return null;
-    return parsed as CodecTestResult[];
-  } catch {
-    return null;
-  }
 }
 
 interface PingCacheEntry {
@@ -396,159 +324,9 @@ function saveCachedEntitledResolutions(cache: EntitledResolutionsCache): void {
   }
 }
 
-function isLinuxArmClient(): boolean {
-  const platform = navigator.platform?.toLowerCase() ?? "";
-  const ua = navigator.userAgent?.toLowerCase() ?? "";
-  const linux = platform.includes("linux") || ua.includes("linux");
-  const arm = /(aarch64|arm64|armv\d|arm)/.test(platform) || /(aarch64|arm64|armv\d|arm)/.test(ua);
-  return linux && arm;
-}
-
-function guessDecodeBackend(hwAccelerated: boolean): string {
-  if (!hwAccelerated) return "Software (CPU)";
-  const platform = navigator.platform?.toLowerCase() ?? "";
-  const ua = navigator.userAgent?.toLowerCase() ?? "";
-  if (platform.includes("win") || ua.includes("windows")) return "D3D11 (GPU)";
-  if (platform.includes("mac") || ua.includes("macintosh")) return "VideoToolbox (GPU)";
-  if (platform.includes("linux") || ua.includes("linux")) {
-    return isLinuxArmClient() ? "V4L2 (GPU)" : "VA-API (GPU)";
-  }
-  return "Hardware (GPU)";
-}
-
-function guessEncodeBackend(hwAccelerated: boolean): string {
-  if (!hwAccelerated) return "Software (CPU)";
-  const platform = navigator.platform?.toLowerCase() ?? "";
-  const ua = navigator.userAgent?.toLowerCase() ?? "";
-  if (platform.includes("win") || ua.includes("windows")) return "Media Foundation (GPU)";
-  if (platform.includes("mac") || ua.includes("macintosh")) return "VideoToolbox (GPU)";
-  if (platform.includes("linux") || ua.includes("linux")) {
-    return isLinuxArmClient() ? "V4L2 (GPU)" : "VA-API (GPU)";
-  }
-  return "Hardware (GPU)";
-}
-
-async function testCodecSupport(): Promise<CodecTestResult[]> {
-  const results: CodecTestResult[] = [];
-
-  // Get WebRTC receiver capabilities once
-  const webrtcCaps = RTCRtpReceiver.getCapabilities?.("video");
-  const webrtcCodecMimes = new Set(
-    webrtcCaps?.codecs.map((c) => c.mimeType.toLowerCase()) ?? [],
-  );
-
-  // Collect WebRTC profiles per codec
-  const webrtcProfiles = new Map<string, string[]>();
-  if (webrtcCaps) {
-    for (const c of webrtcCaps.codecs) {
-      const mime = c.mimeType.toLowerCase();
-      const sdpLine = (c as unknown as Record<string, string>).sdpFmtpLine ?? "";
-      if (!mime.includes("rtx") && !mime.includes("red") && !mime.includes("ulpfec")) {
-        const existing = webrtcProfiles.get(mime) ?? [];
-        if (sdpLine) existing.push(sdpLine);
-        webrtcProfiles.set(mime, existing);
-      }
-    }
-  }
-
-  for (const config of CODEC_TEST_CONFIGS) {
-    const webrtcSupported = webrtcCodecMimes.has(config.webrtcMime.toLowerCase());
-    const profiles = webrtcProfiles.get(config.webrtcMime.toLowerCase()) ?? [];
-
-    // Test decode via MediaCapabilities API
-    let decodeSupported = false;
-    let hwAccelerated = false;
-    try {
-      const decodeResult = await navigator.mediaCapabilities.decodingInfo({
-        type: "webrtc",
-        video: {
-          contentType: config.webrtcMime === "video/H265" ? "video/h265" : config.webrtcMime.toLowerCase(),
-          width: 1920,
-          height: 1080,
-          framerate: 60,
-          bitrate: 20_000_000,
-        },
-      });
-      decodeSupported = decodeResult.supported;
-      hwAccelerated = decodeResult.powerEfficient;
-    } catch {
-      // webrtc type may not be supported, fall back to file type
-      try {
-        const decodeResult = await navigator.mediaCapabilities.decodingInfo({
-          type: "file",
-          video: {
-            contentType: config.decodeContentType,
-            width: 1920,
-            height: 1080,
-            framerate: 60,
-            bitrate: 20_000_000,
-          },
-        });
-        decodeSupported = decodeResult.supported;
-        hwAccelerated = decodeResult.powerEfficient;
-      } catch {
-        // Codec not recognized at all
-      }
-    }
-
-    // Test encode via MediaCapabilities API
-    let encodeSupported = false;
-    let encodeHwAccelerated = false;
-    try {
-      const encodeResult = await navigator.mediaCapabilities.encodingInfo({
-        type: "webrtc",
-        video: {
-          contentType: config.webrtcMime === "video/H265" ? "video/h265" : config.webrtcMime.toLowerCase(),
-          width: 1920,
-          height: 1080,
-          framerate: 60,
-          bitrate: 20_000_000,
-        },
-      });
-      encodeSupported = encodeResult.supported;
-      encodeHwAccelerated = encodeResult.powerEfficient;
-    } catch {
-      try {
-        const encodeResult = await navigator.mediaCapabilities.encodingInfo({
-          type: "record",
-          video: {
-            contentType: config.encodeContentType,
-            width: 1920,
-            height: 1080,
-            framerate: 60,
-            bitrate: 20_000_000,
-          },
-        });
-        encodeSupported = encodeResult.supported;
-        encodeHwAccelerated = encodeResult.powerEfficient;
-      } catch {
-        // Codec not recognized at all
-      }
-    }
-
-    results.push({
-      codec: config.name,
-      webrtcSupported,
-      decodeSupported: decodeSupported || webrtcSupported, // WebRTC support implies decode
-      hwAccelerated,
-      encodeSupported,
-      encodeHwAccelerated,
-      decodeVia: (decodeSupported || webrtcSupported)
-        ? guessDecodeBackend(hwAccelerated)
-        : "Unsupported",
-      encodeVia: encodeSupported
-        ? guessEncodeBackend(encodeHwAccelerated)
-        : "Unsupported",
-      profiles,
-    });
-  }
-
-  return results;
-}
-
 /* ── Component ────────────────────────────────────────────────────── */
 
-export function SettingsPage({ settings, regions, onSettingChange }: SettingsPageProps): JSX.Element {
+export function SettingsPage({ settings, regions, onSettingChange, codecResults, codecTesting, onRunCodecTest }: SettingsPageProps): JSX.Element {
   const [savedIndicator, setSavedIndicator] = useState(false);
   const [activeTab, setActiveTab] = useState<"preferences" | "thanks">("preferences");
   const [thanksData, setThanksData] = useState<ThankYouDataResult | null>(null);
@@ -559,11 +337,7 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
   const [regionSearch, setRegionSearch] = useState("");
   const [regionDropdownOpen, setRegionDropdownOpen] = useState(false);
 
-  // Codec diagnostics
-  const initialCodecResults = useMemo(() => loadStoredCodecResults(), []);
-  const [codecResults, setCodecResults] = useState<CodecTestResult[] | null>(initialCodecResults);
-  const [codecTesting, setCodecTesting] = useState(false);
-  const [codecTestOpen, setCodecTestOpen] = useState(() => initialCodecResults !== null);
+  const codecTestOpen = codecResults !== null || codecTesting;
 
   // Region ping state
   const initialPingResults = useMemo(() => loadStoredPingResults(), []);
@@ -633,31 +407,6 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
       runPingTest();
     }
   }, [regions, pingResults.size, isPinging, runPingTest]);
-
-  const runCodecTest = useCallback(async () => {
-    setCodecTesting(true);
-    setCodecTestOpen(true);
-    try {
-      const results = await testCodecSupport();
-      setCodecResults(results);
-    } catch (err) {
-      console.error("Codec test failed:", err);
-    } finally {
-      setCodecTesting(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      if (codecResults && codecResults.length > 0) {
-        window.sessionStorage.setItem(CODEC_TEST_RESULTS_STORAGE_KEY, JSON.stringify(codecResults));
-      } else {
-        window.sessionStorage.removeItem(CODEC_TEST_RESULTS_STORAGE_KEY);
-      }
-    } catch {
-      // Ignore storage failures (private mode / denied storage)
-    }
-  }, [codecResults]);
 
   const [toggleStatsInput, setToggleStatsInput] = useState(settings.shortcutToggleStats);
   const [togglePointerLockInput, setTogglePointerLockInput] = useState(settings.shortcutTogglePointerLock);
@@ -1596,15 +1345,25 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
             <div className="settings-row">
               <label className="settings-label">Codec</label>
               <div className="settings-chip-row">
-                {codecOptions.map((codec) => (
-                  <button
-                    key={codec}
-                    className={`settings-chip ${settings.codec === codec ? "active" : ""}`}
-                    onClick={() => handleCodecChange(codec)}
-                  >
-                    {codec}
-                  </button>
-                ))}
+                {codecOptions.map((codec) => {
+                  const badgeState = getCodecDecodeBadgeState(codec, codecResults, codecTesting);
+                  return (
+                    <button
+                      key={codec}
+                      className={`settings-chip settings-chip--codec ${settings.codec === codec ? "active" : ""}`}
+                      onClick={() => handleCodecChange(codec)}
+                    >
+                      <span>{codec}</span>
+                      {badgeState && (
+                        <span
+                          className={`settings-inline-badge settings-inline-badge--codec settings-inline-badge--codec-${badgeState}`}
+                        >
+                          {badgeState === "gpu" ? "GPU" : badgeState === "cpu" ? "CPU" : "Testing…"}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -1717,7 +1476,9 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               </label>
               <button
                 className="codec-test-btn"
-                onClick={runCodecTest}
+                onClick={() => {
+                  void onRunCodecTest();
+                }}
                 disabled={codecTesting}
                 type="button"
               >
@@ -2338,6 +2099,21 @@ export function SettingsPage({ settings, regions, onSettingChange }: SettingsPag
               <span className="settings-subtle-hint">
                 Disabling the session elapsed counter stops the live elapsed timer from rendering at all. Remaining playtime indicators stay unchanged.
               </span>
+            </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
+                Discord Rich Presence
+                <span className="settings-hint">Show the game you are streaming as your Discord activity, including elapsed time.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.discordRichPresence}
+                  onChange={(e) => handleChange("discordRichPresence", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
             </div>
           </div>
         </section>

@@ -172,6 +172,21 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
       return;
     }
 
+    const originalVolume = video.volume;
+    const restoreOriginalVolume = (): void => {
+      try {
+        video.volume = originalVolume;
+      } catch {
+        // ignore
+      }
+    };
+
+    try {
+      video.volume = Math.max(0, Math.min(1, originalVolume * 0.3125));
+    } catch {
+      // Ignore if setting volume is not permitted
+    }
+
     const handlePlaying = (): void => {
       setPlayback("playing");
       onPlaybackEventRef.current?.("playing");
@@ -200,6 +215,8 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
         finishFiredRef.current = true;
         onPlaybackEventRef.current?.("ended");
       }
+
+      restoreOriginalVolume();
     };
 
     const handleWaiting = (): void => {
@@ -217,6 +234,7 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
     const handleError = (): void => {
       setPlayback("error");
       onPlaybackEventRef.current?.("error");
+      restoreOriginalVolume();
     };
 
     video.addEventListener("loadstart", handleLoadStart);
@@ -239,6 +257,7 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
       video.removeEventListener("waiting", handleWaiting);
       video.removeEventListener("stalled", handleStalled);
       video.removeEventListener("error", handleError);
+      restoreOriginalVolume();
     };
   }, [mediaUrl]); // intentionally excludes onPlaybackEvent — stored in ref above
 

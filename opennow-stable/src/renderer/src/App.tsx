@@ -17,6 +17,7 @@ import type {
   SubscriptionInfo,
   StreamRegion,
   VideoCodec,
+  PrintedWasteQueueData,
 } from "@shared/gfn";
 import {
   DEFAULT_KEYBOARD_LAYOUT,
@@ -41,6 +42,7 @@ import { useElapsedSeconds } from "./utils/useElapsedSeconds";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
 import { openNow, platformCapabilities, platform } from "./platform";
+import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
@@ -53,6 +55,7 @@ import { StreamLoading } from "./components/StreamLoading";
 import { ControllerStreamLoading } from "./components/ControllerStreamLoading";
 import type { QueueAdPlaybackEvent, QueueAdPreviewHandle } from "./components/QueueAdPreview";
 import { StreamView } from "./components/StreamView";
+import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
 
 const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
@@ -89,6 +92,11 @@ const SESSION_AD_STUCK_TIMEOUT_MS = 30000;
 const SESSION_READY_TIMEOUT_MS = 180000;
 const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
 const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
+const FREE_TIER_SESSION_LIMIT_SECONDS = 60 * 60;
+const FREE_TIER_30_MIN_WARNING_SECONDS = 30 * 60;
+const FREE_TIER_15_MIN_WARNING_SECONDS = 15 * 60;
+const FREE_TIER_FINAL_MINUTE_WARNING_SECONDS = 60;
+const STREAM_WARNING_VISIBILITY_MS = 15 * 1000;
 
 type GameSource = "main" | "library" | "public";
 type AppPage = "home" | "library" | "settings";
@@ -100,6 +108,10 @@ type StreamWarningState = {
   message: string;
   tone: "warn" | "critical";
   secondsLeft?: number;
+};
+type LocalSessionTimerWarningState = {
+  stage: "free-tier-30m" | "free-tier-15m" | "free-tier-final-minute";
+  shownAtMs: number;
 };
 type LaunchErrorState = {
   stage: StreamLoadingStatus;
@@ -330,6 +342,49 @@ function shouldShowQueueAdsForMembership(
 ): boolean {
   const effectiveTier = normalizeMembershipTier(subscription?.membershipTier ?? authSession?.user.membershipTier);
   return effectiveTier === null || effectiveTier === "FREE";
+}
+
+function shouldShowFreeTierSessionWarnings(subscription: SubscriptionInfo | null): boolean {
+  return normalizeMembershipTier(subscription?.membershipTier) === "FREE";
+}
+
+function hasCrossedWarningThreshold(
+  previousSeconds: number | null,
+  currentSeconds: number,
+  thresholdSeconds: number,
+): boolean {
+  if (previousSeconds === null) {
+    return currentSeconds === thresholdSeconds;
+  }
+  return previousSeconds > thresholdSeconds && currentSeconds <= thresholdSeconds;
+}
+
+function getLocalSessionTimerWarning(
+  stage: LocalSessionTimerWarningState["stage"],
+  secondsLeft: number,
+): StreamWarningState {
+  if (stage === "free-tier-30m") {
+    return {
+      code: 1,
+      message: "30 minutes remaining in this free-tier session",
+      tone: "warn",
+    };
+  }
+
+  if (stage === "free-tier-15m") {
+    return {
+      code: 1,
+      message: "15 minutes remaining in this free-tier session",
+      tone: "warn",
+    };
+  }
+
+  return {
+    code: 1,
+    message: "This free-tier session ends soon",
+    tone: "critical",
+    secondsLeft: Math.max(0, secondsLeft),
+  };
 }
 
 function shouldUseQueueAdPolling(session: SessionInfo, subscription: SubscriptionInfo | null, authSession: AuthSession | null): boolean {
@@ -640,8 +695,11 @@ export function App(): JSX.Element {
     keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
     gameLanguage: "en_US",
     enableL4S: false,
+    discordRichPresence: false,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [codecResults, setCodecResults] = useState<CodecTestResult[] | null>(() => loadStoredCodecResults());
+  const [codecTesting, setCodecTesting] = useState(false);
   const [regions, setRegions] = useState<StreamRegion[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
   const diagnosticsStoreRef = useRef<ReturnType<typeof createStreamDiagnosticsStore> | null>(null);
@@ -664,19 +722,69 @@ export function App(): JSX.Element {
   const [navbarActiveSession, setNavbarActiveSession] = useState<ActiveSessionInfo | null>(null);
   const [isResumingNavbarSession, setIsResumingNavbarSession] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
+  const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
+  const [queueModalData, setQueueModalData] = useState<PrintedWasteQueueData | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
-  const [streamWarning, setStreamWarning] = useState<StreamWarningState | null>(null);
+  const [remoteStreamWarning, setRemoteStreamWarning] = useState<StreamWarningState | null>(null);
+  const [localSessionTimerWarning, setLocalSessionTimerWarning] = useState<LocalSessionTimerWarningState | null>(null);
   const [activeQueueAdId, setActiveQueueAdId] = useState<string | null>(null);
+  const previousFreeTierRemainingSecondsRef = useRef<number | null>(null);
 
   const { playtime, startSession: startPlaytimeSession, endSession: endPlaytimeSession } = usePlaytime();
   const sessionElapsedSeconds = useElapsedSeconds(sessionStartedAtMs, streamStatus === "streaming");
   const isStreaming = streamStatus === "streaming";
+  const freeTierSessionWarningsActive =
+    isStreaming && sessionStartedAtMs !== null && shouldShowFreeTierSessionWarnings(subscriptionInfo);
+  const freeTierSessionRemainingSeconds = freeTierSessionWarningsActive
+    ? Math.max(0, FREE_TIER_SESSION_LIMIT_SECONDS - sessionElapsedSeconds)
+    : null;
+  const visibleLocalSessionTimerWarning = useMemo(() => {
+    if (localSessionTimerWarning === null || freeTierSessionRemainingSeconds === null) {
+      return null;
+    }
+
+    return getLocalSessionTimerWarning(localSessionTimerWarning.stage, freeTierSessionRemainingSeconds);
+  }, [freeTierSessionRemainingSeconds, localSessionTimerWarning]);
+  const streamWarning = useMemo(() => {
+    if (visibleLocalSessionTimerWarning?.tone === "critical") {
+      return visibleLocalSessionTimerWarning;
+    }
+    return remoteStreamWarning ?? visibleLocalSessionTimerWarning;
+  }, [remoteStreamWarning, visibleLocalSessionTimerWarning]);
 
   const controllerOverlayOpenRef = useRef(false);
+  const codecTestPromiseRef = useRef<Promise<CodecTestResult[] | null> | null>(null);
+  const codecStartupTestAttemptedRef = useRef(false);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
     setShowStatsOverlay(settings.showStatsOnLaunch);
   }, [settings.showStatsOnLaunch]);
+
+  const runCodecTest = useCallback(async (): Promise<void> => {
+    if (codecTestPromiseRef.current) {
+      await codecTestPromiseRef.current;
+      return;
+    }
+
+    const testPromise = (async (): Promise<CodecTestResult[] | null> => {
+      setCodecTesting(true);
+      try {
+        const results = await testCodecSupport();
+        setCodecResults(results);
+        saveStoredCodecResults(results);
+        return results;
+      } catch (error) {
+        console.error("Codec test failed:", error);
+        return null;
+      } finally {
+        setCodecTesting(false);
+        codecTestPromiseRef.current = null;
+      }
+    })();
+
+    codecTestPromiseRef.current = testPromise;
+    await testPromise;
+  }, []);
 
   const handleControllerPageNavigate = useCallback((direction: "prev" | "next"): void => {
     if (controllerOverlayOpenRef.current) {
@@ -1094,7 +1202,8 @@ export function App(): JSX.Element {
     setStreamStatus("idle");
     setQueuePosition(undefined);
     setSessionStartedAtMs(null);
-    setStreamWarning(null);
+    setRemoteStreamWarning(null);
+    setLocalSessionTimerWarning(null);
     setEscHoldReleaseIndicator({ visible: false, progress: 0 });
     resetStatsOverlayToPreference();
     diagnosticsStore.set(defaultDiagnostics());
@@ -1196,8 +1305,11 @@ export function App(): JSX.Element {
   }, [providers, providerIdpId, authSession]);
 
   const effectiveStreamingBaseUrl = useMemo(() => {
+    if (settings.region.trim()) {
+      return settings.region;
+    }
     return selectedProvider?.streamingServiceUrl ?? "";
-  }, [selectedProvider]);
+  }, [selectedProvider, settings.region]);
 
   const reportQueueAdAction = useCallback((adId: string, action: SessionAdAction, options?: QueueAdReportOptions): void => {
     const currentSession = sessionRef.current;
@@ -1594,6 +1706,18 @@ export function App(): JSX.Element {
     void initialize();
   }, []);
 
+  useEffect(() => {
+    saveStoredCodecResults(codecResults);
+  }, [codecResults]);
+
+  useEffect(() => {
+    if (codecResults || codecTesting || codecStartupTestAttemptedRef.current) {
+      return;
+    }
+    codecStartupTestAttemptedRef.current = true;
+    void runCodecTest();
+  }, [codecResults, codecTesting, runCodecTest]);
+
   // Auto-load controller library at startup if enabled
   useEffect(() => {
     if (isInitializing || !authSession || !settings.controllerMode || !settings.autoLoadControllerLibrary || currentPage !== "home") {
@@ -1789,13 +1913,45 @@ export function App(): JSX.Element {
   }, [sessionStartedAtMs, streamStatus]);
 
   useEffect(() => {
-    if (!streamWarning) return;
-    const warning = streamWarning;
+    if (freeTierSessionRemainingSeconds === null) {
+      previousFreeTierRemainingSecondsRef.current = null;
+      setLocalSessionTimerWarning(null);
+      return;
+    }
+
+    const previousSeconds = previousFreeTierRemainingSecondsRef.current;
+
+    if (hasCrossedWarningThreshold(previousSeconds, freeTierSessionRemainingSeconds, FREE_TIER_FINAL_MINUTE_WARNING_SECONDS)) {
+      setLocalSessionTimerWarning({ stage: "free-tier-final-minute", shownAtMs: Date.now() });
+    } else if (hasCrossedWarningThreshold(previousSeconds, freeTierSessionRemainingSeconds, FREE_TIER_15_MIN_WARNING_SECONDS)) {
+      setLocalSessionTimerWarning({ stage: "free-tier-15m", shownAtMs: Date.now() });
+    } else if (hasCrossedWarningThreshold(previousSeconds, freeTierSessionRemainingSeconds, FREE_TIER_30_MIN_WARNING_SECONDS)) {
+      setLocalSessionTimerWarning({ stage: "free-tier-30m", shownAtMs: Date.now() });
+    }
+
+    previousFreeTierRemainingSecondsRef.current = freeTierSessionRemainingSeconds;
+  }, [freeTierSessionRemainingSeconds]);
+
+  useEffect(() => {
+    if (!localSessionTimerWarning) return;
+
+    const warning = localSessionTimerWarning;
+    const remainingMs = Math.max(0, warning.shownAtMs + STREAM_WARNING_VISIBILITY_MS - Date.now());
     const timer = window.setTimeout(() => {
-      setStreamWarning((current) => (current === warning ? null : current));
-    }, 12000);
+      setLocalSessionTimerWarning((current) => (current === warning ? null : current));
+    }, remainingMs);
     return () => window.clearTimeout(timer);
-  }, [streamWarning]);
+  }, [localSessionTimerWarning]);
+
+  useEffect(() => {
+    if (!remoteStreamWarning) return;
+
+    const warning = remoteStreamWarning;
+    const timer = window.setTimeout(() => {
+      setRemoteStreamWarning((current) => (current === warning ? null : current));
+    }, STREAM_WARNING_VISIBILITY_MS);
+    return () => window.clearTimeout(timer);
+  }, [remoteStreamWarning]);
 
   // Signaling events
   useEffect(() => {
@@ -1830,7 +1986,7 @@ export function App(): JSX.Element {
                 setEscHoldReleaseIndicator({ visible, progress });
               },
               onTimeWarning: (warning) => {
-                setStreamWarning({
+                setRemoteStreamWarning({
                   code: warning.code,
                   message: warningMessage(warning.code),
                   tone: warningTone(warning.code),
@@ -2126,7 +2282,7 @@ export function App(): JSX.Element {
   }, [authSession, effectiveStreamingBaseUrl, findGameContextForSession, resetStatsOverlayToPreference, settings]);
 
   // Play game handler
-  const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean }) => {
+  const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
     if (!selectedProvider) return;
 
     console.log("handlePlayGame entry", {
@@ -2153,7 +2309,8 @@ export function App(): JSX.Element {
     };
 
     setSessionStartedAtMs(null);
-    setStreamWarning(null);
+  setRemoteStreamWarning(null);
+  setLocalSessionTimerWarning(null);
     setLaunchError(null);
     resetStatsOverlayToPreference();
     const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
@@ -2240,7 +2397,7 @@ export function App(): JSX.Element {
       // Create new session
       const newSession = await openNow.createSession({
         token: token || undefined,
-        streamingBaseUrl: effectiveStreamingBaseUrl,
+        streamingBaseUrl: options?.streamingBaseUrl || effectiveStreamingBaseUrl,
         appId,
         internalTitle: game.title,
         accountLinked: game.playType !== "INSTALL_TO_PLAY",
@@ -2421,6 +2578,42 @@ export function App(): JSX.Element {
     variantByGameId,
   ]);
 
+  // Gate handler: shows queue server modal for FREE-tier users before launching
+  const handleInitiatePlay = useCallback(async (game: GameInfo) => {
+    const isFreeUser = subscriptionInfo?.membershipTier === "FREE";
+    if (isFreeUser && streamStatus === "idle" && !launchInFlightRef.current) {
+      try {
+        const queueData = await window.openNow.fetchPrintedWasteQueue();
+        if (!queueData || Object.keys(queueData).length === 0) {
+          void handlePlayGame(game);
+          return;
+        }
+        setQueueModalData(queueData);
+        setQueueModalGame(game);
+      } catch (error) {
+        console.warn("[QueueServerSelect] Queue API unavailable, launching without modal.", error);
+        setQueueModalData(null);
+        void handlePlayGame(game);
+      }
+      return;
+    }
+    void handlePlayGame(game);
+  }, [subscriptionInfo, streamStatus, handlePlayGame]);
+
+  const handleQueueModalConfirm = useCallback((zoneUrl: string | null) => {
+    const game = queueModalGame;
+    setQueueModalGame(null);
+    setQueueModalData(null);
+    if (game) {
+      void handlePlayGame(game, { streamingBaseUrl: zoneUrl ?? undefined });
+    }
+  }, [queueModalGame, handlePlayGame]);
+
+  const handleQueueModalCancel = useCallback(() => {
+    setQueueModalGame(null);
+    setQueueModalData(null);
+  }, []);
+
   const handleResumeFromNavbar = useCallback(async () => {
     if (!selectedProvider || !navbarActiveSession || isResumingNavbarSession) {
       return;
@@ -2440,7 +2633,8 @@ export function App(): JSX.Element {
     setLaunchError(null);
     setQueuePosition(undefined);
     setSessionStartedAtMs(null);
-    setStreamWarning(null);
+    setRemoteStreamWarning(null);
+    setLocalSessionTimerWarning(null);
     resetStatsOverlayToPreference();
     const matchedContext = findGameContextForSession(navbarActiveSession);
     if (matchedContext) {
@@ -3113,7 +3307,7 @@ export function App(): JSX.Element {
             onSourceChange={loadGames}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
-            onPlayGame={handlePlayGame}
+            onPlayGame={handleInitiatePlay}
             isLoading={isLoadingGames}
             selectedGameId={selectedGameId}
             onSelectGame={setSelectedGameId}
@@ -3126,7 +3320,7 @@ export function App(): JSX.Element {
           settings.controllerMode ? (
             <ControllerLibraryPage
               games={filteredLibraryGames}
-              onPlayGame={handlePlayGame}
+              onPlayGame={handleInitiatePlay}
               isLoading={isLoadingGames}
               selectedGameId={selectedGameId}
               onSelectGame={setSelectedGameId}
@@ -3173,7 +3367,7 @@ export function App(): JSX.Element {
               games={filteredLibraryGames}
               searchQuery={searchQuery}
               onSearchChange={setSearchQuery}
-              onPlayGame={handlePlayGame}
+              onPlayGame={handleInitiatePlay}
               isLoading={isLoadingGames}
               selectedGameId={selectedGameId}
               onSelectGame={setSelectedGameId}
@@ -3187,6 +3381,9 @@ export function App(): JSX.Element {
           <SettingsPage
             settings={settings}
             regions={regions}
+            codecResults={codecResults}
+            codecTesting={codecTesting}
+            onRunCodecTest={runCodecTest}
             onSettingChange={updateSetting}
           />
         )}
@@ -3198,6 +3395,15 @@ export function App(): JSX.Element {
           <span>B Back</span>
           <span>LB/RB Tabs</span>
         </div>
+      )}
+
+      {queueModalGame && streamStatus === "idle" && (
+        <QueueServerSelectModal
+          game={queueModalGame}
+          initialQueueData={queueModalData}
+          onConfirm={handleQueueModalConfirm}
+          onCancel={handleQueueModalCancel}
+        />
       )}
     </div>
   );
