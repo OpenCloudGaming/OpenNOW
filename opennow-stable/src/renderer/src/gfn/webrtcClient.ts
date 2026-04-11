@@ -12,6 +12,7 @@ import {
   INPUT_MOUSE_REL,
   PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
   PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
+  partiallyReliableHidMaskForInputType,
   isPartiallyReliableHidTransferEligible,
   mapKeyboardEvent,
   modifierFlags,
@@ -1930,10 +1931,14 @@ export class GfnWebRtcClient {
     if (!this.isPartiallyReliableChannelOpen() || !isPartiallyReliableHidTransferEligible(inputType)) {
       return false;
     }
-    if ((this.riInputCapabilities.hidDeviceMask & inputType) === 0) {
+    const hidMask = partiallyReliableHidMaskForInputType(inputType);
+    if (hidMask === 0) {
       return false;
     }
-    return (this.riInputCapabilities.enablePartiallyReliableTransferHid & inputType) !== 0;
+    if ((this.riInputCapabilities.hidDeviceMask & hidMask) === 0) {
+      return false;
+    }
+    return (this.riInputCapabilities.enablePartiallyReliableTransferHid & hidMask) !== 0;
   }
 
   private sendPartiallyReliable(payload: Uint8Array): void {

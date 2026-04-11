@@ -83,6 +83,13 @@ export interface GamepadInput {
   timestampUs: bigint;
 }
 
+export function partiallyReliableHidMaskForInputType(inputType: number): number {
+  if (!Number.isInteger(inputType) || inputType < 0 || inputType > 31) {
+    return 0;
+  }
+  return 1 << inputType;
+}
+
 export function isPartiallyReliableHidTransferEligible(inputType: number): boolean {
   return inputType === INPUT_MOUSE_REL;
 }
