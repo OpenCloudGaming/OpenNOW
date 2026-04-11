@@ -686,6 +686,9 @@ export interface OpenNowApi {
   showMediaInFolder(input: { filePath: string }): Promise<void>;
 
   deleteCache(): Promise<void>;
+
+  /** Fetch current GFN queue wait times from the PrintedWaste API */
+  fetchPrintedWasteQueue(): Promise<PrintedWasteQueueData>;
   getThanksData(): Promise<ThankYouDataResult>;
 }
 
@@ -771,3 +774,17 @@ export interface MediaListingResult {
   screenshots: MediaListingEntry[];
   videos: MediaListingEntry[];
 }
+
+/** A single zone entry from the PrintedWaste queue API */
+export interface PrintedWasteZone {
+  QueuePosition: number;
+  /** Unix timestamp of last update */
+  "Last Updated": number;
+  /** Geographic region code: "US" | "EU" | "JP" | "KR" | "CA" | "THAI" | "MY" */
+  Region: string;
+  /** Estimated wait time in milliseconds */
+  eta?: number;
+}
+
+/** Full data payload from https://api.printedwaste.com/gfn/queue/ */
+export type PrintedWasteQueueData = Record<string, PrintedWasteZone>;

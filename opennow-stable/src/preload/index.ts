@@ -32,6 +32,7 @@ import type {
   RecordingEntry,
   RecordingDeleteRequest,
   MediaListingResult,
+  PrintedWasteQueueData,
   ThankYouDataResult,
 } from "@shared/gfn";
 import { parseSerializedSessionErrorTransport } from "@shared/sessionError";
@@ -143,6 +144,8 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.MEDIA_SHOW_IN_FOLDER, input),
   deleteCache: (): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.CACHE_DELETE_ALL),
+  fetchPrintedWasteQueue: (): Promise<PrintedWasteQueueData> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PRINTEDWASTE_QUEUE_FETCH),
   getThanksData: (): Promise<ThankYouDataResult> => ipcRenderer.invoke(IPC_CHANNELS.COMMUNITY_GET_THANKS),
 };
 

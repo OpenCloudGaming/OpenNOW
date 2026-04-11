@@ -1593,6 +1593,83 @@ function registerIpcHandlers(): void {
     return Promise.all(pingPromises);
   });
 
+  // PrintedWaste queue API — fetched from main process so User-Agent can be set
+  ipcMain.handle(IPC_CHANNELS.PRINTEDWASTE_QUEUE_FETCH, async () => {
+    const PRINTEDWASTE_QUEUE_TIMEOUT_MS = 7000;
+    const version = app.getVersion();
+    const response = await fetchWithTimeout(
+      "https://api.printedwaste.com/gfn/queue/",
+      {
+        headers: {
+          "User-Agent": `opennow/${version}`,
+          Accept: "application/json",
+        },
+      },
+      PRINTEDWASTE_QUEUE_TIMEOUT_MS,
+      "PrintedWaste queue request",
+    );
+    if (!response.ok) {
+      throw new Error(`PrintedWaste API returned HTTP ${response.status}`);
+    }
+
+    const body = await withTimeout(
+      response.json() as Promise<unknown>,
+      PRINTEDWASTE_QUEUE_TIMEOUT_MS,
+      "PrintedWaste queue response parse",
+    );
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error("PrintedWaste API response was not an object");
+    }
+
+    const apiBody = body as { status?: unknown; data?: unknown };
+    if (typeof apiBody.status !== "boolean") {
+      throw new Error("PrintedWaste API response missing boolean status");
+    }
+    if (!apiBody.status) {
+      throw new Error("PrintedWaste API returned status:false");
+    }
+    if (!apiBody.data || typeof apiBody.data !== "object" || Array.isArray(apiBody.data)) {
+      throw new Error("PrintedWaste API response missing data object");
+    }
+
+    const normalizedData: Record<string, { QueuePosition: number; "Last Updated": number; Region: string; eta?: number }> = {};
+    for (const [zoneId, rawZone] of Object.entries(apiBody.data as Record<string, unknown>)) {
+      if (!rawZone || typeof rawZone !== "object" || Array.isArray(rawZone)) {
+        continue;
+      }
+      const zone = rawZone as Record<string, unknown>;
+      const queuePosition = zone.QueuePosition;
+      const lastUpdated = zone["Last Updated"];
+      const region = zone.Region;
+      const eta = zone.eta;
+
+      if (typeof queuePosition !== "number" || !Number.isFinite(queuePosition)) {
+        continue;
+      }
+      if (typeof lastUpdated !== "number" || !Number.isFinite(lastUpdated)) {
+        continue;
+      }
+      if (typeof region !== "string" || region.length === 0) {
+        continue;
+      }
+      if (eta !== undefined && (typeof eta !== "number" || !Number.isFinite(eta))) {
+        continue;
+      }
+
+      normalizedData[zoneId] = {
+        QueuePosition: queuePosition,
+        "Last Updated": lastUpdated,
+        Region: region,
+        ...(typeof eta === "number" ? { eta } : {}),
+      };
+    }
+
+    if (Object.keys(normalizedData).length === 0) {
+      throw new Error("PrintedWaste API returned no valid zones");
+    }
+    return normalizedData;
+  });
+
   // Save window size when it changes
   mainWindow?.on("resize", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
