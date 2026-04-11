@@ -2592,7 +2592,10 @@ export function App(): JSX.Element {
 
   // Gate handler: shows queue server modal for FREE-tier users before launching
   const handleInitiatePlay = useCallback(async (game: GameInfo) => {
-    const isFreeUser = subscriptionInfo?.membershipTier === "FREE";
+    const effectiveTier = normalizeMembershipTier(
+      subscriptionInfo?.membershipTier ?? authSession?.user.membershipTier,
+    );
+    const isFreeUser = effectiveTier === "FREE";
     if (isFreeUser && streamStatus === "idle" && !launchInFlightRef.current) {
       try {
         const [queueResult, mappingResult] = await Promise.allSettled([
@@ -2639,7 +2642,7 @@ export function App(): JSX.Element {
       return;
     }
     void handlePlayGame(game);
-  }, [subscriptionInfo, streamStatus, handlePlayGame]);
+  }, [subscriptionInfo, authSession, streamStatus, handlePlayGame]);
 
   const handleQueueModalConfirm = useCallback((zoneUrl: string | null) => {
     const game = queueModalGame;
