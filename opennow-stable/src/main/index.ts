@@ -1528,9 +1528,18 @@ function registerIpcHandlers(): void {
         const port = url.protocol === 'https:' ? 443 : 80;
         
         const validPings: number[] = [];
-        
-        // Run 3 ping tests
+
+        // Warm-up ping (result discarded) to prime the TCP path before measuring.
+        // The first cold-start connect includes DNS resolution and TCP SYN overhead
+        // which inflates subsequent measurements if not accounted for.
+        await tcpPing(hostname, port, 3000);
+
+        // Run 3 measured ping tests with a brief delay between each to allow
+        // the previous socket to fully close before opening the next connection.
         for (let i = 0; i < 3; i++) {
+          if (i > 0) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 100));
+          }
           const pingMs = await tcpPing(hostname, port, 3000);
           if (pingMs !== null) {
             validPings.push(pingMs);
