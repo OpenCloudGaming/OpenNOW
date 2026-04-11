@@ -54,6 +54,7 @@ export const IPC_CHANNELS = {
   MEDIA_SHOW_IN_FOLDER: "media:show-in-folder",
   // PrintedWaste queue integration
   PRINTEDWASTE_QUEUE_FETCH: "printedwaste:queue-fetch",
+  PRINTEDWASTE_SERVER_MAPPING_FETCH: "printedwaste:server-mapping-fetch",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
