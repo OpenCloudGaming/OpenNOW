@@ -29,7 +29,7 @@ struct LibraryView: View {
                 } else {
                     ForEach(store.libraryGames) { game in
                         GameCardView(game: game) {
-                            Task { await store.launch(game: game) }
+                            store.scheduleLaunch(game: game)
                         }
                     }
                 }

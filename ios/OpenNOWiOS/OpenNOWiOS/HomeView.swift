@@ -104,7 +104,7 @@ struct HomeView: View {
                 } else {
                     ForEach(store.featuredGames.prefix(8)) { game in
                         FeaturedGameCard(game: game) {
-                            Task { await store.launch(game: game) }
+                            store.scheduleLaunch(game: game)
                         }
                     }
                 }
@@ -125,7 +125,7 @@ struct HomeView: View {
             } else {
                 ForEach(games) { game in
                     GameCardView(game: game) {
-                        Task { await store.launch(game: game) }
+                        store.scheduleLaunch(game: game)
                     }
                 }
             }

@@ -257,7 +257,7 @@ struct SessionView: View {
                         }
                         Spacer()
                         Button("Resume") {
-                            Task { await store.resumeSession(candidate: candidate) }
+                            store.scheduleResume(candidate: candidate)
                         }
                         .buttonStyle(.bordered)
                         .tint(brandAccent)

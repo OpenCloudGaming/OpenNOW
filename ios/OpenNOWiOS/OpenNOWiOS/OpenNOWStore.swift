@@ -1215,6 +1215,7 @@ final class OpenNOWStore: ObservableObject {
     private var authSession: AuthSession?
     private var telemetryTask: Task<Void, Never>?
     private var sessionPollTask: Task<Void, Never>?
+    private var launchTask: Task<Void, Never>?
     private var cachedVpcId: String = "GFN-PC"
 
     private let settingsKey = "OpenNOW.iOS.settings"
@@ -1228,6 +1229,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     deinit {
+        launchTask?.cancel()
         telemetryTask?.cancel()
         sessionPollTask?.cancel()
     }
@@ -1337,10 +1339,18 @@ final class OpenNOWStore: ObservableObject {
             sessionElapsedSeconds = 0
             startSessionTasks()
             lastError = nil
+        } catch is CancellationError {
+            showStreamLoading = false
+            return
         } catch {
             showStreamLoading = false
             lastError = "Session launch failed: \(error.localizedDescription)"
         }
+    }
+
+    func scheduleLaunch(game: CloudGame) {
+        launchTask?.cancel()
+        launchTask = Task { await self.launch(game: game) }
     }
 
     func refreshRemoteSessions() async {
@@ -1382,13 +1392,23 @@ final class OpenNOWStore: ObservableObject {
             sessionElapsedSeconds = 0
             startSessionTasks()
             lastError = nil
+        } catch is CancellationError {
+            showStreamLoading = false
+            return
         } catch {
             showStreamLoading = false
             lastError = "Failed to resume session: \(error.localizedDescription)"
         }
     }
 
+    func scheduleResume(candidate: RemoteSessionCandidate) {
+        launchTask?.cancel()
+        launchTask = Task { await self.resumeSession(candidate: candidate) }
+    }
+
     func endSession() async {
+        launchTask?.cancel()
+        launchTask = nil
         showStreamLoading = false
         guard let session = authSession, let active = activeSession else {
             activeSession = nil

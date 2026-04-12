@@ -57,7 +57,7 @@ struct BrowseView: View {
             LazyVGrid(columns: gridColumns, spacing: 14) {
                 ForEach(filtered) { game in
                     GameCardView(game: game) {
-                        Task { await store.launch(game: game) }
+                        store.scheduleLaunch(game: game)
                     }
                 }
             }
