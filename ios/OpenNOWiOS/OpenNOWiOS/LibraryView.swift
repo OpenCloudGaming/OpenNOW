@@ -22,9 +22,15 @@ struct LibraryView: View {
         ScrollView {
             let columns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 14)]
             LazyVGrid(columns: columns, spacing: 14) {
-                ForEach(store.libraryGames) { game in
-                    GameCardView(game: game) {
-                        Task { await store.launch(game: game) }
+                if store.libraryGames.isEmpty && store.isLoadingGames {
+                    ForEach(0..<8, id: \.self) { _ in
+                        GameCardSkeletonView()
+                    }
+                } else {
+                    ForEach(store.libraryGames) { game in
+                        GameCardView(game: game) {
+                            Task { await store.launch(game: game) }
+                        }
                     }
                 }
             }
