@@ -1492,7 +1492,8 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func maximizeQueueOverlay() {
-        guard showStreamLoading else { return }
+        guard activeSession != nil else { return }
+        showStreamLoading = true
         queueOverlayVisible = true
     }
 
@@ -1548,6 +1549,8 @@ final class OpenNOWStore: ObservableObject {
             var previousStatus = self.activeSession?.status
             var consecutivePollFailures = 0
             var setupTimeoutStartedAt: Date?
+            var loggedReadyForStreamer = false
+            var dismissedOverlayAfterReady = false
             while !Task.isCancelled {
                 guard let session = self.authSession, let active = self.activeSession else {
                     try? await Task.sleep(for: .seconds(2))
@@ -1564,6 +1567,15 @@ final class OpenNOWStore: ObservableObject {
                     self.logger.info(
                         "Poll id=\(polled.id, privacy: .public) status=\(polled.status) queue=\(polled.queuePosition ?? -1) showOverlay=\(self.showStreamLoading)"
                     )
+                    if self.isReadyForStreamer(polled) && !loggedReadyForStreamer {
+                        self.logger.notice(
+                            "Session ready for streamer handoff id=\(polled.id, privacy: .public) status=\(polled.status). Desktop connects signaling here."
+                        )
+                        loggedReadyForStreamer = true
+                    } else if !self.isReadyForStreamer(polled) {
+                        loggedReadyForStreamer = false
+                        dismissedOverlayAfterReady = false
+                    }
                     if polled.status == 2 && previousStatus == 1 {
                         await NotificationManager.shared.sendQueueSetupNotification(gameTitle: polled.game.title)
                     }
@@ -1584,15 +1596,17 @@ final class OpenNOWStore: ObservableObject {
                     } else {
                         setupTimeoutStartedAt = nil
                     }
-                    if (polled.status == 2 || polled.status == 3) && self.showStreamLoading {
-                        try? await Task.sleep(for: .milliseconds(600))
-                        guard !Task.isCancelled,
-                              self.showStreamLoading,
-                              self.activeSession?.id == polled.id,
-                              (self.activeSession?.status == 2 || self.activeSession?.status == 3) else { continue }
-                        self.logger.info("Session ready, hiding loading overlay id=\(polled.id, privacy: .public) status=\(polled.status)")
-                        self.showStreamLoading = false
+                    if !self.isReadyForStreamer(polled) && !self.queueOverlayVisible {
+                        // If the user minimized during queue/setup, keep the loading
+                        // experience reopenable so they can return to it.
+                        self.showStreamLoading = true
+                    }
+                    if self.isReadyForStreamer(polled) && !dismissedOverlayAfterReady {
+                        // iOS currently has no streamer signaling client yet. Do not
+                        // leave users trapped in setup overlay once backend is ready.
                         self.queueOverlayVisible = false
+                        self.showStreamLoading = false
+                        dismissedOverlayAfterReady = true
                     }
                 } catch {
                     consecutivePollFailures += 1
@@ -1616,6 +1630,10 @@ final class OpenNOWStore: ObservableObject {
 
     private func isInSetupPhase(_ session: ActiveSession) -> Bool {
         !isInQueuePhase(session) && session.status == 1
+    }
+
+    private func isReadyForStreamer(_ session: ActiveSession) -> Bool {
+        session.status == 2 || session.status == 3
     }
 
     private func refreshSessionPollBackgroundTask() {

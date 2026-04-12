@@ -25,8 +25,12 @@ struct StreamLoadingView: View {
     private var currentPhase: StreamPhase {
         guard let session = store.activeSession else { return .queue }
         switch session.status {
-        case 3: return .launching
-        case 2: return .setup
+        case 2, 3: return .launching
+        case 1:
+            if let pos = session.queuePosition, pos > 1 {
+                return .queue
+            }
+            return .setup
         default: return .queue
         }
     }
@@ -39,9 +43,9 @@ struct StreamLoadingView: View {
             }
             return store.isLaunchingSession ? "Starting session..." : "Waiting in queue..."
         case .setup:
-            return "Setting up your gaming rig..."
+            return "Preparing your gaming rig..."
         case .launching:
-            return "Connecting to server..."
+            return "Connecting streamer..."
         }
     }
 

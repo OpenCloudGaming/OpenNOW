@@ -174,19 +174,21 @@ struct PrintedWasteQueueView: View {
 
     private var routingRow: some View {
         HStack(spacing: 10) {
-            routingPill(icon: "bolt.fill", accessibilityLabel: "Auto", isSelected: routingPreference == .auto, isEnabled: autoZone != nil) {
+            routingPill(title: "Auto", accessibilityLabel: "Auto", isSelected: routingPreference == .auto, isEnabled: autoZone != nil) {
                 routingPreference = .auto
             }
-            routingPill(icon: "location.fill", accessibilityLabel: "Closest", isSelected: routingPreference == .closest, isEnabled: closestZone != nil || zones.contains(where: \.isMeasuring)) {
+            routingPill(title: "Closest", accessibilityLabel: "Closest", isSelected: routingPreference == .closest, isEnabled: closestZone != nil || zones.contains(where: \.isMeasuring)) {
                 routingPreference = .closest
             }
         }
     }
 
-    private func routingPill(icon: String, accessibilityLabel: String, isSelected: Bool, isEnabled: Bool, action: @escaping () -> Void) -> some View {
+    private func routingPill(title: String, accessibilityLabel: String, isSelected: Bool, isEnabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon)
-                .font(.headline.weight(.semibold))
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.9)
             .foregroundStyle(isSelected ? brandAccent : .primary)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)

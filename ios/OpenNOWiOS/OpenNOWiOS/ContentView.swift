@@ -93,7 +93,7 @@ private struct QueueStatusPill: View {
         case 3:
             return "Ready!"
         case 2:
-            return "Setting up..."
+            return "Ready to connect"
         default:
             if let queue = session.queuePosition {
                 return queue == 1 ? "Next in queue" : "Queue #\(queue)"
