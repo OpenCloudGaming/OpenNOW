@@ -60,6 +60,13 @@ struct MainTabView: View {
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
         }
         .tint(brandAccent)
+        .fullScreenCover(isPresented: Binding(
+            get: { store.showStreamLoading },
+            set: { if !$0 { Task { await store.endSession() } } }
+        )) {
+            StreamLoadingView()
+                .environmentObject(store)
+        }
     }
 }
 

@@ -1206,6 +1206,7 @@ final class OpenNOWStore: ObservableObject {
     @Published var isAuthenticating = false
     @Published var isLoadingGames = false
     @Published var isLaunchingSession = false
+    @Published var showStreamLoading: Bool = false
     @Published var lastError: String?
     @Published var isBootstrapping: Bool = true
 
@@ -1323,6 +1324,7 @@ final class OpenNOWStore: ObservableObject {
             return
         }
         isLaunchingSession = true
+        showStreamLoading = true
         defer { isLaunchingSession = false }
         do {
             let started = try await api.startSession(
@@ -1336,6 +1338,7 @@ final class OpenNOWStore: ObservableObject {
             startSessionTasks()
             lastError = nil
         } catch {
+            showStreamLoading = false
             lastError = "Session launch failed: \(error.localizedDescription)"
         }
     }
@@ -1362,6 +1365,7 @@ final class OpenNOWStore: ObservableObject {
             return
         }
         isLaunchingSession = true
+        showStreamLoading = true
         defer { isLaunchingSession = false }
         do {
             let refreshed = try await api.refreshSession(session)
@@ -1379,11 +1383,13 @@ final class OpenNOWStore: ObservableObject {
             startSessionTasks()
             lastError = nil
         } catch {
+            showStreamLoading = false
             lastError = "Failed to resume session: \(error.localizedDescription)"
         }
     }
 
     func endSession() async {
+        showStreamLoading = false
         guard let session = authSession, let active = activeSession else {
             activeSession = nil
             telemetryTask?.cancel()
@@ -1464,6 +1470,14 @@ final class OpenNOWStore: ObservableObject {
                     self.persistAuthSession(refreshed)
                     let polled = try await self.api.pollSession(session: refreshed, activeSession: active)
                     self.activeSession = polled
+                    if polled.status == 0 && self.showStreamLoading {
+                        try? await Task.sleep(for: .milliseconds(600))
+                        guard !Task.isCancelled,
+                              self.showStreamLoading,
+                              self.activeSession?.id == polled.id,
+                              self.activeSession?.status == 0 else { continue }
+                        self.showStreamLoading = false
+                    }
                 } catch {
                     self.lastError = "Session poll failed: \(error.localizedDescription)"
                 }
