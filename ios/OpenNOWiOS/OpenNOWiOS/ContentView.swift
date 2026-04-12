@@ -100,7 +100,7 @@ private struct QueueStatusPill: View {
         guard let session = store.activeSession else { return "Preparing..." }
         switch session.status {
         case 3:
-            return "Ready!"
+            return store.streamSession == nil ? "Tap to return" : "Streaming"
         case 2:
             return "Ready to connect"
         default:
@@ -114,7 +114,11 @@ private struct QueueStatusPill: View {
     var body: some View {
         HStack(spacing: 10) {
             Button {
-                store.maximizeQueueOverlay()
+                if store.canReopenStreamer {
+                    store.reopenStreamer()
+                } else {
+                    store.maximizeQueueOverlay()
+                }
             } label: {
                 HStack(spacing: 10) {
                     Circle()
