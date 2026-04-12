@@ -56,9 +56,11 @@ struct MainTabView: View {
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
         }
         .tint(brandAccent)
-        .fullScreenCover(isPresented: $store.queueOverlayVisible.transaction { transaction in
-            transaction.animation = transaction.animation?.delay(0.15)
-        }) {
+        .fullScreenCover(isPresented: $store.queueOverlayVisible.transaction({
+            var t = Transaction()
+            t.animation = t.animation?.delay(0.15)
+            return t
+        }())) {
             StreamLoadingView()
                 .environmentObject(store)
         }
