@@ -37,8 +37,6 @@ struct HomeView: View {
             }
             .refreshable { await store.refreshCatalog() }
             .navigationTitle("OpenNOW")
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     if store.isLoadingGames {
@@ -381,7 +379,7 @@ struct GlassCardModifier: ViewModifier {
         } else {
             content
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-                .shadow(color: .black.opacity(0.07), radius: 8, y: 2)
+                .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
         }
     }
 }
