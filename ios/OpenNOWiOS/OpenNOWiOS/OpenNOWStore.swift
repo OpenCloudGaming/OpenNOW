@@ -2,6 +2,7 @@ import AuthenticationServices
 import CryptoKit
 import Foundation
 import Network
+import OSLog
 import UIKit
 
 struct UserProfile: Codable, Equatable {
@@ -1245,6 +1246,7 @@ final class OpenNOWStore: ObservableObject {
     @Published var isBootstrapping: Bool = true
 
     private let api = GFNAPIClient()
+    private let logger = Logger(subsystem: "OpenNOWiOS", category: "Session")
     private let defaults = UserDefaults.standard
     private var authSession: AuthSession?
     private var telemetryTask: Task<Void, Never>?
@@ -1256,6 +1258,7 @@ final class OpenNOWStore: ObservableObject {
     private let settingsKey = "OpenNOW.iOS.settings"
     private let authSessionKey = "OpenNOW.iOS.authSession"
     private let deviceIdKey = "OpenNOW.iOS.deviceId"
+    private let setupPhaseTimeoutSeconds: TimeInterval = 90
 
     init() {
         settings = Self.loadSettings(from: defaults) ?? .default
@@ -1370,6 +1373,7 @@ final class OpenNOWStore: ObservableObject {
         queueOverlayVisible = true
         defer { isLaunchingSession = false }
         do {
+            logger.info("Launch requested game=\(game.title, privacy: .public) zoneUrl=\(zoneUrl ?? "default", privacy: .public)")
             let started = try await api.startSession(
                 session: session,
                 game: game,
@@ -1380,10 +1384,12 @@ final class OpenNOWStore: ObservableObject {
             activeSession = started
             sessionElapsedSeconds = 0
             startSessionTasks()
+            logger.info("Session started id=\(started.id, privacy: .public) status=\(started.status) queue=\(started.queuePosition ?? -1)")
             lastError = nil
         } catch is CancellationError {
             return
         } catch {
+            logger.error("Session launch failed error=\(error.localizedDescription, privacy: .public)")
             showStreamLoading = false
             queueOverlayVisible = false
             lastError = "Session launch failed: \(error.localizedDescription)"
@@ -1421,6 +1427,7 @@ final class OpenNOWStore: ObservableObject {
         queueOverlayVisible = true
         defer { isLaunchingSession = false }
         do {
+            logger.info("Resume requested candidateId=\(candidate.id, privacy: .public) status=\(candidate.status)")
             let refreshed = try await api.refreshSession(session)
             authSession = refreshed
             persistAuthSession(refreshed)
@@ -1434,10 +1441,12 @@ final class OpenNOWStore: ObservableObject {
             activeSession = claimed
             sessionElapsedSeconds = 0
             startSessionTasks()
+            logger.info("Session resumed id=\(claimed.id, privacy: .public) status=\(claimed.status) queue=\(claimed.queuePosition ?? -1)")
             lastError = nil
         } catch is CancellationError {
             return
         } catch {
+            logger.error("Resume session failed error=\(error.localizedDescription, privacy: .public)")
             showStreamLoading = false
             queueOverlayVisible = false
             lastError = "Failed to resume session: \(error.localizedDescription)"
@@ -1538,6 +1547,7 @@ final class OpenNOWStore: ObservableObject {
             guard let self else { return }
             var previousStatus = self.activeSession?.status
             var consecutivePollFailures = 0
+            var setupTimeoutStartedAt: Date?
             while !Task.isCancelled {
                 guard let session = self.authSession, let active = self.activeSession else {
                     try? await Task.sleep(for: .seconds(2))
@@ -1551,6 +1561,9 @@ final class OpenNOWStore: ObservableObject {
                     let polled = try await self.api.pollSession(session: refreshed, activeSession: active)
                     consecutivePollFailures = 0
                     self.activeSession = polled
+                    self.logger.info(
+                        "Poll id=\(polled.id, privacy: .public) status=\(polled.status) queue=\(polled.queuePosition ?? -1) showOverlay=\(self.showStreamLoading)"
+                    )
                     if polled.status == 2 && previousStatus == 1 {
                         await NotificationManager.shared.sendQueueSetupNotification(gameTitle: polled.game.title)
                     }
@@ -1558,17 +1571,32 @@ final class OpenNOWStore: ObservableObject {
                         await NotificationManager.shared.sendQueueReadyNotification(gameTitle: polled.game.title)
                     }
                     previousStatus = polled.status
-                    if polled.status == 3 && self.showStreamLoading {
+                    if self.isInSetupPhase(polled) {
+                        if setupTimeoutStartedAt == nil {
+                            setupTimeoutStartedAt = Date()
+                        } else if let startedAt = setupTimeoutStartedAt,
+                                  Date().timeIntervalSince(startedAt) >= self.setupPhaseTimeoutSeconds {
+                            self.logger.error("Setup phase timeout exceeded for session id=\(polled.id, privacy: .public)")
+                            self.lastError = "Session setup is taking longer than expected. Please retry."
+                            self.showStreamLoading = false
+                            self.queueOverlayVisible = false
+                        }
+                    } else {
+                        setupTimeoutStartedAt = nil
+                    }
+                    if (polled.status == 2 || polled.status == 3) && self.showStreamLoading {
                         try? await Task.sleep(for: .milliseconds(600))
                         guard !Task.isCancelled,
                               self.showStreamLoading,
                               self.activeSession?.id == polled.id,
-                              self.activeSession?.status == 3 else { continue }
+                              (self.activeSession?.status == 2 || self.activeSession?.status == 3) else { continue }
+                        self.logger.info("Session ready, hiding loading overlay id=\(polled.id, privacy: .public) status=\(polled.status)")
                         self.showStreamLoading = false
                         self.queueOverlayVisible = false
                     }
                 } catch {
                     consecutivePollFailures += 1
+                    self.logger.error("Session poll failed attempt=\(consecutivePollFailures) error=\(error.localizedDescription, privacy: .public)")
                     self.lastError = "Session poll failed: \(error.localizedDescription)"
                     if consecutivePollFailures >= 5 && self.showStreamLoading {
                         // Prevent endless "Setting up..." state on repeated poll failures.
@@ -1580,6 +1608,14 @@ final class OpenNOWStore: ObservableObject {
             }
             self.endSessionPollBackgroundTask()
         }
+    }
+
+    private func isInQueuePhase(_ session: ActiveSession) -> Bool {
+        session.status == 1 && (session.queuePosition ?? 0) > 1
+    }
+
+    private func isInSetupPhase(_ session: ActiveSession) -> Bool {
+        !isInQueuePhase(session) && session.status == 1
     }
 
     private func refreshSessionPollBackgroundTask() {

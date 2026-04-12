@@ -170,13 +170,16 @@ struct StreamLoadingView: View {
 
                     Text(step.title)
                         .font(.caption.bold())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.9)
                         .foregroundStyle(labelColor(for: stepState(index: index)))
                 }
+                .frame(width: 88)
 
                 if index < steps.count - 1 {
                     Rectangle()
                         .fill(connectorColor(after: index))
-                        .frame(width: 36, height: 2)
+                        .frame(width: 24, height: 2)
                         .padding(.bottom, 26)
                 }
             }

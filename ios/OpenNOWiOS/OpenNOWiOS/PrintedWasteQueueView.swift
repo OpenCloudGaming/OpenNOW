@@ -146,7 +146,6 @@ struct PrintedWasteQueueView: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .presentationBackground(.regularMaterial)
         .task {
@@ -164,8 +163,8 @@ struct PrintedWasteQueueView: View {
                 Text(game.title)
                     .font(.headline)
                     .lineLimit(2)
-                Text("Pick the best GeForce NOW zone before launch.")
-                    .font(.subheadline)
+                Text("Pick a zone before launch.")
+                    .font(.footnote)
                     .foregroundStyle(brandAccent)
             }
             Spacer()
@@ -175,22 +174,19 @@ struct PrintedWasteQueueView: View {
 
     private var routingRow: some View {
         HStack(spacing: 10) {
-            routingPill(title: "Auto", icon: "bolt.fill", isSelected: routingPreference == .auto, isEnabled: autoZone != nil) {
+            routingPill(icon: "bolt.fill", accessibilityLabel: "Auto", isSelected: routingPreference == .auto, isEnabled: autoZone != nil) {
                 routingPreference = .auto
             }
-            routingPill(title: "Closest", icon: "location.fill", isSelected: routingPreference == .closest, isEnabled: closestZone != nil || zones.contains(where: \.isMeasuring)) {
+            routingPill(icon: "location.fill", accessibilityLabel: "Closest", isSelected: routingPreference == .closest, isEnabled: closestZone != nil || zones.contains(where: \.isMeasuring)) {
                 routingPreference = .closest
             }
         }
     }
 
-    private func routingPill(title: String, icon: String, isSelected: Bool, isEnabled: Bool, action: @escaping () -> Void) -> some View {
+    private func routingPill(icon: String, accessibilityLabel: String, isSelected: Bool, isEnabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                Text(title)
-            }
-            .font(.subheadline.weight(.semibold))
+            Image(systemName: icon)
+                .font(.headline.weight(.semibold))
             .foregroundStyle(isSelected ? brandAccent : .primary)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -221,6 +217,7 @@ struct PrintedWasteQueueView: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.6)
     }
@@ -366,9 +363,9 @@ private struct ZoneRow: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
                     if isAuto {
-                        smallBadge(title: "Auto", icon: "bolt.fill", color: .green)
+                        smallIconBadge(icon: "bolt.fill", color: .green)
                     } else if isClosest {
-                        smallBadge(title: "Closest", icon: "location.fill", color: .blue)
+                        smallIconBadge(icon: "location.fill", color: .blue)
                     }
                 }
             }
@@ -413,10 +410,10 @@ private struct ZoneRow: View {
                 HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Ping")
+                    Text("--")
                 }
             } else if let pingMs = zone.pingMs {
-                Text("\(pingMs) ms")
+                Text("\(pingMs)")
             } else {
                 Text("N/A")
             }
@@ -447,16 +444,12 @@ private struct ZoneRow: View {
             .background(color.opacity(0.18), in: Capsule())
     }
 
-    private func smallBadge(title: String, icon: String, color: Color) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.system(size: 9, weight: .bold))
-            Text(title)
-        }
-        .font(.caption2.weight(.bold))
+    private func smallIconBadge(icon: String, color: Color) -> some View {
+        Image(systemName: icon)
+            .font(.caption2.weight(.bold))
         .lineLimit(1)
         .minimumScaleFactor(0.85)
-        .padding(.horizontal, 7)
+        .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(color.opacity(0.18), in: Capsule())
         .foregroundStyle(color)
@@ -471,10 +464,10 @@ private struct ZoneRow: View {
 
     private func formatWait(_ etaMs: Double) -> String {
         let mins = Int(ceil(etaMs / 60000))
-        if mins < 60 { return "~\(mins)m" }
+        if mins < 60 { return "\(mins)m" }
         let hours = mins / 60
         let remaining = mins % 60
-        return remaining > 0 ? "~\(hours)h \(remaining)m" : "~\(hours)h"
+        return remaining > 0 ? "\(hours)h\(remaining)m" : "\(hours)h"
     }
 }
 
