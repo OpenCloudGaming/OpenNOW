@@ -17,6 +17,11 @@ target3/
 *.swp
 *.swo
 .serena/
+*.xcuserstate
+xcuserdata/
+
+# Xcode build outputs
+DerivedData/
 
 # OS
 .DS_Store
