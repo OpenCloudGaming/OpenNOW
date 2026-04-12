@@ -45,8 +45,6 @@ struct SessionView: View {
         }
     }
 
-    // MARK: - Now Playing Card
-
     private func nowPlayingCard(session: ActiveSession) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 14) {
@@ -100,20 +98,29 @@ struct SessionView: View {
 
     private func statusDot(status: Int) -> some View {
         Circle()
-            .fill(status == 0 ? .green : (status == 1 ? .orange : .red))
+            .fill(statusDotColor(status))
             .frame(width: 8, height: 8)
+    }
+
+    private func statusDotColor(_ status: Int) -> Color {
+        switch status {
+        case 3:
+            return .green
+        case 2, 1:
+            return .orange
+        default:
+            return .red
+        }
     }
 
     private func statusLabel(_ status: Int) -> String {
         switch status {
-        case 0: return "Connected"
-        case 1: return "Queued"
+        case 3: return "Connected"
         case 2: return "Initializing"
+        case 1: return "Queued"
         default: return "Status \(status)"
         }
     }
-
-    // MARK: - Telemetry Section
 
     private var telemetrySection: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -165,8 +172,6 @@ struct SessionView: View {
         loss < 0.15 ? .green : (loss < 1.0 ? .orange : .red)
     }
 
-    // MARK: - Controls Section
-
     private var controlsSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Controls")
@@ -189,8 +194,6 @@ struct SessionView: View {
         }
     }
 
-    // MARK: - End Session
-
     private var endSessionButton: some View {
         Button(role: .destructive) {
             Task { await store.endSession() }
@@ -203,8 +206,6 @@ struct SessionView: View {
         .buttonStyle(.bordered)
         .tint(.red)
     }
-
-    // MARK: - No Session State
 
     private var noSessionState: some View {
         VStack(spacing: 20) {
@@ -224,8 +225,6 @@ struct SessionView: View {
         .padding(24)
         .glassCard()
     }
-
-    // MARK: - Resumable Sessions
 
     private var resumableSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -270,8 +269,6 @@ struct SessionView: View {
     }
 }
 
-// MARK: - Metric Tile
-
 private struct MetricTileView: View {
     let label: String
     let value: String
@@ -298,18 +295,18 @@ private struct MetricTileView: View {
 
             if samples.count > 2 {
                 Chart {
-                    ForEach(Array(samples.enumerated()), id: \.offset) { index, val in
+                    ForEach(Array(samples.enumerated()), id: \.offset) { index, sample in
                         LineMark(
-                            x: .value("t", index),
-                            y: .value(label, val)
+                            x: .value("Index", index),
+                            y: .value(label, sample)
                         )
-                        .foregroundStyle(color.opacity(0.8))
+                        .foregroundStyle(color)
                         .interpolationMethod(.catmullRom)
                     }
                 }
                 .chartXAxis(.hidden)
                 .chartYAxis(.hidden)
-                .frame(height: 36)
+                .frame(height: 40)
             }
         }
         .padding(14)

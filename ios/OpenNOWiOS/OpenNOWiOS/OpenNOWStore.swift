@@ -574,12 +574,19 @@ private actor GFNAPIClient {
         )
     }
 
-    func startSession(session: AuthSession, game: CloudGame, vpcId: String, settings: AppSettings) async throws -> ActiveSession {
+    func startSession(
+        session: AuthSession,
+        game: CloudGame,
+        vpcId: String,
+        settings: AppSettings,
+        streamingBaseUrl: String? = nil
+    ) async throws -> ActiveSession {
         guard let launchAppId = game.launchAppId, !launchAppId.isEmpty else {
             throw NSError(domain: "OpenNOW.Session", code: 30, userInfo: [NSLocalizedDescriptionKey: "Selected game has no launch app ID"])
         }
         let token = session.tokens.idToken ?? session.tokens.accessToken
-        let base = "https://\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
+        let base = streamingBaseUrl.map { $0.hasSuffix("/") ? String($0.dropLast()) : $0 }
+            ?? "https://\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
         let url = URL(string: "\(base)/v2/session?keyboardLayout=en-US&languageCode=en_US")!
         let body = Self.buildSessionBody(appId: launchAppId, title: game.title, fps: settings.preferredFPS)
         let clientId = UUID().uuidString
@@ -614,7 +621,7 @@ private actor GFNAPIClient {
             status: status,
             queuePosition: queue,
             serverIp: serverIp,
-            zone: vpcId,
+            zone: Self.extractZoneId(from: base, fallback: vpcId),
             streamingBaseUrl: base,
             clientId: clientId,
             deviceId: deviceId
@@ -765,6 +772,15 @@ private actor GFNAPIClient {
             return "https://\(serverIp)"
         }
         return streamingBaseUrl
+    }
+
+    private static func extractZoneId(from streamingBaseUrl: String, fallback: String) -> String {
+        guard let host = URL(string: streamingBaseUrl)?.host,
+              let zoneId = host.split(separator: ".").first,
+              !zoneId.isEmpty else {
+            return fallback
+        }
+        return String(zoneId).uppercased()
     }
 
     private static func extractServerIp(sessionObj: [String: Any]) -> String? {
@@ -1045,7 +1061,7 @@ private actor GFNAPIClient {
                 "clientVersion": "30.0",
                 "sdkVersion": "1.0",
                 "streamerVersion": 1,
-                "clientPlatformName": "ios",
+                "clientPlatformName": "windows",
                 "clientRequestMonitorSettings": [[
                     "widthInPixels": 1920,
                     "heightInPixels": 1080,
@@ -1064,7 +1080,10 @@ private actor GFNAPIClient {
                     ["key": "SubSessionId", "value": UUID().uuidString],
                     ["key": "wssignaling", "value": "1"],
                     ["key": "GSStreamerType", "value": "WebRTC"],
-                    ["key": "networkType", "value": "Unknown"]
+                    ["key": "networkType", "value": "Unknown"],
+                    ["key": "ClientImeSupport", "value": "0"],
+                    ["key": "clientPhysicalResolution", "value": "{\"horizontalPixels\":1920,\"verticalPixels\":1080}"],
+                    ["key": "surroundAudioInfo", "value": "2"]
                 ],
                 "sdrHdrMode": 0,
                 "surroundAudioInfo": 0,
@@ -1111,12 +1130,13 @@ private actor GFNAPIClient {
                 "clientVersion": "30.0",
                 "deviceHashId": UUID().uuidString,
                 "internalTitle": NSNull(),
-                "clientPlatformName": "ios",
+                "clientPlatformName": "windows",
                 "metaData": [
                     ["key": "SubSessionId", "value": UUID().uuidString],
                     ["key": "wssignaling", "value": "1"],
                     ["key": "GSStreamerType", "value": "WebRTC"],
-                    ["key": "networkType", "value": "Unknown"]
+                    ["key": "networkType", "value": "Unknown"],
+                    ["key": "ClientImeSupport", "value": "0"]
                 ],
                 "surroundAudioInfo": 0,
                 "clientTimezoneOffset": -TimeZone.current.secondsFromGMT() * 1000,
@@ -1207,6 +1227,7 @@ final class OpenNOWStore: ObservableObject {
     @Published var isLoadingGames = false
     @Published var isLaunchingSession = false
     @Published var showStreamLoading: Bool = false
+    @Published var queueOverlayVisible: Bool = false
     @Published var lastError: String?
     @Published var isBootstrapping: Bool = true
 
@@ -1216,6 +1237,7 @@ final class OpenNOWStore: ObservableObject {
     private var telemetryTask: Task<Void, Never>?
     private var sessionPollTask: Task<Void, Never>?
     private var launchTask: Task<Void, Never>?
+    private var sessionPollBackgroundTaskId: UIBackgroundTaskIdentifier = .invalid
     private var cachedVpcId: String = "GFN-PC"
 
     private let settingsKey = "OpenNOW.iOS.settings"
@@ -1236,6 +1258,7 @@ final class OpenNOWStore: ObservableObject {
 
     func bootstrap() async {
         defer { isBootstrapping = false }
+        await NotificationManager.shared.requestPermission()
         providers = await api.fetchProviders()
         if settings.selectedProviderIdpId.isEmpty {
             settings.selectedProviderIdpId = providers.first?.idpId ?? GFNConstants.defaultProvider.idpId
@@ -1270,6 +1293,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func signOut() {
+        Task { await NotificationManager.shared.cancelSessionNotifications() }
         user = nil
         authSession = nil
         allGames = []
@@ -1280,7 +1304,10 @@ final class OpenNOWStore: ObservableObject {
         subscription = nil
         telemetryTask?.cancel()
         sessionPollTask?.cancel()
+        endSessionPollBackgroundTask()
         sessionElapsedSeconds = 0
+        showStreamLoading = false
+        queueOverlayVisible = false
         defaults.removeObject(forKey: authSessionKey)
     }
 
@@ -1320,20 +1347,22 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
-    func launch(game: CloudGame) async {
+    func launch(game: CloudGame, zoneUrl: String? = nil) async {
         guard let session = authSession else {
             lastError = "Sign in first."
             return
         }
         isLaunchingSession = true
         showStreamLoading = true
+        queueOverlayVisible = true
         defer { isLaunchingSession = false }
         do {
             let started = try await api.startSession(
                 session: session,
                 game: game,
                 vpcId: cachedVpcId,
-                settings: settings
+                settings: settings,
+                streamingBaseUrl: zoneUrl
             )
             activeSession = started
             sessionElapsedSeconds = 0
@@ -1343,13 +1372,14 @@ final class OpenNOWStore: ObservableObject {
             return
         } catch {
             showStreamLoading = false
+            queueOverlayVisible = false
             lastError = "Session launch failed: \(error.localizedDescription)"
         }
     }
 
-    func scheduleLaunch(game: CloudGame) {
+    func scheduleLaunch(game: CloudGame, zoneUrl: String? = nil) {
         launchTask?.cancel()
-        launchTask = Task { await self.launch(game: game) }
+        launchTask = Task { await self.launch(game: game, zoneUrl: zoneUrl) }
     }
 
     func refreshRemoteSessions() async {
@@ -1375,6 +1405,7 @@ final class OpenNOWStore: ObservableObject {
         }
         isLaunchingSession = true
         showStreamLoading = true
+        queueOverlayVisible = true
         defer { isLaunchingSession = false }
         do {
             let refreshed = try await api.refreshSession(session)
@@ -1395,6 +1426,7 @@ final class OpenNOWStore: ObservableObject {
             return
         } catch {
             showStreamLoading = false
+            queueOverlayVisible = false
             lastError = "Failed to resume session: \(error.localizedDescription)"
         }
     }
@@ -1408,10 +1440,13 @@ final class OpenNOWStore: ObservableObject {
         launchTask?.cancel()
         launchTask = nil
         showStreamLoading = false
+        queueOverlayVisible = false
+        await NotificationManager.shared.cancelSessionNotifications()
         guard let session = authSession, let active = activeSession else {
             activeSession = nil
             telemetryTask?.cancel()
             sessionPollTask?.cancel()
+            endSessionPollBackgroundTask()
             sessionElapsedSeconds = 0
             return
         }
@@ -1426,7 +1461,17 @@ final class OpenNOWStore: ObservableObject {
         activeSession = nil
         telemetryTask?.cancel()
         sessionPollTask?.cancel()
+        endSessionPollBackgroundTask()
         sessionElapsedSeconds = 0
+    }
+
+    func minimizeQueueOverlay() {
+        queueOverlayVisible = false
+    }
+
+    func maximizeQueueOverlay() {
+        guard showStreamLoading else { return }
+        queueOverlayVisible = true
     }
 
     func persistSettings() {
@@ -1458,6 +1503,7 @@ final class OpenNOWStore: ObservableObject {
     private func startSessionTasks() {
         telemetryTask?.cancel()
         sessionPollTask?.cancel()
+        endSessionPollBackgroundTask()
 
         telemetryTask = Task { [weak self] in
             guard let self else { return }
@@ -1477,31 +1523,57 @@ final class OpenNOWStore: ObservableObject {
 
         sessionPollTask = Task { [weak self] in
             guard let self else { return }
+            var previousStatus = self.activeSession?.status
             while !Task.isCancelled {
                 guard let session = self.authSession, let active = self.activeSession else {
                     try? await Task.sleep(for: .seconds(2))
                     continue
                 }
+                self.refreshSessionPollBackgroundTask()
                 do {
                     let refreshed = try await self.api.refreshSession(session)
                     self.authSession = refreshed
                     self.persistAuthSession(refreshed)
                     let polled = try await self.api.pollSession(session: refreshed, activeSession: active)
                     self.activeSession = polled
-                    if polled.status == 0 && self.showStreamLoading {
+                    if polled.status == 2 && previousStatus == 1 {
+                        await NotificationManager.shared.sendQueueSetupNotification(gameTitle: polled.game.title)
+                    }
+                    if polled.status == 3 && previousStatus != 3 {
+                        await NotificationManager.shared.sendQueueReadyNotification(gameTitle: polled.game.title)
+                    }
+                    previousStatus = polled.status
+                    if polled.status == 3 && self.showStreamLoading {
                         try? await Task.sleep(for: .milliseconds(600))
                         guard !Task.isCancelled,
                               self.showStreamLoading,
                               self.activeSession?.id == polled.id,
-                              self.activeSession?.status == 0 else { continue }
+                              self.activeSession?.status == 3 else { continue }
                         self.showStreamLoading = false
+                        self.queueOverlayVisible = false
                     }
                 } catch {
                     self.lastError = "Session poll failed: \(error.localizedDescription)"
                 }
                 try? await Task.sleep(for: .seconds(2))
             }
+            self.endSessionPollBackgroundTask()
         }
+    }
+
+    private func refreshSessionPollBackgroundTask() {
+        endSessionPollBackgroundTask()
+        sessionPollBackgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "OpenNOW.SessionPoll") { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.endSessionPollBackgroundTask()
+            }
+        }
+    }
+
+    private func endSessionPollBackgroundTask() {
+        guard sessionPollBackgroundTaskId != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(sessionPollBackgroundTaskId)
+        sessionPollBackgroundTaskId = .invalid
     }
 
     private func resolveGameForRemoteSession(_ candidate: RemoteSessionCandidate) -> CloudGame? {

@@ -25,7 +25,7 @@ struct StreamLoadingView: View {
     private var currentPhase: StreamPhase {
         guard let session = store.activeSession else { return .queue }
         switch session.status {
-        case 0: return .launching
+        case 3: return .launching
         case 2: return .setup
         default: return .queue
         }
@@ -35,7 +35,7 @@ struct StreamLoadingView: View {
         switch currentPhase {
         case .queue:
             if let pos = store.activeSession?.queuePosition {
-                return "Position #\(pos) in queue"
+                return pos == 1 ? "Almost there! Your session is about to start..." : "Position #\(pos) in queue"
             }
             return store.isLaunchingSession ? "Starting session..." : "Waiting in queue..."
         case .setup:
@@ -47,7 +47,9 @@ struct StreamLoadingView: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.95)
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .overlay(Color.black.opacity(0.58))
                 .ignoresSafeArea()
 
             VStack(spacing: 24) {
@@ -72,7 +74,7 @@ struct StreamLoadingView: View {
 
                 Text(statusMessage)
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.8))
+                    .foregroundStyle(.white.opacity(0.82))
                     .multilineTextAlignment(.center)
 
                 ProgressView()
@@ -80,16 +82,24 @@ struct StreamLoadingView: View {
                     .tint(brandAccent)
                     .scaleEffect(1.3)
 
-                Button(role: .cancel) {
-                    Task { await store.endSession() }
-                } label: {
-                    Label("Cancel", systemImage: "xmark")
-                        .font(.subheadline.bold())
-                        .foregroundStyle(.white.opacity(0.6))
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 10)
-                        .background(Color.white.opacity(0.08), in: Capsule())
+                HStack(spacing: 12) {
+                    Button {
+                        store.minimizeQueueOverlay()
+                    } label: {
+                        Label("Minimize", systemImage: "chevron.down")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .streamActionButtonStyle()
+
+                    Button(role: .destructive) {
+                        Task { await store.endSession() }
+                    } label: {
+                        Label("Cancel", systemImage: "xmark")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .streamActionButtonStyle(tint: .red.opacity(0.92))
                 }
+                .frame(maxWidth: 320)
                 .padding(.top, 8)
 
                 Spacer()
@@ -210,9 +220,7 @@ struct StreamLoadingView: View {
         switch state {
         case .pending:
             return Color.white.opacity(0.4)
-        case .active:
-            return .white
-        case .completed:
+        case .active, .completed:
             return .white
         }
     }
@@ -235,5 +243,37 @@ struct StreamLoadingView: View {
         case .active, .completed:
             return brandAccent
         }
+    }
+}
+
+private struct StreamActionButtonStyleModifier: ViewModifier {
+    let tint: Color
+
+    func body(content: Content) -> some View {
+        content
+            .font(.subheadline.bold())
+            .foregroundStyle(.white.opacity(0.84))
+            .padding(.horizontal, 18)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity)
+            .background(
+                Group {
+                    if #available(iOS 26, *) {
+                        Capsule()
+                            .fill(tint.opacity(0.14))
+                            .glassEffect(in: Capsule())
+                    } else {
+                        Capsule()
+                            .fill(.regularMaterial)
+                            .overlay(Capsule().fill(tint.opacity(0.14)))
+                    }
+                }
+            )
+    }
+}
+
+private extension View {
+    func streamActionButtonStyle(tint: Color = .white) -> some View {
+        modifier(StreamActionButtonStyleModifier(tint: tint))
     }
 }
