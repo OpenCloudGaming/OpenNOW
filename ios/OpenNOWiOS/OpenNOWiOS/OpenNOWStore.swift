@@ -301,7 +301,30 @@ private final class OAuthLoopbackServer {
     }
 }
 
+private final class GFNTLSDelegate: NSObject, URLSessionDelegate {
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let serverTrust = challenge.protectionSpace.serverTrust,
+              challenge.protectionSpace.host.hasSuffix("nvidiagrid.net") else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        completionHandler(.useCredential, URLCredential(trust: serverTrust))
+    }
+}
+
 private actor GFNAPIClient {
+    private let session: URLSession = {
+        let delegate = GFNTLSDelegate()
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30
+        return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+    }()
+
     private func request(
         url: URL,
         method: String = "GET",
@@ -314,7 +337,7 @@ private actor GFNAPIClient {
         for (k, v) in headers {
             req.setValue(v, forHTTPHeaderField: k)
         }
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await self.session.data(for: req)
         guard let http = response as? HTTPURLResponse else {
             throw NSError(domain: "OpenNOW.Network", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
