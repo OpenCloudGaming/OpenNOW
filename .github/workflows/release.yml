@@ -158,6 +158,7 @@ jobs:
             fakeroot \
             libglib2.0-dev \
             libgstreamer1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
             libgstreamer-plugins-base1.0-dev \
             libgtk-4-dev \
             libudev-dev \
@@ -181,6 +182,20 @@ jobs:
         shell: powershell
         run: |
           choco install -y gstreamer gstreamer-devel pkgconfiglite
+          $gtkApiUrl = "https://api.github.com/repos/wingtk/gvsbuild/releases/latest"
+          $gtkAsset = (Invoke-RestMethod -Uri $gtkApiUrl -Headers @{ "User-Agent" = "OpenNOW-CI" }).assets |
+            Where-Object { $_.name -match '^GTK4_Gvsbuild_.*_x64\.zip$' } |
+            Select-Object -First 1
+          if (-not $gtkAsset) {
+            throw "Unable to locate latest GTK4 gvsbuild x64 asset"
+          }
+          $gtkZip = Join-Path $env:RUNNER_TEMP $gtkAsset.name
+          $gtkRoot = "C:\gtk"
+          Invoke-WebRequest -Uri $gtkAsset.browser_download_url -OutFile $gtkZip
+          if (Test-Path $gtkRoot) {
+            Remove-Item -Recurse -Force $gtkRoot
+          }
+          Expand-Archive -Path $gtkZip -DestinationPath $gtkRoot
           $candidateRoots = @(
             "C:\Program Files\gstreamer\1.0\msvc_x86_64",
             "C:\gstreamer\1.0\msvc_x86_64"
@@ -189,10 +204,16 @@ jobs:
           if (-not $gstRoot) {
             throw "Unable to locate GStreamer installation. Checked: $($candidateRoots -join ', ')"
           }
+          $gtkPkgConfig = Join-Path $gtkRoot "lib\pkgconfig"
+          if (-not (Test-Path $gtkPkgConfig)) {
+            throw "Unable to locate GTK4 pkg-config files at $gtkPkgConfig"
+          }
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "PKG_CONFIG_PATH=$gstRoot\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PKG_CONFIG_PATH=$gtkPkgConfig;$gstRoot\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "PKG_CONFIG=$env:ChocolateyInstall\bin\pkg-config.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "PATH=$env:ChocolateyInstall\bin;$gstRoot\bin;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LIB=$gtkRoot\lib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "INCLUDE=$gtkRoot\include" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PATH=$env:ChocolateyInstall\bin;$gtkRoot\bin;$gstRoot\bin;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Install FPM for arm64 deb builds
         if: matrix.label == 'linux-arm64'
