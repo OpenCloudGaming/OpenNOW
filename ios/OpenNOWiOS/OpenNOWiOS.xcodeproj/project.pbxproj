@@ -20,6 +20,7 @@
 		BB0000000000000000000004 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000014 /* LibraryView.swift */; };
 		BB0000000000000000000005 /* SessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000015 /* SessionView.swift */; };
 		BB0000000000000000000006 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000016 /* SettingsView.swift */; };
+		BB000000000000000000000A /* StreamerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001A /* StreamerView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,6 +38,7 @@
 			BB0000000000000000000017 /* StreamLoadingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamLoadingView.swift; sourceTree = "<group>"; };
 			BB0000000000000000000018 /* PrintedWasteQueueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrintedWasteQueueView.swift; sourceTree = "<group>"; };
 			BB0000000000000000000019 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
+			BB000000000000000000001A /* StreamerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -73,6 +75,7 @@
 					BB0000000000000000000017 /* StreamLoadingView.swift */,
 					BB0000000000000000000018 /* PrintedWasteQueueView.swift */,
 					BB0000000000000000000019 /* NotificationManager.swift */,
+					BB000000000000000000001A /* StreamerView.swift */,
 					0A1B2C3D4E5F6A7B8C9D2004 /* Assets.xcassets */
 				);
 			path = OpenNOWiOS;
@@ -166,6 +169,7 @@
 					BB0000000000000000000007 /* StreamLoadingView.swift in Sources */,
 					BB0000000000000000000008 /* PrintedWasteQueueView.swift in Sources */,
 					BB0000000000000000000009 /* NotificationManager.swift in Sources */,
+					BB000000000000000000000A /* StreamerView.swift in Sources */,
 				);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -60,6 +60,11 @@ struct MainTabView: View {
             StreamLoadingView()
                 .environmentObject(store)
         }
+        .fullScreenCover(item: $store.streamSession) { session in
+            StreamerView(session: session) {
+                store.dismissStreamer()
+            }
+        }
         .overlay(alignment: .top) {
             if store.showStreamLoading && !store.queueOverlayVisible {
                 QueueStatusPill()
