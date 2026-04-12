@@ -97,9 +97,15 @@ struct HomeView: View {
     private var featuredSection: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 14) {
-                ForEach(store.featuredGames.prefix(8)) { game in
-                    FeaturedGameCard(game: game) {
-                        Task { await store.launch(game: game) }
+                if store.featuredGames.isEmpty && store.isLoadingGames {
+                    ForEach(0..<6, id: \.self) { _ in
+                        FeaturedGameCardSkeleton()
+                    }
+                } else {
+                    ForEach(store.featuredGames.prefix(8)) { game in
+                        FeaturedGameCard(game: game) {
+                            Task { await store.launch(game: game) }
+                        }
                     }
                 }
             }
@@ -112,9 +118,15 @@ struct HomeView: View {
     private func gameGrid(games: [CloudGame]) -> some View {
         let columns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 14)]
         return LazyVGrid(columns: columns, spacing: 14) {
-            ForEach(games) { game in
-                GameCardView(game: game) {
-                    Task { await store.launch(game: game) }
+            if games.isEmpty && store.isLoadingGames {
+                ForEach(0..<8, id: \.self) { _ in
+                    GameCardSkeletonView()
+                }
+            } else {
+                ForEach(games) { game in
+                    GameCardView(game: game) {
+                        Task { await store.launch(game: game) }
+                    }
                 }
             }
         }
@@ -153,12 +165,7 @@ private struct FeaturedGameCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ZStack {
-                gameColor(for: game.title).opacity(0.25)
-                Image(systemName: game.icon)
-                    .font(.system(size: 48))
-                    .foregroundStyle(gameColor(for: game.title))
-            }
+            GameArtworkView(game: game, iconSize: 48)
             .frame(width: 160, height: 100)
             .clipShape(UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 14))
 
@@ -178,6 +185,31 @@ private struct FeaturedGameCard: View {
                 .buttonStyle(.bordered)
                 .tint(brandAccent)
                 .disabled(game.launchAppId == nil)
+            }
+            .padding(10)
+        }
+        .frame(width: 160)
+        .glassCard()
+    }
+}
+
+private struct FeaturedGameCardSkeleton: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            RoundedRectangle(cornerRadius: 14)
+                .fill(.quaternary.opacity(0.4))
+                .frame(width: 160, height: 100)
+                .shimmeringSkeleton()
+            VStack(alignment: .leading, spacing: 8) {
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(.quaternary.opacity(0.4))
+                    .frame(height: 12)
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(.quaternary.opacity(0.3))
+                    .frame(width: 70, height: 10)
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(.quaternary.opacity(0.35))
+                    .frame(height: 28)
             }
             .padding(10)
         }
@@ -213,13 +245,9 @@ struct GameCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ZStack {
-                gameColor(for: game.title).opacity(0.2)
-                Image(systemName: game.icon)
-                    .font(.system(size: 32))
-                    .foregroundStyle(gameColor(for: game.title))
-            }
-            .aspectRatio(4/3, contentMode: .fit)
+            GameArtworkView(game: game, iconSize: 32)
+            .frame(maxWidth: .infinity)
+            .frame(height: 112)
             .clipShape(RoundedRectangle(cornerRadius: 10))
 
             VStack(alignment: .leading, spacing: 3) {
@@ -247,6 +275,99 @@ struct GameCardView: View {
         }
         .padding(10)
         .glassCard()
+    }
+}
+
+struct GameCardSkeletonView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(.quaternary.opacity(0.35))
+                .aspectRatio(4/3, contentMode: .fit)
+                .shimmeringSkeleton()
+            RoundedRectangle(cornerRadius: 5)
+                .fill(.quaternary.opacity(0.4))
+                .frame(height: 12)
+            RoundedRectangle(cornerRadius: 4)
+                .fill(.quaternary.opacity(0.3))
+                .frame(width: 100, height: 10)
+            RoundedRectangle(cornerRadius: 7)
+                .fill(.quaternary.opacity(0.35))
+                .frame(height: 30)
+        }
+        .padding(10)
+        .glassCard()
+    }
+}
+
+private struct GameArtworkView: View {
+    let game: CloudGame
+    let iconSize: CGFloat
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                gameColor(for: game.title).opacity(0.2)
+                if let imageUrl = game.imageUrl, let url = URL(string: imageUrl) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                        case .empty:
+                            Rectangle()
+                                .fill(.quaternary.opacity(0.25))
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                                .shimmeringSkeleton()
+                        default:
+                            iconFallback
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                        }
+                    }
+                } else {
+                    iconFallback
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+        }
+    }
+
+    private var iconFallback: some View {
+        Image(systemName: game.icon)
+            .font(.system(size: iconSize))
+            .foregroundStyle(gameColor(for: game.title))
+    }
+}
+
+private struct SkeletonShimmerModifier: ViewModifier {
+    @State private var phase: CGFloat = -0.6
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                LinearGradient(
+                    colors: [
+                        .clear,
+                        Color.white.opacity(0.25),
+                        .clear
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .rotationEffect(.degrees(12))
+                .offset(x: phase * 220)
+                .blendMode(.screen)
+            )
+            .mask(content)
+            .onAppear {
+                withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
+                    phase = 1.2
+                }
+            }
     }
 }
 
@@ -284,5 +405,9 @@ struct GlassCardModifier: ViewModifier {
 extension View {
     func glassCard() -> some View {
         modifier(GlassCardModifier())
+    }
+
+    func shimmeringSkeleton() -> some View {
+        modifier(SkeletonShimmerModifier())
     }
 }

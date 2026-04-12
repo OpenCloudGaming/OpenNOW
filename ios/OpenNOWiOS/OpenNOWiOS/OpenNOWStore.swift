@@ -41,6 +41,7 @@ struct CloudGame: Identifiable, Codable, Equatable {
     let genre: String
     let platform: String
     let icon: String
+    let imageUrl: String?
     let launchAppId: String?
     let uuid: String?
 }
@@ -550,8 +551,8 @@ private actor GFNAPIClient {
                 "nv-client-type": "NATIVE",
                 "nv-client-version": GFNConstants.gfnClientVersion,
                 "nv-client-streamer": "NVIDIA-CLASSIC",
-                "nv-device-os": "IOS",
-                "nv-device-type": "MOBILE"
+                "nv-device-os": "WINDOWS",
+                "nv-device-type": "DESKTOP"
             ]
         )
         guard response.statusCode == 200 else {
@@ -804,8 +805,8 @@ private actor GFNAPIClient {
                 "nv-client-type": "BROWSER",
                 "nv-client-version": GFNConstants.gfnClientVersion,
                 "nv-client-streamer": "WEBRTC",
-                "nv-device-os": "IOS",
-                "nv-device-type": "MOBILE",
+                "nv-device-os": "WINDOWS",
+                "nv-device-type": "DESKTOP",
                 "User-Agent": GFNConstants.userAgent
             ]
         )
@@ -848,8 +849,8 @@ private actor GFNAPIClient {
                 "nv-client-type": "NATIVE",
                 "nv-client-version": GFNConstants.gfnClientVersion,
                 "nv-client-streamer": "NVIDIA-CLASSIC",
-                "nv-device-os": "IOS",
-                "nv-device-type": "MOBILE",
+                "nv-device-os": "WINDOWS",
+                "nv-device-type": "DESKTOP",
                 "nv-browser-type": "CHROME",
                 "User-Agent": GFNConstants.userAgent
             ]
@@ -928,8 +929,8 @@ private actor GFNAPIClient {
                 "nv-client-type": "NATIVE",
                 "nv-client-version": GFNConstants.gfnClientVersion,
                 "nv-client-streamer": "NVIDIA-CLASSIC",
-                "nv-device-os": "IOS",
-                "nv-device-type": "MOBILE"
+                "nv-device-os": "WINDOWS",
+                "nv-device-type": "DESKTOP"
             ]
         )
         guard response.statusCode == 200 else { return "FREE" }
@@ -960,6 +961,13 @@ private actor GFNAPIClient {
                     let launchAppId = [selectedVariantId, numericVariant, appId].compactMap { $0 }.first(where: { Int($0) != nil })
                     let store = (selectedVariant?["appStore"] as? String) ?? "Unknown"
                     let id = "\(appId):\(selectedVariantId ?? "default")"
+                    let imageUrl: String? = {
+                        guard let images = app["images"] as? [String: Any] else { return nil }
+                        let raw = (images["GAME_BOX_ART"] as? String)
+                            ?? (images["TV_BANNER"] as? String)
+                            ?? (images["HERO_IMAGE"] as? String)
+                        return optimizedImageURL(raw)
+                    }()
                     if seen.contains(id) { continue }
                     seen.insert(id)
                     let genre = (((app["genres"] as? [[String: Any]])?.first)?["name"] as? String) ?? "Cloud Game"
@@ -979,6 +987,7 @@ private actor GFNAPIClient {
                             genre: genre,
                             platform: store,
                             icon: icon,
+                            imageUrl: imageUrl,
                             launchAppId: launchAppId,
                             uuid: appId
                         )
@@ -987,6 +996,12 @@ private actor GFNAPIClient {
             }
         }
         return out
+    }
+
+    private static func optimizedImageURL(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        guard raw.contains("img.nvidiagrid.net") else { return raw }
+        return "\(raw);f=webp;w=320"
     }
 
     private static func cloudMatchHeaders(
@@ -1006,8 +1021,8 @@ private actor GFNAPIClient {
             "nv-client-version": GFNConstants.gfnClientVersion,
             "nv-device-make": "APPLE",
             "nv-device-model": UIDevice.current.model,
-            "nv-device-os": "IOS",
-            "nv-device-type": "MOBILE",
+            "nv-device-os": "WINDOWS",
+            "nv-device-type": "DESKTOP",
             "x-device-id": deviceId
         ]
         if includeOrigin {
@@ -1291,6 +1306,12 @@ final class OpenNOWStore: ObservableObject {
                 user?.membershipTier = sub.membershipTier
             }
             lastError = nil
+        } catch is CancellationError {
+            // Pull-to-refresh can cancel an in-flight request; treat as non-failure.
+            return
+        } catch let nsError as NSError
+            where nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            return
         } catch {
             lastError = "Failed to load games: \(error.localizedDescription)"
         }

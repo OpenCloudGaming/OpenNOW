@@ -35,7 +35,20 @@ struct BrowseView: View {
                 }
 
                 if filtered.isEmpty {
-                    emptyState
+                    if store.isLoadingGames {
+                        ScrollView {
+                            let columns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 14)]
+                            LazyVGrid(columns: columns, spacing: 14) {
+                                ForEach(0..<8, id: \.self) { _ in
+                                    GameCardSkeletonView()
+                                }
+                            }
+                            .padding(.horizontal)
+                            .padding(.bottom)
+                        }
+                    } else {
+                        emptyState
+                    }
                 } else {
                     ScrollView {
                         let columns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 14)]
