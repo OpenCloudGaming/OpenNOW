@@ -123,33 +123,43 @@ private enum GFNConstants {
     static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173"
 }
 
+@MainActor
 private final class OAuthWebAuthenticator: NSObject, ASWebAuthenticationPresentationContextProviding {
     private var session: ASWebAuthenticationSession?
 
     func authenticate(url: URL, callbackScheme: String) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
-            let authSession = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackScheme) { callbackURL, error in
+            let authSession = ASWebAuthenticationSession(
+                url: url,
+                callbackURLScheme: callbackScheme
+            ) { callbackURL, error in
                 if let callbackURL {
                     continuation.resume(returning: callbackURL)
                     return
                 }
-                continuation.resume(throwing: error ?? NSError(domain: "OpenNOWAuth", code: 1))
+                continuation.resume(throwing: error ?? NSError(
+                    domain: "OpenNOWAuth", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Authentication cancelled"]))
             }
             authSession.presentationContextProvider = self
             authSession.prefersEphemeralWebBrowserSession = false
             self.session = authSession
             if !authSession.start() {
-                continuation.resume(throwing: NSError(domain: "OpenNOWAuth", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not start sign-in session"]))
+                continuation.resume(throwing: NSError(
+                    domain: "OpenNOWAuth", code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Could not start sign-in session"]))
             }
         }
     }
 
-    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let window = scene.windows.first else {
-            return ASPresentationAnchor()
+    nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        MainActor.assumeIsolated {
+            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                  let window = scene.windows.first else {
+                return ASPresentationAnchor()
+            }
+            return window
         }
-        return window
     }
 }
 
@@ -236,10 +246,8 @@ private actor GFNAPIClient {
             .init(name: "idp_id", value: provider.idpId)
         ]
 
-        let callbackURL = try await OAuthWebAuthenticator().authenticate(
-            url: authComponents.url!,
-            callbackScheme: "opennowios"
-        )
+        let authenticator = await MainActor.run { OAuthWebAuthenticator() }
+        let callbackURL = try await authenticator.authenticate(url: authComponents.url!, callbackScheme: "opennowios")
         guard let authCode = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?
             .queryItems?.first(where: { $0.name == "code" })?.value else {
             throw NSError(domain: "OpenNOW.Auth", code: 3, userInfo: [NSLocalizedDescriptionKey: "Sign-in callback did not include an authorization code"])
@@ -1028,6 +1036,7 @@ final class OpenNOWStore: ObservableObject {
     @Published var isLoadingGames = false
     @Published var isLaunchingSession = false
     @Published var lastError: String?
+    @Published var isBootstrapping: Bool = true
 
     private let api = GFNAPIClient()
     private let defaults = UserDefaults.standard
@@ -1052,6 +1061,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func bootstrap() async {
+        defer { isBootstrapping = false }
         providers = await api.fetchProviders()
         if settings.selectedProviderIdpId.isEmpty {
             settings.selectedProviderIdpId = providers.first?.idpId ?? GFNConstants.defaultProvider.idpId
@@ -1069,9 +1079,9 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func signIn() async {
+        lastError = nil
         isAuthenticating = true
         defer { isAuthenticating = false }
-        lastError = nil
 
         let provider = providers.first(where: { $0.idpId == settings.selectedProviderIdpId }) ?? GFNConstants.defaultProvider
         do {
