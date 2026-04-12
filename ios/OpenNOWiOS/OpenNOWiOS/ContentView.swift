@@ -56,8 +56,6 @@ struct MainTabView: View {
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
         }
         .tint(brandAccent)
-        .toolbarBackground(.ultraThinMaterial, for: .tabBar)
-        .toolbarBackground(.visible, for: .tabBar)
         .fullScreenCover(isPresented: $store.queueOverlayVisible.transaction({
             var t = Transaction()
             t.animation = t.animation?.delay(0.15)
@@ -202,15 +200,6 @@ let brandGradient = LinearGradient(
 var appBackground: some View {
     ZStack {
         Color(.systemBackground)
-        LinearGradient(
-            colors: [
-                Color(red: 0.46, green: 0.72, blue: 0.0).opacity(0.04),
-                Color.clear,
-                Color(red: 0.0, green: 0.72, blue: 0.55).opacity(0.03)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
     }
     .ignoresSafeArea()
 }

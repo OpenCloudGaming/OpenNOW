@@ -37,8 +37,6 @@ struct HomeView: View {
             }
             .refreshable { await store.refreshCatalog() }
             .navigationTitle("OpenNOW")
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     if store.isLoadingGames {

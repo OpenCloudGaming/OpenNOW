@@ -45,8 +45,6 @@ struct BrowseView: View {
                 }
             }
             .navigationTitle("Browse")
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
             .searchable(
                 text: $store.searchText,
                 placement: .navigationBarDrawer(displayMode: .automatic),
@@ -109,30 +107,12 @@ private struct FilterChip: View {
 
     var body: some View {
         Button(action: action) {
-            if #available(iOS 26, *) {
-                Text(label)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .foregroundStyle(isSelected ? brandAccent : .primary)
-                    .background {
-                        if isSelected {
-                            Capsule()
-                                .fill(.regularMaterial)
-                                .glassEffect(in: Capsule())
-                                .overlay(Capsule().stroke(brandAccent.opacity(0.5), lineWidth: 1))
-                        } else {
-                            Capsule().fill(Color(.systemFill))
-                        }
-                    }
-            } else {
-                Text(label)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .foregroundStyle(isSelected ? .white : .primary)
-                    .background(Capsule().fill(isSelected ? brandAccent : Color(.systemFill)))
-            }
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .foregroundStyle(isSelected ? .white : .primary)
+                .background(isSelected ? brandAccent : Color(.systemFill), in: Capsule())
         }
         .buttonStyle(.plain)
         .animation(.easeOut(duration: 0.15), value: isSelected)

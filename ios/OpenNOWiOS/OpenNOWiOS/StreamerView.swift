@@ -18,9 +18,10 @@ struct StreamerView: View {
             HStack {
                 Text(statusText)
                     .font(.caption)
-                    .lineLimit(1)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
+                    .background(.regularMaterial, in: Capsule())
+                    .lineLimit(1)
                 Spacer()
                 Button {
                     onClose()
@@ -30,19 +31,6 @@ struct StreamerView: View {
                         .symbolRenderingMode(.hierarchical)
                 }
             }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background {
-                if #available(iOS 26, *) {
-                    Capsule()
-                        .fill(.regularMaterial)
-                        .glassEffect(in: Capsule())
-                } else {
-                    Capsule().fill(.regularMaterial)
-                }
-            }
-            .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
             .padding()
         }
         .background(Color.black.ignoresSafeArea())
