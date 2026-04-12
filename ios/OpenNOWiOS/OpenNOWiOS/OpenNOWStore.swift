@@ -1690,8 +1690,18 @@ final class OpenNOWStore: ObservableObject {
         queueOverlayVisible = true
     }
 
+    var canReopenStreamer: Bool {
+        guard let active = activeSession else { return false }
+        return (active.status == 2 || active.status == 3) && streamSession == nil
+    }
+
     func dismissStreamer() {
         streamSession = nil
+    }
+
+    func reopenStreamer() {
+        guard let active = activeSession, active.status == 2 || active.status == 3 else { return }
+        streamSession = active
     }
 
     func persistSettings() {

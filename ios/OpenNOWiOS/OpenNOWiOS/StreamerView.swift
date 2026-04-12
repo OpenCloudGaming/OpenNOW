@@ -119,6 +119,26 @@ private struct StreamerWebView: UIViewRepresentable {
 <body>
   <video id="video" playsinline autoplay muted></video>
   <div id="tap">Tap to unmute</div>
+  <div id="touchpad" style="position:fixed;inset:0;z-index:10;touch-action:none;"></div>
+  <div id="touchHint" style="position:fixed;left:50%;bottom:60px;transform:translateX(-50%);
+    color:rgba(255,255,255,0.45);font:11px -apple-system;pointer-events:none;user-select:none;
+    text-align:center;transition:opacity 1s;">Drag to move · Tap to click · 2-finger tap to right-click</div>
+  <button id="kbBtn" onclick="toggleKeyboard()" style="position:fixed;right:16px;bottom:16px;z-index:20;
+    width:48px;height:48px;border-radius:50%;background:rgba(30,30,30,0.75);color:#fff;
+    border:1px solid rgba(255,255,255,0.25);font-size:22px;cursor:pointer;
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">⌨</button>
+  <div id="kbBar" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:30;
+    background:rgba(20,20,20,0.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+    padding:8px 12px;border-top:1px solid rgba(255,255,255,0.1);">
+    <div style="display:flex;gap:8px;align-items:center;">
+      <input id="kbInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="none"
+        spellcheck="false" placeholder="Type here…"
+        style="flex:1;background:#2a2a2a;color:#fff;border:1px solid rgba(255,255,255,0.2);
+          border-radius:8px;padding:8px 12px;font-size:16px;outline:none;">
+      <button onclick="hideKeyboard()" style="padding:8px 14px;background:#333;color:#fff;
+        border:none;border-radius:8px;font-size:14px;cursor:pointer;">Done</button>
+    </div>
+  </div>
   <script>
   const cfg = \#(payload);
   const video = document.getElementById("video");
@@ -127,6 +147,10 @@ private struct StreamerWebView: UIViewRepresentable {
   let pc = null;
   let ack = 0;
   let hb = null;
+  let hbInput = null;
+  let reliableCh = null;
+  let partialCh = null;
+  let inputReady = false;
   const peerId = 2;
   const peerName = "peer-" + Math.floor(Math.random() * 1e10);
 
@@ -139,6 +163,13 @@ private struct StreamerWebView: UIViewRepresentable {
   function send(obj) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify(obj));
+  }
+  function sendInput(buf) {
+    if (reliableCh && reliableCh.readyState === 'open') reliableCh.send(buf);
+  }
+  function sendPartialInput(buf) {
+    if (partialCh && partialCh.readyState === 'open') partialCh.send(buf);
+    else sendInput(buf);
   }
   function buildSignInUrl() {
     const base = (cfg.signalingUrl || "").trim() || ("wss://" + cfg.signalingServer + "/nvst/");
@@ -191,6 +222,44 @@ private struct StreamerWebView: UIViewRepresentable {
     const pwd = lines.find((line) => line.startsWith('a=ice-pwd:'))?.slice('a=ice-pwd:'.length).trim() ?? '';
     const fingerprint = lines.find((line) => line.startsWith('a=fingerprint:sha-256 '))?.slice('a=fingerprint:sha-256 '.length).trim() ?? '';
     return { ufrag, pwd, fingerprint };
+  }
+  function nowBigUs() { return BigInt(Math.round(performance.now() * 1000)); }
+  function writeTimestampBE(view, offset) {
+    const ts = nowBigUs();
+    view.setUint32(offset, Number(ts >> 32n), false);
+    view.setUint32(offset + 4, Number(ts & 0xFFFFFFFFn), false);
+  }
+  function encodeHeartbeat() {
+    const buf = new ArrayBuffer(4);
+    new DataView(buf).setUint32(0, 2, true);
+    return buf;
+  }
+  function encodeKey(type, keycode, scancode, modifiers) {
+    const buf = new ArrayBuffer(18);
+    const v = new DataView(buf);
+    v.setUint32(0, type, true);
+    v.setUint16(4, keycode, false);
+    v.setUint16(6, modifiers, false);
+    v.setUint16(8, scancode, false);
+    writeTimestampBE(v, 10);
+    return buf;
+  }
+  function encodeMouseMove(dx, dy) {
+    const buf = new ArrayBuffer(22);
+    const v = new DataView(buf);
+    v.setUint32(0, 7, true);
+    v.setInt16(4, Math.max(-32768, Math.min(32767, dx)), false);
+    v.setInt16(6, Math.max(-32768, Math.min(32767, dy)), false);
+    writeTimestampBE(v, 14);
+    return buf;
+  }
+  function encodeMouseButton(type, button) {
+    const buf = new ArrayBuffer(18);
+    const v = new DataView(buf);
+    v.setUint32(0, type, true);
+    v.setUint8(4, button);
+    writeTimestampBE(v, 10);
+    return buf;
   }
   function normalizeCodec(name) {
     const upper = String(name || '').toUpperCase();
@@ -530,6 +599,26 @@ private struct StreamerWebView: UIViewRepresentable {
       credential: server.credential || undefined
     }));
     pc = new RTCPeerConnection({ iceServers: ice });
+    reliableCh = pc.createDataChannel('input_channel_v1', { ordered: true });
+    reliableCh.binaryType = 'arraybuffer';
+    reliableCh.onopen = () => {
+      inputReady = true;
+      post('status', 'Input ready');
+      if (hbInput) clearInterval(hbInput);
+      hbInput = setInterval(() => {
+        if (inputReady) sendInput(encodeHeartbeat());
+      }, 2000);
+    };
+    reliableCh.onclose = () => {
+      inputReady = false;
+      if (hbInput) { clearInterval(hbInput); hbInput = null; }
+    };
+    reliableCh.onmessage = () => {};
+    partialCh = pc.createDataChannel('input_channel_partially_reliable', {
+      ordered: false,
+      maxPacketLifeTime: 100
+    });
+    partialCh.binaryType = 'arraybuffer';
     pc.ontrack = (event) => {
       if (event.streams && event.streams[0]) {
         video.srcObject = event.streams[0];
@@ -633,6 +722,139 @@ private struct StreamerWebView: UIViewRepresentable {
       onRemoteIce(msg);
     }
   }
+  const kbBar = document.getElementById('kbBar');
+  const kbInput = document.getElementById('kbInput');
+  let kbPrevLen = 0;
+  let lastTX = 0, lastTY = 0;
+  let tStartTime = 0, tMoved = false;
+  let twoFingerStart = 0;
+  const touchpad = document.getElementById('touchpad');
+  const touchHint = document.getElementById('touchHint');
+
+  function toggleKeyboard() {
+    if (kbBar.style.display === 'none') showKeyboard();
+    else hideKeyboard();
+  }
+  function showKeyboard() {
+    kbBar.style.display = 'block';
+    kbInput.value = '';
+    kbPrevLen = 0;
+    setTimeout(() => kbInput.focus(), 80);
+  }
+  function hideKeyboard() {
+    kbBar.style.display = 'none';
+    kbInput.blur();
+  }
+
+  const charKeyMap = {
+    'a':{vk:0x41,sc:0x04},'b':{vk:0x42,sc:0x05},'c':{vk:0x43,sc:0x06},'d':{vk:0x44,sc:0x07},
+    'e':{vk:0x45,sc:0x08},'f':{vk:0x46,sc:0x09},'g':{vk:0x47,sc:0x0a},'h':{vk:0x48,sc:0x0b},
+    'i':{vk:0x49,sc:0x0c},'j':{vk:0x4a,sc:0x0d},'k':{vk:0x4b,sc:0x0e},'l':{vk:0x4c,sc:0x0f},
+    'm':{vk:0x4d,sc:0x10},'n':{vk:0x4e,sc:0x11},'o':{vk:0x4f,sc:0x12},'p':{vk:0x50,sc:0x13},
+    'q':{vk:0x51,sc:0x14},'r':{vk:0x52,sc:0x15},'s':{vk:0x53,sc:0x16},'t':{vk:0x54,sc:0x17},
+    'u':{vk:0x55,sc:0x18},'v':{vk:0x56,sc:0x19},'w':{vk:0x57,sc:0x1a},'x':{vk:0x58,sc:0x1b},
+    'y':{vk:0x59,sc:0x1c},'z':{vk:0x5a,sc:0x1d},
+    '0':{vk:0x30,sc:0x27},'1':{vk:0x31,sc:0x1e},'2':{vk:0x32,sc:0x1f},'3':{vk:0x33,sc:0x20},
+    '4':{vk:0x34,sc:0x21},'5':{vk:0x35,sc:0x22},'6':{vk:0x36,sc:0x23},'7':{vk:0x37,sc:0x24},
+    '8':{vk:0x38,sc:0x25},'9':{vk:0x39,sc:0x26},
+    ' ':{vk:0x20,sc:0x2c},'\n':{vk:0x0d,sc:0x28},'\r':{vk:0x0d,sc:0x28},'\t':{vk:0x09,sc:0x2b},
+    '-':{vk:0xbd,sc:0x2d},'=':{vk:0xbb,sc:0x2e},'[':{vk:0xdb,sc:0x2f},']':{vk:0xdd,sc:0x30},
+    '\\':{vk:0xdc,sc:0x31},';':{vk:0xba,sc:0x33},"'":{vk:0xde,sc:0x34},'`':{vk:0xc0,sc:0x35},
+    ',':{vk:0xbc,sc:0x36},'.':{vk:0xbe,sc:0x37},'/':{vk:0xbf,sc:0x38},
+    '!':{vk:0x31,sc:0x1e,sh:true},'@':{vk:0x32,sc:0x1f,sh:true},'#':{vk:0x33,sc:0x20,sh:true},
+    '$':{vk:0x34,sc:0x21,sh:true},'%':{vk:0x35,sc:0x22,sh:true},'^':{vk:0x36,sc:0x23,sh:true},
+    '&':{vk:0x37,sc:0x24,sh:true},'*':{vk:0x38,sc:0x25,sh:true},'(':{vk:0x39,sc:0x26,sh:true},
+    ')':{vk:0x30,sc:0x27,sh:true},'_':{vk:0xbd,sc:0x2d,sh:true},'+':{vk:0xbb,sc:0x2e,sh:true},
+    '{':{vk:0xdb,sc:0x2f,sh:true},'}':{vk:0xdd,sc:0x30,sh:true},'|':{vk:0xdc,sc:0x31,sh:true},
+    ':':{vk:0xba,sc:0x33,sh:true},'"':{vk:0xde,sc:0x34,sh:true},'~':{vk:0xc0,sc:0x35,sh:true},
+    '<':{vk:0xbc,sc:0x36,sh:true},'>':{vk:0xbe,sc:0x37,sh:true},'?':{vk:0xbf,sc:0x38,sh:true},
+  };
+
+  function lookupChar(ch) {
+    const lower = ch.toLowerCase();
+    if (charKeyMap[ch]) return charKeyMap[ch];
+    if (charKeyMap[lower]) return { ...charKeyMap[lower], sh: ch !== lower };
+    return null;
+  }
+
+  function sendChar(ch) {
+    if (!inputReady) return;
+    const spec = lookupChar(ch);
+    if (!spec) return;
+    const mods = spec.sh ? 0x01 : 0x00;
+    if (spec.sh) sendInput(encodeKey(3, 0xA0, 0x2A, 0));
+    sendInput(encodeKey(3, spec.vk, spec.sc, mods));
+    sendInput(encodeKey(4, spec.vk, spec.sc, mods));
+    if (spec.sh) sendInput(encodeKey(4, 0xA0, 0x2A, 0));
+  }
+
+  setTimeout(() => { if (touchHint) touchHint.style.opacity = '0'; }, 4000);
+
+  touchpad.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    const t = e.touches[0];
+    lastTX = t.clientX;
+    lastTY = t.clientY;
+    tStartTime = Date.now();
+    tMoved = false;
+    if (e.touches.length === 2) twoFingerStart = Date.now();
+  }, { passive: false });
+
+  touchpad.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    if (e.touches.length > 1) return;
+    const t = e.touches[0];
+    const dx = Math.round((t.clientX - lastTX) * 2.5);
+    const dy = Math.round((t.clientY - lastTY) * 2.5);
+    lastTX = t.clientX;
+    lastTY = t.clientY;
+    if ((Math.abs(dx) > 0 || Math.abs(dy) > 0) && inputReady) {
+      tMoved = true;
+      sendPartialInput(encodeMouseMove(dx, dy));
+    }
+  }, { passive: false });
+
+  touchpad.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    if (!inputReady) return;
+    const holdMs = Date.now() - tStartTime;
+    if (!tMoved && holdMs < 500) {
+      if (e.changedTouches.length === 1 && e.targetTouches.length === 0) {
+        sendInput(encodeMouseButton(8, 1));
+        setTimeout(() => sendInput(encodeMouseButton(9, 1)), 60);
+      }
+    }
+    if (e.changedTouches.length === 2 && Date.now() - twoFingerStart < 400) {
+      sendInput(encodeMouseButton(8, 3));
+      setTimeout(() => sendInput(encodeMouseButton(9, 3)), 60);
+    }
+  }, { passive: false });
+
+  kbInput.addEventListener('input', (e) => {
+    const val = kbInput.value;
+    if (val.length > kbPrevLen) {
+      const added = val.slice(kbPrevLen);
+      for (const ch of added) sendChar(ch);
+    } else if (val.length < kbPrevLen) {
+      if (inputReady) {
+        sendInput(encodeKey(3, 0x08, 0x2A, 0));
+        sendInput(encodeKey(4, 0x08, 0x2A, 0));
+      }
+    }
+    kbPrevLen = val.length;
+  });
+
+  kbInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (inputReady) {
+        sendInput(encodeKey(3, 0x0d, 0x28, 0));
+        sendInput(encodeKey(4, 0x0d, 0x28, 0));
+      }
+    }
+    if (e.key === 'Escape') hideKeyboard();
+  });
+
   function connect() {
     try {
       const signIn = buildSignInUrl();
@@ -646,7 +868,15 @@ private struct StreamerWebView: UIViewRepresentable {
       };
       ws.onmessage = (event) => handle(event.data);
       ws.onerror = () => fail('Signaling error');
-      ws.onclose = (event) => post('status', 'Signaling closed (' + event.code + ')');
+      ws.onclose = (event) => {
+        post('status', 'Signaling closed (' + event.code + ')');
+        inputReady = false;
+        if (hbInput) { clearInterval(hbInput); hbInput = null; }
+        if (reliableCh) { try { reliableCh.close(); } catch (_) {} }
+        if (partialCh) { try { partialCh.close(); } catch (_) {} }
+        reliableCh = null;
+        partialCh = null;
+      };
     } catch (error) {
       fail('Signaling setup failed: ' + String(error));
     }
