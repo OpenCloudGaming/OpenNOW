@@ -1954,6 +1954,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
             <div className="settings-row">
               <label className="settings-label">
+                Auto Full Screen
+                <span className="settings-hint">Automatically enter fullscreen when a stream starts or pointer lock is requested.</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.autoFullScreen}
+                  onChange={(e) => handleChange("autoFullScreen", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+
+            <div className="settings-row">
+              <label className="settings-label">
                 <span className="settings-label-title">
                   Controller Mode Library
                   <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>

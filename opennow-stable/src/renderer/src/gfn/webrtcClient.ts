@@ -213,6 +213,8 @@ interface ClientOptions {
   audioElement: HTMLAudioElement;
   /** Microphone mode preference */
   microphoneMode?: MicrophoneMode;
+  /** When true, pointer-lock acquisition may also enter fullscreen */
+  autoFullScreen?: boolean;
   /** Preferred microphone device ID */
   microphoneDeviceId?: string;
   /** Mouse sensitivity multiplier (1.0 = default) */
@@ -579,6 +581,7 @@ export class GfnWebRtcClient {
   private mouseDeltaFilter = new MouseDeltaFilter();
   private mouseSensitivity = 1;
   private mouseAccelerationPercent = 1;
+  private autoFullScreenEnabled = true;
 
   private partialReliableThresholdMs = GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
   private riInputCapabilities: RiInputCapabilities = {
@@ -666,6 +669,7 @@ export class GfnWebRtcClient {
     options.audioElement.muted = true;
     this.mouseSensitivity = options.mouseSensitivity ?? 1;
     this.mouseAccelerationPercent = Math.max(1, Math.min(150, Math.round(options.mouseAcceleration ?? 1)));
+    this.autoFullScreenEnabled = options.autoFullScreen !== false;
 
     // Configure video element for lowest latency playback
     this.configureVideoElementForLowLatency(options.videoElement);
@@ -689,6 +693,10 @@ export class GfnWebRtcClient {
         this.micManager.setDeviceId(options.microphoneDeviceId);
       }
     }
+  }
+
+  private shouldAutoFullscreen(): boolean {
+    return this.autoFullScreenEnabled;
   }
 
   /**
@@ -726,6 +734,12 @@ export class GfnWebRtcClient {
     const v = Number.isFinite(value) ? value : 1;
     this.mouseAccelerationPercent = Math.max(1, Math.min(150, Math.round(v)));
     this.log(`Mouse acceleration set to ${this.mouseAccelerationPercent}%`);
+  }
+
+  /** Update fullscreen preference used by auto pointer-lock flows at runtime. */
+  public setAutoFullScreen(value: boolean): void {
+    this.autoFullScreenEnabled = Boolean(value);
+    this.log(`Auto fullscreen ${this.autoFullScreenEnabled ? "enabled" : "disabled"}`);
   }
 
   /**
@@ -1999,7 +2013,7 @@ export class GfnWebRtcClient {
       this.setupInputHeartbeat();
       this.setupGamepadPolling();
       // After input becomes ready, attempt to auto-enable pointer lock.
-      void this.attemptAutoPointerLock(true).catch(() => {});
+      void this.attemptAutoPointerLock(this.shouldAutoFullscreen()).catch(() => {});
     }
   }
 
@@ -2628,7 +2642,7 @@ export class GfnWebRtcClient {
         this.log(`Pointer lock alignment failed (non-fatal): ${String(err)}`);
       }
 
-      void this.attemptAutoPointerLock(true)
+      void this.attemptAutoPointerLock(this.shouldAutoFullscreen())
         .catch(() => {})
         .finally(() => {
           autoLockPending = false;
@@ -2662,24 +2676,6 @@ export class GfnWebRtcClient {
       this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
     };
 
-    // Accumulate a mirror-mode delta directly (bypasses the delta filter which is
-    // calibrated for raw pointer-lock movementX/Y, not absolute-derived deltas).
-    const accumulateMirrorDelta = (dx: number, dy: number, eventTimestampMs: number): void => {
-      if (!this.inputReady || dx === 0 && dy === 0) return;
-      let adx = dx * this.mouseSensitivity;
-      let ady = dy * this.mouseSensitivity;
-      if (this.mouseAccelerationPercent > 1) {
-        const speed = Math.hypot(adx, ady);
-        const strength = (this.mouseAccelerationPercent - 1) / 149;
-        const accelFactor = 1 + Math.min(0.6 * strength, (speed / 50) * strength);
-        adx *= accelFactor;
-        ady *= accelFactor;
-      }
-      this.pendingMouseDx += Math.round(adx);
-      this.pendingMouseDy += Math.round(ady);
-      this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
-    };
-
     const onPointerMove = (event: PointerEvent) => {
       try {
         if (document?.body?.dataset?.sidebarOpen === "1") return;
@@ -2700,14 +2696,11 @@ export class GfnWebRtcClient {
         }
         queueMouseMovement(event.movementX, event.movementY, event.timeStamp);
       } else if (mouseInStreamView) {
-        // Mirror mode: derive deltas from absolute cursor position within the stream view.
-        tryAutoLock();
+        // Pointer lock disabled: keep local cursor tracking up to date without
+        // forwarding mouse movement into the stream.
         const rect = pointerLockTarget.getBoundingClientRect();
         const absX = event.clientX - rect.left;
         const absY = event.clientY - rect.top;
-        if (lastAbsX !== null && lastAbsY !== null) {
-          accumulateMirrorDelta(absX - lastAbsX, absY - lastAbsY, event.timeStamp);
-        }
         lastAbsX = absX;
         lastAbsY = absY;
       }
@@ -2721,13 +2714,11 @@ export class GfnWebRtcClient {
       if (isPointerLockActive()) {
         queueMouseMovement(event.movementX, event.movementY, event.timeStamp);
       } else if (mouseInStreamView) {
-        tryAutoLock();
+        // Pointer lock disabled: keep local cursor tracking up to date without
+        // forwarding mouse movement into the stream.
         const rect = pointerLockTarget.getBoundingClientRect();
         const absX = event.clientX - rect.left;
         const absY = event.clientY - rect.top;
-        if (lastAbsX !== null && lastAbsY !== null) {
-          accumulateMirrorDelta(absX - lastAbsX, absY - lastAbsY, event.timeStamp);
-        }
         lastAbsX = absX;
         lastAbsY = absY;
       }
@@ -2838,9 +2829,7 @@ export class GfnWebRtcClient {
       if (!this.inputReady) {
         return;
       }
-      // When pointer lock is not active, only forward events that originate from
-      // the video element itself to avoid intercepting overlay button clicks.
-      if (!isPointerLockActive() && event.target !== videoElement) {
+      if (!isPointerLockActive()) {
         return;
       }
       event.preventDefault();
@@ -2857,9 +2846,7 @@ export class GfnWebRtcClient {
       if (!this.inputReady) {
         return;
       }
-      // When pointer lock is not active, only forward events that originate from
-      // the video element itself to avoid intercepting overlay button clicks.
-      if (!isPointerLockActive() && event.target !== videoElement) {
+      if (!isPointerLockActive()) {
         return;
       }
       event.preventDefault();
@@ -2872,7 +2859,11 @@ export class GfnWebRtcClient {
     };
 
     const onWheel = (event: WheelEvent) => {
+      if (this.inputPaused) return;
       if (!this.inputReady) {
+        return;
+      }
+      if (!isPointerLockActive()) {
         return;
       }
       event.preventDefault();
@@ -2888,7 +2879,7 @@ export class GfnWebRtcClient {
 
     const onClick = () => {
       // GFN-style sequence: fullscreen -> keyboard lock (Escape) -> pointer lock.
-      void this.requestPointerLockWithEscGuard(pointerLockTarget, true).catch((err: DOMException) => {
+      void this.requestPointerLockWithEscGuard(pointerLockTarget, this.shouldAutoFullscreen()).catch((err: DOMException) => {
         this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
       });
       videoElement.focus();
