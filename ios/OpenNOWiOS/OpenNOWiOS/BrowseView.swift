@@ -3,6 +3,7 @@ import SwiftUI
 struct BrowseView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @State private var selectedGenre: String? = nil
+    private let gridColumns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 14)]
 
     private var genres: [String] {
         Array(Set(store.allGames.map { $0.genre })).sorted()
@@ -34,35 +35,12 @@ struct BrowseView: View {
                     }
                 }
 
-                if filtered.isEmpty {
-                    if store.isLoadingGames {
-                        ScrollView {
-                            let columns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 14)]
-                            LazyVGrid(columns: columns, spacing: 14) {
-                                ForEach(0..<8, id: \.self) { _ in
-                                    GameCardSkeletonView()
-                                }
-                            }
-                            .padding(.horizontal)
-                            .padding(.bottom)
-                        }
-                    } else {
-                        emptyState
-                    }
+                if store.isLoadingGames {
+                    skeletonGrid
+                } else if filtered.isEmpty {
+                    emptyState
                 } else {
-                    ScrollView {
-                        let columns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 14)]
-                        LazyVGrid(columns: columns, spacing: 14) {
-                            ForEach(filtered) { game in
-                                GameCardView(game: game) {
-                                    Task { await store.launch(game: game) }
-                                }
-                            }
-                        }
-                        .padding(.horizontal)
-                        .padding(.bottom)
-                    }
-                    .refreshable { await store.refreshCatalog() }
+                    gameGrid
                 }
             }
             .navigationTitle("Browse")
@@ -72,6 +50,34 @@ struct BrowseView: View {
                 prompt: "Search games…"
             )
         }
+    }
+
+    private var gameGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: gridColumns, spacing: 14) {
+                ForEach(filtered) { game in
+                    GameCardView(game: game) {
+                        Task { await store.launch(game: game) }
+                    }
+                }
+            }
+            .padding(.horizontal)
+            .padding(.bottom)
+        }
+        .refreshable { await store.refreshCatalog() }
+    }
+
+    private var skeletonGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: gridColumns, spacing: 14) {
+                ForEach(0..<8, id: \.self) { _ in
+                    GameCardSkeletonView()
+                }
+            }
+            .padding(.horizontal)
+            .padding(.bottom)
+        }
+        .refreshable { await store.refreshCatalog() }
     }
 
     private var emptyState: some View {
