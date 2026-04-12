@@ -138,6 +138,16 @@ function isStandardPrintedWasteZone(zoneId: string): boolean {
   return zoneId.startsWith("NP-") && !zoneId.startsWith("NPA-");
 }
 
+function isAllianceStreamingBaseUrl(streamingBaseUrl: string): boolean {
+  if (!streamingBaseUrl.trim()) return false;
+  try {
+    const { hostname } = new URL(streamingBaseUrl);
+    return !hostname.endsWith(".nvidiagrid.net");
+  } catch {
+    return false;
+  }
+}
+
 function hasAnyEligiblePrintedWasteZone(
   queueData: PrintedWasteQueueData,
   mapping: PrintedWasteServerMapping,
@@ -2608,6 +2618,12 @@ export function App(): JSX.Element {
       subscriptionInfo?.membershipTier ?? authSession?.user.membershipTier,
     );
     const isFreeUser = effectiveTier === "FREE";
+    const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
+    if (isAllianceServer) {
+      setQueueModalData(null);
+      void handlePlayGame(game);
+      return;
+    }
     if (isFreeUser && streamStatus === "idle" && !launchInFlightRef.current) {
       try {
         const [queueResult, mappingResult] = await Promise.allSettled([
@@ -2654,7 +2670,7 @@ export function App(): JSX.Element {
       return;
     }
     void handlePlayGame(game);
-  }, [subscriptionInfo, authSession, streamStatus, handlePlayGame]);
+  }, [subscriptionInfo, authSession, streamStatus, handlePlayGame, effectiveStreamingBaseUrl]);
 
   const handleQueueModalConfirm = useCallback((zoneUrl: string | null) => {
     const game = queueModalGame;
