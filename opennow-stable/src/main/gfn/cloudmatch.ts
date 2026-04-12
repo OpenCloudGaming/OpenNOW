@@ -1239,7 +1239,8 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
       requestedStreamingFeatures: {
         reflex: false,
         bitDepth: 0,
-        cloudGsync: settings.enableCloudGsync ?? false,
+        // RESUME claims must not renegotiate session creation-only streaming features.
+        cloudGsync: false,
         profile: 0,
         fallbackToLogicalResolution: false,
         chromaFormat: 0,
