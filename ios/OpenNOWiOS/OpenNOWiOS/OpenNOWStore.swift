@@ -1,6 +1,7 @@
 import AuthenticationServices
 import CryptoKit
 import Foundation
+import Network
 import UIKit
 
 struct UserProfile: Codable, Equatable {
@@ -121,6 +122,9 @@ private enum GFNConstants {
     static let gfnClientVersion = "2.0.80.173"
     static let panelsQueryHash = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0"
     static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173"
+    static let oauthRedirectUri = "http://localhost:2259"
+    static let oauthCallbackScheme = "http"
+    static let oauthRedirectPort: UInt16 = 2259
 }
 
 @MainActor
@@ -152,6 +156,11 @@ private final class OAuthWebAuthenticator: NSObject, ASWebAuthenticationPresenta
         }
     }
 
+    func cancel() {
+        session?.cancel()
+        session = nil
+    }
+
     nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         MainActor.assumeIsolated {
             guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
@@ -160,6 +169,126 @@ private final class OAuthWebAuthenticator: NSObject, ASWebAuthenticationPresenta
             }
             return window
         }
+    }
+}
+
+private final class OAuthLoopbackServer {
+    private let queue = DispatchQueue(label: "OpenNOW.OAuthLoopback")
+    private var listener: NWListener?
+    private var continuation: CheckedContinuation<URL, Error>?
+    private var didComplete = false
+
+    func waitForCallback(port: UInt16, timeoutSeconds: TimeInterval = 120) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                guard !self.didComplete else {
+                    continuation.resume(
+                        throwing: NSError(
+                            domain: "OpenNOW.Auth",
+                            code: 10,
+                            userInfo: [NSLocalizedDescriptionKey: "OAuth callback listener already completed."]
+                        )
+                    )
+                    return
+                }
+
+                self.continuation = continuation
+                do {
+                    let listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: port)!)
+                    self.listener = listener
+
+                    listener.stateUpdateHandler = { [weak self] state in
+                        guard let self else { return }
+                        if case .failed(let error) = state {
+                            self.complete(with: .failure(error))
+                        }
+                    }
+
+                    listener.newConnectionHandler = { [weak self] connection in
+                        self?.handle(connection)
+                    }
+
+                    listener.start(queue: self.queue)
+
+                    self.queue.asyncAfter(deadline: .now() + timeoutSeconds) { [weak self] in
+                        self?.complete(
+                            with: .failure(
+                                NSError(
+                                    domain: "OpenNOW.Auth",
+                                    code: 11,
+                                    userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for OAuth callback."]
+                                )
+                            )
+                        )
+                    }
+                } catch {
+                    self.complete(with: .failure(error))
+                }
+            }
+        }
+    }
+
+    private func handle(_ connection: NWConnection) {
+        connection.start(queue: queue)
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, _ in
+            guard let self else { return }
+            let requestText = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let firstLine = requestText.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
+            let path = firstLine
+                .split(separator: " ", omittingEmptySubsequences: true)
+                .dropFirst()
+                .first
+                .map(String.init) ?? "/"
+
+            let callbackURL = URL(string: "http://localhost\(path)") ?? URL(string: GFNConstants.oauthRedirectUri)!
+            let queryItems = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let hasCode = queryItems.contains(where: { $0.name == "code" && !($0.value ?? "").isEmpty })
+            let hasError = queryItems.contains(where: { $0.name == "error" && !($0.value ?? "").isEmpty })
+
+            let htmlMessage: String = hasCode
+                ? "Login complete. You can close this window and return to OpenNOW."
+                : "Login failed or was cancelled. You can close this window and return to OpenNOW."
+            let responseBody = """
+            <!doctype html><html><head><meta charset="utf-8"><title>OpenNOW Login</title></head><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:#0b1220;color:#dbe7ff;display:flex;justify-content:center;align-items:center;height:100vh;margin:0"><div style="background:#111a2c;padding:24px 28px;border:1px solid #30425f;border-radius:12px;max-width:460px"><h2 style="margin-top:0">OpenNOW Login</h2><p>\(htmlMessage)</p></div></body></html>
+            """
+            let httpResponse = """
+            HTTP/1.1 200 OK\r
+            Content-Type: text/html; charset=utf-8\r
+            Content-Length: \(responseBody.utf8.count)\r
+            Connection: close\r
+            \r
+            \(responseBody)
+            """
+            connection.send(content: Data(httpResponse.utf8), completion: .contentProcessed { _ in
+                connection.cancel()
+            })
+
+            if hasCode || hasError {
+                self.complete(with: .success(callbackURL))
+            }
+        }
+    }
+
+    private func complete(with result: Result<URL, Error>) {
+        guard !didComplete else { return }
+        didComplete = true
+        listener?.cancel()
+        listener = nil
+        guard let continuation else { return }
+        self.continuation = nil
+        continuation.resume(with: result)
+    }
+
+    func stop() {
+        complete(
+            with: .failure(
+                NSError(
+                    domain: "OpenNOW.Auth",
+                    code: 12,
+                    userInfo: [NSLocalizedDescriptionKey: "OAuth callback listener stopped."]
+                )
+            )
+        )
     }
 }
 
@@ -230,7 +359,7 @@ private actor GFNAPIClient {
     func login(with provider: LoginProvider, deviceId: String) async throws -> AuthSession {
         let pkce = Self.generatePKCE()
         let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        let redirectUri = "opennowios://oauth-callback"
+        let redirectUri = GFNConstants.oauthRedirectUri
         var authComponents = URLComponents(url: GFNConstants.authEndpoint, resolvingAgainstBaseURL: false)!
         authComponents.queryItems = [
             .init(name: "response_type", value: "code"),
@@ -246,10 +375,32 @@ private actor GFNAPIClient {
             .init(name: "idp_id", value: provider.idpId)
         ]
 
-        let authenticator = await MainActor.run { OAuthWebAuthenticator() }
-        let callbackURL = try await authenticator.authenticate(url: authComponents.url!, callbackScheme: "opennowios")
-        guard let authCode = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?
-            .queryItems?.first(where: { $0.name == "code" })?.value else {
+        let callbackServer = OAuthLoopbackServer()
+        let callbackTask = Task {
+            try await callbackServer.waitForCallback(port: GFNConstants.oauthRedirectPort)
+        }
+        let authUrl = authComponents.url!
+
+        do {
+            try await openSafariSignInURL(authUrl)
+        } catch {
+            callbackServer.stop()
+            throw error
+        }
+
+        let callbackURL = try await callbackTask.value
+        let callbackQueryItems = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        if let oauthError = callbackQueryItems.first(where: { $0.name == "error" })?.value {
+            let oauthErrorDescription =
+                callbackQueryItems.first(where: { $0.name == "error_description" })?.value ??
+                "Authentication failed."
+            throw NSError(
+                domain: "OpenNOW.Auth",
+                code: 8,
+                userInfo: [NSLocalizedDescriptionKey: "\(oauthError): \(oauthErrorDescription)"]
+            )
+        }
+        guard let authCode = callbackQueryItems.first(where: { $0.name == "code" })?.value else {
             throw NSError(domain: "OpenNOW.Auth", code: 3, userInfo: [NSLocalizedDescriptionKey: "Sign-in callback did not include an authorization code"])
         }
 
@@ -305,6 +456,25 @@ private actor GFNAPIClient {
         }
 
         return AuthSession(provider: provider, tokens: tokens, user: user)
+    }
+
+    @MainActor
+    private func openSafariSignInURL(_ url: URL) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            UIApplication.shared.open(url, options: [:]) { opened in
+                if opened {
+                    continuation.resume(returning: ())
+                    return
+                }
+                continuation.resume(
+                    throwing: NSError(
+                        domain: "OpenNOW.Auth",
+                        code: 13,
+                        userInfo: [NSLocalizedDescriptionKey: "Could not open Safari for sign-in."]
+                    )
+                )
+            }
+        }
     }
 
     func refreshSession(_ session: AuthSession) async throws -> AuthSession {
