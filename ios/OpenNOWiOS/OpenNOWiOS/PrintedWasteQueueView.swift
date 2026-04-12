@@ -90,20 +90,29 @@ struct PrintedWasteQueueView: View {
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if zones.isEmpty {
-                    ContentUnavailableView(
-                        "No Servers Available",
-                        systemImage: "network.slash",
-                        description: Text("Try again in a moment.")
-                    )
+                    VStack(spacing: 18) {
+                        ContentUnavailableView(
+                            "No Servers Available",
+                            systemImage: "network.slash",
+                            description: Text("No servers are available right now.")
+                        )
+                        Button("Launch Anyway") {
+                            onConfirm(nil)
+                            dismiss()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List {
                         Section {
                             header
+                                .listRowBackground(Color(.secondarySystemGroupedBackground).opacity(0.7))
                         }
 
                         Section("Routing") {
                             routingRow
+                                .listRowBackground(Color(.secondarySystemGroupedBackground).opacity(0.7))
                         }
 
                         ForEach(groupedZones, id: \.region) { group in
@@ -121,13 +130,15 @@ struct PrintedWasteQueueView: View {
                                         )
                                     }
                                     .buttonStyle(.plain)
+                                    .listRowBackground(Color(.secondarySystemGroupedBackground).opacity(0.7))
                                 }
                             }
                         }
                     }
-                    .listStyle(.insetGrouped)
+                    .listStyle(.plain)
                 }
             }
+            .animation(.spring(response: 0.35), value: isLoading)
             .navigationTitle("Choose Server")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -146,7 +157,9 @@ struct PrintedWasteQueueView: View {
                 }
             }
         }
+        .interactiveDismissDisabled(isLoading)
         .presentationDragIndicator(.visible)
+        .presentationCornerRadius(32)
         .presentationBackground(.regularMaterial)
         .task {
             await loadZones()
@@ -518,7 +531,20 @@ private struct PrintedWasteLaunchSheetModifier: ViewModifier {
     @Binding var pendingGame: CloudGame?
 
     func body(content: Content) -> some View {
-        content.sheet(item: $pendingGame) { game in
+        let sheetBinding = Binding<CloudGame?>(
+            get: {
+                store.authProviderCode == "BPC" ? nil : pendingGame
+            },
+            set: { pendingGame = $0 }
+        )
+
+        content
+            .onChange(of: pendingGame?.id) { _, _ in
+                guard store.authProviderCode == "BPC", let game = pendingGame else { return }
+                store.scheduleLaunch(game: game, zoneUrl: nil)
+                pendingGame = nil
+            }
+            .sheet(item: sheetBinding) { game in
             PrintedWasteQueueView(game: game) { selectedZoneUrl in
                 store.scheduleLaunch(game: game, zoneUrl: selectedZoneUrl)
             }
