@@ -168,6 +168,10 @@ export interface Settings {
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
+  /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
+  enableCloudGsync: boolean;
+  /** Show the currently streaming game as Discord Rich Presence activity */
+  discordRichPresence: boolean;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
@@ -367,6 +371,8 @@ export interface StreamSettings {
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
+  /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
+  enableCloudGsync: boolean;
 }
 
 export interface SessionCreateRequest {
@@ -684,6 +690,11 @@ export interface OpenNowApi {
   showMediaInFolder(input: { filePath: string }): Promise<void>;
 
   deleteCache(): Promise<void>;
+
+  /** Fetch current GFN queue wait times from the PrintedWaste API */
+  fetchPrintedWasteQueue(): Promise<PrintedWasteQueueData>;
+  /** Fetch PrintedWaste server mapping metadata (includes nuked status) */
+  fetchPrintedWasteServerMapping(): Promise<PrintedWasteServerMapping>;
   getThanksData(): Promise<ThankYouDataResult>;
 }
 
@@ -769,3 +780,29 @@ export interface MediaListingResult {
   screenshots: MediaListingEntry[];
   videos: MediaListingEntry[];
 }
+
+/** A single zone entry from the PrintedWaste queue API */
+export interface PrintedWasteZone {
+  QueuePosition: number;
+  /** Unix timestamp of last update */
+  "Last Updated": number;
+  /** Geographic region code: "US" | "EU" | "JP" | "KR" | "CA" | "THAI" | "MY" */
+  Region: string;
+  /** Estimated wait time in milliseconds */
+  eta?: number;
+}
+
+/** Full data payload from https://api.printedwaste.com/gfn/queue/ */
+export type PrintedWasteQueueData = Record<string, PrintedWasteZone>;
+
+/** PrintedWaste server metadata entry from remote mapping config */
+export interface PrintedWasteServerMappingEntry {
+  title?: string;
+  region?: string;
+  is4080Server?: boolean;
+  is5080Server?: boolean;
+  nuked?: boolean;
+}
+
+/** Full data payload from PrintedWaste server-to-region mapping config */
+export type PrintedWasteServerMapping = Record<string, PrintedWasteServerMappingEntry>;

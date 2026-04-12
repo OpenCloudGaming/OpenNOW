@@ -1,4 +1,8 @@
 import type { ColorQuality, VideoCodec } from "@shared/gfn";
+import {
+  PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
+  PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
+} from "./inputProtocol";
 
 interface IceCredentials {
   ufrag: string;
@@ -403,6 +407,9 @@ interface NvstParams {
   codec: VideoCodec;
   colorQuality: ColorQuality;
   credentials: IceCredentials;
+  hidDeviceMask?: number;
+  enablePartiallyReliableTransferGamepad?: number;
+  enablePartiallyReliableTransferHid?: number;
 }
 
 /**
@@ -458,6 +465,10 @@ export function buildNvstSdp(params: NvstParams): string {
   const is240Fps = params.fps >= 240;
   const isAv1 = params.codec === "AV1";
   const bitDepth = params.colorQuality.startsWith("10bit") ? 10 : 8;
+  const hidDeviceMask = params.hidDeviceMask ?? PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL;
+  const enablePartiallyReliableTransferGamepad = params.enablePartiallyReliableTransferGamepad
+    ?? PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL;
+  const enablePartiallyReliableTransferHid = params.enablePartiallyReliableTransferHid ?? hidDeviceMask;
 
   const lines: string[] = [
     "v=0",
@@ -611,6 +622,9 @@ export function buildNvstSdp(params: NvstParams): string {
     "m=application 0 RTP/AVP",
     "a=msid:input_1",
     `a=ri.partialReliableThresholdMs:${params.partialReliableThresholdMs}`,
+    `a=ri.hidDeviceMask:${hidDeviceMask}`,
+    `a=ri.enablePartiallyReliableTransferGamepad:${enablePartiallyReliableTransferGamepad}`,
+    `a=ri.enablePartiallyReliableTransferHid:${enablePartiallyReliableTransferHid}`,
     "",
   );
 
