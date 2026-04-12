@@ -629,8 +629,21 @@ private actor GFNAPIClient {
     }
 
     func pollSession(session: AuthSession, activeSession: ActiveSession) async throws -> ActiveSession {
+        let primaryBase = Self.resolvePollBase(streamingBaseUrl: activeSession.streamingBaseUrl, serverIp: activeSession.serverIp)
+        do {
+            return try await pollSession(session: session, activeSession: activeSession, base: primaryBase)
+        } catch {
+            // Some zones intermittently fail when polling through the resolved host (e.g. direct IP).
+            // Retry once through the canonical zone base before surfacing the failure.
+            guard primaryBase != activeSession.streamingBaseUrl else {
+                throw error
+            }
+            return try await pollSession(session: session, activeSession: activeSession, base: activeSession.streamingBaseUrl)
+        }
+    }
+
+    private func pollSession(session: AuthSession, activeSession: ActiveSession, base: String) async throws -> ActiveSession {
         let token = session.tokens.idToken ?? session.tokens.accessToken
-        let base = Self.resolvePollBase(streamingBaseUrl: activeSession.streamingBaseUrl, serverIp: activeSession.serverIp)
         let url = URL(string: "\(base)/v2/session/\(activeSession.id)")!
         let (data, response) = try await request(
             url: url,
@@ -1524,6 +1537,7 @@ final class OpenNOWStore: ObservableObject {
         sessionPollTask = Task { [weak self] in
             guard let self else { return }
             var previousStatus = self.activeSession?.status
+            var consecutivePollFailures = 0
             while !Task.isCancelled {
                 guard let session = self.authSession, let active = self.activeSession else {
                     try? await Task.sleep(for: .seconds(2))
@@ -1535,6 +1549,7 @@ final class OpenNOWStore: ObservableObject {
                     self.authSession = refreshed
                     self.persistAuthSession(refreshed)
                     let polled = try await self.api.pollSession(session: refreshed, activeSession: active)
+                    consecutivePollFailures = 0
                     self.activeSession = polled
                     if polled.status == 2 && previousStatus == 1 {
                         await NotificationManager.shared.sendQueueSetupNotification(gameTitle: polled.game.title)
@@ -1553,7 +1568,13 @@ final class OpenNOWStore: ObservableObject {
                         self.queueOverlayVisible = false
                     }
                 } catch {
+                    consecutivePollFailures += 1
                     self.lastError = "Session poll failed: \(error.localizedDescription)"
+                    if consecutivePollFailures >= 5 && self.showStreamLoading {
+                        // Prevent endless "Setting up..." state on repeated poll failures.
+                        self.showStreamLoading = false
+                        self.queueOverlayVisible = false
+                    }
                 }
                 try? await Task.sleep(for: .seconds(2))
             }

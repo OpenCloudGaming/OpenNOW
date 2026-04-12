@@ -78,22 +78,75 @@ struct PrintedWasteQueueView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.clear
+            Group {
+                if isLoading {
+                    ProgressView("Loading queue data...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                } else if let fetchError {
+                    ContentUnavailableView(
+                        "Unable to Load Servers",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(fetchError)
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if zones.isEmpty {
+                    ContentUnavailableView(
+                        "No Servers Available",
+                        systemImage: "network.slash",
+                        description: Text("Try again in a moment.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        Section {
+                            header
+                        }
 
-                VStack(spacing: 18) {
-                    header
-                    routingRow
-                    content
-                    footer
+                        Section("Routing") {
+                            routingRow
+                        }
+
+                        ForEach(groupedZones, id: \.region) { group in
+                            Section("\(group.flag) \(group.label)") {
+                                ForEach(group.zones) { zone in
+                                    Button {
+                                        routingPreference = .manual
+                                        selectedZoneId = zone.id
+                                    } label: {
+                                        ZoneRow(
+                                            zone: zone,
+                                            isSelected: routingPreference == .manual && selectedZoneId == zone.id,
+                                            isAuto: autoZone?.id == zone.id,
+                                            isClosest: closestZone?.id == zone.id
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                    .listStyle(.insetGrouped)
                 }
-                .padding(.horizontal, 18)
-                .padding(.top, 18)
-                .padding(.bottom, 12)
             }
+            .navigationTitle("Choose Server")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Launch") {
+                        onConfirm(selectedZoneUrl)
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(isLoading || zones.isEmpty)
+                }
+            }
         }
-        .presentationDetents([.large])
+        .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .presentationBackground(.regularMaterial)
         .task {
@@ -111,17 +164,13 @@ struct PrintedWasteQueueView: View {
                 Text(game.title)
                     .font(.headline)
                     .lineLimit(2)
-                Text("Choose Server")
-                    .font(.subheadline.weight(.semibold))
+                Text("Pick the best GeForce NOW zone before launch.")
+                    .font(.subheadline)
                     .foregroundStyle(brandAccent)
-                Text("Route to the best GeForce NOW zone before launch.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             Spacer()
         }
-        .padding(16)
-        .glassCard()
+        .padding(.vertical, 6)
     }
 
     private var routingRow: some View {
@@ -133,95 +182,6 @@ struct PrintedWasteQueueView: View {
                 routingPreference = .closest
             }
         }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        if isLoading {
-            Spacer()
-            ProgressView("Loading queue data...")
-            Spacer()
-        } else if let fetchError {
-            Spacer()
-            VStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.orange)
-                Text(fetchError)
-                    .font(.subheadline)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(20)
-            .glassCard()
-            Spacer()
-        } else if zones.isEmpty {
-            Spacer()
-            Text("No server data available.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .padding(20)
-                .glassCard()
-            Spacer()
-        } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    ForEach(groupedZones, id: \.region) { group in
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 8) {
-                                Text(group.flag)
-                                Text(group.label)
-                                    .font(.headline)
-                            }
-                            ForEach(group.zones) { zone in
-                                Button {
-                                    routingPreference = .manual
-                                    selectedZoneId = zone.id
-                                } label: {
-                                    ZoneRow(
-                                        zone: zone,
-                                        isSelected: routingPreference == .manual && selectedZoneId == zone.id,
-                                        isAuto: autoZone?.id == zone.id,
-                                        isClosest: closestZone?.id == zone.id
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                }
-                .padding(.bottom, 8)
-            }
-        }
-    }
-
-    private var footer: some View {
-        HStack(spacing: 12) {
-            Link(destination: URL(string: "https://printedwaste.com/gfn")!) {
-                Text("Powered by PrintedWaste")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            Button("Cancel") {
-                dismiss()
-            }
-            .buttonStyle(.bordered)
-
-            Button {
-                onConfirm(selectedZoneUrl)
-                dismiss()
-            } label: {
-                Text("Launch →")
-                    .fontWeight(.semibold)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(brandAccent)
-            .disabled(isLoading || zones.isEmpty)
-        }
-        .padding(.top, 4)
     }
 
     private func routingPill(title: String, icon: String, isSelected: Bool, isEnabled: Bool, action: @escaping () -> Void) -> some View {
@@ -392,45 +352,59 @@ private struct ZoneRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 6) {
+            queueBadge
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
                     Text(zone.id)
                         .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
                     Text(zone.regionSuffix)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
                     if isAuto {
                         smallBadge(title: "Auto", icon: "bolt.fill", color: .green)
                     } else if isClosest {
                         smallBadge(title: "Closest", icon: "location.fill", color: .blue)
                     }
                 }
-                Text(zone.zoneUrl.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "/", with: ""))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
 
             Spacer(minLength: 8)
 
             HStack(spacing: 8) {
-                metricBadge(label: "Q \(zone.queuePosition)", color: queueColor(zone.queuePosition))
                 if let etaMs = zone.etaMs {
                     metricBadge(label: formatWait(etaMs), color: .blue)
                 }
                 pingBadge
                 if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(brandAccent)
+                    ZStack {
+                        Circle()
+                            .fill(brandAccent)
+                            .frame(width: 22, height: 22)
+                        Image(systemName: "checkmark")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.white)
+                    }
                 }
             }
         }
-        .padding(14)
-        .background(rowBackground)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(isSelected ? brandAccent.opacity(0.55) : Color.white.opacity(0.06), lineWidth: 1)
-        )
+        .padding(.vertical, 2)
+    }
+
+    private var queueBadge: some View {
+        Text("Q \(zone.queuePosition)")
+            .font(.caption.weight(.bold))
+            .foregroundStyle(queueColor(zone.queuePosition))
+            .lineLimit(1)
+            .minimumScaleFactor(0.9)
+            .frame(minWidth: 42)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(queueColor(zone.queuePosition).opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var pingBadge: some View {
@@ -448,21 +422,11 @@ private struct ZoneRow: View {
             }
         }
         .font(.caption.weight(.semibold))
+        .lineLimit(1)
+        .minimumScaleFactor(0.85)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(pingBadgeColor, in: Capsule())
-    }
-
-    @ViewBuilder
-    private var rowBackground: some View {
-        if #available(iOS 26, *) {
-            RoundedRectangle(cornerRadius: 12)
-                .fill(.regularMaterial)
-                .glassEffect(in: RoundedRectangle(cornerRadius: 12))
-        } else {
-            RoundedRectangle(cornerRadius: 12)
-                .fill(.regularMaterial)
-        }
     }
 
     private var pingBadgeColor: Color {
@@ -476,6 +440,8 @@ private struct ZoneRow: View {
     private func metricBadge(label: String, color: Color) -> some View {
         Text(label)
             .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(color.opacity(0.18), in: Capsule())
@@ -488,6 +454,8 @@ private struct ZoneRow: View {
             Text(title)
         }
         .font(.caption2.weight(.bold))
+        .lineLimit(1)
+        .minimumScaleFactor(0.85)
         .padding(.horizontal, 7)
         .padding(.vertical, 4)
         .background(color.opacity(0.18), in: Capsule())

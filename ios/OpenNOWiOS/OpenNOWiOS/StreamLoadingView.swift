@@ -47,10 +47,16 @@ struct StreamLoadingView: View {
 
     var body: some View {
         ZStack {
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .overlay(Color.black.opacity(0.58))
-                .ignoresSafeArea()
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.98),
+                    Color(red: 0.06, green: 0.06, blue: 0.08),
+                    Color.black.opacity(0.96)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
 
             VStack(spacing: 24) {
                 Spacer()
@@ -86,7 +92,7 @@ struct StreamLoadingView: View {
                     Button {
                         store.minimizeQueueOverlay()
                     } label: {
-                        Label("Minimize", systemImage: "chevron.down")
+                        Text("Minimize")
                             .frame(maxWidth: .infinity)
                     }
                     .streamActionButtonStyle()
@@ -94,7 +100,7 @@ struct StreamLoadingView: View {
                     Button(role: .destructive) {
                         Task { await store.endSession() }
                     } label: {
-                        Label("Cancel", systemImage: "xmark")
+                        Text("Cancel")
                             .frame(maxWidth: .infinity)
                     }
                     .streamActionButtonStyle(tint: .red.opacity(0.92))
