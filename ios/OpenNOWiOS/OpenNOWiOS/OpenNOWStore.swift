@@ -123,7 +123,7 @@ private enum GFNConstants {
     static let panelsQueryHash = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0"
     static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173"
     static let oauthRedirectUri = "http://localhost:2259"
-    static let oauthCallbackScheme = "http"
+    static let oauthCallbackScheme = "opennowios"
     static let oauthRedirectPort: UInt16 = 2259
 }
 
@@ -245,26 +245,23 @@ private final class OAuthLoopbackServer {
             let hasCode = queryItems.contains(where: { $0.name == "code" && !($0.value ?? "").isEmpty })
             let hasError = queryItems.contains(where: { $0.name == "error" && !($0.value ?? "").isEmpty })
 
-            let htmlMessage: String = hasCode
-                ? "Login complete. You can close this window and return to OpenNOW."
-                : "Login failed or was cancelled. You can close this window and return to OpenNOW."
-            let responseBody = """
-            <!doctype html><html><head><meta charset="utf-8"><title>OpenNOW Login</title></head><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:#0b1220;color:#dbe7ff;display:flex;justify-content:center;align-items:center;height:100vh;margin:0"><div style="background:#111a2c;padding:24px 28px;border:1px solid #30425f;border-radius:12px;max-width:460px"><h2 style="margin-top:0">OpenNOW Login</h2><p>\(htmlMessage)</p></div></body></html>
-            """
-            let httpResponse = """
-            HTTP/1.1 200 OK\r
-            Content-Type: text/html; charset=utf-8\r
-            Content-Length: \(responseBody.utf8.count)\r
-            Connection: close\r
-            \r
-            \(responseBody)
-            """
-            connection.send(content: Data(httpResponse.utf8), completion: .contentProcessed { _ in
-                connection.cancel()
-            })
-
             if hasCode || hasError {
+                var redirectComponents = URLComponents()
+                redirectComponents.scheme = "opennowios"
+                redirectComponents.host = "callback"
+                redirectComponents.queryItems = queryItems
+                let redirectTarget = redirectComponents.url?.absoluteString ?? "opennowios://callback"
+
+                let httpResponse = "HTTP/1.1 302 Found\r\nLocation: \(redirectTarget)\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                connection.send(content: Data(httpResponse.utf8), completion: .contentProcessed { _ in
+                    connection.cancel()
+                })
                 self.complete(with: .success(callbackURL))
+            } else {
+                let httpResponse = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                connection.send(content: Data(httpResponse.utf8), completion: .contentProcessed { _ in
+                    connection.cancel()
+                })
             }
         }
     }
@@ -375,20 +372,22 @@ private actor GFNAPIClient {
             .init(name: "idp_id", value: provider.idpId)
         ]
 
-        let callbackServer = OAuthLoopbackServer()
-        let callbackTask = Task {
-            try await callbackServer.waitForCallback(port: GFNConstants.oauthRedirectPort)
-        }
         let authUrl = authComponents.url!
 
-        do {
-            try await openSafariSignInURL(authUrl)
-        } catch {
-            callbackServer.stop()
-            throw error
+        let callbackServer = OAuthLoopbackServer()
+        let serverTask = Task<URL, Error> {
+            try await callbackServer.waitForCallback(port: GFNConstants.oauthRedirectPort)
         }
 
-        let callbackURL = try await callbackTask.value
+        let callbackURL: URL
+        do {
+            callbackURL = try await performOAuthSession(url: authUrl, callbackScheme: GFNConstants.oauthCallbackScheme)
+            serverTask.cancel()
+        } catch {
+            callbackServer.stop()
+            serverTask.cancel()
+            throw error
+        }
         let callbackQueryItems = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems ?? []
         if let oauthError = callbackQueryItems.first(where: { $0.name == "error" })?.value {
             let oauthErrorDescription =
@@ -459,22 +458,9 @@ private actor GFNAPIClient {
     }
 
     @MainActor
-    private func openSafariSignInURL(_ url: URL) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            UIApplication.shared.open(url, options: [:]) { opened in
-                if opened {
-                    continuation.resume(returning: ())
-                    return
-                }
-                continuation.resume(
-                    throwing: NSError(
-                        domain: "OpenNOW.Auth",
-                        code: 13,
-                        userInfo: [NSLocalizedDescriptionKey: "Could not open Safari for sign-in."]
-                    )
-                )
-            }
-        }
+    private func performOAuthSession(url: URL, callbackScheme: String) async throws -> URL {
+        let authenticator = OAuthWebAuthenticator()
+        return try await authenticator.authenticate(url: url, callbackScheme: callbackScheme)
     }
 
     func refreshSession(_ session: AuthSession) async throws -> AuthSession {
