@@ -2,6 +2,7 @@ import SwiftUI
 
 struct HomeView: View {
     @EnvironmentObject private var store: OpenNOWStore
+    @State private var pendingLaunchGame: CloudGame?
 
     var body: some View {
         NavigationStack {
@@ -44,9 +45,8 @@ struct HomeView: View {
                 }
             }
         }
+        .printedWasteLaunchSheet(pendingGame: $pendingLaunchGame)
     }
-
-    // MARK: - Account Card
 
     @ViewBuilder
     private func accountCard(user: UserProfile) -> some View {
@@ -92,8 +92,6 @@ struct HomeView: View {
         .glassCard()
     }
 
-    // MARK: - Featured Section (horizontal scroll)
-
     private var featuredSection: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 14) {
@@ -104,7 +102,7 @@ struct HomeView: View {
                 } else {
                     ForEach(store.featuredGames.prefix(8)) { game in
                         FeaturedGameCard(game: game) {
-                            store.scheduleLaunch(game: game)
+                            pendingLaunchGame = game
                         }
                     }
                 }
@@ -112,8 +110,6 @@ struct HomeView: View {
             .padding(.horizontal)
         }
     }
-
-    // MARK: - Game Grid
 
     private func gameGrid(games: [CloudGame]) -> some View {
         let columns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 14)]
@@ -125,14 +121,12 @@ struct HomeView: View {
             } else {
                 ForEach(games) { game in
                     GameCardView(game: game) {
-                        store.scheduleLaunch(game: game)
+                        pendingLaunchGame = game
                     }
                 }
             }
         }
     }
-
-    // MARK: - Loading Placeholder
 
     private var loadingPlaceholder: some View {
         HStack {
@@ -148,16 +142,12 @@ struct HomeView: View {
         .padding(.vertical, 60)
     }
 
-    // MARK: - Section Header
-
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
             .font(.title3.bold())
             .padding(.horizontal)
     }
 }
-
-// MARK: - Featured Game Card (larger, horizontal scroll card)
 
 private struct FeaturedGameCard: View {
     let game: CloudGame
@@ -218,8 +208,6 @@ private struct FeaturedGameCardSkeleton: View {
     }
 }
 
-// MARK: - Error Banner
-
 struct ErrorBannerView: View {
     let message: String
 
@@ -236,8 +224,6 @@ struct ErrorBannerView: View {
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
     }
 }
-
-// MARK: - Shared Game Card
 
 struct GameCardView: View {
     let game: CloudGame
@@ -371,8 +357,6 @@ private struct SkeletonShimmerModifier: ViewModifier {
     }
 }
 
-// MARK: - Color helpers
-
 func gameColor(for title: String) -> Color {
     let palette: [Color] = [
         Color(red: 0.46, green: 0.72, blue: 0.0),
@@ -385,8 +369,6 @@ func gameColor(for title: String) -> Color {
     let hash = abs(title.hashValue)
     return palette[hash % palette.count]
 }
-
-// MARK: - GlassCard ViewModifier
 
 struct GlassCardModifier: ViewModifier {
     func body(content: Content) -> some View {
