@@ -197,6 +197,8 @@ interface ClientOptions {
   audioElement: HTMLAudioElement;
   /** Microphone mode preference */
   microphoneMode?: MicrophoneMode;
+  /** When true, pointer-lock acquisition may also enter fullscreen */
+  autoFullScreen?: boolean;
   /** Preferred microphone device ID */
   microphoneDeviceId?: string;
   /** Mouse sensitivity multiplier (1.0 = default) */
@@ -532,6 +534,7 @@ export class GfnWebRtcClient {
   private mouseDeltaFilter = new MouseDeltaFilter();
   private mouseSensitivity = 1;
   private mouseAccelerationPercent = 1;
+  private autoFullScreenEnabled = true;
 
   private partialReliableThresholdMs = GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
   private inputQueuePeakBufferedBytesWindow = 0;
@@ -608,6 +611,7 @@ export class GfnWebRtcClient {
     options.audioElement.muted = true;
     this.mouseSensitivity = options.mouseSensitivity ?? 1;
     this.mouseAccelerationPercent = Math.max(1, Math.min(150, Math.round(options.mouseAcceleration ?? 1)));
+    this.autoFullScreenEnabled = options.autoFullScreen !== false;
 
     // Configure video element for lowest latency playback
     this.configureVideoElementForLowLatency(options.videoElement);
@@ -631,6 +635,10 @@ export class GfnWebRtcClient {
         this.micManager.setDeviceId(options.microphoneDeviceId);
       }
     }
+  }
+
+  private shouldAutoFullscreen(): boolean {
+    return this.autoFullScreenEnabled;
   }
 
   /**
@@ -668,6 +676,12 @@ export class GfnWebRtcClient {
     const v = Number.isFinite(value) ? value : 1;
     this.mouseAccelerationPercent = Math.max(1, Math.min(150, Math.round(v)));
     this.log(`Mouse acceleration set to ${this.mouseAccelerationPercent}%`);
+  }
+
+  /** Update fullscreen preference used by auto pointer-lock flows at runtime. */
+  public setAutoFullScreen(value: boolean): void {
+    this.autoFullScreenEnabled = Boolean(value);
+    this.log(`Auto fullscreen ${this.autoFullScreenEnabled ? "enabled" : "disabled"}`);
   }
 
   /**
@@ -1872,7 +1886,7 @@ export class GfnWebRtcClient {
       this.setupInputHeartbeat();
       this.setupGamepadPolling();
       // After input becomes ready, attempt to auto-enable pointer lock.
-      void this.attemptAutoPointerLock(true).catch(() => {});
+      void this.attemptAutoPointerLock(this.shouldAutoFullscreen()).catch(() => {});
     }
   }
 
@@ -2493,7 +2507,7 @@ export class GfnWebRtcClient {
         this.log(`Pointer lock alignment failed (non-fatal): ${String(err)}`);
       }
 
-      void this.attemptAutoPointerLock(true)
+      void this.attemptAutoPointerLock(this.shouldAutoFullscreen())
         .catch(() => {})
         .finally(() => {
           autoLockPending = false;
@@ -2753,7 +2767,7 @@ export class GfnWebRtcClient {
 
     const onClick = () => {
       // GFN-style sequence: fullscreen -> keyboard lock (Escape) -> pointer lock.
-      void this.requestPointerLockWithEscGuard(pointerLockTarget, true).catch((err: DOMException) => {
+      void this.requestPointerLockWithEscGuard(pointerLockTarget, this.shouldAutoFullscreen()).catch((err: DOMException) => {
         this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
       });
       videoElement.focus();

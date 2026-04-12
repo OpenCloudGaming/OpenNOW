@@ -1754,7 +1754,7 @@ export function App(): JSX.Element {
       }
     };
 
-    if (!document.fullscreenElement) {
+    if (settings.autoFullScreen && !document.fullscreenElement) {
       await document.documentElement.requestFullscreen().catch(() => {});
     }
 
@@ -1773,7 +1773,7 @@ export function App(): JSX.Element {
         throw err;
       })
       .catch(() => {});
-  }, []);
+  }, [settings.autoFullScreen]);
 
   const handleRequestPointerLock = useCallback(() => {
     if (videoRef.current) {
@@ -1970,6 +1970,7 @@ export function App(): JSX.Element {
             clientRef.current = new GfnWebRtcClient({
               videoElement: videoRef.current,
               audioElement: audioRef.current,
+              autoFullScreen: settings.autoFullScreen,
               microphoneMode: settings.microphoneMode,
               microphoneDeviceId: settings.microphoneDeviceId || undefined,
               mouseSensitivity: settings.mouseSensitivity,
@@ -2052,6 +2053,13 @@ export function App(): JSX.Element {
     if (key === "mouseAcceleration") {
       try {
         (clientRef.current as any)?.setMouseAccelerationPercent?.(value as number);
+      } catch {
+        // ignore
+      }
+    }
+    if (key === "autoFullScreen") {
+      try {
+        (clientRef.current as any)?.setAutoFullScreen?.(value as boolean);
       } catch {
         // ignore
       }
