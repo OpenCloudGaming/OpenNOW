@@ -5,7 +5,7 @@ struct SettingsView: View {
 
     private let fpsValues = [60, 120]
     private let qualityValues = ["Balanced", "Data Saver", "Quality"]
-    private let codecValues = ["Auto", "H264", "HEVC", "AV1"]
+    private let codecValues = ["Auto", "H264", "H265", "AV1"]
     private let regionValues = ["Auto", "US East", "US West", "Europe", "Asia"]
 
     var body: some View {
@@ -99,6 +99,8 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .scrollContentBackground(.hidden)
+            .background(appBackground)
             .onChange(of: store.settings) { _, _ in
                 store.persistSettings()
             }
@@ -124,5 +126,6 @@ struct SettingsView: View {
                 .pickerStyle(.menu)
                 .tint(.primary)
         }
+        .listRowBackground(Color(.secondarySystemGroupedBackground).opacity(0.75))
     }
 }

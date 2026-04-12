@@ -67,6 +67,8 @@ struct ActiveSession: Identifiable, Codable, Equatable {
     var status: Int
     var queuePosition: Int?
     var serverIp: String?
+    var mediaIp: String?
+    var mediaPort: Int
     var signalingServer: String?
     var signalingUrl: String?
     var iceServers: [IceServerConfig]
@@ -138,239 +140,6 @@ private enum GFNConstants {
     static let oauthRedirectPort: UInt16 = 2259
 }
 
-private final class GFNSignalingClient: NSObject, URLSessionWebSocketDelegate {
-    enum Event {
-        case connected
-        case disconnected(reason: String)
-        case offer(sdp: String)
-        case remoteIce(candidate: String)
-        case log(String)
-        case failure(String)
-    }
-
-    private let signalingServer: String
-    private let sessionId: String
-    private let signalingUrl: String?
-    private let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36"
-    private let peerName = "peer-\(Int.random(in: 1_000_000...9_999_999_999))"
-    private var peerId = 2
-    private var ackCounter = 0
-    private var webSocketTask: URLSessionWebSocketTask?
-    private var urlSession: URLSession?
-    private var heartbeatTimer: Timer?
-    private var openContinuation: CheckedContinuation<Void, Error>?
-    private var eventHandler: ((Event) -> Void)?
-
-    init(signalingServer: String, sessionId: String, signalingUrl: String?) {
-        self.signalingServer = signalingServer
-        self.sessionId = sessionId
-        self.signalingUrl = signalingUrl
-    }
-
-    func onEvent(_ handler: @escaping (Event) -> Void) {
-        eventHandler = handler
-    }
-
-    func connect() async throws {
-        if webSocketTask != nil {
-            return
-        }
-        let signInURL = try buildSignInURL()
-        var request = URLRequest(url: signInURL)
-        request.setValue("https://play.geforcenow.com", forHTTPHeaderField: "Origin")
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = 20
-        let config = URLSessionConfiguration.default
-        config.waitsForConnectivity = true
-        let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
-        urlSession = session
-        let subprotocol = "x-nv-sessionid.\(sessionId)"
-        request.setValue(subprotocol, forHTTPHeaderField: "Sec-WebSocket-Protocol")
-        let task = session.webSocketTask(with: request)
-        webSocketTask = task
-        task.resume()
-
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask { [weak self] in
-                guard let self else { return }
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    self.openContinuation = continuation
-                }
-            }
-            group.addTask {
-                try await Task.sleep(for: .seconds(12))
-                throw NSError(
-                    domain: "OpenNOW.Signaling",
-                    code: 91,
-                    userInfo: [NSLocalizedDescriptionKey: "Signaling connect timeout"]
-                )
-            }
-            let _ = try await group.next()
-            group.cancelAll()
-        }
-
-        receiveNextMessage()
-    }
-
-    func disconnect() {
-        heartbeatTimer?.invalidate()
-        heartbeatTimer = nil
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
-        webSocketTask = nil
-        urlSession?.invalidateAndCancel()
-        urlSession = nil
-        if let openContinuation {
-            openContinuation.resume(throwing: NSError(
-                domain: "OpenNOW.Signaling",
-                code: 92,
-                userInfo: [NSLocalizedDescriptionKey: "Signaling disconnected before open"]
-            ))
-            self.openContinuation = nil
-        }
-    }
-
-    private func buildSignInURL() throws -> URL {
-        let fallbackHost = signalingServer.contains(":") ? signalingServer : "\(signalingServer):443"
-        let base = (signalingUrl?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
-            ? signalingUrl!
-            : "wss://\(fallbackHost)/nvst/"
-        guard var components = URLComponents(string: base) else {
-            throw NSError(domain: "OpenNOW.Signaling", code: 90, userInfo: [NSLocalizedDescriptionKey: "Invalid signaling URL"])
-        }
-        components.scheme = "wss"
-        let normalizedPath = components.path.hasSuffix("/") ? components.path : "\(components.path)/"
-        components.path = "\(normalizedPath)sign_in"
-        components.queryItems = [
-            URLQueryItem(name: "peer_id", value: peerName),
-            URLQueryItem(name: "version", value: "2")
-        ]
-        guard let url = components.url else {
-            throw NSError(domain: "OpenNOW.Signaling", code: 90, userInfo: [NSLocalizedDescriptionKey: "Invalid signaling URL"])
-        }
-        return url
-    }
-
-    private func nextAckId() -> Int {
-        ackCounter += 1
-        return ackCounter
-    }
-
-    private func sendJson(_ payload: [String: Any]) {
-        guard let task = webSocketTask else { return }
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
-              let text = String(data: data, encoding: .utf8) else { return }
-        task.send(.string(text)) { [weak self] error in
-            if let error {
-                self?.eventHandler?(.failure("send failed: \(error.localizedDescription)"))
-            }
-        }
-    }
-
-    private func setupHeartbeat() {
-        heartbeatTimer?.invalidate()
-        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            self?.sendJson(["hb": 1])
-        }
-    }
-
-    private func sendPeerInfo() {
-        sendJson([
-            "ackid": nextAckId(),
-            "peer_info": [
-                "browser": "Chrome",
-                "browserVersion": "131",
-                "connected": true,
-                "id": peerId,
-                "name": peerName,
-                "peerRole": 0,
-                "resolution": "1920x1080",
-                "version": 2
-            ]
-        ])
-    }
-
-    private func receiveNextMessage() {
-        guard let task = webSocketTask else { return }
-        task.receive { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .failure(let error):
-                self.eventHandler?(.failure("receive failed: \(error.localizedDescription)"))
-                self.disconnect()
-            case .success(let message):
-                switch message {
-                case .string(let text):
-                    self.handleIncomingText(text)
-                case .data(let data):
-                    if let text = String(data: data, encoding: .utf8) {
-                        self.handleIncomingText(text)
-                    }
-                @unknown default:
-                    break
-                }
-                self.receiveNextMessage()
-            }
-        }
-    }
-
-    private func handleIncomingText(_ text: String) {
-        guard let data = text.data(using: .utf8),
-              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            eventHandler?(.log("Ignoring non-JSON signaling packet"))
-            return
-        }
-
-        if parsed["hb"] != nil {
-            sendJson(["hb": 1])
-            return
-        }
-
-        if let ackId = parsed["ackid"] as? Int {
-            let peerInfo = parsed["peer_info"] as? [String: Any]
-            let sourcePeerId = peerInfo?["id"] as? Int
-            if sourcePeerId != peerId {
-                sendJson(["ack": ackId])
-            }
-        }
-
-        guard let peerMsg = parsed["peer_msg"] as? [String: Any],
-              let msg = peerMsg["msg"] as? String,
-              let msgData = msg.data(using: .utf8),
-              let peerPayload = try? JSONSerialization.jsonObject(with: msgData) as? [String: Any] else {
-            return
-        }
-
-        if let type = peerPayload["type"] as? String,
-           type == "offer",
-           let sdp = peerPayload["sdp"] as? String {
-            eventHandler?(.offer(sdp: sdp))
-            return
-        }
-
-        if let candidate = peerPayload["candidate"] as? String {
-            eventHandler?(.remoteIce(candidate: candidate))
-            return
-        }
-
-        eventHandler?(.log("Unhandled signaling message keys: \(peerPayload.keys.joined(separator: ","))"))
-    }
-
-    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        sendPeerInfo()
-        setupHeartbeat()
-        openContinuation?.resume()
-        openContinuation = nil
-        eventHandler?(.connected)
-    }
-
-    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        let reasonText = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "socket closed (\(closeCode.rawValue))"
-        eventHandler?(.disconnected(reason: reasonText))
-        disconnect()
-    }
-}
-
-@MainActor
 private final class OAuthWebAuthenticator: NSObject, ASWebAuthenticationPresentationContextProviding {
     private var session: ASWebAuthenticationSession?
 
@@ -707,12 +476,70 @@ private actor GFNAPIClient {
     }
 
     func refreshSession(_ session: AuthSession) async throws -> AuthSession {
-        guard Date().timeIntervalSince1970 >= session.tokens.expiresAt - (10 * 60) else {
+        let nowEpoch = Date().timeIntervalSince1970
+        guard nowEpoch >= session.tokens.expiresAt - (10 * 60) else {
             return session
         }
-        guard let refreshToken = session.tokens.refreshToken else {
-            return session
+
+        if let clientToken = session.tokens.clientToken,
+           let expiry = session.tokens.clientTokenExpiresAt,
+           nowEpoch < expiry - (5 * 60) {
+            if let refreshed = try? await refreshWithClientToken(clientToken, userId: session.user.userId, existing: session) {
+                return refreshed
+            }
         }
+
+        if let refreshToken = session.tokens.refreshToken {
+            return try await refreshWithOAuthToken(refreshToken, existing: session)
+        }
+
+        return session
+    }
+
+    private func refreshWithClientToken(_ clientToken: String, userId: String, existing: AuthSession) async throws -> AuthSession {
+        let body = URLQueryItemEncoder.encode([
+            "grant_type": "urn:ietf:params:oauth:grant-type:client_token",
+            "client_token": clientToken,
+            "client_id": GFNConstants.clientId,
+            "sub": userId
+        ])
+        var headers = headersForOAuth()
+        headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+        let (data, response) = try await request(
+            url: GFNConstants.tokenEndpoint,
+            method: "POST",
+            headers: headers,
+            body: body.data(using: .utf8)
+        )
+        guard response.statusCode == 200 else {
+            throw NSError(domain: "OpenNOW.Auth", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: "client_token refresh failed"])
+        }
+        let json = try parseJSON(data)
+        guard let accessToken = json["access_token"] as? String else {
+            throw NSError(domain: "OpenNOW.Auth", code: 4, userInfo: [NSLocalizedDescriptionKey: "client_token response missing access_token"])
+        }
+        let newRefresh = (json["refresh_token"] as? String) ?? existing.tokens.refreshToken
+        let newIdToken = (json["id_token"] as? String) ?? existing.tokens.idToken
+        let expiresIn = (json["expires_in"] as? Double) ?? 86400
+        var newClientToken = existing.tokens.clientToken
+        var newClientTokenExpiry = existing.tokens.clientTokenExpiresAt
+        if let fresh = try? await requestClientToken(accessToken: accessToken) {
+            newClientToken = fresh.token
+            newClientTokenExpiry = fresh.expiresAt
+        }
+        let newTokens = AuthTokens(
+            accessToken: accessToken,
+            refreshToken: newRefresh,
+            idToken: newIdToken,
+            expiresAt: Date().addingTimeInterval(expiresIn).timeIntervalSince1970,
+            clientToken: newClientToken,
+            clientTokenExpiresAt: newClientTokenExpiry
+        )
+        let user = (try? await fetchUser(tokens: newTokens)) ?? existing.user
+        return AuthSession(provider: existing.provider, tokens: newTokens, user: user)
+    }
+
+    private func refreshWithOAuthToken(_ refreshToken: String, existing: AuthSession) async throws -> AuthSession {
         let body = URLQueryItemEncoder.encode([
             "grant_type": "refresh_token",
             "refresh_token": refreshToken,
@@ -724,40 +551,34 @@ private actor GFNAPIClient {
             url: GFNConstants.tokenEndpoint,
             method: "POST",
             headers: headers,
-            body: body.data(using: String.Encoding.utf8)
+            body: body.data(using: .utf8)
         )
         guard response.statusCode == 200 else {
-            return session
+            throw NSError(domain: "OpenNOW.Auth", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: "refresh_token exchange failed"])
         }
         let json = try parseJSON(data)
         guard let accessToken = json["access_token"] as? String else {
-            return session
+            throw NSError(domain: "OpenNOW.Auth", code: 4, userInfo: [NSLocalizedDescriptionKey: "refresh_token response missing access_token"])
         }
         let newRefresh = (json["refresh_token"] as? String) ?? refreshToken
-        let newIdToken = json["id_token"] as? String ?? session.tokens.idToken
-        let expiresIn = json["expires_in"] as? Double ?? 86400
-        let user = (try? await fetchUser(tokens: AuthTokens(
+        let newIdToken = (json["id_token"] as? String) ?? existing.tokens.idToken
+        let expiresIn = (json["expires_in"] as? Double) ?? 86400
+        var newClientToken = existing.tokens.clientToken
+        var newClientTokenExpiry = existing.tokens.clientTokenExpiresAt
+        if let fresh = try? await requestClientToken(accessToken: accessToken) {
+            newClientToken = fresh.token
+            newClientTokenExpiry = fresh.expiresAt
+        }
+        let newTokens = AuthTokens(
             accessToken: accessToken,
             refreshToken: newRefresh,
             idToken: newIdToken,
             expiresAt: Date().addingTimeInterval(expiresIn).timeIntervalSince1970,
-            clientToken: session.tokens.clientToken,
-            clientTokenExpiresAt: session.tokens.clientTokenExpiresAt
-        ))) ?? session.user
-
-        let refreshed = AuthSession(
-            provider: session.provider,
-            tokens: AuthTokens(
-                accessToken: accessToken,
-                refreshToken: newRefresh,
-                idToken: newIdToken,
-                expiresAt: Date().addingTimeInterval(expiresIn).timeIntervalSince1970,
-                clientToken: session.tokens.clientToken,
-                clientTokenExpiresAt: session.tokens.clientTokenExpiresAt
-            ),
-            user: user
+            clientToken: newClientToken,
+            clientTokenExpiresAt: newClientTokenExpiry
         )
-        return refreshed
+        let user = (try? await fetchUser(tokens: newTokens)) ?? existing.user
+        return AuthSession(provider: existing.provider, tokens: newTokens, user: user)
     }
 
     func fetchMainGames(session: AuthSession) async throws -> ([CloudGame], String) {
@@ -856,6 +677,7 @@ private actor GFNAPIClient {
         let queue = sessionObj["queuePosition"] as? Int
         let control = sessionObj["sessionControlInfo"] as? [String: Any]
         let serverIp = Self.extractServerIp(sessionObj: sessionObj) ?? (control?["ip"] as? String)
+        let mediaConnectionInfo = Self.extractMediaConnectionInfo(sessionObj: sessionObj)
         let signaling = Self.resolveSignaling(sessionObj: sessionObj, fallbackServerIp: serverIp)
         let iceServers = Self.extractIceServers(sessionObj: sessionObj)
         return ActiveSession(
@@ -865,6 +687,8 @@ private actor GFNAPIClient {
             status: status,
             queuePosition: queue,
             serverIp: serverIp,
+            mediaIp: mediaConnectionInfo.ip,
+            mediaPort: mediaConnectionInfo.port,
             signalingServer: signaling.server,
             signalingUrl: signaling.url,
             iceServers: iceServers,
@@ -920,6 +744,7 @@ private actor GFNAPIClient {
         let queue = (sessionObj["queuePosition"] as? Int) ??
             ((sessionObj["seatSetupInfo"] as? [String: Any])?["queuePosition"] as? Int)
         let serverIp = Self.extractServerIp(sessionObj: sessionObj) ?? activeSession.serverIp
+        let mediaConnectionInfo = Self.extractMediaConnectionInfo(sessionObj: sessionObj)
         let signaling = Self.resolveSignaling(sessionObj: sessionObj, fallbackServerIp: serverIp ?? activeSession.signalingServer)
         let iceServers = Self.extractIceServers(sessionObj: sessionObj)
 
@@ -927,6 +752,8 @@ private actor GFNAPIClient {
         updated.status = status
         updated.queuePosition = queue
         updated.serverIp = serverIp
+        updated.mediaIp = mediaConnectionInfo.ip ?? updated.mediaIp
+        updated.mediaPort = mediaConnectionInfo.port > 0 ? mediaConnectionInfo.port : updated.mediaPort
         updated.signalingServer = signaling.server ?? updated.signalingServer
         updated.signalingUrl = signaling.url ?? updated.signalingUrl
         if !iceServers.isEmpty {
@@ -1009,16 +836,25 @@ private actor GFNAPIClient {
             throw NSError(domain: "OpenNOW.Session", code: claimResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
         }
 
+        let claimJSON = (try? parseJSON(claimData)) ?? [:]
+        let claimSessionObj = claimJSON["session"] as? [String: Any] ?? [:]
+        let claimServerIp = Self.extractServerIp(sessionObj: claimSessionObj) ?? candidate.serverIp
+        let mediaConnectionInfo = Self.extractMediaConnectionInfo(sessionObj: claimSessionObj)
+        let signaling = Self.resolveSignaling(sessionObj: claimSessionObj, fallbackServerIp: claimServerIp)
+        let iceServers = Self.extractIceServers(sessionObj: claimSessionObj)
+
         var active = ActiveSession(
             id: candidate.id,
             game: game,
             startedAt: .now,
-            status: candidate.status,
+            status: (claimSessionObj["status"] as? Int) ?? candidate.status,
             queuePosition: nil,
-            serverIp: candidate.serverIp,
-            signalingServer: candidate.serverIp,
-            signalingUrl: candidate.serverIp.flatMap { "wss://\($0):443/nvst/" },
-            iceServers: [],
+            serverIp: claimServerIp,
+            mediaIp: mediaConnectionInfo.ip,
+            mediaPort: mediaConnectionInfo.port,
+            signalingServer: signaling.server ?? claimServerIp,
+            signalingUrl: signaling.url ?? claimServerIp.flatMap { "wss://\($0):443/nvst/" },
+            iceServers: iceServers,
             zone: vpcId,
             streamingBaseUrl: zoneBase,
             clientId: clientId,
@@ -1078,6 +914,21 @@ private actor GFNAPIClient {
             }
         }
         return nil
+    }
+
+    private static func extractMediaConnectionInfo(sessionObj: [String: Any]) -> (ip: String?, port: Int) {
+        let connectionInfo = sessionObj["connectionInfo"] as? [[String: Any]] ?? []
+        let mediaConn = connectionInfo.first(where: { ($0["usage"] as? Int) == 1 })
+        let mediaIp: String?
+        if let ip = mediaConn?["ip"] as? String, !ip.isEmpty {
+            mediaIp = ip
+        } else if let ips = mediaConn?["ip"] as? [String], let first = ips.first, !first.isEmpty {
+            mediaIp = first
+        } else {
+            mediaIp = nil
+        }
+        let mediaPort = mediaConn?["port"] as? Int ?? 0
+        return (mediaIp, mediaPort)
     }
 
     private static func resolveSignaling(sessionObj: [String: Any], fallbackServerIp: String?) -> (server: String?, url: String?) {
@@ -1564,8 +1415,6 @@ final class OpenNOWStore: ObservableObject {
     private var telemetryTask: Task<Void, Never>?
     private var sessionPollTask: Task<Void, Never>?
     private var launchTask: Task<Void, Never>?
-    private var signalingClient: GFNSignalingClient?
-    private var signalingClientKey: String?
     private var sessionPollBackgroundTaskId: UIBackgroundTaskIdentifier = .invalid
     private var cachedVpcId: String = "GFN-PC"
 
@@ -1575,7 +1424,11 @@ final class OpenNOWStore: ObservableObject {
     private let setupPhaseTimeoutSeconds: TimeInterval = 90
 
     init() {
-        settings = Self.loadSettings(from: defaults) ?? .default
+        var loadedSettings = Self.loadSettings(from: defaults) ?? .default
+        if loadedSettings.preferredCodec == "HEVC" {
+            loadedSettings.preferredCodec = "H265"
+        }
+        settings = loadedSettings
         authSession = Self.loadAuthSession(from: defaults)
         user = authSession?.user
     }
@@ -1584,7 +1437,6 @@ final class OpenNOWStore: ObservableObject {
         launchTask?.cancel()
         telemetryTask?.cancel()
         sessionPollTask?.cancel()
-        signalingClient?.disconnect()
     }
 
     func bootstrap() async {
@@ -1640,7 +1492,6 @@ final class OpenNOWStore: ObservableObject {
         sessionElapsedSeconds = 0
         showStreamLoading = false
         queueOverlayVisible = false
-        disconnectSignaling()
         defaults.removeObject(forKey: authSessionKey)
     }
 
@@ -1781,7 +1632,6 @@ final class OpenNOWStore: ObservableObject {
         showStreamLoading = false
         queueOverlayVisible = false
         await NotificationManager.shared.cancelSessionNotifications()
-        disconnectSignaling()
         guard let session = authSession, let active = activeSession else {
             activeSession = nil
             streamSession = nil
@@ -1825,6 +1675,10 @@ final class OpenNOWStore: ObservableObject {
         if let encoded = try? JSONEncoder().encode(settings) {
             defaults.set(encoded, forKey: settingsKey)
         }
+    }
+
+    var authProviderCode: String? {
+        authSession?.provider.code
     }
 
     func formattedSessionElapsed() -> String {
@@ -1962,68 +1816,6 @@ final class OpenNOWStore: ObservableObject {
 
     private func isReadyForStreamer(_ session: ActiveSession) -> Bool {
         session.status == 2 || session.status == 3
-    }
-
-    private func connectSignalingIfNeeded(for session: ActiveSession) async {
-        guard let signalingServer = signalingServerHost(for: session) else {
-            logger.error("Cannot connect signaling: missing signaling server for session id=\(session.id, privacy: .public)")
-            return
-        }
-        let signalingUrl = "wss://\(signalingServer):443/nvst/"
-        let nextKey = "\(session.id)|\(signalingServer)|\(signalingUrl)"
-        if signalingClientKey == nextKey {
-            return
-        }
-        disconnectSignaling()
-        logger.info(
-            "Connecting signaling sessionId=\(session.id, privacy: .public) server=\(signalingServer, privacy: .public) url=\(signalingUrl, privacy: .public)"
-        )
-        let client = GFNSignalingClient(signalingServer: signalingServer, sessionId: session.id, signalingUrl: signalingUrl)
-        client.onEvent { [weak self] event in
-            guard let self else { return }
-            Task { @MainActor in
-                switch event {
-                case .connected:
-                    self.logger.info("Signaling connected for session id=\(session.id, privacy: .public)")
-                case .disconnected(let reason):
-                    self.logger.info("Signaling disconnected reason=\(reason, privacy: .public)")
-                case .offer(let sdp):
-                    self.logger.notice("Signaling offer received (len=\(sdp.count)). WebRTC client not wired in iOS target yet.")
-                case .remoteIce(let candidate):
-                    self.logger.debug("Remote ICE candidate received: \(candidate, privacy: .public)")
-                case .log(let message):
-                    self.logger.debug("Signaling log: \(message, privacy: .public)")
-                case .failure(let message):
-                    self.logger.error("Signaling failure: \(message, privacy: .public)")
-                }
-            }
-        }
-
-        do {
-            try await client.connect()
-            signalingClient = client
-            signalingClientKey = nextKey
-        } catch {
-            logger.error("Signaling connect failed: \(error.localizedDescription, privacy: .public)")
-            signalingClient = nil
-            signalingClientKey = nil
-        }
-    }
-
-    private func disconnectSignaling() {
-        signalingClient?.disconnect()
-        signalingClient = nil
-        signalingClientKey = nil
-    }
-
-    private func signalingServerHost(for session: ActiveSession) -> String? {
-        if let ip = session.serverIp?.trimmingCharacters(in: .whitespacesAndNewlines), !ip.isEmpty {
-            return ip
-        }
-        guard let host = URL(string: session.streamingBaseUrl)?.host else {
-            return nil
-        }
-        return host
     }
 
     private func refreshSessionPollBackgroundTask() {

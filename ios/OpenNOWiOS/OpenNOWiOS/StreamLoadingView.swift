@@ -51,16 +51,8 @@ struct StreamLoadingView: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color.black.opacity(0.98),
-                    Color(red: 0.06, green: 0.06, blue: 0.08),
-                    Color.black.opacity(0.96)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
+            Color(.systemBackground)
+                .ignoresSafeArea()
 
             VStack(spacing: 24) {
                 Spacer()
@@ -84,7 +76,7 @@ struct StreamLoadingView: View {
 
                 Text(statusMessage)
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.82))
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
 
                 ProgressView()
@@ -125,9 +117,16 @@ struct StreamLoadingView: View {
     private var gameHeader: some View {
         VStack(spacing: 14) {
             ZStack {
-                Circle()
-                    .fill(Color.white.opacity(0.06))
-                    .frame(width: 92, height: 92)
+                if #available(iOS 26, *) {
+                    Circle()
+                        .fill(.regularMaterial)
+                        .glassEffect(in: Circle())
+                        .frame(width: 92, height: 92)
+                } else {
+                    Circle()
+                        .fill(Color.secondary.opacity(0.12))
+                        .frame(width: 92, height: 92)
+                }
 
                 if let session = store.activeSession {
                     Image(systemName: session.game.icon)
@@ -143,7 +142,7 @@ struct StreamLoadingView: View {
             VStack(spacing: 4) {
                 Text(store.activeSession?.game.title ?? "Preparing your game")
                     .font(.title2.bold())
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                     .multilineTextAlignment(.center)
 
                 Text(store.activeSession?.game.platform ?? "Cloud Gaming")
@@ -182,7 +181,7 @@ struct StreamLoadingView: View {
 
                 if index < steps.count - 1 {
                     Rectangle()
-                        .fill(connectorColor(after: index))
+                        .fill(connectorGradient(after: index))
                         .frame(width: 24, height: 2)
                         .padding(.bottom, 26)
                 }
@@ -208,17 +207,29 @@ struct StreamLoadingView: View {
         switch state {
         case .pending:
             Circle()
-                .fill(Color.white.opacity(0.12))
+                .fill(Color.secondary.opacity(0.12))
                 .overlay(
                     Circle()
-                        .stroke(Color.white.opacity(0.2), lineWidth: 2)
+                        .stroke(Color.secondary.opacity(0.2), lineWidth: 2)
                 )
         case .active:
-            Circle()
-                .fill(brandAccent)
-                .scaleEffect(pulsing ? 1.15 : 1.0)
-                .opacity(pulsing ? 0.92 : 1.0)
-                .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulsing)
+            Group {
+                if #available(iOS 26, *) {
+                    Circle()
+                        .fill(.regularMaterial)
+                        .glassEffect(in: Circle())
+                        .overlay(
+                            Circle()
+                                .stroke(brandAccent.opacity(0.55), lineWidth: 1.5)
+                        )
+                } else {
+                    Circle()
+                        .fill(brandAccent)
+                }
+            }
+            .scaleEffect(pulsing ? 1.15 : 1.0)
+            .opacity(pulsing ? 0.92 : 1.0)
+            .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulsing)
         case .completed:
             Circle()
                 .fill(brandAccent.opacity(0.35))
@@ -232,8 +243,10 @@ struct StreamLoadingView: View {
     private func iconColor(for state: StepState) -> Color {
         switch state {
         case .pending:
-            return Color.white.opacity(0.4)
-        case .active, .completed:
+            return .secondary.opacity(0.7)
+        case .active:
+            return brandAccent
+        case .completed:
             return .white
         }
     }
@@ -241,21 +254,24 @@ struct StreamLoadingView: View {
     private func labelColor(for state: StepState) -> Color {
         switch state {
         case .pending:
-            return Color.white.opacity(0.4)
+            return .secondary
         case .active:
-            return .white
+            return .primary
         case .completed:
             return brandAccent
         }
     }
 
-    private func connectorColor(after index: Int) -> Color {
+    private func connectorGradient(after index: Int) -> LinearGradient {
+        let startColor: Color = stepState(index: index) == .completed ? brandAccent : .secondary.opacity(0.2)
+        let endColor: Color
         switch stepState(index: index + 1) {
         case .pending:
-            return Color.white.opacity(0.15)
+            endColor = .secondary.opacity(0.2)
         case .active, .completed:
-            return brandAccent
+            endColor = brandAccent
         }
+        return LinearGradient(colors: [startColor, endColor], startPoint: .leading, endPoint: .trailing)
     }
 }
 

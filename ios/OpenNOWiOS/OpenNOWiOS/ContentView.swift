@@ -56,12 +56,14 @@ struct MainTabView: View {
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
         }
         .tint(brandAccent)
-        .fullScreenCover(isPresented: $store.queueOverlayVisible) {
+        .fullScreenCover(isPresented: $store.queueOverlayVisible.transaction { transaction in
+            transaction.animation = transaction.animation?.delay(0.15)
+        }) {
             StreamLoadingView()
                 .environmentObject(store)
         }
         .fullScreenCover(item: $store.streamSession) { session in
-            StreamerView(session: session) {
+            StreamerView(session: session, settings: store.settings) {
                 store.dismissStreamer()
             }
         }
@@ -151,6 +153,7 @@ private struct QueueStatusPill: View {
         }
         .padding(.horizontal, 10)
         .queuePillBackground()
+        .shadow(color: brandAccent.opacity(0.12), radius: 8, y: 2)
         .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
         .padding(.horizontal, 16)
         .onAppear {
