@@ -526,7 +526,7 @@ function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest
       requestedStreamingFeatures: {
         reflex: input.settings.fps >= 120,
         bitDepth,
-        cloudGsync: false,
+        cloudGsync: input.settings.enableCloudGsync,
         enabledL4S: input.settings.enableL4S,
         mouseMovementFlags: 0,
         trueHdr: hdrEnabled,
@@ -1239,8 +1239,8 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
       requestedStreamingFeatures: {
         reflex: false,
         bitDepth: 0,
+        // RESUME claims must not renegotiate session creation-only streaming features.
         cloudGsync: false,
-        enabledL4S: false,
         profile: 0,
         fallbackToLogicalResolution: false,
         chromaFormat: 0,
@@ -1275,6 +1275,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
     gameLanguage: "en_US",
     enableL4S: false,
+    enableCloudGsync: false,
   };
   const keyboardLayout = resolveGfnKeyboardLayout(settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);
   const languageCode = settings.gameLanguage ?? "en_US";

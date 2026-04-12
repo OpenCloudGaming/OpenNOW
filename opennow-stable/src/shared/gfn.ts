@@ -168,6 +168,8 @@ export interface Settings {
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
+  /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
+  enableCloudGsync: boolean;
   /** Show the currently streaming game as Discord Rich Presence activity */
   discordRichPresence: boolean;
 }
@@ -369,6 +371,8 @@ export interface StreamSettings {
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
+  /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
+  enableCloudGsync: boolean;
 }
 
 export interface SessionCreateRequest {

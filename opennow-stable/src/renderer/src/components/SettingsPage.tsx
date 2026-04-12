@@ -1460,6 +1460,28 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               </span>
             </div>
 
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top settings-row-top--compact">
+                <label className="settings-label settings-label--wrap">
+                  <span className="settings-label-title">
+                    Cloud G-Sync / Variable Refresh Rate
+                    <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
+                  </span>
+                </label>
+                <label className="settings-toggle">
+                  <input
+                    type="checkbox"
+                    checked={settings.enableCloudGsync}
+                    onChange={(e) => handleChange("enableCloudGsync", e.target.checked)}
+                  />
+                  <span className="settings-toggle-track" />
+                </label>
+              </div>
+              <span className="settings-subtle-hint">
+                Request Cloud G-Sync (VRR) on newly created sessions. Smooths frame pacing on variable frame rate streams. Requires a VRR-capable display. The service may ignore this request depending on your subscription tier.
+              </span>
+            </div>
+
           </div>
         </section>
 
