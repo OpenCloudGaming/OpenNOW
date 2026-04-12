@@ -1340,7 +1340,6 @@ final class OpenNOWStore: ObservableObject {
             startSessionTasks()
             lastError = nil
         } catch is CancellationError {
-            showStreamLoading = false
             return
         } catch {
             showStreamLoading = false
@@ -1393,7 +1392,6 @@ final class OpenNOWStore: ObservableObject {
             startSessionTasks()
             lastError = nil
         } catch is CancellationError {
-            showStreamLoading = false
             return
         } catch {
             showStreamLoading = false
