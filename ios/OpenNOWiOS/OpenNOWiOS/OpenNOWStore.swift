@@ -1930,10 +1930,10 @@ final class OpenNOWStore: ObservableObject {
                         self.showStreamLoading = true
                     }
                     if self.isReadyForStreamer(polled) && !dismissedOverlayAfterReady {
-                        // iOS currently has no streamer signaling client yet. Do not
-                        // leave users trapped in setup overlay once backend is ready.
+                        // Close the full-screen queue overlay so streamer can present,
+                        // but keep the compact top indicator alive.
                         self.queueOverlayVisible = false
-                        self.showStreamLoading = false
+                        self.showStreamLoading = true
                         dismissedOverlayAfterReady = true
                     }
                 } catch {
