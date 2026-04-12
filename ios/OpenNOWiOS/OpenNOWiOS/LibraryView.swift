@@ -16,6 +16,8 @@ struct LibraryView: View {
                 }
             }
             .navigationTitle("Library")
+            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
         }
         .printedWasteLaunchSheet(pendingGame: $pendingLaunchGame)
     }

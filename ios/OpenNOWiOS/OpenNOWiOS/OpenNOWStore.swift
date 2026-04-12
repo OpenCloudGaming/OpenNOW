@@ -1697,6 +1697,9 @@ final class OpenNOWStore: ObservableObject {
 
     func dismissStreamer() {
         streamSession = nil
+        if activeSession != nil {
+            startSessionTasks()
+        }
     }
 
     func reopenStreamer() {
@@ -1734,7 +1737,7 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
-    private func startSessionTasks() {
+    fileprivate func startSessionTasks() {
         telemetryTask?.cancel()
         sessionPollTask?.cancel()
         endSessionPollBackgroundTask()
