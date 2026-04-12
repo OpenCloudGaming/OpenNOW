@@ -28,17 +28,22 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install GStreamer MSVC SDK
+      - name: Install GStreamer MSVC SDK and pkg-config
         shell: powershell
         run: |
-          choco install -y gstreamer gstreamer-devel
-          $gstRoot = "C:\gstreamer\1.0\msvc_x86_64"
+          choco install -y gstreamer gstreamer-devel pkgconfiglite
+          $candidateRoots = @(
+            "C:\Program Files\gstreamer\1.0\msvc_x86_64",
+            "C:\gstreamer\1.0\msvc_x86_64"
+          )
+          $gstRoot = $candidateRoots | Where-Object { Test-Path (Join-Path $_ "bin") } | Select-Object -First 1
           if (-not (Test-Path "$gstRoot\bin")) {
-            throw "Expected GStreamer installation at $gstRoot"
+            throw "Unable to locate GStreamer installation. Checked: $($candidateRoots -join ', ')"
           }
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "PKG_CONFIG_PATH=$gstRoot\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "PATH=$gstRoot\bin;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PKG_CONFIG=$env:ChocolateyInstall\bin\pkg-config.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PATH=$env:ChocolateyInstall\bin;$gstRoot\bin;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Run Rust tests
         shell: powershell
