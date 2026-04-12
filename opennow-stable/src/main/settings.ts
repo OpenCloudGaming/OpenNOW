@@ -78,6 +78,8 @@ export interface Settings {
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
+  /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
+  enableCloudGsync: boolean;
   /** Show the currently streaming game as Discord Rich Presence activity */
   discordRichPresence: boolean;
 }
@@ -127,6 +129,7 @@ const DEFAULT_SETTINGS: Settings = {
   keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
   gameLanguage: "en_US",
   enableL4S: false,
+  enableCloudGsync: false,
   discordRichPresence: false,
 };
 

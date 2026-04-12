@@ -712,6 +712,7 @@ export function App(): JSX.Element {
     keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
     gameLanguage: "en_US",
     enableL4S: false,
+    enableCloudGsync: false,
     discordRichPresence: false,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -2282,6 +2283,7 @@ export function App(): JSX.Element {
         keyboardLayout: settings.keyboardLayout,
         gameLanguage: settings.gameLanguage,
         enableL4S: settings.enableL4S,
+        enableCloudGsync: settings.enableCloudGsync,
       },
     });
 
@@ -2435,6 +2437,7 @@ export function App(): JSX.Element {
           keyboardLayout: settings.keyboardLayout,
           gameLanguage: settings.gameLanguage,
           enableL4S: settings.enableL4S,
+          enableCloudGsync: settings.enableCloudGsync,
         },
       });
 
@@ -3248,6 +3251,7 @@ export function App(): JSX.Element {
                 fps: settings.fps,
                 codec: settings.codec,
                 enableL4S: settings.enableL4S,
+                enableCloudGsync: settings.enableCloudGsync,
                 microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
@@ -3402,6 +3406,7 @@ export function App(): JSX.Element {
                 fps: settings.fps,
                 codec: settings.codec,
                 enableL4S: settings.enableL4S,
+                enableCloudGsync: settings.enableCloudGsync,
                 microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
