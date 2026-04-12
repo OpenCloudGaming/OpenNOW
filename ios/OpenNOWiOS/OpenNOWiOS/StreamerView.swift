@@ -18,9 +18,10 @@ struct StreamerView: View {
             HStack {
                 Text(statusText)
                     .font(.caption)
-                    .lineLimit(1)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
+                    .background(.regularMaterial, in: Capsule())
+                    .lineLimit(1)
                 Spacer()
                 Button {
                     onClose()
@@ -30,19 +31,6 @@ struct StreamerView: View {
                         .symbolRenderingMode(.hierarchical)
                 }
             }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background {
-                if #available(iOS 26, *) {
-                    Capsule()
-                        .fill(.regularMaterial)
-                        .glassEffect(in: Capsule())
-                } else {
-                    Capsule().fill(.regularMaterial)
-                }
-            }
-            .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
             .padding()
         }
         .background(Color.black.ignoresSafeArea())
@@ -135,28 +123,20 @@ private struct StreamerWebView: UIViewRepresentable {
   <div id="touchHint" style="position:fixed;left:50%;bottom:60px;transform:translateX(-50%);
     color:rgba(255,255,255,0.45);font:11px -apple-system;pointer-events:none;user-select:none;
     text-align:center;transition:opacity 1s;">Drag to move · Tap to click · 2-finger tap to right-click</div>
-  <button id="kbBtn" onclick="toggleKeyboard()" style="position:fixed;right:16px;bottom:20px;z-index:20;
-    width:52px;height:52px;border-radius:50%;
-    background:rgba(30,30,30,0.55);color:#fff;
-    border:1px solid rgba(255,255,255,0.18);font-size:22px;cursor:pointer;
-    backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);
-    box-shadow:0 4px 16px rgba(0,0,0,0.35);">⌨</button>
+  <button id="kbBtn" onclick="toggleKeyboard()" style="position:fixed;right:16px;bottom:16px;z-index:20;
+    width:48px;height:48px;border-radius:50%;background:rgba(30,30,30,0.75);color:#fff;
+    border:1px solid rgba(255,255,255,0.25);font-size:22px;cursor:pointer;
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">⌨</button>
   <div id="kbBar" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:30;
-    background:rgba(18,18,20,0.75);
-    backdrop-filter:blur(30px) saturate(180%);-webkit-backdrop-filter:blur(30px) saturate(180%);
-    padding:10px 16px calc(10px + env(safe-area-inset-bottom));
-    border-top:0.5px solid rgba(255,255,255,0.12);">
-    <div style="display:flex;gap:10px;align-items:center;">
+    background:rgba(20,20,20,0.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+    padding:8px 12px;border-top:1px solid rgba(255,255,255,0.1);">
+    <div style="display:flex;gap:8px;align-items:center;">
       <input id="kbInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="none"
         spellcheck="false" placeholder="Type here…"
-        style="flex:1;background:rgba(60,60,70,0.6);color:#fff;
-          border:0.5px solid rgba(255,255,255,0.15);
-          border-radius:10px;padding:9px 14px;font-size:16px;outline:none;">
-      <button onclick="hideKeyboard()" style="padding:9px 16px;
-        background:rgba(80,80,90,0.5);color:#fff;
-        border:0.5px solid rgba(255,255,255,0.12);border-radius:10px;
-        font-size:14px;cursor:pointer;
-        backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);">Done</button>
+        style="flex:1;background:#2a2a2a;color:#fff;border:1px solid rgba(255,255,255,0.2);
+          border-radius:8px;padding:8px 12px;font-size:16px;outline:none;">
+      <button onclick="hideKeyboard()" style="padding:8px 14px;background:#333;color:#fff;
+        border:none;border-radius:8px;font-size:14px;cursor:pointer;">Done</button>
     </div>
   </div>
   <script>
@@ -748,9 +728,6 @@ private struct StreamerWebView: UIViewRepresentable {
   let lastTX = 0, lastTY = 0;
   let tStartTime = 0, tMoved = false;
   let twoFingerStart = 0;
-  var accDX = 0, accDY = 0;
-  var intentionalClose = false;
-  var reconnectTimer = null;
   const touchpad = document.getElementById('touchpad');
   const touchHint = document.getElementById('touchHint');
 
@@ -762,7 +739,7 @@ private struct StreamerWebView: UIViewRepresentable {
     kbBar.style.display = 'block';
     kbInput.value = '';
     kbPrevLen = 0;
-    kbInput.focus();
+    setTimeout(() => kbInput.focus(), 80);
   }
   function hideKeyboard() {
     kbBar.style.display = 'none';
@@ -820,28 +797,18 @@ private struct StreamerWebView: UIViewRepresentable {
     lastTY = t.clientY;
     tStartTime = Date.now();
     tMoved = false;
-    accDX = 0;
-    accDY = 0;
-    if (e.touches.length === 2) {
-      twoFingerStart = Date.now();
-      lastTX = e.touches[0].clientX;
-      lastTY = e.touches[0].clientY;
-    }
+    if (e.touches.length === 2) twoFingerStart = Date.now();
   }, { passive: false });
 
   touchpad.addEventListener('touchmove', (e) => {
     e.preventDefault();
     if (e.touches.length > 1) return;
     const t = e.touches[0];
-    accDX += (t.clientX - lastTX) * 2.0;
-    accDY += (t.clientY - lastTY) * 2.0;
+    const dx = Math.round((t.clientX - lastTX) * 2.5);
+    const dy = Math.round((t.clientY - lastTY) * 2.5);
     lastTX = t.clientX;
     lastTY = t.clientY;
-    const dx = Math.trunc(accDX);
-    const dy = Math.trunc(accDY);
-    accDX -= dx;
-    accDY -= dy;
-    if ((dx !== 0 || dy !== 0) && inputReady) {
+    if ((Math.abs(dx) > 0 || Math.abs(dy) > 0) && inputReady) {
       tMoved = true;
       sendPartialInput(encodeMouseMove(dx, dy));
     }
@@ -849,8 +816,6 @@ private struct StreamerWebView: UIViewRepresentable {
 
   touchpad.addEventListener('touchend', (e) => {
     e.preventDefault();
-    accDX = 0;
-    accDY = 0;
     if (!inputReady) return;
     const holdMs = Date.now() - tStartTime;
     if (!tMoved && holdMs < 500) {
@@ -906,16 +871,11 @@ private struct StreamerWebView: UIViewRepresentable {
       ws.onclose = (event) => {
         post('status', 'Signaling closed (' + event.code + ')');
         inputReady = false;
-        if (hb) { clearInterval(hb); hb = null; }
         if (hbInput) { clearInterval(hbInput); hbInput = null; }
-        if (reliableCh) { try { reliableCh.close(); } catch (_) {} reliableCh = null; }
-        if (partialCh) { try { partialCh.close(); } catch (_) {} partialCh = null; }
-        if (pc) { try { pc.close(); } catch (_) {} pc = null; }
-        if (!intentionalClose) {
-          if (reconnectTimer) clearTimeout(reconnectTimer);
-          post('status', 'Reconnecting in 2.5 s…');
-          reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 2500);
-        }
+        if (reliableCh) { try { reliableCh.close(); } catch (_) {} }
+        if (partialCh) { try { partialCh.close(); } catch (_) {} }
+        reliableCh = null;
+        partialCh = null;
       };
     } catch (error) {
       fail('Signaling setup failed: ' + String(error));
@@ -951,20 +911,10 @@ private struct StreamerWebView: UIViewRepresentable {
         let longSide = max(nativeBounds.width, nativeBounds.height)
         let shortSide = min(nativeBounds.width, nativeBounds.height)
         let supports1440 = longSide >= 2500 || shortSide >= 1400 || UIScreen.main.nativeScale >= 3.0
-        switch settings.preferredQuality {
-        case "Data Saver":
-            return StreamProfile(width: 1280, height: 720, maxBitrateKbps: 15000)
-        case "Quality":
-            if supports1440 {
-                return StreamProfile(width: 2560, height: 1440, maxBitrateKbps: 50000)
-            }
-            return StreamProfile(width: 1920, height: 1080, maxBitrateKbps: 40000)
-        default:
-            if settings.preferredFPS >= 120 && supports1440 {
-                return StreamProfile(width: 2560, height: 1440, maxBitrateKbps: 50000)
-            }
-            return StreamProfile(width: 1920, height: 1080, maxBitrateKbps: 30000)
+        if settings.preferredFPS >= 120 && supports1440 {
+            return StreamProfile(width: 2560, height: 1440, maxBitrateKbps: 50000)
         }
+        return StreamProfile(width: 1920, height: 1080, maxBitrateKbps: 30000)
     }
 
     final class Coordinator: NSObject, WKScriptMessageHandler {

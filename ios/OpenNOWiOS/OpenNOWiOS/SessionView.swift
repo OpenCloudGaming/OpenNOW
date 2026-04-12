@@ -27,8 +27,6 @@ struct SessionView: View {
                 .padding(.vertical, 8)
             }
             .navigationTitle("Session")
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -204,19 +202,9 @@ struct SessionView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
                 .font(.headline)
-                .foregroundStyle(.white)
         }
-        .buttonStyle(.plain)
-        .background {
-            if #available(iOS 26, *) {
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(.red.opacity(0.7))
-                    .glassEffect(in: RoundedRectangle(cornerRadius: 14))
-            } else {
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(.red.opacity(0.85))
-            }
-        }
+        .buttonStyle(.bordered)
+        .tint(.red)
     }
 
     private var noSessionState: some View {
