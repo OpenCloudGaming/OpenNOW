@@ -76,6 +76,17 @@ struct PrintedWasteQueueView: View {
         }
     }
 
+    @ViewBuilder
+    private var glassRowBackground: some View {
+        if #available(iOS 26, *) {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .glassEffect(in: Rectangle())
+        } else {
+            Color(.secondarySystemGroupedBackground).opacity(0.7)
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -107,12 +118,12 @@ struct PrintedWasteQueueView: View {
                     List {
                         Section {
                             header
-                                .listRowBackground(Color(.secondarySystemGroupedBackground).opacity(0.7))
+                                .listRowBackground(glassRowBackground)
                         }
 
                         Section("Routing") {
                             routingRow
-                                .listRowBackground(Color(.secondarySystemGroupedBackground).opacity(0.7))
+                                .listRowBackground(glassRowBackground)
                         }
 
                         ForEach(groupedZones, id: \.region) { group in
@@ -130,17 +141,20 @@ struct PrintedWasteQueueView: View {
                                         )
                                     }
                                     .buttonStyle(.plain)
-                                    .listRowBackground(Color(.secondarySystemGroupedBackground).opacity(0.7))
+                                    .listRowBackground(glassRowBackground)
                                 }
                             }
                         }
                     }
                     .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
                 }
             }
             .animation(.spring(response: 0.35), value: isLoading)
             .navigationTitle("Choose Server")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") {
@@ -182,7 +196,9 @@ struct PrintedWasteQueueView: View {
             }
             Spacer()
         }
-        .padding(.vertical, 6)
+        .padding(12)
+        .glassCard()
+        .padding(.vertical, 2)
     }
 
     private var routingRow: some View {
@@ -217,6 +233,7 @@ struct PrintedWasteQueueView: View {
                         } else {
                             Capsule()
                                 .fill(.ultraThinMaterial)
+                                .glassEffect(in: Capsule())
                         }
                     } else {
                         if isSelected {
@@ -393,18 +410,12 @@ private struct ZoneRow: View {
                 }
                 pingBadge
                 if isSelected {
-                    ZStack {
-                        Circle()
-                            .fill(brandAccent)
-                            .frame(width: 22, height: 22)
-                        Image(systemName: "checkmark")
-                            .font(.caption2.bold())
-                            .foregroundStyle(.white)
-                    }
+                    selectedBadge
                 }
             }
         }
         .padding(.vertical, 2)
+        .contentShape(Rectangle())
     }
 
     private var queueBadge: some View {
@@ -416,7 +427,16 @@ private struct ZoneRow: View {
             .frame(minWidth: 42)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .background(queueColor(zone.queuePosition).opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
+            .background {
+                if #available(iOS 26, *) {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(queueColor(zone.queuePosition).opacity(0.15))
+                        .glassEffect(in: RoundedRectangle(cornerRadius: 8))
+                } else {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(queueColor(zone.queuePosition).opacity(0.2))
+                }
+            }
     }
 
     private var pingBadge: some View {
@@ -438,7 +458,16 @@ private struct ZoneRow: View {
         .minimumScaleFactor(0.85)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(pingBadgeColor, in: Capsule())
+        .background {
+            if #available(iOS 26, *) {
+                Capsule()
+                    .fill(pingBadgeColor)
+                    .glassEffect(in: Capsule())
+            } else {
+                Capsule()
+                    .fill(pingBadgeColor)
+            }
+        }
     }
 
     private var pingBadgeColor: Color {
@@ -456,7 +485,38 @@ private struct ZoneRow: View {
             .minimumScaleFactor(0.85)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(color.opacity(0.18), in: Capsule())
+            .background {
+                if #available(iOS 26, *) {
+                    Capsule()
+                        .fill(color.opacity(0.15))
+                        .glassEffect(in: Capsule())
+                } else {
+                    Capsule()
+                        .fill(color.opacity(0.18))
+                }
+            }
+    }
+
+    private var selectedBadge: some View {
+        ZStack {
+            if #available(iOS 26, *) {
+                Circle()
+                    .fill(.regularMaterial)
+                    .glassEffect(in: Circle())
+                    .overlay(Circle().stroke(brandAccent, lineWidth: 2))
+                    .frame(width: 22, height: 22)
+                Image(systemName: "checkmark")
+                    .font(.caption2.bold())
+                    .foregroundStyle(brandAccent)
+            } else {
+                Circle()
+                    .fill(brandAccent)
+                    .frame(width: 22, height: 22)
+                Image(systemName: "checkmark")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.white)
+            }
+        }
     }
 
     private func smallIconBadge(icon: String, color: Color) -> some View {
