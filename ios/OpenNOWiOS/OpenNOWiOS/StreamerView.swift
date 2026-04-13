@@ -818,6 +818,7 @@ private struct StreamerWebView: UIViewRepresentable {
 	        video.srcObject = stream;
 	      }
 	      video.muted = true;
+	      tap.style.display = 'block';
 	      const tryPlay = () => video.play().catch(() => setTimeout(tryPlay, 500));
 	      tryPlay();
 	      post('status', 'Streamer connected');
