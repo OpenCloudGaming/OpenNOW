@@ -365,10 +365,11 @@ struct PrintedWasteQueueView: View {
                 return batchResults
             }
 
-            for (zoneId, pingMs) in results {
-                if let index = zones.firstIndex(where: { $0.id == zoneId }) {
-                    zones[index].pingMs = pingMs
-                    zones[index].isMeasuring = false
+            let resultMap = Dictionary(uniqueKeysWithValues: results)
+            for i in zones.indices {
+                if let pingMs = resultMap[zones[i].id] {
+                    zones[i].pingMs = pingMs
+                    zones[i].isMeasuring = false
                 }
             }
         }
@@ -449,6 +450,7 @@ private struct ZoneRow: View {
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
+                        .layoutPriority(1)
                     Text(zone.regionSuffix)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -480,6 +482,7 @@ private struct ZoneRow: View {
                     }
                 }
             }
+            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.vertical, 2)
     }
@@ -489,8 +492,7 @@ private struct ZoneRow: View {
             .font(.caption.weight(.bold))
             .foregroundStyle(queueColor(zone.queuePosition))
             .lineLimit(1)
-            .minimumScaleFactor(0.9)
-            .frame(minWidth: 42)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .liquidBadgeBackground(tint: queueColor(zone.queuePosition), cornerRadius: 8)
