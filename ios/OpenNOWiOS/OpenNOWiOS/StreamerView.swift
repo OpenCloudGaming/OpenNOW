@@ -1649,6 +1649,24 @@ private struct StreamerWebView: UIViewRepresentable {
     tap.style.display = 'none';
     try { await video.play(); } catch (_) {}
   };
+  // GPU keep-alive: prevents WKWebView GPUProcess idle-exit during WebRTC negotiation.
+  // Without active GPU work, iOS terminates the GPU process before video frames arrive,
+  // crashing the stream. A minimal WebGL rAF loop keeps the process alive until playing.
+  (function() {
+    var c = document.createElement('canvas');
+    c.width = c.height = 1;
+    c.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;z-index:-1;';
+    document.body.appendChild(c);
+    var gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+    if (!gl) { c.remove(); return; }
+    var rafId = null;
+    function loop() { gl.clear(gl.COLOR_BUFFER_BIT); rafId = requestAnimationFrame(loop); }
+    loop();
+    video.addEventListener('playing', function() {
+      if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+      c.remove();
+    }, { once: true });
+  })();
   connect();
   </script>
 </body>
