@@ -1739,7 +1739,7 @@ final class OpenNOWStore: ObservableObject {
 
     var canReopenStreamer: Bool {
         guard let active = activeSession else { return false }
-        return (active.status == 2 || active.status == 3) && streamSession == nil
+        return active.status == 3 && streamSession == nil
     }
 
     func dismissStreamer() {
@@ -1747,7 +1747,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func reopenStreamer() {
-        guard let active = activeSession, active.status == 2 || active.status == 3 else { return }
+        guard let active = activeSession, active.status == 3 else { return }
         streamSession = active
     }
 
@@ -1895,7 +1895,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func isReadyForStreamer(_ session: ActiveSession) -> Bool {
-        session.status == 2 || session.status == 3
+        session.status == 3
     }
 
     private func refreshSessionPollBackgroundTask() {
