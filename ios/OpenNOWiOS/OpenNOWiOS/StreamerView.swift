@@ -7,12 +7,25 @@ struct StreamerView: View {
     let settings: AppSettings
     let onClose: () -> Void
     @State private var statusText = "Connecting streamer..."
+    @State private var showReconnect = false
+    @State private var webView: WKWebView?
 
     var body: some View {
         ZStack(alignment: .top) {
-            StreamerWebView(session: session, settings: settings) { event in
-                statusText = event
-            }
+            StreamerWebView(
+                session: session,
+                settings: settings,
+                onEvent: { event in
+                    statusText = event
+                    showReconnect = event.contains("Reconnecting")
+                        || event.contains("closed")
+                        || event.contains("failed")
+                        || event.contains("Error")
+                },
+                onWebViewReady: { readyWebView in
+                    webView = readyWebView
+                }
+            )
             .ignoresSafeArea()
 
             HStack {
@@ -23,6 +36,17 @@ struct StreamerView: View {
                     .background(.regularMaterial, in: Capsule())
                     .lineLimit(1)
                 Spacer()
+                if showReconnect {
+                    Button {
+                        webView?.evaluateJavaScript("manualReconnect()")
+                        showReconnect = false
+                    } label: {
+                        Image(systemName: "arrow.clockwise.circle.fill")
+                            .font(.title2)
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.yellow)
+                    }
+                }
                 Button {
                     onClose()
                 } label: {
@@ -41,6 +65,7 @@ private struct StreamerWebView: UIViewRepresentable {
     let session: ActiveSession
     let settings: AppSettings
     let onEvent: (String) -> Void
+    let onWebViewReady: (WKWebView) -> Void
 
     private struct StreamProfile {
         let width: Int
@@ -63,6 +88,9 @@ private struct StreamerWebView: UIViewRepresentable {
         webView.backgroundColor = .black
         webView.scrollView.isScrollEnabled = false
         webView.loadHTMLString(buildHTML(for: session, settings: settings), baseURL: nil)
+        DispatchQueue.main.async {
+            onWebViewReady(webView)
+        }
         return webView
     }
 
@@ -123,36 +151,84 @@ private struct StreamerWebView: UIViewRepresentable {
   <div id="touchHint" style="position:fixed;left:50%;bottom:60px;transform:translateX(-50%);
     color:rgba(255,255,255,0.45);font:11px -apple-system;pointer-events:none;user-select:none;
     text-align:center;transition:opacity 1s;">Drag to move · Tap to click · 2-finger tap to right-click</div>
-  <button id="kbBtn" onclick="toggleKeyboard()" style="position:fixed;right:16px;bottom:16px;z-index:20;
-    width:48px;height:48px;border-radius:50%;background:rgba(30,30,30,0.75);color:#fff;
-    border:1px solid rgba(255,255,255,0.25);font-size:22px;cursor:pointer;
-    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">⌨</button>
-  <div id="kbBar" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:30;
-    background:rgba(20,20,20,0.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-    padding:8px 12px;border-top:1px solid rgba(255,255,255,0.1);">
-    <div style="display:flex;gap:8px;align-items:center;">
-      <input id="kbInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="none"
-        spellcheck="false" placeholder="Type here…"
-        style="flex:1;background:#2a2a2a;color:#fff;border:1px solid rgba(255,255,255,0.2);
-          border-radius:8px;padding:8px 12px;font-size:16px;outline:none;">
-      <button onclick="hideKeyboard()" style="padding:8px 14px;background:#333;color:#fff;
-        border:none;border-radius:8px;font-size:14px;cursor:pointer;">Done</button>
-    </div>
-  </div>
-  <script>
+	  <button id="gpBtn" style="position:fixed;right:72px;bottom:16px;z-index:20;
+	    width:48px;height:48px;border-radius:50%;background:rgba(30,30,30,0.75);color:#fff;
+	    border:1px solid rgba(255,255,255,0.25);font-size:22px;cursor:pointer;
+	    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">🎮</button>
+	  <button id="kbBtn" style="position:fixed;right:16px;bottom:16px;z-index:20;
+	    width:48px;height:48px;border-radius:50%;background:rgba(30,30,30,0.75);color:#fff;
+	    border:1px solid rgba(255,255,255,0.25);font-size:22px;cursor:pointer;
+	    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">⌨</button>
+	  <div id="kbBar" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:30;
+	    background:rgba(20,20,20,0.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+	    padding:8px 12px;border-top:1px solid rgba(255,255,255,0.1);">
+	    <div style="display:flex;gap:8px;align-items:center;">
+	      <input id="kbInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="none"
+	        inputmode="text" spellcheck="false" placeholder="Type here…" readonly
+	        style="flex:1;background:#2a2a2a;color:#fff;border:1px solid rgba(255,255,255,0.2);
+	          border-radius:8px;padding:8px 12px;font-size:16px;outline:none;">
+	      <button id="kbDoneBtn" style="padding:8px 14px;background:#333;color:#fff;
+	        border:none;border-radius:8px;font-size:14px;cursor:pointer;">Done</button>
+	    </div>
+	  </div>
+	  <div id="gamepadOverlay" style="display:none;position:fixed;inset:0;z-index:15;pointer-events:none;">
+	    <div id="gpLeftStick" style="position:fixed;left:20px;bottom:110px;width:110px;height:110px;border-radius:50%;
+	      background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.18);pointer-events:all;
+	      backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">
+	      <div id="gpLeftStickDot" style="position:absolute;left:40px;top:40px;width:30px;height:30px;border-radius:50%;
+	        background:rgba(255,255,255,0.28);"></div>
+	    </div>
+	    <div id="gpRightStick" style="position:fixed;right:20px;bottom:110px;width:110px;height:110px;border-radius:50%;
+	      background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.18);pointer-events:all;
+	      backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">
+	      <div id="gpRightStickDot" style="position:absolute;left:40px;top:40px;width:30px;height:30px;border-radius:50%;
+	        background:rgba(255,255,255,0.28);"></div>
+	    </div>
+	    <button data-gp-button="12" style="position:fixed;left:44px;bottom:238px;width:42px;height:42px;border:none;border-radius:50%;
+	      background:rgba(255,255,255,0.12);color:#fff;font-size:18px;pointer-events:all;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">↑</button>
+	    <button data-gp-button="13" style="position:fixed;left:44px;bottom:144px;width:42px;height:42px;border:none;border-radius:50%;
+	      background:rgba(255,255,255,0.12);color:#fff;font-size:18px;pointer-events:all;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">↓</button>
+	    <button data-gp-button="14" style="position:fixed;left:0;bottom:191px;width:42px;height:42px;border:none;border-radius:50%;
+	      background:rgba(255,255,255,0.12);color:#fff;font-size:18px;pointer-events:all;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">←</button>
+	    <button data-gp-button="15" style="position:fixed;left:88px;bottom:191px;width:42px;height:42px;border:none;border-radius:50%;
+	      background:rgba(255,255,255,0.12);color:#fff;font-size:18px;pointer-events:all;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">→</button>
+	    <button data-gp-button="3" style="position:fixed;right:56px;bottom:238px;width:44px;height:44px;border:none;border-radius:50%;
+	      background:rgba(255,255,255,0.12);color:#fff;font-size:18px;pointer-events:all;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">Y</button>
+	    <button data-gp-button="0" style="position:fixed;right:56px;bottom:144px;width:44px;height:44px;border:none;border-radius:50%;
+	      background:rgba(255,255,255,0.12);color:#fff;font-size:18px;pointer-events:all;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">A</button>
+	    <button data-gp-button="2" style="position:fixed;right:100px;bottom:191px;width:44px;height:44px;border:none;border-radius:50%;
+	      background:rgba(255,255,255,0.12);color:#fff;font-size:18px;pointer-events:all;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">X</button>
+	    <button data-gp-button="1" style="position:fixed;right:12px;bottom:191px;width:44px;height:44px;border:none;border-radius:50%;
+	      background:rgba(255,255,255,0.12);color:#fff;font-size:18px;pointer-events:all;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">B</button>
+	    <button data-gp-button="4" style="position:fixed;left:20px;top:18px;width:92px;height:36px;border:none;border-radius:18px;
+	      background:rgba(255,255,255,0.12);color:#fff;font-size:15px;pointer-events:all;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">L</button>
+	    <button data-gp-button="5" style="position:fixed;right:20px;top:18px;width:92px;height:36px;border:none;border-radius:18px;
+	      background:rgba(255,255,255,0.12);color:#fff;font-size:15px;pointer-events:all;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">R</button>
+	    <button data-gp-button="8" style="position:fixed;left:calc(50% - 76px);bottom:184px;width:64px;height:34px;border:none;border-radius:17px;
+	      background:rgba(255,255,255,0.12);color:#fff;font-size:13px;pointer-events:all;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">Select</button>
+	    <button data-gp-button="9" style="position:fixed;left:calc(50% + 12px);bottom:184px;width:64px;height:34px;border:none;border-radius:17px;
+	      background:rgba(255,255,255,0.12);color:#fff;font-size:13px;pointer-events:all;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);">Start</button>
+	  </div>
+	  <script>
   const cfg = \#(payload);
-  const video = document.getElementById("video");
-  const tap = document.getElementById("tap");
-  let ws = null;
-  let pc = null;
-  let ack = 0;
-  let hb = null;
-  let hbInput = null;
-  let reliableCh = null;
-  let partialCh = null;
-  let inputReady = false;
-  const peerId = 2;
-  const peerName = "peer-" + Math.floor(Math.random() * 1e10);
+	  const video = document.getElementById("video");
+	  const tap = document.getElementById("tap");
+	  let ws = null;
+	  let pc = null;
+	  let ack = 0;
+	  let hb = null;
+	  let hbInput = null;
+	  let reliableCh = null;
+	  let partialCh = null;
+	  let inputReady = false;
+	  let reconnectTimer = null;
+	  let reconnectAttempt = 0;
+	  let isReconnecting = false;
+	  let lastMouseSentAt = 0;
+	  let gamepadActive = false;
+	  let prevGamepadState = null;
+	  const peerId = 2;
+	  const peerName = "peer-" + Math.floor(Math.random() * 1e10);
 
   function post(type, message) {
     try { window.webkit.messageHandlers.opennow.postMessage({ type, message }); } catch (_) {}
@@ -253,18 +329,41 @@ private struct StreamerWebView: UIViewRepresentable {
     writeTimestampBE(v, 14);
     return buf;
   }
-  function encodeMouseButton(type, button) {
-    const buf = new ArrayBuffer(18);
-    const v = new DataView(buf);
-    v.setUint32(0, type, true);
-    v.setUint8(4, button);
-    writeTimestampBE(v, 10);
-    return buf;
-  }
-  function normalizeCodec(name) {
-    const upper = String(name || '').toUpperCase();
-    return upper === 'HEVC' ? 'H265' : upper;
-  }
+	  function encodeMouseButton(type, button) {
+	    const buf = new ArrayBuffer(18);
+	    const v = new DataView(buf);
+	    v.setUint32(0, type, true);
+	    v.setUint8(4, button);
+	    writeTimestampBE(v, 10);
+	    return buf;
+	  }
+	  function encodeGamepad(buttons, leftTrigger, rightTrigger, leftX, leftY, rightX, rightY) {
+	    const buf = new ArrayBuffer(32);
+	    const v = new DataView(buf);
+	    v.setUint32(0, 5, true);
+	    v.setUint16(4, buttons, true);
+	    v.setUint8(6, leftTrigger);
+	    v.setUint8(7, rightTrigger);
+	    v.setInt16(8, Math.max(-32767, Math.min(32767, leftX)), true);
+	    v.setInt16(10, Math.max(-32767, Math.min(32767, leftY)), true);
+	    v.setInt16(12, Math.max(-32767, Math.min(32767, rightX)), true);
+	    v.setInt16(14, Math.max(-32767, Math.min(32767, rightY)), true);
+	    writeTimestampBE(v, 16);
+	    return buf;
+	  }
+	  const GAMEPAD_BUTTON_MAP = [
+	    0x1000, 0x2000, 0x4000, 0x8000,
+	    0x0100, 0x0200, 0, 0,
+	    0x0020, 0x0010, 0x0040, 0x0080,
+	    0x0001, 0x0002, 0x0004, 0x0008
+	  ];
+	  function normalizeCodec(name) {
+	    const upper = String(name || '').toUpperCase().trim();
+	    if (upper === 'HEVC' || upper === 'H265') return 'H265';
+	    if (upper === 'AV1') return 'AV1';
+	    if (upper === 'H264') return 'H264';
+	    return 'AUTO';
+	  }
   function offerHasCodec(sdp, codec) {
     const target = normalizeCodec(codec);
     let inVideo = false;
@@ -284,13 +383,19 @@ private struct StreamerWebView: UIViewRepresentable {
     }
     return false;
   }
-  function resolvePreferredCodec(offerSdp) {
-    const preferred = normalizeCodec(cfg.preferredCodec || 'Auto');
-    if (preferred === 'AUTO') {
-      return offerHasCodec(offerSdp, 'H265') ? 'H265' : 'H264';
-    }
-    return preferred;
-  }
+	  function resolvePreferredCodec(offerSdp) {
+	    const preferred = normalizeCodec(cfg.preferredCodec || 'Auto');
+	    if (preferred === 'AUTO') {
+	      if (offerHasCodec(offerSdp, 'AV1')) return 'AV1';
+	      if (offerHasCodec(offerSdp, 'H265')) return 'H265';
+	      return 'H264';
+	    }
+	    if (!offerHasCodec(offerSdp, preferred)) {
+	      post('status', 'Codec ' + preferred + ' unavailable, using H264');
+	      return 'H264';
+	    }
+	    return preferred;
+	  }
   function preferCodec(sdp, codec) {
     const target = normalizeCodec(codec);
     const lineEnding = sdp.includes('\r\n') ? '\r\n' : '\n';
@@ -580,21 +685,104 @@ private struct StreamerWebView: UIViewRepresentable {
       rtc.addEventListener('icegatheringstatechange', onChange);
     });
   }
-  async function injectManualIce(rtc, ip, port, ufrag) {
-    const rawIp = extractPublicIp(ip);
-    if (!rawIp || !port) return;
-    const candidateStr = `candidate:1 1 udp 2130706431 ${rawIp} ${port} typ host`;
-    for (const mid of ['0', '1', '2', '3']) {
+	  async function injectManualIce(rtc, ip, port, ufrag) {
+	    const rawIp = extractPublicIp(ip);
+	    if (!rawIp || !port) return;
+	    const candidateStr = `candidate:1 1 udp 2130706431 ${rawIp} ${port} typ host`;
+	    for (const mid of ['0', '1', '2', '3']) {
       try {
         await rtc.addIceCandidate({ candidate: candidateStr, sdpMid: mid, sdpMLineIndex: parseInt(mid, 10), usernameFragment: ufrag || undefined });
         break;
-      } catch (_) {}
-    }
-  }
-  function ensurePeerConnection() {
-    if (pc) return pc;
-    const ice = (cfg.iceServers || []).map((server) => ({
-      urls: Array.isArray(server.urls) ? server.urls : [server.urls],
+	      } catch (_) {}
+	    }
+	  }
+	  function cleanupConnection() {
+	    inputReady = false;
+	    prevGamepadState = null;
+	    if (hbInput) { clearInterval(hbInput); hbInput = null; }
+	    if (hb) { clearInterval(hb); hb = null; }
+	    if (reliableCh) { try { reliableCh.close(); } catch (_) {} reliableCh = null; }
+	    if (partialCh) { try { partialCh.close(); } catch (_) {} partialCh = null; }
+	    if (pc) {
+	      pc.ontrack = null;
+	      pc.onicecandidate = null;
+	      pc.onconnectionstatechange = null;
+	      pc.ondatachannel = null;
+	      try { pc.close(); } catch (_) {}
+	      pc = null;
+	    }
+	    if (ws) {
+	      ws.onopen = null;
+	      ws.onmessage = null;
+	      ws.onerror = null;
+	      ws.onclose = null;
+	      try { ws.close(1000); } catch (_) {}
+	      ws = null;
+	    }
+	  }
+	  function scheduleReconnect() {
+	    if (reconnectTimer || isReconnecting) return;
+	    const delay = Math.min(2000 * Math.pow(1.5, reconnectAttempt), 20000);
+	    reconnectAttempt += 1;
+	    post('status', 'Reconnecting in ' + Math.round(delay / 1000) + 's... (attempt ' + reconnectAttempt + ')');
+	    reconnectTimer = setTimeout(() => {
+	      reconnectTimer = null;
+	      isReconnecting = true;
+	      cleanupConnection();
+	      isReconnecting = false;
+	      connect();
+	    }, delay);
+	  }
+	  function manualReconnect() {
+	    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+	    reconnectAttempt = 0;
+	    cleanupConnection();
+	    connect();
+	  }
+	  function sendCurrentGamepadState() {
+	    if (!inputReady) return;
+	    const buttons = virtualGamepad.buttons.reduce((mask, pressed, index) => {
+	      return pressed && GAMEPAD_BUTTON_MAP[index] ? (mask | GAMEPAD_BUTTON_MAP[index]) : mask;
+	    }, 0);
+	    const leftTrigger = Math.round(Math.max(0, Math.min(1, virtualGamepad.leftTrigger)) * 255);
+	    const rightTrigger = Math.round(Math.max(0, Math.min(1, virtualGamepad.rightTrigger)) * 255);
+	    const leftX = Math.round(virtualGamepad.leftX * 32767);
+	    const leftY = Math.round(virtualGamepad.leftY * 32767);
+	    const rightX = Math.round(virtualGamepad.rightX * 32767);
+	    const rightY = Math.round(virtualGamepad.rightY * 32767);
+	    sendPartialInput(encodeGamepad(buttons, leftTrigger, rightTrigger, leftX, leftY, rightX, rightY));
+	  }
+	  function pollGamepad() {
+	    if (!inputReady || gamepadActive) return;
+	    const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+	    const gp = Array.from(gamepads).find((candidate) => candidate && candidate.connected);
+	    if (!gp) return;
+	    let buttons = 0;
+	    for (let i = 0; i < Math.min(gp.buttons.length, GAMEPAD_BUTTON_MAP.length); i++) {
+	      if (GAMEPAD_BUTTON_MAP[i] && gp.buttons[i].pressed) {
+	        buttons |= GAMEPAD_BUTTON_MAP[i];
+	      }
+	    }
+	    const leftTrigger = Math.round((gp.buttons[6]?.value ?? 0) * 255);
+	    const rightTrigger = Math.round((gp.buttons[7]?.value ?? 0) * 255);
+	    const leftX = Math.round((gp.axes[0] ?? 0) * 32767);
+	    const leftY = Math.round((gp.axes[1] ?? 0) * -32767);
+	    const rightX = Math.round((gp.axes[2] ?? 0) * 32767);
+	    const rightY = Math.round((gp.axes[3] ?? 0) * -32767);
+	    const state = buttons + ',' + leftTrigger + ',' + rightTrigger + ',' + leftX + ',' + leftY + ',' + rightX + ',' + rightY;
+	    if (state !== prevGamepadState) {
+	      prevGamepadState = state;
+	      sendPartialInput(encodeGamepad(buttons, leftTrigger, rightTrigger, leftX, leftY, rightX, rightY));
+	    }
+	  }
+	  function gameLoop() {
+	    pollGamepad();
+	    requestAnimationFrame(gameLoop);
+	  }
+	  function ensurePeerConnection() {
+	    if (pc) return pc;
+	    const ice = (cfg.iceServers || []).map((server) => ({
+	      urls: Array.isArray(server.urls) ? server.urls : [server.urls],
       username: server.username || undefined,
       credential: server.credential || undefined
     }));
@@ -609,27 +797,31 @@ private struct StreamerWebView: UIViewRepresentable {
         if (inputReady) sendInput(encodeHeartbeat());
       }, 2000);
     };
-    reliableCh.onclose = () => {
-      inputReady = false;
-      if (hbInput) { clearInterval(hbInput); hbInput = null; }
-    };
-    reliableCh.onmessage = () => {};
-    partialCh = pc.createDataChannel('input_channel_partially_reliable', {
-      ordered: false,
-      maxPacketLifeTime: 100
-    });
-    partialCh.binaryType = 'arraybuffer';
-    pc.ontrack = (event) => {
-      if (event.streams && event.streams[0]) {
-        video.srcObject = event.streams[0];
-      } else {
-        const stream = new MediaStream();
-        stream.addTrack(event.track);
-        video.srcObject = stream;
-      }
-      video.play().catch(() => {});
-      post('status', 'Streamer connected');
-    };
+	    reliableCh.onclose = () => {
+	      inputReady = false;
+	      prevGamepadState = null;
+	      if (hbInput) { clearInterval(hbInput); hbInput = null; }
+	    };
+	    reliableCh.onmessage = () => {};
+	    partialCh = pc.createDataChannel('input_channel_partially_reliable', {
+	      ordered: false,
+	      maxPacketLifeTime: 50
+	    });
+	    partialCh.binaryType = 'arraybuffer';
+	    pc.ontrack = (event) => {
+	      const stream = event.streams?.[0] ?? (() => {
+	        const fallbackStream = new MediaStream();
+	        fallbackStream.addTrack(event.track);
+	        return fallbackStream;
+	      })();
+	      if (video.srcObject !== stream) {
+	        video.srcObject = stream;
+	      }
+	      video.muted = true;
+	      const tryPlay = () => video.play().catch(() => setTimeout(tryPlay, 500));
+	      tryPlay();
+	      post('status', 'Streamer connected');
+	    };
     pc.onicecandidate = (event) => {
       if (!event.candidate) return;
       send({
@@ -644,12 +836,28 @@ private struct StreamerWebView: UIViewRepresentable {
         },
         ackid: nextAck()
       });
-    };
-    pc.onconnectionstatechange = () => {
-      post('status', 'Peer: ' + pc.connectionState);
-    };
-    return pc;
-  }
+	    };
+	    pc.onconnectionstatechange = () => {
+	      const state = pc.connectionState;
+	      post('status', 'Peer: ' + state);
+	      if (state === 'failed') {
+	        scheduleReconnect();
+	      } else if (state === 'disconnected') {
+	        setTimeout(() => {
+	          if (pc && (pc.connectionState === 'disconnected' || pc.connectionState === 'failed')) {
+	            scheduleReconnect();
+	          }
+	        }, 4000);
+	      } else if (state === 'connected') {
+	        reconnectAttempt = 0;
+	        if (reconnectTimer) {
+	          clearTimeout(reconnectTimer);
+	          reconnectTimer = null;
+	        }
+	      }
+	    };
+	    return pc;
+	  }
   async function onOffer(sdp) {
     try {
       const rtc = ensurePeerConnection();
@@ -661,7 +869,7 @@ private struct StreamerWebView: UIViewRepresentable {
       const answer = await rtc.createAnswer();
       answer.sdp = mungeAnswerSdp(answer.sdp || '', cfg.maxBitrateKbps);
       await rtc.setLocalDescription(answer);
-      const finalSdp = (await waitForIceGathering(rtc, 5000)) || rtc.localDescription?.sdp || answer.sdp || '';
+	      const finalSdp = (await waitForIceGathering(rtc, 3000)) || rtc.localDescription?.sdp || answer.sdp || '';
       const effectiveCodec = detectNegotiatedCodec(finalSdp) || selectedCodec;
       const credentials = extractIceCredentials(finalSdp);
       const nvstSdp = buildNvstSdp({
@@ -722,32 +930,147 @@ private struct StreamerWebView: UIViewRepresentable {
       onRemoteIce(msg);
     }
   }
-  const kbBar = document.getElementById('kbBar');
-  const kbInput = document.getElementById('kbInput');
-  let kbPrevLen = 0;
-  let lastTX = 0, lastTY = 0;
-  let tStartTime = 0, tMoved = false;
-  let twoFingerStart = 0;
-  const touchpad = document.getElementById('touchpad');
-  const touchHint = document.getElementById('touchHint');
+	  const kbBar = document.getElementById('kbBar');
+	  const kbInput = document.getElementById('kbInput');
+	  const kbBtn = document.getElementById('kbBtn');
+	  const kbDoneBtn = document.getElementById('kbDoneBtn');
+	  const gpBtn = document.getElementById('gpBtn');
+	  const gamepadOverlay = document.getElementById('gamepadOverlay');
+	  const gpLeftStick = document.getElementById('gpLeftStick');
+	  const gpLeftStickDot = document.getElementById('gpLeftStickDot');
+	  const gpRightStick = document.getElementById('gpRightStick');
+	  const gpRightStickDot = document.getElementById('gpRightStickDot');
+	  let kbPrevLen = 0;
+	  let lastTX = 0, lastTY = 0;
+	  let tStartTime = 0, tMoved = false;
+	  let twoFingerStart = 0;
+	  const touchpad = document.getElementById('touchpad');
+	  const touchHint = document.getElementById('touchHint');
+	  const virtualGamepad = {
+	    buttons: Array(16).fill(false),
+	    leftTrigger: 0,
+	    rightTrigger: 0,
+	    leftX: 0,
+	    leftY: 0,
+	    rightX: 0,
+	    rightY: 0
+	  };
 
-  function toggleKeyboard() {
-    if (kbBar.style.display === 'none') showKeyboard();
-    else hideKeyboard();
-  }
-  function showKeyboard() {
-    kbBar.style.display = 'block';
-    kbInput.value = '';
-    kbPrevLen = 0;
-    setTimeout(() => kbInput.focus(), 80);
-  }
-  function hideKeyboard() {
-    kbBar.style.display = 'none';
-    kbInput.blur();
-  }
+	  function toggleKeyboard() {
+	    if (kbBar.style.display === 'none') showKeyboard();
+	    else hideKeyboard();
+	  }
+	  function showKeyboard() {
+	    kbBar.style.display = 'block';
+	    kbInput.removeAttribute('readonly');
+	    kbInput.value = '';
+	    kbPrevLen = 0;
+	    kbInput.focus();
+	    kbInput.click();
+	  }
+	  function hideKeyboard() {
+	    kbBar.style.display = 'none';
+	    kbInput.setAttribute('readonly', '');
+	    kbInput.blur();
+	  }
+	  function toggleGamepad() {
+	    gamepadActive = !gamepadActive;
+	    gamepadOverlay.style.display = gamepadActive ? 'block' : 'none';
+	    if (!gamepadActive) resetVirtualGamepad();
+	  }
+	  function resetVirtualGamepad() {
+	    virtualGamepad.buttons.fill(false);
+	    virtualGamepad.leftTrigger = 0;
+	    virtualGamepad.rightTrigger = 0;
+	    virtualGamepad.leftX = 0;
+	    virtualGamepad.leftY = 0;
+	    virtualGamepad.rightX = 0;
+	    virtualGamepad.rightY = 0;
+	    prevGamepadState = null;
+	    gpLeftStickDot.style.transform = 'translate(0px, 0px)';
+	    gpRightStickDot.style.transform = 'translate(0px, 0px)';
+	    sendCurrentGamepadState();
+	  }
+	  function setGamepadButton(index, pressed) {
+	    if (virtualGamepad.buttons[index] === pressed) return;
+	    virtualGamepad.buttons[index] = pressed;
+	    sendCurrentGamepadState();
+	  }
+	  function bindVirtualButton(button) {
+	    if (!button) return;
+	    const index = Number(button.dataset.gpButton);
+	    button.addEventListener('touchstart', (e) => {
+	      e.preventDefault();
+	      e.stopPropagation();
+	      setGamepadButton(index, true);
+	    }, { passive: false });
+	    const release = (e) => {
+	      e.preventDefault();
+	      e.stopPropagation();
+	      setGamepadButton(index, false);
+	    };
+	    button.addEventListener('touchend', release, { passive: false });
+	    button.addEventListener('touchcancel', release, { passive: false });
+	  }
+	  function bindStick(area, dot, xKey, yKey) {
+	    if (!area || !dot) return;
+	    const radius = 40;
+	    let activeTouchId = null;
+	    function updateFromTouch(touch) {
+	      const rect = area.getBoundingClientRect();
+	      const centerX = rect.left + (rect.width / 2);
+	      const centerY = rect.top + (rect.height / 2);
+	      let dx = touch.clientX - centerX;
+	      let dy = touch.clientY - centerY;
+	      const distance = Math.hypot(dx, dy);
+	      if (distance > radius) {
+	        const scale = radius / distance;
+	        dx *= scale;
+	        dy *= scale;
+	      }
+	      dot.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
+	      virtualGamepad[xKey] = Math.max(-1, Math.min(1, dx / radius));
+	      virtualGamepad[yKey] = Math.max(-1, Math.min(1, dy / radius));
+	      sendCurrentGamepadState();
+	    }
+	    const release = () => {
+	      activeTouchId = null;
+	      dot.style.transform = 'translate(0px, 0px)';
+	      virtualGamepad[xKey] = 0;
+	      virtualGamepad[yKey] = 0;
+	      sendCurrentGamepadState();
+	    };
+	    area.addEventListener('touchstart', (e) => {
+	      e.preventDefault();
+	      e.stopPropagation();
+	      const touch = e.changedTouches[0];
+	      activeTouchId = touch.identifier;
+	      updateFromTouch(touch);
+	    }, { passive: false });
+	    area.addEventListener('touchmove', (e) => {
+	      e.preventDefault();
+	      e.stopPropagation();
+	      const touch = Array.from(e.touches).find((item) => item.identifier === activeTouchId);
+	      if (touch) updateFromTouch(touch);
+	    }, { passive: false });
+	    area.addEventListener('touchend', (e) => {
+	      const touchEnded = Array.from(e.changedTouches).some((item) => item.identifier === activeTouchId);
+	      if (!touchEnded) return;
+	      e.preventDefault();
+	      e.stopPropagation();
+	      release();
+	    }, { passive: false });
+	    area.addEventListener('touchcancel', (e) => {
+	      const touchEnded = Array.from(e.changedTouches).some((item) => item.identifier === activeTouchId);
+	      if (!touchEnded) return;
+	      e.preventDefault();
+	      e.stopPropagation();
+	      release();
+	    }, { passive: false });
+	  }
 
-  const charKeyMap = {
-    'a':{vk:0x41,sc:0x04},'b':{vk:0x42,sc:0x05},'c':{vk:0x43,sc:0x06},'d':{vk:0x44,sc:0x07},
+	  const charKeyMap = {
+	    'a':{vk:0x41,sc:0x04},'b':{vk:0x42,sc:0x05},'c':{vk:0x43,sc:0x06},'d':{vk:0x44,sc:0x07},
     'e':{vk:0x45,sc:0x08},'f':{vk:0x46,sc:0x09},'g':{vk:0x47,sc:0x0a},'h':{vk:0x48,sc:0x0b},
     'i':{vk:0x49,sc:0x0c},'j':{vk:0x4a,sc:0x0d},'k':{vk:0x4b,sc:0x0e},'l':{vk:0x4c,sc:0x0f},
     'm':{vk:0x4d,sc:0x10},'n':{vk:0x4e,sc:0x11},'o':{vk:0x4f,sc:0x12},'p':{vk:0x50,sc:0x13},
@@ -788,29 +1111,51 @@ private struct StreamerWebView: UIViewRepresentable {
     if (spec.sh) sendInput(encodeKey(4, 0xA0, 0x2A, 0));
   }
 
-  setTimeout(() => { if (touchHint) touchHint.style.opacity = '0'; }, 4000);
+	  setTimeout(() => { if (touchHint) touchHint.style.opacity = '0'; }, 4000);
 
-  touchpad.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    const t = e.touches[0];
-    lastTX = t.clientX;
+	  kbBtn.addEventListener('touchstart', (e) => {
+	    e.preventDefault();
+	    e.stopPropagation();
+	    toggleKeyboard();
+	  }, { passive: false });
+	  kbDoneBtn.addEventListener('touchstart', (e) => {
+	    e.preventDefault();
+	    e.stopPropagation();
+	    hideKeyboard();
+	  }, { passive: false });
+	  gpBtn.addEventListener('touchstart', (e) => {
+	    e.preventDefault();
+	    e.stopPropagation();
+	    toggleGamepad();
+	  }, { passive: false });
+	  document.querySelectorAll('[data-gp-button]').forEach(bindVirtualButton);
+	  bindStick(gpLeftStick, gpLeftStickDot, 'leftX', 'leftY');
+	  bindStick(gpRightStick, gpRightStickDot, 'rightX', 'rightY');
+
+	  touchpad.addEventListener('touchstart', (e) => {
+	    e.preventDefault();
+	    const t = e.touches[0];
+	    lastTX = t.clientX;
     lastTY = t.clientY;
     tStartTime = Date.now();
     tMoved = false;
     if (e.touches.length === 2) twoFingerStart = Date.now();
   }, { passive: false });
 
-  touchpad.addEventListener('touchmove', (e) => {
-    e.preventDefault();
-    if (e.touches.length > 1) return;
-    const t = e.touches[0];
-    const dx = Math.round((t.clientX - lastTX) * 2.5);
-    const dy = Math.round((t.clientY - lastTY) * 2.5);
-    lastTX = t.clientX;
-    lastTY = t.clientY;
-    if ((Math.abs(dx) > 0 || Math.abs(dy) > 0) && inputReady) {
-      tMoved = true;
-      sendPartialInput(encodeMouseMove(dx, dy));
+	  touchpad.addEventListener('touchmove', (e) => {
+	    e.preventDefault();
+	    if (e.touches.length > 1) return;
+	    const t = e.touches[0];
+	    const now = performance.now();
+	    if (now - lastMouseSentAt < 14) return;
+	    lastMouseSentAt = now;
+	    const dx = Math.round((t.clientX - lastTX) * 2.0);
+	    const dy = Math.round((t.clientY - lastTY) * 2.0);
+	    lastTX = t.clientX;
+	    lastTY = t.clientY;
+	    if ((Math.abs(dx) > 0 || Math.abs(dy) > 0) && inputReady) {
+	      tMoved = true;
+	      sendPartialInput(encodeMouseMove(dx, dy));
     }
   }, { passive: false });
 
@@ -855,39 +1200,41 @@ private struct StreamerWebView: UIViewRepresentable {
     if (e.key === 'Escape') hideKeyboard();
   });
 
-  function connect() {
-    try {
-      const signIn = buildSignInUrl();
-      post('status', 'Connecting signaling');
-      ws = new WebSocket(signIn, 'x-nv-sessionid.' + cfg.sessionId);
+	  function connect() {
+	    try {
+	      const signIn = buildSignInUrl();
+	      post('status', 'Connecting signaling');
+	      ws = new WebSocket(signIn, 'x-nv-sessionid.' + cfg.sessionId);
       ws.onopen = () => {
         sendPeerInfo();
         if (hb) clearInterval(hb);
         hb = setInterval(() => send({ hb: 1 }), 5000);
         post('status', 'Signaling connected');
-      };
-      ws.onmessage = (event) => handle(event.data);
-      ws.onerror = () => fail('Signaling error');
-      ws.onclose = (event) => {
-        post('status', 'Signaling closed (' + event.code + ')');
-        inputReady = false;
-        if (hbInput) { clearInterval(hbInput); hbInput = null; }
-        if (reliableCh) { try { reliableCh.close(); } catch (_) {} }
-        if (partialCh) { try { partialCh.close(); } catch (_) {} }
-        reliableCh = null;
-        partialCh = null;
-      };
-    } catch (error) {
-      fail('Signaling setup failed: ' + String(error));
-    }
-  }
+	      };
+	      ws.onmessage = (event) => handle(event.data);
+	      ws.onerror = () => fail('Signaling error');
+	      ws.onclose = (event) => {
+	        post('status', 'Signaling closed (' + event.code + ')');
+	        inputReady = false;
+	        if (hbInput) { clearInterval(hbInput); hbInput = null; }
+	        reliableCh = null;
+	        partialCh = null;
+	        if (event.code !== 1000 && event.code !== 1001 && !isReconnecting) {
+	          scheduleReconnect();
+	        }
+	      };
+	    } catch (error) {
+	      fail('Signaling setup failed: ' + String(error));
+	    }
+	  }
   tap.onclick = async () => {
     video.muted = false;
     tap.style.display = 'none';
     try { await video.play(); } catch (_) {}
   };
-  connect();
-  </script>
+	  connect();
+	  requestAnimationFrame(gameLoop);
+	  </script>
 </body>
 </html>
 """#
@@ -907,10 +1254,14 @@ private struct StreamerWebView: UIViewRepresentable {
     }
 
     private static func streamProfile(for settings: AppSettings) -> StreamProfile {
-        let nativeBounds = UIScreen.main.nativeBounds
-        let longSide = max(nativeBounds.width, nativeBounds.height)
-        let shortSide = min(nativeBounds.width, nativeBounds.height)
-        let supports1440 = longSide >= 2500 || shortSide >= 1400 || UIScreen.main.nativeScale >= 3.0
+        let windowScene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first
+        let screenBounds = windowScene?.screen.nativeBounds ?? UIScreen.main.nativeBounds
+        let scale = windowScene?.screen.nativeScale ?? UIScreen.main.nativeScale
+        let longSide = max(screenBounds.width, screenBounds.height)
+        let shortSide = min(screenBounds.width, screenBounds.height)
+        let supports1440 = longSide >= 2500 || shortSide >= 1300 || scale >= 3.0
         if settings.preferredFPS >= 120 && supports1440 {
             return StreamProfile(width: 2560, height: 1440, maxBitrateKbps: 50000)
         }
