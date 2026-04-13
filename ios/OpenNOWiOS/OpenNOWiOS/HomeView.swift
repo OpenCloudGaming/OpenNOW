@@ -156,8 +156,8 @@ private struct FeaturedGameCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             GameArtworkView(game: game, iconSize: 48)
-                .frame(width: 160, height: 110)
-                .clipShape(UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 14))
+            .frame(width: 160, height: 100)
+            .clipShape(UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 14))
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(game.title)
@@ -232,9 +232,9 @@ struct GameCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             GameArtworkView(game: game, iconSize: 32)
-                .frame(maxWidth: .infinity)
-                .aspectRatio(16 / 9, contentMode: .fill)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+            .frame(maxWidth: .infinity)
+            .frame(height: 112)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(game.title)
@@ -302,16 +302,19 @@ private struct GameArtworkView: View {
                                 .resizable()
                                 .scaledToFill()
                                 .frame(width: proxy.size.width, height: proxy.size.height)
-                                .clipped()
                         case .empty:
-                            ProgressView()
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            Rectangle()
+                                .fill(.quaternary.opacity(0.25))
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                                .shimmeringSkeleton()
                         default:
-                            fallbackIcon
+                            iconFallback
+                                .frame(width: proxy.size.width, height: proxy.size.height)
                         }
                     }
                 } else {
-                    fallbackIcon
+                    iconFallback
+                        .frame(width: proxy.size.width, height: proxy.size.height)
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
@@ -319,11 +322,10 @@ private struct GameArtworkView: View {
         }
     }
 
-    private var fallbackIcon: some View {
+    private var iconFallback: some View {
         Image(systemName: game.icon)
-            .font(.system(size: iconSize, weight: .semibold))
+            .font(.system(size: iconSize))
             .foregroundStyle(gameColor(for: game.title))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
