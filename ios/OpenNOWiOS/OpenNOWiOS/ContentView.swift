@@ -39,6 +39,24 @@ private struct SplashView: View {
 
 struct MainTabView: View {
     @EnvironmentObject private var store: OpenNOWStore
+    @State private var streamerAutoRetryCount = 0
+    private static let maxStreamerAutoRetries = 3
+
+    private var isPad: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad
+    }
+    
+    private var queuePillAlignment: Alignment {
+        isPad ? .bottom : .top
+    }
+    
+    private var queuePillAlignmentEdge: Edge {
+        isPad ? .bottom : .top
+    }
+
+    private var queuePillPaddingEdge: Edge.Set {
+        isPad ? .bottom : .top
+    }
 
     var body: some View {
         TabView {
@@ -72,16 +90,28 @@ struct MainTabView: View {
         }
         .animation(.spring(response: 0.42, dampingFraction: 0.86), value: store.queueOverlayVisible)
         .fullScreenCover(item: $store.streamSession) { session in
-            StreamerView(session: session, settings: store.settings) {
-                store.dismissStreamer()
-            }
+            StreamerView(
+                session: session,
+                settings: store.settings,
+                onClose: {
+                    streamerAutoRetryCount = 0
+                    store.dismissStreamer()
+                },
+                onRetry: streamerAutoRetryCount < Self.maxStreamerAutoRetries ? {
+                    streamerAutoRetryCount += 1
+                    store.dismissStreamer()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        store.reopenStreamer()
+                    }
+                } : nil
+            )
         }
-        .overlay(alignment: .top) {
+        .overlay(alignment: queuePillAlignment) {
             if store.showStreamLoading && !store.queueOverlayVisible {
                 QueueStatusPill()
                     .environmentObject(store)
-                    .padding(.top, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(queuePillPaddingEdge, 8)
+                    .transition(.move(edge: queuePillAlignmentEdge).combined(with: .opacity))
             }
         }
         .animation(.spring(response: 0.36, dampingFraction: 0.88), value: store.showStreamLoading && !store.queueOverlayVisible)

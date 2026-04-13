@@ -1,19 +1,92 @@
 import SwiftUI
 import UIKit
 import WebKit
+import OSLog
 
 struct StreamerView: View {
     let session: ActiveSession
     let settings: AppSettings
     let onClose: () -> Void
+    var onRetry: (() -> Void)? = nil
+    private let logger = Logger(subsystem: "OpenNOWiOS", category: "StreamerView")
     @State private var statusText = ""
+    @State private var latestStatusLine = "Initializing streamer..."
+    @State private var isPeerConnected = false
+
+    private var isShowingConnectionOverlay: Bool {
+        !isPeerConnected
+    }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             StreamerWebView(session: session, settings: settings) { event in
+                logger.info("Streamer event: \(event, privacy: .public)")
                 statusText = event
+                if event.hasPrefix("Status: ") {
+                    latestStatusLine = String(event.dropFirst("Status: ".count))
+                    if latestStatusLine.localizedCaseInsensitiveContains("peer: connected") {
+                        isPeerConnected = true
+                    }
+                }
+                if event.localizedCaseInsensitiveContains("peer: connected") {
+                    isPeerConnected = true
+                }
+                if event.hasPrefix("Error:") {
+                    isPeerConnected = false
+                    let isFatal = event.localizedCaseInsensitiveContains("reconnect exhausted")
+                        || event.localizedCaseInsensitiveContains("restart limit reached")
+                    if isFatal, let retry = onRetry {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            retry()
+                        }
+                    }
+                }
             }
             .ignoresSafeArea()
+
+            if isShowingConnectionOverlay {
+                ZStack {
+                    Color.black.opacity(0.72)
+                        .ignoresSafeArea()
+
+                    VStack(spacing: 14) {
+                        if statusText.hasPrefix("Error:") {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 26, weight: .semibold))
+                                .foregroundStyle(.orange)
+                        } else {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .scaleEffect(1.25)
+                                .tint(.white)
+                        }
+
+                        Text(statusText.hasPrefix("Error:") ? "Connection issue" : "Connecting to stream...")
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.white)
+
+                        Text(statusText.hasPrefix("Error:") ? statusText.replacingOccurrences(of: "Error: ", with: "") : latestStatusLine)
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.85))
+                            .multilineTextAlignment(.center)
+                            .lineLimit(3)
+                            .padding(.horizontal, 12)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 18)
+                    .frame(maxWidth: 340)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                            )
+                    )
+                    .padding(.horizontal, 20)
+                }
+                .transition(.opacity)
+            }
 
             Button {
                 onClose()
@@ -67,6 +140,9 @@ private struct StreamerWebView: UIViewRepresentable {
     let session: ActiveSession
     let settings: AppSettings
     let onEvent: (String) -> Void
+    private static let desktopLikeUserAgent =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
     private struct StreamProfile {
         let width: Int
@@ -85,13 +161,16 @@ private struct StreamerWebView: UIViewRepresentable {
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         config.userContentController.add(context.coordinator, name: "opennow")
         let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.customUserAgent = Self.desktopLikeUserAgent
         webView.isOpaque = false
         webView.backgroundColor = .black
         webView.scrollView.isScrollEnabled = false
-        webView.loadHTMLString(
-            buildHTML(for: session, settings: settings),
-            baseURL: URL(string: "https://play.geforcenow.com")
-        )
+        let html = buildHTML(for: session, settings: settings)
+        let baseURL = URL(string: "https://play.geforcenow.com")
+        context.coordinator.cachedHTML = html
+        context.coordinator.cachedBaseURL = baseURL
+        webView.loadHTMLString(html, baseURL: baseURL)
         return webView
     }
 
@@ -213,7 +292,7 @@ private struct StreamerWebView: UIViewRepresentable {
   let inputReady = false;
   let reconnectTimer = null;
   let reconnectAttempts = 0;
-  const maxReconnectAttempts = 5;
+  const maxReconnectAttempts = 10;
   let offerTimeoutTimer = null;
   let signalingOpenTimeout = null;
   let statsTimer = null;
@@ -247,6 +326,16 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   function log(message) { post("log", message); }
   function fail(message) { post("error", message); }
+  window.addEventListener('error', (event) => {
+    const message = event && event.message ? event.message : 'unknown';
+    const source = event && event.filename ? event.filename : 'inline';
+    const line = event && event.lineno ? event.lineno : 0;
+    fail(`JS runtime error: ${message} @ ${source}:${line}`);
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event && event.reason ? String(event.reason) : 'unknown';
+    fail('Unhandled promise rejection: ' + reason);
+  });
   function nextAck() { ack += 1; return ack; }
   function scheduleReconnect(reason) {
     if (reconnectAttempts >= maxReconnectAttempts) {
@@ -313,7 +402,7 @@ private struct StreamerWebView: UIViewRepresentable {
         try { ws.close(); } catch (_) {}
       }
       scheduleReconnect('offer timeout');
-    }, 9000);
+    }, 15000);
   }
   function isChannelOpen(channel) {
     return !!channel && channel.readyState === 'open';
@@ -1534,7 +1623,8 @@ private struct StreamerWebView: UIViewRepresentable {
       };
       ws.onclose = (event) => {
         clearOfferTimeout();
-        post('status', 'Signaling closed (' + event.code + ')');
+        const reason = event && event.reason ? event.reason : 'no reason';
+        post('status', 'Signaling closed (' + event.code + '): ' + reason);
         if (shouldKeepPeerAliveOnSignalingClose()) {
           if (hb) { clearInterval(hb); hb = null; }
           ws = null;
@@ -1600,8 +1690,12 @@ private struct StreamerWebView: UIViewRepresentable {
         return StreamProfile(width: 1920, height: 1080, maxBitrateKbps: bitrateFor1080)
     }
 
-    final class Coordinator: NSObject, WKScriptMessageHandler {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         private let onEvent: (String) -> Void
+        var cachedHTML: String = ""
+        var cachedBaseURL: URL?
+        private var contentProcessRestartCount = 0
+        private static let maxContentProcessRestarts = 5
 
         init(onEvent: @escaping (String) -> Void) {
             self.onEvent = onEvent
@@ -1616,13 +1710,48 @@ private struct StreamerWebView: UIViewRepresentable {
             }
             switch type {
             case "status":
-                if msg.localizedCaseInsensitiveContains("error") {
+                onEvent("Status: \(msg)")
+                if msg.localizedCaseInsensitiveContains("error")
+                    || msg.localizedCaseInsensitiveContains("reconnect")
+                    || msg.localizedCaseInsensitiveContains("timeout")
+                {
                     onEvent("Error: \(msg)")
                 }
             case "error":
                 onEvent("Error: \(msg)")
+            case "log":
+                onEvent("Log: \(msg)")
             default:
                 break
+            }
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            didFail navigation: WKNavigation!,
+            withError error: Error
+        ) {
+            onEvent("Error: WebView navigation failed: \(error.localizedDescription)")
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            didFailProvisionalNavigation navigation: WKNavigation!,
+            withError error: Error
+        ) {
+            onEvent("Error: WebView provisional load failed: \(error.localizedDescription)")
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            contentProcessRestartCount += 1
+            if contentProcessRestartCount <= Self.maxContentProcessRestarts, !cachedHTML.isEmpty {
+                onEvent("Status: Reconnecting after process crash (\(contentProcessRestartCount)/\(Self.maxContentProcessRestarts))...")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak webView] in
+                    guard let webView else { return }
+                    webView.loadHTMLString(self.cachedHTML, baseURL: self.cachedBaseURL)
+                }
+            } else {
+                onEvent("Error: Stream WebContent process terminated (restart limit reached)")
             }
         }
     }

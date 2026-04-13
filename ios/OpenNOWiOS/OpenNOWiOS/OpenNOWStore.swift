@@ -2113,7 +2113,7 @@ final class OpenNOWStore: ObservableObject {
 
     var canReopenStreamer: Bool {
         guard let active = activeSession else { return false }
-        return active.status == 3 && streamSession == nil
+        return streamSession == nil && isReadyForStreamer(active)
     }
 
     var effectiveAdState: SessionAdState? {
@@ -2198,7 +2198,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func reopenStreamer() {
-        guard let active = activeSession, active.status == 3 else { return }
+        guard let active = activeSession, isReadyForStreamer(active) else { return }
         streamSession = active
     }
 
@@ -2260,6 +2260,7 @@ final class OpenNOWStore: ObservableObject {
             var setupTimeoutStartedAt: Date?
             var setupTimeoutNotified = false
             var readyPollStreak = 0
+            var readySince: Date?
             var loggedReadyForStreamer = false
             var dismissedOverlayAfterReady = false
             while !Task.isCancelled {
@@ -2275,24 +2276,39 @@ final class OpenNOWStore: ObservableObject {
                     let polled = try await self.api.pollSession(session: refreshed, activeSession: active)
                     consecutivePollFailures = 0
                     self.activeSession = polled
-                    if self.streamSession?.id == polled.id {
-                        self.streamSession = polled
-                    }
+                    // Keep the presented streamer session stable while polling continues.
+                    // Replacing the fullScreenCover item every poll can trigger reconnect churn.
                     self.logger.info(
-                        "Poll id=\(polled.id, privacy: .public) status=\(polled.status) queue=\(polled.queuePosition ?? -1) showOverlay=\(self.showStreamLoading)"
+                        "Poll id=\(polled.id, privacy: .public) status=\(polled.status) queue=\(polled.queuePosition ?? -1) showOverlay=\(self.showStreamLoading) signalingServer=\(polled.signalingServer ?? "nil", privacy: .public) signalingUrl=\(polled.signalingUrl ?? "nil", privacy: .public) mediaIp=\(polled.mediaIp ?? "nil", privacy: .public) mediaPort=\(polled.mediaPort)"
                     )
                     let readyForStreamer = self.isReadyForStreamer(polled)
                     if readyForStreamer {
                         readyPollStreak += 1
+                        if readySince == nil {
+                            readySince = Date()
+                        }
                     } else {
                         readyPollStreak = 0
+                        readySince = nil
                     }
 
-                    if readyPollStreak >= 2 && !loggedReadyForStreamer {
+                    let requiredReadyPollStreak = (polled.status == 2) ? 5 : 2
+                    // Status=2 sessions can still be warming transport; hold longer
+                    // before first handoff to reduce early connection churn.
+                    let requiredReadyHoldSeconds: TimeInterval = (polled.status == 2) ? 20 : 8
+                    let readyHoldElapsed = readySince.map { Date().timeIntervalSince($0) } ?? 0
+                    if readyPollStreak >= requiredReadyPollStreak
+                        && readyHoldElapsed >= requiredReadyHoldSeconds
+                        && !loggedReadyForStreamer
+                    {
+                        let handoffSession = await self.prepareSessionForStreamer(polled)
                         self.logger.notice(
-                            "Session ready for streamer handoff id=\(polled.id, privacy: .public) status=\(polled.status). Presenting iOS streamer."
+                            "Session ready for streamer handoff id=\(handoffSession.id, privacy: .public) status=\(handoffSession.status) readyStreak=\(readyPollStreak) readyHoldSeconds=\(Int(readyHoldElapsed)). Presenting iOS streamer."
                         )
-                        self.streamSession = polled
+                        if self.activeSession?.id == handoffSession.id {
+                            self.activeSession = handoffSession
+                        }
+                        self.streamSession = handoffSession
                         loggedReadyForStreamer = true
                     } else if !readyForStreamer {
                         loggedReadyForStreamer = false
@@ -2358,6 +2374,8 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func isReadyForStreamer(_ session: ActiveSession) -> Bool {
+        // Match desktop behavior: allow connect on status 2 or 3.
+        // Keep signaling non-empty checks below to avoid premature handoff.
         guard session.status == 2 || session.status == 3 else { return false }
         if (session.adState?.sessionAdsRequired ?? session.adState?.isAdsRequired ?? false) {
             return false
@@ -2365,7 +2383,78 @@ final class OpenNOWStore: ObservableObject {
         if let queuePosition = session.queuePosition, queuePosition > 1 {
             return false
         }
-        return session.signalingUrl != nil || session.signalingServer != nil
+        return hasUsableSignalingEndpoint(session) && hasUsableMediaEndpoint(session)
+    }
+
+    private func hasUsableSignalingEndpoint(_ session: ActiveSession) -> Bool {
+        let signalingUrl = session.signalingUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !signalingUrl.isEmpty, let parsed = URL(string: signalingUrl), let host = parsed.host, !host.isEmpty {
+            let scheme = (parsed.scheme ?? "").lowercased()
+            if scheme == "wss" || scheme == "ws" || scheme == "rtsps" || scheme == "rtsp" || scheme == "https" {
+                return true
+            }
+        }
+
+        let signalingServer = session.signalingServer?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !signalingServer.isEmpty else { return false }
+        if let parsed = URL(string: "https://\(signalingServer)"), let host = parsed.host, !host.isEmpty {
+            return true
+        }
+        // Fallback: treat plain host/ip (possibly with :port) as valid.
+        let hostOnly = signalingServer.split(separator: ":").first.map(String.init) ?? signalingServer
+        return !hostOnly.isEmpty
+    }
+
+    private func hasUsableMediaEndpoint(_ session: ActiveSession) -> Bool {
+        guard session.mediaPort > 0 else { return false }
+        if let mediaIp = session.mediaIp?.trimmingCharacters(in: .whitespacesAndNewlines), !mediaIp.isEmpty {
+            return true
+        }
+        if let serverIp = session.serverIp?.trimmingCharacters(in: .whitespacesAndNewlines), !serverIp.isEmpty {
+            return true
+        }
+        if let signalingServer = session.signalingServer?.trimmingCharacters(in: .whitespacesAndNewlines), !signalingServer.isEmpty {
+            return true
+        }
+        return false
+    }
+
+    private func prepareSessionForStreamer(_ session: ActiveSession) async -> ActiveSession {
+        // Mirrors the successful "resume" behavior: when status=2, claim once before
+        // handoff so backend can return stabilized signaling/media coordinates.
+        guard session.status == 2 else { return session }
+        guard let currentAuth = authSession else { return session }
+        do {
+            let refreshed = try await api.refreshSession(currentAuth)
+            authSession = refreshed
+            persistAuthSession(refreshed)
+            let activeCandidates = try await api.fetchActiveSessions(session: refreshed, vpcId: cachedVpcId)
+            let candidate =
+                activeCandidates.first(where: { $0.id == session.id }) ??
+                activeCandidates.first(where: { $0.appId == session.game.launchAppId && ($0.status == 2 || $0.status == 3) }) ??
+                RemoteSessionCandidate(
+                    id: session.id,
+                    appId: session.game.launchAppId,
+                    status: session.status,
+                    serverIp: session.serverIp
+                )
+            let claimed = try await api.claimSession(
+                session: refreshed,
+                candidate: candidate,
+                game: session.game,
+                vpcId: cachedVpcId,
+                settings: settings
+            )
+            logger.info(
+                "Pre-handoff claim refreshed session id=\(claimed.id, privacy: .public) status=\(claimed.status) candidateServerIp=\(candidate.serverIp ?? "nil", privacy: .public) signalingServer=\(claimed.signalingServer ?? "nil", privacy: .public) signalingUrl=\(claimed.signalingUrl ?? "nil", privacy: .public) mediaIp=\(claimed.mediaIp ?? "nil", privacy: .public) mediaPort=\(claimed.mediaPort)"
+            )
+            return claimed
+        } catch {
+            logger.error(
+                "Pre-handoff claim failed id=\(session.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            return session
+        }
     }
 
     private var isFreeTierUser: Bool {
@@ -2406,9 +2495,6 @@ final class OpenNOWStore: ObservableObject {
             )
             if activeSession?.id == updated.id {
                 activeSession = updated
-                if streamSession?.id == updated.id {
-                    streamSession = updated
-                }
             }
             if action == .finish || action == .cancel {
                 adStartedAtById.removeValue(forKey: adId)
