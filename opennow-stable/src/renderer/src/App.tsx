@@ -279,6 +279,13 @@ function chooseAccountLinked(game: GameInfo, selectedVariant?: GameVariant): boo
   return false;
 }
 
+function areStringArraysEqual(left: string[], right: string[]): boolean {
+  if (left.length != right.length) {
+    return false;
+  }
+  return left.every((value, index) => value === right[index]);
+}
+
 function sortLibraryGames(games: GameInfo[], sortId: string): GameInfo[] {
   const copy = [...games];
   const compareTitle = (left: GameInfo, right: GameInfo) => left.title.localeCompare(right.title);
@@ -754,6 +761,7 @@ export function App(): JSX.Element {
   const [catalogSelectedFilterIds, setCatalogSelectedFilterIds] = useState<string[]>([]);
   const [catalogTotalCount, setCatalogTotalCount] = useState(0);
   const [catalogSupportedCount, setCatalogSupportedCount] = useState(0);
+  const catalogFilterKey = useMemo(() => catalogSelectedFilterIds.join("|"), [catalogSelectedFilterIds]);
 
   // Settings State
   const [settings, setSettings] = useState<Settings>({
@@ -1777,16 +1785,7 @@ export function App(): JSX.Element {
                 providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
               }),
             ]);
-            setGames(catalogResult.games);
-            setCatalogFilterGroups(catalogResult.filterGroups);
-            setCatalogSortOptions(catalogResult.sortOptions);
-            setCatalogSelectedSortId(catalogResult.selectedSortId);
-            setCatalogSelectedFilterIds(catalogResult.selectedFilterIds);
-            setCatalogTotalCount(catalogResult.totalCount);
-            setCatalogSupportedCount(catalogResult.numberSupported);
-            setSource("main");
-            setSelectedGameId(catalogResult.games[0]?.id ?? "");
-            applyVariantSelections(catalogResult.games);
+            applyCatalogBrowseResult(catalogResult);
             setLibraryGames(libGames);
             applyVariantSelections(libGames);
           } catch (catalogError) {
@@ -2236,6 +2235,19 @@ export function App(): JSX.Element {
     });
   }, [updateSetting]);
 
+  const applyCatalogBrowseResult = useCallback((catalogResult: CatalogBrowseResult): void => {
+    setGames(catalogResult.games);
+    setCatalogFilterGroups(catalogResult.filterGroups);
+    setCatalogSortOptions(catalogResult.sortOptions);
+    setCatalogSelectedSortId((previous) => previous === catalogResult.selectedSortId ? previous : catalogResult.selectedSortId);
+    setCatalogSelectedFilterIds((previous) => areStringArraysEqual(previous, catalogResult.selectedFilterIds) ? previous : catalogResult.selectedFilterIds);
+    setCatalogTotalCount(catalogResult.totalCount);
+    setCatalogSupportedCount(catalogResult.numberSupported);
+    setSource("main");
+    setSelectedGameId((previous) => catalogResult.games.some((game) => game.id === previous) ? previous : (catalogResult.games[0]?.id ?? ""));
+    applyVariantSelections(catalogResult.games);
+  }, [applyVariantSelections]);
+
   // Login handler
   const handleLogin = useCallback(async () => {
     setIsLoggingIn(true);
@@ -2270,16 +2282,7 @@ export function App(): JSX.Element {
           providerStreamingBaseUrl: session.provider.streamingServiceUrl,
         }),
       ]);
-      setGames(catalogResult.games);
-      setCatalogFilterGroups(catalogResult.filterGroups);
-      setCatalogSortOptions(catalogResult.sortOptions);
-      setCatalogSelectedSortId(catalogResult.selectedSortId);
-      setCatalogSelectedFilterIds(catalogResult.selectedFilterIds);
-      setCatalogTotalCount(catalogResult.totalCount);
-      setCatalogSupportedCount(catalogResult.numberSupported);
-      setSource("main");
-      setSelectedGameId(catalogResult.games[0]?.id ?? "");
-      applyVariantSelections(catalogResult.games);
+      applyCatalogBrowseResult(catalogResult);
       setLibraryGames(libGames);
       applyVariantSelections(libGames);
     } catch (error) {
@@ -2287,7 +2290,7 @@ export function App(): JSX.Element {
     } finally {
       setIsLoggingIn(false);
     }
-  }, [applyVariantSelections, loadSubscriptionInfo, providerIdpId]);
+  }, [applyCatalogBrowseResult, applyVariantSelections, loadSubscriptionInfo, providerIdpId, catalogFilterKey, catalogSelectedSortId]);
 
   // Logout handler
   const handleLogout = useCallback(async () => {
@@ -2329,16 +2332,7 @@ export function App(): JSX.Element {
           sortId: catalogSelectedSortId,
           filterIds: catalogSelectedFilterIds,
         });
-        setGames(catalogResult.games);
-        setCatalogFilterGroups(catalogResult.filterGroups);
-        setCatalogSortOptions(catalogResult.sortOptions);
-        setCatalogSelectedSortId(catalogResult.selectedSortId);
-        setCatalogSelectedFilterIds(catalogResult.selectedFilterIds);
-        setCatalogTotalCount(catalogResult.totalCount);
-        setCatalogSupportedCount(catalogResult.numberSupported);
-        setSource("main");
-        setSelectedGameId((previous) => catalogResult.games.some((game) => game.id === previous) ? previous : (catalogResult.games[0]?.id ?? ""));
-        applyVariantSelections(catalogResult.games);
+        applyCatalogBrowseResult(catalogResult);
         return;
       }
 
@@ -2352,7 +2346,7 @@ export function App(): JSX.Element {
     } finally {
       setIsLoadingGames(false);
     }
-  }, [applyVariantSelections, authSession, effectiveStreamingBaseUrl, searchQuery, catalogSelectedSortId, catalogSelectedFilterIds]);
+  }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
   useEffect(() => {
     if (!authSession || source !== "main") {
@@ -2362,7 +2356,7 @@ export function App(): JSX.Element {
       void loadGames("main");
     }, searchQuery.trim() ? 220 : 0);
     return () => window.clearTimeout(handle);
-  }, [authSession, loadGames, searchQuery, source, catalogSelectedSortId, catalogSelectedFilterIds]);
+  }, [authSession, loadGames, searchQuery, source, catalogFilterKey, catalogSelectedSortId]);
 
   const handleSelectGameVariant = useCallback((gameId: string, variantId: string): void => {
     setVariantByGameId((prev) => {
@@ -3501,8 +3495,6 @@ export function App(): JSX.Element {
                 }
                 return;
               }
-              setCurrentPage("home");
-              setSource("main");
               void loadGames("main");
             }}
             searchQuery={searchQuery}

@@ -1,4 +1,4 @@
-import { Search, LayoutGrid, Library, ArrowUpDown, Filter, Loader2, Sparkles } from "lucide-react";
+import { Search, LayoutGrid, Loader2, ArrowUpDown, Filter } from "lucide-react";
 import type { JSX } from "react";
 import type { CatalogFilterGroup, CatalogSortOption, GameInfo } from "@shared/gfn";
 import { GameCard } from "./GameCard";
@@ -47,97 +47,67 @@ export function HomePage({
   supportedCount,
 }: HomePageProps): JSX.Element {
   const hasGames = games.length > 0;
-  const quickGroups = filterGroups.filter((group) => ["digital_store", "genre", "subscriptions"].includes(group.id));
-  const primaryOptions = quickGroups.flatMap((group) => group.options.slice(0, group.id === "genre" ? 8 : group.options.length));
+  const visibleFilterGroups = filterGroups.filter((group) => ["digital_store", "genre", "subscriptions"].includes(group.id));
 
   return (
-    <div className="home-page home-page--catalog">
-      <header className="catalog-hero">
-        <div className="catalog-hero-copy">
-          <span className="catalog-kicker">
-            <Sparkles size={14} />
-            Cloud catalog
-          </span>
-          <div className="catalog-hero-title-row">
-            <h1>Discover your next session</h1>
-            <div className="home-tabs">
-              <button
-                className={`home-tab ${source === "main" ? "active" : ""}`}
-                onClick={() => onSourceChange("main")}
-                disabled={isLoading}
-              >
-                <LayoutGrid size={15} />
-                Catalog
-              </button>
-              <button
-                className={`home-tab ${source === "library" ? "active" : ""}`}
-                onClick={() => onSourceChange("library")}
-                disabled={isLoading}
-              >
-                <Library size={15} />
-                Library
-              </button>
-            </div>
-          </div>
-          <p>Official GFN search, server-defined filters, and OpenNOW card actions.</p>
+    <div className="home-page">
+      <header className="home-toolbar">
+        <div className="home-tabs">
+          <button
+            className={`home-tab ${source === "main" ? "active" : ""}`}
+            onClick={() => onSourceChange("main")}
+            disabled={isLoading}
+          >
+            <LayoutGrid size={15} />
+            Catalog
+          </button>
         </div>
-        <div className="catalog-hero-stats">
-          <div className="catalog-stat-card">
-            <span className="catalog-stat-label">Visible</span>
-            <strong>{games.length}</strong>
-          </div>
-          <div className="catalog-stat-card">
-            <span className="catalog-stat-label">Supported</span>
-            <strong>{supportedCount || games.length}</strong>
-          </div>
-          <div className="catalog-stat-card">
-            <span className="catalog-stat-label">Total matches</span>
-            <strong>{totalCount || games.length}</strong>
-          </div>
+
+        <div className="home-search">
+          <Search className="home-search-icon" size={16} />
+          <input
+            type="text"
+            className="home-search-input"
+            placeholder="Search games..."
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+          />
         </div>
+
+        <label className="home-sort">
+          <ArrowUpDown size={14} />
+          <select value={selectedSortId} onChange={(e) => onSortChange(e.target.value)} disabled={isLoading}>
+            {sortOptions.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <span className="home-count">
+          {isLoading
+            ? "Loading..."
+            : `${games.length} shown${totalCount > games.length ? ` · ${totalCount} total` : ""}${supportedCount > 0 ? ` · ${supportedCount} supported` : ""}`}
+        </span>
       </header>
 
-      <section className="catalog-controls-panel">
-        <div className="catalog-controls-toprow">
-          <div className="home-search catalog-search">
-            <Search className="home-search-icon" size={16} />
-            <input
-              type="text"
-              className="home-search-input"
-              placeholder="Search titles, stores, genres, and features..."
-              value={searchQuery}
-              onChange={(e) => onSearchChange(e.target.value)}
-            />
-          </div>
-
-          <label className="catalog-sort-control">
-            <ArrowUpDown size={15} />
-            <span>Sort</span>
-            <select value={selectedSortId} onChange={(e) => onSortChange(e.target.value)} disabled={isLoading}>
-              {sortOptions.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        <div className="catalog-filter-groups">
-          {quickGroups.map((group) => (
-            <div key={group.id} className="catalog-filter-group">
-              <div className="catalog-filter-group-label">
-                <Filter size={13} />
+      {visibleFilterGroups.length > 0 && (
+        <div className="home-filter-bar">
+          {visibleFilterGroups.map((group) => (
+            <div key={group.id} className="home-filter-group">
+              <span className="home-filter-group-label">
+                <Filter size={12} />
                 {group.label}
-              </div>
-              <div className="catalog-filter-chip-row">
+              </span>
+              <div className="home-filter-chips">
                 {group.options.slice(0, group.id === "genre" ? 8 : group.options.length).map((option) => {
                   const active = selectedFilterIds.includes(option.id);
                   return (
                     <button
                       key={option.id}
                       type="button"
-                      className={`catalog-filter-chip ${active ? "active" : ""}`}
+                      className={`home-filter-chip ${active ? "active" : ""}`}
                       onClick={() => onToggleFilter(option.id)}
                     >
                       {option.label}
@@ -147,33 +117,24 @@ export function HomePage({
               </div>
             </div>
           ))}
-          {quickGroups.length === 0 && primaryOptions.length === 0 && (
-            <span className="catalog-filters-empty">Filters unavailable</span>
-          )}
         </div>
-      </section>
-
-      <div className="catalog-results-header">
-        <div>
-          <h2>{searchQuery.trim() ? `Results for “${searchQuery.trim()}”` : "Browse catalog"}</h2>
-          <p>{selectedFilterIds.length > 0 ? `${selectedFilterIds.length} active filter${selectedFilterIds.length === 1 ? "" : "s"}` : "All supported cloud games"}</p>
-        </div>
-        <span className="home-count">
-          {isLoading ? "Refreshing…" : `${games.length} shown`}
-        </span>
-      </div>
+      )}
 
       <div className="home-grid-area">
         {isLoading ? (
           <div className="home-empty-state">
             <Loader2 className="home-spinner" size={36} />
-            <p>Refreshing catalog…</p>
+            <p>Loading games...</p>
           </div>
         ) : !hasGames ? (
           <div className="home-empty-state">
             <LayoutGrid size={44} className="home-empty-icon" />
             <h3>No games found</h3>
-            <p>{searchQuery || selectedFilterIds.length > 0 ? "Try another search or adjust filters" : "No supported games are currently available"}</p>
+            <p>
+              {searchQuery || selectedFilterIds.length > 0
+                ? "Try adjusting your search terms or filters"
+                : "Check back later for new additions"}
+            </p>
           </div>
         ) : (
           <div className="game-grid">

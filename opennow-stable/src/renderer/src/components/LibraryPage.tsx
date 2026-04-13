@@ -54,52 +54,36 @@ export function LibraryPage({
   onSortChange,
 }: LibraryPageProps): JSX.Element {
   return (
-    <div className="library-page library-page--desktop">
-      <header className="library-hero">
-        <div className="library-title-block">
-          <div className="library-title">
-            <Library className="library-title-icon" size={22} />
-            <div>
-              <h1>My Library</h1>
-              <p>Your owned and linked GFN titles, with recent play history.</p>
-            </div>
-          </div>
-          <div className="library-hero-stats">
-            <div className="catalog-stat-card">
-              <span className="catalog-stat-label">Owned</span>
-              <strong>{libraryCount}</strong>
-            </div>
-            <div className="catalog-stat-card">
-              <span className="catalog-stat-label">Visible</span>
-              <strong>{games.length}</strong>
-            </div>
-          </div>
+    <div className="library-page">
+      <header className="library-toolbar">
+        <div className="library-title">
+          <Library className="library-title-icon" size={22} />
+          <h1>My Library</h1>
         </div>
 
-        <div className="library-toolbar library-toolbar--expanded">
-          <div className="library-search">
-            <Search className="library-search-icon" size={16} />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => onSearchChange(e.target.value)}
-              placeholder="Search your library by title, genre, store, or feature..."
-              className="library-search-input"
-            />
-          </div>
-
-          <label className="catalog-sort-control">
-            <ArrowUpDown size={15} />
-            <span>Sort</span>
-            <select value={selectedSortId} onChange={(e) => onSortChange(e.target.value)}>
-              {sortOptions.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
+        <div className="library-search">
+          <Search className="library-search-icon" size={16} />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Search your library..."
+            className="library-search-input"
+          />
         </div>
+
+        <label className="library-sort">
+          <ArrowUpDown size={14} />
+          <select value={selectedSortId} onChange={(e) => onSortChange(e.target.value)}>
+            {sortOptions.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <span className="library-count">{libraryCount} game{libraryCount !== 1 ? "s" : ""}</span>
       </header>
 
       <div className="library-grid-area">
@@ -112,13 +96,13 @@ export function LibraryPage({
           <div className="library-empty-state">
             <Gamepad2 className="library-empty-icon" size={44} />
             <h3>Your library is empty</h3>
-            <p>Games you own will appear here. Use the catalog to discover titles supported by your stores.</p>
+            <p>Games you own will appear here. Browse the catalog to find games.</p>
           </div>
         ) : games.length === 0 ? (
           <div className="library-empty-state">
             <Search className="library-empty-icon" size={44} />
             <h3>No results</h3>
-            <p>No library games match “{searchQuery}”</p>
+            <p>No games match &ldquo;{searchQuery}&rdquo;</p>
           </div>
         ) : (
           <div className="game-grid">

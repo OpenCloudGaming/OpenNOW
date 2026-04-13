@@ -19,7 +19,6 @@ import { cacheManager } from "./services/cacheManager";
 import { refreshScheduler } from "./services/refreshScheduler";
 import { cacheEventBus } from "./services/cacheEventBus";
 import {
-  browseCatalogUncached,
   fetchMainGamesUncached,
   fetchLibraryGamesUncached,
   fetchPublicGamesUncached,

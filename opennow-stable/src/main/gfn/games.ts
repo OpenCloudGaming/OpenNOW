@@ -390,7 +390,10 @@ function appToGame(app: AppData): GameInfo {
 
 function mergeAppMetaIntoGame(game: GameInfo, app: AppData): GameInfo {
   const merged = appToGame(app);
-  const selectedVariantIndex = game.variants.findIndex((variant) => variant.id === game.variants[game.selectedVariantIndex]?.id);
+  const selectedVariantId = game.variants[game.selectedVariantIndex]?.id;
+  const selectedVariantIndex = selectedVariantId
+    ? merged.variants.findIndex((variant) => variant.id === selectedVariantId)
+    : -1;
 
   return {
     ...game,
@@ -458,47 +461,38 @@ async function fetchAppMetaData(
     return { data: { apps: { items: [] } } };
   }
 
-  const variables = {
+  const variables = JSON.stringify({
     vpcId,
     locale: DEFAULT_LOCALE,
     appIds: normalizedIds,
-  };
+  });
 
-  const query = `query AppMetaData($vpcId: String!, $locale: String!, $appIds: [String!]!) {
-    apps(vpcId: $vpcId, language: $locale, ids: $appIds) {
-      items {
-        id
-        title
-        description
-        longDescription
-        publisherName
-        features
-        gameFeatures
-        appFeatures
-        genres
-        tags
-        contentRatings
-        images { GAME_BOX_ART TV_BANNER HERO_IMAGE KEY_ART }
-        variants {
-          id
-          appStore
-          supportedControls
-          gfn {
-            status
-            library { status selected lastPlayedDate }
-          }
-        }
-        gfn {
-          playType
-          playabilityState
-          minimumMembershipTierLabel
-          catalogSkuStrings { SKU_BASED_TAG }
-        }
-      }
-    }
-  }`;
+  const extensions = JSON.stringify({
+    persistedQuery: {
+      sha256Hash: APP_METADATA_QUERY_HASH,
+    },
+  });
 
-  return postGraphQl<AppMetaDataResponse>(query, variables, token);
+  const params = new URLSearchParams({
+    requestType: "appMetaData",
+    extensions,
+    huId: randomHuId(),
+    variables,
+  });
+
+  const response = await fetch(`${GRAPHQL_URL}?${params.toString()}`, {
+    headers: {
+      ...buildHeaders(token),
+      "Content-Type": "application/graphql",
+    },
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`App metadata failed (${response.status}): ${text.slice(0, 400)}`);
+  }
+
+  return (await response.json()) as AppMetaDataResponse;
 }
 
 async function enrichGamesWithMetadata(token: string, vpcId: string, games: GameInfo[]): Promise<GameInfo[]> {
@@ -711,27 +705,17 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
       items {
         id
         title
-        description
-        longDescription
-        publisherName
-        features
-        gameFeatures
-        appFeatures
-        genres
-        tags
-        contentRatings
-        images { TV_BANNER HERO_IMAGE KEY_ART GAME_BOX_ART }
+        images { TV_BANNER HERO_IMAGE }
         variants {
           id
           appStore
           supportedControls
           gfn {
             status
-            library { status selected lastPlayedDate }
+            library { status selected }
           }
         }
         gfn {
-          playType
           playabilityState
           minimumMembershipTierLabel
           catalogSkuStrings { SKU_BASED_TAG }
