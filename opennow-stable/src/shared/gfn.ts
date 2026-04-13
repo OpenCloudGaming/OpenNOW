@@ -545,7 +545,7 @@ export interface SessionInfo {
   deviceId?: string;
 }
 
-/** Information about an active session from getActiveSessions */
+/** Information about a resumable session returned by getActiveSessions */
 export interface ActiveSessionInfo {
   sessionId: string;
   appId: number;
@@ -617,7 +617,7 @@ export interface OpenNowApi {
   pollSession(input: SessionPollRequest): Promise<SessionInfo>;
   reportSessionAd(input: SessionAdReportRequest): Promise<SessionInfo>;
   stopSession(input: SessionStopRequest): Promise<void>;
-  /** Get list of active sessions (status 2 or 3) */
+  /** Get list of resumable sessions (currently status 1, 2, or 3) */
   getActiveSessions(token?: string, streamingBaseUrl?: string): Promise<ActiveSessionInfo[]>;
   /** Claim/resume an existing session */
   claimSession(input: SessionClaimRequest): Promise<SessionInfo>;

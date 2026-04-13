@@ -114,6 +114,8 @@ export function Navbar({
   const firstEntitlementStart = formatDateTime(subscription?.firstEntitlementStartDateTime);
   const modalTitle = modalType === "time" ? "Playtime Details" : "Storage Details";
   const activeSessionTitle = activeSessionGameTitle?.trim() || null;
+  const isLaunchingSession = activeSession?.status === 1;
+  const canResumeSession = !!activeSession && (isLaunchingSession || !!activeSession.serverIp);
 
   useEffect(() => {
     if (!modalType) return;
@@ -277,14 +279,18 @@ export function Navbar({
             type="button"
             className={`navbar-session-resume${isResumingSession ? " is-loading" : ""}`}
             title={
-              activeSession.serverIp
+              isLaunchingSession
+                ? activeSessionTitle
+                  ? `Resume launching cloud session: ${activeSessionTitle}`
+                  : "Resume launching cloud session"
+                : activeSession.serverIp
                 ? activeSessionTitle
                   ? `Resume active cloud session: ${activeSessionTitle}`
                   : "Resume active cloud session"
                 : "Active session found (missing server address)"
             }
             onClick={onResumeSession}
-            disabled={isResumingSession || !activeSession.serverIp}
+            disabled={isResumingSession || !canResumeSession}
           >
             {isResumingSession ? <Loader2 size={14} className="navbar-session-resume-spin" /> : <PlayCircle size={14} />}
             <span className="navbar-session-resume-text">Resume</span>

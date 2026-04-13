@@ -1096,8 +1096,8 @@ export async function stopSession(input: SessionStopRequest): Promise<void> {
 }
 
 /**
- * Get list of active sessions (status 2 or 3)
- * Returns sessions that are Ready or Streaming
+ * Get list of resumable sessions surfaced by CloudMatch.
+ * Returns setup/queuing (1), ready (2), and streaming (3) sessions.
  */
 export async function getActiveSessions(
   token: string,

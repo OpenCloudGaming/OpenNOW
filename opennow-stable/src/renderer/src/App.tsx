@@ -193,6 +193,16 @@ function isSessionReadyForConnect(status: number): boolean {
   return status === 2 || status === 3;
 }
 
+function isSessionResumable(status: number): boolean {
+  return status === 1 || isSessionReadyForConnect(status);
+}
+
+function pickNavbarResumableSession(activeSessions: ActiveSessionInfo[]): ActiveSessionInfo | null {
+  return activeSessions.find((entry) => isSessionReadyForConnect(entry.status))
+    ?? activeSessions.find((entry) => isSessionResumable(entry.status))
+    ?? null;
+}
+
 function isSessionInQueue(session: SessionInfo): boolean {
   // Official client treats seat setup step 1 as queue state even when queuePosition reaches 1.
   // Fallback to queuePosition-based inference for payloads that do not expose seatSetupStep.
@@ -1560,8 +1570,7 @@ export function App(): JSX.Element {
     }
     try {
       const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
-      const candidate = activeSessions.find((entry) => entry.status === 3 || entry.status === 2) ?? null;
-      setNavbarActiveSession(candidate);
+      setNavbarActiveSession(pickNavbarResumableSession(activeSessions));
     } catch (error) {
       console.warn("Failed to refresh active sessions:", error);
     }
@@ -2317,6 +2326,138 @@ export function App(): JSX.Element {
     });
   }, [authSession, effectiveStreamingBaseUrl, findGameContextForSession, resetStatsOverlayToPreference, settings]);
 
+  const continueLaunchSession = useCallback(async ({
+    initialSession,
+    token,
+    updateLoadingStep,
+  }: {
+    initialSession: SessionInfo;
+    token: string | undefined;
+    updateLoadingStep: (next: StreamLoadingStatus) => void;
+  }): Promise<void> => {
+    let finalSession: SessionInfo | null = null;
+    let latestSession = initialSession;
+    let isInQueueMode = isSessionInQueue(initialSession);
+    let setupTimeoutStartAt: number | null = isInQueueMode ? null : Date.now();
+    let attempt = 0;
+
+    setSession(initialSession);
+    sessionRef.current = initialSession;
+    setQueuePosition(initialSession.queuePosition);
+
+    if (isSessionReadyForConnect(initialSession.status)) {
+      finalSession = initialSession;
+    } else if (isInQueueMode) {
+      updateLoadingStep("queue");
+    } else if (initialSession.status === 1) {
+      updateLoadingStep("setup");
+    }
+
+    while (!finalSession) {
+      attempt++;
+
+      const pollIntervalMs = shouldUseQueueAdPolling(latestSession, subscriptionInfo, authSession)
+        ? SESSION_AD_POLL_INTERVAL_MS
+        : SESSION_READY_POLL_INTERVAL_MS;
+
+      if (pollIntervalMs > SESSION_READY_POLL_INTERVAL_MS) {
+        const tickMs = 500;
+        let elapsed = 0;
+        while (elapsed < pollIntervalMs) {
+          await sleep(tickMs);
+          elapsed += tickMs;
+          if (launchAbortRef.current) return;
+          const refSession = sessionRef.current;
+          if (refSession && refSession.sessionId === latestSession.sessionId) {
+            latestSession = mergePolledSessionState(latestSession, refSession);
+          }
+          if (!shouldUseQueueAdPolling(latestSession, subscriptionInfo, authSession)) {
+            break;
+          }
+        }
+      } else {
+        await sleep(pollIntervalMs);
+      }
+
+      if (shouldUseQueueAdPolling(latestSession, subscriptionInfo, authSession) && queueAdPlaybackRef.current) {
+        const graceDeadline = Date.now() + 5000;
+        while (queueAdPlaybackRef.current && Date.now() < graceDeadline) {
+          await sleep(200);
+          if (launchAbortRef.current) {
+            return;
+          }
+        }
+      }
+
+      if (launchAbortRef.current) {
+        return;
+      }
+
+      const polled = await window.openNow.pollSession({
+        token: token || undefined,
+        streamingBaseUrl: initialSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
+        serverIp: initialSession.serverIp,
+        zone: initialSession.zone,
+        sessionId: initialSession.sessionId,
+        clientId: initialSession.clientId,
+        deviceId: initialSession.deviceId,
+      });
+
+      if (launchAbortRef.current) {
+        return;
+      }
+
+      const mergedSession = mergePolledSessionState(latestSession, polled);
+      latestSession = mergedSession;
+
+      setSession(mergedSession);
+      sessionRef.current = mergedSession;
+      setQueuePosition(mergedSession.queuePosition);
+
+      const wasInQueueMode = isInQueueMode;
+      isInQueueMode = isSessionInQueue(mergedSession);
+      if (wasInQueueMode && !isInQueueMode) {
+        setupTimeoutStartAt = Date.now();
+      }
+
+      console.log(
+        `Poll attempt ${attempt}: status=${mergedSession.status}, seatSetupStep=${mergedSession.seatSetupStep ?? "n/a"}, queuePosition=${mergedSession.queuePosition ?? "n/a"}, serverIp=${mergedSession.serverIp}, queueMode=${isInQueueMode}, adsRequired=${isSessionAdsRequired(mergedSession.adState)}`,
+      );
+
+      if (isSessionReadyForConnect(mergedSession.status)) {
+        finalSession = mergedSession;
+        break;
+      }
+
+      if (isInQueueMode) {
+        updateLoadingStep("queue");
+      } else if (mergedSession.status === 1) {
+        updateLoadingStep("setup");
+      }
+
+      if (!isInQueueMode && setupTimeoutStartAt !== null && Date.now() - setupTimeoutStartAt >= SESSION_READY_TIMEOUT_MS) {
+        throw new Error(`Session did not become ready in time (${Math.round(SESSION_READY_TIMEOUT_MS / 1000)}s)`);
+      }
+    }
+
+    setQueuePosition(undefined);
+    updateLoadingStep("connecting");
+
+    const sessionToConnect = finalSession ?? sessionRef.current ?? initialSession;
+    console.log("Connecting signaling with:", {
+      sessionId: sessionToConnect.sessionId,
+      signalingServer: sessionToConnect.signalingServer,
+      signalingUrl: sessionToConnect.signalingUrl,
+      status: sessionToConnect.status,
+    });
+
+    await window.openNow.connectSignaling({
+      sessionId: sessionToConnect.sessionId,
+      signalingServer: sessionToConnect.signalingServer,
+      signalingUrl: sessionToConnect.signalingUrl,
+    });
+  }, [authSession, effectiveStreamingBaseUrl, subscriptionInfo]);
+
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
     if (!selectedProvider) return;
@@ -2450,142 +2591,10 @@ export function App(): JSX.Element {
           enableCloudGsync: settings.enableCloudGsync,
         },
       });
-
-      setSession(newSession);
-      setQueuePosition(newSession.queuePosition);
-
-      // Poll for readiness.
-      // Queue mode: no timeout - users wait indefinitely and see position updates.
-      // Setup/Starting mode: 180s timeout applies while machine is being allocated.
-      let finalSession: SessionInfo | null = null;
-      let latestSession = newSession;
-      let isInQueueMode = isSessionInQueue(newSession);
-      let setupTimeoutStartAt: number | null = isInQueueMode ? null : Date.now();
-      let attempt = 0;
-
-      while (true) {
-        attempt++;
-
-        const pollIntervalMs = shouldUseQueueAdPolling(latestSession, subscriptionInfo, authSession)
-          ? SESSION_AD_POLL_INTERVAL_MS
-          : SESSION_READY_POLL_INTERVAL_MS;
-
-        // Sleep in small ticks during ad-polling intervals so the loop can react
-        // quickly when reportSessionAd clears isAdsRequired (which only updates
-        // sessionRef, not the local latestSession variable).  Standard 2 s intervals
-        // are kept as a single sleep since they're already short.
-        if (pollIntervalMs > SESSION_READY_POLL_INTERVAL_MS) {
-          const tickMs = 500;
-          let elapsed = 0;
-          while (elapsed < pollIntervalMs) {
-            await sleep(tickMs);
-            elapsed += tickMs;
-            if (launchAbortRef.current) return;
-            // Sync ad-action responses from sessionRef into the local tracking variable
-            // so shouldUseQueueAdPolling sees the updated adState immediately.
-            const refSession = sessionRef.current;
-            if (refSession && refSession.sessionId === latestSession.sessionId) {
-              latestSession = mergePolledSessionState(latestSession, refSession);
-            }
-            // Break out of the sleep early when ads are no longer required.
-            if (!shouldUseQueueAdPolling(latestSession, subscriptionInfo, authSession)) {
-              break;
-            }
-          }
-        } else {
-          await sleep(pollIntervalMs);
-        }
-
-        if (shouldUseQueueAdPolling(latestSession, subscriptionInfo, authSession) && queueAdPlaybackRef.current) {
-          const graceDeadline = Date.now() + 5000;
-          while (queueAdPlaybackRef.current && Date.now() < graceDeadline) {
-            await sleep(200);
-            if (launchAbortRef.current) {
-              return;
-            }
-          }
-        }
-
-        if (launchAbortRef.current) {
-          return;
-        }
-
-        if (launchAbortRef.current) {
-          return;
-        }
-
-        const polled = await window.openNow.pollSession({
-          token: token || undefined,
-          streamingBaseUrl: newSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
-          serverIp: newSession.serverIp,
-          zone: newSession.zone,
-          sessionId: newSession.sessionId,
-          clientId: newSession.clientId,
-          deviceId: newSession.deviceId,
-        });
-
-        if (launchAbortRef.current) {
-          return;
-        }
-
-        const mergedSession = mergePolledSessionState(latestSession, polled);
-        latestSession = mergedSession;
-
-        setSession(mergedSession);
-        setQueuePosition(mergedSession.queuePosition);
-
-        // Check if queue just cleared - transition from queue mode to setup mode
-        const wasInQueueMode = isInQueueMode;
-        isInQueueMode = isSessionInQueue(mergedSession);
-        if (wasInQueueMode && !isInQueueMode) {
-          // Queue just cleared, start timeout counting from now.
-          setupTimeoutStartAt = Date.now();
-        }
-
-        console.log(
-          `Poll attempt ${attempt}: status=${mergedSession.status}, seatSetupStep=${mergedSession.seatSetupStep ?? "n/a"}, queuePosition=${mergedSession.queuePosition ?? "n/a"}, serverIp=${mergedSession.serverIp}, queueMode=${isInQueueMode}, adsRequired=${isSessionAdsRequired(mergedSession.adState)}`,
-        );
-
-        if (isSessionReadyForConnect(mergedSession.status)) {
-          finalSession = mergedSession;
-          break;
-        }
-
-        // Update status based on session state
-        if (isInQueueMode) {
-          updateLoadingStep("queue");
-        } else if (mergedSession.status === 1) {
-          updateLoadingStep("setup");
-        }
-
-        // Only check timeout when NOT in queue mode (i.e., during setup/starting)
-        if (!isInQueueMode && setupTimeoutStartAt !== null && Date.now() - setupTimeoutStartAt >= SESSION_READY_TIMEOUT_MS) {
-          throw new Error(`Session did not become ready in time (${Math.round(SESSION_READY_TIMEOUT_MS / 1000)}s)`);
-        }
-      }
-
-      // finalSession is guaranteed to be set here (we only exit the loop via break when session is ready)
-      // Timeout only applies during setup/starting phase, not during queue wait
-
-      setQueuePosition(undefined);
-      updateLoadingStep("connecting");
-
-      // Use finalSession (the status=2 poll result) as the authoritative source for
-      // signaling coordinates — it carries the real server IP resolved at the moment
-      // the rig became ready. sessionRef.current may still hold stale zone-LB data
-      // from a prior React render cycle.
-      const sessionToConnect = finalSession ?? sessionRef.current ?? newSession;
-      console.log("Connecting signaling with:", {
-        sessionId: sessionToConnect.sessionId,
-        signalingServer: sessionToConnect.signalingServer,
-        signalingUrl: sessionToConnect.signalingUrl,
-        status: sessionToConnect.status,
-      });
-
-      await window.openNow.connectSignaling({
-        sessionId: sessionToConnect.sessionId,
-        signalingServer: sessionToConnect.signalingServer,
-        signalingUrl: sessionToConnect.signalingUrl,
+      await continueLaunchSession({
+        initialSession: newSession,
+        token,
+        updateLoadingStep,
       });
     } catch (error) {
       if (launchAbortRef.current) {
@@ -2605,6 +2614,7 @@ export function App(): JSX.Element {
     authSession,
     allKnownGames,
     claimAndConnectSession,
+    continueLaunchSession,
     effectiveStreamingBaseUrl,
     refreshNavbarActiveSession,
     resetLaunchRuntime,
@@ -2712,6 +2722,13 @@ export function App(): JSX.Element {
     setLocalSessionTimerWarning(null);
     resetStatsOverlayToPreference();
     const matchedContext = findGameContextForSession(navbarActiveSession);
+    const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
+    if (!token) {
+      launchInFlightRef.current = false;
+      setIsResumingNavbarSession(false);
+      setLaunchError(toLaunchErrorState(new Error("Missing token for session resume"), loadingStep));
+      return;
+    }
     if (matchedContext) {
       setStreamingGame(matchedContext.game);
       setStreamingStore(matchedContext.variant?.store ?? null);
@@ -2721,7 +2738,37 @@ export function App(): JSX.Element {
     updateLoadingStep("setup");
 
     try {
-      await claimAndConnectSession(navbarActiveSession);
+      if (isSessionReadyForConnect(navbarActiveSession.status)) {
+        await claimAndConnectSession(navbarActiveSession);
+      } else if (navbarActiveSession.status === 1) {
+        const resumedSession = await window.openNow.createSession({
+          token,
+          streamingBaseUrl: effectiveStreamingBaseUrl,
+          appId: String(navbarActiveSession.appId),
+          internalTitle: matchedContext?.game.title ?? gameTitleByAppId.get(navbarActiveSession.appId) ?? "Game",
+          accountLinked: matchedContext?.game.playType !== "INSTALL_TO_PLAY",
+          zone: "prod",
+          settings: {
+            resolution: settings.resolution,
+            fps: settings.fps,
+            maxBitrateMbps: settings.maxBitrateMbps,
+            codec: settings.codec,
+            colorQuality: settings.colorQuality,
+            keyboardLayout: settings.keyboardLayout,
+            gameLanguage: settings.gameLanguage,
+            enableL4S: settings.enableL4S,
+            enableCloudGsync: settings.enableCloudGsync,
+          },
+        });
+
+        await continueLaunchSession({
+          initialSession: resumedSession,
+          token,
+          updateLoadingStep,
+        });
+      } else {
+        throw new Error(`Session is not resumable from the navbar (status=${navbarActiveSession.status})`);
+      }
       setNavbarActiveSession(null);
     } catch (error) {
       console.error("Navbar resume failed:", error);
@@ -2737,12 +2784,16 @@ export function App(): JSX.Element {
     }
   }, [
     claimAndConnectSession,
+    continueLaunchSession,
+    authSession,
+    gameTitleByAppId,
     isResumingNavbarSession,
     navbarActiveSession,
     findGameContextForSession,
     refreshNavbarActiveSession,
     resetLaunchRuntime,
     resetStatsOverlayToPreference,
+    settings,
     selectedProvider,
     streamStatus,
   ]);
