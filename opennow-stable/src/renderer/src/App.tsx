@@ -2786,6 +2786,7 @@ export function App(): JSX.Element {
     claimAndConnectSession,
     continueLaunchSession,
     authSession,
+    effectiveStreamingBaseUrl,
     gameTitleByAppId,
     isResumingNavbarSession,
     navbarActiveSession,
