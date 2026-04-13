@@ -8,6 +8,7 @@ export const IPC_CHANNELS = {
   SUBSCRIPTION_FETCH: "subscription:fetch",
   GAMES_FETCH_MAIN: "games:fetch-main",
   GAMES_FETCH_LIBRARY: "games:fetch-library",
+  GAMES_BROWSE_CATALOG: "games:browse-catalog",
   GAMES_FETCH_PUBLIC: "games:fetch-public",
   GAMES_RESOLVE_LAUNCH_ID: "games:resolve-launch-id",
   CREATE_SESSION: "gfn:create-session",

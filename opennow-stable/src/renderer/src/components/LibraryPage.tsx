@@ -1,6 +1,6 @@
-import { Library, Search, Clock, Gamepad2, Loader2 } from "lucide-react";
+import { Library, Search, Clock, Gamepad2, Loader2, ArrowUpDown } from "lucide-react";
 import type { JSX } from "react";
-import type { GameInfo } from "@shared/gfn";
+import type { CatalogSortOption, GameInfo } from "@shared/gfn";
 import { GameCard } from "./GameCard";
 
 export interface LibraryPageProps {
@@ -13,6 +13,10 @@ export interface LibraryPageProps {
   onSelectGame: (id: string) => void;
   selectedVariantByGameId: Record<string, string>;
   onSelectGameVariant: (gameId: string, variantId: string) => void;
+  libraryCount: number;
+  sortOptions: CatalogSortOption[];
+  selectedSortId: string;
+  onSortChange: (sortId: string) => void;
 }
 
 function formatLastPlayed(date?: string): string {
@@ -44,59 +48,82 @@ export function LibraryPage({
   onSelectGame,
   selectedVariantByGameId,
   onSelectGameVariant,
+  libraryCount,
+  sortOptions,
+  selectedSortId,
+  onSortChange,
 }: LibraryPageProps): JSX.Element {
-  const filteredGames = searchQuery.trim()
-    ? games.filter((game) =>
-        game.title.toLowerCase().includes(searchQuery.trim().toLowerCase())
-      )
-    : games;
-
   return (
-    <div className="library-page">
-      {/* Toolbar: title + search + count */}
-      <header className="library-toolbar">
-        <div className="library-title">
-          <Library className="library-title-icon" size={22} />
-          <h1>My Library</h1>
+    <div className="library-page library-page--desktop">
+      <header className="library-hero">
+        <div className="library-title-block">
+          <div className="library-title">
+            <Library className="library-title-icon" size={22} />
+            <div>
+              <h1>My Library</h1>
+              <p>Your owned and linked GFN titles, with recent play history.</p>
+            </div>
+          </div>
+          <div className="library-hero-stats">
+            <div className="catalog-stat-card">
+              <span className="catalog-stat-label">Owned</span>
+              <strong>{libraryCount}</strong>
+            </div>
+            <div className="catalog-stat-card">
+              <span className="catalog-stat-label">Visible</span>
+              <strong>{games.length}</strong>
+            </div>
+          </div>
         </div>
 
-        <div className="library-search">
-          <Search className="library-search-icon" size={16} />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search your library..."
-            className="library-search-input"
-          />
-        </div>
+        <div className="library-toolbar library-toolbar--expanded">
+          <div className="library-search">
+            <Search className="library-search-icon" size={16} />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => onSearchChange(e.target.value)}
+              placeholder="Search your library by title, genre, store, or feature..."
+              className="library-search-input"
+            />
+          </div>
 
-        <span className="library-count">{games.length} game{games.length !== 1 ? "s" : ""}</span>
+          <label className="catalog-sort-control">
+            <ArrowUpDown size={15} />
+            <span>Sort</span>
+            <select value={selectedSortId} onChange={(e) => onSortChange(e.target.value)}>
+              {sortOptions.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       </header>
 
-      {/* Game grid */}
       <div className="library-grid-area">
         {isLoading ? (
           <div className="library-empty-state">
             <Loader2 className="library-spinner" size={36} />
             <p>Loading your library...</p>
           </div>
-        ) : games.length === 0 ? (
+        ) : libraryCount === 0 ? (
           <div className="library-empty-state">
             <Gamepad2 className="library-empty-icon" size={44} />
             <h3>Your library is empty</h3>
-            <p>Games you own will appear here. Browse the catalog to find games.</p>
+            <p>Games you own will appear here. Use the catalog to discover titles supported by your stores.</p>
           </div>
-        ) : filteredGames.length === 0 ? (
+        ) : games.length === 0 ? (
           <div className="library-empty-state">
             <Search className="library-empty-icon" size={44} />
             <h3>No results</h3>
-            <p>No games match &ldquo;{searchQuery}&rdquo;</p>
+            <p>No library games match “{searchQuery}”</p>
           </div>
         ) : (
           <div className="game-grid">
-            {filteredGames.map((game, index) => (
-              <div key={`${game.id}-${index}`} className="library-game-wrapper">
+            {games.map((game) => (
+              <div key={game.id} className="library-game-wrapper">
                 <GameCard
                   game={game}
                   isSelected={game.id === selectedGameId}
@@ -105,11 +132,9 @@ export function LibraryPage({
                   selectedVariantId={selectedVariantByGameId[game.id]}
                   onSelectStore={(variantId) => onSelectGameVariant(game.id, variantId)}
                 />
-                {/* @ts-expect-error - lastPlayed may exist on library games */}
                 {game.lastPlayed && (
                   <div className="library-last-played">
                     <Clock size={12} />
-                    {/* @ts-expect-error - lastPlayed may exist on library games */}
                     <span>{formatLastPlayed(game.lastPlayed)}</span>
                   </div>
                 )}

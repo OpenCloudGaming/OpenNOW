@@ -5,6 +5,7 @@ import type {
   AuthLoginRequest,
   AuthSessionRequest,
   GamesFetchRequest,
+  CatalogBrowseRequest,
   ResolveLaunchIdRequest,
   RegionsFetchRequest,
   MainToRendererSignalingEvent,
@@ -66,6 +67,7 @@ const api: OpenNowApi = {
   fetchMainGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_MAIN, input),
   fetchLibraryGames: (input: GamesFetchRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_LIBRARY, input),
+  browseCatalog: (input: CatalogBrowseRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_BROWSE_CATALOG, input),
   fetchPublicGames: () => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_PUBLIC),
   resolveLaunchAppId: (input: ResolveLaunchIdRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, input),
