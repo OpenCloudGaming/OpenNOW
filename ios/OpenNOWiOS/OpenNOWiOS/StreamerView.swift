@@ -224,12 +224,10 @@ private struct StreamerWebView: UIViewRepresentable {
     #video{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
     #tap{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);padding:8px 12px;
       color:#fff;background:rgba(0,0,0,.5);border-radius:999px;font:12px -apple-system;}
-    @keyframes _gpuKA{from{transform:scale(1)}to{transform:scale(1.0001)}}
   </style>
 </head>
 <body>
   <video id="video" playsinline autoplay muted></video>
-  <div id="_gpuKA" style="position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;will-change:transform;animation:_gpuKA 1s linear infinite alternate"></div>
   <div id="tap">Tap to unmute</div>
   <div id="stats" style="position:fixed;left:12px;top:12px;z-index:30;padding:6px 10px;
     color:#d5ffd5;background:rgba(0,0,0,0.58);border:1px solid rgba(255,255,255,0.15);
@@ -1651,10 +1649,19 @@ private struct StreamerWebView: UIViewRepresentable {
     tap.style.display = 'none';
     try { await video.play(); } catch (_) {}
   };
-  // WebContent keep-alive: iOS suspends WKWebView WebContent processes that
-  // lack browser-engine entitlements unless they have active media playback.
-  // An empty MediaStream on the video element activates the "playing media"
-  // state, preventing suspension during the WebRTC negotiation window.
+  // GPU keep-alive: minimal WebGL rAF loop prevents GPUProcess idle-exit during
+  // WebRTC negotiation. Runs until the WKWebView is destroyed (streamer dismissed).
+  (function() {
+    var c = document.createElement('canvas');
+    c.width = c.height = 1;
+    c.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;z-index:-1;';
+    document.body.appendChild(c);
+    var gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+    if (!gl) { c.remove(); return; }
+    (function loop() { gl.clear(gl.COLOR_BUFFER_BIT); requestAnimationFrame(loop); })();
+  })();
+  // WebContent keep-alive: active media playback prevents iOS from suspending the
+  // WebContent process during WebRTC negotiation (no browser-engine entitlements).
   try { video.srcObject = new MediaStream(); video.play().catch(function(){}); } catch(e) {}
   connect();
   </script>
