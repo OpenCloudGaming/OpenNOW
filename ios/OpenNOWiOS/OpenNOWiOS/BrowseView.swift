@@ -3,7 +3,8 @@ import SwiftUI
 struct BrowseView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @State private var selectedGenre: String? = nil
-    @State private var pendingLaunchGame: CloudGame?
+    @State private var pendingLaunchRequest: GameLaunchRequest?
+    @State private var selectedGameForDetails: CloudGame?
     private let gridColumns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 14)]
 
     private var genres: [String] {
@@ -51,7 +52,10 @@ struct BrowseView: View {
                 prompt: "Search games…"
             )
         }
-        .printedWasteLaunchSheet(pendingGame: $pendingLaunchGame)
+        .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails) { game, option in
+            pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
+        }
+        .printedWasteLaunchSheet(pendingLaunchRequest: $pendingLaunchRequest)
     }
 
     private var gameGrid: some View {
@@ -59,7 +63,7 @@ struct BrowseView: View {
             LazyVGrid(columns: gridColumns, spacing: 14) {
                 ForEach(filtered) { game in
                     GameCardView(game: game) {
-                        pendingLaunchGame = game
+                        selectedGameForDetails = game
                     }
                 }
             }

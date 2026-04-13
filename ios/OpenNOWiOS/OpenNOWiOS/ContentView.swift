@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @EnvironmentObject private var store: OpenNOWStore
@@ -22,13 +23,39 @@ struct ContentView: View {
 }
 
 private struct SplashView: View {
+    private var appIconImage: UIImage? {
+        let iconDictionaries: [[String: Any]] = [
+            (Bundle.main.object(forInfoDictionaryKey: "CFBundleIcons") as? [String: Any]) ?? [:],
+            (Bundle.main.object(forInfoDictionaryKey: "CFBundleIcons~ipad") as? [String: Any]) ?? [:]
+        ]
+        for icons in iconDictionaries {
+            guard let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+                  let files = primary["CFBundleIconFiles"] as? [String],
+                  let iconName = files.last else {
+                continue
+            }
+            if let image = UIImage(named: iconName) {
+                return image
+            }
+        }
+        return nil
+    }
+
     var body: some View {
         ZStack {
             appBackground
             VStack(spacing: 16) {
-                Image(systemName: "bolt.fill")
-                    .font(.system(size: 56, weight: .bold))
-                    .foregroundStyle(brandGradient)
+                if let appIconImage {
+                    Image(uiImage: appIconImage)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 88, height: 88)
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                } else {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 56, weight: .bold))
+                        .foregroundStyle(brandGradient)
+                }
                 Text("OpenNOW")
                     .font(.largeTitle.bold())
                 ProgressView()
@@ -63,6 +90,7 @@ struct MainTabView: View {
         }())) {
             StreamLoadingView()
                 .environmentObject(store)
+                .interactiveDismissDisabled(true)
         }
         .fullScreenCover(item: $store.streamSession) { session in
             StreamerView(session: session, settings: store.settings) {

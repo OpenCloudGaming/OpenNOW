@@ -127,6 +127,10 @@ private struct StreamerWebView: UIViewRepresentable {
     width:48px;height:48px;border-radius:50%;background:rgba(30,30,30,0.75);color:#fff;
     border:1px solid rgba(255,255,255,0.25);font-size:22px;cursor:pointer;
     backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">⌨</button>
+  <button id="gpBtn" onclick="toggleGamepad()" style="position:fixed;right:16px;bottom:72px;z-index:20;
+    width:48px;height:48px;border-radius:50%;background:rgba(30,30,30,0.75);color:#fff;
+    border:1px solid rgba(255,255,255,0.25);font-size:22px;cursor:pointer;
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">🎮</button>
   <div id="kbBar" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:30;
     background:rgba(20,20,20,0.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
     padding:8px 12px;border-top:1px solid rgba(255,255,255,0.1);">
@@ -137,6 +141,22 @@ private struct StreamerWebView: UIViewRepresentable {
           border-radius:8px;padding:8px 12px;font-size:16px;outline:none;">
       <button onclick="hideKeyboard()" style="padding:8px 14px;background:#333;color:#fff;
         border:none;border-radius:8px;font-size:14px;cursor:pointer;">Done</button>
+    </div>
+  </div>
+  <div id="gpPad" style="display:none;position:fixed;left:0;right:0;bottom:12px;z-index:25;pointer-events:none;">
+    <div style="display:flex;justify-content:space-between;gap:16px;padding:0 12px;">
+      <div style="display:grid;grid-template-columns:56px 56px 56px;grid-template-rows:56px 56px 56px;gap:6px;pointer-events:auto;">
+        <button data-key="w" style="grid-column:2;grid-row:1;" class="gpKey">▲</button>
+        <button data-key="a" style="grid-column:1;grid-row:2;" class="gpKey">◀</button>
+        <button data-key="s" style="grid-column:2;grid-row:3;" class="gpKey">▼</button>
+        <button data-key="d" style="grid-column:3;grid-row:2;" class="gpKey">▶</button>
+      </div>
+      <div style="display:grid;grid-template-columns:56px 56px;grid-template-rows:56px 56px;gap:8px;pointer-events:auto;">
+        <button data-key="j" class="gpKey">X</button>
+        <button data-key="l" class="gpKey">Y</button>
+        <button data-key="k" class="gpKey">A</button>
+        <button data-key="i" class="gpKey">B</button>
+      </div>
     </div>
   </div>
   <script>
@@ -151,6 +171,9 @@ private struct StreamerWebView: UIViewRepresentable {
   let reliableCh = null;
   let partialCh = null;
   let inputReady = false;
+  let reconnectTimer = null;
+  let reconnectAttempts = 0;
+  const maxReconnectAttempts = 5;
   const peerId = 2;
   const peerName = "peer-" + Math.floor(Math.random() * 1e10);
 
@@ -160,6 +183,35 @@ private struct StreamerWebView: UIViewRepresentable {
   function log(message) { post("log", message); }
   function fail(message) { post("error", message); }
   function nextAck() { ack += 1; return ack; }
+  function scheduleReconnect(reason) {
+    if (reconnectAttempts >= maxReconnectAttempts) {
+      fail('Reconnect exhausted: ' + reason);
+      return;
+    }
+    if (reconnectTimer) return;
+    reconnectAttempts += 1;
+    const waitMs = Math.min(1500 * reconnectAttempts, 5000);
+    post('status', `Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...`);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, waitMs);
+  }
+  function resetTransport(closeSocket = false) {
+    inputReady = false;
+    if (hb) { clearInterval(hb); hb = null; }
+    if (hbInput) { clearInterval(hbInput); hbInput = null; }
+    if (reliableCh) { try { reliableCh.close(); } catch (_) {} }
+    if (partialCh) { try { partialCh.close(); } catch (_) {} }
+    reliableCh = null;
+    partialCh = null;
+    if (pc) { try { pc.close(); } catch (_) {} }
+    pc = null;
+    if (closeSocket && ws) {
+      try { ws.onclose = null; ws.close(); } catch (_) {}
+      ws = null;
+    }
+  }
   function send(obj) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify(obj));
@@ -599,7 +651,8 @@ private struct StreamerWebView: UIViewRepresentable {
       credential: server.credential || undefined
     }));
     pc = new RTCPeerConnection({ iceServers: ice });
-    reliableCh = pc.createDataChannel('input_channel_v1', { ordered: true });
+    const thisPc = pc;
+    reliableCh = thisPc.createDataChannel('input_channel_v1', { ordered: true });
     reliableCh.binaryType = 'arraybuffer';
     reliableCh.onopen = () => {
       inputReady = true;
@@ -614,12 +667,12 @@ private struct StreamerWebView: UIViewRepresentable {
       if (hbInput) { clearInterval(hbInput); hbInput = null; }
     };
     reliableCh.onmessage = () => {};
-    partialCh = pc.createDataChannel('input_channel_partially_reliable', {
+    partialCh = thisPc.createDataChannel('input_channel_partially_reliable', {
       ordered: false,
       maxPacketLifeTime: 100
     });
     partialCh.binaryType = 'arraybuffer';
-    pc.ontrack = (event) => {
+    thisPc.ontrack = (event) => {
       if (event.streams && event.streams[0]) {
         video.srcObject = event.streams[0];
       } else {
@@ -630,7 +683,7 @@ private struct StreamerWebView: UIViewRepresentable {
       video.play().catch(() => {});
       post('status', 'Streamer connected');
     };
-    pc.onicecandidate = (event) => {
+    thisPc.onicecandidate = (event) => {
       if (!event.candidate) return;
       send({
         peer_msg: {
@@ -645,8 +698,14 @@ private struct StreamerWebView: UIViewRepresentable {
         ackid: nextAck()
       });
     };
-    pc.onconnectionstatechange = () => {
-      post('status', 'Peer: ' + pc.connectionState);
+    thisPc.onconnectionstatechange = () => {
+      post('status', 'Peer: ' + thisPc.connectionState);
+      if (thisPc.connectionState === 'failed' || thisPc.connectionState === 'disconnected') {
+        resetTransport();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          scheduleReconnect('peer disconnected');
+        }
+      }
     };
     return pc;
   }
@@ -724,10 +783,12 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   const kbBar = document.getElementById('kbBar');
   const kbInput = document.getElementById('kbInput');
+  const gpPad = document.getElementById('gpPad');
   let kbPrevLen = 0;
   let lastTX = 0, lastTY = 0;
-  let tStartTime = 0, tMoved = false;
+  let tStartTime = 0, tMoved = false, activeTouchId = null;
   let twoFingerStart = 0;
+  let twoFingerTapPending = false;
   const touchpad = document.getElementById('touchpad');
   const touchHint = document.getElementById('touchHint');
 
@@ -744,6 +805,9 @@ private struct StreamerWebView: UIViewRepresentable {
   function hideKeyboard() {
     kbBar.style.display = 'none';
     kbInput.blur();
+  }
+  function toggleGamepad() {
+    gpPad.style.display = gpPad.style.display === 'none' ? 'block' : 'none';
   }
 
   const charKeyMap = {
@@ -787,23 +851,68 @@ private struct StreamerWebView: UIViewRepresentable {
     sendInput(encodeKey(4, spec.vk, spec.sc, mods));
     if (spec.sh) sendInput(encodeKey(4, 0xA0, 0x2A, 0));
   }
+  function sendVirtualKey(key, isDown) {
+    const mapped = lookupChar(key);
+    if (!mapped || !inputReady) return;
+    const mods = mapped.sh ? 0x01 : 0x00;
+    if (mapped.sh && isDown) sendInput(encodeKey(3, 0xA0, 0x2A, 0));
+    sendInput(encodeKey(isDown ? 3 : 4, mapped.vk, mapped.sc, mods));
+    if (mapped.sh && !isDown) sendInput(encodeKey(4, 0xA0, 0x2A, 0));
+  }
+  function hookVirtualGamepadButtons() {
+    const btns = document.querySelectorAll('.gpKey');
+    btns.forEach((btn) => {
+      const key = btn.getAttribute('data-key');
+      const down = (e) => {
+        e.preventDefault();
+        btn.style.transform = 'scale(0.95)';
+        sendVirtualKey(key, true);
+      };
+      const up = (e) => {
+        e.preventDefault();
+        btn.style.transform = 'scale(1)';
+        sendVirtualKey(key, false);
+      };
+      btn.addEventListener('touchstart', down, { passive: false });
+      btn.addEventListener('touchend', up, { passive: false });
+      btn.addEventListener('touchcancel', up, { passive: false });
+      btn.style.background = 'rgba(30,30,30,0.72)';
+      btn.style.color = '#fff';
+      btn.style.border = '1px solid rgba(255,255,255,0.25)';
+      btn.style.borderRadius = '14px';
+      btn.style.backdropFilter = 'blur(8px)';
+      btn.style.webkitBackdropFilter = 'blur(8px)';
+      btn.style.fontSize = '18px';
+    });
+  }
 
   setTimeout(() => { if (touchHint) touchHint.style.opacity = '0'; }, 4000);
 
   touchpad.addEventListener('touchstart', (e) => {
     e.preventDefault();
     const t = e.touches[0];
+    if (!t) return;
+    activeTouchId = t.identifier;
     lastTX = t.clientX;
     lastTY = t.clientY;
     tStartTime = Date.now();
     tMoved = false;
-    if (e.touches.length === 2) twoFingerStart = Date.now();
+    if (e.touches.length === 2) {
+      twoFingerStart = Date.now();
+      twoFingerTapPending = true;
+    } else {
+      twoFingerTapPending = false;
+    }
   }, { passive: false });
 
   touchpad.addEventListener('touchmove', (e) => {
     e.preventDefault();
-    if (e.touches.length > 1) return;
-    const t = e.touches[0];
+    if (e.touches.length > 1) {
+      twoFingerTapPending = false;
+      return;
+    }
+    const t = Array.from(e.touches).find((item) => item.identifier === activeTouchId) || e.touches[0];
+    if (!t) return;
     const dx = Math.round((t.clientX - lastTX) * 2.5);
     const dy = Math.round((t.clientY - lastTY) * 2.5);
     lastTX = t.clientX;
@@ -824,10 +933,12 @@ private struct StreamerWebView: UIViewRepresentable {
         setTimeout(() => sendInput(encodeMouseButton(9, 1)), 60);
       }
     }
-    if (e.changedTouches.length === 2 && Date.now() - twoFingerStart < 400) {
+    if (twoFingerTapPending && e.touches.length === 0 && Date.now() - twoFingerStart < 400) {
       sendInput(encodeMouseButton(8, 3));
       setTimeout(() => sendInput(encodeMouseButton(9, 3)), 60);
     }
+    activeTouchId = null;
+    twoFingerTapPending = false;
   }, { passive: false });
 
   kbInput.addEventListener('input', (e) => {
@@ -837,8 +948,8 @@ private struct StreamerWebView: UIViewRepresentable {
       for (const ch of added) sendChar(ch);
     } else if (val.length < kbPrevLen) {
       if (inputReady) {
-        sendInput(encodeKey(3, 0x08, 0x2A, 0));
-        sendInput(encodeKey(4, 0x08, 0x2A, 0));
+        sendInput(encodeKey(3, 0x08, 0x0E, 0));
+        sendInput(encodeKey(4, 0x08, 0x0E, 0));
       }
     }
     kbPrevLen = val.length;
@@ -857,30 +968,33 @@ private struct StreamerWebView: UIViewRepresentable {
 
   function connect() {
     try {
+      resetTransport(true);
       const signIn = buildSignInUrl();
       post('status', 'Connecting signaling');
       ws = new WebSocket(signIn, 'x-nv-sessionid.' + cfg.sessionId);
       ws.onopen = () => {
+        reconnectAttempts = 0;
         sendPeerInfo();
         if (hb) clearInterval(hb);
         hb = setInterval(() => send({ hb: 1 }), 5000);
         post('status', 'Signaling connected');
       };
       ws.onmessage = (event) => handle(event.data);
-      ws.onerror = () => fail('Signaling error');
+      ws.onerror = () => {
+        fail('Signaling error');
+        scheduleReconnect('socket error');
+      };
       ws.onclose = (event) => {
         post('status', 'Signaling closed (' + event.code + ')');
-        inputReady = false;
-        if (hbInput) { clearInterval(hbInput); hbInput = null; }
-        if (reliableCh) { try { reliableCh.close(); } catch (_) {} }
-        if (partialCh) { try { partialCh.close(); } catch (_) {} }
-        reliableCh = null;
-        partialCh = null;
+        resetTransport();
+        scheduleReconnect('socket closed');
       };
     } catch (error) {
       fail('Signaling setup failed: ' + String(error));
+      scheduleReconnect('setup failed');
     }
   }
+  hookVirtualGamepadButtons();
   tap.onclick = async () => {
     video.muted = false;
     tap.style.display = 'none';
@@ -912,9 +1026,9 @@ private struct StreamerWebView: UIViewRepresentable {
         let shortSide = min(nativeBounds.width, nativeBounds.height)
         let supports1440 = longSide >= 2500 || shortSide >= 1400 || UIScreen.main.nativeScale >= 3.0
         if settings.preferredFPS >= 120 && supports1440 {
-            return StreamProfile(width: 2560, height: 1440, maxBitrateKbps: 50000)
+            return StreamProfile(width: 2560, height: 1440, maxBitrateKbps: 35000)
         }
-        return StreamProfile(width: 1920, height: 1080, maxBitrateKbps: 30000)
+        return StreamProfile(width: 1920, height: 1080, maxBitrateKbps: 22000)
     }
 
     final class Coordinator: NSObject, WKScriptMessageHandler {

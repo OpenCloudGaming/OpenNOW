@@ -1,8 +1,10 @@
 import SwiftUI
+import UIKit
 
 struct HomeView: View {
     @EnvironmentObject private var store: OpenNOWStore
-    @State private var pendingLaunchGame: CloudGame?
+    @State private var pendingLaunchRequest: GameLaunchRequest?
+    @State private var selectedGameForDetails: CloudGame?
 
     var body: some View {
         NavigationStack {
@@ -45,7 +47,10 @@ struct HomeView: View {
                 }
             }
         }
-        .printedWasteLaunchSheet(pendingGame: $pendingLaunchGame)
+        .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails) { game, option in
+            pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
+        }
+        .printedWasteLaunchSheet(pendingLaunchRequest: $pendingLaunchRequest)
     }
 
     @ViewBuilder
@@ -102,7 +107,7 @@ struct HomeView: View {
                 } else {
                     ForEach(store.featuredGames.prefix(8)) { game in
                         FeaturedGameCard(game: game) {
-                            pendingLaunchGame = game
+                            selectedGameForDetails = game
                         }
                     }
                 }
@@ -121,7 +126,7 @@ struct HomeView: View {
             } else {
                 ForEach(games) { game in
                     GameCardView(game: game) {
-                        pendingLaunchGame = game
+                        selectedGameForDetails = game
                     }
                 }
             }
@@ -151,7 +156,7 @@ struct HomeView: View {
 
 private struct FeaturedGameCard: View {
     let game: CloudGame
-    let onLaunch: () -> Void
+    let onOpenDetails: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -166,20 +171,13 @@ private struct FeaturedGameCard: View {
                 Text(game.platform)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Button(action: onLaunch) {
-                    Label("Play", systemImage: "play.fill")
-                        .font(.caption2.bold())
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 7)
-                }
-                .buttonStyle(.bordered)
-                .tint(brandAccent)
-                .disabled(game.launchAppId == nil)
             }
             .padding(10)
         }
         .frame(width: 160)
         .glassCard()
+        .contentShape(RoundedRectangle(cornerRadius: 16))
+        .onTapGesture(perform: onOpenDetails)
     }
 }
 
@@ -227,7 +225,7 @@ struct ErrorBannerView: View {
 
 struct GameCardView: View {
     let game: CloudGame
-    let onLaunch: () -> Void
+    let onOpenDetails: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -240,27 +238,115 @@ struct GameCardView: View {
                 Text(game.title)
                     .font(.caption.bold())
                     .lineLimit(2)
+                    .frame(height: 32, alignment: .topLeading)
                 Text("\(game.genre) · \(game.platform)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .frame(height: 14, alignment: .topLeading)
             }
 
-            Button(action: onLaunch) {
-                HStack(spacing: 4) {
-                    Image(systemName: "play.fill")
-                    Text("Play")
-                }
-                .font(.caption.bold())
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 7)
-            }
-            .buttonStyle(.bordered)
-            .tint(game.launchAppId != nil ? brandAccent : .secondary)
-            .disabled(game.launchAppId == nil)
+            Spacer(minLength: 0)
         }
         .padding(10)
+        .frame(height: 220)
         .glassCard()
+        .contentShape(RoundedRectangle(cornerRadius: 16))
+        .onTapGesture(perform: onOpenDetails)
+    }
+}
+
+struct GameLaunchDetailsSheet: View {
+    let game: CloudGame
+    let onLaunch: (GameLaunchOption?) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedOption: GameLaunchOption?
+
+    private var launcherOptions: [GameLaunchOption] {
+        if game.launchOptions.isEmpty, let launchAppId = game.launchAppId {
+            return [GameLaunchOption(storefront: "Auto", appId: launchAppId)]
+        }
+        return game.launchOptions
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                GameArtworkView(game: game, iconSize: 40)
+                    .frame(height: 160)
+                    .clipShape(RoundedRectangle(cornerRadius: 18))
+                    .glassCard()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(game.title)
+                        .font(.title3.bold())
+                    Text("\(game.genre) · \(game.platform)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                if launcherOptions.isEmpty {
+                    Text("This game doesn't expose launch targets yet.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Launch With")
+                            .font(.headline)
+                        ForEach(launcherOptions) { option in
+                            Button {
+                                selectedOption = option
+                            } label: {
+                                HStack {
+                                    Text(option.storefront.capitalized)
+                                        .font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    if selectedOption?.id == option.id {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(brandAccent)
+                                    }
+                                }
+                                .padding(12)
+                                .glassCard()
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                Button {
+                    onLaunch(selectedOption ?? launcherOptions.first)
+                    dismiss()
+                } label: {
+                    Text("Launch")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(brandAccent)
+                .disabled(launcherOptions.isEmpty)
+
+                Spacer(minLength: 0)
+            }
+            .padding(20)
+            .navigationTitle("Game Details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.headline.weight(.semibold))
+                    }
+                }
+            }
+            .background(appBackground)
+        }
+        .onAppear {
+            selectedOption = launcherOptions.first
+        }
     }
 }
 
@@ -391,5 +477,74 @@ extension View {
 
     func shimmeringSkeleton() -> some View {
         modifier(SkeletonShimmerModifier())
+    }
+
+    func presentGameDetailsUIKit(
+        selectedGame: Binding<CloudGame?>,
+        onLaunch: @escaping (CloudGame, GameLaunchOption?) -> Void
+    ) -> some View {
+        background(
+            UIKitGameDetailsPresenter(selectedGame: selectedGame, onLaunch: onLaunch)
+                .frame(width: 0, height: 0)
+        )
+    }
+}
+
+private struct UIKitGameDetailsPresenter: UIViewControllerRepresentable {
+    @Binding var selectedGame: CloudGame?
+    let onLaunch: (CloudGame, GameLaunchOption?) -> Void
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        let controller = UIViewController()
+        controller.view.backgroundColor = .clear
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        context.coordinator.parent = self
+        if let game = selectedGame {
+            if context.coordinator.presentedGameId == game.id {
+                return
+            }
+            guard uiViewController.presentedViewController == nil else {
+                return
+            }
+            let hosted = UIHostingController(
+                rootView: GameLaunchDetailsSheet(game: game) { option in
+                    onLaunch(game, option)
+                    selectedGame = nil
+                }
+            )
+            hosted.modalPresentationStyle = .pageSheet
+            if let sheet = hosted.sheetPresentationController {
+                sheet.detents = [.large()]
+                sheet.prefersGrabberVisible = true
+                sheet.preferredCornerRadius = 28
+            }
+            hosted.presentationController?.delegate = context.coordinator
+            context.coordinator.presentedGameId = game.id
+            uiViewController.present(hosted, animated: true)
+        } else if let presented = uiViewController.presentedViewController {
+            context.coordinator.presentedGameId = nil
+            presented.dismiss(animated: true)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    final class Coordinator: NSObject, UIAdaptivePresentationControllerDelegate {
+        var parent: UIKitGameDetailsPresenter
+        var presentedGameId: String?
+
+        init(parent: UIKitGameDetailsPresenter) {
+            self.parent = parent
+        }
+
+        func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+            presentedGameId = nil
+            parent.selectedGame = nil
+        }
     }
 }

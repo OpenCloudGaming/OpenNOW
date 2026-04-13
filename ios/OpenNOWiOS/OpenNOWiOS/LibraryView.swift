@@ -2,7 +2,8 @@ import SwiftUI
 
 struct LibraryView: View {
     @EnvironmentObject private var store: OpenNOWStore
-    @State private var pendingLaunchGame: CloudGame?
+    @State private var pendingLaunchRequest: GameLaunchRequest?
+    @State private var selectedGameForDetails: CloudGame?
 
     var body: some View {
         NavigationStack {
@@ -17,7 +18,10 @@ struct LibraryView: View {
             }
             .navigationTitle("Library")
         }
-        .printedWasteLaunchSheet(pendingGame: $pendingLaunchGame)
+        .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails) { game, option in
+            pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
+        }
+        .printedWasteLaunchSheet(pendingLaunchRequest: $pendingLaunchRequest)
     }
 
     private var gameGrid: some View {
@@ -31,7 +35,7 @@ struct LibraryView: View {
                 } else {
                     ForEach(store.libraryGames) { game in
                         GameCardView(game: game) {
-                            pendingLaunchGame = game
+                            selectedGameForDetails = game
                         }
                     }
                 }
