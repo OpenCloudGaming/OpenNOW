@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct ContentView: View {
     @EnvironmentObject private var store: OpenNOWStore
@@ -23,39 +22,11 @@ struct ContentView: View {
 }
 
 private struct SplashView: View {
-    private var appIconImage: UIImage? {
-        let iconDictionaries: [[String: Any]] = [
-            (Bundle.main.object(forInfoDictionaryKey: "CFBundleIcons") as? [String: Any]) ?? [:],
-            (Bundle.main.object(forInfoDictionaryKey: "CFBundleIcons~ipad") as? [String: Any]) ?? [:]
-        ]
-        for icons in iconDictionaries {
-            guard let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
-                  let files = primary["CFBundleIconFiles"] as? [String],
-                  let iconName = files.last else {
-                continue
-            }
-            if let image = UIImage(named: iconName) {
-                return image
-            }
-        }
-        return nil
-    }
-
     var body: some View {
         ZStack {
             appBackground
             VStack(spacing: 16) {
-                if let appIconImage {
-                    Image(uiImage: appIconImage)
-                        .resizable()
-                        .interpolation(.high)
-                        .frame(width: 88, height: 88)
-                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                } else {
-                    Image(systemName: "bolt.fill")
-                        .font(.system(size: 56, weight: .bold))
-                        .foregroundStyle(brandGradient)
-                }
+                BrandLogoView(size: 88)
                 Text("OpenNOW")
                     .font(.largeTitle.bold())
                 ProgressView()
@@ -83,15 +54,23 @@ struct MainTabView: View {
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
         }
         .tint(brandAccent)
-        .fullScreenCover(isPresented: $store.queueOverlayVisible.transaction({
-            var t = Transaction()
-            t.animation = t.animation?.delay(0.15)
-            return t
-        }())) {
-            StreamLoadingView()
-                .environmentObject(store)
-                .interactiveDismissDisabled(true)
+        .overlay {
+            ZStack {
+                if store.queueOverlayVisible {
+                    StreamLoadingView()
+                        .environmentObject(store)
+                        .ignoresSafeArea()
+                        .zIndex(1000)
+                        .transition(
+                            .asymmetric(
+                                insertion: .scale(scale: 0.96).combined(with: .opacity),
+                                removal: .move(edge: .bottom).combined(with: .opacity)
+                            )
+                        )
+                }
+            }
         }
+        .animation(.spring(response: 0.42, dampingFraction: 0.86), value: store.queueOverlayVisible)
         .fullScreenCover(item: $store.streamSession) { session in
             StreamerView(session: session, settings: store.settings) {
                 store.dismissStreamer()
@@ -105,7 +84,7 @@ struct MainTabView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .animation(.spring(response: 0.4), value: store.queueOverlayVisible)
+        .animation(.spring(response: 0.36, dampingFraction: 0.88), value: store.showStreamLoading && !store.queueOverlayVisible)
     }
 }
 

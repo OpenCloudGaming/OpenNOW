@@ -62,7 +62,10 @@ private struct StreamerWebView: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .black
         webView.scrollView.isScrollEnabled = false
-        webView.loadHTMLString(buildHTML(for: session, settings: settings), baseURL: nil)
+        webView.loadHTMLString(
+            buildHTML(for: session, settings: settings),
+            baseURL: URL(string: "https://play.geforcenow.com")
+        )
         return webView
     }
 
@@ -82,6 +85,7 @@ private struct StreamerWebView: UIViewRepresentable {
             let maxBitrateKbps: Int
             let width: Int
             let height: Int
+            let showStatsOverlay: Bool
         }
 
         let signalingServer = session.signalingServer ?? session.serverIp ?? URL(string: session.streamingBaseUrl)?.host ?? ""
@@ -100,7 +104,8 @@ private struct StreamerWebView: UIViewRepresentable {
             fps: settings.preferredFPS,
             maxBitrateKbps: profile.maxBitrateKbps,
             width: profile.width,
-            height: profile.height
+            height: profile.height,
+            showStatsOverlay: settings.showStatsOverlay
         )
         let data = (try? JSONEncoder().encode(bridge)) ?? Data("{}".utf8)
         let payload = String(data: data, encoding: .utf8) ?? "{}"
@@ -119,6 +124,11 @@ private struct StreamerWebView: UIViewRepresentable {
 <body>
   <video id="video" playsinline autoplay muted></video>
   <div id="tap">Tap to unmute</div>
+  <div id="stats" style="position:fixed;left:12px;top:12px;z-index:30;padding:6px 10px;
+    color:#d5ffd5;background:rgba(0,0,0,0.58);border:1px solid rgba(255,255,255,0.15);
+    border-radius:10px;font:12px -apple-system;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">
+    FPS -- | Ping -- ms | -- Mbps
+  </div>
   <div id="touchpad" style="position:fixed;inset:0;z-index:10;touch-action:none;"></div>
   <div id="touchHint" style="position:fixed;left:50%;bottom:60px;transform:translateX(-50%);
     color:rgba(255,255,255,0.45);font:11px -apple-system;pointer-events:none;user-select:none;
@@ -158,6 +168,10 @@ private struct StreamerWebView: UIViewRepresentable {
         <button data-key="i" class="gpKey">B</button>
       </div>
     </div>
+    <div style="display:flex;justify-content:center;margin-top:10px;pointer-events:auto;">
+      <button id="gpHide" style="padding:8px 12px;border-radius:999px;background:rgba(20,20,20,0.82);
+        color:#fff;border:1px solid rgba(255,255,255,0.25);font-size:12px;">Hide gamepad</button>
+    </div>
   </div>
   <script>
   const cfg = \#(payload);
@@ -174,8 +188,17 @@ private struct StreamerWebView: UIViewRepresentable {
   let reconnectTimer = null;
   let reconnectAttempts = 0;
   const maxReconnectAttempts = 5;
+  let offerTimeoutTimer = null;
+  let signalingOpenTimeout = null;
+  let statsTimer = null;
+  let lastBytesReceived = 0;
+  let lastBytesTimestamp = 0;
+  let pendingMoveDx = 0;
+  let pendingMoveDy = 0;
+  let moveFrame = null;
   const peerId = 2;
   const peerName = "peer-" + Math.floor(Math.random() * 1e10);
+  const statsEl = document.getElementById('stats');
 
   function post(type, message) {
     try { window.webkit.messageHandlers.opennow.postMessage({ type, message }); } catch (_) {}
@@ -199,8 +222,16 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   function resetTransport(closeSocket = false) {
     inputReady = false;
+    clearOfferTimeout();
+    if (signalingOpenTimeout) {
+      clearTimeout(signalingOpenTimeout);
+      signalingOpenTimeout = null;
+    }
     if (hb) { clearInterval(hb); hb = null; }
     if (hbInput) { clearInterval(hbInput); hbInput = null; }
+    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+    lastBytesReceived = 0;
+    lastBytesTimestamp = 0;
     if (reliableCh) { try { reliableCh.close(); } catch (_) {} }
     if (partialCh) { try { partialCh.close(); } catch (_) {} }
     reliableCh = null;
@@ -212,23 +243,99 @@ private struct StreamerWebView: UIViewRepresentable {
       ws = null;
     }
   }
+  function clearOfferTimeout() {
+    if (offerTimeoutTimer) {
+      clearTimeout(offerTimeoutTimer);
+      offerTimeoutTimer = null;
+    }
+  }
+  function startOfferTimeout() {
+    clearOfferTimeout();
+    offerTimeoutTimer = setTimeout(() => {
+      fail('Offer timeout, retrying signaling');
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.close(); } catch (_) {}
+      }
+      scheduleReconnect('offer timeout');
+    }, 9000);
+  }
+  function isChannelOpen(channel) {
+    return !!channel && channel.readyState === 'open';
+  }
+  function updateInputReady() {
+    inputReady = isChannelOpen(reliableCh) || isChannelOpen(partialCh);
+    if (inputReady) {
+      post('status', 'Input ready');
+    }
+  }
   function send(obj) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify(obj));
   }
   function sendInput(buf) {
-    if (reliableCh && reliableCh.readyState === 'open') reliableCh.send(buf);
+    if (isChannelOpen(reliableCh)) {
+      reliableCh.send(buf);
+      return;
+    }
+    if (isChannelOpen(partialCh)) {
+      partialCh.send(buf);
+    }
   }
   function sendPartialInput(buf) {
-    if (partialCh && partialCh.readyState === 'open') partialCh.send(buf);
-    else sendInput(buf);
+    if (isChannelOpen(partialCh)) {
+      partialCh.send(buf);
+      return;
+    }
+    sendInput(buf);
+  }
+  function updateStatsOverlay(fps, pingMs, bitrateMbps) {
+    if (!statsEl) return;
+    statsEl.textContent = `FPS ${fps > 0 ? Math.round(fps) : '--'} | Ping ${pingMs > 0 ? Math.round(pingMs) : '--'} ms | ${bitrateMbps > 0 ? bitrateMbps.toFixed(1) : '--'} Mbps`;
+  }
+  async function samplePeerStats() {
+    if (!pc || !statsEl || !cfg.showStatsOverlay) return;
+    try {
+      const report = await pc.getStats();
+      let fps = 0;
+      let pingMs = 0;
+      let bitrateMbps = 0;
+      report.forEach((stat) => {
+        if (stat.type === 'inbound-rtp' && stat.kind === 'video') {
+          if (typeof stat.framesPerSecond === 'number' && stat.framesPerSecond > 0) {
+            fps = stat.framesPerSecond;
+          }
+          if (typeof stat.bytesReceived === 'number') {
+            if (lastBytesTimestamp > 0 && stat.timestamp > lastBytesTimestamp && stat.bytesReceived >= lastBytesReceived) {
+              const bytesDiff = stat.bytesReceived - lastBytesReceived;
+              const seconds = (stat.timestamp - lastBytesTimestamp) / 1000;
+              if (seconds > 0) {
+                bitrateMbps = (bytesDiff * 8) / seconds / 1000000;
+              }
+            }
+            lastBytesReceived = stat.bytesReceived;
+            lastBytesTimestamp = stat.timestamp;
+          }
+        }
+        if (stat.type === 'remote-inbound-rtp' && stat.kind === 'video' && typeof stat.roundTripTime === 'number') {
+          pingMs = stat.roundTripTime * 1000;
+        }
+        if (stat.type === 'candidate-pair' && stat.nominated && typeof stat.currentRoundTripTime === 'number') {
+          pingMs = Math.max(pingMs, stat.currentRoundTripTime * 1000);
+        }
+      });
+      updateStatsOverlay(fps, pingMs, bitrateMbps);
+    } catch (_) {}
+  }
+  function ensureStatsTicker() {
+    if (!cfg.showStatsOverlay || statsTimer) return;
+    statsTimer = setInterval(samplePeerStats, 1000);
   }
   function buildSignInUrl() {
     const base = (cfg.signalingUrl || "").trim() || ("wss://" + cfg.signalingServer + "/nvst/");
     const url = new URL(base);
     url.protocol = "wss:";
-    if (!url.pathname.endsWith("/")) url.pathname += "/";
-    url.pathname += "sign_in";
+    // CloudMatch signaling URLs often point at /nvst/, but websocket login is /sign_in.
+    url.pathname = "/sign_in";
     url.search = "";
     url.searchParams.set("peer_id", peerName);
     url.searchParams.set("version", "2");
@@ -655,15 +762,14 @@ private struct StreamerWebView: UIViewRepresentable {
     reliableCh = thisPc.createDataChannel('input_channel_v1', { ordered: true });
     reliableCh.binaryType = 'arraybuffer';
     reliableCh.onopen = () => {
-      inputReady = true;
-      post('status', 'Input ready');
+      updateInputReady();
       if (hbInput) clearInterval(hbInput);
       hbInput = setInterval(() => {
         if (inputReady) sendInput(encodeHeartbeat());
       }, 2000);
     };
     reliableCh.onclose = () => {
-      inputReady = false;
+      updateInputReady();
       if (hbInput) { clearInterval(hbInput); hbInput = null; }
     };
     reliableCh.onmessage = () => {};
@@ -672,6 +778,8 @@ private struct StreamerWebView: UIViewRepresentable {
       maxPacketLifeTime: 100
     });
     partialCh.binaryType = 'arraybuffer';
+    partialCh.onopen = () => updateInputReady();
+    partialCh.onclose = () => updateInputReady();
     thisPc.ontrack = (event) => {
       if (event.streams && event.streams[0]) {
         video.srcObject = event.streams[0];
@@ -682,6 +790,7 @@ private struct StreamerWebView: UIViewRepresentable {
       }
       video.play().catch(() => {});
       post('status', 'Streamer connected');
+      ensureStatsTicker();
     };
     thisPc.onicecandidate = (event) => {
       if (!event.candidate) return;
@@ -711,6 +820,7 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   async function onOffer(sdp) {
     try {
+      clearOfferTimeout();
       const rtc = ensurePeerConnection();
       const fixedOffer = fixServerIp(sdp, cfg.serverIp || cfg.signalingServer || '');
       const serverIceUfrag = extractIceUfragFromOffer(fixedOffer);
@@ -784,6 +894,8 @@ private struct StreamerWebView: UIViewRepresentable {
   const kbBar = document.getElementById('kbBar');
   const kbInput = document.getElementById('kbInput');
   const gpPad = document.getElementById('gpPad');
+  const gpBtn = document.getElementById('gpBtn');
+  const gpHide = document.getElementById('gpHide');
   let kbPrevLen = 0;
   let lastTX = 0, lastTY = 0;
   let tStartTime = 0, tMoved = false, activeTouchId = null;
@@ -791,6 +903,17 @@ private struct StreamerWebView: UIViewRepresentable {
   let twoFingerTapPending = false;
   const touchpad = document.getElementById('touchpad');
   const touchHint = document.getElementById('touchHint');
+  if (!cfg.showStatsOverlay && statsEl) {
+    statsEl.style.display = 'none';
+  }
+  function setGamepadVisible(visible) {
+    gpPad.style.display = visible ? 'block' : 'none';
+    if (gpBtn) {
+      gpBtn.style.opacity = visible ? '0.75' : '1';
+      gpBtn.textContent = visible ? '🙈' : '🎮';
+      gpBtn.title = visible ? 'Hide gamepad' : 'Show gamepad';
+    }
+  }
 
   function toggleKeyboard() {
     if (kbBar.style.display === 'none') showKeyboard();
@@ -807,7 +930,21 @@ private struct StreamerWebView: UIViewRepresentable {
     kbInput.blur();
   }
   function toggleGamepad() {
-    gpPad.style.display = gpPad.style.display === 'none' ? 'block' : 'none';
+    setGamepadVisible(gpPad.style.display === 'none');
+  }
+  function flushPendingMouseMove() {
+    moveFrame = null;
+    if (!inputReady) {
+      pendingMoveDx = 0;
+      pendingMoveDy = 0;
+      return;
+    }
+    const dx = Math.round(pendingMoveDx);
+    const dy = Math.round(pendingMoveDy);
+    pendingMoveDx = 0;
+    pendingMoveDy = 0;
+    if (dx === 0 && dy === 0) return;
+    sendPartialInput(encodeMouseMove(dx, dy));
   }
 
   const charKeyMap = {
@@ -913,19 +1050,28 @@ private struct StreamerWebView: UIViewRepresentable {
     }
     const t = Array.from(e.touches).find((item) => item.identifier === activeTouchId) || e.touches[0];
     if (!t) return;
-    const dx = Math.round((t.clientX - lastTX) * 2.5);
-    const dy = Math.round((t.clientY - lastTY) * 2.5);
+    const dx = (t.clientX - lastTX) * 1.6;
+    const dy = (t.clientY - lastTY) * 1.6;
     lastTX = t.clientX;
     lastTY = t.clientY;
     if ((Math.abs(dx) > 0 || Math.abs(dy) > 0) && inputReady) {
       tMoved = true;
-      sendPartialInput(encodeMouseMove(dx, dy));
+      pendingMoveDx += dx;
+      pendingMoveDy += dy;
+      if (!moveFrame) {
+        moveFrame = requestAnimationFrame(flushPendingMouseMove);
+      }
     }
   }, { passive: false });
 
   touchpad.addEventListener('touchend', (e) => {
     e.preventDefault();
     if (!inputReady) return;
+    if (moveFrame) {
+      cancelAnimationFrame(moveFrame);
+      moveFrame = null;
+    }
+    flushPendingMouseMove();
     const holdMs = Date.now() - tStartTime;
     if (!tMoved && holdMs < 500) {
       if (e.changedTouches.length === 1 && e.targetTouches.length === 0) {
@@ -972,19 +1118,33 @@ private struct StreamerWebView: UIViewRepresentable {
       const signIn = buildSignInUrl();
       post('status', 'Connecting signaling');
       ws = new WebSocket(signIn, 'x-nv-sessionid.' + cfg.sessionId);
+      signalingOpenTimeout = setTimeout(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          fail('Signaling connect timeout');
+          try { if (ws) ws.close(); } catch (_) {}
+          scheduleReconnect('socket timeout');
+        }
+      }, 8000);
       ws.onopen = () => {
+        if (signalingOpenTimeout) {
+          clearTimeout(signalingOpenTimeout);
+          signalingOpenTimeout = null;
+        }
         reconnectAttempts = 0;
         sendPeerInfo();
         if (hb) clearInterval(hb);
         hb = setInterval(() => send({ hb: 1 }), 5000);
         post('status', 'Signaling connected');
+        startOfferTimeout();
       };
       ws.onmessage = (event) => handle(event.data);
       ws.onerror = () => {
         fail('Signaling error');
+        clearOfferTimeout();
         scheduleReconnect('socket error');
       };
       ws.onclose = (event) => {
+        clearOfferTimeout();
         post('status', 'Signaling closed (' + event.code + ')');
         resetTransport();
         scheduleReconnect('socket closed');
@@ -995,6 +1155,10 @@ private struct StreamerWebView: UIViewRepresentable {
     }
   }
   hookVirtualGamepadButtons();
+  if (gpHide) {
+    gpHide.onclick = () => setGamepadVisible(false);
+  }
+  setGamepadVisible(false);
   tap.onclick = async () => {
     video.muted = false;
     tap.style.display = 'none';

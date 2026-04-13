@@ -255,11 +255,20 @@ struct SessionView: View {
                             }
                         }
                         Spacer()
-                        Button("Resume") {
-                            store.scheduleResume(candidate: candidate)
+                        HStack(spacing: 8) {
+                            Button("Resume") {
+                                store.scheduleResume(candidate: candidate)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(brandAccent)
+
+                            Button(role: .destructive) {
+                                Task { await store.endRemoteSession(candidate: candidate) }
+                            } label: {
+                                Text("End")
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.bordered)
-                        .tint(brandAccent)
                     }
                     .padding(14)
                     .glassCard()

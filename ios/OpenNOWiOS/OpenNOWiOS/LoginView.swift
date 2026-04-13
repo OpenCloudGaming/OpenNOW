@@ -44,14 +44,7 @@ struct LoginView: View {
 
     private var brandHeader: some View {
         VStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(brandGradient)
-                    .frame(width: 72, height: 72)
-                Image(systemName: "bolt.fill")
-                    .font(.system(size: 30, weight: .bold))
-                    .foregroundStyle(.white)
-            }
+            BrandLogoView(size: 82)
             .shadow(color: Color(red: 0.46, green: 0.72, blue: 0.0).opacity(0.6), radius: 20)
 
             Text("OpenNOW")

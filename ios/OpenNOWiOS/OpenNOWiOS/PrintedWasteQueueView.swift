@@ -114,9 +114,9 @@ struct PrintedWasteQueueView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 18) {
+                        LazyVStack(alignment: .leading, spacing: 18) {
                             header
-                                .glassCard()
+                                .printedWasteGlassSurface()
 
                             VStack(alignment: .leading, spacing: 10) {
                                 Text("Routing")
@@ -125,7 +125,7 @@ struct PrintedWasteQueueView: View {
                                 routingRow
                             }
                             .padding(14)
-                            .glassCard()
+                            .printedWasteGlassSurface()
 
                             ForEach(groupedZones, id: \.region) { group in
                                 VStack(alignment: .leading, spacing: 10) {
@@ -146,7 +146,11 @@ struct PrintedWasteQueueView: View {
                                         }
                                         .buttonStyle(.plain)
                                         .padding(12)
-                                        .glassCard()
+                                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 14)
+                                                .stroke(.white.opacity(0.14), lineWidth: 1)
+                                        )
                                     }
                                 }
                             }
@@ -236,15 +240,13 @@ struct PrintedWasteQueueView: View {
             .background(
                 Group {
                     if #available(iOS 26, *) {
-                        if isSelected {
-                            Capsule()
-                                .fill(.regularMaterial)
-                                .glassEffect(in: Capsule())
-                                .overlay(Capsule().stroke(brandAccent.opacity(0.5), lineWidth: 1))
-                        } else {
-                            Capsule()
-                                .fill(.ultraThinMaterial)
-                        }
+                        Capsule()
+                            .fill(.clear)
+                            .glassEffect(in: Capsule())
+                            .overlay(
+                                Capsule()
+                                    .stroke(isSelected ? brandAccent.opacity(0.5) : .white.opacity(0.2), lineWidth: 1)
+                            )
                     } else {
                         if isSelected {
                             Capsule()
@@ -320,16 +322,29 @@ struct PrintedWasteQueueView: View {
     }
 
     private func measurePings() async {
-        await withTaskGroup(of: (String, Int?).self) { group in
-            for zone in zones {
-                let url = zone.zoneUrl
-                group.addTask {
-                    let ping = await Self.measurePing(to: url)
-                    return (zone.id, ping)
+        let maxConcurrentPings = 6
+        guard !zones.isEmpty else { return }
+
+        for start in stride(from: 0, to: zones.count, by: maxConcurrentPings) {
+            let end = min(start + maxConcurrentPings, zones.count)
+            let batch = Array(zones[start..<end])
+
+            let results = await withTaskGroup(of: (String, Int?).self, returning: [(String, Int?)].self) { group in
+                for zone in batch {
+                    group.addTask {
+                        let ping = await Self.measurePing(to: zone.zoneUrl)
+                        return (zone.id, ping)
+                    }
                 }
+
+                var batchResults: [(String, Int?)] = []
+                for await result in group {
+                    batchResults.append(result)
+                }
+                return batchResults
             }
 
-            for await (zoneId, pingMs) in group {
+            for (zoneId, pingMs) in results {
                 if let index = zones.firstIndex(where: { $0.id == zoneId }) {
                     zones[index].pingMs = pingMs
                     zones[index].isMeasuring = false
@@ -339,8 +354,8 @@ struct PrintedWasteQueueView: View {
     }
 
     private static func measurePing(to zoneUrl: String) async -> Int? {
-        let warmups = 2
-        let measurements = 3
+        let warmups = 1
+        let measurements = 2
         for _ in 0..<warmups {
             _ = await headProbe(urlString: zoneUrl)
         }
@@ -448,9 +463,9 @@ private struct ZoneRow: View {
             .lineLimit(1)
             .minimumScaleFactor(0.9)
             .frame(minWidth: 42)
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(queueColor(zone.queuePosition).opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
+            .liquidBadgeBackground(tint: queueColor(zone.queuePosition), cornerRadius: 8)
     }
 
     private var pingBadge: some View {
@@ -472,7 +487,7 @@ private struct ZoneRow: View {
         .minimumScaleFactor(0.85)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(pingBadgeColor, in: Capsule())
+        .liquidBadgeBackground(tint: pingBadgeColor, cornerRadius: 999)
     }
 
     private var pingBadgeColor: Color {
@@ -490,7 +505,7 @@ private struct ZoneRow: View {
             .minimumScaleFactor(0.85)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(color.opacity(0.18), in: Capsule())
+            .liquidBadgeBackground(tint: color.opacity(0.2), cornerRadius: 999)
     }
 
     private func smallIconBadge(icon: String, color: Color) -> some View {
@@ -500,7 +515,7 @@ private struct ZoneRow: View {
         .minimumScaleFactor(0.85)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(color.opacity(0.18), in: Capsule())
+        .liquidBadgeBackground(tint: color.opacity(0.2), cornerRadius: 999)
         .foregroundStyle(color)
     }
 
@@ -557,6 +572,59 @@ private struct PrintedWasteArtwork: View {
 extension View {
     func printedWasteLaunchSheet(pendingLaunchRequest: Binding<GameLaunchRequest?>) -> some View {
         modifier(PrintedWasteLaunchSheetModifier(pendingLaunchRequest: pendingLaunchRequest))
+    }
+
+    fileprivate func printedWasteGlassSurface(cornerRadius: CGFloat = 16) -> some View {
+        modifier(PrintedWasteGlassSurfaceModifier(cornerRadius: cornerRadius))
+    }
+
+    fileprivate func liquidBadgeBackground(tint: Color, cornerRadius: CGFloat) -> some View {
+        modifier(LiquidBadgeBackgroundModifier(tint: tint, cornerRadius: cornerRadius))
+    }
+}
+
+private struct PrintedWasteGlassSurfaceModifier: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content
+                .background(
+                    RoundedRectangle(cornerRadius: cornerRadius)
+                        .fill(.clear)
+                        .glassEffect(in: RoundedRectangle(cornerRadius: cornerRadius))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius)
+                        .stroke(.white.opacity(0.16), lineWidth: 1)
+                )
+        } else {
+            content
+                .glassCard()
+        }
+    }
+}
+
+private struct LiquidBadgeBackgroundModifier: ViewModifier {
+    let tint: Color
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content
+                .background(
+                    RoundedRectangle(cornerRadius: cornerRadius)
+                        .fill(.clear)
+                        .glassEffect(in: RoundedRectangle(cornerRadius: cornerRadius))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: cornerRadius)
+                                .stroke(tint.opacity(0.28), lineWidth: 1)
+                        )
+                )
+        } else {
+            content
+                .background(tint, in: RoundedRectangle(cornerRadius: cornerRadius))
+        }
     }
 }
 

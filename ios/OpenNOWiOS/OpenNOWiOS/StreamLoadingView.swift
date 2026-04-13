@@ -1,8 +1,8 @@
 import SwiftUI
+import AVKit
 
 struct StreamLoadingView: View {
     @EnvironmentObject private var store: OpenNOWStore
-    @State private var pulsing = false
 
     private enum StreamPhase: Equatable {
         case queue
@@ -23,10 +23,17 @@ struct StreamLoadingView: View {
     ]
 
     private var currentPhase: StreamPhase {
+        if let adState = store.effectiveAdState, adState.sessionAdsRequired ?? adState.isAdsRequired {
+            return .queue
+        }
         guard let session = store.activeSession else { return .queue }
         switch session.status {
-        case 2, 3: return .launching
+        case 2: return .setup
+        case 3: return .launching
         case 1:
+            if session.seatSetupStep == 1 {
+                return .queue
+            }
             if let pos = session.queuePosition, pos > 1 {
                 return .queue
             }
@@ -38,6 +45,14 @@ struct StreamLoadingView: View {
     private var statusMessage: String {
         switch currentPhase {
         case .queue:
+            if let adState = store.effectiveAdState {
+                if adState.opportunity?.queuePaused == true || adState.isQueuePaused == true {
+                    return adState.message ?? "Session queue paused. Resume ad playback to continue."
+                }
+                if (adState.sessionAdsRequired ?? adState.isAdsRequired) {
+                    return adState.message ?? "Watch queue ads to continue."
+                }
+            }
             if let pos = store.activeSession?.queuePosition {
                 return pos == 1 ? "Almost there! Your session is about to start..." : "Position #\(pos) in queue"
             }
@@ -45,7 +60,16 @@ struct StreamLoadingView: View {
         case .setup:
             return "Preparing your gaming rig..."
         case .launching:
-            return "Connecting streamer..."
+            if store.streamSession != nil {
+                return "Opening stream..."
+            }
+            if let signalingUrl = store.activeSession?.signalingUrl, !signalingUrl.isEmpty {
+                return "Connecting streamer..."
+            }
+            if let signalingServer = store.activeSession?.signalingServer, !signalingServer.isEmpty {
+                return "Connecting streamer..."
+            }
+            return "Finalizing stream endpoint..."
         }
     }
 
@@ -91,6 +115,11 @@ struct StreamLoadingView: View {
                     .frame(maxWidth: 320)
                 }
 
+                if let ad = store.activeQueueAd {
+                    QueueAdPlayerCard(ad: ad)
+                        .environmentObject(store)
+                }
+
                 stepsView
 
                 Text(statusMessage)
@@ -128,35 +157,11 @@ struct StreamLoadingView: View {
             .padding(.horizontal, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .onAppear {
-            pulsing = true
-        }
     }
 
     private var gameHeader: some View {
         VStack(spacing: 14) {
-            ZStack {
-                if #available(iOS 26, *) {
-                    Circle()
-                        .fill(.regularMaterial)
-                        .glassEffect(in: Circle())
-                        .frame(width: 92, height: 92)
-                } else {
-                    Circle()
-                        .fill(Color.secondary.opacity(0.12))
-                        .frame(width: 92, height: 92)
-                }
-
-                if let session = store.activeSession {
-                    Image(systemName: session.game.icon)
-                        .font(.system(size: 34, weight: .semibold))
-                        .foregroundStyle(gameColor(for: session.game.title))
-                } else {
-                    Image(systemName: "bolt.fill")
-                        .font(.system(size: 34, weight: .semibold))
-                        .foregroundStyle(brandGradient)
-                }
-            }
+            BrandLogoView(size: 92)
 
             VStack(spacing: 4) {
                 Text(store.activeSession?.game.title ?? "Preparing your game")
@@ -232,23 +237,26 @@ struct StreamLoadingView: View {
                         .stroke(Color.secondary.opacity(0.2), lineWidth: 2)
                 )
         case .active:
-            Group {
-                if #available(iOS 26, *) {
-                    Circle()
-                        .fill(.regularMaterial)
-                        .glassEffect(in: Circle())
-                        .overlay(
-                            Circle()
-                                .stroke(brandAccent.opacity(0.55), lineWidth: 1.5)
-                        )
-                } else {
-                    Circle()
-                        .fill(brandAccent)
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
+                let phase = timeline.date.timeIntervalSinceReferenceDate.remainder(dividingBy: 0.9) / 0.9
+                let pulse = 0.5 - 0.5 * cos(phase * 2 * .pi)
+                Group {
+                    if #available(iOS 26, *) {
+                        Circle()
+                            .fill(.regularMaterial)
+                            .glassEffect(in: Circle())
+                            .overlay(
+                                Circle()
+                                    .stroke(brandAccent.opacity(0.55), lineWidth: 1.5)
+                            )
+                    } else {
+                        Circle()
+                            .fill(brandAccent)
+                    }
                 }
+                .scaleEffect(1.0 + (0.15 * pulse))
+                .opacity(1.0 - (0.08 * pulse))
             }
-            .scaleEffect(pulsing ? 1.15 : 1.0)
-            .opacity(pulsing ? 0.92 : 1.0)
-            .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulsing)
         case .completed:
             Circle()
                 .fill(brandAccent.opacity(0.35))
@@ -291,6 +299,151 @@ struct StreamLoadingView: View {
             endColor = brandAccent
         }
         return LinearGradient(colors: [startColor, endColor], startPoint: .leading, endPoint: .trailing)
+    }
+}
+
+private struct QueueAdPlayerCard: View {
+    @EnvironmentObject private var store: OpenNOWStore
+    let ad: SessionAdInfo
+
+    @State private var player = AVPlayer()
+    @State private var adDurationObserver: Any?
+    @State private var adEndObserver: NSObjectProtocol?
+    @State private var currentItemId: String?
+    @State private var watchedTimeMs = 0
+    @State private var didSendFinish = false
+    @State private var hasReportedPlaying = false
+    @State private var isPaused = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "play.rectangle.fill")
+                    .foregroundStyle(.orange)
+                Text("Ad Queue")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+            }
+
+            Group {
+                if let mediaUrl = preferredMediaURLString(for: ad), let url = URL(string: mediaUrl) {
+                    VideoPlayer(player: player)
+                        .frame(height: 150)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .onAppear {
+                            configurePlayer(url: url)
+                        }
+                        .onChange(of: ad.adId) { _ in
+                            didSendFinish = false
+                            hasReportedPlaying = false
+                            isPaused = false
+                            configurePlayer(url: url)
+                        }
+                        .onDisappear {
+                            teardownPlayer()
+                        }
+                } else {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.secondary.opacity(0.15))
+                        .frame(height: 150)
+                        .overlay(
+                            VStack(spacing: 6) {
+                                Image(systemName: "video.slash.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(.secondary)
+                                Text("Ad media unavailable")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        )
+                }
+            }
+
+            if let message = store.effectiveAdState?.message, !message.isEmpty {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(.regularMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(.orange.opacity(0.28), lineWidth: 1)
+                )
+        )
+        .frame(maxWidth: 320)
+    }
+
+    private func preferredMediaURLString(for ad: SessionAdInfo) -> String? {
+        if let firstMedia = ad.adMediaFiles.first(where: { ($0.mediaFileUrl ?? "").isEmpty == false })?.mediaFileUrl {
+            return firstMedia
+        }
+        if let adUrl = ad.adUrl, !adUrl.isEmpty {
+            return adUrl
+        }
+        if let mediaUrl = ad.mediaUrl, !mediaUrl.isEmpty {
+            return mediaUrl
+        }
+        return nil
+    }
+
+    private func configurePlayer(url: URL) {
+        guard currentItemId != ad.adId else { return }
+        teardownPlayer()
+        currentItemId = ad.adId
+        watchedTimeMs = 0
+        didSendFinish = false
+        hasReportedPlaying = false
+        isPaused = false
+
+        let item = AVPlayerItem(url: url)
+        player.replaceCurrentItem(with: item)
+        player.isMuted = false
+        player.volume = 0.3
+        player.play()
+
+        adDurationObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
+            queue: .main
+        ) { _ in
+            watchedTimeMs = max(0, Int((player.currentTime().seconds * 1000).rounded()))
+            let isPlaying = player.rate > 0.01
+            if isPlaying, !hasReportedPlaying {
+                hasReportedPlaying = true
+                isPaused = false
+                store.reportQueueAdStarted(adId: ad.adId)
+            } else if !isPlaying, hasReportedPlaying, !didSendFinish, !isPaused {
+                isPaused = true
+                store.reportQueueAdPaused(adId: ad.adId)
+            } else if isPlaying {
+                isPaused = false
+            }
+        }
+
+        adEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { _ in
+            guard !didSendFinish else { return }
+            didSendFinish = true
+            store.reportQueueAdFinished(adId: ad.adId, watchedTimeInMs: watchedTimeMs)
+        }
+    }
+
+    private func teardownPlayer() {
+        player.pause()
+        if let observer = adDurationObserver {
+            player.removeTimeObserver(observer)
+            adDurationObserver = nil
+        }
+        if let observer = adEndObserver {
+            NotificationCenter.default.removeObserver(observer)
+            adEndObserver = nil
+        }
     }
 }
 

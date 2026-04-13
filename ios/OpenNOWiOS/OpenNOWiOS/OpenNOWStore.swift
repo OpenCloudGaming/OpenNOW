@@ -3,6 +3,7 @@ import CryptoKit
 import Foundation
 import Network
 import OSLog
+import SwiftUI
 import UIKit
 
 struct UserProfile: Codable, Equatable {
@@ -73,6 +74,7 @@ struct ActiveSession: Identifiable, Codable, Equatable {
     let startedAt: Date
     var status: Int
     var queuePosition: Int?
+    var seatSetupStep: Int?
     var serverIp: String?
     var mediaIp: String?
     var mediaPort: Int
@@ -83,6 +85,7 @@ struct ActiveSession: Identifiable, Codable, Equatable {
     let streamingBaseUrl: String
     let clientId: String
     let deviceId: String
+    var adState: SessionAdState?
 }
 
 struct RemoteSessionCandidate: Identifiable, Codable, Equatable {
@@ -98,6 +101,48 @@ struct SubscriptionSnapshot: Codable, Equatable {
     let isUnlimited: Bool
     let remainingHours: Double
     let totalHours: Double
+}
+
+struct SessionAdMediaFile: Codable, Equatable {
+    let mediaFileUrl: String?
+    let encodingProfile: String?
+}
+
+struct SessionOpportunityInfo: Codable, Equatable {
+    let state: String?
+    let queuePaused: Bool?
+    let gracePeriodSeconds: Int?
+    let message: String?
+    let title: String?
+    let description: String?
+}
+
+struct SessionAdInfo: Codable, Equatable, Identifiable {
+    let adId: String
+    let state: Int?
+    let adState: Int?
+    let adUrl: String?
+    let mediaUrl: String?
+    let adMediaFiles: [SessionAdMediaFile]
+    let clickThroughUrl: String?
+    let adLengthInSeconds: Double?
+    let durationMs: Int?
+    let title: String?
+    let description: String?
+
+    var id: String { adId }
+}
+
+struct SessionAdState: Codable, Equatable {
+    let isAdsRequired: Bool
+    let sessionAdsRequired: Bool?
+    let isQueuePaused: Bool?
+    let gracePeriodSeconds: Int?
+    let message: String?
+    let sessionAds: [SessionAdInfo]
+    let ads: [SessionAdInfo]
+    let opportunity: SessionOpportunityInfo?
+    let serverSentEmptyAds: Bool?
 }
 
 struct AppSettings: Codable, Equatable {
@@ -145,6 +190,15 @@ private enum GFNConstants {
     static let oauthRedirectUri = "http://localhost:2259"
     static let oauthCallbackScheme = "opennowios"
     static let oauthRedirectPort: UInt16 = 2259
+    static let sessionModifyActionAdUpdate = 6
+}
+
+enum SessionAdAction: String, Codable {
+    case start
+    case pause
+    case resume
+    case finish
+    case cancel
 }
 
 private final class OAuthWebAuthenticator: NSObject, ASWebAuthenticationPresentationContextProviding {
@@ -713,17 +767,20 @@ private actor GFNAPIClient {
         let sessionId = sessionObj["sessionId"] as? String ?? UUID().uuidString
         let status = sessionObj["status"] as? Int ?? 1
         let queue = sessionObj["queuePosition"] as? Int
+        let seatSetupStep = Self.extractSeatSetupStep(sessionObj: sessionObj)
         let control = sessionObj["sessionControlInfo"] as? [String: Any]
         let serverIp = Self.extractServerIp(sessionObj: sessionObj) ?? (control?["ip"] as? String)
         let mediaConnectionInfo = Self.extractMediaConnectionInfo(sessionObj: sessionObj)
         let signaling = Self.resolveSignaling(sessionObj: sessionObj, fallbackServerIp: serverIp)
         let iceServers = Self.extractIceServers(sessionObj: sessionObj)
+        let adState = Self.extractAdState(sessionObj: sessionObj)
         return ActiveSession(
             id: sessionId,
             game: game,
             startedAt: .now,
             status: status,
             queuePosition: queue,
+            seatSetupStep: seatSetupStep,
             serverIp: serverIp,
             mediaIp: mediaConnectionInfo.ip,
             mediaPort: mediaConnectionInfo.port,
@@ -733,7 +790,8 @@ private actor GFNAPIClient {
             zone: Self.extractZoneId(from: base, fallback: vpcId),
             streamingBaseUrl: base,
             clientId: clientId,
-            deviceId: deviceId
+            deviceId: deviceId,
+            adState: adState
         )
     }
 
@@ -781,14 +839,17 @@ private actor GFNAPIClient {
         let status = sessionObj["status"] as? Int ?? activeSession.status
         let queue = (sessionObj["queuePosition"] as? Int) ??
             ((sessionObj["seatSetupInfo"] as? [String: Any])?["queuePosition"] as? Int)
+        let seatSetupStep = Self.extractSeatSetupStep(sessionObj: sessionObj)
         let serverIp = Self.extractServerIp(sessionObj: sessionObj) ?? activeSession.serverIp
         let mediaConnectionInfo = Self.extractMediaConnectionInfo(sessionObj: sessionObj)
         let signaling = Self.resolveSignaling(sessionObj: sessionObj, fallbackServerIp: serverIp ?? activeSession.signalingServer)
         let iceServers = Self.extractIceServers(sessionObj: sessionObj)
+        let adState = Self.extractAdState(sessionObj: sessionObj)
 
         var updated = activeSession
         updated.status = status
         updated.queuePosition = queue
+        updated.seatSetupStep = seatSetupStep
         updated.serverIp = serverIp
         updated.mediaIp = mediaConnectionInfo.ip ?? updated.mediaIp
         updated.mediaPort = mediaConnectionInfo.port > 0 ? mediaConnectionInfo.port : updated.mediaPort
@@ -797,6 +858,84 @@ private actor GFNAPIClient {
         if !iceServers.isEmpty {
             updated.iceServers = iceServers
         }
+        if let adState {
+            updated.adState = adState
+        }
+        return updated
+    }
+
+    func reportSessionAd(
+        session: AuthSession,
+        activeSession: ActiveSession,
+        adId: String,
+        action: SessionAdAction,
+        watchedTimeInMs: Int? = nil,
+        pausedTimeInMs: Int? = nil,
+        cancelReason: String? = nil,
+        errorInfo: String? = nil
+    ) async throws -> ActiveSession {
+        let token = session.tokens.idToken ?? session.tokens.accessToken
+        let base = Self.resolvePollBase(streamingBaseUrl: activeSession.streamingBaseUrl, serverIp: activeSession.serverIp)
+        let url = URL(string: "\(base)/v2/session/\(activeSession.id)")!
+        let actionCodes: [SessionAdAction: Int] = [
+            .start: 1,
+            .pause: 2,
+            .resume: 3,
+            .finish: 4,
+            .cancel: 5
+        ]
+        var adUpdate: [String: Any] = [
+            "adId": adId,
+            "adAction": actionCodes[action] ?? 1,
+            "clientTimestamp": Int(Date().timeIntervalSince1970)
+        ]
+        if let watchedTimeInMs {
+            adUpdate["watchedTimeInMs"] = max(0, watchedTimeInMs)
+        }
+        if let pausedTimeInMs {
+            adUpdate["pausedTimeInMs"] = max(0, pausedTimeInMs)
+        }
+        if let cancelReason, !cancelReason.isEmpty {
+            adUpdate["cancelReason"] = cancelReason
+        }
+        if let errorInfo, !errorInfo.isEmpty {
+            adUpdate["errorInfo"] = errorInfo
+        }
+        let requestBody: [String: Any] = [
+            "action": GFNConstants.sessionModifyActionAdUpdate,
+            "adUpdates": [adUpdate]
+        ]
+        let body = try JSONSerialization.data(withJSONObject: requestBody)
+        let (data, response) = try await request(
+            url: url,
+            method: "PUT",
+            headers: Self.cloudMatchHeaders(
+                token: token,
+                clientId: activeSession.clientId,
+                deviceId: activeSession.deviceId,
+                includeOrigin: true
+            ),
+            body: body
+        )
+        guard response.statusCode == 200 else {
+            let text = String(data: data, encoding: .utf8) ?? "unknown"
+            throw NSError(domain: "OpenNOW.SessionAd", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
+        }
+        let json = try parseJSON(data)
+        let requestStatus = json["requestStatus"] as? [String: Any]
+        let statusCode = requestStatus?["statusCode"] as? Int ?? 0
+        guard statusCode == 1 else {
+            let description = requestStatus?["statusDescription"] as? String ?? "Ad update failed"
+            throw NSError(domain: "OpenNOW.SessionAd", code: statusCode, userInfo: [NSLocalizedDescriptionKey: description])
+        }
+        let sessionObj = json["session"] as? [String: Any] ?? [:]
+        var updated = activeSession
+        updated.status = sessionObj["status"] as? Int ?? updated.status
+        updated.queuePosition = (sessionObj["queuePosition"] as? Int) ??
+            ((sessionObj["seatSetupInfo"] as? [String: Any])?["queuePosition"] as? Int) ??
+            updated.queuePosition
+        updated.seatSetupStep = Self.extractSeatSetupStep(sessionObj: sessionObj) ?? updated.seatSetupStep
+        updated.adState = Self.extractAdState(sessionObj: sessionObj) ?? updated.adState
         return updated
     }
 
@@ -816,6 +955,26 @@ private actor GFNAPIClient {
         )
         guard response.statusCode == 200 || response.statusCode == 204 else {
             throw NSError(domain: "OpenNOW.Session", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: "Failed to stop session"])
+        }
+    }
+
+    func stopRemoteSession(session: AuthSession, candidate: RemoteSessionCandidate, vpcId: String) async throws {
+        let token = session.tokens.idToken ?? session.tokens.accessToken
+        let fallbackHost = "\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
+        let targetHost = candidate.serverIp ?? fallbackHost
+        let url = URL(string: "https://\(targetHost)/v2/session/\(candidate.id)")!
+        let (_, response) = try await request(
+            url: url,
+            method: "DELETE",
+            headers: Self.cloudMatchHeaders(
+                token: token,
+                clientId: UUID().uuidString,
+                deviceId: UUID().uuidString,
+                includeOrigin: false
+            )
+        )
+        guard response.statusCode == 200 || response.statusCode == 204 else {
+            throw NSError(domain: "OpenNOW.Session", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: "Failed to end remote session"])
         }
     }
 
@@ -887,6 +1046,7 @@ private actor GFNAPIClient {
             startedAt: .now,
             status: (claimSessionObj["status"] as? Int) ?? candidate.status,
             queuePosition: nil,
+            seatSetupStep: Self.extractSeatSetupStep(sessionObj: claimSessionObj),
             serverIp: claimServerIp,
             mediaIp: mediaConnectionInfo.ip,
             mediaPort: mediaConnectionInfo.port,
@@ -896,7 +1056,8 @@ private actor GFNAPIClient {
             zone: vpcId,
             streamingBaseUrl: zoneBase,
             clientId: clientId,
-            deviceId: deviceId
+            deviceId: deviceId,
+            adState: Self.extractAdState(sessionObj: claimSessionObj)
         )
 
         for _ in 0..<45 {
@@ -955,18 +1116,193 @@ private actor GFNAPIClient {
     }
 
     private static func extractMediaConnectionInfo(sessionObj: [String: Any]) -> (ip: String?, port: Int) {
-        let connectionInfo = sessionObj["connectionInfo"] as? [[String: Any]] ?? []
-        let mediaConn = connectionInfo.first(where: { ($0["usage"] as? Int) == 1 })
-        let mediaIp: String?
-        if let ip = mediaConn?["ip"] as? String, !ip.isEmpty {
-            mediaIp = ip
-        } else if let ips = mediaConn?["ip"] as? [String], let first = ips.first, !first.isEmpty {
-            mediaIp = first
-        } else {
-            mediaIp = nil
+        let connections = sessionObj["connectionInfo"] as? [[String: Any]] ?? []
+        let fallbackServerIp = extractServerIp(sessionObj: sessionObj)
+
+        func extractIp(from connection: [String: Any]) -> String? {
+            if let ip = connection["ip"] as? String, !ip.isEmpty {
+                return ip
+            }
+            if let ips = connection["ip"] as? [String], let first = ips.first, !first.isEmpty {
+                return first
+            }
+            if let resourcePath = connection["resourcePath"] as? String,
+               let host = URL(string: resourcePath.replacingOccurrences(of: "rtsps://", with: "https://").replacingOccurrences(of: "rtsp://", with: "http://"))?.host,
+               !host.isEmpty {
+                return host
+            }
+            return nil
         }
-        let mediaPort = mediaConn?["port"] as? Int ?? 0
-        return (mediaIp, mediaPort)
+
+        func extractPort(from connection: [String: Any]) -> Int {
+            if let port = connection["port"] as? Int, port > 0 {
+                return port
+            }
+            if let resourcePath = connection["resourcePath"] as? String,
+               let parsedPort = URL(string: resourcePath.replacingOccurrences(of: "rtsps://", with: "https://").replacingOccurrences(of: "rtsp://", with: "http://"))?.port,
+               parsedPort > 0 {
+                return parsedPort
+            }
+            return 0
+        }
+
+        // Mirror CloudMatch media priority order used by desktop:
+        // usage=2 -> usage=17 -> usage=1 -> usage=14 (highest port, server fallback).
+        for usage in [2, 17, 1] {
+            if let candidate = connections.first(where: { ($0["usage"] as? Int) == usage }) {
+                let ip = extractIp(from: candidate)
+                let port = extractPort(from: candidate)
+                if ip != nil, port > 0 {
+                    return (ip, port)
+                }
+            }
+        }
+
+        let usage14Connections = connections
+            .filter { ($0["usage"] as? Int) == 14 }
+            .sorted { extractPort(from: $0) > extractPort(from: $1) }
+
+        for candidate in usage14Connections {
+            let ip = extractIp(from: candidate) ?? fallbackServerIp
+            let port = extractPort(from: candidate)
+            if ip != nil, port > 0 {
+                return (ip, port)
+            }
+        }
+
+        return (nil, 0)
+    }
+
+    private static func extractSeatSetupStep(sessionObj: [String: Any]) -> Int? {
+        let seatSetupInfo = sessionObj["seatSetupInfo"] as? [String: Any]
+        if let step = seatSetupInfo?["seatSetupStep"] as? Int {
+            return step
+        }
+        if let stepDouble = seatSetupInfo?["seatSetupStep"] as? Double, stepDouble.isFinite {
+            return Int(stepDouble)
+        }
+        if let stepString = seatSetupInfo?["seatSetupStep"] as? String, let step = Int(stepString) {
+            return step
+        }
+        return nil
+    }
+
+    private static func toPositiveInt(_ value: Any?) -> Int? {
+        if let intValue = value as? Int, intValue > 0 {
+            return intValue
+        }
+        if let doubleValue = value as? Double, doubleValue.isFinite {
+            let normalized = Int(doubleValue)
+            return normalized > 0 ? normalized : nil
+        }
+        if let stringValue = value as? String,
+           let parsed = Int(stringValue.trimmingCharacters(in: .whitespacesAndNewlines)),
+           parsed > 0 {
+            return parsed
+        }
+        return nil
+    }
+
+    private static func toBoolean(_ value: Any?) -> Bool? {
+        if let boolValue = value as? Bool {
+            return boolValue
+        }
+        if let intValue = value as? Int {
+            return intValue != 0
+        }
+        if let doubleValue = value as? Double {
+            return doubleValue != 0
+        }
+        if let stringValue = value as? String {
+            let normalized = stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if normalized == "true" || normalized == "1" {
+                return true
+            }
+            if normalized == "false" || normalized == "0" {
+                return false
+            }
+        }
+        return nil
+    }
+
+    private static func toOptionalString(_ value: Any?) -> String? {
+        guard let stringValue = value as? String else { return nil }
+        let trimmed = stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func normalizeSessionAdInfo(ad: [String: Any], index: Int) -> SessionAdInfo? {
+        let adId = toOptionalString(ad["adId"]) ?? "ad-\(index + 1)"
+        let mediaFiles = (ad["adMediaFiles"] as? [[String: Any]] ?? []).compactMap { item -> SessionAdMediaFile? in
+            let mediaFileUrl = toOptionalString(item["mediaFileUrl"])
+            let encodingProfile = toOptionalString(item["encodingProfile"])
+            guard mediaFileUrl != nil || encodingProfile != nil else { return nil }
+            return SessionAdMediaFile(mediaFileUrl: mediaFileUrl, encodingProfile: encodingProfile)
+        }
+        let adLengthInSeconds = ad["adLengthInSeconds"] as? Double
+        let durationMs = adLengthInSeconds.map { Int(round($0 * 1000)) }
+            ?? toPositiveInt(ad["durationMs"])
+            ?? toPositiveInt(ad["durationInMs"])
+        let state = ad["state"] as? Int
+        let adState = ad["adState"] as? Int
+        let adUrl = toOptionalString(ad["adUrl"])
+        let mediaUrl = toOptionalString(ad["mediaUrl"]) ?? toOptionalString(ad["videoUrl"]) ?? toOptionalString(ad["url"])
+        let clickThroughUrl = toOptionalString(ad["clickThroughUrl"])
+        let title = toOptionalString(ad["title"])
+        let description = toOptionalString(ad["description"])
+        return SessionAdInfo(
+            adId: adId,
+            state: state,
+            adState: adState,
+            adUrl: adUrl,
+            mediaUrl: mediaUrl,
+            adMediaFiles: mediaFiles,
+            clickThroughUrl: clickThroughUrl,
+            adLengthInSeconds: adLengthInSeconds,
+            durationMs: durationMs,
+            title: title,
+            description: description
+        )
+    }
+
+    private static func extractAdState(sessionObj: [String: Any]) -> SessionAdState? {
+        let sessionAdsRequired = toBoolean(sessionObj["sessionAdsRequired"])
+            ?? toBoolean(sessionObj["isAdsRequired"])
+            ?? toBoolean((sessionObj["sessionProgress"] as? [String: Any])?["isAdsRequired"])
+            ?? toBoolean((sessionObj["progressInfo"] as? [String: Any])?["isAdsRequired"])
+        let adsRaw = sessionObj["sessionAds"] as? [[String: Any]] ?? []
+        let ads = adsRaw.enumerated().compactMap { normalizeSessionAdInfo(ad: $0.element, index: $0.offset) }
+        let opportunityRaw = sessionObj["opportunity"] as? [String: Any]
+        let opportunity = opportunityRaw.map {
+            SessionOpportunityInfo(
+                state: toOptionalString($0["state"]),
+                queuePaused: toBoolean($0["queuePaused"]),
+                gracePeriodSeconds: toPositiveInt($0["gracePeriodSeconds"]),
+                message: toOptionalString($0["message"]),
+                title: toOptionalString($0["title"]),
+                description: toOptionalString($0["description"])
+            )
+        }
+        let queuePaused = opportunity?.queuePaused ?? {
+            guard let state = opportunity?.state else { return nil }
+            return state.lowercased() == "graceperiodstart"
+        }()
+        let effectiveAdsRequired = sessionAdsRequired ?? !ads.isEmpty
+        let message = opportunity?.message ?? opportunity?.description ?? (queuePaused == true ? "Resume ads to stay in queue." : nil)
+        if !effectiveAdsRequired, ads.isEmpty, queuePaused != true, message == nil {
+            return nil
+        }
+        return SessionAdState(
+            isAdsRequired: effectiveAdsRequired,
+            sessionAdsRequired: sessionAdsRequired,
+            isQueuePaused: queuePaused,
+            gracePeriodSeconds: opportunity?.gracePeriodSeconds,
+            message: message,
+            sessionAds: ads,
+            ads: ads,
+            opportunity: opportunity,
+            serverSentEmptyAds: sessionObj["sessionAds"] is NSNull
+        )
     }
 
     private static func resolveSignaling(sessionObj: [String: Any], fallbackServerIp: String?) -> (server: String?, url: String?) {
@@ -1485,6 +1821,8 @@ final class OpenNOWStore: ObservableObject {
     private var launchTask: Task<Void, Never>?
     private var sessionPollBackgroundTaskId: UIBackgroundTaskIdentifier = .invalid
     private var cachedVpcId: String = "GFN-PC"
+    private var adReportStateById: [String: SessionAdAction] = [:]
+    private var adStartedAtById: [String: Date] = [:]
 
     private let settingsKey = "OpenNOW.iOS.settings"
     private let authSessionKey = "OpenNOW.iOS.authSession"
@@ -1560,6 +1898,8 @@ final class OpenNOWStore: ObservableObject {
         sessionElapsedSeconds = 0
         showStreamLoading = false
         queueOverlayVisible = false
+        adReportStateById = [:]
+        adStartedAtById = [:]
         defaults.removeObject(forKey: authSessionKey)
     }
 
@@ -1620,6 +1960,8 @@ final class OpenNOWStore: ObservableObject {
                 launcherName: launchOption?.storefront ?? "Auto"
             )
             activeSession = started
+            adReportStateById = [:]
+            adStartedAtById = [:]
             sessionElapsedSeconds = 0
             startSessionTasks()
             logger.info("Session started id=\(started.id, privacy: .public) status=\(started.status) queue=\(started.queuePosition ?? -1)")
@@ -1651,6 +1993,28 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
+    func endRemoteSession(candidate: RemoteSessionCandidate) async {
+        guard let session = authSession else {
+            lastError = "Sign in first."
+            return
+        }
+        do {
+            let refreshed = try await api.refreshSession(session)
+            authSession = refreshed
+            persistAuthSession(refreshed)
+            try await api.stopRemoteSession(session: refreshed, candidate: candidate, vpcId: cachedVpcId)
+            if activeSession?.id == candidate.id {
+                await endSession()
+            } else {
+                resumableSessions.removeAll { $0.id == candidate.id }
+                await refreshRemoteSessions()
+            }
+            lastError = nil
+        } catch {
+            lastError = "Could not end session: \(error.localizedDescription)"
+        }
+    }
+
     func resumeSession(candidate: RemoteSessionCandidate) async {
         guard let session = authSession else {
             lastError = "Sign in first."
@@ -1677,6 +2041,8 @@ final class OpenNOWStore: ObservableObject {
                 settings: settings
             )
             activeSession = claimed
+            adReportStateById = [:]
+            adStartedAtById = [:]
             sessionElapsedSeconds = 0
             startSessionTasks()
             logger.info("Session resumed id=\(claimed.id, privacy: .public) status=\(claimed.status) queue=\(claimed.queuePosition ?? -1)")
@@ -1721,6 +2087,8 @@ final class OpenNOWStore: ObservableObject {
         }
         activeSession = nil
         streamSession = nil
+        adReportStateById = [:]
+        adStartedAtById = [:]
         telemetryTask?.cancel()
         sessionPollTask?.cancel()
         endSessionPollBackgroundTask()
@@ -1728,18 +2096,99 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func minimizeQueueOverlay() {
-        queueOverlayVisible = false
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
+            queueOverlayVisible = false
+        }
     }
 
     func maximizeQueueOverlay() {
         guard activeSession != nil else { return }
-        showStreamLoading = true
-        queueOverlayVisible = true
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
+            showStreamLoading = true
+            queueOverlayVisible = true
+        }
     }
 
     var canReopenStreamer: Bool {
         guard let active = activeSession else { return false }
         return active.status == 3 && streamSession == nil
+    }
+
+    var effectiveAdState: SessionAdState? {
+        guard let active = activeSession else { return nil }
+        if let adState = active.adState {
+            return adState
+        }
+        guard isFreeTierUser else { return nil }
+        guard active.status == 1, (active.queuePosition ?? 0) >= 1 else { return nil }
+        return SessionAdState(
+            isAdsRequired: true,
+            sessionAdsRequired: true,
+            isQueuePaused: nil,
+            gracePeriodSeconds: nil,
+            message: "Free-tier queue ads begin as soon as you enter queue.",
+            sessionAds: [],
+            ads: [],
+            opportunity: SessionOpportunityInfo(
+                state: nil,
+                queuePaused: nil,
+                gracePeriodSeconds: nil,
+                message: "Free-tier queue ads begin as soon as you enter queue.",
+                title: nil,
+                description: nil
+            ),
+            serverSentEmptyAds: true
+        )
+    }
+
+    var activeQueueAd: SessionAdInfo? {
+        let ads = effectiveAdState?.sessionAds ?? effectiveAdState?.ads ?? []
+        return ads.first
+    }
+
+    func reportQueueAdStarted(adId: String) {
+        let lastAction = adReportStateById[adId]
+        if lastAction == .start || lastAction == .resume || lastAction == .finish || lastAction == .cancel {
+            return
+        }
+        adStartedAtById[adId] = adStartedAtById[adId] ?? Date()
+        let action: SessionAdAction = (lastAction == .pause) ? .resume : .start
+        adReportStateById[adId] = action
+        Task { await reportQueueAdAction(adId: adId, action: action) }
+    }
+
+    func reportQueueAdPaused(adId: String) {
+        let lastAction = adReportStateById[adId]
+        guard lastAction == .start || lastAction == .resume else { return }
+        adReportStateById[adId] = .pause
+        Task { await reportQueueAdAction(adId: adId, action: .pause) }
+    }
+
+    func reportQueueAdFinished(adId: String, watchedTimeInMs: Int) {
+        let lastAction = adReportStateById[adId]
+        guard lastAction != .finish && lastAction != .cancel else { return }
+        adReportStateById[adId] = .finish
+        Task {
+            await reportQueueAdAction(
+                adId: adId,
+                action: .finish,
+                watchedTimeInMs: max(0, watchedTimeInMs)
+            )
+        }
+    }
+
+    func reportQueueAdError(adId: String, message: String) {
+        let lastAction = adReportStateById[adId]
+        guard lastAction != .finish && lastAction != .cancel else { return }
+        adReportStateById[adId] = .cancel
+        Task {
+            await reportQueueAdAction(
+                adId: adId,
+                action: .cancel,
+                cancelReason: "error",
+                errorInfo: message
+            )
+        }
     }
 
     func dismissStreamer() {
@@ -1807,6 +2256,8 @@ final class OpenNOWStore: ObservableObject {
             var previousStatus = self.activeSession?.status
             var consecutivePollFailures = 0
             var setupTimeoutStartedAt: Date?
+            var setupTimeoutNotified = false
+            var readyPollStreak = 0
             var loggedReadyForStreamer = false
             var dismissedOverlayAfterReady = false
             while !Task.isCancelled {
@@ -1828,13 +2279,20 @@ final class OpenNOWStore: ObservableObject {
                     self.logger.info(
                         "Poll id=\(polled.id, privacy: .public) status=\(polled.status) queue=\(polled.queuePosition ?? -1) showOverlay=\(self.showStreamLoading)"
                     )
-                    if self.isReadyForStreamer(polled) && !loggedReadyForStreamer {
+                    let readyForStreamer = self.isReadyForStreamer(polled)
+                    if readyForStreamer {
+                        readyPollStreak += 1
+                    } else {
+                        readyPollStreak = 0
+                    }
+
+                    if readyPollStreak >= 2 && !loggedReadyForStreamer {
                         self.logger.notice(
                             "Session ready for streamer handoff id=\(polled.id, privacy: .public) status=\(polled.status). Presenting iOS streamer."
                         )
                         self.streamSession = polled
                         loggedReadyForStreamer = true
-                    } else if !self.isReadyForStreamer(polled) {
+                    } else if !readyForStreamer {
                         loggedReadyForStreamer = false
                         dismissedOverlayAfterReady = false
                     }
@@ -1849,21 +2307,22 @@ final class OpenNOWStore: ObservableObject {
                         if setupTimeoutStartedAt == nil {
                             setupTimeoutStartedAt = Date()
                         } else if let startedAt = setupTimeoutStartedAt,
-                                  Date().timeIntervalSince(startedAt) >= self.setupPhaseTimeoutSeconds {
+                                  Date().timeIntervalSince(startedAt) >= self.setupPhaseTimeoutSeconds,
+                                  !setupTimeoutNotified {
                             self.logger.error("Setup phase timeout exceeded for session id=\(polled.id, privacy: .public)")
                             self.lastError = "Session setup is taking longer than expected. Please retry."
-                            self.showStreamLoading = false
-                            self.queueOverlayVisible = false
+                            setupTimeoutNotified = true
                         }
                     } else {
                         setupTimeoutStartedAt = nil
+                        setupTimeoutNotified = false
                     }
-                    if !self.isReadyForStreamer(polled) && !self.queueOverlayVisible {
+                    if !readyForStreamer && !self.queueOverlayVisible {
                         // If the user minimized during queue/setup, keep the loading
                         // experience reopenable so they can return to it.
                         self.showStreamLoading = true
                     }
-                    if self.isReadyForStreamer(polled) && !dismissedOverlayAfterReady {
+                    if loggedReadyForStreamer && self.queueOverlayVisible && !dismissedOverlayAfterReady {
                         // Close the full-screen queue overlay so streamer can present,
                         // but keep the compact top indicator alive.
                         self.queueOverlayVisible = false
@@ -1874,11 +2333,6 @@ final class OpenNOWStore: ObservableObject {
                     consecutivePollFailures += 1
                     self.logger.error("Session poll failed attempt=\(consecutivePollFailures) error=\(error.localizedDescription, privacy: .public)")
                     self.lastError = "Session poll failed: \(error.localizedDescription)"
-                    if consecutivePollFailures >= 5 && self.showStreamLoading {
-                        // Prevent endless "Setting up..." state on repeated poll failures.
-                        self.showStreamLoading = false
-                        self.queueOverlayVisible = false
-                    }
                 }
                 try? await Task.sleep(for: .seconds(2))
             }
@@ -1887,7 +2341,14 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func isInQueuePhase(_ session: ActiveSession) -> Bool {
-        session.status == 1 && (session.queuePosition ?? 0) > 1
+        if (session.adState?.sessionAdsRequired ?? session.adState?.isAdsRequired ?? false), session.status == 1 {
+            return true
+        }
+        guard session.status == 1 else { return false }
+        if session.seatSetupStep == 1 {
+            return true
+        }
+        return (session.queuePosition ?? 0) > 1
     }
 
     private func isInSetupPhase(_ session: ActiveSession) -> Bool {
@@ -1895,7 +2356,66 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func isReadyForStreamer(_ session: ActiveSession) -> Bool {
-        session.status == 3
+        guard session.status == 3 else { return false }
+        if (session.adState?.sessionAdsRequired ?? session.adState?.isAdsRequired ?? false) {
+            return false
+        }
+        if let queuePosition = session.queuePosition, queuePosition > 1 {
+            return false
+        }
+        return session.signalingUrl != nil || session.signalingServer != nil
+    }
+
+    private var isFreeTierUser: Bool {
+        let tier = (subscription?.membershipTier ?? user?.membershipTier).trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return tier.isEmpty || tier == "FREE"
+    }
+
+    private func reportQueueAdAction(
+        adId: String,
+        action: SessionAdAction,
+        watchedTimeInMs: Int? = nil,
+        cancelReason: String? = nil,
+        errorInfo: String? = nil
+    ) async {
+        guard let session = authSession, let active = activeSession else { return }
+        let pausedTimeInMs: Int? = {
+            guard let startedAt = adStartedAtById[adId], action == .finish || action == .cancel else {
+                return nil
+            }
+            let elapsed = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+            let adDurationMs = (activeQueueAd?.adLengthInSeconds.map { Int(round($0 * 1000)) }) ?? activeQueueAd?.durationMs
+            guard let adDurationMs, elapsed > adDurationMs else { return 0 }
+            return elapsed - adDurationMs
+        }()
+        do {
+            let refreshed = try await api.refreshSession(session)
+            authSession = refreshed
+            persistAuthSession(refreshed)
+            let updated = try await api.reportSessionAd(
+                session: refreshed,
+                activeSession: active,
+                adId: adId,
+                action: action,
+                watchedTimeInMs: watchedTimeInMs,
+                pausedTimeInMs: pausedTimeInMs,
+                cancelReason: cancelReason,
+                errorInfo: errorInfo
+            )
+            if activeSession?.id == updated.id {
+                activeSession = updated
+                if streamSession?.id == updated.id {
+                    streamSession = updated
+                }
+            }
+            if action == .finish || action == .cancel {
+                adStartedAtById.removeValue(forKey: adId)
+            }
+        } catch {
+            logger.error(
+                "Ad report failed action=\(action.rawValue, privacy: .public) adId=\(adId, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+        }
     }
 
     private func refreshSessionPollBackgroundTask() {
