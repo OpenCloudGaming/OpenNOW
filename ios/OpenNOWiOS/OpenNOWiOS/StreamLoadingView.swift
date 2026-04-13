@@ -23,7 +23,9 @@ struct StreamLoadingView: View {
     ]
 
     private var currentPhase: StreamPhase {
-        if let adState = store.effectiveAdState, adState.sessionAdsRequired ?? adState.isAdsRequired {
+        if let adState = store.effectiveAdState,
+           store.activeSession?.status == 1,
+           adState.sessionAdsRequired ?? adState.isAdsRequired {
             return .queue
         }
         guard let session = store.activeSession else { return .queue }
@@ -45,11 +47,11 @@ struct StreamLoadingView: View {
     private var statusMessage: String {
         switch currentPhase {
         case .queue:
-            if let adState = store.effectiveAdState {
+            if let adState = store.effectiveAdState, store.activeQueueAd != nil {
                 if adState.opportunity?.queuePaused == true || adState.isQueuePaused == true {
                     return adState.message ?? "Session queue paused. Resume ad playback to continue."
                 }
-                if (adState.sessionAdsRequired ?? adState.isAdsRequired) {
+                if adState.sessionAdsRequired ?? adState.isAdsRequired {
                     return adState.message ?? "Watch queue ads to continue."
                 }
             }
@@ -58,7 +60,7 @@ struct StreamLoadingView: View {
             }
             return store.isLaunchingSession ? "Starting session..." : "Waiting in queue..."
         case .setup:
-            return "Preparing your gaming rig..."
+            return "Setting up your gaming rig..."
         case .launching:
             if store.streamSession != nil {
                 return "Opening stream..."
@@ -302,6 +304,24 @@ struct StreamLoadingView: View {
     }
 }
 
+// Bare AVPlayerViewController wrapper — no system transport controls so only
+// our custom play/pause button is visible (no ±10s skip buttons).
+private struct AdVideoView: UIViewControllerRepresentable {
+    let player: AVPlayer
+
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let vc = AVPlayerViewController()
+        vc.player = player
+        vc.showsPlaybackControls = false
+        vc.videoGravity = .resizeAspect
+        return vc
+    }
+
+    func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
+        vc.player = player
+    }
+}
+
 private struct QueueAdPlayerCard: View {
     @EnvironmentObject private var store: OpenNOWStore
     let ad: SessionAdInfo
@@ -314,22 +334,56 @@ private struct QueueAdPlayerCard: View {
     @State private var didSendFinish = false
     @State private var hasReportedPlaying = false
     @State private var isPaused = false
+    @State private var isMuted = false
+    @State private var isPlaying = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "play.rectangle.fill")
-                    .foregroundStyle(.orange)
-                Text("Ad Queue")
-                    .font(.caption.bold())
-                    .foregroundStyle(.secondary)
-            }
+        if !didSendFinish {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "play.rectangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("Ad Queue")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                }
 
-            Group {
-                if let mediaUrl = preferredMediaURLString(for: ad), let url = URL(string: mediaUrl) {
-                    VideoPlayer(player: player)
-                        .frame(height: 150)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                Group {
+                    if let mediaUrl = preferredMediaURLString(for: ad), let url = URL(string: mediaUrl) {
+                        ZStack(alignment: .bottom) {
+                            AdVideoView(player: player)
+                                .frame(height: 150)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                            HStack {
+                                Button {
+                                    if isPlaying {
+                                        player.pause()
+                                    } else {
+                                        player.play()
+                                    }
+                                } label: {
+                                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                                        .font(.caption.bold())
+                                        .foregroundStyle(.white)
+                                        .padding(8)
+                                        .background(.ultraThinMaterial, in: Circle())
+                                }
+
+                                Spacer()
+
+                                Button {
+                                    toggleMute()
+                                } label: {
+                                    Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                        .font(.caption.bold())
+                                        .foregroundStyle(.white)
+                                        .padding(8)
+                                        .background(.ultraThinMaterial, in: Circle())
+                                }
+                            }
+                            .padding(8)
+                        }
                         .onAppear {
                             configurePlayer(url: url)
                         }
@@ -337,44 +391,46 @@ private struct QueueAdPlayerCard: View {
                             didSendFinish = false
                             hasReportedPlaying = false
                             isPaused = false
+                            isPlaying = false
                             configurePlayer(url: url)
                         }
                         .onDisappear {
                             teardownPlayer()
                         }
-                } else {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.secondary.opacity(0.15))
-                        .frame(height: 150)
-                        .overlay(
-                            VStack(spacing: 6) {
-                                Image(systemName: "video.slash.fill")
-                                    .font(.title3)
-                                    .foregroundStyle(.secondary)
-                                Text("Ad media unavailable")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        )
+                    } else {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.secondary.opacity(0.15))
+                            .frame(height: 150)
+                            .overlay(
+                                VStack(spacing: 6) {
+                                    Image(systemName: "video.slash.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(.secondary)
+                                    Text("Ad media unavailable")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            )
+                    }
+                }
+
+                if let message = store.effectiveAdState?.message, !message.isEmpty {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
-
-            if let message = store.effectiveAdState?.message, !message.isEmpty {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(.regularMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .stroke(.orange.opacity(0.28), lineWidth: 1)
+                    )
+            )
+            .frame(maxWidth: 320)
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(.regularMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(.orange.opacity(0.28), lineWidth: 1)
-                )
-        )
-        .frame(maxWidth: 320)
     }
 
     private func preferredMediaURLString(for ad: SessionAdInfo) -> String? {
@@ -398,10 +454,11 @@ private struct QueueAdPlayerCard: View {
         didSendFinish = false
         hasReportedPlaying = false
         isPaused = false
+        isPlaying = false
 
         let item = AVPlayerItem(url: url)
         player.replaceCurrentItem(with: item)
-        player.isMuted = false
+        player.isMuted = isMuted
         player.volume = 0.3
         player.play()
 
@@ -410,15 +467,16 @@ private struct QueueAdPlayerCard: View {
             queue: .main
         ) { _ in
             watchedTimeMs = max(0, Int((player.currentTime().seconds * 1000).rounded()))
-            let isPlaying = player.rate > 0.01
-            if isPlaying, !hasReportedPlaying {
+            let nowPlaying = player.rate > 0.01
+            isPlaying = nowPlaying
+            if nowPlaying, !hasReportedPlaying {
                 hasReportedPlaying = true
                 isPaused = false
                 store.reportQueueAdStarted(adId: ad.adId)
-            } else if !isPlaying, hasReportedPlaying, !didSendFinish, !isPaused {
+            } else if !nowPlaying, hasReportedPlaying, !didSendFinish, !isPaused {
                 isPaused = true
                 store.reportQueueAdPaused(adId: ad.adId)
-            } else if isPlaying {
+            } else if nowPlaying {
                 isPaused = false
             }
         }
@@ -430,7 +488,11 @@ private struct QueueAdPlayerCard: View {
         ) { _ in
             guard !didSendFinish else { return }
             didSendFinish = true
+            isPlaying = false
             store.reportQueueAdFinished(adId: ad.adId, watchedTimeInMs: watchedTimeMs)
+            Task { @MainActor in
+                await dismissQueueOverlayIfAdsFinished()
+            }
         }
     }
 
@@ -443,6 +505,24 @@ private struct QueueAdPlayerCard: View {
         if let observer = adEndObserver {
             NotificationCenter.default.removeObserver(observer)
             adEndObserver = nil
+        }
+    }
+
+    private func toggleMute() {
+        isMuted.toggle()
+        player.isMuted = isMuted
+    }
+
+    @MainActor
+    private func dismissQueueOverlayIfAdsFinished() async {
+        for _ in 0..<16 {
+            let adsRequired = store.effectiveAdState.map { $0.sessionAdsRequired ?? $0.isAdsRequired } ?? false
+            let isQueueing = (store.activeSession?.status ?? 0) == 1
+            if isQueueing && (!adsRequired || store.activeQueueAd == nil) {
+                store.minimizeQueueOverlay()
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(250))
         }
     }
 }

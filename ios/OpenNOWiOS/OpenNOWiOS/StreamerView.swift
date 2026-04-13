@@ -6,32 +6,58 @@ struct StreamerView: View {
     let session: ActiveSession
     let settings: AppSettings
     let onClose: () -> Void
-    @State private var statusText = "Connecting streamer..."
+    @State private var statusText = ""
 
     var body: some View {
-        ZStack(alignment: .top) {
+        ZStack(alignment: .topTrailing) {
             StreamerWebView(session: session, settings: settings) { event in
                 statusText = event
             }
             .ignoresSafeArea()
 
-            HStack {
-                Text(statusText)
-                    .font(.caption)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(.regularMaterial, in: Capsule())
-                    .lineLimit(1)
-                Spacer()
-                Button {
-                    onClose()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title2)
-                        .symbolRenderingMode(.hierarchical)
+            Button {
+                onClose()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .frame(width: 36, height: 36)
+                    .background(
+                        Group {
+                            if #available(iOS 26, *) {
+                                Circle()
+                                    .fill(.regularMaterial)
+                                    .glassEffect(in: Circle())
+                            } else {
+                                Circle()
+                                    .fill(.regularMaterial)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                                    )
+                            }
+                        }
+                    )
+            }
+            .padding(.top, 12)
+            .padding(.trailing, 12)
+
+            if statusText.hasPrefix("Error:") {
+                VStack {
+                    Spacer()
+                    Text(statusText)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.red.opacity(0.2), in: Capsule())
+                        .overlay(
+                            Capsule()
+                                .stroke(Color.red.opacity(0.45), lineWidth: 1)
+                        )
+                        .foregroundStyle(.white)
+                        .padding(.bottom, 22)
                 }
             }
-            .padding()
         }
         .background(Color.black.ignoresSafeArea())
     }
@@ -132,7 +158,7 @@ private struct StreamerWebView: UIViewRepresentable {
   <div id="touchpad" style="position:fixed;inset:0;z-index:10;touch-action:none;"></div>
   <div id="touchHint" style="position:fixed;left:50%;bottom:60px;transform:translateX(-50%);
     color:rgba(255,255,255,0.45);font:11px -apple-system;pointer-events:none;user-select:none;
-    text-align:center;transition:opacity 1s;">Drag to move · Tap to click · 2-finger tap to right-click</div>
+    text-align:center;transition:opacity 1s;">Drag to move · Tap to click · Pinch to zoom · 2-finger pan when zoomed</div>
   <button id="kbBtn" onclick="toggleKeyboard()" style="position:fixed;right:16px;bottom:16px;z-index:20;
     width:48px;height:48px;border-radius:50%;background:rgba(30,30,30,0.75);color:#fff;
     border:1px solid rgba(255,255,255,0.25);font-size:22px;cursor:pointer;
@@ -196,9 +222,25 @@ private struct StreamerWebView: UIViewRepresentable {
   let pendingMoveDx = 0;
   let pendingMoveDy = 0;
   let moveFrame = null;
+  const INPUT_PROTOCOL_FALLBACK_DELAY_MS = 1500;
+  const DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS = 100;
+  const DEFAULT_HID_DEVICE_MASK = 0xFFFFFFFF;
+  const DEFAULT_PR_GAMEPAD_MASK = 0xF;
+  const DEFAULT_PR_HID_MASK = 0xFFFFFFFF;
+  const RI_INPUT_MOUSE_REL_MASK = 1 << 7;
   const peerId = 2;
   const peerName = "peer-" + Math.floor(Math.random() * 1e10);
   const statsEl = document.getElementById('stats');
+  let inputProtocolVersion = 2;
+  let inputHandshakeComplete = false;
+  let inputFallbackTimer = null;
+  let partialReliableThresholdMs = DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
+  let riInputCapabilities = {
+    hidDeviceMask: DEFAULT_HID_DEVICE_MASK,
+    enablePartiallyReliableTransferGamepad: DEFAULT_PR_GAMEPAD_MASK,
+    enablePartiallyReliableTransferHid: DEFAULT_PR_HID_MASK
+  };
+  let offerAccepted = false;
 
   function post(type, message) {
     try { window.webkit.messageHandlers.opennow.postMessage({ type, message }); } catch (_) {}
@@ -222,7 +264,20 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   function resetTransport(closeSocket = false) {
     inputReady = false;
+    inputProtocolVersion = 2;
+    inputHandshakeComplete = false;
+    partialReliableThresholdMs = DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
+    riInputCapabilities = {
+      hidDeviceMask: DEFAULT_HID_DEVICE_MASK,
+      enablePartiallyReliableTransferGamepad: DEFAULT_PR_GAMEPAD_MASK,
+      enablePartiallyReliableTransferHid: DEFAULT_PR_HID_MASK
+    };
+    offerAccepted = false;
     clearOfferTimeout();
+    if (inputFallbackTimer) {
+      clearTimeout(inputFallbackTimer);
+      inputFallbackTimer = null;
+    }
     if (signalingOpenTimeout) {
       clearTimeout(signalingOpenTimeout);
       signalingOpenTimeout = null;
@@ -230,6 +285,7 @@ private struct StreamerWebView: UIViewRepresentable {
     if (hb) { clearInterval(hb); hb = null; }
     if (hbInput) { clearInterval(hbInput); hbInput = null; }
     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+    stopKeyframeTimer();
     lastBytesReceived = 0;
     lastBytesTimestamp = 0;
     if (reliableCh) { try { reliableCh.close(); } catch (_) {} }
@@ -263,10 +319,20 @@ private struct StreamerWebView: UIViewRepresentable {
     return !!channel && channel.readyState === 'open';
   }
   function updateInputReady() {
-    inputReady = isChannelOpen(reliableCh) || isChannelOpen(partialCh);
+    inputReady = isChannelOpen(reliableCh) && inputHandshakeComplete;
     if (inputReady) {
       post('status', 'Input ready');
     }
+  }
+  function shouldKeepPeerAliveOnSignalingClose() {
+    if (!offerAccepted || !pc) return false;
+    const state = pc.connectionState;
+    return state === 'new' || state === 'connecting' || state === 'connected';
+  }
+  function canUsePartiallyReliableForMouse() {
+    if (!isChannelOpen(partialCh)) return false;
+    if ((riInputCapabilities.hidDeviceMask & RI_INPUT_MOUSE_REL_MASK) === 0) return false;
+    return (riInputCapabilities.enablePartiallyReliableTransferHid & RI_INPUT_MOUSE_REL_MASK) !== 0;
   }
   function send(obj) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -282,11 +348,52 @@ private struct StreamerWebView: UIViewRepresentable {
     }
   }
   function sendPartialInput(buf) {
-    if (isChannelOpen(partialCh)) {
+    if (canUsePartiallyReliableForMouse()) {
       partialCh.send(buf);
       return;
     }
     sendInput(buf);
+  }
+  async function toBytes(data) {
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (typeof Blob !== 'undefined' && data instanceof Blob) {
+      const buffer = await data.arrayBuffer();
+      return new Uint8Array(buffer);
+    }
+    if (typeof data === 'string') {
+      return new TextEncoder().encode(data);
+    }
+    return new Uint8Array(0);
+  }
+  function setupInputHeartbeat() {
+    if (hbInput) clearInterval(hbInput);
+    hbInput = setInterval(() => {
+      if (inputReady) sendInput(encodeHeartbeat());
+    }, 2000);
+  }
+  function handleInputHandshakeMessage(bytes) {
+    if (!bytes || bytes.length < 2) return;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const firstWord = view.getUint16(0, true);
+    let version = 2;
+    if (firstWord === 526) {
+      version = bytes.length >= 4 ? view.getUint16(2, true) : 2;
+    } else if (bytes[0] === 0x0e) {
+      version = firstWord;
+    } else {
+      return;
+    }
+    if (inputFallbackTimer) {
+      clearTimeout(inputFallbackTimer);
+      inputFallbackTimer = null;
+    }
+    inputProtocolVersion = Math.max(2, Math.floor(version || 2));
+    if (!inputHandshakeComplete) {
+      inputHandshakeComplete = true;
+      updateInputReady();
+      setupInputHeartbeat();
+      log('Input handshake complete (protocol v' + inputProtocolVersion + ')');
+    }
   }
   function updateStatsOverlay(fps, pingMs, bitrateMbps) {
     if (!statsEl) return;
@@ -331,11 +438,14 @@ private struct StreamerWebView: UIViewRepresentable {
     statsTimer = setInterval(samplePeerStats, 1000);
   }
   function buildSignInUrl() {
-    const base = (cfg.signalingUrl || "").trim() || ("wss://" + cfg.signalingServer + "/nvst/");
+    const signalingServer = (cfg.signalingServer || "").trim();
+    const fallbackHost = signalingServer.includes(":") ? signalingServer : (signalingServer ? signalingServer + ":443" : "");
+    const base = (cfg.signalingUrl || "").trim() || ("wss://" + fallbackHost + "/nvst/");
     const url = new URL(base);
     url.protocol = "wss:";
-    // CloudMatch signaling URLs often point at /nvst/, but websocket login is /sign_in.
-    url.pathname = "/sign_in";
+    // Append sign_in to existing path (e.g. /nvst/abc/ -> /nvst/abc/sign_in).
+    // Do NOT wipe the full path — the session signalingUrl may include a unique subpath.
+    url.pathname = url.pathname.replace(/\/?$/, '/') + 'sign_in';
     url.search = "";
     url.searchParams.set("peer_id", peerName);
     url.searchParams.set("version", "2");
@@ -382,6 +492,38 @@ private struct StreamerWebView: UIViewRepresentable {
     const fingerprint = lines.find((line) => line.startsWith('a=fingerprint:sha-256 '))?.slice('a=fingerprint:sha-256 '.length).trim() ?? '';
     return { ufrag, pwd, fingerprint };
   }
+  function parseRiIntegerAttribute(sdp, attribute, fallback) {
+    const escapedAttribute = attribute.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = sdp.match(new RegExp(`a=${escapedAttribute}:([^\\r\\n]+)`, 'i'));
+    const raw = match?.[1]?.trim();
+    if (!raw) return fallback;
+    const normalized = raw.toLowerCase();
+    const parsed = normalized.startsWith('0x') ? parseInt(normalized.slice(2), 16) : parseInt(normalized, 10);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  function parsePartialReliableThresholdMs(sdp) {
+    const match = sdp.match(/a=ri\.partialReliableThresholdMs:(\d+)/i);
+    if (!match?.[1]) return DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
+    const parsed = Number.parseInt(match[1], 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
+    return Math.max(1, Math.min(5000, parsed));
+  }
+  function parseRiInputCapabilities(sdp) {
+    return {
+      partialReliableThresholdMs: parsePartialReliableThresholdMs(sdp),
+      hidDeviceMask: parseRiIntegerAttribute(sdp, 'ri.hidDeviceMask', DEFAULT_HID_DEVICE_MASK),
+      enablePartiallyReliableTransferGamepad: parseRiIntegerAttribute(
+        sdp,
+        'ri.enablePartiallyReliableTransferGamepad',
+        DEFAULT_PR_GAMEPAD_MASK
+      ),
+      enablePartiallyReliableTransferHid: parseRiIntegerAttribute(
+        sdp,
+        'ri.enablePartiallyReliableTransferHid',
+        DEFAULT_PR_HID_MASK
+      )
+    };
+  }
   function nowBigUs() { return BigInt(Math.round(performance.now() * 1000)); }
   function writeTimestampBE(view, offset) {
     const ts = nowBigUs();
@@ -401,7 +543,7 @@ private struct StreamerWebView: UIViewRepresentable {
     v.setUint16(6, modifiers, false);
     v.setUint16(8, scancode, false);
     writeTimestampBE(v, 10);
-    return buf;
+    return wrapSingleEvent(buf);
   }
   function encodeMouseMove(dx, dy) {
     const buf = new ArrayBuffer(22);
@@ -410,7 +552,7 @@ private struct StreamerWebView: UIViewRepresentable {
     v.setInt16(4, Math.max(-32768, Math.min(32767, dx)), false);
     v.setInt16(6, Math.max(-32768, Math.min(32767, dy)), false);
     writeTimestampBE(v, 14);
-    return buf;
+    return wrapMouseMoveEvent(buf);
   }
   function encodeMouseButton(type, button) {
     const buf = new ArrayBuffer(18);
@@ -418,7 +560,28 @@ private struct StreamerWebView: UIViewRepresentable {
     v.setUint32(0, type, true);
     v.setUint8(4, button);
     writeTimestampBE(v, 10);
-    return buf;
+    return wrapSingleEvent(buf);
+  }
+  function wrapSingleEvent(buf) {
+    if (inputProtocolVersion <= 2) return buf;
+    const wrapped = new ArrayBuffer(10 + buf.byteLength);
+    const view = new DataView(wrapped);
+    view.setUint8(0, 0x23);
+    writeTimestampBE(view, 1);
+    view.setUint8(9, 0x22);
+    new Uint8Array(wrapped, 10).set(new Uint8Array(buf));
+    return wrapped;
+  }
+  function wrapMouseMoveEvent(buf) {
+    if (inputProtocolVersion <= 2) return buf;
+    const wrapped = new ArrayBuffer(12 + buf.byteLength);
+    const view = new DataView(wrapped);
+    view.setUint8(0, 0x23);
+    writeTimestampBE(view, 1);
+    view.setUint8(9, 0x21);
+    view.setUint16(10, buf.byteLength, false);
+    new Uint8Array(wrapped, 12).set(new Uint8Array(buf));
+    return wrapped;
   }
   function normalizeCodec(name) {
     const upper = String(name || '').toUpperCase();
@@ -750,6 +913,31 @@ private struct StreamerWebView: UIViewRepresentable {
       } catch (_) {}
     }
   }
+  let kfAttempt = 0;
+  let kfTimer = null;
+  function sendKeyframeRequest() {
+    kfAttempt += 1;
+    send({
+      peer_msg: { from: peerId, to: 1, msg: JSON.stringify({ type: 'request_keyframe', reason: 'decoder-recovery', backlogFrames: 0, attempt: kfAttempt }) },
+      ackid: nextAck()
+    });
+  }
+  function startKeyframeTimer() {
+    if (kfTimer) return;
+    kfAttempt = 0;
+    kfTimer = setInterval(sendKeyframeRequest, 5000);
+  }
+  function stopKeyframeTimer() {
+    if (kfTimer) { clearInterval(kfTimer); kfTimer = null; }
+    kfAttempt = 0;
+  }
+  function configureReceiverLowLatency(receiver, kind) {
+    try {
+      if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 0;
+      if ('playoutDelayHint' in receiver) receiver.playoutDelayHint = 0;
+      if (kind === 'video' && receiver.track && 'contentHint' in receiver.track) receiver.track.contentHint = 'motion';
+    } catch (_) {}
+  }
   function ensurePeerConnection() {
     if (pc) return pc;
     const ice = (cfg.iceServers || []).map((server) => ({
@@ -757,40 +945,81 @@ private struct StreamerWebView: UIViewRepresentable {
       username: server.username || undefined,
       credential: server.credential || undefined
     }));
-    pc = new RTCPeerConnection({ iceServers: ice });
+    pc = new RTCPeerConnection({ iceServers: ice, bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' });
     const thisPc = pc;
     reliableCh = thisPc.createDataChannel('input_channel_v1', { ordered: true });
     reliableCh.binaryType = 'arraybuffer';
     reliableCh.onopen = () => {
       updateInputReady();
-      if (hbInput) clearInterval(hbInput);
-      hbInput = setInterval(() => {
-        if (inputReady) sendInput(encodeHeartbeat());
-      }, 2000);
+      if (inputFallbackTimer) clearTimeout(inputFallbackTimer);
+      inputFallbackTimer = setTimeout(() => {
+        if (!inputHandshakeComplete && isChannelOpen(reliableCh)) {
+          inputProtocolVersion = 2;
+          inputHandshakeComplete = true;
+          updateInputReady();
+          setupInputHeartbeat();
+          log('Input handshake timeout; falling back to protocol v2');
+        }
+      }, INPUT_PROTOCOL_FALLBACK_DELAY_MS);
     };
     reliableCh.onclose = () => {
+      inputHandshakeComplete = false;
+      inputProtocolVersion = 2;
       updateInputReady();
+      if (inputFallbackTimer) {
+        clearTimeout(inputFallbackTimer);
+        inputFallbackTimer = null;
+      }
       if (hbInput) { clearInterval(hbInput); hbInput = null; }
     };
-    reliableCh.onmessage = () => {};
+    reliableCh.onmessage = async (event) => {
+      try {
+        const bytes = await toBytes(event.data);
+        handleInputHandshakeMessage(bytes);
+      } catch (_) {}
+    };
     partialCh = thisPc.createDataChannel('input_channel_partially_reliable', {
       ordered: false,
-      maxPacketLifeTime: 100
+      maxPacketLifeTime: partialReliableThresholdMs
     });
     partialCh.binaryType = 'arraybuffer';
     partialCh.onopen = () => updateInputReady();
     partialCh.onclose = () => updateInputReady();
+    thisPc.ondatachannel = (event) => {
+      const ch = event.channel;
+      if (ch.label !== 'control_channel') return;
+      ch.binaryType = 'arraybuffer';
+      ch.onmessage = (e) => {
+        try {
+          const msg = typeof e.data === 'string' ? JSON.parse(e.data) : null;
+          if (msg && msg.type === 'time_warning') {
+            post('status', 'Time warning: ' + (msg.secondsLeft || '?') + 's left');
+          }
+        } catch (_) {}
+      };
+    };
     thisPc.ontrack = (event) => {
-      if (event.streams && event.streams[0]) {
-        video.srcObject = event.streams[0];
-      } else {
-        const stream = new MediaStream();
-        stream.addTrack(event.track);
-        video.srcObject = stream;
+      const kind = event.track.kind;
+      configureReceiverLowLatency(event.receiver, kind);
+      if (kind === 'video') {
+        if (event.streams && event.streams[0]) {
+          video.srcObject = event.streams[0];
+        } else {
+          const stream = new MediaStream();
+          stream.addTrack(event.track);
+          video.srcObject = stream;
+        }
+        video.play().catch(() => {});
+        post('status', 'Streamer connected');
+        ensureStatsTicker();
+        startKeyframeTimer();
+      } else if (kind === 'audio') {
+        if (event.streams && event.streams[0] && video.srcObject) {
+          for (const t of event.streams[0].getAudioTracks()) {
+            video.srcObject.addTrack(t);
+          }
+        }
       }
-      video.play().catch(() => {});
-      post('status', 'Streamer connected');
-      ensureStatsTicker();
     };
     thisPc.onicecandidate = (event) => {
       if (!event.candidate) return;
@@ -810,6 +1039,7 @@ private struct StreamerWebView: UIViewRepresentable {
     thisPc.onconnectionstatechange = () => {
       post('status', 'Peer: ' + thisPc.connectionState);
       if (thisPc.connectionState === 'failed' || thisPc.connectionState === 'disconnected') {
+        stopKeyframeTimer();
         resetTransport();
         if (ws && ws.readyState === WebSocket.OPEN) {
           scheduleReconnect('peer disconnected');
@@ -821,8 +1051,15 @@ private struct StreamerWebView: UIViewRepresentable {
   async function onOffer(sdp) {
     try {
       clearOfferTimeout();
-      const rtc = ensurePeerConnection();
       const fixedOffer = fixServerIp(sdp, cfg.serverIp || cfg.signalingServer || '');
+      const parsedRi = parseRiInputCapabilities(fixedOffer);
+      partialReliableThresholdMs = parsedRi.partialReliableThresholdMs;
+      riInputCapabilities = {
+        hidDeviceMask: parsedRi.hidDeviceMask,
+        enablePartiallyReliableTransferGamepad: parsedRi.enablePartiallyReliableTransferGamepad,
+        enablePartiallyReliableTransferHid: parsedRi.enablePartiallyReliableTransferHid
+      };
+      const rtc = ensurePeerConnection();
       const serverIceUfrag = extractIceUfragFromOffer(fixedOffer);
       const selectedCodec = resolvePreferredCodec(fixedOffer);
       const filteredOffer = preferCodec(fixedOffer, selectedCodec);
@@ -840,10 +1077,10 @@ private struct StreamerWebView: UIViewRepresentable {
         maxBitrateKbps: cfg.maxBitrateKbps,
         codec: effectiveCodec,
         colorQuality: '8bit',
-        partialReliableThresholdMs: 100,
-        hidDeviceMask: 0xFFFFFFFF,
-        enablePartiallyReliableTransferGamepad: 0xF,
-        enablePartiallyReliableTransferHid: 0xFFFFFFFF,
+        partialReliableThresholdMs,
+        hidDeviceMask: riInputCapabilities.hidDeviceMask,
+        enablePartiallyReliableTransferGamepad: riInputCapabilities.enablePartiallyReliableTransferGamepad,
+        enablePartiallyReliableTransferHid: riInputCapabilities.enablePartiallyReliableTransferHid,
         credentials
       });
       send({
@@ -854,6 +1091,7 @@ private struct StreamerWebView: UIViewRepresentable {
         },
         ackid: nextAck()
       });
+      offerAccepted = true;
       await injectManualIce(rtc, cfg.mediaIp, cfg.mediaPort, serverIceUfrag);
       post('status', 'Offer accepted');
     } catch (error) {
@@ -865,8 +1103,9 @@ private struct StreamerWebView: UIViewRepresentable {
       const rtc = ensurePeerConnection();
       await rtc.addIceCandidate({
         candidate: payload.candidate,
-        sdpMid: payload.sdpMid ?? null,
-        sdpMLineIndex: payload.sdpMLineIndex ?? null
+        sdpMid: payload.sdpMid ?? undefined,
+        sdpMLineIndex: payload.sdpMLineIndex ?? undefined,
+        usernameFragment: payload.usernameFragment ?? undefined
       });
     } catch (error) {
       log('Remote ICE add failed: ' + String(error));
@@ -898,9 +1137,25 @@ private struct StreamerWebView: UIViewRepresentable {
   const gpHide = document.getElementById('gpHide');
   let kbPrevLen = 0;
   let lastTX = 0, lastTY = 0;
+  let tapStartX = 0, tapStartY = 0;
   let tStartTime = 0, tMoved = false, activeTouchId = null;
   let twoFingerStart = 0;
   let twoFingerTapPending = false;
+  const MOVE_CLICK_CANCEL_PX = 8;
+  const pointerSpeed = 1.2;
+  let zoomScale = 1;
+  let zoomTx = 0;
+  let zoomTy = 0;
+  let pinchStartDistance = 0;
+  let pinchStartScale = 1;
+  let pinchCenterStartX = 0;
+  let pinchCenterStartY = 0;
+  let pinchTranslateStartX = 0;
+  let pinchTranslateStartY = 0;
+  let pinchGestureMoved = false;
+  const ZOOM_MIN = 1;
+  const ZOOM_MAX = 3;
+  const ZOOM_DEFAULT_STEP = 0.3;
   const touchpad = document.getElementById('touchpad');
   const touchHint = document.getElementById('touchHint');
   if (!cfg.showStatsOverlay && statsEl) {
@@ -931,6 +1186,52 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   function toggleGamepad() {
     setGamepadVisible(gpPad.style.display === 'none');
+  }
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+  function pinchDistance(t1, t2) {
+    const dx = t2.clientX - t1.clientX;
+    const dy = t2.clientY - t1.clientY;
+    return Math.hypot(dx, dy);
+  }
+  function pinchCenter(t1, t2) {
+    return { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+  }
+  function clampZoomTranslation() {
+    if (zoomScale <= 1) {
+      zoomTx = 0;
+      zoomTy = 0;
+      return;
+    }
+    const maxX = ((window.innerWidth * zoomScale) - window.innerWidth) * 0.5;
+    const maxY = ((window.innerHeight * zoomScale) - window.innerHeight) * 0.5;
+    zoomTx = clamp(zoomTx, -maxX, maxX);
+    zoomTy = clamp(zoomTy, -maxY, maxY);
+  }
+  function applyVideoTransform() {
+    clampZoomTranslation();
+    if (Math.abs(zoomScale - 1) < 0.01) {
+      zoomScale = 1;
+      zoomTx = 0;
+      zoomTy = 0;
+      video.style.transform = 'none';
+      return;
+    }
+    video.style.transformOrigin = 'center center';
+    video.style.transform = `translate(${zoomTx}px, ${zoomTy}px) scale(${zoomScale})`;
+  }
+  function adjustZoom(step) {
+    const prev = zoomScale;
+    zoomScale = clamp(zoomScale + step, ZOOM_MIN, ZOOM_MAX);
+    if (Math.abs(zoomScale - prev) > 0.001) {
+      if (zoomScale <= 1.01) {
+        zoomScale = 1;
+        zoomTx = 0;
+        zoomTy = 0;
+      }
+      applyVideoTransform();
+    }
   }
   function flushPendingMouseMove() {
     moveFrame = null;
@@ -1027,34 +1328,73 @@ private struct StreamerWebView: UIViewRepresentable {
 
   touchpad.addEventListener('touchstart', (e) => {
     e.preventDefault();
+    if (e.touches.length === 2) {
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      const center = pinchCenter(t1, t2);
+      pinchStartDistance = pinchDistance(t1, t2);
+      pinchStartScale = zoomScale;
+      pinchCenterStartX = center.x;
+      pinchCenterStartY = center.y;
+      pinchTranslateStartX = zoomTx;
+      pinchTranslateStartY = zoomTy;
+      pinchGestureMoved = false;
+      twoFingerStart = Date.now();
+      twoFingerTapPending = true;
+      activeTouchId = null;
+      return;
+    }
     const t = e.touches[0];
     if (!t) return;
     activeTouchId = t.identifier;
     lastTX = t.clientX;
     lastTY = t.clientY;
+    tapStartX = t.clientX;
+    tapStartY = t.clientY;
     tStartTime = Date.now();
     tMoved = false;
-    if (e.touches.length === 2) {
-      twoFingerStart = Date.now();
-      twoFingerTapPending = true;
-    } else {
-      twoFingerTapPending = false;
-    }
+    twoFingerTapPending = false;
   }, { passive: false });
 
   touchpad.addEventListener('touchmove', (e) => {
     e.preventDefault();
-    if (e.touches.length > 1) {
-      twoFingerTapPending = false;
+    if (e.touches.length === 2) {
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      const distance = pinchDistance(t1, t2);
+      const center = pinchCenter(t1, t2);
+      if (pinchStartDistance > 0) {
+        const nextScale = clamp((distance / pinchStartDistance) * pinchStartScale, ZOOM_MIN, ZOOM_MAX);
+        if (Math.abs(nextScale - zoomScale) > 0.01) {
+          pinchGestureMoved = true;
+        }
+        zoomScale = nextScale;
+      }
+      if (zoomScale > 1.01) {
+        zoomTx = pinchTranslateStartX + (center.x - pinchCenterStartX);
+        zoomTy = pinchTranslateStartY + (center.y - pinchCenterStartY);
+        if (Math.abs(center.x - pinchCenterStartX) > 2 || Math.abs(center.y - pinchCenterStartY) > 2) {
+          pinchGestureMoved = true;
+        }
+      }
+      if (pinchGestureMoved) {
+        twoFingerTapPending = false;
+      }
+      applyVideoTransform();
       return;
     }
     const t = Array.from(e.touches).find((item) => item.identifier === activeTouchId) || e.touches[0];
     if (!t) return;
-    const dx = (t.clientX - lastTX) * 1.6;
-    const dy = (t.clientY - lastTY) * 1.6;
+    const dxRaw = t.clientX - lastTX;
+    const dyRaw = t.clientY - lastTY;
+    const dx = dxRaw * pointerSpeed;
+    const dy = dyRaw * pointerSpeed;
     lastTX = t.clientX;
     lastTY = t.clientY;
-    if ((Math.abs(dx) > 0 || Math.abs(dy) > 0) && inputReady) {
+    if (Math.abs(t.clientX - tapStartX) > MOVE_CLICK_CANCEL_PX || Math.abs(t.clientY - tapStartY) > MOVE_CLICK_CANCEL_PX) {
+      tMoved = true;
+    }
+    if ((Math.abs(dxRaw) > 0 || Math.abs(dyRaw) > 0) && inputReady) {
       tMoved = true;
       pendingMoveDx += dx;
       pendingMoveDy += dy;
@@ -1066,6 +1406,12 @@ private struct StreamerWebView: UIViewRepresentable {
 
   touchpad.addEventListener('touchend', (e) => {
     e.preventDefault();
+    if (e.touches.length === 0 && zoomScale > 1.01 && pinchGestureMoved) {
+      pinchGestureMoved = false;
+      activeTouchId = null;
+      twoFingerTapPending = false;
+      return;
+    }
     if (!inputReady) return;
     if (moveFrame) {
       cancelAnimationFrame(moveFrame);
@@ -1076,15 +1422,27 @@ private struct StreamerWebView: UIViewRepresentable {
     if (!tMoved && holdMs < 500) {
       if (e.changedTouches.length === 1 && e.targetTouches.length === 0) {
         sendInput(encodeMouseButton(8, 1));
-        setTimeout(() => sendInput(encodeMouseButton(9, 1)), 60);
+        setTimeout(() => sendInput(encodeMouseButton(9, 1)), 35);
       }
     }
-    if (twoFingerTapPending && e.touches.length === 0 && Date.now() - twoFingerStart < 400) {
+    if (twoFingerTapPending && zoomScale <= 1.01 && e.touches.length === 0 && Date.now() - twoFingerStart < 400) {
       sendInput(encodeMouseButton(8, 3));
-      setTimeout(() => sendInput(encodeMouseButton(9, 3)), 60);
+      setTimeout(() => sendInput(encodeMouseButton(9, 3)), 35);
     }
     activeTouchId = null;
     twoFingerTapPending = false;
+  }, { passive: false });
+
+  touchpad.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    if (zoomScale > 1.01) {
+      zoomScale = 1;
+      zoomTx = 0;
+      zoomTy = 0;
+      applyVideoTransform();
+    } else {
+      adjustZoom(ZOOM_DEFAULT_STEP);
+    }
   }, { passive: false });
 
   kbInput.addEventListener('input', (e) => {
@@ -1102,15 +1460,42 @@ private struct StreamerWebView: UIViewRepresentable {
   });
 
   kbInput.addEventListener('keydown', (e) => {
+    if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing) {
+      e.preventDefault();
+      sendChar(e.key);
+      return;
+    }
+    if (e.key === 'Backspace') {
+      e.preventDefault();
+      if (inputReady) {
+        sendInput(encodeKey(3, 0x08, 0x0E, 0));
+        sendInput(encodeKey(4, 0x08, 0x0E, 0));
+      }
+      return;
+    }
     if (e.key === 'Enter') {
       e.preventDefault();
       if (inputReady) {
         sendInput(encodeKey(3, 0x0d, 0x28, 0));
         sendInput(encodeKey(4, 0x0d, 0x28, 0));
       }
+      return;
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      if (inputReady) {
+        sendInput(encodeKey(3, 0x09, 0x2B, 0));
+        sendInput(encodeKey(4, 0x09, 0x2B, 0));
+      }
+      return;
     }
     if (e.key === 'Escape') hideKeyboard();
   });
+
+  touchpad.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    adjustZoom(e.deltaY < 0 ? ZOOM_DEFAULT_STEP : -ZOOM_DEFAULT_STEP);
+  }, { passive: false });
 
   function connect() {
     try {
@@ -1139,6 +1524,10 @@ private struct StreamerWebView: UIViewRepresentable {
       };
       ws.onmessage = (event) => handle(event.data);
       ws.onerror = () => {
+        if (shouldKeepPeerAliveOnSignalingClose()) {
+          post('status', 'Signaling error (ignored after offer)');
+          return;
+        }
         fail('Signaling error');
         clearOfferTimeout();
         scheduleReconnect('socket error');
@@ -1146,6 +1535,12 @@ private struct StreamerWebView: UIViewRepresentable {
       ws.onclose = (event) => {
         clearOfferTimeout();
         post('status', 'Signaling closed (' + event.code + ')');
+        if (shouldKeepPeerAliveOnSignalingClose()) {
+          if (hb) { clearInterval(hb); hb = null; }
+          ws = null;
+          post('status', 'Continuing stream without signaling');
+          return;
+        }
         resetTransport();
         scheduleReconnect('socket closed');
       };
@@ -1189,10 +1584,20 @@ private struct StreamerWebView: UIViewRepresentable {
         let longSide = max(nativeBounds.width, nativeBounds.height)
         let shortSide = min(nativeBounds.width, nativeBounds.height)
         let supports1440 = longSide >= 2500 || shortSide >= 1400 || UIScreen.main.nativeScale >= 3.0
+
+        // Pick bitrate based on quality preference to avoid overwhelming mobile links.
+        // "Data Saver" targets lower network usage; "Quality" allows higher bitrate;
+        // "Balanced" stays in the middle.
+        let quality = settings.preferredQuality.lowercased()
+        let bitrateFor1080: Int = quality == "quality" ? 75_000 : (quality == "data saver" ? 25_000 : 50_000)
+        let bitrateFor1440: Int = quality == "quality" ? 100_000 : (quality == "data saver" ? 35_000 : 65_000)
+
+        // Limit to 1440p only when explicitly requesting high FPS AND device supports it.
+        // Keep at 1080p for 60 fps or lower to reduce decode load and lag.
         if settings.preferredFPS >= 120 && supports1440 {
-            return StreamProfile(width: 2560, height: 1440, maxBitrateKbps: 35000)
+            return StreamProfile(width: 2560, height: 1440, maxBitrateKbps: bitrateFor1440)
         }
-        return StreamProfile(width: 1920, height: 1080, maxBitrateKbps: 22000)
+        return StreamProfile(width: 1920, height: 1080, maxBitrateKbps: bitrateFor1080)
     }
 
     final class Coordinator: NSObject, WKScriptMessageHandler {
@@ -1206,15 +1611,18 @@ private struct StreamerWebView: UIViewRepresentable {
             guard let body = message.body as? [String: Any] else { return }
             let type = (body["type"] as? String) ?? "log"
             let msg = (body["message"] as? String) ?? ""
+            if msg.localizedCaseInsensitiveContains("input handshake complete") || msg == "Input ready" {
+                return
+            }
             switch type {
             case "status":
-                onEvent(msg)
+                if msg.localizedCaseInsensitiveContains("error") {
+                    onEvent("Error: \(msg)")
+                }
             case "error":
                 onEvent("Error: \(msg)")
             default:
-                if !msg.isEmpty {
-                    onEvent(msg)
-                }
+                break
             }
         }
     }
