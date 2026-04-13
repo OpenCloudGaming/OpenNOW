@@ -681,24 +681,7 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
   const fetchCount = Math.max(24, Math.min(input.fetchCount ?? DEFAULT_CATALOG_FETCH_COUNT, 200));
   const filters = mergeFilterPayloads(normalizedFilterIds, definitions.filterPayloadById);
 
-  const query = `query GetSearchFilterResults(
-    $vpcId: String!,
-    $locale: String!,
-    $sortString: String!,
-    $fetchCount: Int!,
-    $cursor: String!,
-    $searchString: String!,
-    $filters: AppFilterFields!
-  ) {
-    apps(
-      vpcId: $vpcId,
-      language: $locale,
-      orderBy: $sortString,
-      first: $fetchCount,
-      after: $cursor,
-      searchQuery: $searchString,
-      filters: $filters
-    ) {
+  const appFields = `
       numberReturned
       numberSupported
       pageInfo { hasNextPage endCursor totalCount }
@@ -722,8 +705,49 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
         }
         itemMetadata { campaignIds }
       }
-    }
-  }`;
+  `;
+
+  const query = searchQuery.length > 0
+    ? `query GetSearchFilterResults(
+      $vpcId: String!,
+      $locale: String!,
+      $sortString: String!,
+      $fetchCount: Int!,
+      $cursor: String!,
+      $searchString: String!,
+      $filters: AppFilterFields!
+    ) {
+      apps(
+        vpcId: $vpcId,
+        language: $locale,
+        orderBy: $sortString,
+        first: $fetchCount,
+        after: $cursor,
+        searchQuery: $searchString,
+        filters: $filters
+      ) {
+${appFields}
+      }
+    }`
+    : `query GetFilterBrowseResults(
+      $vpcId: String!,
+      $locale: String!,
+      $sortString: String!,
+      $fetchCount: Int!,
+      $cursor: String!,
+      $filters: AppFilterFields!
+    ) {
+      apps(
+        vpcId: $vpcId,
+        language: $locale,
+        orderBy: $sortString,
+        first: $fetchCount,
+        after: $cursor,
+        filters: $filters
+      ) {
+${appFields}
+      }
+    }`;
 
   const collectedApps: AppData[] = [];
   let numberReturned = 0;
@@ -736,15 +760,24 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
   for (let page = 0; page < MAX_CATALOG_PAGES; page += 1) {
     const payload = await postGraphQl<AppsSearchResponse>(
       query,
-      {
-        vpcId,
-        locale: DEFAULT_LOCALE,
-        sortString: selectedSort.orderBy,
-        fetchCount,
-        cursor,
-        searchString: searchQuery,
-        filters,
-      },
+      searchQuery.length > 0
+        ? {
+            vpcId,
+            locale: DEFAULT_LOCALE,
+            sortString: selectedSort.orderBy,
+            fetchCount,
+            cursor,
+            searchString: searchQuery,
+            filters,
+          }
+        : {
+            vpcId,
+            locale: DEFAULT_LOCALE,
+            sortString: selectedSort.orderBy,
+            fetchCount,
+            cursor,
+            filters,
+          },
       token,
     );
 
