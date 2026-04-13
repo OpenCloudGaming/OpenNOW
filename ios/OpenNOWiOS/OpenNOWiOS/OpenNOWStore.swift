@@ -2195,6 +2195,9 @@ final class OpenNOWStore: ObservableObject {
 
     func dismissStreamer() {
         streamSession = nil
+        // Note: poll task stays cancelled (stopped in handoff).
+        // QueueStatusPill reflects last known activeSession state.
+        // User can reopen via pill tap → reopenStreamer().
     }
 
     func reopenStreamer() {
@@ -2292,10 +2295,10 @@ final class OpenNOWStore: ObservableObject {
                         readySince = nil
                     }
 
-                    let requiredReadyPollStreak = (polled.status == 2) ? 5 : 2
-                    // Status=2 sessions can still be warming transport; hold longer
+                    let requiredReadyPollStreak = (polled.status == 2) ? 3 : 2
+                    // Status=2 sessions can still be warming transport; hold briefly
                     // before first handoff to reduce early connection churn.
-                    let requiredReadyHoldSeconds: TimeInterval = (polled.status == 2) ? 20 : 8
+                    let requiredReadyHoldSeconds: TimeInterval = (polled.status == 2) ? 5 : 3
                     let readyHoldElapsed = readySince.map { Date().timeIntervalSince($0) } ?? 0
                     if readyPollStreak >= requiredReadyPollStreak
                         && readyHoldElapsed >= requiredReadyHoldSeconds
@@ -2310,6 +2313,7 @@ final class OpenNOWStore: ObservableObject {
                         }
                         self.streamSession = handoffSession
                         loggedReadyForStreamer = true
+                        self.sessionPollTask?.cancel()
                     } else if !readyForStreamer {
                         loggedReadyForStreamer = false
                         dismissedOverlayAfterReady = false
@@ -2448,6 +2452,14 @@ final class OpenNOWStore: ObservableObject {
             logger.info(
                 "Pre-handoff claim refreshed session id=\(claimed.id, privacy: .public) status=\(claimed.status) candidateServerIp=\(candidate.serverIp ?? "nil", privacy: .public) signalingServer=\(claimed.signalingServer ?? "nil", privacy: .public) signalingUrl=\(claimed.signalingUrl ?? "nil", privacy: .public) mediaIp=\(claimed.mediaIp ?? "nil", privacy: .public) mediaPort=\(claimed.mediaPort)"
             )
+            let serverMigrated = (claimed.signalingServer ?? "") != (session.signalingServer ?? "")
+                && !(claimed.signalingServer ?? "").isEmpty
+            if serverMigrated {
+                logger.info(
+                    "Pre-handoff claim: server migrated from \(session.signalingServer ?? "nil", privacy: .public) to \(claimed.signalingServer ?? "nil", privacy: .public), waiting 3s for WebRTC init"
+                )
+                try? await Task.sleep(for: .seconds(3))
+            }
             return claimed
         } catch {
             logger.error(
