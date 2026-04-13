@@ -44,7 +44,14 @@ struct CloudGame: Identifiable, Codable, Equatable {
     let icon: String
     let imageUrl: String?
     let launchAppId: String?
+    let launchOptions: [GameLaunchOption]
     let uuid: String?
+}
+
+struct GameLaunchOption: Identifiable, Codable, Equatable {
+    var id: String { "\(storefront)-\(appId)" }
+    let storefront: String
+    let appId: String
 }
 
 struct SessionTelemetry: Codable, Equatable {
@@ -665,16 +672,24 @@ private actor GFNAPIClient {
         game: CloudGame,
         vpcId: String,
         settings: AppSettings,
-        streamingBaseUrl: String? = nil
+        streamingBaseUrl: String? = nil,
+        launchAppIdOverride: String? = nil,
+        launcherName: String = "Auto"
     ) async throws -> ActiveSession {
-        guard let launchAppId = game.launchAppId, !launchAppId.isEmpty else {
+        let resolvedLaunchAppId = launchAppIdOverride ?? game.launchAppId
+        guard let launchAppId = resolvedLaunchAppId, !launchAppId.isEmpty else {
             throw NSError(domain: "OpenNOW.Session", code: 30, userInfo: [NSLocalizedDescriptionKey: "Selected game has no launch app ID"])
         }
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let base = streamingBaseUrl.map { $0.hasSuffix("/") ? String($0.dropLast()) : $0 }
             ?? "https://\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
         let url = URL(string: "\(base)/v2/session?keyboardLayout=en-US&languageCode=en_US")!
-        let body = Self.buildSessionBody(appId: launchAppId, title: game.title, fps: settings.preferredFPS)
+        let body = Self.buildSessionBody(
+            appId: launchAppId,
+            title: game.title,
+            fps: settings.preferredFPS,
+            launcherName: launcherName
+        )
         let clientId = UUID().uuidString
         let deviceId = UUID().uuidString
         let (data, response) = try await request(
@@ -1174,7 +1189,35 @@ private actor GFNAPIClient {
                     let selectedVariantId = selectedVariant?["id"] as? String
                     let numericVariant = variants.compactMap { $0["id"] as? String }.first(where: { Int($0) != nil })
                     let launchAppId = [selectedVariantId, numericVariant, appId].compactMap { $0 }.first(where: { Int($0) != nil })
-                    let store = (selectedVariant?["appStore"] as? String) ?? "Unknown"
+                    var launchOptions: [GameLaunchOption] = []
+                    var seenLaunchOptionIds = Set<String>()
+                    for variant in variants {
+                        guard let variantId = variant["id"] as? String,
+                              Int(variantId) != nil else {
+                            continue
+                        }
+                        let storefront = ((variant["appStore"] as? String) ?? "Auto")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let option = GameLaunchOption(
+                            storefront: storefront.isEmpty ? "Auto" : storefront,
+                            appId: variantId
+                        )
+                        if seenLaunchOptionIds.insert(option.id).inserted {
+                            launchOptions.append(option)
+                        }
+                    }
+                    if let launchAppId {
+                        let selectedStore = ((selectedVariant?["appStore"] as? String) ?? "Auto")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let defaultOption = GameLaunchOption(
+                            storefront: selectedStore.isEmpty ? "Auto" : selectedStore,
+                            appId: launchAppId
+                        )
+                        if seenLaunchOptionIds.insert(defaultOption.id).inserted {
+                            launchOptions.insert(defaultOption, at: 0)
+                        }
+                    }
+                    let store = launchOptions.first?.storefront ?? (selectedVariant?["appStore"] as? String) ?? "Unknown"
                     let id = "\(appId):\(selectedVariantId ?? "default")"
                     let imageUrl: String? = {
                         guard let images = app["images"] as? [String: Any] else { return nil }
@@ -1204,6 +1247,7 @@ private actor GFNAPIClient {
                             icon: icon,
                             imageUrl: imageUrl,
                             launchAppId: launchAppId,
+                            launchOptions: launchOptions,
                             uuid: appId
                         )
                     )
@@ -1247,7 +1291,7 @@ private actor GFNAPIClient {
         return headers
     }
 
-    private static func buildSessionBody(appId: String, title: String, fps: Int) -> Data {
+    private static func buildSessionBody(appId: String, title: String, fps: Int, launcherName: String) -> Data {
         let body: [String: Any] = [
             "sessionRequestData": [
                 "appId": appId,
@@ -1281,6 +1325,7 @@ private actor GFNAPIClient {
                     ["key": "GSStreamerType", "value": "WebRTC"],
                     ["key": "networkType", "value": "Unknown"],
                     ["key": "ClientImeSupport", "value": "0"],
+                    ["key": "preferredLauncher", "value": launcherName],
                     ["key": "clientPhysicalResolution", "value": "{\"horizontalPixels\":1920,\"verticalPixels\":1080}"],
                     ["key": "surroundAudioInfo", "value": "2"]
                 ],
@@ -1554,7 +1599,7 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
-    func launch(game: CloudGame, zoneUrl: String? = nil) async {
+    func launch(game: CloudGame, zoneUrl: String? = nil, launchOption: GameLaunchOption? = nil) async {
         guard let session = authSession else {
             lastError = "Sign in first."
             return
@@ -1570,7 +1615,9 @@ final class OpenNOWStore: ObservableObject {
                 game: game,
                 vpcId: cachedVpcId,
                 settings: settings,
-                streamingBaseUrl: zoneUrl
+                streamingBaseUrl: zoneUrl,
+                launchAppIdOverride: launchOption?.appId,
+                launcherName: launchOption?.storefront ?? "Auto"
             )
             activeSession = started
             sessionElapsedSeconds = 0
@@ -1587,9 +1634,9 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
-    func scheduleLaunch(game: CloudGame, zoneUrl: String? = nil) {
+    func scheduleLaunch(game: CloudGame, zoneUrl: String? = nil, launchOption: GameLaunchOption? = nil) {
         launchTask?.cancel()
-        launchTask = Task { await self.launch(game: game, zoneUrl: zoneUrl) }
+        launchTask = Task { await self.launch(game: game, zoneUrl: zoneUrl, launchOption: launchOption) }
     }
 
     func refreshRemoteSessions() async {

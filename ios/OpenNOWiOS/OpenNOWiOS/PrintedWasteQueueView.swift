@@ -1,5 +1,14 @@
 import SwiftUI
 
+struct GameLaunchRequest: Identifiable, Equatable {
+    let game: CloudGame
+    let launchOption: GameLaunchOption?
+
+    var id: String {
+        "\(game.id)-\(launchOption?.id ?? "auto")"
+    }
+}
+
 struct PrintedWasteZone: Identifiable, Equatable {
     let id: String
     let region: String
@@ -104,38 +113,47 @@ struct PrintedWasteQueueView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    List {
-                        Section {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
                             header
-                                .listRowBackground(Color(.secondarySystemGroupedBackground).opacity(0.7))
-                        }
+                                .glassCard()
 
-                        Section("Routing") {
-                            routingRow
-                                .listRowBackground(Color(.secondarySystemGroupedBackground).opacity(0.7))
-                        }
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Routing")
+                                    .font(.headline)
+                                    .foregroundStyle(.secondary)
+                                routingRow
+                            }
+                            .padding(14)
+                            .glassCard()
 
-                        ForEach(groupedZones, id: \.region) { group in
-                            Section("\(group.flag) \(group.label)") {
-                                ForEach(group.zones) { zone in
-                                    Button {
-                                        routingPreference = .manual
-                                        selectedZoneId = zone.id
-                                    } label: {
-                                        ZoneRow(
-                                            zone: zone,
-                                            isSelected: routingPreference == .manual && selectedZoneId == zone.id,
-                                            isAuto: autoZone?.id == zone.id,
-                                            isClosest: closestZone?.id == zone.id
-                                        )
+                            ForEach(groupedZones, id: \.region) { group in
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("\(group.flag) \(group.label)")
+                                        .font(.headline)
+                                        .foregroundStyle(.secondary)
+                                    ForEach(group.zones) { zone in
+                                        Button {
+                                            routingPreference = .manual
+                                            selectedZoneId = zone.id
+                                        } label: {
+                                            ZoneRow(
+                                                zone: zone,
+                                                isSelected: routingPreference == .manual && selectedZoneId == zone.id,
+                                                isAuto: autoZone?.id == zone.id,
+                                                isClosest: closestZone?.id == zone.id
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                        .padding(12)
+                                        .glassCard()
                                     }
-                                    .buttonStyle(.plain)
-                                    .listRowBackground(Color(.secondarySystemGroupedBackground).opacity(0.7))
                                 }
                             }
                         }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
                     }
-                    .listStyle(.plain)
                 }
             }
             .animation(.spring(response: 0.35), value: isLoading)
@@ -176,13 +194,22 @@ struct PrintedWasteQueueView: View {
                 Text(game.title)
                     .font(.headline)
                     .lineLimit(2)
-                Text("Pick a zone before launch.")
+                Text("Choose your preferred region before launch.")
                     .font(.footnote)
-                    .foregroundStyle(brandAccent)
+                    .foregroundStyle(.secondary)
             }
             Spacer()
+            if let autoZone {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Best")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(autoZone.id)
+                        .font(.caption.weight(.bold))
+                }
+            }
         }
-        .padding(.vertical, 6)
+        .padding(14)
     }
 
     private var routingRow: some View {
@@ -279,6 +306,13 @@ struct PrintedWasteQueueView: View {
             }
             isLoading = false
             await measurePings()
+        } catch is CancellationError {
+            isLoading = false
+            return
+        } catch let nsError as NSError
+            where nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            isLoading = false
+            return
         } catch {
             isLoading = false
             fetchError = error.localizedDescription
@@ -521,35 +555,49 @@ private struct PrintedWasteArtwork: View {
 }
 
 extension View {
-    func printedWasteLaunchSheet(pendingGame: Binding<CloudGame?>) -> some View {
-        modifier(PrintedWasteLaunchSheetModifier(pendingGame: pendingGame))
+    func printedWasteLaunchSheet(pendingLaunchRequest: Binding<GameLaunchRequest?>) -> some View {
+        modifier(PrintedWasteLaunchSheetModifier(pendingLaunchRequest: pendingLaunchRequest))
     }
 }
 
 private struct PrintedWasteLaunchSheetModifier: ViewModifier {
     @EnvironmentObject private var store: OpenNOWStore
-    @Binding var pendingGame: CloudGame?
+    @Binding var pendingLaunchRequest: GameLaunchRequest?
 
     func body(content: Content) -> some View {
-        let sheetBinding = Binding<CloudGame?>(
+        let sheetBinding = Binding<GameLaunchRequest?>(
             get: {
-                store.authProviderCode == "BPC" ? nil : pendingGame
+                store.authProviderCode == "BPC" ? nil : pendingLaunchRequest
             },
-            set: { pendingGame = $0 }
+            set: { pendingLaunchRequest = $0 }
         )
 
         content
-            .onChange(of: pendingGame?.id) { _, _ in
-                guard store.authProviderCode == "BPC", let game = pendingGame else { return }
-                store.scheduleLaunch(game: game, zoneUrl: nil)
-                pendingGame = nil
+            .onChange(of: pendingLaunchRequest?.id) { _, _ in
+                guard store.authProviderCode == "BPC",
+                      let request = pendingLaunchRequest else { return }
+                store.scheduleLaunch(game: request.game, zoneUrl: nil, launchOption: request.launchOption)
+                pendingLaunchRequest = nil
             }
-            .sheet(item: sheetBinding) { game in
-            PrintedWasteQueueView(game: game) { selectedZoneUrl in
-                store.scheduleLaunch(game: game, zoneUrl: selectedZoneUrl)
+            .sheet(item: sheetBinding) { request in
+                if #available(iOS 26, *) {
+                    PrintedWasteQueueView(game: request.game) { selectedZoneUrl in
+                        store.scheduleLaunch(game: request.game, zoneUrl: selectedZoneUrl, launchOption: request.launchOption)
+                    }
+                    .environmentObject(store)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(.clear)
+                } else {
+                    PrintedWasteQueueView(game: request.game) { selectedZoneUrl in
+                        store.scheduleLaunch(game: request.game, zoneUrl: selectedZoneUrl, launchOption: request.launchOption)
+                    }
+                    .environmentObject(store)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(.regularMaterial)
+                }
             }
-            .environmentObject(store)
-        }
     }
 }
 

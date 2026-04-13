@@ -65,10 +65,29 @@ struct StreamLoadingView: View {
                             .foregroundStyle(.orange)
                         Text("Queue position: \(pos)")
                             .font(.subheadline.bold())
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.primary)
                     }
                     .padding(12)
-                    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                    .background(
+                        Group {
+                            if #available(iOS 26, *) {
+                                RoundedRectangle(cornerRadius: 14)
+                                    .fill(.regularMaterial)
+                                    .glassEffect(in: RoundedRectangle(cornerRadius: 14))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 14)
+                                            .stroke(.orange.opacity(0.35), lineWidth: 1)
+                                    )
+                            } else {
+                                RoundedRectangle(cornerRadius: 14)
+                                    .fill(.regularMaterial)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 14)
+                                            .fill(.orange.opacity(0.08))
+                                    )
+                            }
+                        }
+                    )
                     .frame(maxWidth: 320)
                 }
 
