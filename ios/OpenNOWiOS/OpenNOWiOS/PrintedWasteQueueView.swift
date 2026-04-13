@@ -31,6 +31,8 @@ struct PrintedWasteQueueView: View {
     @State private var selectedZoneId: String?
     @State private var isLoading = true
     @State private var fetchError: String?
+    @State private var lastAutoZoneId: String?
+    @State private var lastClosestZoneId: String?
 
     private enum RoutingPreference: Equatable {
         case auto
@@ -38,12 +40,12 @@ struct PrintedWasteQueueView: View {
         case manual
     }
 
-    private var autoZone: PrintedWasteZone? {
+    private var isTestingPings: Bool {
+        zones.contains(where: \.isMeasuring)
+    }
+
+    private var computedAutoZone: PrintedWasteZone? {
         guard !zones.isEmpty else { return nil }
-        let hasPendingPings = zones.contains(where: \.isMeasuring)
-        if hasPendingPings {
-            return zones.min(by: { $0.queuePosition < $1.queuePosition })
-        }
         let maxPing = max(zones.compactMap { $0.pingMs }.max() ?? 1, 1)
         let maxQueue = max(zones.map(\.queuePosition).max() ?? 1, 1)
         return zones.min { lhs, rhs in
@@ -53,10 +55,28 @@ struct PrintedWasteQueueView: View {
         }
     }
 
-    private var closestZone: PrintedWasteZone? {
+    private var autoZone: PrintedWasteZone? {
+        if isTestingPings,
+           let lastAutoZoneId,
+           let savedAutoZone = zones.first(where: { $0.id == lastAutoZoneId }) {
+            return savedAutoZone
+        }
+        return computedAutoZone
+    }
+
+    private var computedClosestZone: PrintedWasteZone? {
         zones
             .filter { $0.pingMs != nil }
             .min { ($0.pingMs ?? .max) < ($1.pingMs ?? .max) }
+    }
+
+    private var closestZone: PrintedWasteZone? {
+        if isTestingPings,
+           let lastClosestZoneId,
+           let savedClosestZone = zones.first(where: { $0.id == lastClosestZoneId }) {
+            return savedClosestZone
+        }
+        return computedClosestZone
     }
 
     private var groupedZones: [(region: String, label: String, flag: String, zones: [PrintedWasteZone])] {
@@ -273,6 +293,7 @@ struct PrintedWasteQueueView: View {
             async let queueResponse = fetchQueueResponse()
             async let mappingResponse = fetchMappingResponse()
             let (queue, mapping) = try await (queueResponse, mappingResponse)
+            let previousZonesById = Dictionary(uniqueKeysWithValues: zones.map { ($0.id, $0) })
             let nukedZones = Set(mapping.data.compactMap { entry in
                 entry.value.nuked == true ? entry.key : nil
             })
@@ -291,7 +312,7 @@ struct PrintedWasteQueueView: View {
                         queuePosition: zone.QueuePosition,
                         etaMs: zone.eta,
                         zoneUrl: Self.constructZoneUrl(zoneId),
-                        pingMs: nil,
+                        pingMs: previousZonesById[zoneId]?.pingMs,
                         isMeasuring: true,
                         regionSuffix: suffix
                     )
@@ -351,6 +372,13 @@ struct PrintedWasteQueueView: View {
                 }
             }
         }
+        persistRoutingRecommendations()
+    }
+
+    private func persistRoutingRecommendations() {
+        guard !isTestingPings else { return }
+        lastAutoZoneId = computedAutoZone?.id
+        lastClosestZoneId = computedClosestZone?.id
     }
 
     private static func measurePing(to zoneUrl: String) async -> Int? {
@@ -474,10 +502,10 @@ private struct ZoneRow: View {
                 HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("--")
+                    Text("-- ms")
                 }
             } else if let pingMs = zone.pingMs {
-                Text("\(pingMs)")
+                Text("\(pingMs) ms")
             } else {
                 Text("N/A")
             }

@@ -156,7 +156,7 @@ struct AppSettings: Codable, Equatable {
 
     static let `default` = AppSettings(
         preferredRegion: "Auto",
-        preferredFPS: 120,
+        preferredFPS: 60,
         preferredQuality: "Balanced",
         preferredCodec: "Auto",
         keepMicEnabled: false,
@@ -858,9 +858,10 @@ private actor GFNAPIClient {
         if !iceServers.isEmpty {
             updated.iceServers = iceServers
         }
-        if let adState {
-            updated.adState = adState
-        }
+        // Always replace ad state with the latest poll value. When the backend omits
+        // ad fields after queue/setup, we must clear stale ad requirements so the
+        // streamer handoff can proceed.
+        updated.adState = adState
         return updated
     }
 
@@ -935,7 +936,8 @@ private actor GFNAPIClient {
             ((sessionObj["seatSetupInfo"] as? [String: Any])?["queuePosition"] as? Int) ??
             updated.queuePosition
         updated.seatSetupStep = Self.extractSeatSetupStep(sessionObj: sessionObj) ?? updated.seatSetupStep
-        updated.adState = Self.extractAdState(sessionObj: sessionObj) ?? updated.adState
+        // Keep ad state in sync with server response; clear stale queue-ad state when omitted.
+        updated.adState = Self.extractAdState(sessionObj: sessionObj)
         return updated
     }
 
@@ -2356,7 +2358,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func isReadyForStreamer(_ session: ActiveSession) -> Bool {
-        guard session.status == 3 else { return false }
+        guard session.status == 2 || session.status == 3 else { return false }
         if (session.adState?.sessionAdsRequired ?? session.adState?.isAdsRequired ?? false) {
             return false
         }
@@ -2367,8 +2369,8 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private var isFreeTierUser: Bool {
-        let tier = (subscription?.membershipTier ?? user?.membershipTier).trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        return tier.isEmpty || tier == "FREE"
+        let tier = (subscription?.membershipTier ?? user?.membershipTier)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return ((tier?.isEmpty) != nil) || tier == "FREE"
     }
 
     private func reportQueueAdAction(
