@@ -250,9 +250,6 @@ export const GameCard = memo(function GameCard({
         </div>
 
         <div className="game-card-info">
-          <h3 className="game-card-title" title={game.title}>
-            {game.title}
-          </h3>
           {activeStoreOption && (
             <p className="game-card-platform" title={activeStoreOption.displayName}>
               {activeStoreOption.displayName}
@@ -289,6 +286,9 @@ export const GameCard = memo(function GameCard({
               })}
             </div>
           )}
+          <h3 className="game-card-title" title={game.title}>
+            {game.title}
+          </h3>
         </div>
       </div>
     </div>
