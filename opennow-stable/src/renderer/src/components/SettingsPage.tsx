@@ -40,7 +40,7 @@ type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 type SettingsSectionId = "stream" | "game" | "audio" | "input" | "interface" | "thanks";
 
 const POSTER_SIZE_MIN = 75;
-const POSTER_SIZE_MAX = 150;
+const POSTER_SIZE_MAX = 135;
 const POSTER_SIZE_STEP = 5;
 
 const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
