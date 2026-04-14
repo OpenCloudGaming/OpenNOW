@@ -34,13 +34,6 @@ struct StreamerView: View {
                 }
                 if event.hasPrefix("Error:") {
                     isPeerConnected = false
-                    let isFatal = event.localizedCaseInsensitiveContains("reconnect exhausted")
-                        || event.localizedCaseInsensitiveContains("restart limit reached")
-                    if isFatal, let retry = onRetry {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                            retry()
-                        }
-                    }
                 }
             }
             .ignoresSafeArea()
@@ -72,6 +65,16 @@ struct StreamerView: View {
                             .multilineTextAlignment(.center)
                             .lineLimit(3)
                             .padding(.horizontal, 12)
+
+                        if statusText.hasPrefix("Error:"), let retry = onRetry {
+                            Button("Retry") {
+                                retry()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.white.opacity(0.22))
+                            .foregroundStyle(.white)
+                            .padding(.top, 4)
+                        }
                     }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 18)
@@ -716,7 +719,9 @@ private struct StreamerWebView: UIViewRepresentable {
   function resolvePreferredCodec(offerSdp) {
     const preferred = normalizeCodec(cfg.preferredCodec || 'Auto');
     if (preferred === 'AUTO') {
-      return offerHasCodec(offerSdp, 'H265') ? 'H265' : 'H264';
+      // iOS WKWebView can report a connected peer while hardware decode fails
+      // on some HEVC paths (AppleAVD init errors). Prefer H264 for reliability.
+      return offerHasCodec(offerSdp, 'H264') ? 'H264' : 'H265';
     }
     return preferred;
   }
