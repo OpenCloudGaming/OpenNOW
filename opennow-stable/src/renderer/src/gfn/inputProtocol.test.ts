@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -7,6 +9,7 @@ function keyboardEvent(init: Partial<KeyboardEvent> & Pick<KeyboardEvent, "code"
   return {
     code: init.code,
     key: init.key,
+    location: init.location ?? 0,
     shiftKey: init.shiftKey ?? false,
     ctrlKey: init.ctrlKey ?? false,
     altKey: init.altKey ?? false,
@@ -26,9 +29,9 @@ test("maps representative physical keys to Windows set-1 scancodes", () => {
 });
 
 test("maps escape and left/right modifiers with correct scancodes", () => {
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "Escape", key: "Escape" })), codeMap.Escape);
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "ShiftLeft", key: "Shift" })), codeMap.ShiftLeft);
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "ShiftRight", key: "Shift" })), codeMap.ShiftRight);
+  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "Escape", key: "Escape", keyCode: 27 })), codeMap.Escape);
+  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "ShiftLeft", key: "Shift", keyCode: 16 })), codeMap.ShiftLeft);
+  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "ShiftRight", key: "Shift", keyCode: 16 })), codeMap.ShiftRight);
 });
 
 test("maps non-US and numpad physical keys", () => {
@@ -36,19 +39,30 @@ test("maps non-US and numpad physical keys", () => {
     mapKeyboardEvent(keyboardEvent({ code: "IntlBackslash", key: "<" })),
     codeMap.IntlBackslash,
   );
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "NumLock", key: "NumLock" })), codeMap.NumLock);
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "Numpad0", key: "0" })), codeMap.Numpad0);
-  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "NumpadEnter", key: "Enter" })), codeMap.NumpadEnter);
+  assert.deepEqual(mapKeyboardEvent(keyboardEvent({ code: "NumLock", key: "NumLock", keyCode: 144 })), codeMap.NumLock);
+  assert.deepEqual(
+    mapKeyboardEvent(keyboardEvent({ code: "Numpad0", key: "0", keyCode: 96, location: 3 })),
+    codeMap.Numpad0,
+  );
+  assert.deepEqual(
+    mapKeyboardEvent(keyboardEvent({ code: "NumpadEnter", key: "Enter", keyCode: 13, location: 3 })),
+    codeMap.NumpadEnter,
+  );
 });
 
 test("prefers physical code over layout-dependent key value", () => {
-  const event = keyboardEvent({ code: "KeyZ", key: "y" });
+  const event = keyboardEvent({ code: "KeyZ", key: "y", keyCode: 89 });
   assert.deepEqual(mapKeyboardEvent(event), codeMap.KeyZ);
 });
 
 test("falls back to key-based escape detection when code is unavailable", () => {
   const event = keyboardEvent({ code: "", key: "Escape", keyCode: 27 });
   assert.deepEqual(mapKeyboardEvent(event), codeMap.Escape);
+});
+
+test("prefers platform keyCode for virtual-key derivation when available", () => {
+  const event = keyboardEvent({ code: "Slash", key: "ö", keyCode: 191 });
+  assert.deepEqual(mapKeyboardEvent(event), codeMap.Slash);
 });
 
 test("uses corrected scancodes for synthetic text injection", () => {

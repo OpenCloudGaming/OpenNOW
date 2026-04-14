@@ -20,8 +20,7 @@
       "DOM.Iterable"
     ],
     "types": [
-      "vite/client",
-      "node"
+      "vite/client"
     ],
     "skipLibCheck": true,
     "noEmit": true
