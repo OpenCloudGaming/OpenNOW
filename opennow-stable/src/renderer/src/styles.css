@@ -1462,8 +1462,9 @@ body.controller-mode.controller-hide-cursor * {
 }
 
 .home-sort,
-.library-sort {
-  display: flex;
+.library-sort,
+.home-filter-dropdown-trigger {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 0 10px;
@@ -1474,13 +1475,29 @@ body.controller-mode.controller-hide-cursor * {
   color: var(--ink-muted);
   font-size: 0.78rem;
   font-weight: 600;
+  transition: border-color var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+
+.home-sort:hover,
+.library-sort:hover,
+.home-filter-dropdown-trigger:hover {
+  color: var(--ink-soft);
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.home-sort:focus-within,
+.library-sort:focus-within,
+.home-filter-dropdown-trigger:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-surface);
 }
 
 .home-sort select,
 .library-sort select {
   border: none;
   background: transparent;
-  color: var(--ink);
+  color: currentColor;
   font: inherit;
   outline: none;
 }
@@ -1503,17 +1520,7 @@ body.controller-mode.controller-hide-cursor * {
 
 .home-filter-dropdown-trigger {
   list-style: none;
-  display: inline-flex;
-  align-items: center;
   gap: 8px;
-  padding: 0 10px;
-  height: 34px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--panel-border);
-  background: var(--card);
-  color: var(--ink-muted);
-  font-size: 0.78rem;
-  font-weight: 600;
   cursor: pointer;
   user-select: none;
 }
