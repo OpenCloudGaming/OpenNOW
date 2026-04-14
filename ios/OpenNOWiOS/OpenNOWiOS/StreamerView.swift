@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import WebKit
 import OSLog
+import AVFoundation
 
 struct StreamerView: View {
     let session: ActiveSession
@@ -133,6 +134,23 @@ struct StreamerView: View {
             }
         }
         .background(Color.black.ignoresSafeArea())
+        .onAppear {
+            do {
+                try AVAudioSession.sharedInstance().setCategory(
+                    .playback,
+                    mode: .moviePlayback,
+                    options: [.mixWithOthers]
+                )
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+            }
+        }
+        .onDisappear {
+            try? AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
+        }
     }
 }
 
