@@ -2785,6 +2785,10 @@ button.game-card-store-chip.active:hover {
   text-align: left;
 }
 
+.settings-shortcut-input[readonly]:not(.settings-shortcut-input--static) {
+  cursor: pointer;
+}
+
 .settings-shortcut-input--static {
   background: var(--bg-e);
   color: var(--ink);

@@ -23,7 +23,7 @@ import {
   USER_FACING_COLOR_QUALITY_OPTIONS,
   USER_FACING_VIDEO_CODEC_OPTIONS,
 } from "@shared/gfn";
-import { formatShortcutForDisplay, normalizeShortcut } from "../shortcuts";
+import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { getCodecDecodeBadgeState, type CodecTestResult } from "../lib/codecDiagnostics";
 
 interface SettingsPageProps {
@@ -119,7 +119,34 @@ const shortcutDefaults = {
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
   shortcutToggleMicrophone: "Ctrl+Shift+M",
   shortcutScreenshot: "F11",
+  shortcutToggleRecording: "F12",
 } as const;
+
+/** Canonical shortcut for toggling the stream sidebar (must match StreamView key handler). */
+const SIDEBAR_TOGGLE_SHORTCUT_RAW = isMac ? "Meta+G" : "Ctrl+Shift+G";
+
+type ShortcutSettingKey = keyof typeof shortcutDefaults;
+
+const SHORTCUT_SETTING_KEYS = Object.keys(shortcutDefaults) as ShortcutSettingKey[];
+
+function getShortcutConflictMessage(
+  editingKey: ShortcutSettingKey,
+  candidateCanonical: string,
+  currentSettings: Settings,
+): string | null {
+  const sidebarParsed = normalizeShortcut(SIDEBAR_TOGGLE_SHORTCUT_RAW);
+  if (sidebarParsed.valid && candidateCanonical === sidebarParsed.canonical) {
+    return "Shortcut conflicts with the settings sidebar toggle.";
+  }
+  for (const key of SHORTCUT_SETTING_KEYS) {
+    if (key === editingKey) continue;
+    const parsed = normalizeShortcut(currentSettings[key]);
+    if (parsed.valid && parsed.canonical === candidateCanonical) {
+      return "Shortcut conflicts with another binding.";
+    }
+  }
+  return null;
+}
 
 const microphoneModeOptions: Array<{ value: MicrophoneMode; label: string }> = [
   { value: "disabled", label: "Disabled" },
@@ -419,12 +446,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [toggleAntiAfkInput, setToggleAntiAfkInput] = useState(settings.shortcutToggleAntiAfk);
   const [toggleMicrophoneInput, setToggleMicrophoneInput] = useState(settings.shortcutToggleMicrophone);
   const [screenshotInput, setScreenshotInput] = useState(settings.shortcutScreenshot);
-  const [toggleStatsError, setToggleStatsError] = useState(false);
-  const [togglePointerLockError, setTogglePointerLockError] = useState(false);
-  const [stopStreamError, setStopStreamError] = useState(false);
-  const [toggleAntiAfkError, setToggleAntiAfkError] = useState(false);
-  const [toggleMicrophoneError, setToggleMicrophoneError] = useState(false);
-  const [screenshotError, setScreenshotError] = useState(false);
+  const [recordingInput, setRecordingInput] = useState(settings.shortcutToggleRecording);
+  const [toggleStatsError, setToggleStatsError] = useState<string | null>(null);
+  const [togglePointerLockError, setTogglePointerLockError] = useState<string | null>(null);
+  const [stopStreamError, setStopStreamError] = useState<string | null>(null);
+  const [toggleAntiAfkError, setToggleAntiAfkError] = useState<string | null>(null);
+  const [toggleMicrophoneError, setToggleMicrophoneError] = useState<string | null>(null);
+  const [screenshotError, setScreenshotError] = useState<string | null>(null);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
 
   const [keyboardLayoutDropdownOpen, setKeyboardLayoutDropdownOpen] = useState(false);
   const keyboardLayoutDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -465,6 +494,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   useEffect(() => {
     setScreenshotInput(settings.shortcutScreenshot);
   }, [settings.shortcutScreenshot]);
+
+  useEffect(() => {
+    setRecordingInput(settings.shortcutToggleRecording);
+  }, [settings.shortcutToggleRecording]);
 
   // Fetch subscription data (cached per account; reload only when account changes)
   useEffect(() => {
@@ -747,28 +780,157 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, []);
 
-  const handleShortcutBlur = <K extends keyof Settings>(
-    key: K,
-    rawValue: string,
-    setInput: (value: string) => void,
-    setError: (value: boolean) => void
-  ): void => {
-    const normalized = normalizeShortcut(rawValue.trim());
-    if (!normalized.valid) {
-      setError(true);
+  const handleShortcutBlur = (key: ShortcutSettingKey, rawValue: string): void => {
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      const msg = "Shortcut cannot be empty.";
+      switch (key) {
+        case "shortcutToggleStats": setToggleStatsError(msg); break;
+        case "shortcutTogglePointerLock": setTogglePointerLockError(msg); break;
+        case "shortcutStopStream": setStopStreamError(msg); break;
+        case "shortcutToggleAntiAfk": setToggleAntiAfkError(msg); break;
+        case "shortcutToggleMicrophone": setToggleMicrophoneError(msg); break;
+        case "shortcutScreenshot": setScreenshotError(msg); break;
+        case "shortcutToggleRecording": setRecordingError(msg); break;
+      }
       return;
     }
-    setError(false);
-    setInput(normalized.canonical);
+
+    const normalized = normalizeShortcut(trimmed);
+    if (!normalized.valid) {
+      const msg = "Invalid shortcut format.";
+      switch (key) {
+        case "shortcutToggleStats": setToggleStatsError(msg); break;
+        case "shortcutTogglePointerLock": setTogglePointerLockError(msg); break;
+        case "shortcutStopStream": setStopStreamError(msg); break;
+        case "shortcutToggleAntiAfk": setToggleAntiAfkError(msg); break;
+        case "shortcutToggleMicrophone": setToggleMicrophoneError(msg); break;
+        case "shortcutScreenshot": setScreenshotError(msg); break;
+        case "shortcutToggleRecording": setRecordingError(msg); break;
+      }
+      return;
+    }
+
+    const conflict = getShortcutConflictMessage(key, normalized.canonical, settings);
+    if (conflict) {
+      switch (key) {
+        case "shortcutToggleStats": setToggleStatsError(conflict); break;
+        case "shortcutTogglePointerLock": setTogglePointerLockError(conflict); break;
+        case "shortcutStopStream": setStopStreamError(conflict); break;
+        case "shortcutToggleAntiAfk": setToggleAntiAfkError(conflict); break;
+        case "shortcutToggleMicrophone": setToggleMicrophoneError(conflict); break;
+        case "shortcutScreenshot": setScreenshotError(conflict); break;
+        case "shortcutToggleRecording": setRecordingError(conflict); break;
+      }
+      return;
+    }
+
+    switch (key) {
+      case "shortcutToggleStats": setToggleStatsError(null); break;
+      case "shortcutTogglePointerLock": setTogglePointerLockError(null); break;
+      case "shortcutStopStream": setStopStreamError(null); break;
+      case "shortcutToggleAntiAfk": setToggleAntiAfkError(null); break;
+      case "shortcutToggleMicrophone": setToggleMicrophoneError(null); break;
+      case "shortcutScreenshot": setScreenshotError(null); break;
+      case "shortcutToggleRecording": setRecordingError(null); break;
+    }
+
+    switch (key) {
+      case "shortcutToggleStats": setToggleStatsInput(normalized.canonical); break;
+      case "shortcutTogglePointerLock": setTogglePointerLockInput(normalized.canonical); break;
+      case "shortcutStopStream": setStopStreamInput(normalized.canonical); break;
+      case "shortcutToggleAntiAfk": setToggleAntiAfkInput(normalized.canonical); break;
+      case "shortcutToggleMicrophone": setToggleMicrophoneInput(normalized.canonical); break;
+      case "shortcutScreenshot": setScreenshotInput(normalized.canonical); break;
+      case "shortcutToggleRecording": setRecordingInput(normalized.canonical); break;
+    }
+
     if (settings[key] !== normalized.canonical) {
-      handleChange(key, normalized.canonical as Settings[K]);
+      handleChange(key, normalized.canonical);
     }
   };
 
-  const handleShortcutKeyDown = (e: React.KeyboardEvent): void => {
-    if (e.key === "Enter") {
-      (e.target as HTMLInputElement).blur();
+  const applyShortcutCapture = (key: ShortcutSettingKey, canonical: string): void => {
+    const conflict = getShortcutConflictMessage(key, canonical, settings);
+    if (conflict) {
+      switch (key) {
+        case "shortcutToggleStats": setToggleStatsError(conflict); break;
+        case "shortcutTogglePointerLock": setTogglePointerLockError(conflict); break;
+        case "shortcutStopStream": setStopStreamError(conflict); break;
+        case "shortcutToggleAntiAfk": setToggleAntiAfkError(conflict); break;
+        case "shortcutToggleMicrophone": setToggleMicrophoneError(conflict); break;
+        case "shortcutScreenshot": setScreenshotError(conflict); break;
+        case "shortcutToggleRecording": setRecordingError(conflict); break;
+      }
+      return;
     }
+
+    switch (key) {
+      case "shortcutToggleStats": setToggleStatsError(null); break;
+      case "shortcutTogglePointerLock": setTogglePointerLockError(null); break;
+      case "shortcutStopStream": setStopStreamError(null); break;
+      case "shortcutToggleAntiAfk": setToggleAntiAfkError(null); break;
+      case "shortcutToggleMicrophone": setToggleMicrophoneError(null); break;
+      case "shortcutScreenshot": setScreenshotError(null); break;
+      case "shortcutToggleRecording": setRecordingError(null); break;
+    }
+
+    switch (key) {
+      case "shortcutToggleStats": setToggleStatsInput(canonical); break;
+      case "shortcutTogglePointerLock": setTogglePointerLockInput(canonical); break;
+      case "shortcutStopStream": setStopStreamInput(canonical); break;
+      case "shortcutToggleAntiAfk": setToggleAntiAfkInput(canonical); break;
+      case "shortcutToggleMicrophone": setToggleMicrophoneInput(canonical); break;
+      case "shortcutScreenshot": setScreenshotInput(canonical); break;
+      case "shortcutToggleRecording": setRecordingInput(canonical); break;
+    }
+
+    if (settings[key] !== canonical) {
+      handleChange(key, canonical);
+    }
+  };
+
+  const handleShortcutCaptureKeyDown = (key: ShortcutSettingKey, e: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.currentTarget.blur();
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      return;
+    }
+
+    const captured = shortcutFromKeyboardEvent(e.nativeEvent);
+    if (!captured) {
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    applyShortcutCapture(key, captured);
+  };
+
+  const handleShortcutPaste = (key: ShortcutSettingKey, e: React.ClipboardEvent<HTMLInputElement>): void => {
+    const text = e.clipboardData.getData("text/plain").trim();
+    if (!text) {
+      return;
+    }
+    e.preventDefault();
+    const normalized = normalizeShortcut(text);
+    if (!normalized.valid) {
+      const msg = "Invalid shortcut format.";
+      switch (key) {
+        case "shortcutToggleStats": setToggleStatsError(msg); break;
+        case "shortcutTogglePointerLock": setTogglePointerLockError(msg); break;
+        case "shortcutStopStream": setStopStreamError(msg); break;
+        case "shortcutToggleAntiAfk": setToggleAntiAfkError(msg); break;
+        case "shortcutToggleMicrophone": setToggleMicrophoneError(msg); break;
+        case "shortcutScreenshot": setScreenshotError(msg); break;
+        case "shortcutToggleRecording": setRecordingError(msg); break;
+      }
+      return;
+    }
+    applyShortcutCapture(key, normalized.canonical);
   };
 
   const areShortcutsDefault = useMemo(
@@ -778,7 +940,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       && settings.shortcutStopStream === shortcutDefaults.shortcutStopStream
       && settings.shortcutToggleAntiAfk === shortcutDefaults.shortcutToggleAntiAfk
       && settings.shortcutToggleMicrophone === shortcutDefaults.shortcutToggleMicrophone
-      && settings.shortcutScreenshot === shortcutDefaults.shortcutScreenshot,
+      && settings.shortcutScreenshot === shortcutDefaults.shortcutScreenshot
+      && settings.shortcutToggleRecording === shortcutDefaults.shortcutToggleRecording,
     [
       settings.shortcutToggleStats,
       settings.shortcutTogglePointerLock,
@@ -786,6 +949,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       settings.shortcutToggleAntiAfk,
       settings.shortcutToggleMicrophone,
       settings.shortcutScreenshot,
+      settings.shortcutToggleRecording,
     ]
   );
 
@@ -796,23 +960,16 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     setToggleAntiAfkInput(shortcutDefaults.shortcutToggleAntiAfk);
     setToggleMicrophoneInput(shortcutDefaults.shortcutToggleMicrophone);
     setScreenshotInput(shortcutDefaults.shortcutScreenshot);
-    setToggleStatsError(false);
-    setTogglePointerLockError(false);
-    setStopStreamError(false);
-    setToggleAntiAfkError(false);
-    setToggleMicrophoneError(false);
-    setScreenshotError(false);
+    setRecordingInput(shortcutDefaults.shortcutToggleRecording);
+    setToggleStatsError(null);
+    setTogglePointerLockError(null);
+    setStopStreamError(null);
+    setToggleAntiAfkError(null);
+    setToggleMicrophoneError(null);
+    setScreenshotError(null);
+    setRecordingError(null);
 
-    const shortcutKeys = [
-      "shortcutToggleStats",
-      "shortcutTogglePointerLock",
-      "shortcutStopStream",
-      "shortcutToggleAntiAfk",
-      "shortcutToggleMicrophone",
-      "shortcutScreenshot",
-    ] as const;
-
-    for (const key of shortcutKeys) {
+    for (const key of SHORTCUT_SETTING_KEYS) {
       const value = shortcutDefaults[key];
       if (settings[key] !== value) {
         handleChange(key, value);
@@ -1883,112 +2040,170 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
 
                   <div className="settings-shortcut-grid">
-                    <label className="settings-shortcut-row">
-                      <span className="settings-shortcut-label">Toggle Stats</span>
-                      <input
-                        type="text"
-                        className={`settings-text-input settings-shortcut-input ${toggleStatsError ? "error" : ""}`}
-                        value={toggleStatsInput}
-                        onChange={(e) => setToggleStatsInput(e.target.value)}
-                        onBlur={() => handleShortcutBlur("shortcutToggleStats", toggleStatsInput, setToggleStatsInput, setToggleStatsError)}
-                        onKeyDown={handleShortcutKeyDown}
-                        placeholder="F3"
-                        spellCheck={false}
-                      />
-                    </label>
+                <div className="settings-shortcut-row">
+                  <span className="settings-shortcut-label" id="shortcut-toggle-stats-label">Toggle Stats</span>
+                  <input
+                    type="text"
+                    id="shortcut-toggle-stats"
+                    aria-labelledby="shortcut-toggle-stats-label"
+                    readOnly
+                    className={`settings-text-input settings-shortcut-input ${toggleStatsError ? "error" : ""}`}
+                    value={toggleStatsInput}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => handleShortcutBlur("shortcutToggleStats", toggleStatsInput)}
+                    onPaste={(e) => handleShortcutPaste("shortcutToggleStats", e)}
+                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleStats", e)}
+                    placeholder="Click here, then press a key"
+                    title="Focus and press the key combination to bind"
+                    spellCheck={false}
+                  />
+                </div>
 
-                    <label className="settings-shortcut-row">
-                      <span className="settings-shortcut-label">Mouse Lock</span>
-                      <input
-                        type="text"
-                        className={`settings-text-input settings-shortcut-input ${togglePointerLockError ? "error" : ""}`}
-                        value={togglePointerLockInput}
-                        onChange={(e) => setTogglePointerLockInput(e.target.value)}
-                        onBlur={() => handleShortcutBlur("shortcutTogglePointerLock", togglePointerLockInput, setTogglePointerLockInput, setTogglePointerLockError)}
-                        onKeyDown={handleShortcutKeyDown}
-                        placeholder="F8"
-                        spellCheck={false}
-                      />
-                    </label>
+                <div className="settings-shortcut-row">
+                  <span className="settings-shortcut-label" id="shortcut-pointer-lock-label">Mouse Lock</span>
+                  <input
+                    type="text"
+                    id="shortcut-pointer-lock"
+                    aria-labelledby="shortcut-pointer-lock-label"
+                    readOnly
+                    className={`settings-text-input settings-shortcut-input ${togglePointerLockError ? "error" : ""}`}
+                    value={togglePointerLockInput}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => handleShortcutBlur("shortcutTogglePointerLock", togglePointerLockInput)}
+                    onPaste={(e) => handleShortcutPaste("shortcutTogglePointerLock", e)}
+                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutTogglePointerLock", e)}
+                    placeholder="Click here, then press a key"
+                    title="Focus and press the key combination to bind"
+                    spellCheck={false}
+                  />
+                </div>
 
-                    <label className="settings-shortcut-row">
-                      <span className="settings-shortcut-label">Stop Stream</span>
-                      <input
-                        type="text"
-                        className={`settings-text-input settings-shortcut-input ${stopStreamError ? "error" : ""}`}
-                        value={stopStreamInput}
-                        onChange={(e) => setStopStreamInput(e.target.value)}
-                        onBlur={() => handleShortcutBlur("shortcutStopStream", stopStreamInput, setStopStreamInput, setStopStreamError)}
-                        onKeyDown={handleShortcutKeyDown}
-                        placeholder="Ctrl+Shift+Q"
-                        spellCheck={false}
-                      />
-                    </label>
+                <div className="settings-shortcut-row">
+                  <span className="settings-shortcut-label" id="shortcut-stop-stream-label">Stop Stream</span>
+                  <input
+                    type="text"
+                    id="shortcut-stop-stream"
+                    aria-labelledby="shortcut-stop-stream-label"
+                    readOnly
+                    className={`settings-text-input settings-shortcut-input ${stopStreamError ? "error" : ""}`}
+                    value={stopStreamInput}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => handleShortcutBlur("shortcutStopStream", stopStreamInput)}
+                    onPaste={(e) => handleShortcutPaste("shortcutStopStream", e)}
+                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutStopStream", e)}
+                    placeholder="Click here, then press a key"
+                    title="Focus and press the key combination to bind"
+                    spellCheck={false}
+                  />
+                </div>
 
-                    <label className="settings-shortcut-row">
-                      <span className="settings-shortcut-label">Toggle Anti-AFK</span>
-                      <input
-                        type="text"
-                        className={`settings-text-input settings-shortcut-input ${toggleAntiAfkError ? "error" : ""}`}
-                        value={toggleAntiAfkInput}
-                        onChange={(e) => setToggleAntiAfkInput(e.target.value)}
-                        onBlur={() => handleShortcutBlur("shortcutToggleAntiAfk", toggleAntiAfkInput, setToggleAntiAfkInput, setToggleAntiAfkError)}
-                        onKeyDown={handleShortcutKeyDown}
-                        placeholder="Ctrl+Shift+K"
-                        spellCheck={false}
-                      />
-                    </label>
+                <div className="settings-shortcut-row">
+                  <span className="settings-shortcut-label" id="shortcut-anti-afk-label">Toggle Anti-AFK</span>
+                  <input
+                    type="text"
+                    id="shortcut-anti-afk"
+                    aria-labelledby="shortcut-anti-afk-label"
+                    readOnly
+                    className={`settings-text-input settings-shortcut-input ${toggleAntiAfkError ? "error" : ""}`}
+                    value={toggleAntiAfkInput}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => handleShortcutBlur("shortcutToggleAntiAfk", toggleAntiAfkInput)}
+                    onPaste={(e) => handleShortcutPaste("shortcutToggleAntiAfk", e)}
+                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleAntiAfk", e)}
+                    placeholder="Click here, then press a key"
+                    title="Focus and press the key combination to bind"
+                    spellCheck={false}
+                  />
+                </div>
 
-                    <label className="settings-shortcut-row">
-                      <span className="settings-shortcut-label">Toggle Microphone</span>
-                      <input
-                        type="text"
-                        className={`settings-text-input settings-shortcut-input ${toggleMicrophoneError ? "error" : ""}`}
-                        value={toggleMicrophoneInput}
-                        onChange={(e) => setToggleMicrophoneInput(e.target.value)}
-                        onBlur={() => handleShortcutBlur("shortcutToggleMicrophone", toggleMicrophoneInput, setToggleMicrophoneInput, setToggleMicrophoneError)}
-                        onKeyDown={handleShortcutKeyDown}
-                        placeholder="Ctrl+Shift+M"
-                        spellCheck={false}
-                      />
-                    </label>
+                <div className="settings-shortcut-row">
+                  <span className="settings-shortcut-label" id="shortcut-mic-label">Toggle Microphone</span>
+                  <input
+                    type="text"
+                    id="shortcut-mic"
+                    aria-labelledby="shortcut-mic-label"
+                    readOnly
+                    className={`settings-text-input settings-shortcut-input ${toggleMicrophoneError ? "error" : ""}`}
+                    value={toggleMicrophoneInput}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => handleShortcutBlur("shortcutToggleMicrophone", toggleMicrophoneInput)}
+                    onPaste={(e) => handleShortcutPaste("shortcutToggleMicrophone", e)}
+                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleMicrophone", e)}
+                    placeholder="Click here, then press a key"
+                    title="Focus and press the key combination to bind"
+                    spellCheck={false}
+                  />
+                </div>
 
-                    <label className="settings-shortcut-row">
-                      <span className="settings-shortcut-label">Screenshot</span>
-                      <input
-                        type="text"
-                        className={`settings-text-input settings-shortcut-input ${screenshotError ? "error" : ""}`}
-                        value={screenshotInput}
-                        onChange={(e) => setScreenshotInput(e.target.value)}
-                        onBlur={() => handleShortcutBlur("shortcutScreenshot", screenshotInput, setScreenshotInput, setScreenshotError)}
-                        onKeyDown={handleShortcutKeyDown}
-                        placeholder="F11"
-                        spellCheck={false}
-                      />
-                    </label>
+                <div className="settings-shortcut-row">
+                  <span className="settings-shortcut-label" id="shortcut-screenshot-label">Screenshot</span>
+                  <input
+                    type="text"
+                    id="shortcut-screenshot"
+                    aria-labelledby="shortcut-screenshot-label"
+                    readOnly
+                    className={`settings-text-input settings-shortcut-input ${screenshotError ? "error" : ""}`}
+                    value={screenshotInput}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => handleShortcutBlur("shortcutScreenshot", screenshotInput)}
+                    onPaste={(e) => handleShortcutPaste("shortcutScreenshot", e)}
+                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutScreenshot", e)}
+                    placeholder="Click here, then press a key"
+                    title="Focus and press the key combination to bind"
+                    spellCheck={false}
+                  />
+                </div>
 
-                    <label className="settings-shortcut-row">
-                      <span className="settings-shortcut-label">Toggle Settings Menu</span>
-                      <input
-                        type="text"
-                        value="Cmd+G / Ctrl+Shift+G"
-                        className="settings-text-input settings-shortcut-input settings-shortcut-input--static"
-                        disabled
-                      />
-                    </label>
-                  </div>
+                <div className="settings-shortcut-row">
+                  <span className="settings-shortcut-label" id="shortcut-recording-label">Recording</span>
+                  <input
+                    type="text"
+                    id="shortcut-recording"
+                    aria-labelledby="shortcut-recording-label"
+                    readOnly
+                    className={`settings-text-input settings-shortcut-input ${recordingError ? "error" : ""}`}
+                    value={recordingInput}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => handleShortcutBlur("shortcutToggleRecording", recordingInput)}
+                    onPaste={(e) => handleShortcutPaste("shortcutToggleRecording", e)}
+                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleRecording", e)}
+                    placeholder="Click here, then press a key"
+                    title="Focus and press the key combination to bind"
+                    spellCheck={false}
+                  />
+                </div>
 
-                  {(toggleStatsError || togglePointerLockError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError || screenshotError) && (
-                    <span className="settings-input-hint">
-                      Invalid shortcut. Use {shortcutExamples}
-                    </span>
-                  )}
+                <div className="settings-shortcut-row">
+                  <span className="settings-shortcut-label" id="shortcut-sidebar-label">Toggle stream sidebar</span>
+                  <input
+                    type="text"
+                    id="shortcut-sidebar"
+                    aria-labelledby="shortcut-sidebar-label"
+                    value={formatShortcutForDisplay(SIDEBAR_TOGGLE_SHORTCUT_RAW, isMac)}
+                    className="settings-text-input settings-shortcut-input settings-shortcut-input--static"
+                    readOnly
+                    tabIndex={-1}
+                  />
+                </div>
+              </div>
 
-                  {!toggleStatsError && !togglePointerLockError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && !screenshotError && (
-                    <span className="settings-shortcut-hint">
-                      {shortcutExamples}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}. Screenshot: {formatShortcutForDisplay(settings.shortcutScreenshot, isMac)}.
-                    </span>
-                  )}
+              {(toggleStatsError || togglePointerLockError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError || screenshotError || recordingError) && (
+                <span className="settings-input-hint">
+                  {toggleStatsError
+                    || togglePointerLockError
+                    || stopStreamError
+                    || toggleAntiAfkError
+                    || toggleMicrophoneError
+                    || screenshotError
+                    || recordingError}
+                </span>
+              )}
+
+              {!toggleStatsError && !togglePointerLockError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && !screenshotError && !recordingError && (
+                <span className="settings-shortcut-hint">
+                  Click a field and press the keys to bind, or paste a shortcut ({shortcutExamples}). Escape cancels focus. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}. Screenshot: {formatShortcutForDisplay(settings.shortcutScreenshot, isMac)}. Recording: {formatShortcutForDisplay(settings.shortcutToggleRecording, isMac)}.
+                </span>
+              )}
                 </div>
               </div>
             </section>

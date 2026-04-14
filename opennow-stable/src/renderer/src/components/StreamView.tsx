@@ -10,7 +10,7 @@ import type { MicState } from "../gfn/microphoneManager";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
-import { isShortcutMatch, normalizeShortcut } from "../shortcuts";
+import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -21,6 +21,7 @@ interface StreamViewProps {
     toggleStats: string;
     togglePointerLock: string;
     stopStream: string;
+    toggleAntiAfk: string;
     toggleMicrophone?: string;
     screenshot: string;
     recording: string;
@@ -851,9 +852,10 @@ export function StreamView({
       shortcuts.toggleStats,
       shortcuts.togglePointerLock,
       shortcuts.stopStream,
+      shortcuts.toggleAntiAfk,
       shortcuts.toggleMicrophone,
       shortcuts.recording,
-      isMacClient ? "Cmd+G" : "Ctrl+Shift+G",
+      isMacClient ? "Meta+G" : "Ctrl+Shift+G",
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .map((value) => normalizeShortcut(value))
@@ -865,7 +867,7 @@ export function StreamView({
     }
 
     return null;
-  }, [isMacClient, shortcuts.recording, shortcuts.stopStream, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
+  }, [isMacClient, shortcuts.recording, shortcuts.stopStream, shortcuts.toggleAntiAfk, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
 
   const getRecordingShortcutError = useCallback((rawValue: string): string | null => {
     const trimmed = rawValue.trim();
@@ -882,9 +884,10 @@ export function StreamView({
       shortcuts.toggleStats,
       shortcuts.togglePointerLock,
       shortcuts.stopStream,
+      shortcuts.toggleAntiAfk,
       shortcuts.toggleMicrophone,
       shortcuts.screenshot,
-      isMacClient ? "Cmd+G" : "Ctrl+Shift+G",
+      isMacClient ? "Meta+G" : "Ctrl+Shift+G",
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .map((value) => normalizeShortcut(value))
@@ -896,7 +899,106 @@ export function StreamView({
     }
 
     return null;
-  }, [isMacClient, shortcuts.screenshot, shortcuts.stopStream, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
+  }, [isMacClient, shortcuts.screenshot, shortcuts.stopStream, shortcuts.toggleAntiAfk, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
+
+  const SIDEBAR_TOGGLE_RAW = isMacClient ? "Meta+G" : "Ctrl+Shift+G";
+  const sidebarToggleShortcutDisplay = formatShortcutForDisplay(SIDEBAR_TOGGLE_RAW, isMacClient);
+
+  const applyScreenshotShortcutFromCapture = useCallback(
+    (canonical: string) => {
+      const error = getScreenshotShortcutError(canonical);
+      if (error) {
+        setScreenshotShortcutError(error);
+        return;
+      }
+      const normalized = normalizeShortcut(canonical.trim());
+      if (!normalized.valid) {
+        setScreenshotShortcutError("Invalid shortcut format.");
+        return;
+      }
+      setScreenshotShortcutError(null);
+      setScreenshotShortcutInput(normalized.canonical);
+      if (normalized.canonical !== shortcuts.screenshot) {
+        onScreenshotShortcutChange(normalized.canonical);
+      }
+    },
+    [getScreenshotShortcutError, onScreenshotShortcutChange, shortcuts.screenshot],
+  );
+
+  const applyRecordingShortcutFromCapture = useCallback(
+    (canonical: string) => {
+      const error = getRecordingShortcutError(canonical);
+      if (error) {
+        setRecordingShortcutError(error);
+        return;
+      }
+      const normalized = normalizeShortcut(canonical.trim());
+      if (!normalized.valid) {
+        setRecordingShortcutError("Invalid shortcut format.");
+        return;
+      }
+      setRecordingShortcutError(null);
+      setRecordingShortcutInput(normalized.canonical);
+      if (normalized.canonical !== shortcuts.recording) {
+        onRecordingShortcutChange(normalized.canonical);
+      }
+    },
+    [getRecordingShortcutError, onRecordingShortcutChange, shortcuts.recording],
+  );
+
+  const handleStreamScreenshotShortcutKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.currentTarget.blur();
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      return;
+    }
+    const captured = shortcutFromKeyboardEvent(e.nativeEvent);
+    if (!captured) {
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    applyScreenshotShortcutFromCapture(captured);
+  };
+
+  const handleStreamRecordingShortcutKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.currentTarget.blur();
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      return;
+    }
+    const captured = shortcutFromKeyboardEvent(e.nativeEvent);
+    if (!captured) {
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    applyRecordingShortcutFromCapture(captured);
+  };
+
+  const handleStreamScreenshotShortcutPaste = (e: React.ClipboardEvent<HTMLInputElement>): void => {
+    const text = e.clipboardData.getData("text/plain").trim();
+    if (!text) {
+      return;
+    }
+    e.preventDefault();
+    applyScreenshotShortcutFromCapture(text);
+  };
+
+  const handleStreamRecordingShortcutPaste = (e: React.ClipboardEvent<HTMLInputElement>): void => {
+    const text = e.clipboardData.getData("text/plain").trim();
+    if (!text) {
+      return;
+    }
+    e.preventDefault();
+    applyRecordingShortcutFromCapture(text);
+  };
 
   const refreshScreenshots = useCallback(async () => {
     setGalleryError(null);
@@ -1652,11 +1754,9 @@ export function StreamView({
                       type="text"
                       className={`settings-text-input settings-shortcut-input sidebar-shortcut-input ${screenshotShortcutError ? "error" : ""}`}
                       value={screenshotShortcutInput}
-                      onChange={(event) => {
-                        const nextValue = event.target.value;
-                        setScreenshotShortcutInput(nextValue);
-                        setScreenshotShortcutError(getScreenshotShortcutError(nextValue));
-                      }}
+                      readOnly
+                      onFocus={(event) => event.target.select()}
+                      onPaste={handleStreamScreenshotShortcutPaste}
                       onBlur={() => {
                         const error = getScreenshotShortcutError(screenshotShortcutInput);
                         if (error) {
@@ -1674,12 +1774,9 @@ export function StreamView({
                           onScreenshotShortcutChange(normalized.canonical);
                         }
                       }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          (event.target as HTMLInputElement).blur();
-                        }
-                      }}
-                      placeholder="F11"
+                      onKeyDown={handleStreamScreenshotShortcutKeyDown}
+                      placeholder="Click, then press a key"
+                      title="Focus and press the key combination to bind"
                       spellCheck={false}
                     />
                   </div>
@@ -1692,11 +1789,9 @@ export function StreamView({
                       type="text"
                       className={`settings-text-input settings-shortcut-input sidebar-shortcut-input ${recordingShortcutError ? "error" : ""}`}
                       value={recordingShortcutInput}
-                      onChange={(event) => {
-                        const nextValue = event.target.value;
-                        setRecordingShortcutInput(nextValue);
-                        setRecordingShortcutError(getRecordingShortcutError(nextValue));
-                      }}
+                      readOnly
+                      onFocus={(event) => event.target.select()}
+                      onPaste={handleStreamRecordingShortcutPaste}
                       onBlur={() => {
                         const error = getRecordingShortcutError(recordingShortcutInput);
                         if (error) {
@@ -1714,12 +1809,9 @@ export function StreamView({
                           onRecordingShortcutChange(normalized.canonical);
                         }
                       }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          (event.target as HTMLInputElement).blur();
-                        }
-                      }}
-                      placeholder="F12"
+                      onKeyDown={handleStreamRecordingShortcutKeyDown}
+                      placeholder="Click, then press a key"
+                      title="Focus and press the key combination to bind"
                       spellCheck={false}
                     />
                   </div>
@@ -1744,7 +1836,7 @@ export function StreamView({
                   )}
                   <div className="sidebar-row sidebar-row--aligned">
                     <span className="sidebar-label">Toggle Sidebar</span>
-                    <span className="settings-value-badge">{isMacClient ? "Cmd+G" : "Ctrl+Shift+G"}</span>
+                    <span className="settings-value-badge">{sidebarToggleShortcutDisplay}</span>
                   </div>
                 </section>
               </>

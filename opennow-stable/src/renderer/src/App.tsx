@@ -89,8 +89,8 @@ const resolutionOptions = getResolutionsByAspectRatio("16:9");
 
 function getAppStyle(posterSizeScale: number): CSSProperties {
   return {
-    ["--game-poster-scale" as "--game-poster-scale"]: String(posterSizeScale),
-  };
+    "--game-poster-scale": String(posterSizeScale),
+  } as CSSProperties;
 }
 const SESSION_READY_POLL_INTERVAL_MS = 2000;
 const SESSION_AD_POLL_INTERVAL_MS = 30000;
@@ -840,6 +840,7 @@ export function App(): JSX.Element {
     enableL4S: false,
     enableCloudGsync: false,
     discordRichPresence: false,
+    posterSizeScale: 1,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [codecResults, setCodecResults] = useState<CodecTestResult[] | null>(() => loadStoredCodecResults());
@@ -3269,6 +3270,7 @@ export function App(): JSX.Element {
               toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
               togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),
               stopStream: formatShortcutForDisplay(settings.shortcutStopStream, isMac),
+              toggleAntiAfk: shortcuts.toggleAntiAfk.canonical,
               toggleMicrophone: formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac),
               screenshot: shortcuts.screenshot.canonical,
               recording: shortcuts.recording.canonical,
