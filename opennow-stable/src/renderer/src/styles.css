@@ -1904,7 +1904,7 @@ button.game-card-store-chip.active:hover {
    SETTINGS PAGE
    ====================================================== */
 .settings-page {
-  max-width: 760px;
+  max-width: 980px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -2178,6 +2178,231 @@ button.game-card-store-chip.active:hover {
   gap: 14px;
 }
 
+/* ── Settings two-panel layout ───────────────────────── */
+.settings-layout {
+  display: flex;
+  gap: 0;
+  min-height: 0;
+  flex: 1;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.settings-sidebar {
+  width: 188px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  background: var(--bg-a);
+  border-right: 1px solid var(--panel-border);
+  padding: 10px 8px;
+}
+
+.settings-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  background: var(--chip);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+
+.settings-search-icon {
+  color: var(--ink-muted);
+  flex-shrink: 0;
+}
+
+.settings-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-family: inherit;
+  min-width: 0;
+}
+
+.settings-search-input::placeholder {
+  color: var(--ink-muted);
+}
+
+.settings-search-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 3px;
+  transition: color var(--t-fast);
+}
+
+.settings-search-clear:hover {
+  color: var(--ink);
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--t-fast), color var(--t-fast);
+  white-space: nowrap;
+}
+
+.settings-nav-item svg {
+  flex-shrink: 0;
+  color: var(--ink-muted);
+  transition: color var(--t-fast);
+}
+
+.settings-nav-item:hover {
+  background: var(--chip);
+  color: var(--ink);
+}
+
+.settings-nav-item:hover svg {
+  color: var(--ink-soft);
+}
+
+.settings-nav-item.active {
+  background: var(--accent-surface);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.settings-nav-item.active svg {
+  color: var(--accent);
+}
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Advanced disclosure */
+.settings-advanced-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  background: var(--bg-a);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-sm);
+  color: var(--ink-soft);
+  font-size: 0.83rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+
+.settings-advanced-toggle:hover {
+  color: var(--ink);
+  border-color: rgba(255,255,255,0.1);
+  background: var(--chip);
+}
+
+.settings-advanced-chevron {
+  margin-left: auto;
+  color: var(--ink-muted);
+  transition: transform var(--t-fast);
+}
+
+.settings-advanced-chevron.flipped {
+  transform: rotate(180deg);
+}
+
+/* Resolution grouped dropdown */
+.settings-dropdown-menu--grouped {
+  max-height: 300px;
+}
+
+.settings-dropdown-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-dropdown-group-label {
+  padding: 8px 14px 4px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  background: rgba(255,255,255,0.03);
+  border-top: 1px solid var(--panel-border);
+}
+
+.settings-dropdown-group:first-child .settings-dropdown-group-label {
+  border-top: none;
+}
+
+/* Toggle two-column grid */
+.settings-toggle-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+}
+
+.settings-toggle-grid .settings-row {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px;
+  background: var(--chip);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+}
+
+.settings-toggle-grid .settings-label {
+  flex-shrink: 1;
+}
+
+/* Search result context label */
+.settings-section-context {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
 .settings-section {
   background: var(--card);
   border: 1px solid var(--panel-border);
@@ -2415,14 +2640,15 @@ button.game-card-store-chip.active:hover {
 
 .settings-shortcut-grid {
   display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
 }
 
 .settings-shortcut-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
 }
 
 .settings-shortcut-label {
@@ -2431,8 +2657,9 @@ button.game-card-store-chip.active:hover {
 }
 
 .settings-shortcut-input {
-  min-width: 185px;
-  text-align: right;
+  min-width: unset;
+  width: 100%;
+  text-align: left;
 }
 
 .settings-shortcut-input--static {
