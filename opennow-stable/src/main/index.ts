@@ -29,6 +29,7 @@ import type {
   SessionInfo,
   AuthSessionRequest,
   GamesFetchRequest,
+  CatalogBrowseRequest,
   ResolveLaunchIdRequest,
   RegionsFetchRequest,
   SessionAdReportRequest,
@@ -70,6 +71,7 @@ import { getSettingsManager, type SettingsManager } from "./settings";
 import { createSession, pollSession, reportSessionAd, stopSession, getActiveSessions, claimSession } from "./gfn/cloudmatch";
 import { AuthService } from "./gfn/auth";
 import {
+  browseCatalog,
   fetchLibraryGames,
   fetchMainGames,
   fetchPublicGames,
@@ -906,6 +908,14 @@ function registerIpcHandlers(): void {
       payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
     refreshScheduler.updateAuthContext(token, streamingBaseUrl);
     return fetchLibraryGames(token, streamingBaseUrl);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GAMES_BROWSE_CATALOG, async (_event, payload: CatalogBrowseRequest) => {
+    const token = await resolveJwt(payload?.token);
+    const streamingBaseUrl =
+      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+    refreshScheduler.updateAuthContext(token, streamingBaseUrl);
+    return browseCatalog({ ...payload, token, providerStreamingBaseUrl: streamingBaseUrl });
   });
 
   ipcMain.handle(IPC_CHANNELS.GAMES_FETCH_PUBLIC, async () => {

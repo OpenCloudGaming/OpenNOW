@@ -5,6 +5,9 @@ import type {
   ActiveSessionInfo,
   AuthSession,
   AuthUser,
+  CatalogBrowseResult,
+  CatalogFilterGroup,
+  CatalogSortOption,
   GameInfo,
   GameVariant,
   LoginProvider,
@@ -104,7 +107,7 @@ const FREE_TIER_15_MIN_WARNING_SECONDS = 15 * 60;
 const FREE_TIER_FINAL_MINUTE_WARNING_SECONDS = 60;
 const STREAM_WARNING_VISIBILITY_MS = 15 * 1000;
 
-type GameSource = "main" | "library" | "public";
+type GameSource = "main" | "library";
 type AppPage = "home" | "library" | "settings";
 type StreamStatus = "idle" | "queue" | "setup" | "starting" | "connecting" | "streaming";
 type StreamLoadingStatus = "queue" | "setup" | "starting" | "connecting";
@@ -248,6 +251,76 @@ function findSessionContextForAppId(
   }
 
   return null;
+}
+
+function matchesGameSearch(game: GameInfo, query: string): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return true;
+  if (game.searchText?.includes(normalizedQuery)) return true;
+  return [
+    game.title,
+    game.description,
+    game.publisherName,
+    ...(game.genres ?? []),
+    ...(game.featureLabels ?? []),
+    ...(game.availableStores ?? []),
+  ]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .some((value) => value.toLowerCase().includes(normalizedQuery));
+}
+
+function chooseAccountLinked(game: GameInfo, selectedVariant?: GameVariant): boolean {
+  if (game.playType === "INSTALL_TO_PLAY") {
+    return false;
+  }
+  if (selectedVariant?.librarySelected) {
+    return true;
+  }
+  if (selectedVariant?.libraryStatus === "IN_LIBRARY") {
+    return true;
+  }
+  if (game.isInLibrary) {
+    return true;
+  }
+  return false;
+}
+
+function areStringArraysEqual(left: string[], right: string[]): boolean {
+  if (left.length != right.length) {
+    return false;
+  }
+  return left.every((value, index) => value === right[index]);
+}
+
+function sortLibraryGames(games: GameInfo[], sortId: string): GameInfo[] {
+  const copy = [...games];
+  const compareTitle = (left: GameInfo, right: GameInfo) => left.title.localeCompare(right.title);
+  if (sortId === "z_to_a") {
+    return copy.sort((left, right) => right.title.localeCompare(left.title));
+  }
+  if (sortId === "a_to_z") {
+    return copy.sort(compareTitle);
+  }
+  if (sortId === "last_played") {
+    return copy.sort((left, right) => {
+      const leftTime = left.lastPlayed ? new Date(left.lastPlayed).getTime() : 0;
+      const rightTime = right.lastPlayed ? new Date(right.lastPlayed).getTime() : 0;
+      if (leftTime === rightTime) return compareTitle(left, right);
+      return rightTime - leftTime;
+    });
+  }
+  if (sortId === "last_added") {
+    return copy.sort((left, right) => {
+      const leftTime = left.isInLibrary ? new Date(left.lastPlayed ?? 0).getTime() : 0;
+      const rightTime = right.isInLibrary ? new Date(right.lastPlayed ?? 0).getTime() : 0;
+      if (leftTime === rightTime) return compareTitle(left, right);
+      return rightTime - leftTime;
+    });
+  }
+  if (sortId === "most_popular") {
+    return copy.sort((left, right) => (right.membershipTierLabel ? 1 : 0) - (left.membershipTierLabel ? 1 : 0) || compareTitle(left, right));
+  }
+  return copy.sort(compareTitle);
 }
 
 function mergeVariantSelections(
@@ -688,6 +761,13 @@ export function App(): JSX.Element {
   const [selectedGameId, setSelectedGameId] = useState("");
   const [variantByGameId, setVariantByGameId] = useState<Record<string, string>>({});
   const [isLoadingGames, setIsLoadingGames] = useState(false);
+  const [catalogFilterGroups, setCatalogFilterGroups] = useState<CatalogFilterGroup[]>([]);
+  const [catalogSortOptions, setCatalogSortOptions] = useState<CatalogSortOption[]>([]);
+  const [catalogSelectedSortId, setCatalogSelectedSortId] = useState("relevance");
+  const [catalogSelectedFilterIds, setCatalogSelectedFilterIds] = useState<string[]>([]);
+  const [catalogTotalCount, setCatalogTotalCount] = useState(0);
+  const [catalogSupportedCount, setCatalogSupportedCount] = useState(0);
+  const catalogFilterKey = useMemo(() => catalogSelectedFilterIds.join("|"), [catalogSelectedFilterIds]);
 
   // Settings State
   const [settings, setSettings] = useState<Settings>({
@@ -1698,36 +1778,39 @@ export function App(): JSX.Element {
 
           // Load games
           try {
-            const mainGames = await window.openNow.fetchMainGames({
-              token,
-              providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
-            });
-            setGames(mainGames);
-            setSource("main");
-            setSelectedGameId(mainGames[0]?.id ?? "");
-            applyVariantSelections(mainGames);
-
-            // Also load library
-            const libGames = await window.openNow.fetchLibraryGames({
-              token,
-              providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
-            });
+            const [catalogResult, libGames] = await Promise.all([
+              window.openNow.browseCatalog({
+                token,
+                providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
+                searchQuery: "",
+                sortId: catalogSelectedSortId,
+                filterIds: catalogSelectedFilterIds,
+              }),
+              window.openNow.fetchLibraryGames({
+                token,
+                providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
+              }),
+            ]);
+            applyCatalogBrowseResult(catalogResult);
             setLibraryGames(libGames);
             applyVariantSelections(libGames);
-          } catch {
-            // Fallback to public games
-            const publicGames = await window.openNow.fetchPublicGames();
-            setGames(publicGames);
-            setSource("public");
-            applyVariantSelections(publicGames);
+          } catch (catalogError) {
+            console.error("Initialization games load failed:", catalogError);
+            setGames([]);
+            setLibraryGames([]);
+            setCatalogFilterGroups([]);
+            setCatalogSortOptions([]);
+            setCatalogTotalCount(0);
+            setCatalogSupportedCount(0);
           }
         } else {
-          // Load public games for non-logged in users
-          const publicGames = await window.openNow.fetchPublicGames();
-          setGames(publicGames);
-          setSource("public");
-          applyVariantSelections(publicGames);
+          setGames([]);
+          setLibraryGames([]);
           setSubscriptionInfo(null);
+          setCatalogFilterGroups([]);
+          setCatalogSortOptions([]);
+          setCatalogTotalCount(0);
+          setCatalogSupportedCount(0);
         }
       } catch (error) {
         console.error("Initialization failed:", error);
@@ -2158,6 +2241,19 @@ export function App(): JSX.Element {
     });
   }, [updateSetting]);
 
+  const applyCatalogBrowseResult = useCallback((catalogResult: CatalogBrowseResult): void => {
+    setGames(catalogResult.games);
+    setCatalogFilterGroups(catalogResult.filterGroups);
+    setCatalogSortOptions(catalogResult.sortOptions);
+    setCatalogSelectedSortId((previous) => previous === catalogResult.selectedSortId ? previous : catalogResult.selectedSortId);
+    setCatalogSelectedFilterIds((previous) => areStringArraysEqual(previous, catalogResult.selectedFilterIds) ? previous : catalogResult.selectedFilterIds);
+    setCatalogTotalCount(catalogResult.totalCount);
+    setCatalogSupportedCount(catalogResult.numberSupported);
+    setSource("main");
+    setSelectedGameId((previous) => catalogResult.games.some((game) => game.id === previous) ? previous : (catalogResult.games[0]?.id ?? ""));
+    applyVariantSelections(catalogResult.games);
+  }, [applyVariantSelections]);
+
   // Login handler
   const handleLogin = useCallback(async () => {
     setIsLoggingIn(true);
@@ -2179,21 +2275,20 @@ export function App(): JSX.Element {
         setSubscriptionInfo(null);
       }
 
-      // Load games
-      const mainGames = await window.openNow.fetchMainGames({
-        token,
-        providerStreamingBaseUrl: session.provider.streamingServiceUrl,
-      });
-      setGames(mainGames);
-      setSource("main");
-      setSelectedGameId(mainGames[0]?.id ?? "");
-      applyVariantSelections(mainGames);
-
-      // Load library
-      const libGames = await window.openNow.fetchLibraryGames({
-        token,
-        providerStreamingBaseUrl: session.provider.streamingServiceUrl,
-      });
+      const [catalogResult, libGames] = await Promise.all([
+        window.openNow.browseCatalog({
+          token,
+          providerStreamingBaseUrl: session.provider.streamingServiceUrl,
+          searchQuery: "",
+          sortId: catalogSelectedSortId,
+          filterIds: catalogSelectedFilterIds,
+        }),
+        window.openNow.fetchLibraryGames({
+          token,
+          providerStreamingBaseUrl: session.provider.streamingServiceUrl,
+        }),
+      ]);
+      applyCatalogBrowseResult(catalogResult);
       setLibraryGames(libGames);
       applyVariantSelections(libGames);
     } catch (error) {
@@ -2201,7 +2296,7 @@ export function App(): JSX.Element {
     } finally {
       setIsLoggingIn(false);
     }
-  }, [applyVariantSelections, loadSubscriptionInfo, providerIdpId]);
+  }, [applyCatalogBrowseResult, applyVariantSelections, loadSubscriptionInfo, providerIdpId, catalogFilterKey, catalogSelectedSortId]);
 
   // Logout handler
   const handleLogout = useCallback(async () => {
@@ -2215,11 +2310,15 @@ export function App(): JSX.Element {
     setIsResumingNavbarSession(false);
     setSubscriptionInfo(null);
     setCurrentPage("home");
-    const publicGames = await window.openNow.fetchPublicGames();
-    setGames(publicGames);
-    setSource("public");
-    applyVariantSelections(publicGames);
-  }, [applyVariantSelections, resetLaunchRuntime]);
+    setCatalogFilterGroups([]);
+    setCatalogSortOptions([]);
+    setCatalogSelectedSortId("relevance");
+    setCatalogSelectedFilterIds([]);
+    setCatalogTotalCount(0);
+    setCatalogSupportedCount(0);
+    setSource("main");
+    setSelectedGameId("");
+  }, [resetLaunchRuntime]);
 
   // Load games handler
   const loadGames = useCallback(async (targetSource: GameSource) => {
@@ -2227,30 +2326,43 @@ export function App(): JSX.Element {
     try {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
       const baseUrl = effectiveStreamingBaseUrl;
-
-      let result: GameInfo[] = [];
-      if (targetSource === "main" && token) {
-        result = await window.openNow.fetchMainGames({ token, providerStreamingBaseUrl: baseUrl });
-      } else if (targetSource === "library" && token) {
-        result = await window.openNow.fetchLibraryGames({ token, providerStreamingBaseUrl: baseUrl });
-        setLibraryGames(result);
-        applyVariantSelections(result);
-      } else if (targetSource === "public") {
-        result = await window.openNow.fetchPublicGames();
+      if (!token) {
+        return;
       }
 
-      if (targetSource !== "library") {
-        setGames(result);
-        setSource(targetSource);
-        setSelectedGameId(result[0]?.id ?? "");
-        applyVariantSelections(result);
+      if (targetSource === "main") {
+        const catalogResult = await window.openNow.browseCatalog({
+          token,
+          providerStreamingBaseUrl: baseUrl,
+          searchQuery,
+          sortId: catalogSelectedSortId,
+          filterIds: catalogSelectedFilterIds,
+        });
+        applyCatalogBrowseResult(catalogResult);
+        return;
       }
+
+      const result = await window.openNow.fetchLibraryGames({ token, providerStreamingBaseUrl: baseUrl });
+      setLibraryGames(result);
+      setSource("library");
+      setSelectedGameId((previous) => result.some((game) => game.id === previous) ? previous : (result[0]?.id ?? ""));
+      applyVariantSelections(result);
     } catch (error) {
       console.error("Failed to load games:", error);
     } finally {
       setIsLoadingGames(false);
     }
-  }, [applyVariantSelections, authSession, effectiveStreamingBaseUrl]);
+  }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, searchQuery, catalogFilterKey, catalogSelectedSortId]);
+
+  useEffect(() => {
+    if (!authSession || source !== "main") {
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      void loadGames("main");
+    }, searchQuery.trim() ? 220 : 0);
+    return () => window.clearTimeout(handle);
+  }, [authSession, loadGames, searchQuery, source, catalogFilterKey, catalogSelectedSortId]);
 
   const handleSelectGameVariant = useCallback((gameId: string, variantId: string): void => {
     setVariantByGameId((prev) => {
@@ -2442,7 +2554,7 @@ export function App(): JSX.Element {
         streamingBaseUrl: options?.streamingBaseUrl || effectiveStreamingBaseUrl,
         appId,
         internalTitle: game.title,
-        accountLinked: game.playType !== "INSTALL_TO_PLAY",
+        accountLinked: chooseAccountLinked(game, selectedVariant),
         zone: "prod",
         settings: {
           resolution: settings.resolution,
@@ -3008,18 +3120,13 @@ export function App(): JSX.Element {
     streamStatus,
   ]);
 
-  // Filter games by search
-  const filteredGames = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) return games;
-    return games.filter((g) => g.title.toLowerCase().includes(query));
-  }, [games, searchQuery]);
+  const filteredGames = games;
 
   const filteredLibraryGames = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) return libraryGames;
-    return libraryGames.filter((g) => g.title.toLowerCase().includes(query));
-  }, [libraryGames, searchQuery]);
+    const query = searchQuery.trim();
+    const searched = query ? libraryGames.filter((game) => matchesGameSearch(game, query)) : libraryGames;
+    return sortLibraryGames(searched, catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId);
+  }, [libraryGames, searchQuery, catalogSelectedSortId]);
 
   const activeSessionGameTitle = useMemo(() => {
     if (!navbarActiveSession) return null;
@@ -3386,8 +3493,17 @@ export function App(): JSX.Element {
         {currentPage === "home" && (
           <HomePage
             games={filteredGames}
-            source={source}
-            onSourceChange={loadGames}
+            source="main"
+            onSourceChange={(nextSource) => {
+              if (nextSource === "library") {
+                setCurrentPage("library");
+                if (libraryGames.length === 0 && authSession) {
+                  void loadGames("library");
+                }
+                return;
+              }
+              void loadGames("main");
+            }}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             onPlayGame={handleInitiatePlay}
@@ -3396,6 +3512,16 @@ export function App(): JSX.Element {
             onSelectGame={setSelectedGameId}
             selectedVariantByGameId={variantByGameId}
             onSelectGameVariant={handleSelectGameVariant}
+            filterGroups={catalogFilterGroups}
+            selectedFilterIds={catalogSelectedFilterIds}
+            onToggleFilter={(filterId) => {
+              setCatalogSelectedFilterIds((previous) => previous.includes(filterId) ? previous.filter((value) => value !== filterId) : [...previous, filterId]);
+            }}
+            sortOptions={catalogSortOptions}
+            selectedSortId={catalogSelectedSortId}
+            onSortChange={setCatalogSelectedSortId}
+            totalCount={catalogTotalCount}
+            supportedCount={catalogSupportedCount}
           />
         )}
 
@@ -3458,6 +3584,10 @@ export function App(): JSX.Element {
               onSelectGame={setSelectedGameId}
               selectedVariantByGameId={variantByGameId}
               onSelectGameVariant={handleSelectGameVariant}
+              libraryCount={libraryGames.length}
+              sortOptions={catalogSortOptions.filter((option) => option.id !== "relevance")}
+              selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
+              onSortChange={setCatalogSelectedSortId}
             />
           )
         )}

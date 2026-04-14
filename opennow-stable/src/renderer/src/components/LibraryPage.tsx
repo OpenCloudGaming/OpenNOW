@@ -1,6 +1,6 @@
-import { Library, Search, Clock, Gamepad2, Loader2 } from "lucide-react";
+import { Library, Search, Clock, Gamepad2, Loader2, ArrowUpDown } from "lucide-react";
 import type { JSX } from "react";
-import type { GameInfo } from "@shared/gfn";
+import type { CatalogSortOption, GameInfo } from "@shared/gfn";
 import { GameCard } from "./GameCard";
 
 export interface LibraryPageProps {
@@ -13,6 +13,10 @@ export interface LibraryPageProps {
   onSelectGame: (id: string) => void;
   selectedVariantByGameId: Record<string, string>;
   onSelectGameVariant: (gameId: string, variantId: string) => void;
+  libraryCount: number;
+  sortOptions: CatalogSortOption[];
+  selectedSortId: string;
+  onSortChange: (sortId: string) => void;
 }
 
 function formatLastPlayed(date?: string): string {
@@ -44,16 +48,13 @@ export function LibraryPage({
   onSelectGame,
   selectedVariantByGameId,
   onSelectGameVariant,
+  libraryCount,
+  sortOptions,
+  selectedSortId,
+  onSortChange,
 }: LibraryPageProps): JSX.Element {
-  const filteredGames = searchQuery.trim()
-    ? games.filter((game) =>
-        game.title.toLowerCase().includes(searchQuery.trim().toLowerCase())
-      )
-    : games;
-
   return (
     <div className="library-page">
-      {/* Toolbar: title + search + count */}
       <header className="library-toolbar">
         <div className="library-title">
           <Library className="library-title-icon" size={22} />
@@ -71,23 +72,33 @@ export function LibraryPage({
           />
         </div>
 
-        <span className="library-count">{games.length} game{games.length !== 1 ? "s" : ""}</span>
+        <label className="library-sort">
+          <ArrowUpDown size={14} />
+          <select value={selectedSortId} onChange={(e) => onSortChange(e.target.value)}>
+            {sortOptions.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <span className="library-count">{libraryCount} game{libraryCount !== 1 ? "s" : ""}</span>
       </header>
 
-      {/* Game grid */}
       <div className="library-grid-area">
         {isLoading ? (
           <div className="library-empty-state">
             <Loader2 className="library-spinner" size={36} />
             <p>Loading your library...</p>
           </div>
-        ) : games.length === 0 ? (
+        ) : libraryCount === 0 ? (
           <div className="library-empty-state">
             <Gamepad2 className="library-empty-icon" size={44} />
             <h3>Your library is empty</h3>
             <p>Games you own will appear here. Browse the catalog to find games.</p>
           </div>
-        ) : filteredGames.length === 0 ? (
+        ) : games.length === 0 ? (
           <div className="library-empty-state">
             <Search className="library-empty-icon" size={44} />
             <h3>No results</h3>
@@ -95,8 +106,8 @@ export function LibraryPage({
           </div>
         ) : (
           <div className="game-grid">
-            {filteredGames.map((game, index) => (
-              <div key={`${game.id}-${index}`} className="library-game-wrapper">
+            {games.map((game) => (
+              <div key={game.id} className="library-game-wrapper">
                 <GameCard
                   game={game}
                   isSelected={game.id === selectedGameId}
@@ -105,11 +116,9 @@ export function LibraryPage({
                   selectedVariantId={selectedVariantByGameId[game.id]}
                   onSelectStore={(variantId) => onSelectGameVariant(game.id, variantId)}
                 />
-                {/* @ts-expect-error - lastPlayed may exist on library games */}
                 {game.lastPlayed && (
                   <div className="library-last-played">
                     <Clock size={12} />
-                    {/* @ts-expect-error - lastPlayed may exist on library games */}
                     <span>{formatLastPlayed(game.lastPlayed)}</span>
                   </div>
                 )}

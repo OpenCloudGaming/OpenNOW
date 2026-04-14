@@ -1,5 +1,6 @@
 import type { GameInfo } from "@shared/gfn";
 import { cacheEventBus } from "./cacheEventBus";
+import { cacheManager } from "./cacheManager";
 
 export interface RefreshAuthContext {
   token: string;
@@ -86,11 +87,20 @@ class RefreshScheduler {
     try {
       cacheEventBus.emit("cache:refresh-start");
 
-      const results = await Promise.allSettled([
+      const shouldRefreshLibrary = !(await cacheManager.loadFromCache<GameInfo[]>("games:library"));
+      if (!shouldRefreshLibrary) {
+        console.log("[CACHE] Skipping library refresh; cached library is still fresh");
+      }
+
+      const refreshTasks: Promise<GameInfo[]>[] = [
         this.fetchMainGames(this.authContext.token, this.authContext.providerStreamingBaseUrl),
-        this.fetchLibraryGames(this.authContext.token, this.authContext.providerStreamingBaseUrl),
+        shouldRefreshLibrary
+          ? this.fetchLibraryGames(this.authContext.token, this.authContext.providerStreamingBaseUrl)
+          : Promise.resolve([]),
         this.fetchPublicGames(),
-      ]);
+      ];
+
+      const results = await Promise.allSettled(refreshTasks);
 
       let hasErrors = false;
       for (let i = 0; i < results.length; i++) {
