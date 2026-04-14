@@ -100,12 +100,42 @@ const SESSION_AD_FORCE_PLAY_TIMEOUT_MS = 10000;
 const SESSION_AD_STUCK_TIMEOUT_MS = 30000;
 const SESSION_READY_TIMEOUT_MS = 180000;
 const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
+const CATALOG_PREFERENCES_LOCALSTORAGE_KEY = "opennow.catalogPreferences.v1";
 const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
 const FREE_TIER_SESSION_LIMIT_SECONDS = 60 * 60;
 const FREE_TIER_30_MIN_WARNING_SECONDS = 30 * 60;
 const FREE_TIER_15_MIN_WARNING_SECONDS = 15 * 60;
 const FREE_TIER_FINAL_MINUTE_WARNING_SECONDS = 60;
 const STREAM_WARNING_VISIBILITY_MS = 15 * 1000;
+
+interface CatalogPreferences {
+  sortId: string;
+  filterIds: string[];
+}
+
+function loadCatalogPreferences(): CatalogPreferences {
+  try {
+    const raw = localStorage.getItem(CATALOG_PREFERENCES_LOCALSTORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<CatalogPreferences>;
+      return {
+        sortId: typeof parsed.sortId === "string" ? parsed.sortId : "relevance",
+        filterIds: Array.isArray(parsed.filterIds) ? parsed.filterIds.filter((id): id is string => typeof id === "string") : [],
+      };
+    }
+  } catch {
+    // ignore
+  }
+  return { sortId: "relevance", filterIds: [] };
+}
+
+function saveCatalogPreferences(prefs: CatalogPreferences): void {
+  try {
+    localStorage.setItem(CATALOG_PREFERENCES_LOCALSTORAGE_KEY, JSON.stringify(prefs));
+  } catch {
+    // ignore
+  }
+}
 
 type GameSource = "main" | "library";
 type AppPage = "home" | "library" | "settings";
@@ -763,8 +793,8 @@ export function App(): JSX.Element {
   const [isLoadingGames, setIsLoadingGames] = useState(false);
   const [catalogFilterGroups, setCatalogFilterGroups] = useState<CatalogFilterGroup[]>([]);
   const [catalogSortOptions, setCatalogSortOptions] = useState<CatalogSortOption[]>([]);
-  const [catalogSelectedSortId, setCatalogSelectedSortId] = useState("relevance");
-  const [catalogSelectedFilterIds, setCatalogSelectedFilterIds] = useState<string[]>([]);
+  const [catalogSelectedSortId, setCatalogSelectedSortId] = useState(() => loadCatalogPreferences().sortId);
+  const [catalogSelectedFilterIds, setCatalogSelectedFilterIds] = useState<string[]>(() => loadCatalogPreferences().filterIds);
   const [catalogTotalCount, setCatalogTotalCount] = useState(0);
   const [catalogSupportedCount, setCatalogSupportedCount] = useState(0);
   const catalogFilterKey = useMemo(() => catalogSelectedFilterIds.join("|"), [catalogSelectedFilterIds]);
@@ -1826,6 +1856,10 @@ export function App(): JSX.Element {
   useEffect(() => {
     saveStoredCodecResults(codecResults);
   }, [codecResults]);
+
+  useEffect(() => {
+    saveCatalogPreferences({ sortId: catalogSelectedSortId, filterIds: catalogSelectedFilterIds });
+  }, [catalogSelectedSortId, catalogSelectedFilterIds]);
 
   useEffect(() => {
     if (codecResults || codecTesting || codecStartupTestAttemptedRef.current) {

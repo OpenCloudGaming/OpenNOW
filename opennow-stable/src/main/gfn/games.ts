@@ -688,7 +688,7 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
       items {
         id
         title
-        images { TV_BANNER HERO_IMAGE }
+        images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE }
         variants {
           id
           appStore
