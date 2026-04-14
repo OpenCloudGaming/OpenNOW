@@ -87,9 +87,13 @@ const getResolutionsByAspectRatio = (aspectRatio: string): string[] => {
 };
 const resolutionOptions = getResolutionsByAspectRatio("16:9");
 
-function getAppStyle(posterSizeScale: number): CSSProperties {
+type AppStyle = CSSProperties & {
+  "--game-poster-scale"?: string;
+};
+
+function getAppStyle(posterSizeScale: number): AppStyle {
   return {
-    ["--game-poster-scale" as "--game-poster-scale"]: String(posterSizeScale),
+    "--game-poster-scale": String(posterSizeScale),
   };
 }
 const SESSION_READY_POLL_INTERVAL_MS = 2000;
@@ -803,6 +807,7 @@ export function App(): JSX.Element {
   const [settings, setSettings] = useState<Settings>({
     resolution: "1920x1080",
     aspectRatio: "16:9",
+    posterSizeScale: 1,
     fps: 60,
     maxBitrateMbps: 75,
     codec: DEFAULT_STREAM_PREFERENCES.codec,
@@ -1132,9 +1137,9 @@ export function App(): JSX.Element {
   const queueAdPlaybackRef = useRef<{ adId: string; phase: "playing" | "finishing" } | null>(null);
   const queueAdPreviewRef = useRef<QueueAdPreviewHandle | null>(null);
   const activeQueueAdIdRef = useRef<string | null>(null);
-  const adForcePlayTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const adStartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const adProgressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const adForcePlayTimeoutRef = useRef<number | null>(null);
+  const adStartTimeoutRef = useRef<number | null>(null);
+  const adProgressIntervalRef = useRef<number | null>(null);
   const adLastProgressTsRef = useRef<number | null>(null);
   // Stable ref so timer callbacks can call the latest reportQueueAdAction without
   // capturing a stale closure (auth state can change between scheduling and firing).
