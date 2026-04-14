@@ -2424,49 +2424,27 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func prepareSessionForStreamer(_ session: ActiveSession) async -> ActiveSession {
-        // Mirrors the successful "resume" behavior: when status=2, claim once before
-        // handoff so backend can return stabilized signaling/media coordinates.
         guard session.status == 2 else { return session }
+        // Refresh auth token so it's valid for the upcoming signaling connection.
+        // Do NOT claim/migrate the session — the polled server has already handled
+        // this session throughout queue/setup and is ready to serve WebRTC offers.
+        // Migrating to a different server (via claimSession PUT) moves to a cold
+        // server that hasn't set up its WebRTC endpoint and won't offer in time.
+        // This matches desktop behavior: connect signaling directly to the polled server.
         guard let currentAuth = authSession else { return session }
         do {
             let refreshed = try await api.refreshSession(currentAuth)
             authSession = refreshed
             persistAuthSession(refreshed)
-            let activeCandidates = try await api.fetchActiveSessions(session: refreshed, vpcId: cachedVpcId)
-            let candidate =
-                activeCandidates.first(where: { $0.id == session.id }) ??
-                activeCandidates.first(where: { $0.appId == session.game.launchAppId && ($0.status == 2 || $0.status == 3) }) ??
-                RemoteSessionCandidate(
-                    id: session.id,
-                    appId: session.game.launchAppId,
-                    status: session.status,
-                    serverIp: session.serverIp
-                )
-            let claimed = try await api.claimSession(
-                session: refreshed,
-                candidate: candidate,
-                game: session.game,
-                vpcId: cachedVpcId,
-                settings: settings
-            )
-            logger.info(
-                "Pre-handoff claim refreshed session id=\(claimed.id, privacy: .public) status=\(claimed.status) candidateServerIp=\(candidate.serverIp ?? "nil", privacy: .public) signalingServer=\(claimed.signalingServer ?? "nil", privacy: .public) signalingUrl=\(claimed.signalingUrl ?? "nil", privacy: .public) mediaIp=\(claimed.mediaIp ?? "nil", privacy: .public) mediaPort=\(claimed.mediaPort)"
-            )
-            let serverMigrated = (claimed.signalingServer ?? "") != (session.signalingServer ?? "")
-                && !(claimed.signalingServer ?? "").isEmpty
-            if serverMigrated {
-                logger.info(
-                    "Pre-handoff claim: server migrated from \(session.signalingServer ?? "nil", privacy: .public) to \(claimed.signalingServer ?? "nil", privacy: .public), waiting 3s for WebRTC init"
-                )
-                try? await Task.sleep(for: .seconds(3))
-            }
-            return claimed
         } catch {
             logger.error(
-                "Pre-handoff claim failed id=\(session.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                "Pre-handoff auth refresh failed id=\(session.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
-            return session
         }
+        logger.info(
+            "Pre-handoff ready id=\(session.id, privacy: .public) signalingServer=\(session.signalingServer ?? "nil", privacy: .public) signalingUrl=\(session.signalingUrl ?? "nil", privacy: .public) mediaIp=\(session.mediaIp ?? "nil", privacy: .public)"
+        )
+        return session
     }
 
     private var isFreeTierUser: Bool {
