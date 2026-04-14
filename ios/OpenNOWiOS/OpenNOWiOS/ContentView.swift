@@ -43,21 +43,11 @@ struct MainTabView: View {
     @State private var presentedStreamerSession: ActiveSession?
     private static let maxStreamerAutoRetries = 3
 
-    private var isPad: Bool {
-        UIDevice.current.userInterfaceIdiom == .pad
-    }
-    
-    private var queuePillAlignment: Alignment {
-        isPad ? .bottom : .top
-    }
-    
-    private var queuePillAlignmentEdge: Edge {
-        isPad ? .bottom : .top
-    }
+    /// Keep the pill at the top on all devices so it does not cover tab content
+    /// (e.g. Session “End Session” and scrollable bottom actions on iPad).
+    private var queuePillAlignment: Alignment { .top }
 
-    private var queuePillPaddingEdge: Edge.Set {
-        isPad ? .bottom : .top
-    }
+    private var queuePillPaddingEdge: Edge.Set { .top }
 
     var body: some View {
         TabView {
@@ -80,22 +70,17 @@ struct MainTabView: View {
                         .environmentObject(store)
                         .ignoresSafeArea()
                         .zIndex(1000)
-                        .transition(
-                            .asymmetric(
-                                insertion: .scale(scale: 0.96).combined(with: .opacity),
-                                removal: .move(edge: .bottom).combined(with: .opacity)
-                            )
-                        )
+                        .transition(.opacity)
                 }
             }
         }
-        .animation(.spring(response: 0.42, dampingFraction: 0.86), value: store.queueOverlayVisible)
+        .animation(.easeInOut(duration: 0.32), value: store.queueOverlayVisible)
         .overlay(alignment: queuePillAlignment) {
             if store.showStreamLoading && !store.queueOverlayVisible {
                 QueueStatusPill()
                     .environmentObject(store)
                     .padding(queuePillPaddingEdge, 8)
-                    .transition(.move(edge: queuePillAlignmentEdge).combined(with: .opacity))
+                    .transition(.opacity)
             }
         }
         .overlay {
@@ -120,8 +105,15 @@ struct MainTabView: View {
                 .transition(.opacity)
             }
         }
-        .animation(.spring(response: 0.36, dampingFraction: 0.88), value: store.showStreamLoading && !store.queueOverlayVisible)
+        .animation(.easeInOut(duration: 0.28), value: store.showStreamLoading && !store.queueOverlayVisible)
         .animation(.easeInOut(duration: 0.2), value: presentedStreamerSession?.id)
+        .onAppear {
+            // MainTabView can be recreated by upstream auth/bootstrap state updates.
+            // Reattach streamer overlay if store already has an active stream session.
+            if let activeStream = store.streamSession {
+                presentedStreamerSession = activeStream
+            }
+        }
         .onChange(of: store.streamSession) { _, newValue in
             if let newValue {
                 presentedStreamerSession = newValue
@@ -170,8 +162,9 @@ private struct QueueStatusPill: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 0) {
             Button {
+                Haptics.light()
                 if store.canReopenStreamer {
                     store.reopenStreamer()
                 } else {
@@ -197,25 +190,32 @@ private struct QueueStatusPill: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 14)
+                .padding(.leading, 14)
+                .padding(.trailing, 12)
                 .padding(.vertical, 11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
             Divider()
                 .frame(height: 20)
+                .padding(.vertical, 8)
 
             Button(role: .destructive) {
+                Haptics.medium()
                 Task { await store.endSession() }
             } label: {
                 Image(systemName: "stop.fill")
                     .font(.caption.bold())
-                    .frame(width: 28, height: 28)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
                     .foregroundStyle(.red)
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 10)
+        .padding(.leading, 4)
+        .padding(.trailing, 2)
         .queuePillBackground()
         .shadow(color: brandAccent.opacity(0.12), radius: 8, y: 2)
         .shadow(color: .black.opacity(0.2), radius: 12, y: 4)

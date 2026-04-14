@@ -5,6 +5,8 @@ struct SessionView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @State private var pingSamples: [Double] = []
     @State private var fpsSamples: [Double] = []
+    /// Which resumable row’s “End” is in progress (shows spinner).
+    @State private var endingRemoteSessionId: String?
 
     var body: some View {
         NavigationStack {
@@ -30,6 +32,7 @@ struct SessionView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
+                        Haptics.light()
                         Task { await store.refreshRemoteSessions() }
                     } label: {
                         Image(systemName: "arrow.clockwise")
@@ -196,6 +199,7 @@ struct SessionView: View {
 
     private var endSessionButton: some View {
         Button(role: .destructive) {
+            Haptics.medium()
             Task { await store.endSession() }
         } label: {
             Label("End Session", systemImage: "stop.circle.fill")
@@ -240,6 +244,7 @@ struct SessionView: View {
                     .glassCard()
             } else {
                 ForEach(store.resumableSessions) { candidate in
+                    let isEndingRemote = endingRemoteSessionId == candidate.id
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Session")
@@ -257,17 +262,36 @@ struct SessionView: View {
                         Spacer()
                         HStack(spacing: 8) {
                             Button("Resume") {
+                                Haptics.light()
                                 store.scheduleResume(candidate: candidate)
                             }
                             .buttonStyle(.bordered)
                             .tint(brandAccent)
+                            .disabled(isEndingRemote)
 
                             Button(role: .destructive) {
-                                Task { await store.endRemoteSession(candidate: candidate) }
+                                Haptics.medium()
+                                Task { @MainActor in
+                                    endingRemoteSessionId = candidate.id
+                                    await store.endRemoteSession(candidate: candidate)
+                                    if endingRemoteSessionId == candidate.id {
+                                        endingRemoteSessionId = nil
+                                    }
+                                }
                             } label: {
-                                Text("End")
+                                Group {
+                                    if isEndingRemote {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .tint(.red)
+                                    } else {
+                                        Text("End")
+                                    }
+                                }
+                                .frame(minWidth: 52, minHeight: 20)
                             }
                             .buttonStyle(.bordered)
+                            .disabled(isEndingRemote)
                         }
                     }
                     .padding(14)

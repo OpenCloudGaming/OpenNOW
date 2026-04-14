@@ -22,6 +22,7 @@
 		BB0000000000000000000008 /* PrintedWasteQueueView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000018 /* PrintedWasteQueueView.swift */; };
 		BB0000000000000000000009 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000019 /* NotificationManager.swift */; };
 		BB000000000000000000000A /* StreamerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001A /* StreamerView.swift */; };
+		BB000000000000000000000B /* Haptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001B /* Haptics.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -41,6 +42,7 @@
 		BB0000000000000000000018 /* PrintedWasteQueueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrintedWasteQueueView.swift; sourceTree = "<group>"; };
 		BB0000000000000000000019 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
 		BB000000000000000000001A /* StreamerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamerView.swift; sourceTree = "<group>"; };
+		BB000000000000000000001B /* Haptics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Haptics.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -66,6 +68,7 @@
 			isa = PBXGroup;
 			children = (
 				74417F292F8C848000233AC1 /* BrandLogoView.swift */,
+				BB000000000000000000001B /* Haptics.swift */,
 				0A1B2C3D4E5F6A7B8C9D2001 /* OpenNOWiOSApp.swift */,
 				0A1B2C3D4E5F6A7B8C9D2002 /* ContentView.swift */,
 				0A1B2C3D4E5F6A7B8C9D2006 /* OpenNOWStore.swift */,
@@ -164,6 +167,7 @@
 				0A1B2C3D4E5F6A7B8C9D1001 /* OpenNOWiOSApp.swift in Sources */,
 				0A1B2C3D4E5F6A7B8C9D1005 /* OpenNOWStore.swift in Sources */,
 				74417F2A2F8C848000233AC1 /* BrandLogoView.swift in Sources */,
+				BB000000000000000000000B /* Haptics.swift in Sources */,
 				BB0000000000000000000001 /* LoginView.swift in Sources */,
 				BB0000000000000000000002 /* HomeView.swift in Sources */,
 				BB0000000000000000000003 /* BrowseView.swift in Sources */,
@@ -228,7 +232,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 67;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -262,7 +266,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 67;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;

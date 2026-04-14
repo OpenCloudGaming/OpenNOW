@@ -136,6 +136,7 @@ struct StreamLoadingView: View {
 
                 HStack(spacing: 12) {
                     Button {
+                        Haptics.light()
                         store.minimizeQueueOverlay()
                     } label: {
                         Text("Minimize")
@@ -144,6 +145,7 @@ struct StreamLoadingView: View {
                     .streamActionButtonStyle()
 
                     Button(role: .destructive) {
+                        Haptics.medium()
                         Task { await store.endSession() }
                     } label: {
                         Text("Cancel")

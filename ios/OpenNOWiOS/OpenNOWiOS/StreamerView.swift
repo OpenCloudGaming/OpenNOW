@@ -227,7 +227,7 @@ private struct StreamerWebView: UIViewRepresentable {
             mediaIp: session.mediaIp,
             mediaPort: session.mediaPort,
             preferredCodec: Self.normalizePreferredCodec(settings.preferredCodec),
-            fps: settings.preferredFPS,
+            fps: min(settings.preferredFPS, 60),
             maxBitrateKbps: profile.maxBitrateKbps,
             width: profile.width,
             height: profile.height,
@@ -243,13 +243,23 @@ private struct StreamerWebView: UIViewRepresentable {
   <style>
     html,body{margin:0;padding:0;background:#000;width:100%;height:100%;overflow:hidden}
     #video{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
-    #tap{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);padding:8px 12px;
-      color:#fff;background:rgba(0,0,0,.5);border-radius:999px;font:12px -apple-system;}
+    #infoTab{position:fixed;right:0;top:50%;transform:translateY(-50%);z-index:35;
+      border:none;border-radius:12px 0 0 12px;padding:10px 8px;background:rgba(28,28,30,0.78);
+      color:#fff;font:12px -apple-system;font-weight:600;letter-spacing:.2px;cursor:pointer;
+      backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.16);
+      border-right:none;}
+    #infoPanel{position:fixed;right:12px;top:50%;transform:translate(130%, -50%);z-index:34;
+      width:min(280px,calc(100vw - 34px));max-height:75vh;overflow:auto;padding:12px;border-radius:14px;
+      color:#fff;background:rgba(22,22,25,0.8);border:1px solid rgba(255,255,255,0.16);
+      font:12px -apple-system;transition:transform .22s ease,opacity .22s ease;opacity:0;
+      backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);}
+    #infoPanel.open{transform:translate(0,-50%);opacity:1;}
+    .infoAction{width:100%;padding:9px 10px;border-radius:10px;border:1px solid rgba(255,255,255,0.24);
+      background:rgba(255,255,255,0.08);color:#fff;font:12px -apple-system;font-weight:600;cursor:pointer;}
   </style>
 </head>
 <body>
   <video id="video" playsinline autoplay muted></video>
-  <div id="tap">Tap to unmute</div>
   <div id="stats" style="position:fixed;left:12px;top:12px;z-index:30;padding:6px 10px;
     color:#d5ffd5;background:rgba(0,0,0,0.58);border:1px solid rgba(255,255,255,0.15);
     border-radius:10px;font:12px -apple-system;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">
@@ -258,7 +268,23 @@ private struct StreamerWebView: UIViewRepresentable {
   <div id="touchpad" style="position:fixed;inset:0;z-index:10;touch-action:none;"></div>
   <div id="touchHint" style="position:fixed;left:50%;bottom:60px;transform:translateX(-50%);
     color:rgba(255,255,255,0.45);font:11px -apple-system;pointer-events:none;user-select:none;
-    text-align:center;transition:opacity 1s;">Drag to move · Tap to click · Pinch to zoom · 2-finger pan when zoomed</div>
+    text-align:center;transition:opacity 1s;">Drag to move · Tap to click · 2-finger tap for right click</div>
+  <button id="infoTab" onclick="toggleInfoPanel()">Info</button>
+  <aside id="infoPanel">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;">
+      <strong style="font-size:13px;">Stream Controls</strong>
+      <button onclick="toggleInfoPanel()" style="border:none;background:transparent;color:#fff;font-size:16px;line-height:1;cursor:pointer;">×</button>
+    </div>
+    <div style="display:grid;gap:8px;margin-bottom:10px;">
+      <button id="audioBtn" class="infoAction" onclick="unlockAudio()">Enable Audio</button>
+      <button id="gpEmuBtn" class="infoAction" onclick="toggleGamepadEmulation()">Controller Emulation: On</button>
+    </div>
+    <div style="line-height:1.45;color:rgba(255,255,255,0.86);">
+      <div style="margin-bottom:6px;"><strong>Touchpad:</strong> drag to move, tap to click, two-finger tap for right click.</div>
+      <div style="margin-bottom:6px;"><strong>Controller:</strong> circular stick moves, ABXY map to game input, right stick assists mouse look.</div>
+      <div id="controllerState" style="color:rgba(255,255,255,0.65);">Controller: waiting...</div>
+    </div>
+  </aside>
   <button id="kbBtn" onclick="toggleKeyboard()" style="position:fixed;right:16px;bottom:16px;z-index:20;
     width:48px;height:48px;border-radius:50%;background:rgba(30,30,30,0.75);color:#fff;
     border:1px solid rgba(255,255,255,0.25);font-size:22px;cursor:pointer;
@@ -281,11 +307,13 @@ private struct StreamerWebView: UIViewRepresentable {
   </div>
   <div id="gpPad" style="display:none;position:fixed;left:0;right:0;bottom:12px;z-index:25;pointer-events:none;">
     <div style="display:flex;justify-content:space-between;gap:16px;padding:0 12px;">
-      <div style="display:grid;grid-template-columns:56px 56px 56px;grid-template-rows:56px 56px 56px;gap:6px;pointer-events:auto;">
-        <button data-key="w" style="grid-column:2;grid-row:1;" class="gpKey">▲</button>
-        <button data-key="a" style="grid-column:1;grid-row:2;" class="gpKey">◀</button>
-        <button data-key="s" style="grid-column:2;grid-row:3;" class="gpKey">▼</button>
-        <button data-key="d" style="grid-column:3;grid-row:2;" class="gpKey">▶</button>
+      <div id="joyBase" style="position:relative;width:146px;height:146px;border-radius:50%;
+        pointer-events:auto;touch-action:none;background:rgba(20,20,20,0.72);
+        border:1px solid rgba(255,255,255,0.2);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+        box-shadow:inset 0 0 0 1px rgba(255,255,255,0.08);">
+        <div id="joyStick" style="position:absolute;left:50%;top:50%;width:62px;height:62px;border-radius:50%;
+          transform:translate(-50%,-50%);background:rgba(255,255,255,0.18);
+          border:1px solid rgba(255,255,255,0.35);box-shadow:0 6px 18px rgba(0,0,0,0.3);"></div>
       </div>
       <div style="display:grid;grid-template-columns:56px 56px;grid-template-rows:56px 56px;gap:8px;pointer-events:auto;">
         <button data-key="j" class="gpKey">X</button>
@@ -302,7 +330,6 @@ private struct StreamerWebView: UIViewRepresentable {
   <script>
   const cfg = \#(payload);
   const video = document.getElementById("video");
-  const tap = document.getElementById("tap");
   let ws = null;
   let pc = null;
   let ack = 0;
@@ -331,6 +358,12 @@ private struct StreamerWebView: UIViewRepresentable {
   const peerId = 2;
   const peerName = "peer-" + Math.floor(Math.random() * 1e10);
   const statsEl = document.getElementById('stats');
+  const infoPanel = document.getElementById('infoPanel');
+  const infoTab = document.getElementById('infoTab');
+  const audioBtn = document.getElementById('audioBtn');
+  const gpEmuBtn = document.getElementById('gpEmuBtn');
+  const controllerState = document.getElementById('controllerState');
+  const remoteMediaStream = new MediaStream();
   let inputProtocolVersion = 2;
   let inputHandshakeComplete = false;
   let inputFallbackTimer = null;
@@ -341,12 +374,62 @@ private struct StreamerWebView: UIViewRepresentable {
     enablePartiallyReliableTransferHid: DEFAULT_PR_HID_MASK
   };
   let offerAccepted = false;
+  let infoPanelOpen = false;
+  let audioUnlocked = false;
+  let audioRetryTimer = null;
+  let gamepadEmulationEnabled = true;
 
   function post(type, message) {
     try { window.webkit.messageHandlers.opennow.postMessage({ type, message }); } catch (_) {}
   }
   function log(message) { post("log", message); }
   function fail(message) { post("error", message); }
+  function toggleInfoPanel(forceOpen) {
+    infoPanelOpen = typeof forceOpen === 'boolean' ? forceOpen : !infoPanelOpen;
+    if (infoPanel) {
+      infoPanel.classList.toggle('open', infoPanelOpen);
+    }
+    if (infoTab) {
+      infoTab.textContent = infoPanelOpen ? 'Close' : 'Info';
+    }
+  }
+  function updateAudioButton() {
+    if (!audioBtn) return;
+    audioBtn.textContent = video.muted ? 'Enable Audio' : 'Audio On';
+  }
+  async function unlockAudio() {
+    if (!video.muted) {
+      updateAudioButton();
+      return;
+    }
+    video.muted = false;
+    video.volume = 1;
+    try { await video.play(); } catch (_) {}
+    audioUnlocked = !video.muted;
+    updateAudioButton();
+  }
+  function scheduleAudioRetry() {
+    if (audioRetryTimer) return;
+    audioRetryTimer = setTimeout(async () => {
+      audioRetryTimer = null;
+      await unlockAudio();
+      if (video.muted) {
+        scheduleAudioRetry();
+      }
+    }, 750);
+  }
+  async function ensureAudioActive() {
+    await unlockAudio();
+    if (video.muted) {
+      scheduleAudioRetry();
+    }
+  }
+  function toggleGamepadEmulation() {
+    gamepadEmulationEnabled = !gamepadEmulationEnabled;
+    if (gpEmuBtn) {
+      gpEmuBtn.textContent = `Controller Emulation: ${gamepadEmulationEnabled ? 'On' : 'Off'}`;
+    }
+  }
   window.addEventListener('error', (event) => {
     const message = event && event.message ? event.message : 'unknown';
     const source = event && event.filename ? event.filename : 'inline';
@@ -395,9 +478,13 @@ private struct StreamerWebView: UIViewRepresentable {
     if (hb) { clearInterval(hb); hb = null; }
     if (hbInput) { clearInterval(hbInput); hbInput = null; }
     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+    if (audioRetryTimer) { clearTimeout(audioRetryTimer); audioRetryTimer = null; }
     stopKeyframeTimer();
     lastBytesReceived = 0;
     lastBytesTimestamp = 0;
+    for (const track of remoteMediaStream.getTracks()) {
+      try { remoteMediaStream.removeTrack(track); } catch (_) {}
+    }
     if (reliableCh) { try { reliableCh.close(); } catch (_) {} }
     if (partialCh) { try { partialCh.close(); } catch (_) {} }
     reliableCh = null;
@@ -1113,24 +1200,19 @@ private struct StreamerWebView: UIViewRepresentable {
     thisPc.ontrack = (event) => {
       const kind = event.track.kind;
       configureReceiverLowLatency(event.receiver, kind);
+      if (!remoteMediaStream.getTracks().some((track) => track.id === event.track.id)) {
+        remoteMediaStream.addTrack(event.track);
+      }
       if (kind === 'video') {
-        if (event.streams && event.streams[0]) {
-          video.srcObject = event.streams[0];
-        } else {
-          const stream = new MediaStream();
-          stream.addTrack(event.track);
-          video.srcObject = stream;
-        }
+        video.srcObject = remoteMediaStream;
         video.play().catch(() => {});
+        ensureAudioActive();
         post('status', 'Streamer connected');
         ensureStatsTicker();
         startKeyframeTimer();
       } else if (kind === 'audio') {
-        if (event.streams && event.streams[0] && video.srcObject) {
-          for (const t of event.streams[0].getAudioTracks()) {
-            video.srcObject.addTrack(t);
-          }
-        }
+        video.srcObject = remoteMediaStream;
+        ensureAudioActive();
       }
     };
     thisPc.onicecandidate = (event) => {
@@ -1247,14 +1329,17 @@ private struct StreamerWebView: UIViewRepresentable {
   const gpPad = document.getElementById('gpPad');
   const gpBtn = document.getElementById('gpBtn');
   const gpHide = document.getElementById('gpHide');
+  const joyBase = document.getElementById('joyBase');
+  const joyStick = document.getElementById('joyStick');
   let kbPrevLen = 0;
   let lastTX = 0, lastTY = 0;
   let tapStartX = 0, tapStartY = 0;
   let tStartTime = 0, tMoved = false, activeTouchId = null;
+  let mouseGestureActive = false;
   let twoFingerStart = 0;
   let twoFingerTapPending = false;
   const MOVE_CLICK_CANCEL_PX = 8;
-  const pointerSpeed = 1.2;
+  const pointerSpeed = 1.05;
   let zoomScale = 1;
   let zoomTx = 0;
   let zoomTy = 0;
@@ -1268,8 +1353,15 @@ private struct StreamerWebView: UIViewRepresentable {
   const ZOOM_MIN = 1;
   const ZOOM_MAX = 3;
   const ZOOM_DEFAULT_STEP = 0.3;
+  const MAX_MOUSE_DELTA_PER_FRAME = 64;
   const touchpad = document.getElementById('touchpad');
   const touchHint = document.getElementById('touchHint');
+  const activePadKeys = new Map();
+  /** Keys driven only by physical gamepad (never cleared by virtual joystick). */
+  const GAMEPAD_ONLY_KEYS = new Set(['k', 'j', 'l', 'i', 'q', 'e', '\n']);
+  let joystickTouchId = null;
+  let joystickWindowCleanup = null;
+  const joystickMaxOffset = 42;
   if (!cfg.showStatsOverlay && statsEl) {
     statsEl.style.display = 'none';
   }
@@ -1287,6 +1379,7 @@ private struct StreamerWebView: UIViewRepresentable {
     else hideKeyboard();
   }
   function showKeyboard() {
+    unlockAudio();
     kbBar.style.display = 'block';
     kbInput.value = '';
     kbPrevLen = 0;
@@ -1297,6 +1390,7 @@ private struct StreamerWebView: UIViewRepresentable {
     kbInput.blur();
   }
   function toggleGamepad() {
+    unlockAudio();
     setGamepadVisible(gpPad.style.display === 'none');
   }
   function clamp(value, min, max) {
@@ -1352,8 +1446,8 @@ private struct StreamerWebView: UIViewRepresentable {
       pendingMoveDy = 0;
       return;
     }
-    const dx = Math.round(pendingMoveDx);
-    const dy = Math.round(pendingMoveDy);
+    const dx = Math.round(clamp(pendingMoveDx, -MAX_MOUSE_DELTA_PER_FRAME, MAX_MOUSE_DELTA_PER_FRAME));
+    const dy = Math.round(clamp(pendingMoveDy, -MAX_MOUSE_DELTA_PER_FRAME, MAX_MOUSE_DELTA_PER_FRAME));
     pendingMoveDx = 0;
     pendingMoveDy = 0;
     if (dx === 0 && dy === 0) return;
@@ -1415,6 +1509,7 @@ private struct StreamerWebView: UIViewRepresentable {
       const key = btn.getAttribute('data-key');
       const down = (e) => {
         e.preventDefault();
+        unlockAudio();
         btn.style.transform = 'scale(0.95)';
         sendVirtualKey(key, true);
       };
@@ -1435,14 +1530,186 @@ private struct StreamerWebView: UIViewRepresentable {
       btn.style.fontSize = '18px';
     });
   }
+  function resetVirtualJoystick() {
+    if (joyStick) {
+      joyStick.style.transform = 'translate(-50%,-50%)';
+    }
+    setJoystickMoveKeys(false, false, false, false);
+  }
+  function updateVirtualJoystickFromTouch(touch) {
+    if (!joyBase || !touch) return;
+    const rect = joyBase.getBoundingClientRect();
+    const centerX = rect.left + (rect.width / 2);
+    const centerY = rect.top + (rect.height / 2);
+    let dx = touch.clientX - centerX;
+    let dy = touch.clientY - centerY;
+    const distance = Math.hypot(dx, dy);
+    if (distance > joystickMaxOffset && distance > 0) {
+      const scale = joystickMaxOffset / distance;
+      dx *= scale;
+      dy *= scale;
+    }
+    if (joyStick) {
+      joyStick.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    }
+    const threshold = joystickMaxOffset * 0.28;
+    setJoystickMoveKeys(dx < -threshold, dx > threshold, dy < -threshold, dy > threshold);
+  }
+  function setJoystickMoveKeys(left, right, up, down) {
+    setPadKeyState('a', left);
+    setPadKeyState('d', right);
+    setPadKeyState('w', up);
+    setPadKeyState('s', down);
+  }
+  function releaseGamepadOnlyKeys() {
+    GAMEPAD_ONLY_KEYS.forEach((key) => {
+      if (activePadKeys.get(key) === true) {
+        sendVirtualKey(key, false);
+        activePadKeys.delete(key);
+      }
+    });
+  }
+  function hookVirtualJoystick() {
+    if (!joyBase) return;
+    const detachWindowListeners = () => {
+      if (typeof joystickWindowCleanup === 'function') {
+        joystickWindowCleanup();
+        joystickWindowCleanup = null;
+      }
+    };
+    const onWindowMove = (e) => {
+      if (joystickTouchId == null) return;
+      const t = Array.from(e.touches).find((item) => item.identifier === joystickTouchId);
+      if (!t) return;
+      e.preventDefault();
+      updateVirtualJoystickFromTouch(t);
+    };
+    const onWindowEnd = (e) => {
+      if (joystickTouchId == null) return;
+      const endedHere = Array.from(e.changedTouches).some((item) => item.identifier === joystickTouchId);
+      if (!endedHere) return;
+      e.preventDefault();
+      joystickTouchId = null;
+      detachWindowListeners();
+      resetVirtualJoystick();
+    };
+    const onStart = (e) => {
+      if (joystickTouchId != null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      unlockAudio();
+      detachWindowListeners();
+      const t = e.changedTouches[0];
+      if (!t) return;
+      joystickTouchId = t.identifier;
+      const opts = { passive: false, capture: true };
+      window.addEventListener('touchmove', onWindowMove, opts);
+      window.addEventListener('touchend', onWindowEnd, opts);
+      window.addEventListener('touchcancel', onWindowEnd, opts);
+      joystickWindowCleanup = () => {
+        window.removeEventListener('touchmove', onWindowMove, opts);
+        window.removeEventListener('touchend', onWindowEnd, opts);
+        window.removeEventListener('touchcancel', onWindowEnd, opts);
+      };
+      updateVirtualJoystickFromTouch(t);
+    };
+    joyBase.addEventListener('touchstart', onStart, { passive: false, capture: true });
+  }
+  function setPadKeyState(key, isDown) {
+    if (!key) return;
+    const currentlyDown = activePadKeys.get(key) === true;
+    if (currentlyDown === isDown) return;
+    activePadKeys.set(key, isDown);
+    sendVirtualKey(key, isDown);
+  }
+  function releaseAllPadKeys() {
+    joystickTouchId = null;
+    if (typeof joystickWindowCleanup === 'function') {
+      joystickWindowCleanup();
+      joystickWindowCleanup = null;
+    }
+    activePadKeys.forEach((isDown, key) => {
+      if (isDown) sendVirtualKey(key, false);
+    });
+    activePadKeys.clear();
+    if (joyStick) {
+      joyStick.style.transform = 'translate(-50%,-50%)';
+    }
+  }
+  function pollGamepadState() {
+    if (!gamepadEmulationEnabled) {
+      releaseAllPadKeys();
+      if (controllerState) controllerState.textContent = 'Controller: emulation paused';
+      requestAnimationFrame(pollGamepadState);
+      return;
+    }
+    const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
+    const pad = pads[0];
+    if (!pad) {
+      releaseGamepadOnlyKeys();
+      if (joystickTouchId == null) {
+        setJoystickMoveKeys(false, false, false, false);
+      }
+      if (controllerState) controllerState.textContent = 'Controller: waiting…';
+      requestAnimationFrame(pollGamepadState);
+      return;
+    }
+    if (controllerState) {
+      controllerState.textContent = `Controller: ${pad.id || 'connected'}`;
+    }
+    unlockAudio();
+    const buttonMap = {
+      0: 'k', // A
+      1: 'j', // B
+      2: 'l', // X
+      3: 'i', // Y
+      4: 'q', // LB
+      5: 'e', // RB
+      9: '\n' // Start
+    };
+    Object.keys(buttonMap).forEach((rawIndex) => {
+      const index = Number(rawIndex);
+      const pressed = !!pad.buttons[index] && pad.buttons[index].pressed;
+      setPadKeyState(buttonMap[index], pressed);
+    });
+    const joyOverridesMove = joystickTouchId != null;
+    if (!joyOverridesMove) {
+      setPadKeyState('w', !!pad.buttons[12]?.pressed);
+      setPadKeyState('s', !!pad.buttons[13]?.pressed);
+      setPadKeyState('a', !!pad.buttons[14]?.pressed);
+      setPadKeyState('d', !!pad.buttons[15]?.pressed);
+
+      const leftDeadzone = 0.32;
+      const lx = pad.axes[0] || 0;
+      const ly = pad.axes[1] || 0;
+      setPadKeyState('a', lx < -leftDeadzone || !!pad.buttons[14]?.pressed);
+      setPadKeyState('d', lx > leftDeadzone || !!pad.buttons[15]?.pressed);
+      setPadKeyState('w', ly < -leftDeadzone || !!pad.buttons[12]?.pressed);
+      setPadKeyState('s', ly > leftDeadzone || !!pad.buttons[13]?.pressed);
+    }
+
+    const rx = pad.axes[2] || 0;
+    const ry = pad.axes[3] || 0;
+    if (Math.abs(rx) > 0.18 || Math.abs(ry) > 0.18) {
+      pendingMoveDx += rx * 8.5;
+      pendingMoveDy += ry * 8.5;
+      if (!moveFrame) {
+        moveFrame = requestAnimationFrame(flushPendingMouseMove);
+      }
+    }
+    requestAnimationFrame(pollGamepadState);
+  }
+  window.addEventListener('blur', releaseAllPadKeys);
 
   setTimeout(() => { if (touchHint) touchHint.style.opacity = '0'; }, 4000);
 
   touchpad.addEventListener('touchstart', (e) => {
     e.preventDefault();
-    if (e.touches.length === 2) {
-      const t1 = e.touches[0];
-      const t2 = e.touches[1];
+    unlockAudio();
+    const touches = e.targetTouches;
+    if (touches.length === 2) {
+      const t1 = touches[0];
+      const t2 = touches[1];
       const center = pinchCenter(t1, t2);
       pinchStartDistance = pinchDistance(t1, t2);
       pinchStartScale = zoomScale;
@@ -1452,12 +1719,13 @@ private struct StreamerWebView: UIViewRepresentable {
       pinchTranslateStartY = zoomTy;
       pinchGestureMoved = false;
       twoFingerStart = Date.now();
-      twoFingerTapPending = true;
+      twoFingerTapPending = !mouseGestureActive;
       activeTouchId = null;
       return;
     }
-    const t = e.touches[0];
+    const t = touches[0];
     if (!t) return;
+    mouseGestureActive = true;
     activeTouchId = t.identifier;
     lastTX = t.clientX;
     lastTY = t.clientY;
@@ -1470,14 +1738,19 @@ private struct StreamerWebView: UIViewRepresentable {
 
   touchpad.addEventListener('touchmove', (e) => {
     e.preventDefault();
-    if (e.touches.length === 2) {
-      const t1 = e.touches[0];
-      const t2 = e.touches[1];
+    const touches = e.targetTouches;
+    if (touches.length === 2) {
+      if (mouseGestureActive && zoomScale <= 1.01) {
+        twoFingerTapPending = false;
+        return;
+      }
+      const t1 = touches[0];
+      const t2 = touches[1];
       const distance = pinchDistance(t1, t2);
       const center = pinchCenter(t1, t2);
       if (pinchStartDistance > 0) {
         const nextScale = clamp((distance / pinchStartDistance) * pinchStartScale, ZOOM_MIN, ZOOM_MAX);
-        if (Math.abs(nextScale - zoomScale) > 0.01) {
+        if (Math.abs(nextScale - zoomScale) > 0.04 || Math.abs(distance - pinchStartDistance) > 10) {
           pinchGestureMoved = true;
         }
         zoomScale = nextScale;
@@ -1485,7 +1758,7 @@ private struct StreamerWebView: UIViewRepresentable {
       if (zoomScale > 1.01) {
         zoomTx = pinchTranslateStartX + (center.x - pinchCenterStartX);
         zoomTy = pinchTranslateStartY + (center.y - pinchCenterStartY);
-        if (Math.abs(center.x - pinchCenterStartX) > 2 || Math.abs(center.y - pinchCenterStartY) > 2) {
+        if (Math.abs(center.x - pinchCenterStartX) > 8 || Math.abs(center.y - pinchCenterStartY) > 8) {
           pinchGestureMoved = true;
         }
       }
@@ -1495,7 +1768,7 @@ private struct StreamerWebView: UIViewRepresentable {
       applyVideoTransform();
       return;
     }
-    const t = Array.from(e.touches).find((item) => item.identifier === activeTouchId) || e.touches[0];
+    const t = Array.from(touches).find((item) => item.identifier === activeTouchId) || touches[0];
     if (!t) return;
     const dxRaw = t.clientX - lastTX;
     const dyRaw = t.clientY - lastTY;
@@ -1518,9 +1791,11 @@ private struct StreamerWebView: UIViewRepresentable {
 
   touchpad.addEventListener('touchend', (e) => {
     e.preventDefault();
-    if (e.touches.length === 0 && zoomScale > 1.01 && pinchGestureMoved) {
+    const remainingTouches = e.targetTouches;
+    if (remainingTouches.length === 0 && zoomScale > 1.01 && pinchGestureMoved) {
       pinchGestureMoved = false;
       activeTouchId = null;
+      mouseGestureActive = false;
       twoFingerTapPending = false;
       return;
     }
@@ -1532,16 +1807,17 @@ private struct StreamerWebView: UIViewRepresentable {
     flushPendingMouseMove();
     const holdMs = Date.now() - tStartTime;
     if (!tMoved && holdMs < 500) {
-      if (e.changedTouches.length === 1 && e.targetTouches.length === 0) {
+      if (e.changedTouches.length === 1 && remainingTouches.length === 0) {
         sendInput(encodeMouseButton(8, 1));
         setTimeout(() => sendInput(encodeMouseButton(9, 1)), 35);
       }
     }
-    if (twoFingerTapPending && zoomScale <= 1.01 && e.touches.length === 0 && Date.now() - twoFingerStart < 400) {
+    if (twoFingerTapPending && zoomScale <= 1.01 && remainingTouches.length === 0 && Date.now() - twoFingerStart < 400) {
       sendInput(encodeMouseButton(8, 3));
       setTimeout(() => sendInput(encodeMouseButton(9, 3)), 35);
     }
     activeTouchId = null;
+    mouseGestureActive = false;
     twoFingerTapPending = false;
   }, { passive: false });
 
@@ -1663,15 +1939,24 @@ private struct StreamerWebView: UIViewRepresentable {
     }
   }
   hookVirtualGamepadButtons();
+  hookVirtualJoystick();
   if (gpHide) {
     gpHide.onclick = () => setGamepadVisible(false);
   }
+  if (infoPanel) {
+    infoPanel.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+  }
+  document.addEventListener('touchstart', (e) => {
+    if (!infoPanelOpen) return;
+    const target = e.target;
+    if (infoPanel && !infoPanel.contains(target) && infoTab && !infoTab.contains(target)) {
+      toggleInfoPanel(false);
+    }
+  }, { passive: true });
   setGamepadVisible(false);
-  tap.onclick = async () => {
-    video.muted = false;
-    tap.style.display = 'none';
-    try { await video.play(); } catch (_) {}
-  };
+  video.addEventListener('volumechange', updateAudioButton);
+  updateAudioButton();
+  pollGamepadState();
   // GPU keep-alive: minimal WebGL rAF loop prevents GPUProcess idle-exit during
   // WebRTC negotiation. Runs until the WKWebView is destroyed (streamer dismissed).
   (function() {
@@ -1694,15 +1979,13 @@ private struct StreamerWebView: UIViewRepresentable {
     }
 
     private static func normalizePreferredCodec(_ codec: String) -> String {
+        // iOS WKWebView is currently most reliable with H264 decode path.
+        // Force non-H264 selections to H264 to avoid connected-but-black video.
         switch codec.uppercased() {
-        case "HEVC", "H265":
-            return "H265"
-        case "AV1":
-            return "AV1"
         case "H264":
             return "H264"
         default:
-            return "Auto"
+            return "H264"
         }
     }
 
@@ -1711,17 +1994,18 @@ private struct StreamerWebView: UIViewRepresentable {
         let longSide = max(nativeBounds.width, nativeBounds.height)
         let shortSide = min(nativeBounds.width, nativeBounds.height)
         let supports1440 = longSide >= 2500 || shortSide >= 1400 || UIScreen.main.nativeScale >= 3.0
+        let requestedFPS = settings.preferredFPS
 
         // Pick bitrate based on quality preference to avoid overwhelming mobile links.
         // "Data Saver" targets lower network usage; "Quality" allows higher bitrate;
-        // "Balanced" stays in the middle.
+        // "Balanced" stays in the middle while avoiding bursty spikes.
         let quality = settings.preferredQuality.lowercased()
-        let bitrateFor1080: Int = quality == "quality" ? 75_000 : (quality == "data saver" ? 25_000 : 50_000)
-        let bitrateFor1440: Int = quality == "quality" ? 100_000 : (quality == "data saver" ? 35_000 : 65_000)
+        let bitrateFor1080: Int = quality == "quality" ? 45_000 : (quality == "data saver" ? 16_000 : 28_000)
+        let bitrateFor1440: Int = quality == "quality" ? 65_000 : (quality == "data saver" ? 24_000 : 40_000)
 
         // Limit to 1440p only when explicitly requesting high FPS AND device supports it.
-        // Keep at 1080p for 60 fps or lower to reduce decode load and lag.
-        if settings.preferredFPS >= 120 && supports1440 {
+        // iOS uses a conservative 60 fps cap to improve decoder stability.
+        if requestedFPS >= 120 && supports1440 {
             return StreamProfile(width: 2560, height: 1440, maxBitrateKbps: bitrateFor1440)
         }
         return StreamProfile(width: 1920, height: 1080, maxBitrateKbps: bitrateFor1080)

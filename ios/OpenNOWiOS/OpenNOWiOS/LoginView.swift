@@ -108,6 +108,7 @@ struct LoginView: View {
             }
 
             Button {
+                Haptics.medium()
                 Task { await store.signIn() }
             } label: {
                 HStack(spacing: 10) {

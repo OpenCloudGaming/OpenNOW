@@ -47,6 +47,12 @@ struct CloudGame: Identifiable, Codable, Equatable {
     let launchAppId: String?
     let launchOptions: [GameLaunchOption]
     let uuid: String?
+    let summary: String?
+    let publisher: String?
+    let developer: String?
+    let releaseDate: String?
+    let tags: [String]?
+    let stores: [String]?
 }
 
 struct GameLaunchOption: Identifiable, Codable, Equatable {
@@ -1567,6 +1573,11 @@ private actor GFNAPIClient {
                     if seen.contains(id) { continue }
                     seen.insert(id)
                     let genre = (((app["genres"] as? [[String: Any]])?.first)?["name"] as? String) ?? "Cloud Game"
+                    let metadata = extractGameMetadata(
+                        app: app,
+                        selectedVariant: selectedVariant,
+                        launchOptions: launchOptions
+                    )
                     let icon: String = {
                         let lower = title.lowercased()
                         if lower.contains("fortnite") { return "bolt.fill" }
@@ -1586,13 +1597,96 @@ private actor GFNAPIClient {
                             imageUrl: imageUrl,
                             launchAppId: launchAppId,
                             launchOptions: launchOptions,
-                            uuid: appId
+                            uuid: appId,
+                            summary: metadata.summary,
+                            publisher: metadata.publisher,
+                            developer: metadata.developer,
+                            releaseDate: metadata.releaseDate,
+                            tags: metadata.tags,
+                            stores: metadata.stores
                         )
                     )
                 }
             }
         }
         return out
+    }
+
+    private static func extractGameMetadata(
+        app: [String: Any],
+        selectedVariant: [String: Any]?,
+        launchOptions: [GameLaunchOption]
+    ) -> (
+        summary: String?,
+        publisher: String?,
+        developer: String?,
+        releaseDate: String?,
+        tags: [String]?,
+        stores: [String]?
+    ) {
+        let summary = toOptionalString(app["description"])
+            ?? toOptionalString(app["shortDescription"])
+            ?? toOptionalString(app["tagLine"])
+            ?? toOptionalString(app["synopsis"])
+        let publisher = toOptionalString(app["publisher"])
+            ?? toOptionalString((app["publisherInfo"] as? [String: Any])?["name"])
+            ?? toOptionalString((app["publisherInfo"] as? [String: Any])?["displayName"])
+        let developer = toOptionalString(app["developer"])
+            ?? toOptionalString((app["developerInfo"] as? [String: Any])?["name"])
+            ?? toOptionalString((app["studio"] as? [String: Any])?["name"])
+        let releaseDateRaw = toOptionalString(app["releaseDate"])
+            ?? toOptionalString(app["releaseDateTime"])
+            ?? toOptionalString(selectedVariant?["releaseDate"])
+        let releaseDate = formatReleaseDate(releaseDateRaw)
+        let genreNames = ((app["genres"] as? [[String: Any]]) ?? [])
+            .compactMap { toOptionalString($0["name"]) }
+        let tagNames = toOptionalStringArray(app["tags"])
+            ?? toOptionalStringArray(app["keywords"])
+        let mergedTags = Array(Set((genreNames + (tagNames ?? [])))).sorted()
+        let stores = Array(
+            Set(launchOptions.map(\.storefront).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+        )
+        return (
+            summary: summary,
+            publisher: publisher,
+            developer: developer,
+            releaseDate: releaseDate,
+            tags: mergedTags.isEmpty ? nil : mergedTags,
+            stores: stores.isEmpty ? nil : stores.sorted()
+        )
+    }
+
+    private static func toOptionalStringArray(_ value: Any?) -> [String]? {
+        if let list = value as? [String] {
+            let cleaned = list.compactMap { toOptionalString($0) }
+            return cleaned.isEmpty ? nil : cleaned
+        }
+        if let list = value as? [[String: Any]] {
+            let cleaned = list.compactMap {
+                toOptionalString($0["name"]) ?? toOptionalString($0["title"]) ?? toOptionalString($0["label"])
+            }
+            return cleaned.isEmpty ? nil : cleaned
+        }
+        return nil
+    }
+
+    private static func formatReleaseDate(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let iso = ISO8601DateFormatter()
+        if let date = iso.date(from: raw) {
+            let formatter = DateFormatter()
+            formatter.locale = .autoupdatingCurrent
+            formatter.dateStyle = .medium
+            return formatter.string(from: date)
+        }
+        if let seconds = TimeInterval(raw) {
+            let date = Date(timeIntervalSince1970: seconds > 1_000_000_000_000 ? seconds / 1000 : seconds)
+            let formatter = DateFormatter()
+            formatter.locale = .autoupdatingCurrent
+            formatter.dateStyle = .medium
+            return formatter.string(from: date)
+        }
+        return raw
     }
 
     private static func optimizedImageURL(_ raw: String?) -> String? {
@@ -2099,14 +2193,14 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func minimizeQueueOverlay() {
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
+        withAnimation(.easeInOut(duration: 0.32)) {
             queueOverlayVisible = false
         }
     }
 
     func maximizeQueueOverlay() {
         guard activeSession != nil else { return }
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
+        withAnimation(.easeInOut(duration: 0.32)) {
             showStreamLoading = true
             queueOverlayVisible = true
         }
@@ -2531,6 +2625,11 @@ final class OpenNOWStore: ObservableObject {
             if let fromLibrary = libraryGames.first(where: { $0.launchAppId == appId }) { return fromLibrary }
         }
         return featuredGames.first ?? allGames.first ?? libraryGames.first
+    }
+
+    /// Resolved catalog entry for a remote session (for Jump back in, Session list, etc.).
+    func gameForRemoteSession(_ candidate: RemoteSessionCandidate) -> CloudGame? {
+        resolveGameForRemoteSession(candidate)
     }
 
     private func streamSessionChangeCallsite() -> String {

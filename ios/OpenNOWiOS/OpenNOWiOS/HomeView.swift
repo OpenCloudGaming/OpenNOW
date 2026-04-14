@@ -20,6 +20,11 @@ struct HomeView: View {
                             .padding(.horizontal)
                     }
 
+                    if store.user != nil, jumpBackInHasContent {
+                        sectionHeader("Jump back in")
+                        jumpBackInSection
+                    }
+
                     if !store.featuredGames.isEmpty || store.isLoadingGames {
                         sectionHeader("Featured")
                         featuredSection
@@ -147,10 +152,133 @@ struct HomeView: View {
         .padding(.vertical, 60)
     }
 
+    private var jumpBackInHasContent: Bool {
+        store.activeSession != nil || !store.resumableSessions.isEmpty
+    }
+
+    private var resumableSessionsExcludingActive: [RemoteSessionCandidate] {
+        let activeId = store.activeSession?.id
+        return store.resumableSessions.filter { $0.id != activeId }
+    }
+
+    private func jumpBackInSubtitleActive(_ session: ActiveSession) -> String {
+        switch session.status {
+        case 3:
+            return store.streamSession == nil ? "Tap to return" : "Streaming"
+        case 2:
+            return "Connecting"
+        default:
+            if let queue = session.queuePosition {
+                return queue == 1 ? "Next in queue" : "Queue #\(queue)"
+            }
+            return "In queue"
+        }
+    }
+
+    private func jumpBackInTintActive(_ session: ActiveSession) -> Color {
+        switch session.status {
+        case 3: return .green
+        case 2: return Color(red: 0.84, green: 0.72, blue: 0.12)
+        default: return .orange
+        }
+    }
+
+    private var jumpBackInSection: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 14) {
+                if let active = store.activeSession {
+                    JumpBackInCard(
+                        title: active.game.title,
+                        subtitle: jumpBackInSubtitleActive(active),
+                        game: active.game,
+                        statusTint: jumpBackInTintActive(active)
+                    ) {
+                        if store.canReopenStreamer {
+                            store.reopenStreamer()
+                        } else {
+                            store.maximizeQueueOverlay()
+                        }
+                    }
+                }
+                ForEach(Array(resumableSessionsExcludingActive.prefix(8))) { candidate in
+                    let game = store.gameForRemoteSession(candidate)
+                    JumpBackInCard(
+                        title: game?.title ?? "Cloud session",
+                        subtitle: "Resume",
+                        game: game,
+                        statusTint: .orange
+                    ) {
+                        store.scheduleResume(candidate: candidate)
+                    }
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
             .font(.title3.bold())
             .padding(.horizontal)
+    }
+}
+
+private struct JumpBackInCard: View {
+    let title: String
+    let subtitle: String
+    let game: CloudGame?
+    let statusTint: Color
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: {
+            Haptics.light()
+            onTap()
+        }) {
+            VStack(alignment: .leading, spacing: 0) {
+                Group {
+                    if let game {
+                        GameArtworkView(game: game, iconSize: 48)
+                    } else {
+                        ZStack {
+                            Color.secondary.opacity(0.18)
+                            Image(systemName: "arrow.counterclockwise.circle.fill")
+                                .font(.system(size: 40))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .frame(width: 160, height: 100)
+                .clipShape(
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 14,
+                        bottomLeadingRadius: 0,
+                        bottomTrailingRadius: 0,
+                        topTrailingRadius: 14
+                    )
+                )
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(title)
+                        .font(.caption.bold())
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(height: 32, alignment: .top)
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(statusTint.opacity(0.92), in: Capsule())
+                }
+                .padding(10)
+            }
+            .frame(width: 160)
+            .glassCard()
+            .contentShape(RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -159,25 +287,34 @@ private struct FeaturedGameCard: View {
     let onOpenDetails: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            GameArtworkView(game: game, iconSize: 48)
-            .frame(width: 160, height: 100)
-            .clipShape(UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 14))
+        Button(action: {
+            Haptics.light()
+            onOpenDetails()
+        }) {
+            VStack(alignment: .leading, spacing: 0) {
+                GameArtworkView(game: game, iconSize: 48)
+                    .frame(width: 160, height: 100)
+                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 14))
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(game.title)
-                    .font(.caption.bold())
-                    .lineLimit(2)
-                Text(game.platform)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(game.title)
+                        .font(.caption.bold())
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(height: 32, alignment: .top)
+                    Text(game.platform)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(height: 14, alignment: .top)
+                }
+                .padding(10)
             }
-            .padding(10)
+            .frame(width: 160)
+            .glassCard()
+            .contentShape(RoundedRectangle(cornerRadius: 16))
         }
-        .frame(width: 160)
-        .glassCard()
-        .contentShape(RoundedRectangle(cornerRadius: 16))
-        .onTapGesture(perform: onOpenDetails)
+        .buttonStyle(.plain)
     }
 }
 
@@ -188,16 +325,13 @@ private struct FeaturedGameCardSkeleton: View {
                 .fill(.quaternary.opacity(0.4))
                 .frame(width: 160, height: 100)
                 .shimmeringSkeleton()
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
                 RoundedRectangle(cornerRadius: 5)
                     .fill(.quaternary.opacity(0.4))
-                    .frame(height: 12)
+                    .frame(height: 32)
                 RoundedRectangle(cornerRadius: 4)
                     .fill(.quaternary.opacity(0.3))
-                    .frame(width: 70, height: 10)
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(.quaternary.opacity(0.35))
-                    .frame(height: 28)
+                    .frame(width: 70, height: 14)
             }
             .padding(10)
         }
@@ -228,31 +362,37 @@ struct GameCardView: View {
     let onOpenDetails: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            GameArtworkView(game: game, iconSize: 32)
-            .frame(maxWidth: .infinity)
-            .frame(height: 112)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+        Button(action: {
+            Haptics.light()
+            onOpenDetails()
+        }) {
+            VStack(alignment: .leading, spacing: 8) {
+                GameArtworkView(game: game, iconSize: 32)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 112)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(game.title)
-                    .font(.caption.bold())
-                    .lineLimit(2)
-                    .frame(height: 32, alignment: .topLeading)
-                Text("\(game.genre) · \(game.platform)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(height: 14, alignment: .topLeading)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(game.title)
+                        .font(.caption.bold())
+                        .lineLimit(2)
+                        .frame(height: 32, alignment: .topLeading)
+                    Text("\(game.genre) · \(game.platform)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(height: 14, alignment: .topLeading)
+                }
+
+                Spacer(minLength: 0)
             }
-
-            Spacer(minLength: 0)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(height: 220)
+            .glassCard()
+            .contentShape(RoundedRectangle(cornerRadius: 16))
         }
-        .padding(10)
-        .frame(height: 220)
-        .glassCard()
-        .contentShape(RoundedRectangle(cornerRadius: 16))
-        .onTapGesture(perform: onOpenDetails)
+        .buttonStyle(.plain)
     }
 }
 
@@ -285,6 +425,32 @@ struct GameLaunchDetailsSheet: View {
                         .foregroundStyle(.secondary)
                 }
 
+                if let summary = game.summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
+
+                VStack(spacing: 8) {
+                    if let releaseDate = game.releaseDate {
+                        metadataRow(label: "Release", value: releaseDate, icon: "calendar")
+                    }
+                    if let publisher = game.publisher {
+                        metadataRow(label: "Publisher", value: publisher, icon: "building.2")
+                    }
+                    if let developer = game.developer {
+                        metadataRow(label: "Developer", value: developer, icon: "hammer")
+                    }
+                    if let stores = resolvedStores, !stores.isEmpty {
+                        metadataRow(label: "Stores", value: stores.joined(separator: ", "), icon: "bag")
+                    }
+                    if let appId = game.uuid {
+                        metadataRow(label: "Game ID", value: appId, icon: "number")
+                    }
+                }
+
                 if launcherOptions.isEmpty {
                     Text("This game doesn't expose launch targets yet.")
                         .font(.subheadline)
@@ -295,6 +461,7 @@ struct GameLaunchDetailsSheet: View {
                             .font(.headline)
                         ForEach(launcherOptions) { option in
                             Button {
+                                Haptics.selection()
                                 selectedOption = option
                             } label: {
                                 HStack {
@@ -314,7 +481,22 @@ struct GameLaunchDetailsSheet: View {
                     }
                 }
 
+                if let tags = game.tags, !tags.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(tags.prefix(10), id: \.self) { tag in
+                                Text(tag)
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color(.systemFill), in: Capsule())
+                            }
+                        }
+                    }
+                }
+
                 Button {
+                    Haptics.medium()
                     onLaunch(selectedOption ?? launcherOptions.first)
                     dismiss()
                 } label: {
@@ -335,6 +517,7 @@ struct GameLaunchDetailsSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
+                        Haptics.light()
                         dismiss()
                     } label: {
                         Image(systemName: "xmark")
@@ -347,6 +530,37 @@ struct GameLaunchDetailsSheet: View {
         .onAppear {
             selectedOption = launcherOptions.first
         }
+    }
+
+    private var resolvedStores: [String]? {
+        if let stores = game.stores, !stores.isEmpty {
+            return stores
+        }
+        let derived = Array(Set(launcherOptions.map(\.storefront))).sorted()
+        return derived.isEmpty ? nil : derived
+    }
+
+    @ViewBuilder
+    private func metadataRow(label: String, value: String, icon: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 16, height: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
     }
 }
 

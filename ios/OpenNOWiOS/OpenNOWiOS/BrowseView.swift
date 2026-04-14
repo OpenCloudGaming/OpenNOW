@@ -96,7 +96,10 @@ struct BrowseView: View {
                 .font(.headline)
                 .foregroundStyle(.secondary)
             if !store.searchText.isEmpty {
-                Button("Clear Search") { store.searchText = "" }
+                Button("Clear Search") {
+                    Haptics.light()
+                    store.searchText = ""
+                }
                     .buttonStyle(.bordered)
             }
             Spacer()
@@ -110,7 +113,10 @@ private struct FilterChip: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button(action: {
+            Haptics.selection()
+            action()
+        }) {
             Text(label)
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 14)
