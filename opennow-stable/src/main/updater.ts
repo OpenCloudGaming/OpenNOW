@@ -260,10 +260,7 @@ export class UpdaterService {
       return this.getState();
     }
 
-    const result = await autoUpdater.checkForUpdates();
-    if (result?.isUpdateAvailable) {
-      await this.loadPreferredReleaseNotes(result.updateInfo);
-    }
+    await autoUpdater.checkForUpdates();
     return this.getState();
   }
 

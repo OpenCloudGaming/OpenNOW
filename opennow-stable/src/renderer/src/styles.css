@@ -7427,45 +7427,11 @@ button.game-card-store-chip.active:hover {
   }
 }
 
-.settings-update-panel {
-  padding: 16px;
-  background: linear-gradient(180deg, rgba(88, 217, 138, 0.05), rgba(88, 217, 138, 0.02));
-  border: 1px solid rgba(88, 217, 138, 0.14);
-  border-radius: 12px;
-}
-
-.settings-update-panel-header {
-  align-items: flex-start;
-}
-
 .settings-update-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   justify-content: flex-end;
-}
-
-.settings-update-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-}
-
-.settings-update-summary-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 12px 14px;
-  background: rgba(10, 10, 12, 0.5);
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-}
-
-.settings-update-summary-label {
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--ink-muted);
 }
 
 .settings-update-progress-bar {
@@ -7483,17 +7449,6 @@ button.game-card-store-chip.active:hover {
   transition: width var(--t-normal);
 }
 
-.settings-update-notes-card {
-  gap: 10px;
-}
-
-.settings-update-release-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: var(--ink-soft);
-}
-
 .settings-update-notes {
   max-height: 220px;
   overflow: auto;
@@ -7506,17 +7461,6 @@ button.game-card-store-chip.active:hover {
   font-size: 0.88rem;
   line-height: 1.5;
   white-space: pre-wrap;
-}
-
-.settings-update-error {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px solid var(--error-border);
-  background: var(--error-bg);
-  color: #fecaca;
 }
 
 @media (max-width: 900px) {

@@ -208,21 +208,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_COMMITISH: ${{ github.sha }}
         run: |
           mkdir -p release-artifacts
-          gh api repos/${{ github.repository }}/releases/generate-notes \
+          gh api "repos/$REPOSITORY/releases/generate-notes" \
             -X POST \
             -f tag_name="$RELEASE_TAG" \
-            -f target_commitish="${{ github.sha }}" > release-notes-response.json
+            -f target_commitish="$TARGET_COMMITISH" > release-notes-response.json
 
           python3 - <<'PYTHON'
           from datetime import datetime, timezone
           import json
+          import os
           from pathlib import Path
 
           payload = json.loads(Path('release-notes-response.json').read_text())
-          version = '${{ needs.preflight.outputs.version }}'
-          tag = '${{ needs.preflight.outputs.release_tag }}'
+          version = os.environ['RELEASE_VERSION']
+          tag = os.environ['RELEASE_TAG']
           artifact = {
               'version': version,
               'releaseName': payload.get('name') or f'OpenNOW v{version}',
