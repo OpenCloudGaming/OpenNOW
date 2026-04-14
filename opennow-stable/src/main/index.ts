@@ -566,15 +566,6 @@ async function createMainWindow(): Promise<void> {
     await mainWindow.loadFile(join(__dirname, "../../dist/index.html"));
   }
 
-  // Apply full screen on startup if the user has configured it.
-  if (settings.autoFullScreen) {
-    try {
-      mainWindow.setFullScreen(true);
-    } catch (err) {
-      console.warn("Failed to apply autoFullScreen on startup:", err);
-    }
-  }
-
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -1203,12 +1194,6 @@ function registerIpcHandlers(): void {
     settingsManager.set(key, value);
     // React to certain setting changes immediately in main process
     try {
-      if (key === "autoFullScreen") {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          const should = Boolean(value as unknown as boolean);
-          mainWindow.setFullScreen(should);
-        }
-      }
       if (key === "discordRichPresence") {
         if (value) {
           void connectDiscordRpc();

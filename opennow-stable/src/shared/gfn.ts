@@ -141,6 +141,7 @@ export interface Settings {
   mouseAcceleration: number;
   shortcutToggleStats: string;
   shortcutTogglePointerLock: string;
+  shortcutToggleFullscreen: string;
   shortcutStopStream: string;
   shortcutToggleAntiAfk: string;
   shortcutToggleMicrophone: string;

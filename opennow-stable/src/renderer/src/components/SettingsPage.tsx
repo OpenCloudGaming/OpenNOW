@@ -115,6 +115,7 @@ const shortcutExamples = "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K";
 const shortcutDefaults = {
   shortcutToggleStats: "F3",
   shortcutTogglePointerLock: "F8",
+  shortcutToggleFullscreen: "F10",
   shortcutStopStream: "Ctrl+Shift+Q",
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
   shortcutToggleMicrophone: "Ctrl+Shift+M",
@@ -442,6 +443,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
   const [toggleStatsInput, setToggleStatsInput] = useState(settings.shortcutToggleStats);
   const [togglePointerLockInput, setTogglePointerLockInput] = useState(settings.shortcutTogglePointerLock);
+  const [toggleFullscreenInput, setToggleFullscreenInput] = useState(settings.shortcutToggleFullscreen);
   const [stopStreamInput, setStopStreamInput] = useState(settings.shortcutStopStream);
   const [toggleAntiAfkInput, setToggleAntiAfkInput] = useState(settings.shortcutToggleAntiAfk);
   const [toggleMicrophoneInput, setToggleMicrophoneInput] = useState(settings.shortcutToggleMicrophone);
@@ -449,6 +451,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [recordingInput, setRecordingInput] = useState(settings.shortcutToggleRecording);
   const [toggleStatsError, setToggleStatsError] = useState<string | null>(null);
   const [togglePointerLockError, setTogglePointerLockError] = useState<string | null>(null);
+  const [toggleFullscreenError, setToggleFullscreenError] = useState<string | null>(null);
   const [stopStreamError, setStopStreamError] = useState<string | null>(null);
   const [toggleAntiAfkError, setToggleAntiAfkError] = useState<string | null>(null);
   const [toggleMicrophoneError, setToggleMicrophoneError] = useState<string | null>(null);
@@ -478,6 +481,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   useEffect(() => {
     setTogglePointerLockInput(settings.shortcutTogglePointerLock);
   }, [settings.shortcutTogglePointerLock]);
+
+  useEffect(() => {
+    setToggleFullscreenInput(settings.shortcutToggleFullscreen);
+  }, [settings.shortcutToggleFullscreen]);
 
   useEffect(() => {
     setStopStreamInput(settings.shortcutStopStream);
@@ -787,6 +794,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       switch (key) {
         case "shortcutToggleStats": setToggleStatsError(msg); break;
         case "shortcutTogglePointerLock": setTogglePointerLockError(msg); break;
+        case "shortcutToggleFullscreen": setToggleFullscreenError(msg); break;
         case "shortcutStopStream": setStopStreamError(msg); break;
         case "shortcutToggleAntiAfk": setToggleAntiAfkError(msg); break;
         case "shortcutToggleMicrophone": setToggleMicrophoneError(msg); break;
@@ -802,6 +810,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       switch (key) {
         case "shortcutToggleStats": setToggleStatsError(msg); break;
         case "shortcutTogglePointerLock": setTogglePointerLockError(msg); break;
+        case "shortcutToggleFullscreen": setToggleFullscreenError(msg); break;
         case "shortcutStopStream": setStopStreamError(msg); break;
         case "shortcutToggleAntiAfk": setToggleAntiAfkError(msg); break;
         case "shortcutToggleMicrophone": setToggleMicrophoneError(msg); break;
@@ -816,6 +825,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       switch (key) {
         case "shortcutToggleStats": setToggleStatsError(conflict); break;
         case "shortcutTogglePointerLock": setTogglePointerLockError(conflict); break;
+        case "shortcutToggleFullscreen": setToggleFullscreenError(conflict); break;
         case "shortcutStopStream": setStopStreamError(conflict); break;
         case "shortcutToggleAntiAfk": setToggleAntiAfkError(conflict); break;
         case "shortcutToggleMicrophone": setToggleMicrophoneError(conflict); break;
@@ -828,6 +838,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     switch (key) {
       case "shortcutToggleStats": setToggleStatsError(null); break;
       case "shortcutTogglePointerLock": setTogglePointerLockError(null); break;
+      case "shortcutToggleFullscreen": setToggleFullscreenError(null); break;
       case "shortcutStopStream": setStopStreamError(null); break;
       case "shortcutToggleAntiAfk": setToggleAntiAfkError(null); break;
       case "shortcutToggleMicrophone": setToggleMicrophoneError(null); break;
@@ -838,6 +849,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     switch (key) {
       case "shortcutToggleStats": setToggleStatsInput(normalized.canonical); break;
       case "shortcutTogglePointerLock": setTogglePointerLockInput(normalized.canonical); break;
+      case "shortcutToggleFullscreen": setToggleFullscreenInput(normalized.canonical); break;
       case "shortcutStopStream": setStopStreamInput(normalized.canonical); break;
       case "shortcutToggleAntiAfk": setToggleAntiAfkInput(normalized.canonical); break;
       case "shortcutToggleMicrophone": setToggleMicrophoneInput(normalized.canonical); break;
@@ -856,6 +868,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       switch (key) {
         case "shortcutToggleStats": setToggleStatsError(conflict); break;
         case "shortcutTogglePointerLock": setTogglePointerLockError(conflict); break;
+        case "shortcutToggleFullscreen": setToggleFullscreenError(conflict); break;
         case "shortcutStopStream": setStopStreamError(conflict); break;
         case "shortcutToggleAntiAfk": setToggleAntiAfkError(conflict); break;
         case "shortcutToggleMicrophone": setToggleMicrophoneError(conflict); break;
@@ -868,6 +881,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     switch (key) {
       case "shortcutToggleStats": setToggleStatsError(null); break;
       case "shortcutTogglePointerLock": setTogglePointerLockError(null); break;
+      case "shortcutToggleFullscreen": setToggleFullscreenError(null); break;
       case "shortcutStopStream": setStopStreamError(null); break;
       case "shortcutToggleAntiAfk": setToggleAntiAfkError(null); break;
       case "shortcutToggleMicrophone": setToggleMicrophoneError(null); break;
@@ -878,6 +892,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     switch (key) {
       case "shortcutToggleStats": setToggleStatsInput(canonical); break;
       case "shortcutTogglePointerLock": setTogglePointerLockInput(canonical); break;
+      case "shortcutToggleFullscreen": setToggleFullscreenInput(canonical); break;
       case "shortcutStopStream": setStopStreamInput(canonical); break;
       case "shortcutToggleAntiAfk": setToggleAntiAfkInput(canonical); break;
       case "shortcutToggleMicrophone": setToggleMicrophoneInput(canonical); break;
@@ -922,6 +937,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       switch (key) {
         case "shortcutToggleStats": setToggleStatsError(msg); break;
         case "shortcutTogglePointerLock": setTogglePointerLockError(msg); break;
+        case "shortcutToggleFullscreen": setToggleFullscreenError(msg); break;
         case "shortcutStopStream": setStopStreamError(msg); break;
         case "shortcutToggleAntiAfk": setToggleAntiAfkError(msg); break;
         case "shortcutToggleMicrophone": setToggleMicrophoneError(msg); break;
@@ -937,6 +953,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     () =>
       settings.shortcutToggleStats === shortcutDefaults.shortcutToggleStats
       && settings.shortcutTogglePointerLock === shortcutDefaults.shortcutTogglePointerLock
+      && settings.shortcutToggleFullscreen === shortcutDefaults.shortcutToggleFullscreen
       && settings.shortcutStopStream === shortcutDefaults.shortcutStopStream
       && settings.shortcutToggleAntiAfk === shortcutDefaults.shortcutToggleAntiAfk
       && settings.shortcutToggleMicrophone === shortcutDefaults.shortcutToggleMicrophone
@@ -945,6 +962,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     [
       settings.shortcutToggleStats,
       settings.shortcutTogglePointerLock,
+      settings.shortcutToggleFullscreen,
       settings.shortcutStopStream,
       settings.shortcutToggleAntiAfk,
       settings.shortcutToggleMicrophone,
@@ -956,6 +974,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const handleResetShortcuts = useCallback(() => {
     setToggleStatsInput(shortcutDefaults.shortcutToggleStats);
     setTogglePointerLockInput(shortcutDefaults.shortcutTogglePointerLock);
+    setToggleFullscreenInput(shortcutDefaults.shortcutToggleFullscreen);
     setStopStreamInput(shortcutDefaults.shortcutStopStream);
     setToggleAntiAfkInput(shortcutDefaults.shortcutToggleAntiAfk);
     setToggleMicrophoneInput(shortcutDefaults.shortcutToggleMicrophone);
@@ -963,6 +982,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     setRecordingInput(shortcutDefaults.shortcutToggleRecording);
     setToggleStatsError(null);
     setTogglePointerLockError(null);
+    setToggleFullscreenError(null);
     setStopStreamError(null);
     setToggleAntiAfkError(null);
     setToggleMicrophoneError(null);
@@ -2079,6 +2099,25 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
 
                 <div className="settings-shortcut-row">
+                  <span className="settings-shortcut-label" id="shortcut-fullscreen-label">Toggle Full Screen</span>
+                  <input
+                    type="text"
+                    id="shortcut-fullscreen"
+                    aria-labelledby="shortcut-fullscreen-label"
+                    readOnly
+                    className={`settings-text-input settings-shortcut-input ${toggleFullscreenError ? "error" : ""}`}
+                    value={toggleFullscreenInput}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => handleShortcutBlur("shortcutToggleFullscreen", toggleFullscreenInput)}
+                    onPaste={(e) => handleShortcutPaste("shortcutToggleFullscreen", e)}
+                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleFullscreen", e)}
+                    placeholder="Click here, then press a key"
+                    title="Focus and press the key combination to bind"
+                    spellCheck={false}
+                  />
+                </div>
+
+                <div className="settings-shortcut-row">
                   <span className="settings-shortcut-label" id="shortcut-stop-stream-label">Stop Stream</span>
                   <input
                     type="text"
@@ -2187,10 +2226,11 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
               </div>
 
-              {(toggleStatsError || togglePointerLockError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError || screenshotError || recordingError) && (
+              {(toggleStatsError || togglePointerLockError || toggleFullscreenError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError || screenshotError || recordingError) && (
                 <span className="settings-input-hint">
                   {toggleStatsError
                     || togglePointerLockError
+                    || toggleFullscreenError
                     || stopStreamError
                     || toggleAntiAfkError
                     || toggleMicrophoneError
@@ -2199,9 +2239,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </span>
               )}
 
-              {!toggleStatsError && !togglePointerLockError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && !screenshotError && !recordingError && (
+              {!toggleStatsError && !togglePointerLockError && !toggleFullscreenError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && !screenshotError && !recordingError && (
                 <span className="settings-shortcut-hint">
-                  Click a field and press the keys to bind, or paste a shortcut ({shortcutExamples}). Escape cancels focus. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}. Screenshot: {formatShortcutForDisplay(settings.shortcutScreenshot, isMac)}. Recording: {formatShortcutForDisplay(settings.shortcutToggleRecording, isMac)}.
+                  Click a field and press the keys to bind, or paste a shortcut ({shortcutExamples}). Escape cancels focus. Full screen: {formatShortcutForDisplay(settings.shortcutToggleFullscreen, isMac)}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}. Screenshot: {formatShortcutForDisplay(settings.shortcutScreenshot, isMac)}. Recording: {formatShortcutForDisplay(settings.shortcutToggleRecording, isMac)}.
                 </span>
               )}
                 </div>
@@ -2254,7 +2294,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   <div className="settings-row">
                     <label className="settings-label">
                       Auto Full Screen
-                      <span className="settings-hint">Automatically enter fullscreen when a stream starts or pointer lock is requested.</span>
+                      <span className="settings-hint">Automatically enter fullscreen when connecting to or starting a session.</span>
                     </label>
                     <label className="settings-toggle">
                       <input

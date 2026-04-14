@@ -35,6 +35,8 @@ export interface Settings {
   shortcutToggleStats: string;
   /** Toggle pointer lock shortcut */
   shortcutTogglePointerLock: string;
+  /** Toggle fullscreen shortcut */
+  shortcutToggleFullscreen: string;
   /** Stop stream shortcut */
   shortcutStopStream: string;
   /** Toggle anti-AFK shortcut */
@@ -109,6 +111,7 @@ const DEFAULT_SETTINGS: Settings = {
   mouseAcceleration: 1,
   shortcutToggleStats: "F3",
   shortcutTogglePointerLock: "F8",
+  shortcutToggleFullscreen: "F10",
   shortcutStopStream: defaultStopShortcut,
   shortcutToggleAntiAfk: defaultAntiAfkShortcut,
   shortcutToggleMicrophone: defaultMicShortcut,
