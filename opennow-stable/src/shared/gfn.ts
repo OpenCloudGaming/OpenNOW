@@ -128,6 +128,7 @@ export interface MicrophonePermissionResult {
 export interface Settings {
   resolution: string;
   aspectRatio: AspectRatio;
+  posterSizeScale: number;
   fps: number;
   maxBitrateMbps: number;
   codec: VideoCodec;
