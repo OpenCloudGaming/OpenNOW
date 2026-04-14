@@ -1825,6 +1825,7 @@ final class OpenNOWStore: ObservableObject {
     private var cachedVpcId: String = "GFN-PC"
     private var adReportStateById: [String: SessionAdAction] = [:]
     private var adStartedAtById: [String: Date] = [:]
+    private var reopenToken: UUID = UUID()
 
     private let settingsKey = "OpenNOW.iOS.settings"
     private let authSessionKey = "OpenNOW.iOS.authSession"
@@ -2205,6 +2206,17 @@ final class OpenNOWStore: ObservableObject {
         streamSession = active
     }
 
+    /// Schedule a streamer reopen with a 0.8s delay.
+    /// Automatically aborts if a new session starts before the delay completes.
+    func scheduleStreamerReopen() {
+        let token = UUID()
+        reopenToken = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, self.reopenToken == token else { return }
+            self.reopenStreamer()
+        }
+    }
+
     func persistSettings() {
         if let encoded = try? JSONEncoder().encode(settings) {
             defaults.set(encoded, forKey: settingsKey)
@@ -2236,6 +2248,8 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func startSessionTasks() {
+        streamSession = nil
+        reopenToken = UUID()
         telemetryTask?.cancel()
         sessionPollTask?.cancel()
         endSessionPollBackgroundTask()
