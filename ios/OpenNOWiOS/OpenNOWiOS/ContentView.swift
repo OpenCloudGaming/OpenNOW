@@ -40,6 +40,7 @@ private struct SplashView: View {
 struct MainTabView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @State private var streamerAutoRetryCount = 0
+    @State private var presentedStreamerSession: ActiveSession?
     private static let maxStreamerAutoRetries = 3
 
     private var isPad: Bool {
@@ -89,21 +90,6 @@ struct MainTabView: View {
             }
         }
         .animation(.spring(response: 0.42, dampingFraction: 0.86), value: store.queueOverlayVisible)
-        .fullScreenCover(item: $store.streamSession) { session in
-            StreamerView(
-                session: session,
-                settings: store.settings,
-                onClose: {
-                    streamerAutoRetryCount = 0
-                    store.dismissStreamer()
-                },
-                onRetry: streamerAutoRetryCount < Self.maxStreamerAutoRetries ? {
-                    streamerAutoRetryCount += 1
-                    store.dismissStreamer()
-                    store.scheduleStreamerReopen()
-                } : nil
-            )
-        }
         .overlay(alignment: queuePillAlignment) {
             if store.showStreamLoading && !store.queueOverlayVisible {
                 QueueStatusPill()
@@ -112,9 +98,43 @@ struct MainTabView: View {
                     .transition(.move(edge: queuePillAlignmentEdge).combined(with: .opacity))
             }
         }
+        .overlay {
+            if let session = presentedStreamerSession {
+                StreamerView(
+                    session: session,
+                    settings: store.settings,
+                    onClose: {
+                        presentedStreamerSession = nil
+                        streamerAutoRetryCount = 0
+                        store.dismissStreamer()
+                    },
+                    onRetry: streamerAutoRetryCount < Self.maxStreamerAutoRetries ? {
+                        presentedStreamerSession = nil
+                        streamerAutoRetryCount += 1
+                        store.dismissStreamer()
+                        store.scheduleStreamerReopen()
+                    } : nil
+                )
+                .ignoresSafeArea()
+                .zIndex(3000)
+                .transition(.opacity)
+            }
+        }
         .animation(.spring(response: 0.36, dampingFraction: 0.88), value: store.showStreamLoading && !store.queueOverlayVisible)
+        .animation(.easeInOut(duration: 0.2), value: presentedStreamerSession?.id)
+        .onChange(of: store.streamSession) { _, newValue in
+            if let newValue {
+                presentedStreamerSession = newValue
+            } else if store.activeSession == nil {
+                // Session fully ended; allow the cover to close.
+                presentedStreamerSession = nil
+            }
+        }
         .onChange(of: store.activeSession?.id) { _ in
             streamerAutoRetryCount = 0
+            if store.activeSession == nil {
+                presentedStreamerSession = nil
+            }
         }
     }
 }

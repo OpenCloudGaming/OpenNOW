@@ -1893,7 +1893,7 @@ final class OpenNOWStore: ObservableObject {
         libraryGames = []
         resumableSessions = []
         activeSession = nil
-        streamSession = nil
+        setStreamSession(nil, reason: "signOut")
         subscription = nil
         telemetryTask?.cancel()
         sessionPollTask?.cancel()
@@ -2073,7 +2073,7 @@ final class OpenNOWStore: ObservableObject {
         await NotificationManager.shared.cancelSessionNotifications()
         guard let session = authSession, let active = activeSession else {
             activeSession = nil
-            streamSession = nil
+            setStreamSession(nil, reason: "endSession.noActiveSession")
             telemetryTask?.cancel()
             sessionPollTask?.cancel()
             endSessionPollBackgroundTask()
@@ -2089,7 +2089,7 @@ final class OpenNOWStore: ObservableObject {
             lastError = "Stop session failed: \(error.localizedDescription)"
         }
         activeSession = nil
-        streamSession = nil
+        setStreamSession(nil, reason: "endSession.completed")
         adReportStateById = [:]
         adStartedAtById = [:]
         telemetryTask?.cancel()
@@ -2195,7 +2195,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func dismissStreamer() {
-        streamSession = nil
+        setStreamSession(nil, reason: "dismissStreamer")
         // Note: poll task stays cancelled (stopped in handoff).
         // QueueStatusPill reflects last known activeSession state.
         // User can reopen via pill tap → reopenStreamer().
@@ -2203,7 +2203,7 @@ final class OpenNOWStore: ObservableObject {
 
     func reopenStreamer() {
         guard let active = activeSession, isReadyForStreamer(active) else { return }
-        streamSession = active
+        setStreamSession(active, reason: "reopenStreamer")
     }
 
     /// Schedule a streamer reopen with a 0.8s delay.
@@ -2248,7 +2248,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func startSessionTasks() {
-        streamSession = nil
+        setStreamSession(nil, reason: "startSessionTasks.reset")
         reopenToken = UUID()
         telemetryTask?.cancel()
         sessionPollTask?.cancel()
@@ -2325,7 +2325,7 @@ final class OpenNOWStore: ObservableObject {
                         if self.activeSession?.id == handoffSession.id {
                             self.activeSession = handoffSession
                         }
-                        self.streamSession = handoffSession
+                        self.setStreamSession(handoffSession, reason: "sessionPollTask.handoffReady")
                         loggedReadyForStreamer = true
                         self.sessionPollTask?.cancel()
                     } else if !readyForStreamer {
@@ -2531,6 +2531,26 @@ final class OpenNOWStore: ObservableObject {
             if let fromLibrary = libraryGames.first(where: { $0.launchAppId == appId }) { return fromLibrary }
         }
         return featuredGames.first ?? allGames.first ?? libraryGames.first
+    }
+
+    private func streamSessionChangeCallsite() -> String {
+        // Keep this compact for console readability while still surfacing
+        // which flow is clearing/presenting the streamer item binding.
+        Thread.callStackSymbols
+            .dropFirst(2)
+            .prefix(5)
+            .map { $0.replacingOccurrences(of: "\t", with: " ") }
+            .joined(separator: " <- ")
+    }
+
+    private func setStreamSession(_ session: ActiveSession?, reason: String) {
+        let oldId = streamSession?.id ?? "nil"
+        let newId = session?.id ?? "nil"
+        guard oldId != newId else { return }
+        logger.notice(
+            "streamSession reason=\(reason, privacy: .public) \(oldId, privacy: .public) -> \(newId, privacy: .public) callsite=\(self.streamSessionChangeCallsite(), privacy: .public)"
+        )
+        streamSession = session
     }
 
     private static func loadSettings(from defaults: UserDefaults) -> AppSettings? {
