@@ -1,4 +1,4 @@
-import { Search, LayoutGrid, Loader2, ArrowUpDown, Filter } from "lucide-react";
+import { Search, LayoutGrid, Loader2, ArrowUpDown, Filter, ChevronDown } from "lucide-react";
 import type { JSX } from "react";
 import type { CatalogFilterGroup, CatalogSortOption, GameInfo } from "@shared/gfn";
 import { GameCard } from "./GameCard";
@@ -48,6 +48,7 @@ export function HomePage({
 }: HomePageProps): JSX.Element {
   const hasGames = games.length > 0;
   const visibleFilterGroups = filterGroups.filter((group) => ["digital_store", "genre", "subscriptions"].includes(group.id));
+  const activeFilterCount = selectedFilterIds.length;
 
   return (
     <div className="home-page">
@@ -74,6 +75,41 @@ export function HomePage({
           />
         </div>
 
+        {visibleFilterGroups.length > 0 && (
+          <details className="home-filter-dropdown">
+            <summary className="home-filter-dropdown-trigger">
+              <span className="home-filter-dropdown-label">
+                <Filter size={14} />
+                Filters
+              </span>
+              {activeFilterCount > 0 && <span className="home-filter-dropdown-count">{activeFilterCount}</span>}
+              <ChevronDown size={14} className="home-filter-dropdown-chevron" />
+            </summary>
+            <div className="home-filter-dropdown-menu">
+              {visibleFilterGroups.map((group) => (
+                <div key={group.id} className="home-filter-dropdown-group">
+                  <div className="home-filter-group-label">{group.label}</div>
+                  <div className="home-filter-chips">
+                    {group.options.slice(0, group.id === "genre" ? 8 : group.options.length).map((option) => {
+                      const active = selectedFilterIds.includes(option.id);
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          className={`home-filter-chip ${active ? "active" : ""}`}
+                          onClick={() => onToggleFilter(option.id)}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+
         <label className="home-sort">
           <ArrowUpDown size={14} />
           <select value={selectedSortId} onChange={(e) => onSortChange(e.target.value)} disabled={isLoading}>
@@ -91,34 +127,6 @@ export function HomePage({
             : `${games.length} shown${totalCount > games.length ? ` · ${totalCount} total` : ""}${supportedCount > 0 ? ` · ${supportedCount} supported` : ""}`}
         </span>
       </header>
-
-      {visibleFilterGroups.length > 0 && (
-        <div className="home-filter-bar">
-          {visibleFilterGroups.map((group) => (
-            <div key={group.id} className="home-filter-group">
-              <span className="home-filter-group-label">
-                <Filter size={12} />
-                {group.label}
-              </span>
-              <div className="home-filter-chips">
-                {group.options.slice(0, group.id === "genre" ? 8 : group.options.length).map((option) => {
-                  const active = selectedFilterIds.includes(option.id);
-                  return (
-                    <button
-                      key={option.id}
-                      type="button"
-                      className={`home-filter-chip ${active ? "active" : ""}`}
-                      onClick={() => onToggleFilter(option.id)}
-                    >
-                      {option.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
 
       <div className="home-grid-area">
         {isLoading ? (
