@@ -248,48 +248,48 @@ export const GameCard = memo(function GameCard({
             <Play size={24} fill="currentColor" />
           </button>
         </div>
-      </div>
 
-      <div className="game-card-info">
-        <h3 className="game-card-title" title={game.title}>
-          {game.title}
-        </h3>
-        {activeStoreOption && (
-          <p className="game-card-platform" title={activeStoreOption.displayName}>
-            {activeStoreOption.displayName}
-          </p>
-        )}
-        {storeOptions.length > 0 && (
-          <div className="game-card-stores">
-            {storeOptions.map((store) => {
-              const isActive = store.variantId === activeVariantId;
-              const className = `game-card-store-chip ${isActive ? "active" : ""}`;
-              const title = `${store.displayName}${isActive ? " (selected)" : ""}`;
+        <div className="game-card-info">
+          <h3 className="game-card-title" title={game.title}>
+            {game.title}
+          </h3>
+          {activeStoreOption && (
+            <p className="game-card-platform" title={activeStoreOption.displayName}>
+              {activeStoreOption.displayName}
+            </p>
+          )}
+          {storeOptions.length > 0 && (
+            <div className="game-card-stores">
+              {storeOptions.map((store) => {
+                const isActive = store.variantId === activeVariantId;
+                const className = `game-card-store-chip ${isActive ? "active" : ""}`;
+                const title = `${store.displayName}${isActive ? " (selected)" : ""}`;
 
-              if (onSelectStore) {
+                if (onSelectStore) {
+                  return (
+                    <button
+                      key={store.storeKey}
+                      type="button"
+                      className={className}
+                      title={title}
+                      onClick={(event) => handleStoreClick(event, store.variantId)}
+                      aria-label={`${store.displayName} store`}
+                      aria-pressed={isActive}
+                    >
+                      <store.IconComponent />
+                    </button>
+                  );
+                }
+
                 return (
-                  <button
-                    key={store.storeKey}
-                    type="button"
-                    className={className}
-                    title={title}
-                    onClick={(event) => handleStoreClick(event, store.variantId)}
-                    aria-label={`${store.displayName} store`}
-                    aria-pressed={isActive}
-                  >
+                  <span key={store.storeKey} className={className} title={title}>
                     <store.IconComponent />
-                  </button>
+                  </span>
                 );
-              }
-
-              return (
-                <span key={store.storeKey} className={className} title={title}>
-                  <store.IconComponent />
-                </span>
-              );
-            })}
-          </div>
-        )}
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
