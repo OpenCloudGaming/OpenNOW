@@ -20,6 +20,7 @@ interface StreamViewProps {
   shortcuts: {
     toggleStats: string;
     togglePointerLock: string;
+    toggleFullscreen: string;
     stopStream: string;
     toggleAntiAfk: string;
     toggleMicrophone?: string;
@@ -2072,6 +2073,7 @@ export function StreamView({
         <div className="sv-hints">
           <div className="sv-hint"><kbd>{shortcuts.toggleStats}</kbd><span>Stats</span></div>
           <div className="sv-hint"><kbd>{shortcuts.togglePointerLock}</kbd><span>Mouse lock</span></div>
+          <div className="sv-hint"><kbd>{shortcuts.toggleFullscreen}</kbd><span>Full screen</span></div>
           <div className="sv-hint"><kbd>{shortcuts.stopStream}</kbd><span>Stop</span></div>
           {shortcuts.toggleMicrophone && <div className="sv-hint"><kbd>{shortcuts.toggleMicrophone}</kbd><span>Mic</span></div>}
         </div>

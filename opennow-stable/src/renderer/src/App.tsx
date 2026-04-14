@@ -203,6 +203,7 @@ function hasAnyEligiblePrintedWasteZone(
 const DEFAULT_SHORTCUTS = {
   shortcutToggleStats: "F3",
   shortcutTogglePointerLock: "F8",
+  shortcutToggleFullscreen: "F10",
   shortcutStopStream: "Ctrl+Shift+Q",
   shortcutToggleAntiAfk: "Ctrl+Shift+K",
   shortcutToggleMicrophone: "Ctrl+Shift+M",
@@ -820,6 +821,7 @@ export function App(): JSX.Element {
     mouseAcceleration: 1,
     shortcutToggleStats: DEFAULT_SHORTCUTS.shortcutToggleStats,
     shortcutTogglePointerLock: DEFAULT_SHORTCUTS.shortcutTogglePointerLock,
+    shortcutToggleFullscreen: DEFAULT_SHORTCUTS.shortcutToggleFullscreen,
     shortcutStopStream: DEFAULT_SHORTCUTS.shortcutStopStream,
     shortcutToggleAntiAfk: DEFAULT_SHORTCUTS.shortcutToggleAntiAfk,
     shortcutToggleMicrophone: DEFAULT_SHORTCUTS.shortcutToggleMicrophone,
@@ -1889,21 +1891,45 @@ export function App(): JSX.Element {
     };
     const toggleStats = parseWithFallback(settings.shortcutToggleStats, DEFAULT_SHORTCUTS.shortcutToggleStats);
     const togglePointerLock = parseWithFallback(settings.shortcutTogglePointerLock, DEFAULT_SHORTCUTS.shortcutTogglePointerLock);
+    const toggleFullscreen = parseWithFallback(settings.shortcutToggleFullscreen, DEFAULT_SHORTCUTS.shortcutToggleFullscreen);
     const stopStream = parseWithFallback(settings.shortcutStopStream, DEFAULT_SHORTCUTS.shortcutStopStream);
     const toggleAntiAfk = parseWithFallback(settings.shortcutToggleAntiAfk, DEFAULT_SHORTCUTS.shortcutToggleAntiAfk);
     const toggleMicrophone = parseWithFallback(settings.shortcutToggleMicrophone, DEFAULT_SHORTCUTS.shortcutToggleMicrophone);
     const screenshot = parseWithFallback(settings.shortcutScreenshot, DEFAULT_SHORTCUTS.shortcutScreenshot);
     const recording = parseWithFallback(settings.shortcutToggleRecording, DEFAULT_SHORTCUTS.shortcutToggleRecording);
-    return { toggleStats, togglePointerLock, stopStream, toggleAntiAfk, toggleMicrophone, screenshot, recording };
+    return { toggleStats, togglePointerLock, toggleFullscreen, stopStream, toggleAntiAfk, toggleMicrophone, screenshot, recording };
   }, [
     settings.shortcutToggleStats,
     settings.shortcutTogglePointerLock,
+    settings.shortcutToggleFullscreen,
     settings.shortcutStopStream,
     settings.shortcutToggleAntiAfk,
     settings.shortcutToggleMicrophone,
     settings.shortcutScreenshot,
     settings.shortcutToggleRecording,
   ]);
+
+  const setSessionFullscreen = useCallback(async (nextFullscreen: boolean) => {
+    try {
+      if (nextFullscreen) {
+        if (!document.fullscreenElement) {
+          await document.documentElement.requestFullscreen();
+        }
+      } else if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      }
+    } catch {}
+
+    try {
+      await window.openNow.setFullscreen(nextFullscreen);
+    } catch (error) {
+      console.warn(`Failed to sync native fullscreen state (${nextFullscreen ? "enter" : "exit"}):`, error);
+    }
+  }, []);
+
+  const toggleSessionFullscreen = useCallback(async () => {
+    await setSessionFullscreen(!document.fullscreenElement);
+  }, [setSessionFullscreen]);
 
   const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
     const lockTarget = (target.parentElement as HTMLElement | null) ?? target;
@@ -1917,7 +1943,7 @@ export function App(): JSX.Element {
     };
 
     if (settings.autoFullScreen && !document.fullscreenElement) {
-      await document.documentElement.requestFullscreen().catch(() => {});
+      await setSessionFullscreen(true);
     }
 
     const nav = navigator as any;
@@ -1935,7 +1961,7 @@ export function App(): JSX.Element {
         throw err;
       })
       .catch(() => {});
-  }, [settings.autoFullScreen]);
+  }, [setSessionFullscreen, settings.autoFullScreen]);
 
   const handleRequestPointerLock = useCallback(() => {
     if (videoRef.current) {
@@ -1985,14 +2011,27 @@ export function App(): JSX.Element {
   // so navigator.keyboard.lock() can capture Escape in fullscreen)
   useEffect(() => {
     const unsubscribe = window.openNow.onToggleFullscreen(() => {
-      if (document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {});
-      } else {
-        document.documentElement.requestFullscreen().catch(() => {});
-      }
+      void toggleSessionFullscreen();
     });
     return () => unsubscribe();
-  }, []);
+  }, [toggleSessionFullscreen]);
+
+  const autoFullscreenRequestedRef = useRef(false);
+
+  useEffect(() => {
+    const isSessionConnecting = streamStatus === "connecting" || streamStatus === "streaming";
+    if (!settings.autoFullScreen || !isSessionConnecting) {
+      autoFullscreenRequestedRef.current = false;
+      return;
+    }
+
+    if (autoFullscreenRequestedRef.current || document.fullscreenElement) {
+      return;
+    }
+
+    autoFullscreenRequestedRef.current = true;
+    void setSessionFullscreen(true);
+  }, [setSessionFullscreen, settings.autoFullScreen, streamStatus]);
 
   // Anti-AFK interval
   useEffect(() => {
@@ -2170,14 +2209,6 @@ export function App(): JSX.Element {
             });
             setLaunchError(null);
             setStreamStatus("streaming");
-            // Auto-enter fullscreen on stream start if user enabled it
-            try {
-              if ((settings as any).autoFullScreen) {
-                void (window as any).openNow?.setFullscreen?.(true);
-              }
-            } catch (err) {
-              console.warn("Failed to auto-fullscreen on stream start:", err);
-            }
           }
         } else if (event.type === "remote-ice") {
           await clientRef.current?.addRemoteCandidate(event.candidate);
@@ -3117,6 +3148,16 @@ export function App(): JSX.Element {
         return;
       }
 
+      if (isShortcutMatch(e, shortcuts.toggleFullscreen)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        if (streamStatus === "connecting" || streamStatus === "streaming") {
+          void toggleSessionFullscreen();
+        }
+        return;
+      }
+
       if (isShortcutMatch(e, shortcuts.stopStream)) {
         e.preventDefault();
         e.stopPropagation();
@@ -3157,6 +3198,7 @@ export function App(): JSX.Element {
     settings.clipboardPaste,
     shortcuts,
     streamStatus,
+    toggleSessionFullscreen,
   ]);
 
   const filteredGames = games;
@@ -3273,6 +3315,7 @@ export function App(): JSX.Element {
             shortcuts={{
               toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
               togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),
+              toggleFullscreen: formatShortcutForDisplay(settings.shortcutToggleFullscreen, isMac),
               stopStream: formatShortcutForDisplay(settings.shortcutStopStream, isMac),
               toggleAntiAfk: shortcuts.toggleAntiAfk.canonical,
               toggleMicrophone: formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac),
@@ -3294,11 +3337,7 @@ export function App(): JSX.Element {
             gameTitle={streamingGame?.title ?? "Game"}
             platformStore={streamingStore ?? undefined}
             onToggleFullscreen={() => {
-              if (document.fullscreenElement) {
-                document.exitFullscreen().catch(() => {});
-              } else {
-                document.documentElement.requestFullscreen().catch(() => {});
-              }
+              void toggleSessionFullscreen();
             }}
             onConfirmExit={handleExitPromptConfirm}
             onCancelExit={handleExitPromptCancel}
