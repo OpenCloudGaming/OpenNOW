@@ -20,7 +20,8 @@
     "preview": "electron-vite preview",
     "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
     "dist:signed": "npm run build && electron-builder",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test src/renderer/src/gfn/inputProtocol.test.ts"
   },
   "dependencies": {
     "discord-rpc": "^4.0.1",
@@ -41,6 +42,7 @@
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
     "react-scan": "^0.5.3",
+    "tsx": "^4.20.6",
     "typescript": "^6.0.2",
     "vite": "^7.3.1"
   },

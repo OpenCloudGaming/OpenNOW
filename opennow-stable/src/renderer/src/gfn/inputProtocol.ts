@@ -94,130 +94,410 @@ export function isPartiallyReliableHidTransferEligible(inputType: number): boole
   return inputType === INPUT_MOUSE_REL;
 }
 
-const codeMap: Record<string, { vk: number; scancode: number }> = {
-  // Letters
-  KeyA: { vk: 0x41, scancode: 0x04 },
-  KeyB: { vk: 0x42, scancode: 0x05 },
-  KeyC: { vk: 0x43, scancode: 0x06 },
-  KeyD: { vk: 0x44, scancode: 0x07 },
-  KeyE: { vk: 0x45, scancode: 0x08 },
-  KeyF: { vk: 0x46, scancode: 0x09 },
-  KeyG: { vk: 0x47, scancode: 0x0a },
-  KeyH: { vk: 0x48, scancode: 0x0b },
-  KeyI: { vk: 0x49, scancode: 0x0c },
-  KeyJ: { vk: 0x4a, scancode: 0x0d },
-  KeyK: { vk: 0x4b, scancode: 0x0e },
-  KeyL: { vk: 0x4c, scancode: 0x0f },
-  KeyM: { vk: 0x4d, scancode: 0x10 },
-  KeyN: { vk: 0x4e, scancode: 0x11 },
-  KeyO: { vk: 0x4f, scancode: 0x12 },
-  KeyP: { vk: 0x50, scancode: 0x13 },
-  KeyQ: { vk: 0x51, scancode: 0x14 },
-  KeyR: { vk: 0x52, scancode: 0x15 },
-  KeyS: { vk: 0x53, scancode: 0x16 },
-  KeyT: { vk: 0x54, scancode: 0x17 },
-  KeyU: { vk: 0x55, scancode: 0x18 },
-  KeyV: { vk: 0x56, scancode: 0x19 },
-  KeyW: { vk: 0x57, scancode: 0x1a },
-  KeyX: { vk: 0x58, scancode: 0x1b },
-  KeyY: { vk: 0x59, scancode: 0x1c },
-  KeyZ: { vk: 0x5a, scancode: 0x1d },
-  // Numbers
-  Digit1: { vk: 0x31, scancode: 0x1e },
-  Digit2: { vk: 0x32, scancode: 0x1f },
-  Digit3: { vk: 0x33, scancode: 0x20 },
-  Digit4: { vk: 0x34, scancode: 0x21 },
-  Digit5: { vk: 0x35, scancode: 0x22 },
-  Digit6: { vk: 0x36, scancode: 0x23 },
-  Digit7: { vk: 0x37, scancode: 0x24 },
-  Digit8: { vk: 0x38, scancode: 0x25 },
-  Digit9: { vk: 0x39, scancode: 0x26 },
-  Digit0: { vk: 0x30, scancode: 0x27 },
-  // Special keys
-  Enter: { vk: 0x0d, scancode: 0x28 },
-  Escape: { vk: 0x1b, scancode: 0x29 },
-  Backspace: { vk: 0x08, scancode: 0x2a },
-  Tab: { vk: 0x09, scancode: 0x2b },
-  Space: { vk: 0x20, scancode: 0x2c },
-  // Punctuation
-  Minus: { vk: 0xbd, scancode: 0x2d },
-  Equal: { vk: 0xbb, scancode: 0x2e },
-  BracketLeft: { vk: 0xdb, scancode: 0x2f },
-  BracketRight: { vk: 0xdd, scancode: 0x30 },
-  Backslash: { vk: 0xdc, scancode: 0x31 },
-  Semicolon: { vk: 0xba, scancode: 0x33 },
-  Quote: { vk: 0xde, scancode: 0x34 },
-  Backquote: { vk: 0xc0, scancode: 0x35 },
-  Comma: { vk: 0xbc, scancode: 0x36 },
-  Period: { vk: 0xbe, scancode: 0x37 },
-  Slash: { vk: 0xbf, scancode: 0x38 },
-  // Function keys
-  F1: { vk: 0x70, scancode: 0x3a },
-  F2: { vk: 0x71, scancode: 0x3b },
-  F3: { vk: 0x72, scancode: 0x3c },
-  F4: { vk: 0x73, scancode: 0x3d },
-  F5: { vk: 0x74, scancode: 0x3e },
-  F6: { vk: 0x75, scancode: 0x3f },
-  F7: { vk: 0x76, scancode: 0x40 },
-  F8: { vk: 0x77, scancode: 0x41 },
-  F9: { vk: 0x78, scancode: 0x42 },
-  F10: { vk: 0x79, scancode: 0x43 },
-  F11: { vk: 0x7a, scancode: 0x44 },
-  F12: { vk: 0x7b, scancode: 0x45 },
-  F13: { vk: 0x7c, scancode: 0x64 },
-  // Navigation keys
-  ArrowRight: { vk: 0x27, scancode: 0x4f },
-  ArrowLeft: { vk: 0x25, scancode: 0x50 },
-  ArrowDown: { vk: 0x28, scancode: 0x51 },
-  ArrowUp: { vk: 0x26, scancode: 0x52 },
-  // Modifier keys
-  ControlLeft: { vk: 0xa2, scancode: 0xe0 },
-  ShiftLeft: { vk: 0xa0, scancode: 0xe1 },
-  AltLeft: { vk: 0xa4, scancode: 0xe2 },
-  MetaLeft: { vk: 0x5b, scancode: 0xe3 },
-  ControlRight: { vk: 0xa3, scancode: 0xe4 },
-  ShiftRight: { vk: 0xa1, scancode: 0xe5 },
-  AltRight: { vk: 0xa5, scancode: 0xe6 },
-  MetaRight: { vk: 0x5c, scancode: 0xe7 },
-  // Caps Lock and Num Lock
-  CapsLock: { vk: 0x14, scancode: 0x39 },
-  NumLock: { vk: 0x90, scancode: 0x53 },
-  // Navigation cluster
-  Insert: { vk: 0x2d, scancode: 0x49 },
-  Delete: { vk: 0x2e, scancode: 0x4c },
-  Home: { vk: 0x24, scancode: 0x4a },
-  End: { vk: 0x23, scancode: 0x4d },
-  PageUp: { vk: 0x21, scancode: 0x4b },
-  PageDown: { vk: 0x22, scancode: 0x4e },
-  // System keys
-  PrintScreen: { vk: 0x2c, scancode: 0x46 },
-  ScrollLock: { vk: 0x91, scancode: 0x47 },
-  Pause: { vk: 0x13, scancode: 0x48 },
-  // Context Menu key
-  ContextMenu: { vk: 0x5d, scancode: 0x65 },
-  // Numpad keys
-  Numpad0: { vk: 0x60, scancode: 0x62 },
-  Numpad1: { vk: 0x61, scancode: 0x59 },
-  Numpad2: { vk: 0x62, scancode: 0x5a },
-  Numpad3: { vk: 0x63, scancode: 0x5b },
-  Numpad4: { vk: 0x64, scancode: 0x5c },
-  Numpad5: { vk: 0x65, scancode: 0x5d },
-  Numpad6: { vk: 0x66, scancode: 0x5e },
-  Numpad7: { vk: 0x67, scancode: 0x5f },
-  Numpad8: { vk: 0x68, scancode: 0x60 },
-  Numpad9: { vk: 0x69, scancode: 0x61 },
-  NumpadAdd: { vk: 0x6b, scancode: 0x57 },
-  NumpadSubtract: { vk: 0x6d, scancode: 0x56 },
-  NumpadMultiply: { vk: 0x6a, scancode: 0x55 },
-  NumpadDivide: { vk: 0x6f, scancode: 0x54 },
-  NumpadDecimal: { vk: 0x6e, scancode: 0x63 },
-  NumpadEnter: { vk: 0x0d, scancode: 0x58 },
+export interface KeyMapping {
+  vk: number;
+  scancode: number;
+}
+
+export interface TextKeySpec extends KeyMapping {
+  shift?: boolean;
+}
+
+type KeyLike = Pick<KeyboardEvent, "code" | "key" | "keyCode" | "location">;
+
+const DOM_KEY_LOCATION_STANDARD = 0;
+const DOM_KEY_LOCATION_LEFT = 1;
+const DOM_KEY_LOCATION_RIGHT = 2;
+const DOM_KEY_LOCATION_NUMPAD = 3;
+
+const scancodeByCode: Record<string, number> = {
+  KeyA: 0x001e,
+  KeyB: 0x0030,
+  KeyC: 0x002e,
+  KeyD: 0x0020,
+  KeyE: 0x0012,
+  KeyF: 0x0021,
+  KeyG: 0x0022,
+  KeyH: 0x0023,
+  KeyI: 0x0017,
+  KeyJ: 0x0024,
+  KeyK: 0x0025,
+  KeyL: 0x0026,
+  KeyM: 0x0032,
+  KeyN: 0x0031,
+  KeyO: 0x0018,
+  KeyP: 0x0019,
+  KeyQ: 0x0010,
+  KeyR: 0x0013,
+  KeyS: 0x001f,
+  KeyT: 0x0014,
+  KeyU: 0x0016,
+  KeyV: 0x002f,
+  KeyW: 0x0011,
+  KeyX: 0x002d,
+  KeyY: 0x0015,
+  KeyZ: 0x002c,
+  Digit1: 0x0002,
+  Digit2: 0x0003,
+  Digit3: 0x0004,
+  Digit4: 0x0005,
+  Digit5: 0x0006,
+  Digit6: 0x0007,
+  Digit7: 0x0008,
+  Digit8: 0x0009,
+  Digit9: 0x000a,
+  Digit0: 0x000b,
+  Enter: 0x001c,
+  Escape: 0x0001,
+  Backspace: 0x000e,
+  Tab: 0x000f,
+  Space: 0x0039,
+  Minus: 0x000c,
+  Equal: 0x000d,
+  BracketLeft: 0x001a,
+  BracketRight: 0x001b,
+  Backslash: 0x002b,
+  IntlBackslash: 0x0056,
+  IntlRo: 0x0073,
+  IntlYen: 0x007d,
+  Semicolon: 0x0027,
+  Quote: 0x0028,
+  Backquote: 0x0029,
+  Comma: 0x0033,
+  Period: 0x0034,
+  Slash: 0x0035,
+  F1: 0x003b,
+  F2: 0x003c,
+  F3: 0x003d,
+  F4: 0x003e,
+  F5: 0x003f,
+  F6: 0x0040,
+  F7: 0x0041,
+  F8: 0x0042,
+  F9: 0x0043,
+  F10: 0x0044,
+  F11: 0x0057,
+  F12: 0x0058,
+  F13: 0x0064,
+  ArrowRight: 0xe04d,
+  ArrowLeft: 0xe04b,
+  ArrowDown: 0xe050,
+  ArrowUp: 0xe048,
+  ControlLeft: 0x001d,
+  ShiftLeft: 0x002a,
+  AltLeft: 0x0038,
+  MetaLeft: 0xe05b,
+  ControlRight: 0xe01d,
+  ShiftRight: 0x0036,
+  AltRight: 0xe038,
+  MetaRight: 0xe05c,
+  CapsLock: 0x003a,
+  NumLock: 0xe045,
+  Insert: 0xe052,
+  Delete: 0xe053,
+  Home: 0xe047,
+  End: 0xe04f,
+  PageUp: 0xe049,
+  PageDown: 0xe051,
+  PrintScreen: 0xe037,
+  ScrollLock: 0x0046,
+  Pause: 0x0045,
+  ContextMenu: 0xe05d,
+  Numpad0: 0x0052,
+  Numpad1: 0x004f,
+  Numpad2: 0x0050,
+  Numpad3: 0x0051,
+  Numpad4: 0x004b,
+  Numpad5: 0x004c,
+  Numpad6: 0x004d,
+  Numpad7: 0x0047,
+  Numpad8: 0x0048,
+  Numpad9: 0x0049,
+  NumpadAdd: 0x004e,
+  NumpadSubtract: 0x004a,
+  NumpadMultiply: 0x0037,
+  NumpadDivide: 0xe035,
+  NumpadDecimal: 0x0053,
+  NumpadEnter: 0xe01c,
+  NumpadEqual: 0x0059,
+  NumpadComma: 0x007e,
 };
 
-const keyFallbackMap: Record<string, { vk: number; scancode: number }> = {
-  Escape: { vk: 0x1b, scancode: 0x29 },
-  Esc: { vk: 0x1b, scancode: 0x29 },
+const specialVirtualKeyByCode: Record<string, number> = {
+  Enter: 0x0d,
+  Escape: 0x1b,
+  Backspace: 0x08,
+  Tab: 0x09,
+  Space: 0x20,
+  Minus: 0xbd,
+  Equal: 0xbb,
+  BracketLeft: 0xdb,
+  BracketRight: 0xdd,
+  Backslash: 0xdc,
+  IntlBackslash: 0xe2,
+  IntlRo: 0xc1,
+  IntlYen: 0xdc,
+  Semicolon: 0xba,
+  Quote: 0xde,
+  Backquote: 0xc0,
+  Comma: 0xbc,
+  Period: 0xbe,
+  Slash: 0xbf,
+  ArrowRight: 0x27,
+  ArrowLeft: 0x25,
+  ArrowDown: 0x28,
+  ArrowUp: 0x26,
+  ControlLeft: 0xa2,
+  ShiftLeft: 0xa0,
+  AltLeft: 0xa4,
+  MetaLeft: 0x5b,
+  ControlRight: 0xa3,
+  ShiftRight: 0xa1,
+  AltRight: 0xa5,
+  MetaRight: 0x5c,
+  CapsLock: 0x14,
+  NumLock: 0x90,
+  Insert: 0x2d,
+  Delete: 0x2e,
+  Home: 0x24,
+  End: 0x23,
+  PageUp: 0x21,
+  PageDown: 0x22,
+  PrintScreen: 0x2c,
+  ScrollLock: 0x91,
+  Pause: 0x13,
+  ContextMenu: 0x5d,
+  NumpadAdd: 0x6b,
+  NumpadSubtract: 0x6d,
+  NumpadMultiply: 0x6a,
+  NumpadDivide: 0x6f,
+  NumpadDecimal: 0x6e,
+  NumpadEnter: 0x0d,
+  NumpadEqual: 0xbb,
+  NumpadComma: 0xbc,
 };
+
+const keyFallbackMap: Record<string, KeyMapping> = {
+  Escape: { vk: 0x1b, scancode: 0x0001 },
+  Esc: { vk: 0x1b, scancode: 0x0001 },
+};
+
+const baseCharCodeMap: Record<string, string> = {
+  " ": "Space",
+  "\n": "Enter",
+  "\r": "Enter",
+  "\t": "Tab",
+  "0": "Digit0",
+  "1": "Digit1",
+  "2": "Digit2",
+  "3": "Digit3",
+  "4": "Digit4",
+  "5": "Digit5",
+  "6": "Digit6",
+  "7": "Digit7",
+  "8": "Digit8",
+  "9": "Digit9",
+  "-": "Minus",
+  "=": "Equal",
+  "[": "BracketLeft",
+  "]": "BracketRight",
+  "\\": "Backslash",
+  ";": "Semicolon",
+  "'": "Quote",
+  "`": "Backquote",
+  ",": "Comma",
+  ".": "Period",
+  "/": "Slash",
+};
+
+const shiftedCharCodeMap: Record<string, string> = {
+  "!": "Digit1",
+  "@": "Digit2",
+  "#": "Digit3",
+  "$": "Digit4",
+  "%": "Digit5",
+  "^": "Digit6",
+  "&": "Digit7",
+  "*": "Digit8",
+  "(": "Digit9",
+  ")": "Digit0",
+  "_": "Minus",
+  "+": "Equal",
+  "{": "BracketLeft",
+  "}": "BracketRight",
+  "|": "Backslash",
+  ":": "Semicolon",
+  '"': "Quote",
+  "~": "Backquote",
+  "<": "Comma",
+  ">": "Period",
+  "?": "Slash",
+};
+
+function defaultVirtualKeyFromCode(code: string): number | null {
+  if (code.startsWith("Key") && code.length === 4) {
+    return code.charCodeAt(3);
+  }
+
+  if (code.startsWith("Digit") && code.length === 6) {
+    return code.charCodeAt(5);
+  }
+
+  if (code.startsWith("F")) {
+    const index = Number.parseInt(code.slice(1), 10);
+    if (index >= 1 && index <= 24) {
+      return 0x70 + index - 1;
+    }
+  }
+
+  if (code.startsWith("Numpad") && code.length === 7) {
+    const digit = Number.parseInt(code.slice(6), 10);
+    if (digit >= 0 && digit <= 9) {
+      return 0x60 + digit;
+    }
+  }
+
+  return specialVirtualKeyByCode[code] ?? null;
+}
+
+function keyMappingFromCode(code: string): KeyMapping | null {
+  const scancode = scancodeByCode[code];
+  if (scancode === undefined) {
+    return null;
+  }
+
+  const vk = defaultVirtualKeyFromCode(code);
+  if (vk === null) {
+    return null;
+  }
+
+  return { vk, scancode };
+}
+
+export const codeMap: Record<string, KeyMapping> = Object.freeze(
+  Object.fromEntries(Object.keys(scancodeByCode).map((code) => [code, keyMappingFromCode(code)!])),
+) as Record<string, KeyMapping>;
+
+function virtualKeyFromKeyCode(event: KeyLike): number | null {
+  const keyCode = event.keyCode;
+  if (!Number.isInteger(keyCode) || keyCode <= 0 || keyCode === 229) {
+    return null;
+  }
+
+  switch (event.code) {
+    case "ShiftLeft":
+      return 0xa0;
+    case "ShiftRight":
+      return 0xa1;
+    case "ControlLeft":
+      return 0xa2;
+    case "ControlRight":
+      return 0xa3;
+    case "AltLeft":
+      return 0xa4;
+    case "AltRight":
+      return 0xa5;
+    case "MetaLeft":
+      return 0x5b;
+    case "MetaRight":
+      return 0x5c;
+  }
+
+  if (event.location === DOM_KEY_LOCATION_NUMPAD) {
+    if (keyCode >= 0x60 && keyCode <= 0x69) {
+      return keyCode;
+    }
+    if (keyCode === 0x0d && event.code === "NumpadEnter") {
+      return keyCode;
+    }
+  }
+
+  return keyCode;
+}
+
+function virtualKeyFromKeyValue(key: string): number | null {
+  if (key.length === 1) {
+    const codePoint = key.toUpperCase().charCodeAt(0);
+    if ((codePoint >= 0x30 && codePoint <= 0x39) || (codePoint >= 0x41 && codePoint <= 0x5a)) {
+      return codePoint;
+    }
+  }
+
+  switch (key) {
+    case "Escape":
+    case "Esc":
+      return 0x1b;
+    case "Enter":
+      return 0x0d;
+    case "Tab":
+      return 0x09;
+    case "Backspace":
+      return 0x08;
+    case " ":
+    case "Spacebar":
+      return 0x20;
+    case "ArrowLeft":
+      return 0x25;
+    case "ArrowUp":
+      return 0x26;
+    case "ArrowRight":
+      return 0x27;
+    case "ArrowDown":
+      return 0x28;
+    case "Delete":
+      return 0x2e;
+    case "Insert":
+      return 0x2d;
+    case "Home":
+      return 0x24;
+    case "End":
+      return 0x23;
+    case "PageUp":
+      return 0x21;
+    case "PageDown":
+      return 0x22;
+  }
+
+  return null;
+}
+
+function virtualKeyFromEvent(event: KeyLike): number | null {
+  if (event.code.startsWith("Key") || event.code.startsWith("Digit")) {
+    return defaultVirtualKeyFromCode(event.code);
+  }
+
+  return virtualKeyFromKeyCode(event) ?? virtualKeyFromKeyValue(event.key) ?? defaultVirtualKeyFromCode(event.code);
+}
+
+function textKeySpecFromCode(code: string, shift: boolean = false): TextKeySpec | null {
+  const mapped = keyMappingFromCode(code);
+  if (!mapped) {
+    return null;
+  }
+  return shift ? { ...mapped, shift: true } : mapped;
+}
+
+export function mapTextCharToKeySpec(char: string): TextKeySpec | null {
+  const baseCode = baseCharCodeMap[char];
+  if (baseCode) {
+    return textKeySpecFromCode(baseCode);
+  }
+
+  const shiftedCode = shiftedCharCodeMap[char];
+  if (shiftedCode) {
+    return textKeySpecFromCode(shiftedCode, true);
+  }
+
+  if (char >= "a" && char <= "z") {
+    return textKeySpecFromCode(`Key${char.toUpperCase()}`);
+  }
+
+  if (char >= "A" && char <= "Z") {
+    return textKeySpecFromCode(`Key${char}`, true);
+  }
+
+  return null;
+}
 
 /**
  * Write an 8-byte big-endian timestamp (performance.now() * 1000 = microseconds)
@@ -517,29 +797,29 @@ export function modifierFlags(event: KeyboardEvent): number {
   return flags;
 }
 
-export function mapKeyboardEvent(event: KeyboardEvent): { vk: number; scancode: number } | null {
-  const mapped = codeMap[event.code];
-  if (mapped) {
-    return mapped;
+export function mapKeyboardEvent(event: KeyboardEvent): KeyMapping | null {
+  // The official GFN web client appears to forward the raw DOM key event into a lower-level
+  // virtual input controller instead of keeping a large JS `{ code -> { vk, scancode } }` table.
+  // Electron does not expose that downstream native translation layer to this renderer, so the
+  // closest behavior we can reproduce here is:
+  // 1. derive the Windows virtual-key from the DOM event itself (`keyCode`, `key`, `location`)
+  // 2. keep only a DOM `code -> scancode` lookup for the protocol field that Chromium does not expose
+  // This preserves physical-key behavior across layouts while minimizing JS-side policy.
+  const scancode =
+    (event.code ? scancodeByCode[event.code] : undefined)
+    ?? keyFallbackMap[event.key]?.scancode
+    ?? (event.key.length === 1 ? mapTextCharToKeySpec(event.key)?.scancode : undefined);
+
+  if (scancode === undefined) {
+    return null;
   }
 
-  const fallbackMapped = keyFallbackMap[event.key];
-  if (fallbackMapped) {
-    return fallbackMapped;
+  const vk = virtualKeyFromEvent(event);
+  if (vk === null) {
+    return null;
   }
 
-  const key = event.key;
-  if (key.length === 1) {
-    const upper = key.toUpperCase();
-    if (upper >= "A" && upper <= "Z") {
-      return { vk: upper.charCodeAt(0), scancode: 0 };
-    }
-    if (key >= "0" && key <= "9") {
-      return { vk: key.charCodeAt(0), scancode: 0 };
-    }
-  }
-
-  return null;
+  return { vk, scancode };
 }
 
 /**
