@@ -39,6 +39,10 @@ type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 
 type SettingsSectionId = "stream" | "game" | "audio" | "input" | "interface" | "thanks";
 
+const POSTER_SIZE_MIN = 75;
+const POSTER_SIZE_MAX = 150;
+const POSTER_SIZE_STEP = 5;
+
 const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
 
 const accelerationOptions: { value: VideoAccelerationPreference; label: string }[] = [
@@ -519,6 +523,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     () => (hasDynamic ? getFpsForResolution(entitledResolutions, settings.resolution) : []),
     [entitledResolutions, settings.resolution, hasDynamic]
   );
+  const posterSizePercent = Math.round(settings.posterSizeScale * 100);
 
   const selectedResolutionLabel = useMemo(() => {
     if (hasDynamic) {
@@ -2141,6 +2146,23 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </div>
                   </div>
                 )}
+
+                <div className="settings-row settings-row--column">
+                  <div className="settings-row-top">
+                    <label className="settings-label">Poster Size</label>
+                    <span className="settings-value-badge">{posterSizePercent}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    className="settings-slider"
+                    min={POSTER_SIZE_MIN}
+                    max={POSTER_SIZE_MAX}
+                    step={POSTER_SIZE_STEP}
+                    value={posterSizePercent}
+                    onChange={(e) => handleChange("posterSizeScale", Number(e.target.value) / 100)}
+                  />
+                  <span className="settings-subtle-hint">Adjusts game posters in real time across the library and controller views.</span>
+                </div>
 
                 {/* Session Counter */}
                 <div className="settings-row">

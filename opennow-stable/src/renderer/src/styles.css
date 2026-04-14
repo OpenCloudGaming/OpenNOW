@@ -1,6 +1,7 @@
 /* ---------- Design Tokens ---------- */
 :root {
   color-scheme: dark;
+  --game-poster-scale: 1;
 
   /* Backgrounds — layered obsidian-charcoal */
   --bg-a: #0a0a0c;
@@ -1517,39 +1518,9 @@ body.controller-mode.controller-hide-cursor * {
    ====================================================== */
 .game-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(calc(200px * var(--game-poster-scale, 1)), 1fr));
   gap: 12px;
   padding-bottom: 16px;
-}
-
-@media (min-width: 1600px) {
-  .game-grid {
-    grid-template-columns: repeat(6, 1fr);
-  }
-}
-
-@media (min-width: 1280px) and (max-width: 1599px) {
-  .game-grid {
-    grid-template-columns: repeat(5, 1fr);
-  }
-}
-
-@media (min-width: 1024px) and (max-width: 1279px) {
-  .game-grid {
-    grid-template-columns: repeat(4, 1fr);
-  }
-}
-
-@media (min-width: 768px) and (max-width: 1023px) {
-  .game-grid {
-    grid-template-columns: repeat(3, 1fr);
-  }
-}
-
-@media (max-width: 767px) {
-  .game-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
 }
 
 
@@ -1596,10 +1567,10 @@ body.controller-mode.controller-hide-cursor * {
   box-shadow: 0 0 0 1px var(--accent-glow);
 }
 
-/* Image wrapper — 16:9 landscape for GFN cover art */
+/* Image wrapper — portrait poster art */
 .game-card-image-wrapper {
   position: relative;
-  aspect-ratio: 16 / 9;
+  aspect-ratio: 2 / 3;
   overflow: hidden;
   background: var(--bg-c);
   backface-visibility: hidden;
@@ -6262,8 +6233,9 @@ button.game-card-store-chip.active:hover {
 }
 
 .xmb-game-poster-container {
-  width: 56px;
-  height: 80px;
+  width: calc(56px * var(--game-poster-scale, 1));
+  aspect-ratio: 2 / 3;
+  height: auto;
   border-radius: 8px;
   overflow: hidden;
   margin-right: 24px;
@@ -6445,7 +6417,7 @@ button.game-card-store-chip.active:hover {
 }
 
 .xmb-current-poster {
-  width: min(100%, 250px);
+  width: min(100%, calc(250px * var(--game-poster-scale, 1)));
   border-radius: 20px;
   overflow: hidden;
   border: 1px solid rgba(234, 255, 241, 0.16);

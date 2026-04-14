@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { JSX } from "react";
+import type { CSSProperties, JSX } from "react";
 
 import type {
   ActiveSessionInfo,
@@ -83,6 +83,12 @@ const getResolutionsByAspectRatio = (aspectRatio: string): string[] => {
   return allResolutionOptions.filter(res => RESOLUTION_TO_ASPECT_RATIO[res] === aspectRatio);
 };
 const resolutionOptions = getResolutionsByAspectRatio("16:9");
+
+function getAppStyle(posterSizeScale: number): CSSProperties {
+  return {
+    ["--game-poster-scale" as "--game-poster-scale"]: String(posterSizeScale),
+  };
+}
 const SESSION_READY_POLL_INTERVAL_MS = 2000;
 const SESSION_AD_POLL_INTERVAL_MS = 30000;
 const SESSION_AD_PROGRESS_CHECK_INTERVAL_MS = 1000;
@@ -3274,6 +3280,7 @@ export function App(): JSX.Element {
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
                 autoFullScreen: settings.autoFullScreen,
                 aspectRatio: settings.aspectRatio,
+                posterSizeScale: settings.posterSizeScale,
                 maxBitrateMbps: settings.maxBitrateMbps,
               }}
               resolutionOptions={getResolutionsByAspectRatio(settings.aspectRatio)}
@@ -3353,7 +3360,7 @@ export function App(): JSX.Element {
 
   // Main app layout
   return (
-    <div className="app-container">
+    <div className="app-container" style={getAppStyle(settings.posterSizeScale)}>
       {startupRefreshNotice && (
         <div className={`auth-refresh-notice auth-refresh-notice--${startupRefreshNotice.tone}`}>
           {startupRefreshNotice.text}
@@ -3429,6 +3436,7 @@ export function App(): JSX.Element {
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
                 autoFullScreen: settings.autoFullScreen,
                 aspectRatio: settings.aspectRatio,
+                posterSizeScale: settings.posterSizeScale,
                 maxBitrateMbps: settings.maxBitrateMbps,
               }}
               resolutionOptions={getResolutionsByAspectRatio(settings.aspectRatio)}
