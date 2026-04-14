@@ -1,5 +1,6 @@
 import { app, type BrowserWindow } from "electron";
-import { autoUpdater, type ProgressInfo, type UpdateInfo } from "electron-updater";
+import electronUpdater from "electron-updater";
+import type { ProgressInfo, UpdateInfo } from "electron-updater";
 
 import type {
   ReleaseNotesArtifact,
@@ -11,6 +12,8 @@ import type {
 import { IPC_CHANNELS } from "@shared/ipc";
 
 import type { SettingsManager } from "./settings";
+
+const { autoUpdater } = electronUpdater;
 
 const RELEASE_NOTES_TIMEOUT_MS = 8000;
 const GITHUB_RELEASES_DOWNLOAD_PREFIX = "/releases/download/";
