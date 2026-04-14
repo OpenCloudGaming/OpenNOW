@@ -100,9 +100,7 @@ struct MainTabView: View {
                 onRetry: streamerAutoRetryCount < Self.maxStreamerAutoRetries ? {
                     streamerAutoRetryCount += 1
                     store.dismissStreamer()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                        store.reopenStreamer()
-                    }
+                    store.scheduleStreamerReopen()
                 } : nil
             )
         }
@@ -115,6 +113,9 @@ struct MainTabView: View {
             }
         }
         .animation(.spring(response: 0.36, dampingFraction: 0.88), value: store.showStreamLoading && !store.queueOverlayVisible)
+        .onChange(of: store.activeSession?.id) { _ in
+            streamerAutoRetryCount = 0
+        }
     }
 }
 
