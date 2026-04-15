@@ -2,6 +2,11 @@
   "extends": "./electron-builder.base.json",
   "electronVersion": "27.3.11",
   "mac": {
+    "target": [
+      "dmg",
+      "zip"
+    ],
+    "category": "public.app-category.games",
     "minimumSystemVersion": "10.15.0",
     "artifactName": "OpenNOW-v${version}-mac-catalina-x64.${ext}"
   }

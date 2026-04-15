@@ -1,6 +1,11 @@
 {
   "extends": "./electron-builder.base.json",
   "mac": {
+    "target": [
+      "dmg",
+      "zip"
+    ],
+    "category": "public.app-category.games",
     "artifactName": "OpenNOW-v${version}-mac-${arch}.${ext}"
   }
 }
