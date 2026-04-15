@@ -1,5 +1,5 @@
 import { Play, Monitor } from "lucide-react";
-import { memo } from "react";
+import { memo, useCallback, useState } from "react";
 import type { JSX } from "react";
 import type { GameInfo } from "@shared/gfn";
 
@@ -196,6 +196,17 @@ export const GameCard = memo(function GameCard({
   const activeVariantId = getActiveVariantId(storeOptions, selectedVariantId);
   const activeStoreOption = getActiveStoreOption(storeOptions, activeVariantId);
 
+  const [aspectPct, setAspectPct] = useState<number | undefined>(undefined);
+
+  const handleImageLoad = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = event.currentTarget;
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    if (w && h) {
+      setAspectPct((h / w) * 100);
+    }
+  }, []);
+
   const handlePlayClick = (event: React.MouseEvent): void => {
     event.stopPropagation();
     onPlay();
@@ -223,13 +234,21 @@ export const GameCard = memo(function GameCard({
       tabIndex={0}
       aria-label={`Select ${game.title}`}
     >
-      <div className="game-card-image-wrapper">
+      <div
+        className="game-card-image-wrapper"
+        style={
+          aspectPct
+            ? (({ ["--game-aspect" as any]: `${aspectPct}%` } as unknown) as React.CSSProperties)
+            : undefined
+        }
+      >
         {game.imageUrl ? (
           <img
             src={game.imageUrl}
             alt={game.title}
             className="game-card-image"
             loading="lazy"
+            onLoad={handleImageLoad}
           />
         ) : (
           <div className="game-card-image-placeholder">

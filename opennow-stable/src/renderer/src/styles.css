@@ -1862,7 +1862,8 @@ body.controller-mode.controller-hide-cursor * {
 /* Image wrapper — portrait poster art */
 .game-card-image-wrapper {
   position: relative;
-  aspect-ratio: 2 / 3;
+  width: 100%;
+  padding-top: var(--game-aspect);
   overflow: hidden;
   background: var(--bg-c);
   backface-visibility: hidden;
@@ -1870,10 +1871,13 @@ body.controller-mode.controller-hide-cursor * {
 }
 
 .game-card-image {
-  width: calc(100% + 2px);
-  height: calc(100% + 2px);
-  margin: -1px;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
   object-fit: cover;
+  object-position: center;
   transition: transform var(--t-normal);
 }
 
@@ -1882,6 +1886,8 @@ body.controller-mode.controller-hide-cursor * {
 }
 
 .game-card-image-placeholder {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   display: flex;
