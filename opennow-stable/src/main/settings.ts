@@ -86,6 +86,8 @@ export interface Settings {
   enableCloudGsync: boolean;
   /** Show the currently streaming game as Discord Rich Presence activity */
   discordRichPresence: boolean;
+  /** Automatically check GitHub Releases for app updates in the background */
+  autoCheckForUpdates: boolean;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -137,6 +139,7 @@ const DEFAULT_SETTINGS: Settings = {
   enableL4S: false,
   enableCloudGsync: false,
   discordRichPresence: false,
+  autoCheckForUpdates: true,
 };
 
 export class SettingsManager {

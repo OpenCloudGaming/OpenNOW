@@ -1255,6 +1255,9 @@ function registerIpcHandlers(): void {
     settingsManager.set(key, value);
     // React to certain setting changes immediately in main process
     try {
+      if (key === "autoCheckForUpdates") {
+        appUpdater?.setAutomaticChecksEnabled(value as boolean);
+      }
       if (key === "discordRichPresence") {
         if (value) {
           void connectDiscordRpc();
@@ -1268,7 +1271,9 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
-    return settingsManager.reset();
+    const resetSettings = settingsManager.reset();
+    appUpdater?.setAutomaticChecksEnabled(resetSettings.autoCheckForUpdates);
+    return resetSettings;
   });
 
   ipcMain.handle(IPC_CHANNELS.MICROPHONE_PERMISSION_GET, async (): Promise<MicrophonePermissionResult> => {
@@ -1814,6 +1819,7 @@ app.whenReady().then(async () => {
   settingsManager = getSettingsManager();
   appUpdater = createAppUpdaterController({
     onStateChanged: emitUpdaterStateToRenderer,
+    automaticChecksEnabled: settingsManager.get("autoCheckForUpdates"),
   });
 
   // Connect Discord Rich Presence if the user has opted in

@@ -14,6 +14,7 @@ export interface AppUpdaterController {
   initialize(): void;
   dispose(): void;
   getState(): AppUpdaterState;
+  setAutomaticChecksEnabled(enabled: boolean): AppUpdaterState;
   checkForUpdates(source?: "auto" | "manual"): Promise<AppUpdaterState>;
   downloadUpdate(): Promise<AppUpdaterState>;
   quitAndInstall(): Promise<AppUpdaterState>;
@@ -21,6 +22,7 @@ export interface AppUpdaterController {
 
 interface AppUpdaterControllerOptions {
   onStateChanged: (state: AppUpdaterState) => void;
+  automaticChecksEnabled: boolean;
 }
 
 function isPrereleaseVersion(version: string): boolean {
@@ -88,6 +90,9 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
       getState() {
         return disabledState;
       },
+      setAutomaticChecksEnabled() {
+        return disabledState;
+      },
       async checkForUpdates() {
         return disabledState;
       },
@@ -121,6 +126,7 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
   let intervalTimer: NodeJS.Timeout | null = null;
   let checkInFlight = false;
   let downloadInFlight = false;
+  let automaticChecksEnabled = options.automaticChecksEnabled;
   let availableUpdateInfo: UpdateInfo | null = null;
   let downloadedUpdateInfo: UpdateDownloadedEvent | null = null;
 
@@ -158,6 +164,30 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
       ...baseState,
     });
     emitState();
+  };
+
+  const clearAutomaticCheckTimers = (): void => {
+    if (startupTimer) {
+      clearTimeout(startupTimer);
+      startupTimer = null;
+    }
+    if (intervalTimer) {
+      clearInterval(intervalTimer);
+      intervalTimer = null;
+    }
+  };
+
+  const scheduleAutomaticChecks = (): void => {
+    clearAutomaticCheckTimers();
+    if (disposed || !automaticChecksEnabled) {
+      return;
+    }
+    startupTimer = setTimeout(() => {
+      void controller.checkForUpdates("auto");
+    }, STARTUP_CHECK_DELAY_MS);
+    intervalTimer = setInterval(() => {
+      void controller.checkForUpdates("auto");
+    }, PERIODIC_CHECK_INTERVAL_MS);
   };
 
   updater.on("checking-for-update", () => {
@@ -231,26 +261,14 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
     });
   });
 
-  return {
+  const controller: AppUpdaterController = {
     initialize() {
       emitState();
-      startupTimer = setTimeout(() => {
-        void this.checkForUpdates("auto");
-      }, STARTUP_CHECK_DELAY_MS);
-      intervalTimer = setInterval(() => {
-        void this.checkForUpdates("auto");
-      }, PERIODIC_CHECK_INTERVAL_MS);
+      scheduleAutomaticChecks();
     },
     dispose() {
       disposed = true;
-      if (startupTimer) {
-        clearTimeout(startupTimer);
-        startupTimer = null;
-      }
-      if (intervalTimer) {
-        clearInterval(intervalTimer);
-        intervalTimer = null;
-      }
+      clearAutomaticCheckTimers();
       updater.removeAllListeners("checking-for-update");
       updater.removeAllListeners("update-available");
       updater.removeAllListeners("update-not-available");
@@ -261,8 +279,17 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
     getState() {
       return state;
     },
+    setAutomaticChecksEnabled(enabled: boolean) {
+      automaticChecksEnabled = enabled;
+      scheduleAutomaticChecks();
+      return state;
+    },
     async checkForUpdates(source: "auto" | "manual" = "manual") {
       if (disposed || checkInFlight || downloadInFlight) {
+        return state;
+      }
+
+      if (source === "auto" && !automaticChecksEnabled) {
         return state;
       }
 
@@ -350,4 +377,6 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
       return state;
     },
   };
+
+  return controller;
 }

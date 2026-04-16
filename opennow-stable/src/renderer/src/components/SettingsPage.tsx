@@ -2590,28 +2590,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               <h2>About</h2>
             </div>
             <div className="settings-rows">
-              <div className="settings-about-card">
-                <div className="settings-about-card__eyebrow">OpenNOW</div>
-                <div className="settings-about-card__content">
-                  <div className="settings-about-card__copy">
-                    <h3>Built by Zortos, improved by contributors.</h3>
-                    <p>
-                      OpenNOW is an open project led by Zortos and shaped by people from the community. Follow development,
-                      explore the source, and report issues on GitHub.
-                    </p>
-                  </div>
-                  <a
-                    className="settings-about-card__link"
-                    href="https://github.com/OpenCloudGaming/OpenNOW"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <span>View Project Repository</span>
-                    <ExternalLink size={16} />
-                  </a>
-                </div>
-              </div>
-
               <div className="settings-row">
                 <label className="settings-label settings-label--wrap">
                   <span className="settings-label-title">
@@ -2621,7 +2599,9 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </span>
                   </span>
                   <span className="settings-hint">
-                    Version {updaterState.currentVersion} · Packaged builds check GitHub Releases in the background.
+                    Version {updaterState.currentVersion} · {settings.autoCheckForUpdates
+                      ? "Packaged builds check GitHub Releases in the background."
+                      : "Background update checks are off until you manually check."}
                   </span>
                   {updaterState.message ? (
                     <span className="settings-hint settings-hint--updater-message">{updaterState.message}</span>
@@ -2686,6 +2666,26 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </button>
                   ) : null}
                 </div>
+              </div>
+
+              <div className="settings-row">
+                <label className="settings-label settings-label--wrap">
+                  Automatically Check for Updates
+                  <span className="settings-hint">
+                    When on, packaged builds check GitHub Releases in the background after startup and periodically while OpenNOW is running.
+                  </span>
+                  <span className="settings-hint">
+                    When off, OpenNOW stays on the current version unless you use the manual update buttons below.
+                  </span>
+                </label>
+                <label className="settings-toggle">
+                  <input
+                    type="checkbox"
+                    checked={settings.autoCheckForUpdates}
+                    onChange={(e) => handleChange("autoCheckForUpdates", e.target.checked)}
+                  />
+                  <span className="settings-toggle-track" />
+                </label>
               </div>
 
               {updaterState.status === "downloading" && updaterState.progress ? (

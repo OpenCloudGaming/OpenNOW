@@ -174,6 +174,8 @@ export interface Settings {
   enableCloudGsync: boolean;
   /** Show the currently streaming game as Discord Rich Presence activity */
   discordRichPresence: boolean;
+  /** Automatically check GitHub Releases for app updates in the background */
+  autoCheckForUpdates: boolean;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
