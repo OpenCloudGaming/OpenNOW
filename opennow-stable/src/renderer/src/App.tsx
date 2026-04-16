@@ -2399,6 +2399,10 @@ export function App(): JSX.Element {
 
   // Logout handler
   const handleLogout = useCallback(async () => {
+    if (!window.confirm("Are you sure you want to log out?")) {
+      return;
+    }
+
     await window.openNow.logout();
     setAuthSession(null);
     setGames([]);
