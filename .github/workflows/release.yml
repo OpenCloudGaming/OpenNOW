@@ -216,7 +216,11 @@ jobs:
         run: |
           shopt -s nullglob
           package_assets=(release-artifacts/*.exe release-artifacts/*.dmg release-artifacts/*.zip release-artifacts/*.AppImage release-artifacts/*.deb)
-          metadata_assets=(release-artifacts/latest.yml release-artifacts/latest-mac.yml release-artifacts/latest-linux.yml)
+          metadata_assets=(
+            release-artifacts/latest.yml
+            release-artifacts/latest-mac.yml
+            release-artifacts/latest-linux.yml
+          )
           blockmap_assets=(release-artifacts/*.blockmap)
 
           if [[ ${#package_assets[@]} -eq 0 ]]; then
@@ -224,10 +228,17 @@ jobs:
             exit 1
           fi
 
-          if [[ ${#metadata_assets[@]} -eq 0 ]]; then
-            echo "No updater metadata assets were downloaded." >&2
-            exit 1
-          fi
+          required_metadata_files=(
+            release-artifacts/latest.yml
+            release-artifacts/latest-mac.yml
+            release-artifacts/latest-linux.yml
+          )
+          for required_file in "${required_metadata_files[@]}"; do
+            if [[ ! -f "$required_file" ]]; then
+              echo "Missing required updater metadata file: $required_file" >&2
+              exit 1
+            fi
+          done
 
           echo "Release assets to publish:"
           printf ' - %s\n' "${package_assets[@]}" "${metadata_assets[@]}" "${blockmap_assets[@]}"
@@ -240,6 +251,7 @@ jobs:
           prerelease: ${{ needs.preflight.outputs.prerelease }}
           make_latest: ${{ needs.preflight.outputs.make_latest }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             release-artifacts/*.exe
             release-artifacts/*.dmg
