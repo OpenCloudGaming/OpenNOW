@@ -1248,7 +1248,7 @@ export function SettingsPage({ settings, updaterState, regions, onSettingChange,
   const downloadSpeedLabel = useMemo(() => formatBytesPerSecond(updaterState.downloadProgress?.bytesPerSecond), [updaterState.downloadProgress?.bytesPerSecond]);
   const lastCheckedLabel = useMemo(() => formatRelativeTimestamp(updaterState.lastCheckedAt), [updaterState.lastCheckedAt]);
   const versionLabel = useMemo(() => `Version ${updaterState.currentVersion || "Unknown"}`, [updaterState.currentVersion]);
-  const canDownloadAvailableUpdate = updaterState.availableVersion !== null && !updaterState.canInstall && !updaterState.isSkipped;
+  const canDownloadAvailableUpdate = updaterState.canAutoUpdate && updaterState.availableVersion !== null && !updaterState.canInstall && !updaterState.isSkipped;
 
   return (
     <div className="settings-page">
@@ -2665,6 +2665,14 @@ export function SettingsPage({ settings, updaterState, regions, onSettingChange,
                     </span>
                   )}
                 </div>
+
+                {updaterState.manualUpdateHint && (
+                  <div className="settings-row settings-row--column">
+                    <span className="settings-subtle-hint" role="status" aria-live="polite">
+                      {updaterState.manualUpdateHint}
+                    </span>
+                  </div>
+                )}
 
                 <div className="settings-row">
                   <label className="settings-label">

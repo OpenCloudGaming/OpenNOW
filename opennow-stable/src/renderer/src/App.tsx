@@ -69,6 +69,9 @@ const aspectRatioOptions = ["16:9", "16:10", "21:9", "32:9"] as const;
 const DEFAULT_UPDATER_STATE: UpdaterState = {
   currentVersion: "",
   status: "idle",
+  isPortableBuild: false,
+  canAutoUpdate: false,
+  manualUpdateHint: null,
   availableVersion: null,
   releaseName: null,
   releaseDate: null,

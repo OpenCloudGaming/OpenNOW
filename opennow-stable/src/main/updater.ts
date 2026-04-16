@@ -15,6 +15,13 @@ const { autoUpdater } = electronUpdater;
 
 const GITHUB_RELEASES_DOWNLOAD_PREFIX = "/releases/download/";
 
+function isPortableBuild(): boolean {
+  if (process.platform !== "win32") {
+    return false;
+  }
+  return Boolean(process.env.PORTABLE_EXECUTABLE_FILE || process.env.PORTABLE_EXECUTABLE_DIR);
+}
+
 function isUpdaterRuntimeSupported(): boolean {
   if (process.platform === "win32") {
     return process.arch === "x64";
@@ -29,10 +36,27 @@ function getUnsupportedUpdaterMessage(): string {
   return `Automatic updates are not currently available on ${process.platform} ${process.arch}. Please download new releases manually.`;
 }
 
+function canCurrentBuildAutoUpdate(): boolean {
+  return isUpdaterRuntimeSupported() && !isPortableBuild();
+}
+
+function getManualUpdateHint(): string | null {
+  if (isPortableBuild()) {
+    return "You are using the portable build. Check for new versions here, then download a newer portable release manually.";
+  }
+  if (!isUpdaterRuntimeSupported()) {
+    return getUnsupportedUpdaterMessage();
+  }
+  return null;
+}
+
 function createInitialState(): UpdaterState {
   return {
     currentVersion: app.getVersion(),
     status: "idle",
+    isPortableBuild: isPortableBuild(),
+    canAutoUpdate: canCurrentBuildAutoUpdate(),
+    manualUpdateHint: getManualUpdateHint(),
     availableVersion: null,
     releaseName: null,
     releaseDate: null,
@@ -139,6 +163,9 @@ export class UpdaterService {
       this.state = {
         ...this.state,
         currentVersion: app.getVersion(),
+        isPortableBuild: isPortableBuild(),
+        canAutoUpdate: canCurrentBuildAutoUpdate(),
+        manualUpdateHint: getManualUpdateHint(),
         skippedVersion: settingsManager.get("skippedUpdateVersion") || null,
         isSkipped: this.state.availableVersion !== null && settingsManager.get("skippedUpdateVersion") === this.state.availableVersion,
       };
@@ -151,6 +178,9 @@ export class UpdaterService {
     this.state = {
       ...this.state,
       currentVersion: app.getVersion(),
+      isPortableBuild: isPortableBuild(),
+      canAutoUpdate: canCurrentBuildAutoUpdate(),
+      manualUpdateHint: getManualUpdateHint(),
       skippedVersion: settingsManager.get("skippedUpdateVersion") || null,
     };
 
@@ -238,7 +268,7 @@ export class UpdaterService {
       if (manual) {
         this.setState({
           status: "error",
-          lastError: getUnsupportedUpdaterMessage(),
+          lastError: getManualUpdateHint(),
         });
       }
       return this.getState();
@@ -261,10 +291,10 @@ export class UpdaterService {
       return this.getState();
     }
 
-    if (!isUpdaterRuntimeSupported()) {
+    if (!canCurrentBuildAutoUpdate()) {
       this.setState({
         status: "error",
-        lastError: getUnsupportedUpdaterMessage(),
+        lastError: getManualUpdateHint(),
       });
       return this.getState();
     }
@@ -274,6 +304,9 @@ export class UpdaterService {
   }
 
   quitAndInstall(): void {
+    if (!canCurrentBuildAutoUpdate()) {
+      throw new Error(getManualUpdateHint() ?? "Automatic updates are not available for this build.");
+    }
     if (!this.state.canInstall) {
       throw new Error("No downloaded update is ready to install.");
     }
@@ -344,6 +377,9 @@ export class UpdaterService {
       ...this.state,
       ...patch,
       currentVersion: app.getVersion(),
+      isPortableBuild: isPortableBuild(),
+      canAutoUpdate: canCurrentBuildAutoUpdate(),
+      manualUpdateHint: getManualUpdateHint(),
     };
     this.broadcastState();
   }

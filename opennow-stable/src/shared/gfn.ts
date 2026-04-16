@@ -192,6 +192,9 @@ export interface UpdaterDownloadProgress {
 export interface UpdaterState {
   currentVersion: string;
   status: UpdaterStatus;
+  isPortableBuild: boolean;
+  canAutoUpdate: boolean;
+  manualUpdateHint: string | null;
   availableVersion: string | null;
   releaseName: string | null;
   releaseDate: string | null;
