@@ -229,6 +229,81 @@ let authService: AuthService;
 let settingsManager: SettingsManager;
 let appUpdater: AppUpdaterController | null = null;
 const SCREENSHOT_LIMIT = 60;
+const EXPLICIT_SHUTDOWN_FORCE_EXIT_DELAY_MS = 2000;
+let isShutdownRequested = false;
+let isShutdownCleanupComplete = false;
+let isUpdaterInstallQuitInProgress = false;
+let explicitShutdownFallbackTimer: NodeJS.Timeout | null = null;
+
+function clearExplicitShutdownFallback(): void {
+  if (explicitShutdownFallbackTimer) {
+    clearTimeout(explicitShutdownFallbackTimer);
+    explicitShutdownFallbackTimer = null;
+  }
+}
+
+function runShutdownCleanup(reason = "app-quit"): void {
+  if (isShutdownCleanupComplete) {
+    return;
+  }
+
+  isShutdownCleanupComplete = true;
+  console.log(`[Main] Running shutdown cleanup (${reason})`);
+
+  refreshScheduler.stop();
+  signalingClient?.disconnect();
+  signalingClient = null;
+  signalingClientKey = null;
+  void destroyDiscordRpc();
+  appUpdater?.dispose();
+  appUpdater = null;
+
+  const windowToClose = mainWindow;
+  if (windowToClose && !windowToClose.isDestroyed()) {
+    mainWindow = null;
+    try {
+      windowToClose.close();
+    } catch (error) {
+      console.warn("[Main] Failed to close main window during shutdown:", error);
+    }
+
+    if (!windowToClose.isDestroyed()) {
+      try {
+        windowToClose.destroy();
+      } catch (error) {
+        console.warn("[Main] Failed to destroy main window during shutdown:", error);
+      }
+    }
+  }
+}
+
+function scheduleExplicitShutdownFallback(reason: string, exitCode = 0): void {
+  if (explicitShutdownFallbackTimer || isUpdaterInstallQuitInProgress) {
+    return;
+  }
+
+  explicitShutdownFallbackTimer = setTimeout(() => {
+    explicitShutdownFallbackTimer = null;
+    console.warn(`[Main] Explicit shutdown fallback triggered (${reason}); forcing process exit.`);
+    app.exit(exitCode);
+  }, EXPLICIT_SHUTDOWN_FORCE_EXIT_DELAY_MS);
+  explicitShutdownFallbackTimer.unref?.();
+}
+
+function requestAppShutdown(options: { reason?: string; forceExitFallback?: boolean; exitCode?: number } = {}): void {
+  const { reason = "app-quit", forceExitFallback = false, exitCode = 0 } = options;
+
+  if (!isShutdownRequested) {
+    isShutdownRequested = true;
+    runShutdownCleanup(reason);
+  }
+
+  if (forceExitFallback) {
+    scheduleExplicitShutdownFallback(reason, exitCode);
+  }
+
+  app.quit();
+}
 
 function getScreenshotDirectory(): string {
   return join(app.getPath("pictures"), "OpenNOW", "Screenshots");
@@ -1268,7 +1343,10 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.QUIT_APP, async () => {
-    app.quit();
+    requestAppShutdown({
+      reason: "renderer-explicit-exit",
+      forceExitFallback: true,
+    });
   });
 
   ipcMain.handle(IPC_CHANNELS.APP_UPDATER_GET_STATE, async (): Promise<AppUpdaterState> => {
@@ -1897,6 +1975,13 @@ app.whenReady().then(async () => {
   appUpdater = createAppUpdaterController({
     onStateChanged: emitUpdaterStateToRenderer,
     automaticChecksEnabled: settingsManager.get("autoCheckForUpdates"),
+    onBeforeQuitAndInstall: () => {
+      isUpdaterInstallQuitInProgress = true;
+      clearExplicitShutdownFallback();
+    },
+    onQuitAndInstallError: () => {
+      isUpdaterInstallQuitInProgress = false;
+    },
   });
 
   // Connect Discord Rich Presence if the user has opted in
@@ -1970,6 +2055,9 @@ app.whenReady().then(async () => {
   appUpdater.initialize();
 
   app.on("activate", async () => {
+    if (isShutdownRequested) {
+      return;
+    }
     if (BrowserWindow.getAllWindows().length === 0) {
       await createMainWindow();
     }
@@ -1978,18 +2066,21 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
-    app.quit();
+    requestAppShutdown({ reason: "window-all-closed" });
   }
 });
 
 app.on("before-quit", () => {
-  refreshScheduler.stop();
-  signalingClient?.disconnect();
-  signalingClient = null;
-  signalingClientKey = null;
-  void destroyDiscordRpc();
-  appUpdater?.dispose();
-  appUpdater = null;
+  isShutdownRequested = true;
+  runShutdownCleanup(isUpdaterInstallQuitInProgress ? "before-quit-updater-install" : "before-quit");
+});
+
+app.on("will-quit", () => {
+  clearExplicitShutdownFallback();
+});
+
+app.on("quit", () => {
+  clearExplicitShutdownFallback();
 });
 
 // Export for use by other modules

@@ -23,6 +23,8 @@ export interface AppUpdaterController {
 interface AppUpdaterControllerOptions {
   onStateChanged: (state: AppUpdaterState) => void;
   automaticChecksEnabled: boolean;
+  onBeforeQuitAndInstall?: () => void;
+  onQuitAndInstallError?: () => void;
 }
 
 function isPrereleaseVersion(version: string): boolean {
@@ -185,9 +187,11 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
     startupTimer = setTimeout(() => {
       void controller.checkForUpdates("auto");
     }, STARTUP_CHECK_DELAY_MS);
+    startupTimer.unref?.();
     intervalTimer = setInterval(() => {
       void controller.checkForUpdates("auto");
     }, PERIODIC_CHECK_INTERVAL_MS);
+    intervalTimer.unref?.();
   };
 
   updater.on("checking-for-update", () => {
@@ -365,8 +369,10 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
 
       setImmediate(() => {
         try {
+          options.onBeforeQuitAndInstall?.();
           updater.quitAndInstall(false, true);
         } catch (error) {
+          options.onQuitAndInstallError?.();
           updateState({
             status: "error",
             message: normalizeErrorMessage(error),
