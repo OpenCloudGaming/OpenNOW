@@ -439,6 +439,7 @@ export interface SessionCreateRequest {
   appId: string;
   internalTitle: string;
   accountLinked?: boolean;
+  existingSessionStrategy?: ExistingSessionStrategy;
   zone: string;
   settings: StreamSettings;
 }
@@ -659,6 +660,8 @@ export type MainToRendererSignalingEvent =
 
 /** Dialog result for session conflict resolution */
 export type SessionConflictChoice = "resume" | "new" | "cancel";
+
+export type ExistingSessionStrategy = "auto-resume" | "force-new";
 
 export type AppUpdaterStatus =
   | "disabled"
