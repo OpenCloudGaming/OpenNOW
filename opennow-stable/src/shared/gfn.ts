@@ -150,6 +150,7 @@ export interface Settings {
   microphoneMode: MicrophoneMode;
   microphoneDeviceId: string;
   hideStreamButtons: boolean;
+  showAntiAfkIndicator: boolean;
   showStatsOnLaunch: boolean;
   controllerMode: boolean;
   controllerUiSounds: boolean;

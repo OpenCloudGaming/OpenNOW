@@ -2382,6 +2382,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                   <div className="settings-row">
                     <label className="settings-label">
+                      Show Anti-AFK Indicator
+                      <span className="settings-hint">Show the ANTI-AFK ON badge while Anti-AFK is enabled during streaming.</span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.showAntiAfkIndicator}
+                        onChange={(e) => handleChange("showAntiAfkIndicator", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
+                  <div className="settings-row">
+                    <label className="settings-label">
                       Auto Full Screen
                       <span className="settings-hint">Automatically enter fullscreen when connecting to or starting a session.</span>
                     </label>
