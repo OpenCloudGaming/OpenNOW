@@ -5,8 +5,6 @@ import { GameCard } from "./GameCard";
 
 export interface HomePageProps {
   games: GameInfo[];
-  source: "main" | "library";
-  onSourceChange: (source: "main" | "library") => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
   onPlayGame: (game: GameInfo) => void;
@@ -27,8 +25,6 @@ export interface HomePageProps {
 
 export function HomePage({
   games,
-  source,
-  onSourceChange,
   searchQuery,
   onSearchChange,
   onPlayGame,
@@ -53,17 +49,6 @@ export function HomePage({
   return (
     <div className="home-page">
       <header className="home-toolbar">
-        <div className="home-tabs">
-          <button
-            className={`home-tab ${source === "main" ? "active" : ""}`}
-            onClick={() => onSourceChange("main")}
-            disabled={isLoading}
-          >
-            <LayoutGrid size={15} />
-            Catalog
-          </button>
-        </div>
-
         <div className="home-search">
           <Search className="home-search-icon" size={16} />
           <input

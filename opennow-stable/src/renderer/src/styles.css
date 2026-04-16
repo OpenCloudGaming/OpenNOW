@@ -1602,48 +1602,6 @@ body.controller-mode.controller-hide-cursor * {
   flex-wrap: wrap;
 }
 
-.home-tabs {
-  display: flex;
-  gap: 2px;
-  background: var(--card);
-  border: 1px solid var(--panel-border);
-  border-radius: var(--r-sm);
-  padding: 3px;
-}
-
-.home-tab {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 12px;
-  border-radius: 6px;
-  border: none;
-  background: transparent;
-  color: var(--ink-muted);
-  font-size: 0.8rem;
-  font-weight: 600;
-  font-family: inherit;
-  cursor: pointer;
-  transition: color var(--t-fast), background var(--t-fast);
-  outline: none;
-  white-space: nowrap;
-}
-
-.home-tab:hover:not(:disabled) {
-  color: var(--ink-soft);
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.home-tab.active {
-  color: var(--accent-on);
-  background: var(--accent);
-}
-
-.home-tab:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .home-search {
   flex: 1;
   position: relative;

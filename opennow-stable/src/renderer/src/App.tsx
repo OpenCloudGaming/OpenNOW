@@ -143,7 +143,6 @@ function saveCatalogPreferences(prefs: CatalogPreferences): void {
   }
 }
 
-type GameSource = "main" | "library";
 type AppPage = "home" | "library" | "settings";
 type StreamStatus = "idle" | "queue" | "setup" | "starting" | "connecting" | "streaming";
 type StreamLoadingStatus = "queue" | "setup" | "starting" | "connecting";
@@ -793,7 +792,6 @@ export function App(): JSX.Element {
   // Games State
   const [games, setGames] = useState<GameInfo[]>([]);
   const [libraryGames, setLibraryGames] = useState<GameInfo[]>([]);
-  const [source, setSource] = useState<GameSource>("main");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedGameId, setSelectedGameId] = useState("");
   const [variantByGameId, setVariantByGameId] = useState<Record<string, string>>({});
@@ -2349,7 +2347,6 @@ export function App(): JSX.Element {
     setCatalogSelectedFilterIds((previous) => areStringArraysEqual(previous, catalogResult.selectedFilterIds) ? previous : catalogResult.selectedFilterIds);
     setCatalogTotalCount(catalogResult.totalCount);
     setCatalogSupportedCount(catalogResult.numberSupported);
-    setSource("main");
     setSelectedGameId((previous) => catalogResult.games.some((game) => game.id === previous) ? previous : (catalogResult.games[0]?.id ?? ""));
     applyVariantSelections(catalogResult.games);
   }, [applyVariantSelections]);
@@ -2416,7 +2413,6 @@ export function App(): JSX.Element {
     setCatalogSelectedFilterIds([]);
     setCatalogTotalCount(0);
     setCatalogSupportedCount(0);
-    setSource("main");
     setSelectedGameId("");
   }, [resetLaunchRuntime]);
 
@@ -2426,7 +2422,7 @@ export function App(): JSX.Element {
   }, []);
 
   // Load games handler
-  const loadGames = useCallback(async (targetSource: GameSource) => {
+  const loadGames = useCallback(async (targetSource: "main" | "library") => {
     setIsLoadingGames(true);
     try {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
@@ -2449,7 +2445,6 @@ export function App(): JSX.Element {
 
       const result = await window.openNow.fetchLibraryGames({ token, providerStreamingBaseUrl: baseUrl });
       setLibraryGames(result);
-      setSource("library");
       setSelectedGameId((previous) => result.some((game) => game.id === previous) ? previous : (result[0]?.id ?? ""));
       applyVariantSelections(result);
     } catch (error) {
@@ -2460,14 +2455,14 @@ export function App(): JSX.Element {
   }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
   useEffect(() => {
-    if (!authSession || source !== "main") {
+    if (!authSession || currentPage !== "home") {
       return;
     }
     const handle = window.setTimeout(() => {
       void loadGames("main");
     }, searchQuery.trim() ? 220 : 0);
     return () => window.clearTimeout(handle);
-  }, [authSession, loadGames, searchQuery, source, catalogFilterKey, catalogSelectedSortId]);
+  }, [authSession, currentPage, loadGames, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
   const handleSelectGameVariant = useCallback((gameId: string, variantId: string): void => {
     setVariantByGameId((prev) => {
@@ -3729,17 +3724,6 @@ export function App(): JSX.Element {
         {currentPage === "home" && (
           <HomePage
             games={filteredGames}
-            source="main"
-            onSourceChange={(nextSource) => {
-              if (nextSource === "library") {
-                setCurrentPage("library");
-                if (libraryGames.length === 0 && authSession) {
-                  void loadGames("library");
-                }
-                return;
-              }
-              void loadGames("main");
-            }}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             onPlayGame={handleInitiatePlay}
