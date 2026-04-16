@@ -40,6 +40,7 @@ interface ControllerLibraryPageProps {
     autoLoadControllerLibrary?: boolean;
     autoFullScreen?: boolean;
     aspectRatio?: string;
+    posterSizeScale?: number;
     maxBitrateMbps?: number;
   };
   resolutionOptions?: string[];

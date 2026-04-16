@@ -1,5 +1,5 @@
 import type { ActiveSessionInfo, AuthUser, SubscriptionInfo } from "@shared/gfn";
-import { House, Library, Settings, User, LogOut, Zap, Timer, HardDrive, X, Loader2, PlayCircle } from "lucide-react";
+import { House, Library, Settings, User, LogOut, Zap, Timer, HardDrive, X, Loader2, PlayCircle, Square } from "lucide-react";
 import { useEffect, useState, type JSX } from "react";
 import { createPortal } from "react-dom";
 
@@ -11,7 +11,9 @@ interface NavbarProps {
   activeSession: ActiveSessionInfo | null;
   activeSessionGameTitle: string | null;
   isResumingSession: boolean;
+  isTerminatingSession: boolean;
   onResumeSession: () => void;
+  onTerminateSession: () => void;
   onLogout: () => void;
 }
 
@@ -32,7 +34,9 @@ export function Navbar({
   activeSession,
   activeSessionGameTitle,
   isResumingSession,
+  isTerminatingSession,
   onResumeSession,
+  onTerminateSession,
   onLogout,
 }: NavbarProps): JSX.Element {
   const [modalType, setModalType] = useState<NavbarModalType>(null);
@@ -273,23 +277,39 @@ export function Navbar({
 
       <div className="navbar-right">
         {activeSession && (
-          <button
-            type="button"
-            className={`navbar-session-resume${isResumingSession ? " is-loading" : ""}`}
-            title={
-              activeSession.serverIp
-                ? activeSessionTitle
-                  ? `Resume active cloud session: ${activeSessionTitle}`
-                  : "Resume active cloud session"
-                : "Active session found (missing server address)"
-            }
-            onClick={onResumeSession}
-            disabled={isResumingSession || !activeSession.serverIp}
-          >
-            {isResumingSession ? <Loader2 size={14} className="navbar-session-resume-spin" /> : <PlayCircle size={14} />}
-            <span className="navbar-session-resume-text">Resume</span>
-            {activeSessionTitle && <span className="navbar-session-resume-game">{activeSessionTitle}</span>}
-          </button>
+          <div className="navbar-session-actions">
+            <button
+              type="button"
+              className={`navbar-session-resume${isResumingSession ? " is-loading" : ""}`}
+              title={
+                activeSession.serverIp
+                  ? activeSessionTitle
+                    ? `Resume active cloud session: ${activeSessionTitle}`
+                    : "Resume active cloud session"
+                  : "Active session found (missing server address)"
+              }
+              onClick={onResumeSession}
+              disabled={isResumingSession || isTerminatingSession || !activeSession.serverIp}
+            >
+              {isResumingSession ? <Loader2 size={14} className="navbar-session-resume-spin" /> : <PlayCircle size={14} />}
+              <span className="navbar-session-resume-text">Resume</span>
+              {activeSessionTitle && <span className="navbar-session-resume-game">{activeSessionTitle}</span>}
+            </button>
+            <button
+              type="button"
+              className={`navbar-session-terminate${isTerminatingSession ? " is-loading" : ""}`}
+              title={
+                activeSessionTitle
+                  ? `Terminate active cloud session: ${activeSessionTitle}`
+                  : "Terminate active cloud session"
+              }
+              onClick={onTerminateSession}
+              disabled={isResumingSession || isTerminatingSession}
+            >
+              {isTerminatingSession ? <Loader2 size={14} className="navbar-session-resume-spin" /> : <Square size={12} />}
+              <span className="navbar-session-terminate-text">Terminate</span>
+            </button>
+          </div>
         )}
         {(timeLabel || storageLabel) && (
           <div className="navbar-subscription" aria-label="Subscription details">

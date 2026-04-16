@@ -1,5 +1,5 @@
 import { Play, Monitor } from "lucide-react";
-import { memo } from "react";
+import { memo, useCallback, useState } from "react";
 import type { JSX } from "react";
 import type { GameInfo } from "@shared/gfn";
 
@@ -196,6 +196,17 @@ export const GameCard = memo(function GameCard({
   const activeVariantId = getActiveVariantId(storeOptions, selectedVariantId);
   const activeStoreOption = getActiveStoreOption(storeOptions, activeVariantId);
 
+  const [aspectPct, setAspectPct] = useState<number | undefined>(undefined);
+
+  const handleImageLoad = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = event.currentTarget;
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    if (w && h) {
+      setAspectPct((h / w) * 100);
+    }
+  }, []);
+
   const handlePlayClick = (event: React.MouseEvent): void => {
     event.stopPropagation();
     onPlay();
@@ -223,13 +234,21 @@ export const GameCard = memo(function GameCard({
       tabIndex={0}
       aria-label={`Select ${game.title}`}
     >
-      <div className="game-card-image-wrapper">
+      <div
+        className="game-card-image-wrapper"
+        style={
+          aspectPct
+            ? (({ ["--game-aspect" as any]: `${aspectPct}%` } as unknown) as React.CSSProperties)
+            : undefined
+        }
+      >
         {game.imageUrl ? (
           <img
             src={game.imageUrl}
             alt={game.title}
             className="game-card-image"
             loading="lazy"
+            onLoad={handleImageLoad}
           />
         ) : (
           <div className="game-card-image-placeholder">
@@ -248,48 +267,48 @@ export const GameCard = memo(function GameCard({
             <Play size={24} fill="currentColor" />
           </button>
         </div>
-      </div>
 
-      <div className="game-card-info">
-        <h3 className="game-card-title" title={game.title}>
-          {game.title}
-        </h3>
-        {activeStoreOption && (
-          <p className="game-card-platform" title={activeStoreOption.displayName}>
-            {activeStoreOption.displayName}
-          </p>
-        )}
-        {storeOptions.length > 0 && (
-          <div className="game-card-stores">
-            {storeOptions.map((store) => {
-              const isActive = store.variantId === activeVariantId;
-              const className = `game-card-store-chip ${isActive ? "active" : ""}`;
-              const title = `${store.displayName}${isActive ? " (selected)" : ""}`;
+        <div className="game-card-info">
+          {activeStoreOption && (
+            <p className="game-card-platform" title={activeStoreOption.displayName}>
+              {activeStoreOption.displayName}
+            </p>
+          )}
+          {storeOptions.length > 0 && (
+            <div className="game-card-stores">
+              {storeOptions.map((store) => {
+                const isActive = store.variantId === activeVariantId;
+                const className = `game-card-store-chip ${isActive ? "active" : ""}`;
+                const title = `${store.displayName}${isActive ? " (selected)" : ""}`;
 
-              if (onSelectStore) {
+                if (onSelectStore) {
+                  return (
+                    <button
+                      key={store.storeKey}
+                      type="button"
+                      className={className}
+                      title={title}
+                      onClick={(event) => handleStoreClick(event, store.variantId)}
+                      aria-label={`${store.displayName} store`}
+                      aria-pressed={isActive}
+                    >
+                      <store.IconComponent />
+                    </button>
+                  );
+                }
+
                 return (
-                  <button
-                    key={store.storeKey}
-                    type="button"
-                    className={className}
-                    title={title}
-                    onClick={(event) => handleStoreClick(event, store.variantId)}
-                    aria-label={`${store.displayName} store`}
-                    aria-pressed={isActive}
-                  >
+                  <span key={store.storeKey} className={className} title={title}>
                     <store.IconComponent />
-                  </button>
+                  </span>
                 );
-              }
-
-              return (
-                <span key={store.storeKey} className={className} title={title}>
-                  <store.IconComponent />
-                </span>
-              );
-            })}
-          </div>
-        )}
+              })}
+            </div>
+          )}
+          <h3 className="game-card-title" title={game.title}>
+            {game.title}
+          </h3>
+        </div>
       </div>
     </div>
   );

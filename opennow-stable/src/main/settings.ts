@@ -9,6 +9,8 @@ export interface Settings {
   resolution: string;
   /** Aspect ratio (16:9, 16:10, 21:9, 32:9) */
   aspectRatio: AspectRatio;
+  /** Game poster size multiplier used by the renderer */
+  posterSizeScale: number;
   /** Target FPS (30, 60, 120, etc.) */
   fps: number;
   /** Maximum bitrate in Mbps (cap at 150) */
@@ -33,6 +35,8 @@ export interface Settings {
   shortcutToggleStats: string;
   /** Toggle pointer lock shortcut */
   shortcutTogglePointerLock: string;
+  /** Toggle fullscreen shortcut */
+  shortcutToggleFullscreen: string;
   /** Stop stream shortcut */
   shortcutStopStream: string;
   /** Toggle anti-AFK shortcut */
@@ -53,6 +57,8 @@ export interface Settings {
   microphoneDeviceId: string;
   /** Hide stream buttons (mic/fullscreen/end-session) while streaming */
   hideStreamButtons: boolean;
+  /** Show the Anti-AFK indicator badge while streaming */
+  showAntiAfkIndicator: boolean;
   /** Show the stats overlay automatically when a stream launches */
   showStatsOnLaunch: boolean;
   /** Enable controller-first media bar layout for library browsing */
@@ -82,6 +88,8 @@ export interface Settings {
   enableCloudGsync: boolean;
   /** Show the currently streaming game as Discord Rich Presence activity */
   discordRichPresence: boolean;
+  /** Automatically check GitHub Releases for app updates in the background */
+  autoCheckForUpdates: boolean;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -94,6 +102,7 @@ const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 const DEFAULT_SETTINGS: Settings = {
   resolution: "1920x1080",
   aspectRatio: "16:9",
+  posterSizeScale: 1,
   fps: 60,
   maxBitrateMbps: 75,
   codec: DEFAULT_STREAM_PREFERENCES.codec,
@@ -106,6 +115,7 @@ const DEFAULT_SETTINGS: Settings = {
   mouseAcceleration: 1,
   shortcutToggleStats: "F3",
   shortcutTogglePointerLock: "F8",
+  shortcutToggleFullscreen: "F10",
   shortcutStopStream: defaultStopShortcut,
   shortcutToggleAntiAfk: defaultAntiAfkShortcut,
   shortcutToggleMicrophone: defaultMicShortcut,
@@ -114,6 +124,7 @@ const DEFAULT_SETTINGS: Settings = {
   microphoneMode: "disabled",
   microphoneDeviceId: "",
   hideStreamButtons: false,
+  showAntiAfkIndicator: true,
   showStatsOnLaunch: false,
   controllerMode: false,
   controllerUiSounds: false,
@@ -131,6 +142,7 @@ const DEFAULT_SETTINGS: Settings = {
   enableL4S: false,
   enableCloudGsync: false,
   discordRichPresence: false,
+  autoCheckForUpdates: true,
 };
 
 export class SettingsManager {

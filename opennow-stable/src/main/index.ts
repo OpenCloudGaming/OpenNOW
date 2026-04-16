@@ -24,11 +24,15 @@ import {
   fetchPublicGamesUncached,
 } from "./gfn/games";
 import type {
+  ActiveSessionInfo,
+  ExistingSessionStrategy,
   MainToRendererSignalingEvent,
+  AppUpdaterState,
   AuthLoginRequest,
   SessionInfo,
   AuthSessionRequest,
   GamesFetchRequest,
+  CatalogBrowseRequest,
   ResolveLaunchIdRequest,
   RegionsFetchRequest,
   SessionAdReportRequest,
@@ -70,6 +74,7 @@ import { getSettingsManager, type SettingsManager } from "./settings";
 import { createSession, pollSession, reportSessionAd, stopSession, getActiveSessions, claimSession } from "./gfn/cloudmatch";
 import { AuthService } from "./gfn/auth";
 import {
+  browseCatalog,
   fetchLibraryGames,
   fetchMainGames,
   fetchPublicGames,
@@ -79,6 +84,7 @@ import { fetchSubscription, fetchDynamicRegions } from "./gfn/subscription";
 import { GfnSignalingClient } from "./gfn/signaling";
 import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
 import { connectDiscordRpc, setActivity, clearActivity, destroyDiscordRpc } from "./discordRpc";
+import { createAppUpdaterController, type AppUpdaterController } from "./updater";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -221,7 +227,83 @@ let signalingClient: GfnSignalingClient | null = null;
 let signalingClientKey: string | null = null;
 let authService: AuthService;
 let settingsManager: SettingsManager;
+let appUpdater: AppUpdaterController | null = null;
 const SCREENSHOT_LIMIT = 60;
+const EXPLICIT_SHUTDOWN_FORCE_EXIT_DELAY_MS = 2000;
+let isShutdownRequested = false;
+let isShutdownCleanupComplete = false;
+let isUpdaterInstallQuitInProgress = false;
+let explicitShutdownFallbackTimer: NodeJS.Timeout | null = null;
+
+function clearExplicitShutdownFallback(): void {
+  if (explicitShutdownFallbackTimer) {
+    clearTimeout(explicitShutdownFallbackTimer);
+    explicitShutdownFallbackTimer = null;
+  }
+}
+
+function runShutdownCleanup(reason = "app-quit"): void {
+  if (isShutdownCleanupComplete) {
+    return;
+  }
+
+  isShutdownCleanupComplete = true;
+  console.log(`[Main] Running shutdown cleanup (${reason})`);
+
+  refreshScheduler.stop();
+  signalingClient?.disconnect();
+  signalingClient = null;
+  signalingClientKey = null;
+  void destroyDiscordRpc();
+  appUpdater?.dispose();
+  appUpdater = null;
+
+  const windowToClose = mainWindow;
+  if (windowToClose && !windowToClose.isDestroyed()) {
+    mainWindow = null;
+    try {
+      windowToClose.close();
+    } catch (error) {
+      console.warn("[Main] Failed to close main window during shutdown:", error);
+    }
+
+    if (!windowToClose.isDestroyed()) {
+      try {
+        windowToClose.destroy();
+      } catch (error) {
+        console.warn("[Main] Failed to destroy main window during shutdown:", error);
+      }
+    }
+  }
+}
+
+function scheduleExplicitShutdownFallback(reason: string, exitCode = 0): void {
+  if (explicitShutdownFallbackTimer || isUpdaterInstallQuitInProgress) {
+    return;
+  }
+
+  explicitShutdownFallbackTimer = setTimeout(() => {
+    explicitShutdownFallbackTimer = null;
+    console.warn(`[Main] Explicit shutdown fallback triggered (${reason}); forcing process exit.`);
+    app.exit(exitCode);
+  }, EXPLICIT_SHUTDOWN_FORCE_EXIT_DELAY_MS);
+  explicitShutdownFallbackTimer.unref?.();
+}
+
+function requestAppShutdown(options: { reason?: string; forceExitFallback?: boolean; exitCode?: number } = {}): void {
+  const { reason = "app-quit", forceExitFallback = false, exitCode = 0 } = options;
+
+  if (!isShutdownRequested) {
+    isShutdownRequested = true;
+    runShutdownCleanup(reason);
+  }
+
+  if (forceExitFallback) {
+    scheduleExplicitShutdownFallback(reason, exitCode);
+  }
+
+  app.quit();
+}
 
 function getScreenshotDirectory(): string {
   return join(app.getPath("pictures"), "OpenNOW", "Screenshots");
@@ -520,6 +602,12 @@ function emitToRenderer(event: MainToRendererSignalingEvent): void {
   }
 }
 
+function emitUpdaterStateToRenderer(state: AppUpdaterState): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(IPC_CHANNELS.APP_UPDATER_STATE_CHANGED, state);
+  }
+}
+
 async function createMainWindow(): Promise<void> {
   const preloadMjsPath = join(__dirname, "../preload/index.mjs");
   const preloadJsPath = join(__dirname, "../preload/index.js");
@@ -562,15 +650,6 @@ async function createMainWindow(): Promise<void> {
     await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
     await mainWindow.loadFile(join(__dirname, "../../dist/index.html"));
-  }
-
-  // Apply full screen on startup if the user has configured it.
-  if (settings.autoFullScreen) {
-    try {
-      mainWindow.setFullScreen(true);
-    } catch (err) {
-      console.warn("Failed to apply autoFullScreen on startup:", err);
-    }
   }
 
   mainWindow.on("closed", () => {
@@ -626,6 +705,76 @@ function rethrowSerializedSessionError(error: unknown): never {
     throw new Error(serializeSessionErrorTransport(error.toJSON()));
   }
   throw error;
+}
+
+const AUTO_RESUME_SESSION_STATUSES = new Set([2, 3]);
+const ACTIVE_CREATE_SESSION_STATUSES = new Set([1, 2, 3]);
+
+function shouldForceNewSession(strategy: ExistingSessionStrategy | undefined): boolean {
+  return strategy === "force-new";
+}
+
+function isAutoResumeReadySession(entry: ActiveSessionInfo): boolean {
+  return entry.serverIp != null && AUTO_RESUME_SESSION_STATUSES.has(entry.status);
+}
+
+function isActiveCreateSessionConflict(entry: ActiveSessionInfo): boolean {
+  return ACTIVE_CREATE_SESSION_STATUSES.has(entry.status);
+}
+
+function selectReadySessionToClaim(activeSessions: ActiveSessionInfo[], numericAppId: number): ActiveSessionInfo | null {
+  return (
+    activeSessions.find((session) => isAutoResumeReadySession(session) && session.appId === numericAppId) ??
+    activeSessions.find((session) => isAutoResumeReadySession(session)) ??
+    null
+  );
+}
+
+function selectLaunchingSession(activeSessions: ActiveSessionInfo[], numericAppId: number): ActiveSessionInfo | null {
+  return (
+    activeSessions.find((session) => session.serverIp && session.appId === numericAppId && session.status === 1) ??
+    activeSessions.find((session) => session.serverIp && session.status === 1) ??
+    null
+  );
+}
+
+async function stopActiveSessionsForCreate(params: {
+  token: string;
+  streamingBaseUrl: string;
+  zone: string;
+  appId: string;
+}): Promise<void> {
+  const { token, streamingBaseUrl, zone, appId } = params;
+  const numericAppId = Number.parseInt(appId, 10);
+  const activeSessions = await getActiveSessions(token, streamingBaseUrl);
+  const sessionsToStop = activeSessions.filter(isActiveCreateSessionConflict);
+  if (sessionsToStop.length === 0) {
+    return;
+  }
+
+  console.log(
+    `[CreateSession] Force-new requested; stopping ${sessionsToStop.length} existing active session(s) before create.`,
+  );
+
+  for (const activeSession of sessionsToStop) {
+    if (!activeSession.serverIp) {
+      console.warn(
+        `[CreateSession] Cannot stop existing session ${activeSession.sessionId} (appId=${activeSession.appId}, status=${activeSession.status}) because serverIp is missing.`,
+      );
+      continue;
+    }
+    console.log(
+      `[CreateSession] Stopping existing session id=${activeSession.sessionId}, appId=${activeSession.appId}, status=${activeSession.status}` +
+        `${activeSession.appId === numericAppId ? " (same app)" : ""}.`,
+    );
+    await stopSession({
+      token,
+      streamingBaseUrl,
+      serverIp: activeSession.serverIp,
+      zone,
+      sessionId: activeSession.sessionId,
+    });
+  }
 }
 
 const THANKS_CONTRIBUTORS_URL = "https://api.github.com/repos/OpenCloudGaming/OpenNOW/contributors?per_page=100";
@@ -908,6 +1057,14 @@ function registerIpcHandlers(): void {
     return fetchLibraryGames(token, streamingBaseUrl);
   });
 
+  ipcMain.handle(IPC_CHANNELS.GAMES_BROWSE_CATALOG, async (_event, payload: CatalogBrowseRequest) => {
+    const token = await resolveJwt(payload?.token);
+    const streamingBaseUrl =
+      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+    refreshScheduler.updateAuthContext(token, streamingBaseUrl);
+    return browseCatalog({ ...payload, token, providerStreamingBaseUrl: streamingBaseUrl });
+  });
+
   ipcMain.handle(IPC_CHANNELS.GAMES_FETCH_PUBLIC, async () => {
     return fetchPublicGames();
   });
@@ -922,6 +1079,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.CREATE_SESSION, async (_event, payload: SessionCreateRequest) => {
     const token = await resolveJwt(payload.token);
     const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+    const forceNewSession = shouldForceNewSession(payload.existingSessionStrategy);
 
     /**
      * Attempt to find and claim an existing active session.
@@ -944,10 +1102,7 @@ function registerIpcHandlers(): void {
         const numericAppId = parseInt(payload.appId, 10);
 
         // First prefer a paused/ready session (status 2 or 3) that can be RESUME'd.
-        const readyCandidate =
-          activeSessions.find((s) => s.serverIp && s.appId === numericAppId && (s.status === 2 || s.status === 3)) ??
-          activeSessions.find((s) => s.serverIp && (s.status === 2 || s.status === 3)) ??
-          null;
+        const readyCandidate = selectReadySessionToClaim(activeSessions, numericAppId);
         if (readyCandidate) {
           console.log(
             `[CreateSession] Resuming existing session (id=${readyCandidate.sessionId}, appId=${readyCandidate.appId}, status=${readyCandidate.status}) instead of creating new.`,
@@ -964,10 +1119,7 @@ function registerIpcHandlers(): void {
 
         // A status=1 session is still in queue/setup. Return it so the renderer's
         // polling loop handles queue position and ads — do NOT send a RESUME claim.
-        const launchingCandidate =
-          activeSessions.find((s) => s.serverIp && s.appId === numericAppId && s.status === 1) ??
-          activeSessions.find((s) => s.serverIp && s.status === 1) ??
-          null;
+        const launchingCandidate = selectLaunchingSession(activeSessions, numericAppId);
         if (launchingCandidate) {
           console.log(
             `[CreateSession] Found launching session (id=${launchingCandidate.sessionId}, appId=${launchingCandidate.appId}, status=1); returning for renderer queue/ad polling.`,
@@ -1006,15 +1158,25 @@ function registerIpcHandlers(): void {
     };
 
     // Pre-flight check: resume an active session before trying to create a new one.
-    const preChecked = await tryClaimExisting();
-    if (preChecked) {
-      if (settingsManager.get("discordRichPresence")) {
-        void setActivity(payload.internalTitle || payload.appId, new Date());
+    if (!forceNewSession) {
+      const preChecked = await tryClaimExisting();
+      if (preChecked) {
+        if (settingsManager.get("discordRichPresence")) {
+          void setActivity(payload.internalTitle || payload.appId, new Date());
+        }
+        return preChecked;
       }
-      return preChecked;
     }
 
     try {
+      if (forceNewSession && token) {
+        await stopActiveSessionsForCreate({
+          token,
+          streamingBaseUrl,
+          zone: payload.zone,
+          appId: payload.appId,
+        });
+      }
       const sessionResult = await createSession({ ...payload, token, streamingBaseUrl });
       if (settingsManager.get("discordRichPresence")) {
         void setActivity(payload.internalTitle || payload.appId, new Date());
@@ -1025,7 +1187,7 @@ function registerIpcHandlers(): void {
       // attempt a claim now (the pre-flight may have missed a session whose appId
       // was not populated in the list response, or that had no serverIp at the
       // time of the pre-flight but is ready now).
-      if (error instanceof SessionError && error.statusCode === 11) {
+      if (!forceNewSession && error instanceof SessionError && error.statusCode === 11) {
         console.warn("[CreateSession] SESSION_LIMIT_EXCEEDED — retrying as session claim.");
         const fallback = await tryClaimExisting();
         if (fallback) {
@@ -1181,7 +1343,62 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.QUIT_APP, async () => {
-    app.quit();
+    requestAppShutdown({
+      reason: "renderer-explicit-exit",
+      forceExitFallback: true,
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_UPDATER_GET_STATE, async (): Promise<AppUpdaterState> => {
+    return appUpdater?.getState() ?? {
+      status: "disabled",
+      currentVersion: app.getVersion(),
+      updateSource: "github-releases",
+      canCheck: false,
+      canDownload: false,
+      canInstall: false,
+      isPackaged: app.isPackaged,
+      message: "Updater is unavailable.",
+    };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_UPDATER_CHECK, async (): Promise<AppUpdaterState> => {
+    return appUpdater?.checkForUpdates("manual") ?? {
+      status: "disabled",
+      currentVersion: app.getVersion(),
+      updateSource: "github-releases",
+      canCheck: false,
+      canDownload: false,
+      canInstall: false,
+      isPackaged: app.isPackaged,
+      message: "Updater is unavailable.",
+    };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_UPDATER_DOWNLOAD, async (): Promise<AppUpdaterState> => {
+    return appUpdater?.downloadUpdate() ?? {
+      status: "disabled",
+      currentVersion: app.getVersion(),
+      updateSource: "github-releases",
+      canCheck: false,
+      canDownload: false,
+      canInstall: false,
+      isPackaged: app.isPackaged,
+      message: "Updater is unavailable.",
+    };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_UPDATER_INSTALL, async (): Promise<AppUpdaterState> => {
+    return appUpdater?.quitAndInstall() ?? {
+      status: "disabled",
+      currentVersion: app.getVersion(),
+      updateSource: "github-releases",
+      canCheck: false,
+      canDownload: false,
+      canInstall: false,
+      isPackaged: app.isPackaged,
+      message: "Updater is unavailable.",
+    };
   });
 
   // Settings IPC handlers
@@ -1193,11 +1410,8 @@ function registerIpcHandlers(): void {
     settingsManager.set(key, value);
     // React to certain setting changes immediately in main process
     try {
-      if (key === "autoFullScreen") {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          const should = Boolean(value as unknown as boolean);
-          mainWindow.setFullScreen(should);
-        }
+      if (key === "autoCheckForUpdates") {
+        appUpdater?.setAutomaticChecksEnabled(value as boolean);
       }
       if (key === "discordRichPresence") {
         if (value) {
@@ -1212,7 +1426,9 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
-    return settingsManager.reset();
+    const resetSettings = settingsManager.reset();
+    appUpdater?.setAutomaticChecksEnabled(resetSettings.autoCheckForUpdates);
+    return resetSettings;
   });
 
   ipcMain.handle(IPC_CHANNELS.MICROPHONE_PERMISSION_GET, async (): Promise<MicrophonePermissionResult> => {
@@ -1756,6 +1972,17 @@ app.whenReady().then(async () => {
   await authService.initialize();
 
   settingsManager = getSettingsManager();
+  appUpdater = createAppUpdaterController({
+    onStateChanged: emitUpdaterStateToRenderer,
+    automaticChecksEnabled: settingsManager.get("autoCheckForUpdates"),
+    onBeforeQuitAndInstall: () => {
+      isUpdaterInstallQuitInProgress = true;
+      clearExplicitShutdownFallback();
+    },
+    onQuitAndInstallError: () => {
+      isUpdaterInstallQuitInProgress = false;
+    },
+  });
 
   // Connect Discord Rich Presence if the user has opted in
   if (settingsManager.get("discordRichPresence")) {
@@ -1825,8 +2052,12 @@ app.whenReady().then(async () => {
   refreshScheduler.start();
 
   await createMainWindow();
+  appUpdater.initialize();
 
   app.on("activate", async () => {
+    if (isShutdownRequested) {
+      return;
+    }
     if (BrowserWindow.getAllWindows().length === 0) {
       await createMainWindow();
     }
@@ -1835,16 +2066,21 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
-    app.quit();
+    requestAppShutdown({ reason: "window-all-closed" });
   }
 });
 
 app.on("before-quit", () => {
-  refreshScheduler.stop();
-  signalingClient?.disconnect();
-  signalingClient = null;
-  signalingClientKey = null;
-  void destroyDiscordRpc();
+  isShutdownRequested = true;
+  runShutdownCleanup(isUpdaterInstallQuitInProgress ? "before-quit-updater-install" : "before-quit");
+});
+
+app.on("will-quit", () => {
+  clearExplicitShutdownFallback();
+});
+
+app.on("quit", () => {
+  clearExplicitShutdownFallback();
 });
 
 // Export for use by other modules

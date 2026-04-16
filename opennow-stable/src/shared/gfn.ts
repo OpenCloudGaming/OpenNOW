@@ -128,6 +128,7 @@ export interface MicrophonePermissionResult {
 export interface Settings {
   resolution: string;
   aspectRatio: AspectRatio;
+  posterSizeScale: number;
   fps: number;
   maxBitrateMbps: number;
   codec: VideoCodec;
@@ -140,6 +141,7 @@ export interface Settings {
   mouseAcceleration: number;
   shortcutToggleStats: string;
   shortcutTogglePointerLock: string;
+  shortcutToggleFullscreen: string;
   shortcutStopStream: string;
   shortcutToggleAntiAfk: string;
   shortcutToggleMicrophone: string;
@@ -148,6 +150,7 @@ export interface Settings {
   microphoneMode: MicrophoneMode;
   microphoneDeviceId: string;
   hideStreamButtons: boolean;
+  showAntiAfkIndicator: boolean;
   showStatsOnLaunch: boolean;
   controllerMode: boolean;
   controllerUiSounds: boolean;
@@ -172,6 +175,8 @@ export interface Settings {
   enableCloudGsync: boolean;
   /** Show the currently streaming game as Discord Rich Presence activity */
   discordRichPresence: boolean;
+  /** Automatically check GitHub Releases for app updates in the background */
+  autoCheckForUpdates: boolean;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
@@ -324,6 +329,13 @@ export interface GamesFetchRequest {
   providerStreamingBaseUrl?: string;
 }
 
+export interface CatalogBrowseRequest extends GamesFetchRequest {
+  searchQuery?: string;
+  sortId?: string;
+  filterIds?: string[];
+  fetchCount?: number;
+}
+
 export interface ResolveLaunchIdRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
@@ -340,9 +352,14 @@ export interface GameVariant {
   id: string;
   store: string;
   supportedControls: string[];
+  librarySelected?: boolean;
+  libraryStatus?: string;
+  lastPlayedDate?: string;
+  gfnStatus?: string;
 }
 
 export interface GameInfo {
+
   id: string;
   uuid?: string;
   launchAppId?: string;
@@ -355,8 +372,49 @@ export interface GameInfo {
   screenshotUrl?: string;
   playType?: string;
   membershipTierLabel?: string;
+  publisherName?: string;
+  contentRatings?: string[];
+  playabilityState?: string;
+  availableStores?: string[];
+  searchText?: string;
+  lastPlayed?: string;
+  isInLibrary?: boolean;
   selectedVariantIndex: number;
   variants: GameVariant[];
+}
+
+export interface CatalogFilterOption {
+  id: string;
+  rawId: string;
+  label: string;
+  groupId: string;
+  groupLabel: string;
+}
+
+export interface CatalogFilterGroup {
+  id: string;
+  label: string;
+  options: CatalogFilterOption[];
+}
+
+export interface CatalogSortOption {
+  id: string;
+  label: string;
+  orderBy: string;
+}
+
+export interface CatalogBrowseResult {
+  games: GameInfo[];
+  numberReturned: number;
+  numberSupported: number;
+  totalCount: number;
+  hasNextPage: boolean;
+  endCursor?: string;
+  searchQuery: string;
+  selectedSortId: string;
+  selectedFilterIds: string[];
+  filterGroups: CatalogFilterGroup[];
+  sortOptions: CatalogSortOption[];
 }
 
 export interface StreamSettings {
@@ -381,6 +439,7 @@ export interface SessionCreateRequest {
   appId: string;
   internalTitle: string;
   accountLinked?: boolean;
+  existingSessionStrategy?: ExistingSessionStrategy;
   zone: string;
   settings: StreamSettings;
 }
@@ -551,6 +610,7 @@ export interface ActiveSessionInfo {
   appId: number;
   gpuType?: string;
   status: number;
+  streamingBaseUrl?: string;
   serverIp?: string;
   signalingUrl?: string;
   resolution?: string;
@@ -602,6 +662,41 @@ export type MainToRendererSignalingEvent =
 /** Dialog result for session conflict resolution */
 export type SessionConflictChoice = "resume" | "new" | "cancel";
 
+export type ExistingSessionStrategy = "auto-resume" | "force-new";
+
+export type AppUpdaterStatus =
+  | "disabled"
+  | "idle"
+  | "checking"
+  | "available"
+  | "not-available"
+  | "downloading"
+  | "downloaded"
+  | "error";
+
+export interface AppUpdaterProgress {
+  percent: number;
+  transferred: number;
+  total: number;
+  bytesPerSecond: number;
+}
+
+export interface AppUpdaterState {
+  status: AppUpdaterStatus;
+  currentVersion: string;
+  availableVersion?: string;
+  downloadedVersion?: string;
+  progress?: AppUpdaterProgress;
+  lastCheckedAt?: number;
+  message?: string;
+  errorCode?: string;
+  updateSource: "github-releases";
+  canCheck: boolean;
+  canDownload: boolean;
+  canInstall: boolean;
+  isPackaged: boolean;
+}
+
 export interface OpenNowApi {
   getAuthSession(input?: AuthSessionRequest): Promise<AuthSessionResult>;
   getLoginProviders(): Promise<LoginProvider[]>;
@@ -611,6 +706,7 @@ export interface OpenNowApi {
   fetchSubscription(input: SubscriptionFetchRequest): Promise<SubscriptionInfo>;
   fetchMainGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   fetchLibraryGames(input: GamesFetchRequest): Promise<GameInfo[]>;
+  browseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult>;
   fetchPublicGames(): Promise<GameInfo[]>;
   resolveLaunchAppId(input: ResolveLaunchIdRequest): Promise<string | null>;
   createSession(input: SessionCreateRequest): Promise<SessionInfo>;
@@ -632,6 +728,11 @@ export interface OpenNowApi {
   /** Listen for F11 fullscreen toggle from main process */
   onToggleFullscreen(listener: () => void): () => void;
   quitApp(): Promise<void>;
+  getUpdaterState(): Promise<AppUpdaterState>;
+  checkForUpdates(): Promise<AppUpdaterState>;
+  downloadUpdate(): Promise<AppUpdaterState>;
+  installUpdateAndRestart(): Promise<AppUpdaterState>;
+  onUpdaterStateChanged(listener: (state: AppUpdaterState) => void): () => void;
   setFullscreen(v: boolean): Promise<void>;
   toggleFullscreen(): Promise<void>;
   togglePointerLock(): Promise<void>;
