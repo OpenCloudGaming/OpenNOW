@@ -57,6 +57,8 @@ export interface Settings {
   microphoneDeviceId: string;
   /** Hide stream buttons (mic/fullscreen/end-session) while streaming */
   hideStreamButtons: boolean;
+  /** Show the Anti-AFK indicator badge while streaming */
+  showAntiAfkIndicator: boolean;
   /** Show the stats overlay automatically when a stream launches */
   showStatsOnLaunch: boolean;
   /** Enable controller-first media bar layout for library browsing */
@@ -122,6 +124,7 @@ const DEFAULT_SETTINGS: Settings = {
   microphoneMode: "disabled",
   microphoneDeviceId: "",
   hideStreamButtons: false,
+  showAntiAfkIndicator: true,
   showStatsOnLaunch: false,
   controllerMode: false,
   controllerUiSounds: false,

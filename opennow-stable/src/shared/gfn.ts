@@ -150,6 +150,7 @@ export interface Settings {
   microphoneMode: MicrophoneMode;
   microphoneDeviceId: string;
   hideStreamButtons: boolean;
+  showAntiAfkIndicator: boolean;
   showStatsOnLaunch: boolean;
   controllerMode: boolean;
   controllerUiSounds: boolean;
@@ -438,6 +439,7 @@ export interface SessionCreateRequest {
   appId: string;
   internalTitle: string;
   accountLinked?: boolean;
+  existingSessionStrategy?: ExistingSessionStrategy;
   zone: string;
   settings: StreamSettings;
 }
@@ -608,6 +610,7 @@ export interface ActiveSessionInfo {
   appId: number;
   gpuType?: string;
   status: number;
+  streamingBaseUrl?: string;
   serverIp?: string;
   signalingUrl?: string;
   resolution?: string;
@@ -658,6 +661,8 @@ export type MainToRendererSignalingEvent =
 
 /** Dialog result for session conflict resolution */
 export type SessionConflictChoice = "resume" | "new" | "cancel";
+
+export type ExistingSessionStrategy = "auto-resume" | "force-new";
 
 export type AppUpdaterStatus =
   | "disabled"

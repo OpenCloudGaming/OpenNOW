@@ -8,6 +8,7 @@ import type {
   CatalogBrowseResult,
   CatalogFilterGroup,
   CatalogSortOption,
+  ExistingSessionStrategy,
   GameInfo,
   GameVariant,
   LoginProvider,
@@ -16,6 +17,7 @@ import type {
   SessionAdInfo,
   SessionAdState,
   SessionInfo,
+  SessionStopRequest,
   Settings,
   SubscriptionInfo,
   StreamRegion,
@@ -846,6 +848,7 @@ export function App(): JSX.Element {
     microphoneMode: "disabled",
     microphoneDeviceId: "",
     hideStreamButtons: false,
+    showAntiAfkIndicator: true,
     showStatsOnLaunch: false,
     controllerMode: false,
     controllerUiSounds: false,
@@ -889,6 +892,7 @@ export function App(): JSX.Element {
   const [queuePosition, setQueuePosition] = useState<number | undefined>();
   const [navbarActiveSession, setNavbarActiveSession] = useState<ActiveSessionInfo | null>(null);
   const [isResumingNavbarSession, setIsResumingNavbarSession] = useState(false);
+  const [isTerminatingNavbarSession, setIsTerminatingNavbarSession] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
   const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
   const [queueModalData, setQueueModalData] = useState<PrintedWasteQueueData | null>(null);
@@ -923,6 +927,7 @@ export function App(): JSX.Element {
   const controllerOverlayOpenRef = useRef(false);
   const codecTestPromiseRef = useRef<Promise<CodecTestResult[] | null> | null>(null);
   const codecStartupTestAttemptedRef = useRef(false);
+  const navbarSessionActionInFlightRef = useRef<"resume" | "terminate" | null>(null);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
     setShowStatsOverlay(settings.showStatsOnLaunch);
@@ -1762,6 +1767,29 @@ export function App(): JSX.Element {
   const findGameContextForSession = useCallback((activeSession: ActiveSessionInfo) => {
     return findSessionContextForAppId(allKnownGames, variantByGameId, activeSession.appId);
   }, [allKnownGames, variantByGameId]);
+
+  const stopSessionByTarget = useCallback(async (
+    target: Pick<SessionStopRequest, "sessionId" | "zone" | "streamingBaseUrl" | "serverIp" | "clientId" | "deviceId"> | null | undefined,
+  ): Promise<boolean> => {
+    if (!target) {
+      return false;
+    }
+    const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
+    if (!token) {
+      console.warn("Skipping session stop: missing auth token");
+      return false;
+    }
+    await window.openNow.stopSession({
+      token,
+      streamingBaseUrl: target.streamingBaseUrl,
+      serverIp: target.serverIp,
+      zone: target.zone,
+      sessionId: target.sessionId,
+      clientId: target.clientId,
+      deviceId: target.deviceId,
+    });
+    return true;
+  }, [authSession]);
 
   useEffect(() => {
     if (!startupRefreshNotice) return;
@@ -2751,10 +2779,11 @@ export function App(): JSX.Element {
       bypass: options?.bypassGuards ?? false,
     });
 
-    if (!options?.bypassGuards && (launchInFlightRef.current || streamStatus !== "idle")) {
+    if (!options?.bypassGuards && (launchInFlightRef.current || streamStatus !== "idle" || navbarSessionActionInFlightRef.current)) {
       console.warn("Ignoring play request: launch already in progress or stream not idle", {
         inFlight: launchInFlightRef.current,
         streamStatus,
+        navbarSessionAction: navbarSessionActionInFlightRef.current,
       });
       return;
     }
@@ -2818,6 +2847,8 @@ export function App(): JSX.Element {
       setStreamingGame(matchedGameContext.game);
       setStreamingStore(matchedGameContext.variant?.store ?? null);
 
+      let existingSessionStrategy: ExistingSessionStrategy | undefined;
+
       // Check for active sessions first
       if (token) {
         try {
@@ -2847,6 +2878,9 @@ export function App(): JSX.Element {
                 setNavbarActiveSession(null);
                 return;
               }
+              if (choice === "new") {
+                existingSessionStrategy = "force-new";
+              }
             }
           }
         } catch (error) {
@@ -2862,6 +2896,7 @@ export function App(): JSX.Element {
         appId,
         internalTitle: game.title,
         accountLinked: chooseAccountLinked(game, selectedVariant),
+        existingSessionStrategy,
         zone: "prod",
         settings: {
           resolution: settings.resolution,
@@ -3116,13 +3151,20 @@ export function App(): JSX.Element {
   }, []);
 
   const handleResumeFromNavbar = useCallback(async () => {
-    if (!selectedProvider || !navbarActiveSession || isResumingNavbarSession) {
+    if (
+      !selectedProvider
+      || !navbarActiveSession
+      || isResumingNavbarSession
+      || isTerminatingNavbarSession
+      || navbarSessionActionInFlightRef.current
+    ) {
       return;
     }
     if (launchInFlightRef.current || streamStatus !== "idle") {
       return;
     }
 
+    navbarSessionActionInFlightRef.current = "resume";
     launchInFlightRef.current = true;
     resetSignalingRecoveryState();
     setIsResumingNavbarSession(true);
@@ -3160,11 +3202,13 @@ export function App(): JSX.Element {
       resetLaunchRuntime({ keepLaunchError: true });
       void refreshNavbarActiveSession();
     } finally {
+      navbarSessionActionInFlightRef.current = null;
       launchInFlightRef.current = false;
       setIsResumingNavbarSession(false);
     }
   }, [
     claimAndConnectSession,
+    isTerminatingNavbarSession,
     isResumingNavbarSession,
     navbarActiveSession,
     findGameContextForSession,
@@ -3173,6 +3217,52 @@ export function App(): JSX.Element {
     resetLaunchRuntime,
     resetStatsOverlayToPreference,
     selectedProvider,
+    streamStatus,
+  ]);
+
+  const handleTerminateNavbarSession = useCallback(async () => {
+    if (
+      !navbarActiveSession
+      || isResumingNavbarSession
+      || isTerminatingNavbarSession
+      || navbarSessionActionInFlightRef.current
+    ) {
+      return;
+    }
+    if (launchInFlightRef.current || streamStatus !== "idle") {
+      return;
+    }
+
+    const activeSessionTitle = gameTitleByAppId.get(navbarActiveSession.appId)?.trim() || "this session";
+    if (!window.confirm(`Terminate ${activeSessionTitle}? This will end the active cloud session immediately.`)) {
+      return;
+    }
+
+    navbarSessionActionInFlightRef.current = "terminate";
+    setIsTerminatingNavbarSession(true);
+    try {
+      await stopSessionByTarget({
+        sessionId: navbarActiveSession.sessionId,
+        zone: "",
+        streamingBaseUrl: navbarActiveSession.streamingBaseUrl ?? (effectiveStreamingBaseUrl || undefined),
+        serverIp: navbarActiveSession.serverIp,
+      });
+      setNavbarActiveSession(null);
+    } catch (error) {
+      console.error("Navbar terminate failed:", error);
+    } finally {
+      navbarSessionActionInFlightRef.current = null;
+      setIsTerminatingNavbarSession(false);
+      void refreshNavbarActiveSession();
+    }
+  }, [
+    effectiveStreamingBaseUrl,
+    gameTitleByAppId,
+    isResumingNavbarSession,
+    isTerminatingNavbarSession,
+    navbarActiveSession,
+    refreshNavbarActiveSession,
+    stopSessionByTarget,
     streamStatus,
   ]);
 
@@ -3189,9 +3279,7 @@ export function App(): JSX.Element {
 
       const current = sessionRef.current;
       if (current) {
-        const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
-        await window.openNow.stopSession({
-          token: token || undefined,
+        await stopSessionByTarget({
           streamingBaseUrl: current.streamingBaseUrl,
           serverIp: current.serverIp,
           zone: current.zone,
@@ -3210,7 +3298,7 @@ export function App(): JSX.Element {
     } catch (error) {
       console.error("Stop failed:", error);
     }
-  }, [authSession, endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime, resolveExitPrompt, streamingGame]);
+  }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime, resolveExitPrompt, stopSessionByTarget, streamingGame]);
 
   const handleSwitchGame = useCallback(async (game: GameInfo) => {
     setControllerOverlayOpen(false);
@@ -3568,6 +3656,7 @@ export function App(): JSX.Element {
             hideStreamButtons={settings.hideStreamButtons}
             serverRegion={session?.serverIp}
             antiAfkEnabled={antiAfkEnabled}
+            showAntiAfkIndicator={settings.showAntiAfkIndicator}
             escHoldReleaseIndicator={escHoldReleaseIndicator}
             exitPrompt={exitPrompt}
             sessionStartedAtMs={sessionStartedAtMs}
@@ -3804,8 +3893,12 @@ export function App(): JSX.Element {
           activeSession={navbarActiveSession}
           activeSessionGameTitle={activeSessionGameTitle}
           isResumingSession={isResumingNavbarSession}
+          isTerminatingSession={isTerminatingNavbarSession}
           onResumeSession={() => {
             void handleResumeFromNavbar();
+          }}
+          onTerminateSession={() => {
+            void handleTerminateNavbarSession();
           }}
           onLogout={handleLogout}
         />
