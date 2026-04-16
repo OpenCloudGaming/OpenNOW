@@ -105,7 +105,6 @@ const SESSION_AD_PROGRESS_CHECK_INTERVAL_MS = 1000;
 const SESSION_AD_START_TIMEOUT_MS = 30000;
 const SESSION_AD_FORCE_PLAY_TIMEOUT_MS = 10000;
 const SESSION_AD_STUCK_TIMEOUT_MS = 30000;
-const SESSION_READY_TIMEOUT_MS = 180000;
 const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
 const CATALOG_PREFERENCES_LOCALSTORAGE_KEY = "opennow.catalogPreferences.v1";
 const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
@@ -2686,12 +2685,11 @@ export function App(): JSX.Element {
       setQueuePosition(newSession.queuePosition);
 
       // Poll for readiness.
-      // Queue mode: no timeout - users wait indefinitely and see position updates.
-      // Setup/Starting mode: 180s timeout applies while machine is being allocated.
+      // Queue and setup/starting modes wait indefinitely until the session becomes ready
+      // or the launch is explicitly aborted. Some rigs take much longer than 180s.
       let finalSession: SessionInfo | null = null;
       let latestSession = newSession;
       let isInQueueMode = isSessionInQueue(newSession);
-      let setupTimeoutStartAt: number | null = isInQueueMode ? null : Date.now();
       let attempt = 0;
 
       while (true) {
@@ -2765,13 +2763,8 @@ export function App(): JSX.Element {
         setSession(mergedSession);
         setQueuePosition(mergedSession.queuePosition);
 
-        // Check if queue just cleared - transition from queue mode to setup mode
-        const wasInQueueMode = isInQueueMode;
+        // Check if queue just cleared so the loading UI can transition to setup mode.
         isInQueueMode = isSessionInQueue(mergedSession);
-        if (wasInQueueMode && !isInQueueMode) {
-          // Queue just cleared, start timeout counting from now.
-          setupTimeoutStartAt = Date.now();
-        }
 
         console.log(
           `Poll attempt ${attempt}: status=${mergedSession.status}, seatSetupStep=${mergedSession.seatSetupStep ?? "n/a"}, queuePosition=${mergedSession.queuePosition ?? "n/a"}, serverIp=${mergedSession.serverIp}, queueMode=${isInQueueMode}, adsRequired=${isSessionAdsRequired(mergedSession.adState)}`,
@@ -2789,14 +2782,9 @@ export function App(): JSX.Element {
           updateLoadingStep("setup");
         }
 
-        // Only check timeout when NOT in queue mode (i.e., during setup/starting)
-        if (!isInQueueMode && setupTimeoutStartAt !== null && Date.now() - setupTimeoutStartAt >= SESSION_READY_TIMEOUT_MS) {
-          throw new Error(`Session did not become ready in time (${Math.round(SESSION_READY_TIMEOUT_MS / 1000)}s)`);
-        }
       }
 
       // finalSession is guaranteed to be set here (we only exit the loop via break when session is ready)
-      // Timeout only applies during setup/starting phase, not during queue wait
 
       setQueuePosition(undefined);
       updateLoadingStep("connecting");
