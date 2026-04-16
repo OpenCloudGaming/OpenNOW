@@ -1,4 +1,4 @@
-import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -38,7 +38,7 @@ interface SettingsPageProps {
 
 type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 
-type SettingsSectionId = "stream" | "game" | "audio" | "input" | "interface" | "thanks";
+type SettingsSectionId = "stream" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
 
 const POSTER_SIZE_MIN = 75;
 const POSTER_SIZE_MAX = 135;
@@ -1303,6 +1303,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const showAudio = activeSection === "audio" || showAll;
   const showInput = activeSection === "input" || showAll;
   const showInterface = activeSection === "interface" || showAll;
+  const showAbout = activeSection === "about" || showAll;
 
   return (
     <div className="settings-page">
@@ -1340,6 +1341,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             { id: "audio" as SettingsSectionId, label: "Audio", icon: <Mic size={15} /> },
             { id: "input" as SettingsSectionId, label: "Input", icon: <Keyboard size={15} /> },
             { id: "interface" as SettingsSectionId, label: "Interface", icon: <Monitor size={15} /> },
+            { id: "about" as SettingsSectionId, label: "About", icon: <Info size={15} /> },
             { id: "thanks" as SettingsSectionId, label: "Thanks", icon: <Heart size={15} /> },
           ]).map(item => (
             <button
@@ -2586,90 +2588,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               </div>
               <div className="settings-rows">
                 <div className="settings-row">
-                  <label className="settings-label settings-label--wrap">
-                    <span className="settings-label-title">
-                      Application Updates
-                      <span className={`settings-inline-badge settings-inline-badge--updater settings-inline-badge--updater-${updaterState.status}`}>
-                        {updaterBadgeLabel}
-                      </span>
-                    </span>
-                    <span className="settings-hint">
-                      Version {updaterState.currentVersion} · Packaged builds check GitHub Releases in the background.
-                    </span>
-                    {updaterState.message ? (
-                      <span className="settings-hint settings-hint--updater-message">{updaterState.message}</span>
-                    ) : null}
-                    {updaterLastCheckedLabel ? (
-                      <span className="settings-hint">Last checked: {updaterLastCheckedLabel}</span>
-                    ) : null}
-                    {updaterState.availableVersion && updaterState.status !== "downloaded" ? (
-                      <span className="settings-hint">Available version: {updaterState.availableVersion}</span>
-                    ) : null}
-                    {updaterState.downloadedVersion ? (
-                      <span className="settings-hint">Downloaded version: {updaterState.downloadedVersion}</span>
-                    ) : null}
-                    {updaterState.status === "downloading" && updaterState.progress ? (
-                      <span className="settings-hint">
-                        Download progress: {updaterProgressPercent}%{updaterProgressLabel ? ` · ${updaterProgressLabel}` : ""}{updaterDownloadRateLabel ? ` · ${updaterDownloadRateLabel}` : ""}
-                      </span>
-                    ) : null}
-                  </label>
-                  <div className="settings-updater-actions">
-                    <button
-                      type="button"
-                      className="settings-export-logs-btn"
-                      disabled={!updaterState.canCheck}
-                      onClick={() => {
-                        void window.openNow.checkForUpdates().catch((error) => {
-                          console.error("[Settings] Failed to trigger update check:", error);
-                        });
-                      }}
-                    >
-                      {updaterState.status === "checking" ? <Loader size={16} className="spin" /> : <RefreshCcw size={16} />}
-                      Check for Updates
-                    </button>
-                    {updaterState.status === "available" ? (
-                      <button
-                        type="button"
-                        className="settings-export-logs-btn"
-                        disabled={!updaterState.canDownload}
-                        onClick={() => {
-                          void window.openNow.downloadUpdate().catch((error) => {
-                            console.error("[Settings] Failed to download update:", error);
-                          });
-                        }}
-                      >
-                        <Download size={16} />
-                        Download Update
-                      </button>
-                    ) : null}
-                    {updaterState.status === "downloaded" ? (
-                      <button
-                        type="button"
-                        className="settings-save-btn settings-save-btn--compact"
-                        disabled={!updaterState.canInstall}
-                        onClick={() => {
-                          void window.openNow.installUpdateAndRestart().catch((error) => {
-                            console.error("[Settings] Failed to install update:", error);
-                          });
-                        }}
-                      >
-                        <RefreshCcw size={16} />
-                        Restart to Install
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-
-                {updaterState.status === "downloading" && updaterState.progress ? (
-                  <div className="settings-row settings-row--column">
-                    <div className="settings-updater-progress">
-                      <div className="settings-updater-progress-bar" style={{ width: `${updaterProgressPercent}%` }} />
-                    </div>
-                  </div>
-                ) : null}
-
-                <div className="settings-row">
                   <label className="settings-label">
                     Export Logs
                     <span className="settings-hint">Download debug logs with sensitive data redacted for privacy</span>
@@ -2729,7 +2647,101 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             </section>
           </>
         )}
-          </>
+
+        {showAbout && (
+          <section className="settings-section">
+            {showAll && <div className="settings-section-context">About</div>}
+            <div className="settings-section-header">
+              <h2>About</h2>
+            </div>
+            <div className="settings-rows">
+              <div className="settings-row">
+                <label className="settings-label settings-label--wrap">
+                  <span className="settings-label-title">
+                    Application Updates
+                    <span className={`settings-inline-badge settings-inline-badge--updater settings-inline-badge--updater-${updaterState.status}`}>
+                      {updaterBadgeLabel}
+                    </span>
+                  </span>
+                  <span className="settings-hint">
+                    Version {updaterState.currentVersion} · Packaged builds check GitHub Releases in the background.
+                  </span>
+                  {updaterState.message ? (
+                    <span className="settings-hint settings-hint--updater-message">{updaterState.message}</span>
+                  ) : null}
+                  {updaterLastCheckedLabel ? (
+                    <span className="settings-hint">Last checked: {updaterLastCheckedLabel}</span>
+                  ) : null}
+                  {updaterState.availableVersion && updaterState.status !== "downloaded" ? (
+                    <span className="settings-hint">Available version: {updaterState.availableVersion}</span>
+                  ) : null}
+                  {updaterState.downloadedVersion ? (
+                    <span className="settings-hint">Downloaded version: {updaterState.downloadedVersion}</span>
+                  ) : null}
+                  {updaterState.status === "downloading" && updaterState.progress ? (
+                    <span className="settings-hint">
+                      Download progress: {updaterProgressPercent}%{updaterProgressLabel ? ` · ${updaterProgressLabel}` : ""}{updaterDownloadRateLabel ? ` · ${updaterDownloadRateLabel}` : ""}
+                    </span>
+                  ) : null}
+                </label>
+                <div className="settings-updater-actions">
+                  <button
+                    type="button"
+                    className="settings-export-logs-btn"
+                    disabled={!updaterState.canCheck}
+                    onClick={() => {
+                      void window.openNow.checkForUpdates().catch((error) => {
+                        console.error("[Settings] Failed to trigger update check:", error);
+                      });
+                    }}
+                  >
+                    {updaterState.status === "checking" ? <Loader size={16} className="spin" /> : <RefreshCcw size={16} />}
+                    Check for Updates
+                  </button>
+                  {updaterState.status === "available" ? (
+                    <button
+                      type="button"
+                      className="settings-export-logs-btn"
+                      disabled={!updaterState.canDownload}
+                      onClick={() => {
+                        void window.openNow.downloadUpdate().catch((error) => {
+                          console.error("[Settings] Failed to download update:", error);
+                        });
+                      }}
+                    >
+                      <Download size={16} />
+                      Download Update
+                    </button>
+                  ) : null}
+                  {updaterState.status === "downloaded" ? (
+                    <button
+                      type="button"
+                      className="settings-save-btn settings-save-btn--compact"
+                      disabled={!updaterState.canInstall}
+                      onClick={() => {
+                        void window.openNow.installUpdateAndRestart().catch((error) => {
+                          console.error("[Settings] Failed to install update:", error);
+                        });
+                      }}
+                    >
+                      <RefreshCcw size={16} />
+                      Restart to Install
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+
+              {updaterState.status === "downloading" && updaterState.progress ? (
+                <div className="settings-row settings-row--column">
+                  <div className="settings-updater-progress">
+                    <div className="settings-updater-progress-bar" style={{ width: `${updaterProgressPercent}%` }} />
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </section>
+        )}
+      </>
         )}
       </div>
       </div>
