@@ -8,6 +8,7 @@ import type {
   CatalogBrowseResult,
   CatalogFilterGroup,
   CatalogSortOption,
+  ExistingSessionStrategy,
   GameInfo,
   GameVariant,
   LoginProvider,
@@ -2582,6 +2583,8 @@ export function App(): JSX.Element {
       setStreamingGame(matchedGameContext.game);
       setStreamingStore(matchedGameContext.variant?.store ?? null);
 
+      let existingSessionStrategy: ExistingSessionStrategy | undefined;
+
       // Check for active sessions first
       if (token) {
         try {
@@ -2611,6 +2614,9 @@ export function App(): JSX.Element {
                 setNavbarActiveSession(null);
                 return;
               }
+              if (choice === "new") {
+                existingSessionStrategy = "force-new";
+              }
             }
           }
         } catch (error) {
@@ -2626,6 +2632,7 @@ export function App(): JSX.Element {
         appId,
         internalTitle: game.title,
         accountLinked: chooseAccountLinked(game, selectedVariant),
+        existingSessionStrategy,
         zone: "prod",
         settings: {
           resolution: settings.resolution,

@@ -24,6 +24,8 @@ import {
   fetchPublicGamesUncached,
 } from "./gfn/games";
 import type {
+  ActiveSessionInfo,
+  ExistingSessionStrategy,
   MainToRendererSignalingEvent,
   AppUpdaterState,
   AuthLoginRequest,
@@ -630,6 +632,76 @@ function rethrowSerializedSessionError(error: unknown): never {
   throw error;
 }
 
+const AUTO_RESUME_SESSION_STATUSES = new Set([2, 3]);
+const ACTIVE_CREATE_SESSION_STATUSES = new Set([1, 2, 3]);
+
+function shouldForceNewSession(strategy: ExistingSessionStrategy | undefined): boolean {
+  return strategy === "force-new";
+}
+
+function isAutoResumeReadySession(entry: ActiveSessionInfo): boolean {
+  return entry.serverIp != null && AUTO_RESUME_SESSION_STATUSES.has(entry.status);
+}
+
+function isActiveCreateSessionConflict(entry: ActiveSessionInfo): boolean {
+  return ACTIVE_CREATE_SESSION_STATUSES.has(entry.status);
+}
+
+function selectReadySessionToClaim(activeSessions: ActiveSessionInfo[], numericAppId: number): ActiveSessionInfo | null {
+  return (
+    activeSessions.find((session) => isAutoResumeReadySession(session) && session.appId === numericAppId) ??
+    activeSessions.find((session) => isAutoResumeReadySession(session)) ??
+    null
+  );
+}
+
+function selectLaunchingSession(activeSessions: ActiveSessionInfo[], numericAppId: number): ActiveSessionInfo | null {
+  return (
+    activeSessions.find((session) => session.serverIp && session.appId === numericAppId && session.status === 1) ??
+    activeSessions.find((session) => session.serverIp && session.status === 1) ??
+    null
+  );
+}
+
+async function stopActiveSessionsForCreate(params: {
+  token: string;
+  streamingBaseUrl: string;
+  zone: string;
+  appId: string;
+}): Promise<void> {
+  const { token, streamingBaseUrl, zone, appId } = params;
+  const numericAppId = Number.parseInt(appId, 10);
+  const activeSessions = await getActiveSessions(token, streamingBaseUrl);
+  const sessionsToStop = activeSessions.filter(isActiveCreateSessionConflict);
+  if (sessionsToStop.length === 0) {
+    return;
+  }
+
+  console.log(
+    `[CreateSession] Force-new requested; stopping ${sessionsToStop.length} existing active session(s) before create.`,
+  );
+
+  for (const activeSession of sessionsToStop) {
+    if (!activeSession.serverIp) {
+      console.warn(
+        `[CreateSession] Cannot stop existing session ${activeSession.sessionId} (appId=${activeSession.appId}, status=${activeSession.status}) because serverIp is missing.`,
+      );
+      continue;
+    }
+    console.log(
+      `[CreateSession] Stopping existing session id=${activeSession.sessionId}, appId=${activeSession.appId}, status=${activeSession.status}` +
+        `${activeSession.appId === numericAppId ? " (same app)" : ""}.`,
+    );
+    await stopSession({
+      token,
+      streamingBaseUrl,
+      serverIp: activeSession.serverIp,
+      zone,
+      sessionId: activeSession.sessionId,
+    });
+  }
+}
+
 const THANKS_CONTRIBUTORS_URL = "https://api.github.com/repos/OpenCloudGaming/OpenNOW/contributors?per_page=100";
 const THANKS_SUPPORTERS_URL = "https://github.com/sponsors/zortos293";
 const THANKS_REQUEST_HEADERS = {
@@ -932,6 +1004,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.CREATE_SESSION, async (_event, payload: SessionCreateRequest) => {
     const token = await resolveJwt(payload.token);
     const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+    const forceNewSession = shouldForceNewSession(payload.existingSessionStrategy);
 
     /**
      * Attempt to find and claim an existing active session.
@@ -954,10 +1027,7 @@ function registerIpcHandlers(): void {
         const numericAppId = parseInt(payload.appId, 10);
 
         // First prefer a paused/ready session (status 2 or 3) that can be RESUME'd.
-        const readyCandidate =
-          activeSessions.find((s) => s.serverIp && s.appId === numericAppId && (s.status === 2 || s.status === 3)) ??
-          activeSessions.find((s) => s.serverIp && (s.status === 2 || s.status === 3)) ??
-          null;
+        const readyCandidate = selectReadySessionToClaim(activeSessions, numericAppId);
         if (readyCandidate) {
           console.log(
             `[CreateSession] Resuming existing session (id=${readyCandidate.sessionId}, appId=${readyCandidate.appId}, status=${readyCandidate.status}) instead of creating new.`,
@@ -974,10 +1044,7 @@ function registerIpcHandlers(): void {
 
         // A status=1 session is still in queue/setup. Return it so the renderer's
         // polling loop handles queue position and ads — do NOT send a RESUME claim.
-        const launchingCandidate =
-          activeSessions.find((s) => s.serverIp && s.appId === numericAppId && s.status === 1) ??
-          activeSessions.find((s) => s.serverIp && s.status === 1) ??
-          null;
+        const launchingCandidate = selectLaunchingSession(activeSessions, numericAppId);
         if (launchingCandidate) {
           console.log(
             `[CreateSession] Found launching session (id=${launchingCandidate.sessionId}, appId=${launchingCandidate.appId}, status=1); returning for renderer queue/ad polling.`,
@@ -1016,15 +1083,25 @@ function registerIpcHandlers(): void {
     };
 
     // Pre-flight check: resume an active session before trying to create a new one.
-    const preChecked = await tryClaimExisting();
-    if (preChecked) {
-      if (settingsManager.get("discordRichPresence")) {
-        void setActivity(payload.internalTitle || payload.appId, new Date());
+    if (!forceNewSession) {
+      const preChecked = await tryClaimExisting();
+      if (preChecked) {
+        if (settingsManager.get("discordRichPresence")) {
+          void setActivity(payload.internalTitle || payload.appId, new Date());
+        }
+        return preChecked;
       }
-      return preChecked;
     }
 
     try {
+      if (forceNewSession && token) {
+        await stopActiveSessionsForCreate({
+          token,
+          streamingBaseUrl,
+          zone: payload.zone,
+          appId: payload.appId,
+        });
+      }
       const sessionResult = await createSession({ ...payload, token, streamingBaseUrl });
       if (settingsManager.get("discordRichPresence")) {
         void setActivity(payload.internalTitle || payload.appId, new Date());
@@ -1035,7 +1112,7 @@ function registerIpcHandlers(): void {
       // attempt a claim now (the pre-flight may have missed a session whose appId
       // was not populated in the list response, or that had no serverIp at the
       // time of the pre-flight but is ready now).
-      if (error instanceof SessionError && error.statusCode === 11) {
+      if (!forceNewSession && error instanceof SessionError && error.statusCode === 11) {
         console.warn("[CreateSession] SESSION_LIMIT_EXCEEDED — retrying as session claim.");
         const fallback = await tryClaimExisting();
         if (fallback) {
