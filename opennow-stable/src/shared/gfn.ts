@@ -610,6 +610,7 @@ export interface ActiveSessionInfo {
   appId: number;
   gpuType?: string;
   status: number;
+  streamingBaseUrl?: string;
   serverIp?: string;
   signalingUrl?: string;
   resolution?: string;

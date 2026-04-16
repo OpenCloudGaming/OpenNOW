@@ -472,23 +472,20 @@ body,
   z-index: 2;
 }
 
-.navbar-session-resume {
+.navbar-session-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.navbar-session-resume,
+.navbar-session-terminate {
   display: inline-flex;
   align-items: center;
   justify-content: flex-start;
   gap: 7px;
-  width: 210px;
-  min-width: 210px;
   padding: 6px 10px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--panel-border));
   border-radius: var(--r-full);
-  background:
-    linear-gradient(160deg, rgba(88, 217, 138, 0.26), rgba(88, 217, 138, 0.08)),
-    linear-gradient(180deg, rgba(15, 24, 19, 0.95), rgba(10, 12, 11, 0.92));
-  box-shadow:
-    0 6px 20px rgba(88, 217, 138, 0.16),
-    0 0 0 1px rgba(88, 217, 138, 0.14) inset;
-  color: #d7ffe8;
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.01em;
@@ -499,26 +496,50 @@ body,
     transform var(--t-fast),
     border-color var(--t-fast),
     box-shadow var(--t-fast),
-    filter var(--t-fast);
+    filter var(--t-fast),
+    background var(--t-fast),
+    color var(--t-fast);
   overflow: hidden;
 }
 
-.navbar-session-resume:hover:not(:disabled) {
+.navbar-session-resume {
+  width: 210px;
+  min-width: 210px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--panel-border));
+  background:
+    linear-gradient(160deg, rgba(88, 217, 138, 0.26), rgba(88, 217, 138, 0.08)),
+    linear-gradient(180deg, rgba(15, 24, 19, 0.95), rgba(10, 12, 11, 0.92));
+  box-shadow:
+    0 6px 20px rgba(88, 217, 138, 0.16),
+    0 0 0 1px rgba(88, 217, 138, 0.14) inset;
+  color: #d7ffe8;
+}
+
+.navbar-session-resume:hover:not(:disabled),
+.navbar-session-terminate:hover:not(:disabled) {
   transform: translateY(-1px);
+}
+
+.navbar-session-resume:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent) 75%, var(--panel-border));
   box-shadow:
     0 10px 28px rgba(88, 217, 138, 0.24),
     0 0 0 1px rgba(88, 217, 138, 0.24) inset;
 }
 
-.navbar-session-resume:focus-visible {
+.navbar-session-resume:focus-visible,
+.navbar-session-terminate:focus-visible {
   outline: none;
+}
+
+.navbar-session-resume:focus-visible {
   box-shadow:
     0 0 0 2px rgba(88, 217, 138, 0.24),
     0 10px 28px rgba(88, 217, 138, 0.24);
 }
 
-.navbar-session-resume:disabled {
+.navbar-session-resume:disabled,
+.navbar-session-terminate:disabled {
   opacity: 0.55;
   cursor: not-allowed;
   filter: grayscale(0.1);
@@ -542,11 +563,41 @@ body,
   white-space: nowrap;
 }
 
+.navbar-session-terminate {
+  min-width: 104px;
+  border: 1px solid color-mix(in srgb, var(--error) 42%, var(--panel-border));
+  background:
+    linear-gradient(160deg, rgba(248, 113, 113, 0.2), rgba(248, 113, 113, 0.06)),
+    linear-gradient(180deg, rgba(28, 16, 16, 0.95), rgba(12, 10, 10, 0.92));
+  box-shadow:
+    0 6px 20px rgba(248, 113, 113, 0.12),
+    0 0 0 1px rgba(248, 113, 113, 0.12) inset;
+  color: #ffdada;
+}
+
+.navbar-session-terminate:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--error) 72%, var(--panel-border));
+  box-shadow:
+    0 10px 24px rgba(248, 113, 113, 0.18),
+    0 0 0 1px rgba(248, 113, 113, 0.18) inset;
+}
+
+.navbar-session-terminate:focus-visible {
+  box-shadow:
+    0 0 0 2px rgba(248, 113, 113, 0.22),
+    0 10px 24px rgba(248, 113, 113, 0.18);
+}
+
+.navbar-session-terminate-text {
+  color: #ffe7e7;
+}
+
 .navbar-session-resume-spin {
   animation: spin 1s linear infinite;
 }
 
-.navbar-session-resume.is-loading {
+.navbar-session-resume.is-loading,
+.navbar-session-terminate.is-loading {
   animation: none;
 }
 
@@ -819,6 +870,15 @@ body,
     width: 170px;
     min-width: 170px;
   }
+
+  .navbar-session-terminate-text {
+    display: none;
+  }
+
+  .navbar-session-terminate {
+    min-width: 38px;
+    padding-inline: 10px;
+  }
 }
 
 
@@ -867,7 +927,8 @@ body.controller-mode {
 .controller-mode .region-selected,
 .controller-mode .region-dropdown-item,
 .controller-mode .navbar-subscription-chip,
-.controller-mode .navbar-session-resume {
+.controller-mode .navbar-session-resume,
+.controller-mode .navbar-session-terminate {
   min-height: 42px;
   font-size: 0.84rem;
 }

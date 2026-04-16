@@ -1177,6 +1177,7 @@ export async function getActiveSessions(
         appId,
         gpuType: s.gpuType,
         status: s.status,
+        streamingBaseUrl: base,
         serverIp,
         signalingUrl,
         resolution,
