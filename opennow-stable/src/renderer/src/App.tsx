@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, JSX } from "react";
+import { createPortal } from "react-dom";
 
 import type {
   ActiveSessionInfo,
@@ -877,6 +878,7 @@ export function App(): JSX.Element {
   const [navbarActiveSession, setNavbarActiveSession] = useState<ActiveSessionInfo | null>(null);
   const [isResumingNavbarSession, setIsResumingNavbarSession] = useState(false);
   const [isTerminatingNavbarSession, setIsTerminatingNavbarSession] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
   const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
   const [queueModalData, setQueueModalData] = useState<PrintedWasteQueueData | null>(null);
@@ -2397,8 +2399,8 @@ export function App(): JSX.Element {
     }
   }, [applyCatalogBrowseResult, applyVariantSelections, loadSubscriptionInfo, providerIdpId, catalogFilterKey, catalogSelectedSortId]);
 
-  // Logout handler
-  const handleLogout = useCallback(async () => {
+  const confirmLogout = useCallback(async () => {
+    setLogoutConfirmOpen(false);
     await window.openNow.logout();
     setAuthSession(null);
     setGames([]);
@@ -2418,6 +2420,11 @@ export function App(): JSX.Element {
     setSource("main");
     setSelectedGameId("");
   }, [resetLaunchRuntime]);
+
+  // Logout handler
+  const handleLogout = useCallback(() => {
+    setLogoutConfirmOpen(true);
+  }, []);
 
   // Load games handler
   const loadGames = useCallback(async (targetSource: GameSource) => {
@@ -2912,6 +2919,74 @@ export function App(): JSX.Element {
     setQueueModalGame(null);
     setQueueModalData(null);
   }, []);
+
+  useEffect(() => {
+    if (!logoutConfirmOpen) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setLogoutConfirmOpen(false);
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void confirmLogout();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [confirmLogout, logoutConfirmOpen]);
+
+  const logoutConfirmModal = logoutConfirmOpen && typeof document !== "undefined"
+    ? createPortal(
+        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label="Log out confirmation">
+          <button
+            type="button"
+            className="logout-confirm-backdrop"
+            onClick={() => setLogoutConfirmOpen(false)}
+            aria-label="Cancel log out"
+          />
+          <div className="logout-confirm-card">
+            <div className="logout-confirm-kicker">Session</div>
+            <h3 className="logout-confirm-title">Log out of OpenNOW?</h3>
+            <p className="logout-confirm-text">
+              You&apos;re about to sign out of this device and return to guest mode.
+            </p>
+            <p className="logout-confirm-subtext">
+              Your cloud session data stays on the service. This just clears your local app session.
+            </p>
+            <div className="logout-confirm-actions">
+              <button
+                type="button"
+                className="logout-confirm-btn logout-confirm-btn-cancel"
+                onClick={() => setLogoutConfirmOpen(false)}
+              >
+                Stay Signed In
+              </button>
+              <button
+                type="button"
+                className="logout-confirm-btn logout-confirm-btn-confirm"
+                onClick={() => {
+                  void confirmLogout();
+                }}
+              >
+                Log Out
+              </button>
+            </div>
+            <div className="logout-confirm-hint">
+              <kbd>Enter</kbd> confirm · <kbd>Esc</kbd> cancel
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )
+    : null;
 
   const handleResumeFromNavbar = useCallback(async () => {
     if (
@@ -3785,6 +3860,7 @@ export function App(): JSX.Element {
         </div>
       )}
 
+      {logoutConfirmModal}
       {queueModalGame && streamStatus === "idle" && (
         <QueueServerSelectModal
           game={queueModalGame}

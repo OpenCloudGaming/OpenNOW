@@ -696,6 +696,165 @@ body,
   font-size: 0.78rem;
 }
 
+.logout-confirm {
+  position: fixed;
+  inset: 0;
+  z-index: 3250;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.logout-confirm-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background:
+    radial-gradient(circle at 18% 18%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 38%),
+    radial-gradient(circle at 82% 76%, rgba(248, 113, 113, 0.16), transparent 40%),
+    linear-gradient(180deg, rgba(8, 10, 12, 0.74), rgba(5, 6, 8, 0.82));
+  backdrop-filter: blur(14px) saturate(135%);
+  cursor: pointer;
+}
+
+.logout-confirm-card {
+  position: relative;
+  z-index: 1;
+  width: min(480px, calc(100vw - 32px));
+  padding: 22px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--panel-border-solid) 70%, rgba(255, 255, 255, 0.08));
+  background:
+    linear-gradient(180deg, rgba(19, 22, 25, 0.94), rgba(10, 12, 14, 0.96)),
+    rgba(12, 14, 16, 0.94);
+  box-shadow:
+    0 30px 90px rgba(0, 0, 0, 0.56),
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset,
+    0 0 0 1px color-mix(in srgb, var(--error) 18%, transparent);
+  backdrop-filter: blur(24px) saturate(140%);
+  overflow: hidden;
+  animation: fade-in 170ms var(--ease);
+}
+
+.logout-confirm-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--error), #f59e0b);
+  opacity: 0.95;
+}
+
+.logout-confirm-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--error) 14%, rgba(255, 255, 255, 0.03));
+  border: 1px solid color-mix(in srgb, var(--error) 34%, transparent);
+  color: #ffd4d4;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.logout-confirm-title {
+  margin: 16px 0 0;
+  font-size: 1.45rem;
+  line-height: 1.1;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.logout-confirm-text {
+  margin: 12px 0 0;
+  font-size: 0.97rem;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+.logout-confirm-subtext {
+  margin: 8px 0 0;
+  font-size: 0.83rem;
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+
+.logout-confirm-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.logout-confirm-btn {
+  flex: 1;
+  min-height: 44px;
+  border-radius: 12px;
+  border: 1px solid var(--panel-border);
+  font-family: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition:
+    transform var(--t-fast),
+    border-color var(--t-fast),
+    background var(--t-fast),
+    color var(--t-fast),
+    box-shadow var(--t-fast);
+}
+
+.logout-confirm-btn:hover {
+  transform: translateY(-1px);
+}
+
+.logout-confirm-btn:active {
+  transform: translateY(0);
+}
+
+.logout-confirm-btn-cancel {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--ink);
+}
+
+.logout-confirm-btn-cancel:hover {
+  border-color: var(--panel-border-solid);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.logout-confirm-btn-confirm {
+  border-color: color-mix(in srgb, var(--error) 62%, transparent);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--error) 78%, #7f1d1d), color-mix(in srgb, var(--error) 92%, #f97316));
+  color: #fff5f5;
+  box-shadow: 0 12px 28px rgba(248, 113, 113, 0.22);
+}
+
+.logout-confirm-btn-confirm:hover {
+  border-color: color-mix(in srgb, var(--error) 85%, transparent);
+  box-shadow: 0 16px 32px rgba(248, 113, 113, 0.28);
+}
+
+.logout-confirm-hint {
+  margin-top: 14px;
+  color: var(--ink-muted);
+  font-size: 0.73rem;
+}
+
+.logout-confirm-hint kbd {
+  display: inline-block;
+  margin: 0 2px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--panel-border-solid);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink-soft);
+  font-size: 0.69rem;
+}
+
 .navbar-modal-backdrop {
   position: fixed;
   inset: 0;
