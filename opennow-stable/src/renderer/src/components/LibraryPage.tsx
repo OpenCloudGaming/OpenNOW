@@ -101,7 +101,7 @@ export function LibraryPage({
         ) : games.length === 0 ? (
           <div className="library-empty-state">
             <Search className="library-empty-icon" size={44} />
-            <h3>No results</h3>
+            <h3>No games found</h3>
             <p>No games match &ldquo;{searchQuery}&rdquo;</p>
           </div>
         ) : (
