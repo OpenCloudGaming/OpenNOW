@@ -25,6 +25,7 @@ import {
 } from "./gfn/games";
 import type {
   MainToRendererSignalingEvent,
+  AppUpdaterState,
   AuthLoginRequest,
   SessionInfo,
   AuthSessionRequest,
@@ -81,6 +82,7 @@ import { fetchSubscription, fetchDynamicRegions } from "./gfn/subscription";
 import { GfnSignalingClient } from "./gfn/signaling";
 import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
 import { connectDiscordRpc, setActivity, clearActivity, destroyDiscordRpc } from "./discordRpc";
+import { createAppUpdaterController, type AppUpdaterController } from "./updater";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -223,6 +225,7 @@ let signalingClient: GfnSignalingClient | null = null;
 let signalingClientKey: string | null = null;
 let authService: AuthService;
 let settingsManager: SettingsManager;
+let appUpdater: AppUpdaterController | null = null;
 const SCREENSHOT_LIMIT = 60;
 
 function getScreenshotDirectory(): string {
@@ -519,6 +522,12 @@ async function listRecordings(): Promise<RecordingEntry[]> {
 function emitToRenderer(event: MainToRendererSignalingEvent): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(IPC_CHANNELS.SIGNALING_EVENT, event);
+  }
+}
+
+function emitUpdaterStateToRenderer(state: AppUpdaterState): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(IPC_CHANNELS.APP_UPDATER_STATE_CHANGED, state);
   }
 }
 
@@ -1185,6 +1194,58 @@ function registerIpcHandlers(): void {
     app.quit();
   });
 
+  ipcMain.handle(IPC_CHANNELS.APP_UPDATER_GET_STATE, async (): Promise<AppUpdaterState> => {
+    return appUpdater?.getState() ?? {
+      status: "disabled",
+      currentVersion: app.getVersion(),
+      updateSource: "github-releases",
+      canCheck: false,
+      canDownload: false,
+      canInstall: false,
+      isPackaged: app.isPackaged,
+      message: "Updater is unavailable.",
+    };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_UPDATER_CHECK, async (): Promise<AppUpdaterState> => {
+    return appUpdater?.checkForUpdates("manual") ?? {
+      status: "disabled",
+      currentVersion: app.getVersion(),
+      updateSource: "github-releases",
+      canCheck: false,
+      canDownload: false,
+      canInstall: false,
+      isPackaged: app.isPackaged,
+      message: "Updater is unavailable.",
+    };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_UPDATER_DOWNLOAD, async (): Promise<AppUpdaterState> => {
+    return appUpdater?.downloadUpdate() ?? {
+      status: "disabled",
+      currentVersion: app.getVersion(),
+      updateSource: "github-releases",
+      canCheck: false,
+      canDownload: false,
+      canInstall: false,
+      isPackaged: app.isPackaged,
+      message: "Updater is unavailable.",
+    };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_UPDATER_INSTALL, async (): Promise<AppUpdaterState> => {
+    return appUpdater?.quitAndInstall() ?? {
+      status: "disabled",
+      currentVersion: app.getVersion(),
+      updateSource: "github-releases",
+      canCheck: false,
+      canDownload: false,
+      canInstall: false,
+      isPackaged: app.isPackaged,
+      message: "Updater is unavailable.",
+    };
+  });
+
   // Settings IPC handlers
   ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async (): Promise<Settings> => {
     return settingsManager.getAll();
@@ -1194,6 +1255,9 @@ function registerIpcHandlers(): void {
     settingsManager.set(key, value);
     // React to certain setting changes immediately in main process
     try {
+      if (key === "autoCheckForUpdates") {
+        appUpdater?.setAutomaticChecksEnabled(value as boolean);
+      }
       if (key === "discordRichPresence") {
         if (value) {
           void connectDiscordRpc();
@@ -1207,7 +1271,9 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
-    return settingsManager.reset();
+    const resetSettings = settingsManager.reset();
+    appUpdater?.setAutomaticChecksEnabled(resetSettings.autoCheckForUpdates);
+    return resetSettings;
   });
 
   ipcMain.handle(IPC_CHANNELS.MICROPHONE_PERMISSION_GET, async (): Promise<MicrophonePermissionResult> => {
@@ -1751,6 +1817,10 @@ app.whenReady().then(async () => {
   await authService.initialize();
 
   settingsManager = getSettingsManager();
+  appUpdater = createAppUpdaterController({
+    onStateChanged: emitUpdaterStateToRenderer,
+    automaticChecksEnabled: settingsManager.get("autoCheckForUpdates"),
+  });
 
   // Connect Discord Rich Presence if the user has opted in
   if (settingsManager.get("discordRichPresence")) {
@@ -1820,6 +1890,7 @@ app.whenReady().then(async () => {
   refreshScheduler.start();
 
   await createMainWindow();
+  appUpdater.initialize();
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -1840,6 +1911,8 @@ app.on("before-quit", () => {
   signalingClient = null;
   signalingClientKey = null;
   void destroyDiscordRpc();
+  appUpdater?.dispose();
+  appUpdater = null;
 });
 
 // Export for use by other modules

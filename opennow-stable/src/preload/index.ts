@@ -36,6 +36,7 @@ import type {
   PrintedWasteQueueData,
   PrintedWasteServerMapping,
   ThankYouDataResult,
+  AppUpdaterState,
 } from "@shared/gfn";
 import { parseSerializedSessionErrorTransport } from "@shared/sessionError";
 
@@ -105,6 +106,20 @@ const api: OpenNowApi = {
     };
   },
   quitApp: () => ipcRenderer.invoke(IPC_CHANNELS.QUIT_APP),
+  getUpdaterState: (): Promise<AppUpdaterState> => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATER_GET_STATE),
+  checkForUpdates: (): Promise<AppUpdaterState> => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATER_CHECK),
+  downloadUpdate: (): Promise<AppUpdaterState> => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATER_DOWNLOAD),
+  installUpdateAndRestart: (): Promise<AppUpdaterState> => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATER_INSTALL),
+  onUpdaterStateChanged: (listener: (state: AppUpdaterState) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: AppUpdaterState) => {
+      listener(payload);
+    };
+
+    ipcRenderer.on(IPC_CHANNELS.APP_UPDATER_STATE_CHANGED, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.APP_UPDATER_STATE_CHANGED, wrapped);
+    };
+  },
   toggleFullscreen: () => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_FULLSCREEN),
   setFullscreen: (v: boolean) => ipcRenderer.invoke(IPC_CHANNELS.SET_FULLSCREEN, v),
   togglePointerLock: () => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_POINTER_LOCK),

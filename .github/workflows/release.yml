@@ -181,6 +181,8 @@ jobs:
             opennow-stable/dist-release/*.zip
             opennow-stable/dist-release/*.AppImage
             opennow-stable/dist-release/*.deb
+            opennow-stable/dist-release/latest*.yml
+            opennow-stable/dist-release/*.blockmap
           if-no-files-found: error
 
   release:
