@@ -830,6 +830,7 @@ export function App(): JSX.Element {
     microphoneMode: "disabled",
     microphoneDeviceId: "",
     hideStreamButtons: false,
+    showAntiAfkIndicator: true,
     showStatsOnLaunch: false,
     controllerMode: false,
     controllerUiSounds: false,
@@ -3326,6 +3327,7 @@ export function App(): JSX.Element {
             hideStreamButtons={settings.hideStreamButtons}
             serverRegion={session?.serverIp}
             antiAfkEnabled={antiAfkEnabled}
+            showAntiAfkIndicator={settings.showAntiAfkIndicator}
             escHoldReleaseIndicator={escHoldReleaseIndicator}
             exitPrompt={exitPrompt}
             sessionStartedAtMs={sessionStartedAtMs}

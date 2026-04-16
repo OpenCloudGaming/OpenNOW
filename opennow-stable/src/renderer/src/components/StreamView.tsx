@@ -30,6 +30,7 @@ interface StreamViewProps {
   hideStreamButtons?: boolean;
   serverRegion?: string;
   antiAfkEnabled: boolean;
+  showAntiAfkIndicator: boolean;
   escHoldReleaseIndicator: {
     visible: boolean;
     progress: number;
@@ -301,13 +302,13 @@ function ControllerIndicator({
 
 function MicrophoneIndicator({
   diagnosticsStore,
-  antiAfkEnabled,
+  showAntiAfkIndicator,
   hideStreamButtons,
   isConnecting,
   onToggleMicrophone,
 }: {
   diagnosticsStore: StreamDiagnosticsStore;
-  antiAfkEnabled: boolean;
+  showAntiAfkIndicator: boolean;
   hideStreamButtons: boolean;
   isConnecting: boolean;
   onToggleMicrophone?: () => void;
@@ -331,7 +332,7 @@ function MicrophoneIndicator({
   return (
     <button
       type="button"
-      className={`sv-mic${connectedGamepads > 0 || antiAfkEnabled ? " sv-mic--stacked" : ""}`}
+      className={`sv-mic${connectedGamepads > 0 || showAntiAfkIndicator ? " sv-mic--stacked" : ""}`}
       onClick={onToggleMicrophone}
       data-enabled={micEnabled}
       title={micEnabled ? "Mute microphone" : "Unmute microphone"}
@@ -346,10 +347,12 @@ function MicrophoneIndicator({
 function AntiAfkIndicator({
   diagnosticsStore,
   antiAfkEnabled,
+  showAntiAfkIndicator,
   isConnecting,
 }: {
   diagnosticsStore: StreamDiagnosticsStore;
   antiAfkEnabled: boolean;
+  showAntiAfkIndicator: boolean;
   isConnecting: boolean;
 }): JSX.Element | null {
   const hasController = useStreamDiagnosticsSelector(
@@ -357,7 +360,7 @@ function AntiAfkIndicator({
     (stats) => stats.connectedGamepads > 0,
   );
 
-  if (!antiAfkEnabled || isConnecting) {
+  if (!antiAfkEnabled || !showAntiAfkIndicator || isConnecting) {
     return null;
   }
 
@@ -371,7 +374,7 @@ function AntiAfkIndicator({
 
 function RecordingIndicator({
   diagnosticsStore,
-  antiAfkEnabled,
+  showAntiAfkIndicator,
   hideStreamButtons,
   isConnecting,
   isRecording,
@@ -379,7 +382,7 @@ function RecordingIndicator({
   recordingDurationMs,
 }: {
   diagnosticsStore: StreamDiagnosticsStore;
-  antiAfkEnabled: boolean;
+  showAntiAfkIndicator: boolean;
   hideStreamButtons: boolean;
   isConnecting: boolean;
   isRecording: boolean;
@@ -396,7 +399,7 @@ function RecordingIndicator({
   );
   const hasMicrophone = micState === "started" || micState === "stopped";
   const showMicIndicator = hasMicrophone && !isConnecting && !hideStreamButtons && Boolean(onToggleMicrophone);
-  const stackedBadges = [connectedGamepads > 0, antiAfkEnabled, showMicIndicator].filter(Boolean).length;
+  const stackedBadges = [connectedGamepads > 0, showAntiAfkIndicator, showMicIndicator].filter(Boolean).length;
 
   if (!isRecording || isConnecting) {
     return null;
@@ -643,6 +646,7 @@ export function StreamView({
   shortcuts,
   serverRegion,
   antiAfkEnabled,
+  showAntiAfkIndicator,
   escHoldReleaseIndicator,
   exitPrompt,
   sessionStartedAtMs,
@@ -1953,7 +1957,7 @@ export function StreamView({
       {/* Microphone toggle button (top-left, below controller badge when present) */}
       <MicrophoneIndicator
         diagnosticsStore={diagnosticsStore}
-        antiAfkEnabled={antiAfkEnabled}
+        showAntiAfkIndicator={antiAfkEnabled && showAntiAfkIndicator}
         hideStreamButtons={hideStreamButtons}
         isConnecting={isConnecting}
         onToggleMicrophone={onToggleMicrophone}
@@ -1963,13 +1967,14 @@ export function StreamView({
       <AntiAfkIndicator
         diagnosticsStore={diagnosticsStore}
         antiAfkEnabled={antiAfkEnabled}
+        showAntiAfkIndicator={showAntiAfkIndicator}
         isConnecting={isConnecting}
       />
 
       {/* Recording indicator (top-left, stacked below other badges) */}
       <RecordingIndicator
         diagnosticsStore={diagnosticsStore}
-        antiAfkEnabled={antiAfkEnabled}
+        showAntiAfkIndicator={antiAfkEnabled && showAntiAfkIndicator}
         hideStreamButtons={hideStreamButtons}
         isConnecting={isConnecting}
         isRecording={isRecording}
