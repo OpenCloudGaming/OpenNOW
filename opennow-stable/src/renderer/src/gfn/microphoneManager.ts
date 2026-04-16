@@ -30,6 +30,12 @@ export class MicrophoneManager {
 
   // Track if we should auto-retry with different devices on failure
   private attemptedDevices: Set<string> = new Set();
+  private readonly handleMicStreamInactive = (): void => {
+    console.log("[Microphone] Stream inactive");
+    this.detachMicStreamListeners(this.micStream);
+    this.attemptedDevices.clear();
+    this.micStream = null;
+  };
 
   /**
    * Check if microphone is supported in this browser
@@ -161,6 +167,8 @@ export class MicrophoneManager {
    * Start microphone capture
    */
   private async startCapture(): Promise<void> {
+    this.clearMicStream();
+
     const constraints: MediaStreamConstraints = {
       audio: {
         sampleRate: { ideal: this.sampleRate },
@@ -177,8 +185,9 @@ export class MicrophoneManager {
     }
 
     try {
-      this.micStream = await navigator.mediaDevices.getUserMedia(constraints);
-      const track = this.micStream.getAudioTracks()[0];
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      this.attachMicStream(stream);
+      const track = stream.getAudioTracks()[0];
 
       if (!track) {
         throw new Error("No audio track available");
@@ -189,13 +198,6 @@ export class MicrophoneManager {
         console.log("[Microphone] Track ended");
         this.stop();
       };
-
-      // Handle stream inactive
-      this.micStream.addEventListener("inactive", () => {
-        console.log("[Microphone] Stream inactive");
-        this.attemptedDevices.clear();
-        this.micStream = null;
-      });
 
       // Add track to peer connection if available
       if (this.pc) {
@@ -255,8 +257,16 @@ export class MicrophoneManager {
           // Try without sample rate constraint
           console.warn("[Microphone] Constraints not supported, trying with basic constraints");
           try {
-            this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            const track = this.micStream.getAudioTracks()[0];
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            this.attachMicStream(stream);
+            const track = stream.getAudioTracks()[0];
+            if (!track) {
+              throw new Error("No audio track available");
+            }
+            track.onended = () => {
+              console.log("[Microphone] Track ended");
+              this.stop();
+            };
             if (this.pc && track) {
               await this.addTrackToPeerConnection(track);
             }
@@ -375,6 +385,32 @@ export class MicrophoneManager {
     }
   }
 
+  private attachMicStream(stream: MediaStream): void {
+    this.detachMicStreamListeners(this.micStream);
+    this.micStream = stream;
+    stream.addEventListener("inactive", this.handleMicStreamInactive);
+  }
+
+  private detachMicStreamListeners(stream: MediaStream | null): void {
+    if (!stream) {
+      return;
+    }
+    stream.removeEventListener("inactive", this.handleMicStreamInactive);
+    for (const track of stream.getTracks()) {
+      track.onended = null;
+    }
+  }
+
+  private clearMicStream(): void {
+    if (!this.micStream) {
+      return;
+    }
+    const stream = this.micStream;
+    this.detachMicStreamListeners(stream);
+    stream.getTracks().forEach((track) => track.stop());
+    this.micStream = null;
+  }
+
   /**
    * Enable/disable microphone track (mute/unmute)
    */
@@ -428,13 +464,7 @@ export class MicrophoneManager {
       }
     }
 
-    if (this.micStream) {
-      this.micStream.getTracks().forEach(track => {
-        track.onended = null;
-        track.stop();
-      });
-      this.micStream = null;
-    }
+    this.clearMicStream();
 
     this.attemptedDevices.clear();
     this.setState("stopped");
