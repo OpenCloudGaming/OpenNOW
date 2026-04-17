@@ -3793,7 +3793,7 @@ export function App(): JSX.Element {
               aspectRatioOptions={aspectRatioOptions as unknown as string[]}
               onSettingChange={updateSetting}
               onExitControllerMode={handleExitControllerMode}
-              onExitApp={handleExitApp}
+              onExitApp={platformCapabilities.supportsControllerExitApp ? handleExitApp : undefined}
             />
           ) : (
             <LibraryPage

@@ -134,6 +134,7 @@ export function ControllerLibraryPage({
   isStreaming = false,
   sessionCounterEnabled = false,
 }: ControllerLibraryPageProps): JSX.Element {
+  const supportsControllerExitApp = platformCapabilities.supportsControllerExitApp;
   const [isEntering, setIsEntering] = useState(true);
   const initialCategoryIndex = (() => {
     const hasFavorites = Array.isArray(favoriteGameIds) && favoriteGameIds.length > 0;
@@ -330,7 +331,7 @@ export function ControllerLibraryPage({
         { id: "audio", label: "Audio", value: "" },
         { id: "video", label: "Video", value: "" },
         { id: "system", label: "System", value: "" },
-        { id: "exitApp", label: "Exit", value: "" },
+        ...(supportsControllerExitApp ? [{ id: "exitApp", label: "Exit", value: "" }] : []),
       ],
       Network: [
         { id: "bandwidth", label: "Max Bitrate", value: `${(settings.maxBitrateMbps ?? 75)} Mbps` },
@@ -354,7 +355,7 @@ export function ControllerLibraryPage({
         { id: "exitControllerMode", label: "Exit Controller Mode", value: "" },
       ],
     } as Record<string, Array<{ id: string; label: string; value: string }>>;
-  }, [settings, microphoneDevices]);
+  }, [settings, microphoneDevices, supportsControllerExitApp]);
  
   const currentGameItems = useMemo(() => [
     { id: "resume", label: "Resume Game", value: "" },

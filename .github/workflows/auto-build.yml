@@ -118,6 +118,8 @@ jobs:
     env:
       npm_config_audit: "false"
       npm_config_fund: "false"
+      ANDROID_COMPILE_SDK: "36"
+      ANDROID_BUILD_TOOLS: "36.0.0"
 
     steps:
       - name: Checkout
@@ -139,6 +141,14 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-${ANDROID_COMPILE_SDK}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}"
 
       - name: Install dependencies
         run: npm ci --prefer-offline --no-audit --progress=false

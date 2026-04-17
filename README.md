@@ -132,7 +132,7 @@ OpenNOW uses a shared renderer with thin platform adapters:
 | Main | Electron + Node.js | Desktop-only OAuth, IPC, local filesystem/media, cache, window management |
 | Preload | Electron `contextBridge` | Desktop bridge exposing the existing OpenNOW API surface |
 | Renderer | React + TypeScript | Shared login flow, browsing, settings, WebRTC playback, diagnostics, controls |
-| Capacitor Android | Capacitor + WebView | Android shell, deep links, Preferences/filesystem storage, browser-based signaling |
+| Capacitor Android | Capacitor + WebView | Android shell, localhost WebView auth interception, Preferences/filesystem storage, browser-based signaling |
 
 The code lives under [`opennow-stable/src/`](opennow-stable/src), with shared TypeScript types and platform-neutral helpers in [`opennow-stable/src/shared/`](opennow-stable/src/shared). The renderer now consumes [`src/renderer/src/platform/`](opennow-stable/src/renderer/src/platform/) instead of hard-coding `window.openNow`.
 
@@ -158,7 +158,7 @@ Known Android limitations in this pass:
 - screenshot export/save-as remains desktop-only
 - some desktop shortcut UX is hidden or non-applicable on touch devices
 
-Android auth now mirrors the desktop localhost redirect contract by opening NVIDIA login in a native Android WebView and intercepting the navigation to `http://localhost:<port>` inside the Android shell instead of running a real loopback callback server.
+Android auth now mirrors the desktop localhost redirect contract by opening NVIDIA login in a native Android WebView and intercepting the navigation to `http://localhost:<port>` inside the Android shell instead of using deep links or running a real loopback callback server.
 
 CI also produces a testable Android APK artifact from the Capacitor target so reviewers can install and validate the current branch without making a release build.
 

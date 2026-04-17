@@ -369,12 +369,6 @@ function mergeTokenSnapshot(base: AuthTokens, refreshed: TokenResponse): AuthTok
   };
 }
 
-function gravatarUrl(email: string, size = 80): string {
-  const normalized = email.trim().toLowerCase();
-  const hash = createHash("md5").update(normalized).digest("hex");
-  return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=identicon`;
-}
-
 async function fetchUserInfo(tokens: AuthTokens): Promise<AuthUser> {
   const jwtToken = tokens.idToken ?? tokens.accessToken;
   const parsed = parseJwtPayload<{
@@ -389,12 +383,11 @@ async function fetchUserInfo(tokens: AuthTokens): Promise<AuthUser> {
     const emailFromToken = parsed.email;
     const pictureFromToken = parsed.picture;
     if (emailFromToken || pictureFromToken) {
-      const avatar = pictureFromToken ?? (emailFromToken ? gravatarUrl(emailFromToken) : undefined);
       return {
         userId: parsed.sub,
         displayName: parsed.preferred_username ?? emailFromToken?.split("@")[0] ?? "User",
         email: emailFromToken,
-        avatarUrl: avatar,
+        avatarUrl: pictureFromToken,
         membershipTier: parsed.gfn_tier ?? "FREE",
       };
     }
@@ -421,13 +414,12 @@ async function fetchUserInfo(tokens: AuthTokens): Promise<AuthUser> {
   };
 
   const email = payload.email;
-  const avatar = payload.picture ?? (email ? gravatarUrl(email) : undefined);
 
   return {
     userId: payload.sub,
     displayName: payload.preferred_username ?? email?.split("@")[0] ?? "User",
     email,
-    avatarUrl: avatar,
+    avatarUrl: payload.picture,
     membershipTier: "FREE",
   };
 }

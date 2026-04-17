@@ -74,10 +74,6 @@ export function generatePkce(): { verifier: string; challenge: string } {
   throw new Error("Use a runtime-specific PKCE helper");
 }
 
-export function gravatarUrl(email: string, size = 80): string {
-  return `https://ui-avatars.com/api/?name=${encodeURIComponent(email.trim())}&size=${size}&background=1f2937&color=ffffff`;
-}
-
 export function userFromJwt(tokens: AuthTokens): AuthUser | null {
   const jwtToken = tokens.idToken ?? tokens.accessToken;
   const parsed = parseJwtPayload<{
@@ -88,12 +84,11 @@ export function userFromJwt(tokens: AuthTokens): AuthUser | null {
     picture?: string;
   }>(jwtToken);
   if (!parsed?.sub) return null;
-  const avatar = parsed.picture ?? (parsed.email ? gravatarUrl(parsed.email) : undefined);
   return {
     userId: parsed.sub,
     displayName: parsed.preferred_username ?? parsed.email?.split("@")[0] ?? "User",
     email: parsed.email,
-    avatarUrl: avatar,
+    avatarUrl: parsed.picture,
     membershipTier: parsed.gfn_tier ?? "FREE",
   };
 }

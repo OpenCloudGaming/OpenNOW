@@ -6,6 +6,9 @@ This guide covers the active OpenNOW app in [`opennow-stable/`](../opennow-stabl
 
 - Node.js 22 or newer
 - npm
+- Java 21 JDK
+- Android SDK command-line tools or Android Studio
+- `ANDROID_SDK_ROOT` set to your local Android SDK path when building the APK outside Android Studio
 - A GeForce NOW account for end-to-end testing
 
 ## Getting Started
@@ -180,6 +183,23 @@ For contribution workflow details, see [`.github/CONTRIBUTING.md`](../.github/CO
 
 
 ## Android Workflow
+
+Local Android toolchain prerequisites:
+
+- Android platform `android-36`
+- Android build-tools `36.0.0`
+- Android platform-tools
+- Accepted Android SDK licenses
+
+If you are using the command-line SDK tools, install the same Android components that CI installs:
+
+```bash
+sdkmanager --install \
+  "platform-tools" \
+  "platforms;android-36" \
+  "build-tools;36.0.0"
+yes | sdkmanager --licenses
+```
 
 Build and sync web assets into the Android project:
 

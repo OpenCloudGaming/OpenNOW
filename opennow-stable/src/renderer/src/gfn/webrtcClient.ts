@@ -2005,6 +2005,23 @@ export class GfnWebRtcClient {
     };
   }
 
+  private bindControlChannel(channel: RTCDataChannel, connectionLabel = "Peer connection"): void {
+    this.controlChannel = channel;
+    this.controlChannel.binaryType = "arraybuffer";
+    this.controlChannel.onmessage = (msgEvent) => {
+      void this.onControlChannelMessage(msgEvent.data as string | Blob | ArrayBuffer);
+    };
+    this.controlChannel.onclose = () => {
+      this.log(`${connectionLabel} control channel closed`);
+      if (this.controlChannel === channel) {
+        this.controlChannel = null;
+      }
+    };
+    this.controlChannel.onerror = () => {
+      this.log(`${connectionLabel} control channel error`);
+    };
+  }
+
   private mapTimerNotificationCode(rawCode: number): StreamTimeWarning["code"] | null {
     // Mirrors official client behavior from timerNotification -> StreamWarningType.
     if (rawCode === 1 || rawCode === 2) {
@@ -3430,21 +3447,7 @@ export class GfnWebRtcClient {
       if (channel.label !== "control_channel") {
         return;
       }
-
-      this.controlChannel = channel;
-      this.controlChannel.binaryType = "arraybuffer";
-      this.controlChannel.onmessage = (msgEvent) => {
-        void this.onControlChannelMessage(msgEvent.data as string | Blob | ArrayBuffer);
-      };
-      this.controlChannel.onclose = () => {
-        this.log("Control channel closed");
-        if (this.controlChannel === channel) {
-          this.controlChannel = null;
-        }
-      };
-      this.controlChannel.onerror = () => {
-        this.log("Control channel error");
-      };
+      this.bindControlChannel(channel);
     };
 
     pc.onicecandidateerror = (event: Event) => {
@@ -3749,6 +3752,15 @@ export class GfnWebRtcClient {
           this.configureReceiverForLowLatency(evt.receiver, evt.track.kind);
         };
 
+        relayPc.ondatachannel = (event) => {
+          const channel = event.channel;
+          this.log(`Relay PC remote data channel received: label=${channel.label}, ordered=${channel.ordered}`);
+          if (channel.label !== "control_channel") {
+            return;
+          }
+          this.bindControlChannel(channel, "Relay PC");
+        };
+
         relayPc.onconnectionstatechange = () => {
           this.diagnostics.connectionState = relayPc.connectionState;
           this.emitStats();
@@ -3811,7 +3823,7 @@ export class GfnWebRtcClient {
               const proto = cand.includes("udp") ? "udp" : "tcp";
               for (const mid of mids) {
                 try {
-                  await relayPc.addIceCandidate({ candidate: cand, sdpMid: mid, sdpMLineIndex: parseInt(mid, 10), usernameFragment: relayCredentials.ufrag || undefined });
+                  await relayPc.addIceCandidate({ candidate: cand, sdpMid: mid, sdpMLineIndex: parseInt(mid, 10), usernameFragment: serverIceUfrag || undefined });
                   this.log(`Relay PC manual ICE candidate injected (sdpMid=${mid}, proto=${proto})`);
                   injectedRelay = true;
                   break;
