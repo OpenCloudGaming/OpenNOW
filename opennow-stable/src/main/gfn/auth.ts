@@ -128,11 +128,21 @@ function avatarInitials(label: string | undefined): string {
   return initials || cleaned[0]?.toUpperCase() || "U";
 }
 
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
 function createLocalAvatarUrl(seed: string, label: string | undefined): string {
   const digest = createHash("sha256").update(seed).digest("hex");
   const hue = Number.parseInt(digest.slice(0, 8), 16) % 360;
   const initials = avatarInitials(label);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="${initials}"><rect width="128" height="128" rx="24" fill="hsl(${hue} 68% 42%)"/><text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" fill="#ffffff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="48" font-weight="700">${initials}</text></svg>`;
+  const escapedInitials = escapeXml(initials);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="${escapedInitials}"><rect width="128" height="128" rx="24" fill="hsl(${hue} 68% 42%)"/><text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" fill="#ffffff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="48" font-weight="700">${escapedInitials}</text></svg>`;
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
 }
 

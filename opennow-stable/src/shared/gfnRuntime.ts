@@ -138,16 +138,20 @@ export function userFromJwt(tokens: AuthTokens): AuthUser | null {
     picture?: string;
   }>(jwtToken);
   if (!parsed?.sub) return null;
+  const displayName = parsed.preferred_username ?? parsed.email?.split("@")[0] ?? "User";
   return {
     userId: parsed.sub,
-    displayName: parsed.preferred_username ?? parsed.email?.split("@")[0] ?? "User",
+    displayName,
     email: parsed.email,
-    avatarUrl: resolveAvatarUrl({
-      userId: parsed.sub,
-      email: parsed.email,
-      picture: parsed.picture,
-      displayName: parsed.preferred_username ?? parsed.email?.split("@")[0] ?? "User",
-    }),
+    avatarUrl:
+      parsed.email || parsed.picture
+        ? resolveAvatarUrl({
+            userId: parsed.sub,
+            email: parsed.email,
+            picture: parsed.picture,
+            displayName,
+          })
+        : undefined,
     membershipTier: parsed.gfn_tier ?? "FREE",
   };
 }
