@@ -488,6 +488,7 @@ export class GfnWebRtcClient {
   // Timer for synthetic Escape on pointer lock loss
   private pointerLockEscapeTimer: number | null = null;
   private relayFallbackTimer: number | null = null;
+  private connectionAttemptId = 0;
   // Fallback keyup if browser swallows Escape keyup while keyboard lock is active.
   private escapeAutoKeyUpTimer: number | null = null;
   // True when we already sent an immediate Escape tap for the current physical hold.
@@ -3357,6 +3358,7 @@ export class GfnWebRtcClient {
 
   async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
     this.cleanupPeerConnection();
+    const connectionAttemptId = ++this.connectionAttemptId;
     this.log("=== handleOffer START ===");
     this.log(`Session: id=${session.sessionId}, status=${session.status}, serverIp=${session.serverIp}`);
     this.log(`Signaling: server=${session.signalingServer}, url=${session.signalingUrl}`);
@@ -3695,10 +3697,16 @@ export class GfnWebRtcClient {
     // use of TURN relays. This helps clients behind restrictive NAT/firewalls.
     let triedRelay = false;
     const relayFallbackTimeoutMs = 7000;
+    const isCurrentConnectionAttempt = (): boolean => this.connectionAttemptId === connectionAttemptId;
 
     const attemptRelayFallback = async (): Promise<void> => {
       if (triedRelay) return;
+      if (!isCurrentConnectionAttempt() || this.pc !== pc) return;
       triedRelay = true;
+      if (this.relayFallbackTimer !== null) {
+        window.clearTimeout(this.relayFallbackTimer);
+        this.relayFallbackTimer = null;
+      }
 
       try {
         const hasTurn = (session.iceServers ?? []).some((s) =>
@@ -3714,6 +3722,9 @@ export class GfnWebRtcClient {
         // Tear down any existing peer connection and create a new one configured
         // to use only relays.
         this.cleanupPeerConnection();
+        if (!isCurrentConnectionAttempt()) {
+          return;
+        }
 
         const relayRtcConfig: RTCConfiguration = {
           iceServers: toRtcIceServers(session.iceServers),
@@ -3736,6 +3747,7 @@ export class GfnWebRtcClient {
         this.setupStatsPolling();
 
         relayPc.onicecandidate = (event) => {
+          if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
           if (!event.candidate) return;
           const payload = event.candidate.toJSON();
           if (!payload.candidate) return;
@@ -3752,12 +3764,14 @@ export class GfnWebRtcClient {
         };
 
         relayPc.ontrack = (evt) => {
+          if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
           this.log(`Relay PC track received: kind=${evt.track.kind}, id=${evt.track.id}`);
           this.attachTrack(evt.track);
           this.configureReceiverForLowLatency(evt.receiver, evt.track.kind);
         };
 
         relayPc.ondatachannel = (event) => {
+          if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
           const channel = event.channel;
           this.log(`Relay PC remote data channel received: label=${channel.label}, ordered=${channel.ordered}`);
           if (channel.label !== "control_channel") {
@@ -3767,35 +3781,43 @@ export class GfnWebRtcClient {
         };
 
         relayPc.onconnectionstatechange = () => {
+          if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
           this.diagnostics.connectionState = relayPc.connectionState;
           this.emitStats();
           this.log(`Relay PC connection state: ${relayPc.connectionState}`);
         };
 
         relayPc.oniceconnectionstatechange = () => {
+          if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
           this.log(`Relay PC ICE connection state: ${relayPc.iceConnectionState}`);
         };
 
         // Re-run the SDP answer flow against the same (filtered) offer.
         await relayPc.setRemoteDescription({ type: "offer", sdp: filteredOffer });
+        if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
         await this.flushQueuedCandidates();
+        if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
 
         if (this.micManager) {
           this.micManager.setPeerConnection(relayPc);
           await this.micManager.attachTrackToPeerConnection();
+          if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
         }
 
         // Re-apply codec preferences on the new PC
         this.applyCodecPreferences(relayPc, effectiveCodec, preferredHevcProfileId);
 
         const relayAnswer = await relayPc.createAnswer();
+        if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
         if (relayAnswer.sdp) {
           relayAnswer.sdp = mungeAnswerSdp(relayAnswer.sdp, settings.maxBitrateKbps);
         }
         await relayPc.setLocalDescription(relayAnswer);
+        if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
         this.log("Relay PC local description set, waiting for ICE gathering...");
 
         const finalRelaySdp = await this.waitForIceGathering(relayPc, 5000);
+        if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
         this.log(`Relay ICE gathering done, final SDP length: ${finalRelaySdp.length} chars`);
 
         const relayCredentials = extractIceCredentials(finalRelaySdp);
@@ -3814,6 +3836,7 @@ export class GfnWebRtcClient {
         });
 
         await openNow.sendAnswer({ sdp: finalRelaySdp, nvstSdp: nvstSdpRelay });
+        if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
         this.log("Relay fallback: sent relay answer to signaling");
 
         // Attempt manual mediaConnectionInfo injection again (UDP/TCP) — server may
@@ -3845,12 +3868,14 @@ export class GfnWebRtcClient {
           }
         }
       } catch (e) {
+        if (!isCurrentConnectionAttempt()) return;
         this.log(`Relay fallback failed: ${String(e)}`);
       }
     };
 
     // Trigger fallback on ICE failure or timeout
     pc.oniceconnectionstatechange = () => {
+      if (!isCurrentConnectionAttempt() || this.pc !== pc) return;
       this.log(`ICE connection state: ${pc.iceConnectionState}`);
       if ((pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") && !triedRelay) {
         void attemptRelayFallback();
@@ -3859,14 +3884,18 @@ export class GfnWebRtcClient {
 
     const fallbackPc = pc;
     const fallbackSessionId = session.sessionId;
-    this.relayFallbackTimer = window.setTimeout(() => {
-      if (!triedRelay && this.pc === fallbackPc && session.sessionId === fallbackSessionId && this.pc.connectionState !== "connected" && this.pc.iceConnectionState !== "connected") {
+    const fallbackTimer = window.setTimeout(() => {
+      if (this.relayFallbackTimer !== fallbackTimer) {
+        return;
+      }
+      if (isCurrentConnectionAttempt() && !triedRelay && this.pc === fallbackPc && session.sessionId === fallbackSessionId && this.pc.connectionState !== "connected" && this.pc.iceConnectionState !== "connected") {
         void attemptRelayFallback();
       }
-      if (this.relayFallbackTimer !== null && this.pc === fallbackPc) {
+      if (this.relayFallbackTimer === fallbackTimer) {
         this.relayFallbackTimer = null;
       }
     }, relayFallbackTimeoutMs);
+    this.relayFallbackTimer = fallbackTimer;
   }
 
   async addRemoteCandidate(candidate: IceCandidatePayload): Promise<void> {

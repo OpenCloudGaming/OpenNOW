@@ -65,18 +65,31 @@ export async function ensureDir(path: string, options: StoragePathOptions = {}):
   }
 }
 
-export async function writeFile(path: string, data: string, options: StoragePathOptions = {}): Promise<void> {
+async function ensureParentDir(path: string, options: StoragePathOptions = {}): Promise<string> {
   const normalized = normalizePath(path, options);
   const parent = normalized.split("/").slice(0, -1).join("/");
   if (parent) await ensureDir(parent, { relativeToBaseDir: false });
+  return normalized;
+}
+
+export async function writeTextFile(path: string, data: string, options: StoragePathOptions = {}): Promise<void> {
+  const normalized = await ensureParentDir(path, options);
   await Filesystem.writeFile({ path: normalized, data, directory: Directory.Data, encoding: Encoding.UTF8 });
 }
 
-export async function appendFile(path: string, data: string, options: StoragePathOptions = {}): Promise<void> {
-  const normalized = normalizePath(path, options);
-  const parent = normalized.split("/").slice(0, -1).join("/");
-  if (parent) await ensureDir(parent, { relativeToBaseDir: false });
+export async function appendTextFile(path: string, data: string, options: StoragePathOptions = {}): Promise<void> {
+  const normalized = await ensureParentDir(path, options);
   await Filesystem.appendFile({ path: normalized, data, directory: Directory.Data, encoding: Encoding.UTF8 });
+}
+
+export async function writeBase64File(path: string, data: string, options: StoragePathOptions = {}): Promise<void> {
+  const normalized = await ensureParentDir(path, options);
+  await Filesystem.writeFile({ path: normalized, data, directory: Directory.Data });
+}
+
+export async function appendBase64File(path: string, data: string, options: StoragePathOptions = {}): Promise<void> {
+  const normalized = await ensureParentDir(path, options);
+  await Filesystem.appendFile({ path: normalized, data, directory: Directory.Data });
 }
 
 export async function readFile(path: string, options: StoragePathOptions = {}): Promise<string> {
