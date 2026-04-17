@@ -1,5 +1,18 @@
 apply plugin: 'com.android.application'
 
+import groovy.json.JsonSlurper
+
+def packageJson = new JsonSlurper().parse(rootProject.file('../package.json'))
+def packageVersionName = ((packageJson.version ?: '1.0.0') as String).trim()
+def versionParts = packageVersionName.tokenize('.').collect { token ->
+    def numeric = (token =~ /(\d+)/)
+    numeric.find() ? Integer.parseInt(numeric.group(1)) : 0
+}
+while (versionParts.size() < 3) {
+    versionParts << 0
+}
+def packageVersionCode = (versionParts[0] * 10000) + (versionParts[1] * 100) + versionParts[2]
+
 android {
     namespace = "com.opencloudgaming.opennow"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +20,8 @@ android {
         applicationId "com.opencloudgaming.opennow"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode packageVersionCode
+        versionName packageVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

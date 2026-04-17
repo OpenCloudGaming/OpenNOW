@@ -34,11 +34,3 @@ export async function nativeRequest<T>(options: HttpOptions, responseType: "json
   });
   return parseResponse<T>(response, responseType);
 }
-
-export async function nativeRequestRaw(options: HttpOptions): Promise<HttpResponse> {
-  return CapacitorHttp.request({
-    ...options,
-    headers: normalizeHeaders(options.headers),
-    responseType: "text",
-  });
-}

@@ -3,7 +3,14 @@ import { Preferences } from "@capacitor/preferences";
 
 const BASE_DIR = "opennow";
 
-function normalizePath(path: string): string {
+interface StoragePathOptions {
+  relativeToBaseDir?: boolean;
+}
+
+function normalizePath(path: string, options: StoragePathOptions = {}): string {
+  if (options.relativeToBaseDir === false) {
+    return path;
+  }
   return path.startsWith(`${BASE_DIR}/`) ? path : `${BASE_DIR}/${path}`;
 }
 
@@ -47,9 +54,9 @@ export async function removePreference(key: string): Promise<void> {
   await Preferences.remove({ key });
 }
 
-export async function ensureDir(path: string): Promise<void> {
+export async function ensureDir(path: string, options: StoragePathOptions = {}): Promise<void> {
   try {
-    await Filesystem.mkdir({ path, directory: Directory.Data, recursive: true });
+    await Filesystem.mkdir({ path: normalizePath(path, options), directory: Directory.Data, recursive: true });
   } catch (error) {
     if (isAlreadyExistsFilesystemError(error)) {
       return;
@@ -58,34 +65,34 @@ export async function ensureDir(path: string): Promise<void> {
   }
 }
 
-export async function writeFile(path: string, data: string): Promise<void> {
-  const normalized = normalizePath(path);
+export async function writeFile(path: string, data: string, options: StoragePathOptions = {}): Promise<void> {
+  const normalized = normalizePath(path, options);
   const parent = normalized.split("/").slice(0, -1).join("/");
-  if (parent) await ensureDir(parent);
+  if (parent) await ensureDir(parent, { relativeToBaseDir: false });
   await Filesystem.writeFile({ path: normalized, data, directory: Directory.Data, encoding: Encoding.UTF8 });
 }
 
-export async function appendFile(path: string, data: string): Promise<void> {
-  const normalized = normalizePath(path);
+export async function appendFile(path: string, data: string, options: StoragePathOptions = {}): Promise<void> {
+  const normalized = normalizePath(path, options);
   const parent = normalized.split("/").slice(0, -1).join("/");
-  if (parent) await ensureDir(parent);
+  if (parent) await ensureDir(parent, { relativeToBaseDir: false });
   await Filesystem.appendFile({ path: normalized, data, directory: Directory.Data, encoding: Encoding.UTF8 });
 }
 
-export async function readFile(path: string): Promise<string> {
-  const normalized = normalizePath(path);
+export async function readFile(path: string, options: StoragePathOptions = {}): Promise<string> {
+  const normalized = normalizePath(path, options);
   const result = await Filesystem.readFile({ path: normalized, directory: Directory.Data, encoding: Encoding.UTF8 });
   return typeof result.data === "string" ? result.data : "";
 }
 
-export async function readFileBase64(path: string): Promise<string> {
-  const normalized = normalizePath(path);
+export async function readFileBase64(path: string, options: StoragePathOptions = {}): Promise<string> {
+  const normalized = normalizePath(path, options);
   const result = await Filesystem.readFile({ path: normalized, directory: Directory.Data });
   return typeof result.data === "string" ? result.data : "";
 }
 
-export async function deleteFile(path: string): Promise<void> {
-  const normalized = normalizePath(path);
+export async function deleteFile(path: string, options: StoragePathOptions = {}): Promise<void> {
+  const normalized = normalizePath(path, options);
   try {
     await Filesystem.deleteFile({ path: normalized, directory: Directory.Data });
   } catch (error) {
@@ -96,8 +103,8 @@ export async function deleteFile(path: string): Promise<void> {
   }
 }
 
-export async function readDir(path: string): Promise<string[]> {
-  const normalized = normalizePath(path);
+export async function readDir(path: string, options: StoragePathOptions = {}): Promise<string[]> {
+  const normalized = normalizePath(path, options);
   try {
     const result = await Filesystem.readdir({ path: normalized, directory: Directory.Data });
     return result.files.map((file) => file.name);
@@ -147,8 +154,8 @@ async function clearDirectoryNormalized(path: string): Promise<void> {
   }));
 }
 
-export async function clearDirectory(path: string): Promise<void> {
-  await clearDirectoryNormalized(normalizePath(path));
+export async function clearDirectory(path: string, options: StoragePathOptions = {}): Promise<void> {
+  await clearDirectoryNormalized(normalizePath(path, options));
 }
 
 export function toBase64DataUrl(mimeType: string, data: string): string {

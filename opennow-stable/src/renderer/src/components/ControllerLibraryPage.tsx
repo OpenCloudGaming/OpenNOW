@@ -763,6 +763,7 @@ export function ControllerLibraryPage({
             playUiSound("confirm");
             return;
           }
+          return;
         }
 
         playUiSound("confirm");
@@ -1386,14 +1387,16 @@ export function ControllerLibraryPage({
               </div>
             ) : (
               <>
-                <div className="xmb-btn-hint">
-                  {controllerType === "ps" ? (
-                    <ButtonPSCross className="xmb-btn-icon" size={24} />
-                  ) : (
-                    <ButtonA className="xmb-btn-icon" size={24} />
-                  )}
-                  <span>Open Folder</span>
-                </div>
+                {platformCapabilities.supportsMediaFolderAccess && (
+                  <div className="xmb-btn-hint">
+                    {controllerType === "ps" ? (
+                      <ButtonPSCross className="xmb-btn-icon" size={24} />
+                    ) : (
+                      <ButtonA className="xmb-btn-icon" size={24} />
+                    )}
+                    <span>Open Folder</span>
+                  </div>
+                )}
                 <div className="xmb-btn-hint">
                   {controllerType === "ps" ? (
                     <ButtonPSCircle className="xmb-btn-icon" size={24} />

@@ -38,6 +38,13 @@ export class BrowserSignalingClient {
   private heartbeatTimer: number | null = null;
   private listeners = new Set<(event: MainToRendererSignalingEvent) => void>();
   private generation = 0;
+  private pendingConnect: {
+    ws: WebSocket;
+    generation: number;
+    settled: boolean;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  } | null = null;
 
   onEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void {
     this.listeners.add(listener);
@@ -51,6 +58,27 @@ export class BrowserSignalingClient {
   private nextAckId(): number {
     this.ackCounter += 1;
     return this.ackCounter;
+  }
+
+  private clearHeartbeat(): void {
+    if (this.heartbeatTimer !== null) {
+      window.clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  private settlePendingConnect(ws: WebSocket, generation: number, error?: Error): void {
+    const pending = this.pendingConnect;
+    if (!pending || pending.ws !== ws || pending.generation !== generation || pending.settled) {
+      return;
+    }
+    pending.settled = true;
+    this.pendingConnect = null;
+    if (error) {
+      pending.reject(error);
+      return;
+    }
+    pending.resolve();
   }
 
   private buildSignInUrl(input: SignalingConnectRequest): string {
@@ -69,6 +97,9 @@ export class BrowserSignalingClient {
 
   async connect(input: SignalingConnectRequest): Promise<void> {
     if (this.ws?.readyState === WebSocket.OPEN) return;
+    if (this.ws || this.pendingConnect) {
+      this.disconnect("Signaling connect replaced");
+    }
     const url = this.buildSignInUrl(input);
     const protocol = `x-nv-sessionid.${input.sessionId}`;
     const generation = ++this.generation;
@@ -76,13 +107,14 @@ export class BrowserSignalingClient {
     await new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(url, protocol);
       this.ws = ws;
+      this.pendingConnect = { ws, generation, settled: false, resolve, reject };
 
       const isCurrent = (): boolean => this.ws === ws && this.generation === generation;
 
       ws.onerror = () => {
         if (!isCurrent()) return;
         this.emit({ type: "error", message: "Signaling connect failed" });
-        reject(new Error("Signaling connect failed"));
+        this.settlePendingConnect(ws, generation, new Error("Signaling connect failed"));
       };
 
       ws.onopen = () => {
@@ -102,9 +134,14 @@ export class BrowserSignalingClient {
             secWebSocketKey: randomKey(),
           },
         });
-        this.heartbeatTimer = window.setInterval(() => this.sendJson({ hb: 1 }), 5000);
+        this.clearHeartbeat();
+        this.heartbeatTimer = window.setInterval(() => {
+          if (this.ws === ws && this.generation === generation) {
+            this.sendJson({ hb: 1 });
+          }
+        }, 5000);
         this.emit({ type: "connected" });
-        resolve();
+        this.settlePendingConnect(ws, generation);
       };
 
       ws.onmessage = (event) => {
@@ -113,13 +150,17 @@ export class BrowserSignalingClient {
       };
 
       ws.onclose = (event) => {
-        if (this.heartbeatTimer !== null) {
-          window.clearInterval(this.heartbeatTimer);
-          this.heartbeatTimer = null;
+        if (this.ws === ws) {
+          this.clearHeartbeat();
+          this.ws = null;
         }
-        if (!isCurrent()) return;
-        this.ws = null;
-        this.emit({ type: "disconnected", reason: event.reason || "socket closed" });
+        const reason = event.reason || "socket closed";
+        if (isCurrent()) {
+          this.settlePendingConnect(ws, generation, new Error(reason));
+          this.emit({ type: "disconnected", reason });
+          return;
+        }
+        this.settlePendingConnect(ws, generation, new Error(reason));
       };
     });
   }
@@ -226,13 +267,20 @@ export class BrowserSignalingClient {
     });
   }
 
-  disconnect(): void {
+  disconnect(reason = "Signaling disconnected"): void {
+    const ws = this.ws;
     this.generation += 1;
-    if (this.heartbeatTimer !== null) {
-      window.clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
+    this.clearHeartbeat();
+    if (this.pendingConnect && !this.pendingConnect.settled) {
+      const pending = this.pendingConnect;
+      pending.settled = true;
+      this.pendingConnect = null;
+      pending.reject(new Error(reason));
     }
-    this.ws?.close();
     this.ws = null;
+    if (ws) {
+      ws.close();
+      this.emit({ type: "disconnected", reason });
+    }
   }
 }
