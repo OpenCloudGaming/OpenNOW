@@ -437,6 +437,9 @@ export class GfnWebRtcClient {
   private pendingMouseDy = 0;
   private inputCleanup: Array<() => void> = [];
   private queuedCandidates: RTCIceCandidateInit[] = [];
+  private queuedCandidateKeys = new Set<string>();
+  private remoteCandidates: RTCIceCandidateInit[] = [];
+  private remoteCandidateKeys = new Set<string>();
 
   // Input mode: all input types (mouse, keyboard, gamepad) work simultaneously
   // Removed exclusive mode switching to allow concurrent input
@@ -875,6 +878,38 @@ export class GfnWebRtcClient {
     this.diagnostics.partiallyReliableInputOpen = false;
     this.diagnostics.mouseMoveTransport = "reliable";
     this.emitStats();
+  }
+
+  private remoteCandidateKey(candidate: RTCIceCandidateInit): string {
+    return JSON.stringify([
+      candidate.candidate,
+      candidate.sdpMid ?? null,
+      candidate.sdpMLineIndex ?? null,
+      candidate.usernameFragment ?? null,
+    ]);
+  }
+
+  private rememberRemoteCandidate(candidate: RTCIceCandidateInit): boolean {
+    const key = this.remoteCandidateKey(candidate);
+    if (this.remoteCandidateKeys.has(key)) {
+      return false;
+    }
+    this.remoteCandidateKeys.add(key);
+    this.remoteCandidates.push(candidate);
+    return true;
+  }
+
+  private queueRemoteCandidate(candidate: RTCIceCandidateInit): void {
+    const key = this.remoteCandidateKey(candidate);
+    if (this.queuedCandidateKeys.has(key)) {
+      return;
+    }
+    this.queuedCandidateKeys.add(key);
+    this.queuedCandidates.push(candidate);
+  }
+
+  private isHealthyIceState(state: RTCIceConnectionState | null | undefined): boolean {
+    return state === "connected" || state === "completed";
   }
 
   private closeDataChannels(): void {
@@ -1566,6 +1601,10 @@ export class GfnWebRtcClient {
     this.inputQueueDropCount = 0;
     this.inputQueuePressureLoggedAtMs = 0;
     this.inputEncoder.resetGamepadSequences();
+    this.queuedCandidates = [];
+    this.queuedCandidateKeys.clear();
+    this.remoteCandidates = [];
+    this.remoteCandidateKeys.clear();
   }
 
   private attachTrack(track: MediaStreamTrack): void {
@@ -2098,6 +2137,7 @@ export class GfnWebRtcClient {
       if (!candidate) {
         continue;
       }
+      this.queuedCandidateKeys.delete(this.remoteCandidateKey(candidate));
       await this.pc.addIceCandidate(candidate);
     }
   }
@@ -3703,6 +3743,7 @@ export class GfnWebRtcClient {
       if (triedRelay) return;
       if (!isCurrentConnectionAttempt() || this.pc !== pc) return;
       triedRelay = true;
+      const replayableRemoteCandidates = [...this.remoteCandidates];
       if (this.relayFallbackTimer !== null) {
         window.clearTimeout(this.relayFallbackTimer);
         this.relayFallbackTimer = null;
@@ -3795,7 +3836,9 @@ export class GfnWebRtcClient {
         // Re-run the SDP answer flow against the same (filtered) offer.
         await relayPc.setRemoteDescription({ type: "offer", sdp: filteredOffer });
         if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
-        await this.flushQueuedCandidates();
+        for (const candidate of replayableRemoteCandidates) {
+          await relayPc.addIceCandidate(candidate);
+        }
         if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
 
         if (this.micManager) {
@@ -3888,7 +3931,7 @@ export class GfnWebRtcClient {
       if (this.relayFallbackTimer !== fallbackTimer) {
         return;
       }
-      if (isCurrentConnectionAttempt() && !triedRelay && this.pc === fallbackPc && session.sessionId === fallbackSessionId && this.pc.connectionState !== "connected" && this.pc.iceConnectionState !== "connected") {
+      if (isCurrentConnectionAttempt() && !triedRelay && this.pc === fallbackPc && session.sessionId === fallbackSessionId && this.pc.connectionState !== "connected" && !this.isHealthyIceState(this.pc.iceConnectionState)) {
         void attemptRelayFallback();
       }
       if (this.relayFallbackTimer === fallbackTimer) {
@@ -3906,9 +3949,13 @@ export class GfnWebRtcClient {
       sdpMLineIndex: candidate.sdpMLineIndex ?? undefined,
       usernameFragment: candidate.usernameFragment ?? undefined,
     };
+    const isNewCandidate = this.rememberRemoteCandidate(init);
+    if (!isNewCandidate) {
+      return;
+    }
 
     if (!this.pc || !this.pc.remoteDescription) {
-      this.queuedCandidates.push(init);
+      this.queueRemoteCandidate(init);
       return;
     }
 

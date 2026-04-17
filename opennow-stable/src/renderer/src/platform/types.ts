@@ -16,7 +16,7 @@ export interface PlatformCapabilities {
 }
 
 export interface PlatformInfo {
-  kind: "electron" | "capacitor-web";
+  kind: "electron" | "android";
   capabilities: PlatformCapabilities;
 }
 

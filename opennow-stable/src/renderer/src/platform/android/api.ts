@@ -595,6 +595,86 @@ function decodeDataUrl(dataUrl: string): string { const match = /^data:[^;]+;bas
 function encodeBase64(bytes: Uint8Array): string { let binary = ""; const chunkSize = 0x8000; for (let index = 0; index < bytes.length; index += chunkSize) { binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize)); } return btoa(binary); }
 async function ensureDirectory(path: string): Promise<void> { await ensureDir(path, { relativeToBaseDir: false }); }
 async function listDirectory(path: string): Promise<Array<{ name: string }>> { return (await readDir(path, { relativeToBaseDir: false })).map((name) => ({ name })); }
+function showSessionConflictPrompt(): Promise<SessionConflictChoice> {
+  if (typeof document === "undefined" || !document.body) {
+    if (window.confirm("An active GeForce NOW session was found. Resume it?")) {
+      return Promise.resolve("resume");
+    }
+    if (window.confirm("Start a new session instead?")) {
+      return Promise.resolve("new");
+    }
+    return Promise.resolve("cancel");
+  }
+
+  return new Promise<SessionConflictChoice>((resolve) => {
+    const previousActive = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const overlay = document.createElement("div");
+    overlay.setAttribute("role", "presentation");
+    overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(2,6,23,0.78);padding:24px;";
+
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-labelledby", "android-session-conflict-title");
+    dialog.style.cssText = "width:min(100%,420px);border-radius:20px;padding:24px;background:#0f172a;color:#e2e8f0;box-shadow:0 24px 60px rgba(0,0,0,0.45);display:flex;flex-direction:column;gap:20px;";
+
+    const title = document.createElement("div");
+    title.id = "android-session-conflict-title";
+    title.textContent = "Active session found";
+    title.style.cssText = "font:600 20px/1.3 system-ui,sans-serif;";
+
+    const body = document.createElement("div");
+    body.textContent = "Choose whether to resume the current GeForce NOW session, start a new one, or cancel.";
+    body.style.cssText = "font:400 14px/1.5 system-ui,sans-serif;color:#cbd5e1;";
+
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;flex-direction:column;gap:12px;";
+
+    const cleanup = () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      overlay.remove();
+      previousActive?.focus();
+    };
+
+    const settle = (choice: SessionConflictChoice) => {
+      cleanup();
+      resolve(choice);
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        settle("cancel");
+      }
+    };
+
+    const createAction = (label: string, choice: SessionConflictChoice, accent: string): HTMLButtonElement => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.style.cssText = `border:none;border-radius:14px;padding:14px 16px;background:${accent};color:#f8fafc;font:600 15px/1 system-ui,sans-serif;`;
+      button.addEventListener("click", () => settle(choice));
+      return button;
+    };
+
+    const resumeButton = createAction("Resume", "resume", "#2563eb");
+    const newButton = createAction("Start New", "new", "#475569");
+    const cancelButton = createAction("Cancel", "cancel", "#1e293b");
+
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        settle("cancel");
+      }
+    });
+
+    actions.append(resumeButton, newButton, cancelButton);
+    dialog.append(title, body, actions);
+    overlay.append(dialog);
+    document.body.append(overlay);
+    document.addEventListener("keydown", onKeyDown, true);
+    window.setTimeout(() => resumeButton.focus(), 0);
+  });
+}
 type RecordingMeta = RecordingEntry;
 type ScreenshotMeta = Omit<ScreenshotEntry, "dataUrl">;
 interface RecordingDraft { id: string; fileName: string; filePath: string; pendingWrite: Promise<void>; }
@@ -633,7 +713,7 @@ const api: OpenNowApi = {
   stopSession: async (input) => stopSessionRequest(input),
   getActiveSessions: async (token, streamingBaseUrl) => getActiveSessionsRequest(await authStore.resolveJwtToken(token), streamingBaseUrl),
   claimSession: async (input) => claimSessionRequest(input),
-  showSessionConflictDialog: async (): Promise<SessionConflictChoice> => window.confirm("An active GeForce NOW session was found. Tap OK to resume it or Cancel to start a new session.") ? "resume" : "new",
+  showSessionConflictDialog: async (): Promise<SessionConflictChoice> => showSessionConflictPrompt(),
   connectSignaling: async (input: SignalingConnectRequest) => { signalingClient?.disconnect(); signalingClient = new BrowserSignalingClient(); signalingClient.onEvent((event) => { for (const listener of signalingListeners) listener(event); }); await signalingClient.connect(input); },
   disconnectSignaling: async () => { signalingClient?.disconnect(); signalingClient = null; },
   sendAnswer: async (input: SendAnswerRequest) => { await signalingClient?.sendAnswer(input); },
@@ -679,4 +759,4 @@ const api: OpenNowApi = {
 
 void CapacitorApp.addListener("backButton", () => { if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined); });
 
-export const capacitorPlatform: OpenNowPlatform = { info: { kind: "capacitor-web", capabilities: { isAndroid: true, isElectron: false, supportsQuitApp: false, supportsPointerLockToggle: false, supportsDesktopFullscreen: false, supportsLogExport: false, supportsCacheDeletion: false, supportsMediaFolderAccess: false, supportsScreenshotExport: false, supportsPersistentMedia: true, supportsKeyboardShortcuts: false, supportsControllerExitApp: false } }, api };
+export const capacitorPlatform: OpenNowPlatform = { info: { kind: "android", capabilities: { isAndroid: true, isElectron: false, supportsQuitApp: false, supportsPointerLockToggle: false, supportsDesktopFullscreen: false, supportsLogExport: false, supportsCacheDeletion: false, supportsMediaFolderAccess: false, supportsScreenshotExport: false, supportsPersistentMedia: true, supportsKeyboardShortcuts: false, supportsControllerExitApp: false } }, api };
