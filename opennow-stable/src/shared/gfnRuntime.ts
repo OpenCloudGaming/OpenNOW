@@ -74,6 +74,60 @@ export function generatePkce(): { verifier: string; challenge: string } {
   throw new Error("Use a runtime-specific PKCE helper");
 }
 
+function avatarInitials(label: string | undefined): string {
+  const cleaned = (label ?? "User").trim();
+  if (!cleaned) {
+    return "U";
+  }
+  const parts = cleaned.split(/\s+/).filter(Boolean).slice(0, 2);
+  const initials = parts.map((part) => part[0] ?? "").join("").toUpperCase();
+  return initials || cleaned[0]?.toUpperCase() || "U";
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 1) {
+    binary += String.fromCharCode(bytes[index]);
+  }
+  return btoa(binary);
+}
+
+function hashAvatarSeed(seed: string): number {
+  let hash = 0x811c9dc5;
+  for (const char of seed) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+function createLocalAvatarUrl(seed: string, label: string | undefined): string {
+  const hue = hashAvatarSeed(seed) % 360;
+  const initials = avatarInitials(label);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="${escapeXml(initials)}"><rect width="128" height="128" rx="24" fill="hsl(${hue} 68% 42%)"/><text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" fill="#ffffff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="48" font-weight="700">${escapeXml(initials)}</text></svg>`;
+  return `data:image/svg+xml;base64,${encodeBase64(new TextEncoder().encode(svg))}`;
+}
+
+function resolveAvatarUrl(options: { userId: string; email?: string; picture?: string; displayName?: string }): string | undefined {
+  if (options.picture) {
+    return options.picture;
+  }
+  const seed = options.email?.trim().toLowerCase() || options.userId;
+  if (!seed) {
+    return undefined;
+  }
+  return createLocalAvatarUrl(seed, options.displayName ?? options.email);
+}
+
 export function userFromJwt(tokens: AuthTokens): AuthUser | null {
   const jwtToken = tokens.idToken ?? tokens.accessToken;
   const parsed = parseJwtPayload<{
@@ -88,7 +142,12 @@ export function userFromJwt(tokens: AuthTokens): AuthUser | null {
     userId: parsed.sub,
     displayName: parsed.preferred_username ?? parsed.email?.split("@")[0] ?? "User",
     email: parsed.email,
-    avatarUrl: parsed.picture,
+    avatarUrl: resolveAvatarUrl({
+      userId: parsed.sub,
+      email: parsed.email,
+      picture: parsed.picture,
+      displayName: parsed.preferred_username ?? parsed.email?.split("@")[0] ?? "User",
+    }),
     membershipTier: parsed.gfn_tier ?? "FREE",
   };
 }

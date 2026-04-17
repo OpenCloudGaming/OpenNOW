@@ -2127,8 +2127,8 @@ export class GfnWebRtcClient {
     this.options.onTimeWarning?.({ code: mappedCode, secondsLeft });
   }
 
-  private async flushQueuedCandidates(): Promise<void> {
-    if (!this.pc || !this.pc.remoteDescription) {
+  private async flushQueuedCandidates(targetPc: RTCPeerConnection): Promise<void> {
+    if (!targetPc.remoteDescription) {
       return;
     }
 
@@ -2138,7 +2138,7 @@ export class GfnWebRtcClient {
         continue;
       }
       this.queuedCandidateKeys.delete(this.remoteCandidateKey(candidate));
-      await this.pc.addIceCandidate(candidate);
+      await targetPc.addIceCandidate(candidate);
     }
   }
 
@@ -3601,7 +3601,7 @@ export class GfnWebRtcClient {
     this.log("Setting remote description (offer)...");
     await pc.setRemoteDescription({ type: "offer", sdp: filteredOffer });
     this.log("Remote description set successfully");
-    await this.flushQueuedCandidates();
+    await this.flushQueuedCandidates(pc);
 
     // Attach microphone track to the correct transceiver after remote description is set
     if (this.micManager) {
@@ -3839,6 +3839,7 @@ export class GfnWebRtcClient {
         for (const candidate of replayableRemoteCandidates) {
           await relayPc.addIceCandidate(candidate);
         }
+        await this.flushQueuedCandidates(relayPc);
         if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
 
         if (this.micManager) {
