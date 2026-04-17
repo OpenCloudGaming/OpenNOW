@@ -3400,7 +3400,6 @@ export class GfnWebRtcClient {
   }
 
   async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
-    this.clearCandidateState();
     this.cleanupPeerConnection();
     const connectionAttemptId = ++this.connectionAttemptId;
     this.log("=== handleOffer START ===");

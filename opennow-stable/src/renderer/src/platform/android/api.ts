@@ -555,9 +555,51 @@ function timezoneOffsetMs(): number { return -new Date().getTimezoneOffset() * 6
 function extractHostFromUrl(url: string): string | null { for (const prefix of ["rtsps://", "rtsp://", "wss://", "https://"]) { if (url.startsWith(prefix)) { const host = url.slice(prefix.length).split(":")[0]?.split("/")[0]; return host || null; } } return null; }
 function isZoneHostname(ip: string): boolean { return ip.includes("cloudmatchbeta.nvidiagrid.net") || ip.includes("cloudmatch.nvidiagrid.net"); }
 function isReadySessionStatus(status: number): boolean { return READY_SESSION_STATUSES.has(status); }
-function resolveActiveSessionSignalingUrl(connection: { ip?: string | string[]; resourcePath?: string } | undefined, serverIp?: string): string | undefined { const resourcePath = connection?.resourcePath; if (typeof resourcePath === "string") { if (resourcePath.startsWith("wss://")) return resourcePath; if (resourcePath.startsWith("rtsps://") || resourcePath.startsWith("rtsp://")) { const host = extractHostFromUrl(resourcePath) ?? serverIp; return host ? `wss://${host}/nvst/` : undefined; } if (resourcePath.startsWith("/") && serverIp) return `wss://${serverIp}${resourcePath}`; } return serverIp ? `wss://${serverIp}:443/nvst/` : undefined; }
+function buildSignalingUrl(resourcePath: string, serverIp: string): { signalingUrl: string; signalingHost: string | null } {
+  if (resourcePath.startsWith("rtsps://") || resourcePath.startsWith("rtsp://")) {
+    const host = extractHostFromUrl(resourcePath);
+    if (host) {
+      return { signalingUrl: `wss://${host}/nvst/`, signalingHost: host };
+    }
+    return { signalingUrl: `wss://${serverIp}:443/nvst/`, signalingHost: null };
+  }
+
+  if (resourcePath.startsWith("wss://")) {
+    const authority = resourcePath.slice("wss://".length).split("/")[0] ?? null;
+    return { signalingUrl: resourcePath, signalingHost: authority };
+  }
+
+  if (resourcePath.startsWith("/")) {
+    return { signalingUrl: `wss://${serverIp}:443${resourcePath}`, signalingHost: null };
+  }
+
+  return { signalingUrl: `wss://${serverIp}:443/nvst/`, signalingHost: null };
+}
+
+function resolveActiveSessionSignalingUrl(connection: { ip?: string | string[]; resourcePath?: string } | undefined, serverIp?: string): string | undefined {
+  if (!serverIp) {
+    return undefined;
+  }
+  const { signalingUrl } = buildSignalingUrl(connection?.resourcePath ?? "/nvst/", serverIp);
+  return signalingUrl;
+}
 function streamingServerIp(response: CloudMatchResponse): string | null { const connection = response.session.connectionInfo?.find((conn) => conn.usage === 14); const directIp = Array.isArray(connection?.ip) ? connection?.ip[0] : connection?.ip; if (directIp) return directIp; if (connection?.resourcePath) { const host = extractHostFromUrl(connection.resourcePath); if (host) return host; } const controlIp = response.session.sessionControlInfo?.ip; return Array.isArray(controlIp) ? controlIp[0] ?? null : controlIp ?? null; }
-function resolveSignaling(response: CloudMatchResponse): { serverIp: string; signalingServer: string; signalingUrl: string; mediaConnectionInfo?: { ip: string; port: number } } { const connection = response.session.connectionInfo?.find((conn) => conn.usage === 14 && conn.ip) ?? response.session.connectionInfo?.find((conn) => conn.ip); const serverIp = streamingServerIp(response); if (!serverIp) throw new Error("CloudMatch response did not include a signaling host"); const resourcePath = connection?.resourcePath ?? "/nvst/"; let signalingUrl = `wss://${serverIp}/nvst/`; if (resourcePath.startsWith("wss://")) signalingUrl = resourcePath; else if (resourcePath.startsWith("rtsps://") || resourcePath.startsWith("rtsp://")) signalingUrl = `wss://${extractHostFromUrl(resourcePath) ?? serverIp}/nvst/`; else if (resourcePath.startsWith("/")) signalingUrl = `wss://${serverIp}${resourcePath}`; const connectionIp = Array.isArray(connection?.ip) ? connection?.ip[0] : connection?.ip; return { serverIp, signalingServer: connectionIp ?? extractHostFromUrl(signalingUrl) ?? serverIp, signalingUrl, mediaConnectionInfo: connection?.port && connectionIp ? { ip: connectionIp, port: connection.port } : undefined }; }
+function resolveSignaling(response: CloudMatchResponse): { serverIp: string; signalingServer: string; signalingUrl: string; mediaConnectionInfo?: { ip: string; port: number } } {
+  const connection =
+    response.session.connectionInfo?.find((conn) => conn.usage === 14 && (conn.ip || conn.resourcePath))
+    ?? response.session.connectionInfo?.find((conn) => conn.ip || conn.resourcePath);
+  const serverIp = streamingServerIp(response);
+  if (!serverIp) throw new Error("CloudMatch response did not include a signaling host");
+  const { signalingUrl, signalingHost } = buildSignalingUrl(connection?.resourcePath ?? "/nvst/", serverIp);
+  const effectiveHost = signalingHost ?? serverIp;
+  const connectionIp = Array.isArray(connection?.ip) ? connection?.ip[0] : connection?.ip;
+  return {
+    serverIp,
+    signalingServer: effectiveHost.includes(":") ? effectiveHost : `${effectiveHost}:443`,
+    signalingUrl,
+    mediaConnectionInfo: connection?.port && connectionIp ? { ip: connectionIp, port: connection.port } : undefined,
+  };
+}
 function extractQueuePosition(payload: CloudMatchResponse): number | undefined { return toPositiveInt(payload.session.queuePosition) ?? toPositiveInt(payload.session.seatSetupInfo?.queuePosition) ?? toPositiveInt(payload.session.sessionProgress?.queuePosition) ?? toPositiveInt(payload.session.progressInfo?.queuePosition); }
 function toColorQuality(bitDepth?: number, chromaFormat?: number): import("@shared/gfn").ColorQuality | undefined { if (bitDepth !== 0 && bitDepth !== 10) return undefined; if (chromaFormat !== 0 && chromaFormat !== 2) return undefined; if (bitDepth === 10) return chromaFormat === 2 ? "10bit_444" : "10bit_420"; return chromaFormat === 2 ? "8bit_444" : "8bit_420"; }
 function normalizeIceServers(response: CloudMatchResponse): IceServer[] { const raw = response.session.iceServerConfiguration?.iceServers ?? []; const servers = raw.map((entry) => ({ urls: Array.isArray(entry.urls) ? entry.urls : [entry.urls], username: entry.username, credential: entry.credential })).filter((entry) => entry.urls.length > 0); if (servers.length > 0) return servers; return [{ urls: ["stun:s1.stun.gamestream.nvidia.com:19308"] }, { urls: ["stun:stun.l.google.com:19302"] }]; }

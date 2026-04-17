@@ -82,7 +82,7 @@ Current packaging targets:
 | Linux x64 | `AppImage`, `deb` |
 | Linux ARM64 | `AppImage`, `deb` |
 
-For Android testing, GitHub Actions now builds an unsigned debug APK artifact on pull requests and manual workflow runs. Download it from the `auto-build` workflow artifacts; it is intended for testing, not release distribution.
+For Android testing, GitHub Actions now builds an unsigned debug APK artifact on pull requests, pushes to `main` and `dev`, and manual workflow runs. Download it from the `auto-build` workflow artifacts; it is intended for testing, not release distribution.
 
 ### Develop Locally
 

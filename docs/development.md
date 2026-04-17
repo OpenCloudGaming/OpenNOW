@@ -194,11 +194,11 @@ Local Android toolchain prerequisites:
 If you are using the command-line SDK tools, install the same Android components that CI installs:
 
 ```bash
+yes | sdkmanager --licenses
 sdkmanager --install \
   "platform-tools" \
   "platforms;android-36" \
   "build-tools;36.0.0"
-yes | sdkmanager --licenses
 ```
 
 Build and sync web assets into the Android project:
