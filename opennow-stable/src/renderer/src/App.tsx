@@ -43,6 +43,7 @@ import {
   type StreamDiagnostics,
   type StreamTimeWarning,
 } from "./gfn/webrtcClient";
+import { FULLSCREEN_KEYBOARD_LOCK_CODES } from "./gfn/keyboardLock";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { useControllerNavigation } from "./controllerNavigation";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";
@@ -1976,9 +1977,7 @@ export function App(): JSX.Element {
 
     const nav = navigator as any;
     if (document.fullscreenElement && nav.keyboard?.lock) {
-      await nav.keyboard.lock([
-        "Escape", "F11", "BrowserBack", "BrowserForward", "BrowserRefresh",
-      ]).catch(() => {});
+      await nav.keyboard.lock(FULLSCREEN_KEYBOARD_LOCK_CODES).catch(() => {});
     }
 
     await requestPointerLockCompat({ unadjustedMovement: true })
