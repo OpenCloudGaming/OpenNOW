@@ -442,7 +442,6 @@ export class GfnWebRtcClient {
   private remoteCandidateKeys = new Set<string>();
   private remoteCandidateAttemptId = 0;
   private currentRemoteIceUfrag: string | null = null;
-  private currentRemoteCandidatesUseUsernameFragment = false;
 
   // Input mode: all input types (mouse, keyboard, gamepad) work simultaneously
   // Removed exclusive mode switching to allow concurrent input
@@ -895,7 +894,6 @@ export class GfnWebRtcClient {
     this.remoteCandidateKeys.clear();
     this.remoteCandidateAttemptId = attemptId;
     this.currentRemoteIceUfrag = remoteIceUfrag;
-    this.currentRemoteCandidatesUseUsernameFragment = false;
   }
 
   private remoteCandidateKey(candidate: RTCIceCandidateInit): string {
@@ -931,18 +929,15 @@ export class GfnWebRtcClient {
     this.queuedCandidates.push(candidate);
   }
 
-  private matchesCurrentRemoteIceScope(candidate: RTCIceCandidateInit): boolean {
-    if (!this.currentRemoteIceUfrag) {
+  private matchesQueuedRemoteIceScope(candidate: RTCIceCandidateInit): boolean {
+    return this.matchesLiveRemoteIceScope(candidate);
+  }
+
+  private matchesLiveRemoteIceScope(candidate: RTCIceCandidateInit): boolean {
+    if (!this.currentRemoteIceUfrag || !candidate.usernameFragment) {
       return true;
     }
-    if (!candidate.usernameFragment) {
-      return !this.currentRemoteCandidatesUseUsernameFragment;
-    }
-    if (candidate.usernameFragment === this.currentRemoteIceUfrag) {
-      this.currentRemoteCandidatesUseUsernameFragment = true;
-      return true;
-    }
-    return false;
+    return candidate.usernameFragment === this.currentRemoteIceUfrag;
   }
 
   private isHealthyIceState(state: RTCIceConnectionState | null | undefined): boolean {
@@ -2171,7 +2166,7 @@ export class GfnWebRtcClient {
         continue;
       }
       this.queuedCandidateKeys.delete(this.remoteCandidateKey(candidate));
-      if (!this.matchesCurrentRemoteIceScope(candidate)) {
+      if (!this.matchesQueuedRemoteIceScope(candidate)) {
         continue;
       }
       this.rememberRemoteCandidate(candidate, attemptId);
@@ -3782,7 +3777,6 @@ export class GfnWebRtcClient {
       if (triedRelay) return;
       if (!isCurrentConnectionAttempt() || this.pc !== pc) return;
       triedRelay = true;
-      const replayableRemoteCandidates = [...this.remoteCandidates];
       if (this.relayFallbackTimer !== null) {
         window.clearTimeout(this.relayFallbackTimer);
         this.relayFallbackTimer = null;
@@ -3797,138 +3791,7 @@ export class GfnWebRtcClient {
           return;
         }
 
-        this.log("Relay fallback: starting relay/TURN retry (iceTransportPolicy=relay)");
-
-        // Tear down any existing peer connection and create a new one configured
-        // to use only relays.
-        this.cleanupPeerConnection();
-        if (!isCurrentConnectionAttempt()) {
-          return;
-        }
-
-        const relayRtcConfig: RTCConfiguration = {
-          iceServers: toRtcIceServers(session.iceServers),
-          bundlePolicy: "max-bundle",
-          rtcpMuxPolicy: "require",
-          iceTransportPolicy: "relay",
-        } as RTCConfiguration;
-
-        const relayPc = new RTCPeerConnection(relayRtcConfig);
-        this.pc = relayPc;
-        this.diagnostics.connectionState = relayPc.connectionState;
-        this.diagnostics.serverRegion = this.serverRegion;
-        this.diagnostics.gpuType = this.gpuType;
-        this.emitStats();
-
-        this.resetInputState();
-        this.resetDiagnostics();
-        this.createDataChannels(relayPc);
-        this.installInputCapture(this.options.videoElement);
-        this.setupStatsPolling();
-
-        relayPc.onicecandidate = (event) => {
-          if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
-          if (!event.candidate) return;
-          const payload = event.candidate.toJSON();
-          if (!payload.candidate) return;
-          this.log(`Relay PC local ICE candidate: ${payload.candidate}`);
-          const candidate: IceCandidatePayload = {
-            candidate: payload.candidate,
-            sdpMid: payload.sdpMid,
-            sdpMLineIndex: payload.sdpMLineIndex,
-            usernameFragment: payload.usernameFragment,
-          };
-          openNow.sendIceCandidate(candidate).catch((error) => {
-            this.log(`Relay PC failed to send local ICE candidate: ${String(error)}`);
-          });
-        };
-
-        relayPc.ontrack = (evt) => {
-          if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
-          this.log(`Relay PC track received: kind=${evt.track.kind}, id=${evt.track.id}`);
-          this.attachTrack(evt.track);
-          this.configureReceiverForLowLatency(evt.receiver, evt.track.kind);
-        };
-
-        relayPc.ondatachannel = (event) => {
-          if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
-          const channel = event.channel;
-          this.log(`Relay PC remote data channel received: label=${channel.label}, ordered=${channel.ordered}`);
-          if (channel.label !== "control_channel") {
-            return;
-          }
-          this.bindControlChannel(channel, "Relay PC");
-        };
-
-        relayPc.onconnectionstatechange = () => {
-          if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
-          this.diagnostics.connectionState = relayPc.connectionState;
-          this.emitStats();
-          this.log(`Relay PC connection state: ${relayPc.connectionState}`);
-        };
-
-        relayPc.oniceconnectionstatechange = () => {
-          if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
-          this.log(`Relay PC ICE connection state: ${relayPc.iceConnectionState}`);
-        };
-
-        // Re-run the SDP answer flow against the same (filtered) offer.
-        await relayPc.setRemoteDescription({ type: "offer", sdp: filteredOffer });
-        if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
-        for (const candidate of replayableRemoteCandidates) {
-          await relayPc.addIceCandidate(candidate);
-        }
-        await this.flushQueuedCandidates(relayPc, connectionAttemptId);
-        if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
-
-        if (this.micManager) {
-          this.micManager.setPeerConnection(relayPc);
-          await this.micManager.attachTrackToPeerConnection();
-          if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
-        }
-
-        // Re-apply codec preferences on the new PC
-        this.applyCodecPreferences(relayPc, effectiveCodec, preferredHevcProfileId);
-
-        const relayAnswer = await relayPc.createAnswer();
-        if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
-        if (relayAnswer.sdp) {
-          relayAnswer.sdp = mungeAnswerSdp(relayAnswer.sdp, settings.maxBitrateKbps);
-        }
-        await relayPc.setLocalDescription(relayAnswer);
-        if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
-        this.log("Relay PC local description set, waiting for ICE gathering...");
-
-        this.log("Relay fallback: local relay peer configured without sending a second signaling answer");
-
-        // Attempt manual mediaConnectionInfo injection again (UDP/TCP) — server may
-        // accept TCP connections even when UDP fails.
-        if (session.mediaConnectionInfo) {
-          const mci = session.mediaConnectionInfo;
-          const rawIp = extractPublicIp(mci.ip);
-          if (rawIp && mci.port > 0) {
-            const candidateUdp = `candidate:1 1 udp 2130706431 ${rawIp} ${mci.port} typ host`;
-            const candidateTcp = `candidate:1 1 tcp 1518149375 ${rawIp} ${mci.port} typ host tcptype active`;
-            const candidatesToTry = [candidateUdp, candidateTcp];
-            const mids = ["0", "1", "2", "3"];
-            let injectedRelay = false;
-            for (const cand of candidatesToTry) {
-              const proto = cand.includes("udp") ? "udp" : "tcp";
-              for (const mid of mids) {
-                try {
-                  await relayPc.addIceCandidate({ candidate: cand, sdpMid: mid, sdpMLineIndex: parseInt(mid, 10), usernameFragment: serverIceUfrag || undefined });
-                  this.log(`Relay PC manual ICE candidate injected (sdpMid=${mid}, proto=${proto})`);
-                  injectedRelay = true;
-                  break;
-                } catch (e) {
-                  this.log(`Relay PC manual ICE candidate failed for sdpMid=${mid}, proto=${proto}: ${String(e)}`);
-                }
-              }
-              if (injectedRelay) break;
-            }
-            if (!injectedRelay) this.log("Relay PC: could not inject manual media candidate on any sdpMid");
-          }
-        }
+        this.log("Relay fallback skipped: forcing a new relay-only answer would require a fresh remote offer from signaling, so the existing peer connection is left intact.");
       } catch (e) {
         if (!isCurrentConnectionAttempt()) return;
         this.log(`Relay fallback failed: ${String(e)}`);
@@ -3973,7 +3836,7 @@ export class GfnWebRtcClient {
       return;
     }
 
-    if (!this.matchesCurrentRemoteIceScope(init)) {
+    if (!this.matchesLiveRemoteIceScope(init)) {
       return;
     }
 
