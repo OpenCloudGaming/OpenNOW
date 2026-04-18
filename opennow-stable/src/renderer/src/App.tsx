@@ -48,6 +48,7 @@ import { useControllerNavigation } from "./controllerNavigation";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
+import { openNow, platformCapabilities, platform } from "./platform";
 import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
 
 // UI Components
@@ -1502,7 +1503,7 @@ export function App(): JSX.Element {
               `watchedTimeInMs=${request.watchedTimeInMs ?? "n/a"}, pausedTimeInMs=${request.pausedTimeInMs ?? 0}, ` +
                 `cancelReason=${request.cancelReason ?? "n/a"}, errorInfo=${request.errorInfo ?? "n/a"}`,
           );
-          const updated = await window.openNow.reportSessionAd(request);
+          const updated = await openNow.reportSessionAd(request);
           if (sessionRef.current?.sessionId !== updated.sessionId) {
             return;
           }
@@ -1666,7 +1667,7 @@ export function App(): JSX.Element {
   const loadSubscriptionInfo = useCallback(
     async (session: AuthSession): Promise<void> => {
       const token = session.tokens.idToken ?? session.tokens.accessToken;
-      const subscription = await window.openNow.fetchSubscription({
+      const subscription = await openNow.fetchSubscription({
         token,
         providerStreamingBaseUrl: session.provider.streamingServiceUrl,
         userId: session.user.userId,
@@ -1687,7 +1688,7 @@ export function App(): JSX.Element {
       return;
     }
     try {
-      const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
+      const activeSessions = await openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
       const candidate = activeSessions.find((entry) => entry.status === 3 || entry.status === 2) ?? null;
       setNavbarActiveSession(candidate);
     } catch (error) {
@@ -1737,7 +1738,7 @@ export function App(): JSX.Element {
       console.warn("Skipping session stop: missing auth token");
       return false;
     }
-    await window.openNow.stopSession({
+    await openNow.stopSession({
       token,
       streamingBaseUrl: target.streamingBaseUrl,
       serverIp: target.serverIp,
@@ -1774,7 +1775,7 @@ export function App(): JSX.Element {
     const initialize = async () => {
       try {
         // Load settings first
-        const loadedSettings = await window.openNow.getSettings();
+        const loadedSettings = await openNow.getSettings();
         setSettings(loadedSettings);
         setShowStatsOverlay(loadedSettings.showStatsOnLaunch);
         setSettingsLoaded(true);
@@ -1782,8 +1783,8 @@ export function App(): JSX.Element {
         // Load providers and session (refresh only if token is near expiry)
         setStartupStatusMessage("Restoring saved session...");
         const [providerList, sessionResult] = await Promise.all([
-          window.openNow.getLoginProviders(),
-          window.openNow.getAuthSession(),
+          openNow.getLoginProviders(),
+          openNow.getAuthSession(),
         ]);
         const persistedSession = sessionResult.session;
 
@@ -1831,7 +1832,7 @@ export function App(): JSX.Element {
         if (persistedSession) {
           // Load regions
           const token = persistedSession.tokens.idToken ?? persistedSession.tokens.accessToken;
-          const discovered = await window.openNow.getRegions({ token });
+          const discovered = await openNow.getRegions({ token });
           setRegions(discovered);
 
           try {
@@ -1844,14 +1845,14 @@ export function App(): JSX.Element {
           // Load games
           try {
             const [catalogResult, libGames] = await Promise.all([
-              window.openNow.browseCatalog({
+              openNow.browseCatalog({
                 token,
                 providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
                 searchQuery: "",
                 sortId: catalogSelectedSortId,
                 filterIds: catalogSelectedFilterIds,
               }),
-              window.openNow.fetchLibraryGames({
+              openNow.fetchLibraryGames({
                 token,
                 providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
               }),
@@ -1937,6 +1938,10 @@ export function App(): JSX.Element {
     settings.shortcutToggleRecording,
   ]);
 
+  const isSessionFullscreenActive = useCallback(() => {
+    return Boolean(document.fullscreenElement) || document.body.dataset.androidFullscreen === "true";
+  }, []);
+
   const setSessionFullscreen = useCallback(async (nextFullscreen: boolean) => {
     try {
       if (nextFullscreen) {
@@ -1949,15 +1954,15 @@ export function App(): JSX.Element {
     } catch {}
 
     try {
-      await window.openNow.setFullscreen(nextFullscreen);
+      await openNow.setFullscreen(nextFullscreen);
     } catch (error) {
       console.warn(`Failed to sync native fullscreen state (${nextFullscreen ? "enter" : "exit"}):`, error);
     }
   }, []);
 
   const toggleSessionFullscreen = useCallback(async () => {
-    await setSessionFullscreen(!document.fullscreenElement);
-  }, [setSessionFullscreen]);
+    await setSessionFullscreen(!isSessionFullscreenActive());
+  }, [isSessionFullscreenActive, setSessionFullscreen]);
 
   const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
     const lockTarget = (target.parentElement as HTMLElement | null) ?? target;
@@ -1970,7 +1975,7 @@ export function App(): JSX.Element {
       }
     };
 
-    if (settings.autoFullScreen && !document.fullscreenElement) {
+    if (settings.autoFullScreen && !isSessionFullscreenActive()) {
       await setSessionFullscreen(true);
     }
 
@@ -1989,7 +1994,7 @@ export function App(): JSX.Element {
         throw err;
       })
       .catch(() => {});
-  }, [setSessionFullscreen, settings.autoFullScreen]);
+  }, [isSessionFullscreenActive, setSessionFullscreen, settings.autoFullScreen]);
 
   const handleRequestPointerLock = useCallback(() => {
     if (videoRef.current) {
@@ -2038,7 +2043,7 @@ export function App(): JSX.Element {
   // Listen for F11 fullscreen toggle from main process (uses W3C Fullscreen API
   // so navigator.keyboard.lock() can capture Escape in fullscreen)
   useEffect(() => {
-    const unsubscribe = window.openNow.onToggleFullscreen(() => {
+    const unsubscribe = openNow.onToggleFullscreen(() => {
       void toggleSessionFullscreen();
     });
     return () => unsubscribe();
@@ -2053,13 +2058,13 @@ export function App(): JSX.Element {
       return;
     }
 
-    if (autoFullscreenRequestedRef.current || document.fullscreenElement) {
+    if (autoFullscreenRequestedRef.current || isSessionFullscreenActive()) {
       return;
     }
 
     autoFullscreenRequestedRef.current = true;
     void setSessionFullscreen(true);
-  }, [setSessionFullscreen, settings.autoFullScreen, streamStatus]);
+  }, [isSessionFullscreenActive, setSessionFullscreen, settings.autoFullScreen, streamStatus]);
 
   // Anti-AFK interval
   useEffect(() => {
@@ -2178,7 +2183,7 @@ export function App(): JSX.Element {
 
   // Signaling events
   useEffect(() => {
-    const unsubscribe = window.openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {
+    const unsubscribe = openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {
       console.log(`[App] Signaling event: ${event.type}`, event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "", event.type === "remote-ice" ? event.candidate : "");
       try {
         if (event.type === "offer") {
@@ -2261,7 +2266,7 @@ export function App(): JSX.Element {
   const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
     if (settingsLoaded) {
-      await window.openNow.setSetting(key, value);
+      await openNow.setSetting(key, value);
     }
     // If a running client exists, push certain settings live
     if (key === "mouseSensitivity") {
@@ -2318,8 +2323,8 @@ export function App(): JSX.Element {
 
     if (settingsLoaded) {
       void Promise.all([
-        window.openNow.setSetting("controllerMode", false),
-        window.openNow.setSetting("autoLoadControllerLibrary", false),
+        openNow.setSetting("controllerMode", false),
+        openNow.setSetting("autoLoadControllerLibrary", false),
       ]).catch((error) => {
         console.warn("Failed to persist controller mode exit settings:", error);
       });
@@ -2327,7 +2332,8 @@ export function App(): JSX.Element {
   }, [settingsLoaded]);
 
   const handleExitApp = useCallback(() => {
-    void window.openNow.quitApp().catch((error) => {
+    if (!platformCapabilities.supportsQuitApp) return;
+    void openNow.quitApp().catch((error) => {
       console.warn("Failed to quit application:", error);
     });
   }, []);
@@ -2356,13 +2362,13 @@ export function App(): JSX.Element {
     setIsLoggingIn(true);
     setLoginError(null);
     try {
-      const session = await window.openNow.login({ providerIdpId: providerIdpId || undefined });
+      const session = await openNow.login({ providerIdpId: providerIdpId || undefined });
       setAuthSession(session);
       setProviderIdpId(session.provider.idpId);
 
       // Load regions
       const token = session.tokens.idToken ?? session.tokens.accessToken;
-      const discovered = await window.openNow.getRegions({ token });
+      const discovered = await openNow.getRegions({ token });
       setRegions(discovered);
 
       try {
@@ -2373,14 +2379,14 @@ export function App(): JSX.Element {
       }
 
       const [catalogResult, libGames] = await Promise.all([
-        window.openNow.browseCatalog({
+        openNow.browseCatalog({
           token,
           providerStreamingBaseUrl: session.provider.streamingServiceUrl,
           searchQuery: "",
           sortId: catalogSelectedSortId,
           filterIds: catalogSelectedFilterIds,
         }),
-        window.openNow.fetchLibraryGames({
+        openNow.fetchLibraryGames({
           token,
           providerStreamingBaseUrl: session.provider.streamingServiceUrl,
         }),
@@ -2397,7 +2403,7 @@ export function App(): JSX.Element {
 
   const confirmLogout = useCallback(async () => {
     setLogoutConfirmOpen(false);
-    await window.openNow.logout();
+    await openNow.logout();
     setAuthSession(null);
     setGames([]);
     setLibraryGames([]);
@@ -2432,7 +2438,7 @@ export function App(): JSX.Element {
       }
 
       if (targetSource === "main") {
-        const catalogResult = await window.openNow.browseCatalog({
+        const catalogResult = await openNow.browseCatalog({
           token,
           providerStreamingBaseUrl: baseUrl,
           searchQuery,
@@ -2443,7 +2449,7 @@ export function App(): JSX.Element {
         return;
       }
 
-      const result = await window.openNow.fetchLibraryGames({ token, providerStreamingBaseUrl: baseUrl });
+      const result = await openNow.fetchLibraryGames({ token, providerStreamingBaseUrl: baseUrl });
       setLibraryGames(result);
       setSelectedGameId((previous) => result.some((game) => game.id === previous) ? previous : (result[0]?.id ?? ""));
       applyVariantSelections(result);
@@ -2496,7 +2502,7 @@ export function App(): JSX.Element {
       setStreamingStore(null);
     }
 
-    const claimed = await window.openNow.claimSession({
+    const claimed = await openNow.claimSession({
       token,
       streamingBaseUrl: effectiveStreamingBaseUrl,
       serverIp: existingSession.serverIp,
@@ -2528,7 +2534,7 @@ export function App(): JSX.Element {
     sessionRef.current = claimed;
     setQueuePosition(undefined);
     setStreamStatus("connecting");
-    await window.openNow.connectSignaling({
+    await openNow.connectSignaling({
       sessionId: claimed.sessionId,
       signalingServer: claimed.signalingServer,
       signalingUrl: claimed.signalingUrl,
@@ -2587,7 +2593,7 @@ export function App(): JSX.Element {
 
       if (!appId && token) {
         try {
-          const resolved = await window.openNow.resolveLaunchAppId({
+          const resolved = await openNow.resolveLaunchAppId({
             token,
             providerStreamingBaseUrl: effectiveStreamingBaseUrl,
             appIdOrUuid: game.uuid ?? selectedVariantId,
@@ -2617,7 +2623,7 @@ export function App(): JSX.Element {
       // Check for active sessions first
       if (token) {
         try {
-          const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
+          const activeSessions = await openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
           if (activeSessions.length > 0) {
             // Only claim sessions that are already paused/ready (status 2 or 3).
             // Status=1 sessions are still in queue/setup; sending a RESUME claim
@@ -2633,7 +2639,7 @@ export function App(): JSX.Element {
             }
 
             if (otherSession) {
-              const choice = await window.openNow.showSessionConflictDialog();
+              const choice = await openNow.showSessionConflictDialog();
               if (choice === "cancel") {
                 resetLaunchRuntime();
                 return;
@@ -2655,7 +2661,7 @@ export function App(): JSX.Element {
       }
 
       // Create new session
-      const newSession = await window.openNow.createSession({
+      const newSession = await openNow.createSession({
         token: token || undefined,
         streamingBaseUrl: options?.streamingBaseUrl || effectiveStreamingBaseUrl,
         appId,
@@ -2738,7 +2744,7 @@ export function App(): JSX.Element {
           return;
         }
 
-        const polled = await window.openNow.pollSession({
+        const polled = await openNow.pollSession({
           token: token || undefined,
           streamingBaseUrl: newSession.streamingBaseUrl ?? effectiveStreamingBaseUrl,
           serverIp: newSession.serverIp,
@@ -2796,7 +2802,7 @@ export function App(): JSX.Element {
         status: sessionToConnect.status,
       });
 
-      await window.openNow.connectSignaling({
+      await openNow.connectSignaling({
         sessionId: sessionToConnect.sessionId,
         signalingServer: sessionToConnect.signalingServer,
         signalingUrl: sessionToConnect.signalingUrl,
@@ -2807,7 +2813,7 @@ export function App(): JSX.Element {
       }
       console.error("Launch failed:", error);
       setLaunchError(toLaunchErrorState(error, loadingStep));
-      await window.openNow.disconnectSignaling().catch(() => {});
+      await openNow.disconnectSignaling().catch(() => {});
       clientRef.current?.dispose();
       clientRef.current = null;
       resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
@@ -2844,8 +2850,8 @@ export function App(): JSX.Element {
     if (isFreeUser && streamStatus === "idle" && !launchInFlightRef.current) {
       try {
         const [queueResult, mappingResult] = await Promise.allSettled([
-          window.openNow.fetchPrintedWasteQueue(),
-          window.openNow.fetchPrintedWasteServerMapping(),
+          openNow.fetchPrintedWasteQueue(),
+          openNow.fetchPrintedWasteServerMapping(),
         ]);
 
         if (queueResult.status !== "fulfilled" || mappingResult.status !== "fulfilled") {
@@ -3015,7 +3021,7 @@ export function App(): JSX.Element {
     } catch (error) {
       console.error("Navbar resume failed:", error);
       setLaunchError(toLaunchErrorState(error, loadingStep));
-      await window.openNow.disconnectSignaling().catch(() => {});
+      await openNow.disconnectSignaling().catch(() => {});
       clientRef.current?.dispose();
       clientRef.current = null;
       resetLaunchRuntime({ keepLaunchError: true });
@@ -3092,7 +3098,7 @@ export function App(): JSX.Element {
       if (status !== "idle" && status !== "streaming") {
         launchAbortRef.current = true;
       }
-      await window.openNow.disconnectSignaling();
+      await openNow.disconnectSignaling();
 
       const current = sessionRef.current;
       if (current) {
@@ -3166,7 +3172,7 @@ export function App(): JSX.Element {
   }, [handleStopStream, handlePlayGame]);
 
   const handleDismissLaunchError = useCallback(async () => {
-    await window.openNow.disconnectSignaling().catch(() => {});
+    await openNow.disconnectSignaling().catch(() => {});
     clientRef.current?.dispose();
     clientRef.current = null;
     resetLaunchRuntime();
@@ -3267,6 +3273,10 @@ export function App(): JSX.Element {
         return;
       }
 
+      if (!platformCapabilities.supportsKeyboardShortcuts) {
+        return;
+      }
+
       if (isShortcutMatch(e, shortcuts.toggleStats)) {
         e.preventDefault();
         e.stopPropagation();
@@ -3275,7 +3285,7 @@ export function App(): JSX.Element {
         return;
       }
 
-      if (isShortcutMatch(e, shortcuts.togglePointerLock)) {
+      if (platformCapabilities.supportsPointerLockToggle && isShortcutMatch(e, shortcuts.togglePointerLock)) {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
@@ -3791,7 +3801,7 @@ export function App(): JSX.Element {
               aspectRatioOptions={aspectRatioOptions as unknown as string[]}
               onSettingChange={updateSetting}
               onExitControllerMode={handleExitControllerMode}
-              onExitApp={handleExitApp}
+              onExitApp={platformCapabilities.supportsControllerExitApp ? handleExitApp : undefined}
             />
           ) : (
             <LibraryPage

@@ -612,6 +612,7 @@ export interface ActiveSessionInfo {
   status: number;
   streamingBaseUrl?: string;
   serverIp?: string;
+  signalingServer?: string;
   signalingUrl?: string;
   resolution?: string;
   fps?: number;
@@ -824,6 +825,7 @@ export interface ScreenshotEntry {
   createdAtMs: number;
   sizeBytes: number;
   dataUrl: string;
+  gameTitle?: string;
 }
 
 export interface RecordingEntry {

@@ -25,6 +25,7 @@ import {
   USER_FACING_VIDEO_CODEC_OPTIONS,
 } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
+import { openNow, platformCapabilities } from "../platform";
 import { getCodecDecodeBadgeState, type CodecTestResult } from "../lib/codecDiagnostics";
 
 interface SettingsPageProps {
@@ -439,7 +440,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     if (regions.length === 0) return;
     setIsPinging(true);
     try {
-      const results = await window.openNow.pingRegions(regions);
+      const results = await openNow.pingRegions(regions);
       const pingMap = new Map<string, number | null>();
       let bestUrl: string | null = null;
       let bestPing = Infinity;
@@ -564,7 +565,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   useEffect(() => {
     let cancelled = false;
 
-    void window.openNow.getUpdaterState().then((state) => {
+    void openNow.getUpdaterState().then((state) => {
       if (!cancelled) {
         setUpdaterState(state);
       }
@@ -572,7 +573,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       console.warn("[Settings] Failed to load updater state:", error);
     });
 
-    const unsubscribe = window.openNow.onUpdaterStateChanged((state) => {
+    const unsubscribe = openNow.onUpdaterStateChanged((state) => {
       if (!cancelled) {
         setUpdaterState(state);
       }
@@ -590,7 +591,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
     async function load(): Promise<void> {
       try {
-        const sessionResult = await window.openNow.getAuthSession();
+        const sessionResult = await openNow.getAuthSession();
         const session = sessionResult.session;
         if (!session || cancelled) {
           setEntitledResolutions([]);
@@ -606,7 +607,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
           return;
         }
 
-        const sub = await window.openNow.fetchSubscription({
+        const sub = await openNow.fetchSubscription({
           userId,
         });
 
@@ -737,8 +738,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       };
 
       try {
-        if (typeof window.openNow?.getMicrophonePermission === "function") {
-          const permission = await window.openNow.getMicrophonePermission();
+        if (typeof openNow?.getMicrophonePermission === "function") {
+          const permission = await openNow.getMicrophonePermission();
           if (cancelled) {
             return;
           }
@@ -1108,7 +1109,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     let requestPromise: Promise<ThankYouDataResult>;
 
     try {
-      const getThanksData = window.openNow?.getThanksData;
+      const getThanksData = openNow?.getThanksData;
       if (typeof getThanksData !== "function") {
         throw new Error("openNow.getThanksData is unavailable");
       }
@@ -2131,209 +2132,210 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   <span className="settings-subtle-hint">Dynamic turn boost strength (1% = off-like, 150% = strongest).</span>
                 </div>
 
-                {/* Shortcuts */}
-                <div className="settings-row settings-row--column">
-                  <div className="settings-row-top">
-                    <label className="settings-label">Shortcuts</label>
-                    <div className="settings-shortcut-actions">
-                      <span className="settings-value-badge">Editable</span>
-                      <button
-                        type="button"
-                        className="settings-shortcut-reset-btn"
-                        onClick={handleResetShortcuts}
-                        disabled={areShortcutsDefault}
-                      >
-                        Reset to defaults
-                      </button>
+                {platformCapabilities.supportsKeyboardShortcuts && (
+                  <div className="settings-row settings-row--column">
+                    <div className="settings-row-top">
+                      <label className="settings-label">Shortcuts</label>
+                      <div className="settings-shortcut-actions">
+                        <span className="settings-value-badge">Editable</span>
+                        <button
+                          type="button"
+                          className="settings-shortcut-reset-btn"
+                          onClick={handleResetShortcuts}
+                          disabled={areShortcutsDefault}
+                        >
+                          Reset to defaults
+                        </button>
+                      </div>
                     </div>
+
+                    <div className="settings-shortcut-grid">
+                      <div className="settings-shortcut-row">
+                        <span className="settings-shortcut-label" id="shortcut-toggle-stats-label">Toggle Stats</span>
+                        <input
+                          type="text"
+                          id="shortcut-toggle-stats"
+                          aria-labelledby="shortcut-toggle-stats-label"
+                          readOnly
+                          className={`settings-text-input settings-shortcut-input ${toggleStatsError ? "error" : ""}`}
+                          value={toggleStatsInput}
+                          onFocus={(e) => e.target.select()}
+                          onBlur={() => handleShortcutBlur("shortcutToggleStats", toggleStatsInput)}
+                          onPaste={(e) => handleShortcutPaste("shortcutToggleStats", e)}
+                          onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleStats", e)}
+                          placeholder="Click here, then press a key"
+                          title="Focus and press the key combination to bind"
+                          spellCheck={false}
+                        />
+                      </div>
+
+                      <div className="settings-shortcut-row">
+                        <span className="settings-shortcut-label" id="shortcut-pointer-lock-label">Mouse Lock</span>
+                        <input
+                          type="text"
+                          id="shortcut-pointer-lock"
+                          aria-labelledby="shortcut-pointer-lock-label"
+                          readOnly
+                          className={`settings-text-input settings-shortcut-input ${togglePointerLockError ? "error" : ""}`}
+                          value={togglePointerLockInput}
+                          onFocus={(e) => e.target.select()}
+                          onBlur={() => handleShortcutBlur("shortcutTogglePointerLock", togglePointerLockInput)}
+                          onPaste={(e) => handleShortcutPaste("shortcutTogglePointerLock", e)}
+                          onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutTogglePointerLock", e)}
+                          placeholder="Click here, then press a key"
+                          title="Focus and press the key combination to bind"
+                          spellCheck={false}
+                        />
+                      </div>
+
+                      <div className="settings-shortcut-row">
+                        <span className="settings-shortcut-label" id="shortcut-fullscreen-label">Toggle Full Screen</span>
+                        <input
+                          type="text"
+                          id="shortcut-fullscreen"
+                          aria-labelledby="shortcut-fullscreen-label"
+                          readOnly
+                          className={`settings-text-input settings-shortcut-input ${toggleFullscreenError ? "error" : ""}`}
+                          value={toggleFullscreenInput}
+                          onFocus={(e) => e.target.select()}
+                          onBlur={() => handleShortcutBlur("shortcutToggleFullscreen", toggleFullscreenInput)}
+                          onPaste={(e) => handleShortcutPaste("shortcutToggleFullscreen", e)}
+                          onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleFullscreen", e)}
+                          placeholder="Click here, then press a key"
+                          title="Focus and press the key combination to bind"
+                          spellCheck={false}
+                        />
+                      </div>
+
+                      <div className="settings-shortcut-row">
+                        <span className="settings-shortcut-label" id="shortcut-stop-stream-label">Stop Stream</span>
+                        <input
+                          type="text"
+                          id="shortcut-stop-stream"
+                          aria-labelledby="shortcut-stop-stream-label"
+                          readOnly
+                          className={`settings-text-input settings-shortcut-input ${stopStreamError ? "error" : ""}`}
+                          value={stopStreamInput}
+                          onFocus={(e) => e.target.select()}
+                          onBlur={() => handleShortcutBlur("shortcutStopStream", stopStreamInput)}
+                          onPaste={(e) => handleShortcutPaste("shortcutStopStream", e)}
+                          onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutStopStream", e)}
+                          placeholder="Click here, then press a key"
+                          title="Focus and press the key combination to bind"
+                          spellCheck={false}
+                        />
+                      </div>
+
+                      <div className="settings-shortcut-row">
+                        <span className="settings-shortcut-label" id="shortcut-anti-afk-label">Toggle Anti-AFK</span>
+                        <input
+                          type="text"
+                          id="shortcut-anti-afk"
+                          aria-labelledby="shortcut-anti-afk-label"
+                          readOnly
+                          className={`settings-text-input settings-shortcut-input ${toggleAntiAfkError ? "error" : ""}`}
+                          value={toggleAntiAfkInput}
+                          onFocus={(e) => e.target.select()}
+                          onBlur={() => handleShortcutBlur("shortcutToggleAntiAfk", toggleAntiAfkInput)}
+                          onPaste={(e) => handleShortcutPaste("shortcutToggleAntiAfk", e)}
+                          onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleAntiAfk", e)}
+                          placeholder="Click here, then press a key"
+                          title="Focus and press the key combination to bind"
+                          spellCheck={false}
+                        />
+                      </div>
+
+                      <div className="settings-shortcut-row">
+                        <span className="settings-shortcut-label" id="shortcut-mic-label">Toggle Microphone</span>
+                        <input
+                          type="text"
+                          id="shortcut-mic"
+                          aria-labelledby="shortcut-mic-label"
+                          readOnly
+                          className={`settings-text-input settings-shortcut-input ${toggleMicrophoneError ? "error" : ""}`}
+                          value={toggleMicrophoneInput}
+                          onFocus={(e) => e.target.select()}
+                          onBlur={() => handleShortcutBlur("shortcutToggleMicrophone", toggleMicrophoneInput)}
+                          onPaste={(e) => handleShortcutPaste("shortcutToggleMicrophone", e)}
+                          onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleMicrophone", e)}
+                          placeholder="Click here, then press a key"
+                          title="Focus and press the key combination to bind"
+                          spellCheck={false}
+                        />
+                      </div>
+
+                      <div className="settings-shortcut-row">
+                        <span className="settings-shortcut-label" id="shortcut-screenshot-label">Screenshot</span>
+                        <input
+                          type="text"
+                          id="shortcut-screenshot"
+                          aria-labelledby="shortcut-screenshot-label"
+                          readOnly
+                          className={`settings-text-input settings-shortcut-input ${screenshotError ? "error" : ""}`}
+                          value={screenshotInput}
+                          onFocus={(e) => e.target.select()}
+                          onBlur={() => handleShortcutBlur("shortcutScreenshot", screenshotInput)}
+                          onPaste={(e) => handleShortcutPaste("shortcutScreenshot", e)}
+                          onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutScreenshot", e)}
+                          placeholder="Click here, then press a key"
+                          title="Focus and press the key combination to bind"
+                          spellCheck={false}
+                        />
+                      </div>
+
+                      <div className="settings-shortcut-row">
+                        <span className="settings-shortcut-label" id="shortcut-recording-label">Recording</span>
+                        <input
+                          type="text"
+                          id="shortcut-recording"
+                          aria-labelledby="shortcut-recording-label"
+                          readOnly
+                          className={`settings-text-input settings-shortcut-input ${recordingError ? "error" : ""}`}
+                          value={recordingInput}
+                          onFocus={(e) => e.target.select()}
+                          onBlur={() => handleShortcutBlur("shortcutToggleRecording", recordingInput)}
+                          onPaste={(e) => handleShortcutPaste("shortcutToggleRecording", e)}
+                          onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleRecording", e)}
+                          placeholder="Click here, then press a key"
+                          title="Focus and press the key combination to bind"
+                          spellCheck={false}
+                        />
+                      </div>
+
+                      <div className="settings-shortcut-row">
+                        <span className="settings-shortcut-label" id="shortcut-sidebar-label">Toggle stream sidebar</span>
+                        <input
+                          type="text"
+                          id="shortcut-sidebar"
+                          aria-labelledby="shortcut-sidebar-label"
+                          value={formatShortcutForDisplay(SIDEBAR_TOGGLE_SHORTCUT_RAW, isMac)}
+                          className="settings-text-input settings-shortcut-input settings-shortcut-input--static"
+                          readOnly
+                          tabIndex={-1}
+                        />
+                      </div>
+                    </div>
+
+                    {(toggleStatsError || togglePointerLockError || toggleFullscreenError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError || screenshotError || recordingError) && (
+                      <span className="settings-input-hint">
+                        {toggleStatsError
+                          || togglePointerLockError
+                          || toggleFullscreenError
+                          || stopStreamError
+                          || toggleAntiAfkError
+                          || toggleMicrophoneError
+                          || screenshotError
+                          || recordingError}
+                      </span>
+                    )}
+
+                    {!toggleStatsError && !togglePointerLockError && !toggleFullscreenError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && !screenshotError && !recordingError && (
+                      <span className="settings-shortcut-hint">
+                        Click a field and press the keys to bind, or paste a shortcut ({shortcutExamples}). Escape cancels focus. Full screen: {formatShortcutForDisplay(settings.shortcutToggleFullscreen, isMac)}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}. Screenshot: {formatShortcutForDisplay(settings.shortcutScreenshot, isMac)}. Recording: {formatShortcutForDisplay(settings.shortcutToggleRecording, isMac)}.
+                      </span>
+                    )}
                   </div>
-
-                  <div className="settings-shortcut-grid">
-                <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-toggle-stats-label">Toggle Stats</span>
-                  <input
-                    type="text"
-                    id="shortcut-toggle-stats"
-                    aria-labelledby="shortcut-toggle-stats-label"
-                    readOnly
-                    className={`settings-text-input settings-shortcut-input ${toggleStatsError ? "error" : ""}`}
-                    value={toggleStatsInput}
-                    onFocus={(e) => e.target.select()}
-                    onBlur={() => handleShortcutBlur("shortcutToggleStats", toggleStatsInput)}
-                    onPaste={(e) => handleShortcutPaste("shortcutToggleStats", e)}
-                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleStats", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-pointer-lock-label">Mouse Lock</span>
-                  <input
-                    type="text"
-                    id="shortcut-pointer-lock"
-                    aria-labelledby="shortcut-pointer-lock-label"
-                    readOnly
-                    className={`settings-text-input settings-shortcut-input ${togglePointerLockError ? "error" : ""}`}
-                    value={togglePointerLockInput}
-                    onFocus={(e) => e.target.select()}
-                    onBlur={() => handleShortcutBlur("shortcutTogglePointerLock", togglePointerLockInput)}
-                    onPaste={(e) => handleShortcutPaste("shortcutTogglePointerLock", e)}
-                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutTogglePointerLock", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-fullscreen-label">Toggle Full Screen</span>
-                  <input
-                    type="text"
-                    id="shortcut-fullscreen"
-                    aria-labelledby="shortcut-fullscreen-label"
-                    readOnly
-                    className={`settings-text-input settings-shortcut-input ${toggleFullscreenError ? "error" : ""}`}
-                    value={toggleFullscreenInput}
-                    onFocus={(e) => e.target.select()}
-                    onBlur={() => handleShortcutBlur("shortcutToggleFullscreen", toggleFullscreenInput)}
-                    onPaste={(e) => handleShortcutPaste("shortcutToggleFullscreen", e)}
-                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleFullscreen", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-stop-stream-label">Stop Stream</span>
-                  <input
-                    type="text"
-                    id="shortcut-stop-stream"
-                    aria-labelledby="shortcut-stop-stream-label"
-                    readOnly
-                    className={`settings-text-input settings-shortcut-input ${stopStreamError ? "error" : ""}`}
-                    value={stopStreamInput}
-                    onFocus={(e) => e.target.select()}
-                    onBlur={() => handleShortcutBlur("shortcutStopStream", stopStreamInput)}
-                    onPaste={(e) => handleShortcutPaste("shortcutStopStream", e)}
-                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutStopStream", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-anti-afk-label">Toggle Anti-AFK</span>
-                  <input
-                    type="text"
-                    id="shortcut-anti-afk"
-                    aria-labelledby="shortcut-anti-afk-label"
-                    readOnly
-                    className={`settings-text-input settings-shortcut-input ${toggleAntiAfkError ? "error" : ""}`}
-                    value={toggleAntiAfkInput}
-                    onFocus={(e) => e.target.select()}
-                    onBlur={() => handleShortcutBlur("shortcutToggleAntiAfk", toggleAntiAfkInput)}
-                    onPaste={(e) => handleShortcutPaste("shortcutToggleAntiAfk", e)}
-                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleAntiAfk", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-mic-label">Toggle Microphone</span>
-                  <input
-                    type="text"
-                    id="shortcut-mic"
-                    aria-labelledby="shortcut-mic-label"
-                    readOnly
-                    className={`settings-text-input settings-shortcut-input ${toggleMicrophoneError ? "error" : ""}`}
-                    value={toggleMicrophoneInput}
-                    onFocus={(e) => e.target.select()}
-                    onBlur={() => handleShortcutBlur("shortcutToggleMicrophone", toggleMicrophoneInput)}
-                    onPaste={(e) => handleShortcutPaste("shortcutToggleMicrophone", e)}
-                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleMicrophone", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-screenshot-label">Screenshot</span>
-                  <input
-                    type="text"
-                    id="shortcut-screenshot"
-                    aria-labelledby="shortcut-screenshot-label"
-                    readOnly
-                    className={`settings-text-input settings-shortcut-input ${screenshotError ? "error" : ""}`}
-                    value={screenshotInput}
-                    onFocus={(e) => e.target.select()}
-                    onBlur={() => handleShortcutBlur("shortcutScreenshot", screenshotInput)}
-                    onPaste={(e) => handleShortcutPaste("shortcutScreenshot", e)}
-                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutScreenshot", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-recording-label">Recording</span>
-                  <input
-                    type="text"
-                    id="shortcut-recording"
-                    aria-labelledby="shortcut-recording-label"
-                    readOnly
-                    className={`settings-text-input settings-shortcut-input ${recordingError ? "error" : ""}`}
-                    value={recordingInput}
-                    onFocus={(e) => e.target.select()}
-                    onBlur={() => handleShortcutBlur("shortcutToggleRecording", recordingInput)}
-                    onPaste={(e) => handleShortcutPaste("shortcutToggleRecording", e)}
-                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutToggleRecording", e)}
-                    placeholder="Click here, then press a key"
-                    title="Focus and press the key combination to bind"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-sidebar-label">Toggle stream sidebar</span>
-                  <input
-                    type="text"
-                    id="shortcut-sidebar"
-                    aria-labelledby="shortcut-sidebar-label"
-                    value={formatShortcutForDisplay(SIDEBAR_TOGGLE_SHORTCUT_RAW, isMac)}
-                    className="settings-text-input settings-shortcut-input settings-shortcut-input--static"
-                    readOnly
-                    tabIndex={-1}
-                  />
-                </div>
-              </div>
-
-              {(toggleStatsError || togglePointerLockError || toggleFullscreenError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError || screenshotError || recordingError) && (
-                <span className="settings-input-hint">
-                  {toggleStatsError
-                    || togglePointerLockError
-                    || toggleFullscreenError
-                    || stopStreamError
-                    || toggleAntiAfkError
-                    || toggleMicrophoneError
-                    || screenshotError
-                    || recordingError}
-                </span>
-              )}
-
-              {!toggleStatsError && !togglePointerLockError && !toggleFullscreenError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && !screenshotError && !recordingError && (
-                <span className="settings-shortcut-hint">
-                  Click a field and press the keys to bind, or paste a shortcut ({shortcutExamples}). Escape cancels focus. Full screen: {formatShortcutForDisplay(settings.shortcutToggleFullscreen, isMac)}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}. Screenshot: {formatShortcutForDisplay(settings.shortcutScreenshot, isMac)}. Recording: {formatShortcutForDisplay(settings.shortcutToggleRecording, isMac)}.
-                </span>
-              )}
-                </div>
+                )}
               </div>
             </section>
         )}
@@ -2642,7 +2644,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     className="settings-export-logs-btn"
                     disabled={!updaterState.canCheck}
                     onClick={() => {
-                      void window.openNow.checkForUpdates().catch((error) => {
+                      void openNow.checkForUpdates().catch((error) => {
                         console.error("[Settings] Failed to trigger update check:", error);
                       });
                     }}
@@ -2656,7 +2658,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       className="settings-export-logs-btn"
                       disabled={!updaterState.canDownload}
                       onClick={() => {
-                        void window.openNow.downloadUpdate().catch((error) => {
+                        void openNow.downloadUpdate().catch((error) => {
                           console.error("[Settings] Failed to download update:", error);
                         });
                       }}
@@ -2671,7 +2673,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       className="settings-save-btn settings-save-btn--compact"
                       disabled={!updaterState.canInstall}
                       onClick={() => {
-                        void window.openNow.installUpdateAndRestart().catch((error) => {
+                        void openNow.installUpdateAndRestart().catch((error) => {
                           console.error("[Settings] Failed to install update:", error);
                         });
                       }}
@@ -2711,62 +2713,66 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
               ) : null}
 
-              <div className="settings-row">
-                <label className="settings-label">
-                  Export Logs
-                  <span className="settings-hint">Download debug logs with sensitive data redacted for privacy</span>
-                </label>
-                <button
-                  type="button"
-                  className="settings-export-logs-btn"
-                  onClick={async () => {
-                    try {
-                      const logs = await window.openNow.exportLogs("text");
-                      const blob = new Blob([logs], { type: "text/plain" });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url;
-                      a.download = `opennow-logs-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
-                      document.body.appendChild(a);
-                      a.click();
-                      document.body.removeChild(a);
-                      URL.revokeObjectURL(url);
-                    } catch (err) {
-                      console.error("[Settings] Failed to export logs:", err);
-                      alert("Failed to export logs. Please try again.");
-                    }
-                  }}
-                >
-                  <FileDown size={16} />
-                  Export Logs
-                </button>
-              </div>
+              {platformCapabilities.supportsLogExport && (
+                <div className="settings-row">
+                  <label className="settings-label">
+                    Export Logs
+                    <span className="settings-hint">Download debug logs with sensitive data redacted for privacy</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="settings-export-logs-btn"
+                    onClick={async () => {
+                      try {
+                        const logs = await openNow.exportLogs("text");
+                        const blob = new Blob([logs], { type: "text/plain" });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = `opennow-logs-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                      } catch (err) {
+                        console.error("[Settings] Failed to export logs:", err);
+                        alert("Failed to export logs. Please try again.");
+                      }
+                    }}
+                  >
+                    <FileDown size={16} />
+                    Export Logs
+                  </button>
+                </div>
+              )}
 
-              <div className="settings-row">
-                <label className="settings-label">
-                  Delete Cache
-                  <span className="settings-hint">Clear all cached game data, images, and metadata</span>
-                </label>
-                <button
-                  type="button"
-                  className="settings-delete-cache-btn"
-                  onClick={async () => {
-                    if (!window.confirm("Are you sure you want to delete all cached data? This will clear all game metadata, images, and library information.")) {
-                      return;
-                    }
-                    try {
-                      await window.openNow.deleteCache();
-                      alert("Cache cleared successfully. The app will refresh on next startup.");
-                    } catch (err) {
-                      console.error("[Settings] Failed to delete cache:", err);
-                      alert("Failed to delete cache. Please try again.");
-                    }
-                  }}
-                >
-                  <Trash2 size={16} />
-                  Delete Cache
-                </button>
-              </div>
+              {platformCapabilities.supportsCacheDeletion && (
+                <div className="settings-row">
+                  <label className="settings-label">
+                    Delete Cache
+                    <span className="settings-hint">Clear all cached game data, images, and metadata</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="settings-delete-cache-btn"
+                    onClick={async () => {
+                      if (!window.confirm("Are you sure you want to delete all cached data? This will clear all game metadata, images, and library information.")) {
+                        return;
+                      }
+                      try {
+                        await openNow.deleteCache();
+                        alert("Cache cleared successfully. The app will refresh on next startup.");
+                      } catch (err) {
+                        console.error("[Settings] Failed to delete cache:", err);
+                        alert("Failed to delete cache. Please try again.");
+                      }
+                    }}
+                  >
+                    <Trash2 size={16} />
+                    Delete Cache
+                  </button>
+                </div>
+              )}
             </div>
           </section>
         )}

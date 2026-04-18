@@ -118,6 +118,45 @@ function parseJwtPayload<T>(token: string): T | null {
   }
 }
 
+function avatarInitials(label: string | undefined): string {
+  const cleaned = (label ?? "User").trim();
+  if (!cleaned) {
+    return "U";
+  }
+  const parts = cleaned.split(/\s+/).filter(Boolean).slice(0, 2);
+  const initials = parts.map((part) => part[0]?.toUpperCase() ?? "").join("");
+  return initials || cleaned[0]?.toUpperCase() || "U";
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function createLocalAvatarUrl(seed: string, label: string | undefined): string {
+  const digest = createHash("sha256").update(seed).digest("hex");
+  const hue = Number.parseInt(digest.slice(0, 8), 16) % 360;
+  const initials = avatarInitials(label);
+  const escapedInitials = escapeXml(initials);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="${escapedInitials}"><rect width="128" height="128" rx="24" fill="hsl(${hue} 68% 42%)"/><text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" fill="#ffffff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="48" font-weight="700">${escapedInitials}</text></svg>`;
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+}
+
+function resolveAvatarUrl(options: { userId: string; email?: string; picture?: string; displayName?: string }): string | undefined {
+  if (options.picture) {
+    return options.picture;
+  }
+  const seed = options.email?.trim().toLowerCase() || options.userId;
+  if (!seed) {
+    return undefined;
+  }
+  return createLocalAvatarUrl(seed, options.displayName ?? options.email);
+}
+
 function toExpiresAt(expiresInSeconds: number | undefined, defaultSeconds = 86400): number {
   return Date.now() + (expiresInSeconds ?? defaultSeconds) * 1000;
 }
@@ -369,12 +408,6 @@ function mergeTokenSnapshot(base: AuthTokens, refreshed: TokenResponse): AuthTok
   };
 }
 
-function gravatarUrl(email: string, size = 80): string {
-  const normalized = email.trim().toLowerCase();
-  const hash = createHash("md5").update(normalized).digest("hex");
-  return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=identicon`;
-}
-
 async function fetchUserInfo(tokens: AuthTokens): Promise<AuthUser> {
   const jwtToken = tokens.idToken ?? tokens.accessToken;
   const parsed = parseJwtPayload<{
@@ -389,12 +422,12 @@ async function fetchUserInfo(tokens: AuthTokens): Promise<AuthUser> {
     const emailFromToken = parsed.email;
     const pictureFromToken = parsed.picture;
     if (emailFromToken || pictureFromToken) {
-      const avatar = pictureFromToken ?? (emailFromToken ? gravatarUrl(emailFromToken) : undefined);
+      const displayName = parsed.preferred_username ?? emailFromToken?.split("@")[0] ?? "User";
       return {
         userId: parsed.sub,
-        displayName: parsed.preferred_username ?? emailFromToken?.split("@")[0] ?? "User",
+        displayName,
         email: emailFromToken,
-        avatarUrl: avatar,
+        avatarUrl: resolveAvatarUrl({ userId: parsed.sub, email: emailFromToken, picture: pictureFromToken, displayName }),
         membershipTier: parsed.gfn_tier ?? "FREE",
       };
     }
@@ -421,13 +454,13 @@ async function fetchUserInfo(tokens: AuthTokens): Promise<AuthUser> {
   };
 
   const email = payload.email;
-  const avatar = payload.picture ?? (email ? gravatarUrl(email) : undefined);
+  const displayName = payload.preferred_username ?? email?.split("@")[0] ?? "User";
 
   return {
     userId: payload.sub,
-    displayName: payload.preferred_username ?? email?.split("@")[0] ?? "User",
+    displayName,
     email,
-    avatarUrl: avatar,
+    avatarUrl: resolveAvatarUrl({ userId: payload.sub, email, picture: payload.picture, displayName }),
     membershipTier: "FREE",
   };
 }

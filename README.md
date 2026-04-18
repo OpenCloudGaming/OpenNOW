@@ -53,13 +53,14 @@
 
 ## Overview
 
-OpenNOW is a community-built Electron app for playing GeForce NOW from an open-source desktop client. The active implementation lives in [`opennow-stable/`](opennow-stable) and uses Electron, React, and TypeScript across the main, preload, and renderer processes.
+OpenNOW is a community-built GeForce NOW client. The active implementation lives in [`opennow-stable/`](opennow-stable) and now supports two runtime targets from the same React renderer: Electron for desktop and Capacitor for Android.
 
 The project aims to give players a transparent, customizable alternative to the official client without hiding the technical parts from contributors.
 
 ## Highlights
 
 - Open-source desktop client for Windows, macOS, and Linux
+- Experimental Android target via Capacitor using the shared React renderer in a WebView
 - Catalog and public game browsing with search and library-aware session handling
 - Stream controls for codec, resolution, FPS, aspect ratio, region, and quality preferences
 - In-stream diagnostics overlay with latency, packet loss, decode, and render stats
@@ -80,6 +81,8 @@ Current packaging targets:
 | macOS | `dmg`, `zip` |
 | Linux x64 | `AppImage`, `deb` |
 | Linux ARM64 | `AppImage`, `deb` |
+
+For Android testing, GitHub Actions now builds a debug APK artifact for manual workflow runs, plus pull requests and pushes to `main`/`dev` when the `auto-build` path filters match (`opennow-stable/**` or `.github/workflows/auto-build.yml`). Download it from the workflow artifacts; it is intended for testing, not release distribution.
 
 ### Develop Locally
 
@@ -122,15 +125,43 @@ For a fuller setup guide, see [docs/development.md](docs/development.md).
 
 ## Architecture At A Glance
 
-OpenNOW is split into three Electron layers:
+OpenNOW uses a shared renderer with thin platform adapters:
 
 | Layer | Tech | Responsibility |
 | --- | --- | --- |
-| Main | Electron + Node.js | OAuth, CloudMatch/session orchestration, signaling, caching, local file handling |
-| Preload | Electron `contextBridge` | Safe IPC bridge between the app shell and UI |
-| Renderer | React + TypeScript | Login flow, browsing, settings, WebRTC playback, diagnostics, controls |
+| Main | Electron + Node.js | Desktop-only OAuth, IPC, local filesystem/media, cache, window management |
+| Preload | Electron `contextBridge` | Desktop bridge exposing the existing OpenNOW API surface |
+| Renderer | React + TypeScript | Shared login flow, browsing, settings, WebRTC playback, diagnostics, controls |
+| Capacitor Android | Capacitor + WebView | Android shell, localhost WebView auth interception, Preferences/filesystem storage, browser-based signaling |
 
-The code lives under [`opennow-stable/src/`](opennow-stable/src), with shared TypeScript types and IPC contracts in [`opennow-stable/src/shared/`](opennow-stable/src/shared).
+The code lives under [`opennow-stable/src/`](opennow-stable/src), with shared TypeScript types and platform-neutral helpers in [`opennow-stable/src/shared/`](opennow-stable/src/shared). The renderer now consumes [`src/renderer/src/platform/`](opennow-stable/src/renderer/src/platform/) instead of hard-coding `window.openNow`.
+
+## Android Status
+
+The Android target is an initial pass intended to run the core OpenNOW flow inside a Capacitor WebView. Current Android support includes:
+
+- auth session restore
+- login via native Android WebView interception while preserving the exact desktop redirect URI contract (`http://localhost:<port>`)
+- provider and region loading
+- main/library/public game catalog fetches
+- session create, poll, claim, and stop
+- direct signaling from the WebView
+- settings persistence
+- screenshots and recordings stored in the app data directory
+
+Known Android limitations in this pass:
+
+- no desktop-style quit action
+- no pointer-lock toggle semantics
+- no Electron log export or cache deletion flow
+- no show-in-folder integration for media
+- screenshot export/save-as remains desktop-only
+- some desktop shortcut UX is hidden or non-applicable on touch devices
+
+Android auth now mirrors the desktop localhost redirect contract by opening NVIDIA login in a native Android WebView and intercepting the navigation to `http://localhost:<port>` inside the Android shell instead of using deep links or running a real loopback callback server.
+
+CI also produces a testable Android APK artifact from the Capacitor target so reviewers can install and validate the current branch without making a release build.
+
 
 ## Contributing
 

@@ -11,6 +11,7 @@ import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
+import { openNow, platformCapabilities } from "../platform";
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -691,10 +692,12 @@ export function StreamView({
   const [screenshotShortcutError, setScreenshotShortcutError] = useState<string | null>(null);
   const [activeSidebarTab, setActiveSidebarTab] = useState<"preferences" | "shortcuts">("preferences");
   const screenshotApiAvailable =
-    typeof window.openNow?.saveScreenshot === "function" &&
-    typeof window.openNow?.listScreenshots === "function" &&
-    typeof window.openNow?.deleteScreenshot === "function" &&
-    typeof window.openNow?.saveScreenshotAs === "function";
+    typeof openNow?.saveScreenshot === "function" &&
+    typeof openNow?.listScreenshots === "function" &&
+    typeof openNow?.deleteScreenshot === "function";
+  const screenshotExportAvailable =
+    platformCapabilities.supportsScreenshotExport &&
+    typeof openNow?.saveScreenshotAs === "function";
 
   // Recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -711,12 +714,12 @@ export function StreamView({
   const thumbnailDataUrlRef = useRef<string | null>(null);
   const recCarouselRef = useRef<HTMLDivElement | null>(null);
   const recordingApiAvailable =
-    typeof window.openNow?.beginRecording === "function" &&
-    typeof window.openNow?.sendRecordingChunk === "function" &&
-    typeof window.openNow?.finishRecording === "function" &&
-    typeof window.openNow?.abortRecording === "function" &&
-    typeof window.openNow?.listRecordings === "function" &&
-    typeof window.openNow?.deleteRecording === "function";
+    typeof openNow?.beginRecording === "function" &&
+    typeof openNow?.sendRecordingChunk === "function" &&
+    typeof openNow?.finishRecording === "function" &&
+    typeof openNow?.abortRecording === "function" &&
+    typeof openNow?.listRecordings === "function" &&
+    typeof openNow?.deleteRecording === "function";
 
   const microphoneModes = useMemo(
     () => [
@@ -747,11 +750,17 @@ export function StreamView({
   }, []);
 
   useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
+    const syncFullscreenState = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement) || document.body.dataset.androidFullscreen === "true");
     };
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    syncFullscreenState();
+    const observer = new MutationObserver(syncFullscreenState);
+    observer.observe(document.body, { attributes: true, attributeFilter: ["data-android-fullscreen"] });
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("fullscreenchange", syncFullscreenState);
+    };
   }, []);
 
   useEffect(() => {
@@ -1012,7 +1021,7 @@ export function StreamView({
       return;
     }
     try {
-      const items = await window.openNow.listScreenshots();
+      const items = await openNow.listScreenshots();
       setScreenshots(items);
     } catch (error) {
       console.error("[StreamView] Failed to load screenshots:", error);
@@ -1048,7 +1057,7 @@ export function StreamView({
 
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
       const dataUrl = canvas.toDataURL("image/png");
-      const saved = await window.openNow.saveScreenshot({ dataUrl, gameTitle });
+      const saved = await openNow.saveScreenshot({ dataUrl, gameTitle });
       setScreenshots((prev) => [saved, ...prev.filter((item) => item.id !== saved.id)].slice(0, 60));
     } catch (error) {
       console.error("[StreamView] Failed to capture screenshot:", error);
@@ -1074,14 +1083,14 @@ export function StreamView({
     if (!selectedScreenshot) return;
 
     try {
-      await window.openNow.deleteScreenshot({ id: selectedScreenshot.id });
+      await openNow.deleteScreenshot({ id: selectedScreenshot.id });
       setScreenshots((prev) => prev.filter((item) => item.id !== selectedScreenshot.id));
       setSelectedScreenshotId(null);
     } catch (error) {
       console.error("[StreamView] Failed to delete screenshot:", error);
       setGalleryError("Unable to delete screenshot.");
     }
-  }, [screenshotApiAvailable, selectedScreenshot]);
+  }, [screenshotApiAvailable, screenshotExportAvailable, selectedScreenshot]);
 
   const handleSaveScreenshotAs = useCallback(async () => {
     setGalleryError(null);
@@ -1091,19 +1100,24 @@ export function StreamView({
     }
     if (!selectedScreenshot) return;
 
+    if (!screenshotExportAvailable) {
+      setGalleryError("Screenshot export is not available on this platform.");
+      return;
+    }
+
     try {
-      await window.openNow.saveScreenshotAs({ id: selectedScreenshot.id });
+      await openNow.saveScreenshotAs({ id: selectedScreenshot.id });
     } catch (error) {
       console.error("[StreamView] Failed to save screenshot as:", error);
       setGalleryError("Unable to save screenshot.");
     }
-  }, [screenshotApiAvailable, selectedScreenshot]);
+  }, [screenshotApiAvailable, screenshotExportAvailable, selectedScreenshot]);
 
   const refreshRecordings = useCallback(async () => {
     setRecordingError(null);
     if (!recordingApiAvailable) return;
     try {
-      const items = await window.openNow.listRecordings();
+      const items = await openNow.listRecordings();
       setRecordings(items);
     } catch (error) {
       console.error("[StreamView] Failed to load recordings:", error);
@@ -1115,7 +1129,7 @@ export function StreamView({
     setRecordingError(null);
     if (!recordingApiAvailable) return;
     try {
-      await window.openNow.deleteRecording({ id });
+      await openNow.deleteRecording({ id });
       setRecordings((prev) => prev.filter((r) => r.id !== id));
     } catch (error) {
       console.error("[StreamView] Failed to delete recording:", error);
@@ -1186,7 +1200,7 @@ export function StreamView({
 
     let recordingId: string;
     try {
-      const result = await window.openNow.beginRecording({ mimeType });
+      const result = await openNow.beginRecording({ mimeType });
       recordingId = result.recordingId;
     } catch (error) {
       console.error("[StreamView] Failed to begin recording:", error);
@@ -1249,7 +1263,7 @@ export function StreamView({
       void e.data.arrayBuffer().then((buf) => {
         const id = recordingIdRef.current;
         if (!id) return;
-        window.openNow.sendRecordingChunk({ recordingId: id, chunk: buf }).catch((err: unknown) => {
+        openNow.sendRecordingChunk({ recordingId: id, chunk: buf }).catch((err: unknown) => {
           console.error("[StreamView] Failed to send recording chunk:", err);
         });
       });
@@ -1267,7 +1281,7 @@ export function StreamView({
       if (!id) return;
 
       const durationMs = Date.now() - recordingStartTimeRef.current;
-      void window.openNow
+      void openNow
         .finishRecording({
           recordingId: id,
           durationMs,
@@ -1294,7 +1308,7 @@ export function StreamView({
       setIsRecording(false);
       thumbnailDataUrlRef.current = null;
       if (id) {
-        window.openNow.abortRecording({ recordingId: id }).catch(() => undefined);
+        openNow.abortRecording({ recordingId: id }).catch(() => undefined);
       }
       setRecordingError("Recording encountered an error.");
     };
@@ -1313,7 +1327,7 @@ export function StreamView({
         recorder.stop();
       }
       if (id) {
-        window.openNow.abortRecording({ recordingId: id }).catch(() => undefined);
+        openNow.abortRecording({ recordingId: id }).catch(() => undefined);
         recordingIdRef.current = null;
       }
       audioCtxRef.current?.close().catch(() => undefined);
@@ -1398,6 +1412,15 @@ export function StreamView({
   }, [onReleasePointerLock]);
 
   useEffect(() => {
+    if (!platformCapabilities.supportsKeyboardShortcuts && activeSidebarTab === "shortcuts") {
+      setActiveSidebarTab("preferences");
+    }
+  }, [activeSidebarTab]);
+
+  useEffect(() => {
+    if (!platformCapabilities.supportsKeyboardShortcuts) {
+      return;
+    }
     const screenshotShortcut = normalizeShortcut(shortcuts.screenshot);
     const recordingShortcut = normalizeShortcut(shortcuts.recording);
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1485,15 +1508,17 @@ export function StreamView({
               >
                 Preferences
               </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeSidebarTab === "shortcuts"}
-                className={`sidebar-tab${activeSidebarTab === "shortcuts" ? " sidebar-tab--active" : ""}`}
-                onClick={() => setActiveSidebarTab("shortcuts")}
-              >
-                Shortcuts
-              </button>
+              {platformCapabilities.supportsKeyboardShortcuts && (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeSidebarTab === "shortcuts"}
+                  className={`sidebar-tab${activeSidebarTab === "shortcuts" ? " sidebar-tab--active" : ""}`}
+                  onClick={() => setActiveSidebarTab("shortcuts")}
+                >
+                  Shortcuts
+                </button>
+              )}
             </div>
 
             {activeSidebarTab === "preferences" && (
@@ -1595,7 +1620,7 @@ export function StreamView({
                 <section className="sidebar-section">
                   <div className="sidebar-section-header">
                     <span>Gallery</span>
-                    <span className="sidebar-section-sub">ScreensShot key: {shortcuts.screenshot}</span>
+                    <span className="sidebar-section-sub">{platformCapabilities.supportsKeyboardShortcuts ? `ScreensShot key: ${shortcuts.screenshot}` : "Capture screenshots from the sidebar"}</span>
                   </div>
                   <div className="sidebar-row sidebar-row--aligned">
                     <span className="sidebar-label">ScreensShot</span>
@@ -1643,7 +1668,7 @@ export function StreamView({
                     </button>
                   </div>
                   {screenshots.length === 0 && (
-                    <span className="sidebar-hint">No screenshots yet. Press {shortcuts.screenshot} to capture one.</span>
+                    <span className="sidebar-hint">{platformCapabilities.supportsKeyboardShortcuts ? `No screenshots yet. Press ${shortcuts.screenshot} to capture one.` : "No screenshots yet. Use Capture to save one."}</span>
                   )}
                   {galleryError && <span className="sidebar-hint sidebar-hint--error">{galleryError}</span>}
                 </section>
@@ -1651,7 +1676,7 @@ export function StreamView({
                 <section className="sidebar-section">
                   <div className="sidebar-section-header">
                     <span>Recordings</span>
-                    <span className="sidebar-section-sub">Record key: {shortcuts.recording}</span>
+                    <span className="sidebar-section-sub">{platformCapabilities.supportsKeyboardShortcuts ? `Record key: ${shortcuts.recording}` : "Start or stop recording from the sidebar"}</span>
                   </div>
                   {usedMimeType && (
                     <span className="sidebar-hint sidebar-hint--codec">Codec: {usedMimeType}</span>
@@ -1674,7 +1699,7 @@ export function StreamView({
                     <span className="sidebar-hint sidebar-hint--error">{recordingError}</span>
                   )}
                   {recordings.length === 0 ? (
-                    <span className="sidebar-hint">No recordings yet. Press {shortcuts.recording} to record.</span>
+                    <span className="sidebar-hint">{platformCapabilities.supportsKeyboardShortcuts ? `No recordings yet. Press ${shortcuts.recording} to record.` : "No recordings yet. Use Start to record."}</span>
                   ) : (
                     <div className="sidebar-gallery-row">
                       <button
@@ -1711,10 +1736,10 @@ export function StreamView({
                                 className="sidebar-rec-card-action"
                                 aria-label="Show in folder"
                                 title="Show in folder"
-                                onClick={() => { void window.openNow.showRecordingInFolder(rec.id); }}
-                                disabled={typeof window.openNow?.showRecordingInFolder !== "function"}
+                                onClick={() => { void openNow.showRecordingInFolder(rec.id); }}
+                                disabled={!platformCapabilities.supportsMediaFolderAccess}
                               >
-                                <FolderOpen size={11} />
+                                {platformCapabilities.supportsMediaFolderAccess ? <FolderOpen size={11} /> : <X size={11} />}
                               </button>
                               <button
                                 type="button"
@@ -1743,7 +1768,7 @@ export function StreamView({
               </>
             )}
 
-            {activeSidebarTab === "shortcuts" && (
+            {platformCapabilities.supportsKeyboardShortcuts && activeSidebarTab === "shortcuts" && (
               <>
                 <div className="sidebar-separator" aria-hidden="true" />
                 <section className="sidebar-section">
@@ -1876,6 +1901,7 @@ export function StreamView({
               alt={`Screenshot ${selectedScreenshot.fileName}`}
             />
             <div className="sv-shot-modal-actions">
+{screenshotExportAvailable && (
               <button
                 type="button"
                 className="sv-shot-modal-btn"
@@ -1886,6 +1912,7 @@ export function StreamView({
                 <Save size={14} />
                 <span>Save</span>
               </button>
+              )}
               <button
                 type="button"
                 className="sv-shot-modal-btn sv-shot-modal-btn--danger"
@@ -2074,7 +2101,7 @@ export function StreamView({
       )}
 
       {/* Keyboard hints */}
-      {showHints && !isConnecting && (
+      {showHints && !isConnecting && platformCapabilities.supportsKeyboardShortcuts && (
         <div className="sv-hints">
           <div className="sv-hint"><kbd>{shortcuts.toggleStats}</kbd><span>Stats</span></div>
           <div className="sv-hint"><kbd>{shortcuts.togglePointerLock}</kbd><span>Mouse lock</span></div>

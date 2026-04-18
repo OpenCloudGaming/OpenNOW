@@ -6,6 +6,7 @@ import { ButtonA, ButtonB, ButtonX, ButtonY, ButtonPSCross, ButtonPSCircle, Butt
 import { getStoreDisplayName } from "./GameCard";
 import { SessionElapsedIndicator, RemainingPlaytimeIndicator, CurrentClock } from "./ElapsedSessionIndicators";
 import { type PlaytimeStore, formatPlaytime, formatLastPlayed } from "../utils/usePlaytime";
+import { openNow, platformCapabilities } from "../platform";
 
 interface ControllerLibraryPageProps {
   games: GameInfo[];
@@ -133,6 +134,7 @@ export function ControllerLibraryPage({
   isStreaming = false,
   sessionCounterEnabled = false,
 }: ControllerLibraryPageProps): JSX.Element {
+  const supportsControllerExitApp = platformCapabilities.supportsControllerExitApp;
   const [isEntering, setIsEntering] = useState(true);
   const initialCategoryIndex = (() => {
     const hasFavorites = Array.isArray(favoriteGameIds) && favoriteGameIds.length > 0;
@@ -329,7 +331,7 @@ export function ControllerLibraryPage({
         { id: "audio", label: "Audio", value: "" },
         { id: "video", label: "Video", value: "" },
         { id: "system", label: "System", value: "" },
-        { id: "exitApp", label: "Exit", value: "" },
+        ...(supportsControllerExitApp ? [{ id: "exitApp", label: "Exit", value: "" }] : []),
       ],
       Network: [
         { id: "bandwidth", label: "Max Bitrate", value: `${(settings.maxBitrateMbps ?? 75)} Mbps` },
@@ -353,7 +355,7 @@ export function ControllerLibraryPage({
         { id: "exitControllerMode", label: "Exit Controller Mode", value: "" },
       ],
     } as Record<string, Array<{ id: string; label: string; value: string }>>;
-  }, [settings, microphoneDevices]);
+  }, [settings, microphoneDevices, supportsControllerExitApp]);
  
   const currentGameItems = useMemo(() => [
     { id: "resume", label: "Resume Game", value: "" },
@@ -398,7 +400,7 @@ export function ControllerLibraryPage({
 
   useEffect(() => {
     if (topCategory !== "media" || mediaSubcategory === "root") return;
-    if (typeof window.openNow?.listMediaByGame !== "function") {
+    if (typeof openNow?.listMediaByGame !== "function") {
       setMediaVideos([]);
       setMediaScreenshots([]);
       setMediaThumbById({});
@@ -408,11 +410,11 @@ export function ControllerLibraryPage({
     }
 
     let cancelled = false;
-    const loadMedia = async () => {
-      try {
-        setMediaLoading(true);
-        setMediaError(null);
-        const listing = await window.openNow.listMediaByGame({});
+        const loadMedia = async () => {
+          try {
+            setMediaLoading(true);
+            setMediaError(null);
+            const listing = await openNow.listMediaByGame({});
         if (cancelled) return;
 
         const videos = [...(listing.videos ?? [])].sort((a, b) => b.createdAtMs - a.createdAtMs);
@@ -426,8 +428,8 @@ export function ControllerLibraryPage({
           allItems.map(async (item): Promise<[string, string | null]> => {
             if (item.thumbnailDataUrl) return [item.id, item.thumbnailDataUrl];
             if (item.dataUrl) return [item.id, item.dataUrl];
-            if (typeof window.openNow?.getMediaThumbnail === "function") {
-              const generated = await window.openNow.getMediaThumbnail({ filePath: item.filePath });
+            if (typeof openNow?.getMediaThumbnail === "function") {
+              const generated = await openNow.getMediaThumbnail({ filePath: item.filePath });
               return [item.id, generated];
             }
             return [item.id, null];
@@ -496,7 +498,7 @@ export function ControllerLibraryPage({
   }, [currentStreamingGame, selectedGame]);
 
   useEffect(() => {
-    if (!showGameHub || !selectedGame?.title || typeof window.openNow?.listMediaByGame !== "function") {
+    if (!showGameHub || !selectedGame?.title || typeof openNow?.listMediaByGame !== "function") {
       setGameHubMedia([]);
       setGameHubMediaLoading(false);
       return;
@@ -509,7 +511,7 @@ export function ControllerLibraryPage({
     const timeoutId = window.setTimeout(() => {
       void (async () => {
         try {
-          const listing = await window.openNow.listMediaByGame({ gameTitle: selectedGame.title });
+          const listing = await openNow.listMediaByGame({ gameTitle: selectedGame.title });
           if (cancelled) return;
 
           const recentItems: GameHubMediaItem[] = [
@@ -525,8 +527,8 @@ export function ControllerLibraryPage({
             recentItems.map(async (item): Promise<[string, string | null]> => {
               if (item.thumbnailDataUrl) return [item.id, item.thumbnailDataUrl];
               if (item.dataUrl) return [item.id, item.dataUrl];
-              if (typeof window.openNow?.getMediaThumbnail === "function") {
-                const generated = await window.openNow.getMediaThumbnail({ filePath: item.filePath });
+              if (typeof openNow?.getMediaThumbnail === "function") {
+                const generated = await openNow.getMediaThumbnail({ filePath: item.filePath });
                 return [item.id, generated];
               }
               return [item.id, null];
@@ -720,8 +722,8 @@ export function ControllerLibraryPage({
         if (settingsSubcategory === "root" && setting?.id === "exitApp") {
           if (onExitApp) {
             onExitApp();
-          } else if (window.openNow?.quitApp) {
-            void window.openNow.quitApp();
+          } else if (platformCapabilities.supportsQuitApp) {
+            void openNow.quitApp();
           }
           playUiSound("confirm");
           return;
@@ -756,11 +758,12 @@ export function ControllerLibraryPage({
 
         if (mediaSubcategory !== "root") {
           const selectedMedia = mediaAssetItems[selectedMediaIndex];
-          if (selectedMedia && typeof window.openNow?.showMediaInFolder === "function") {
-            void window.openNow.showMediaInFolder({ filePath: selectedMedia.filePath });
+          if (selectedMedia && platformCapabilities.supportsMediaFolderAccess) {
+            void openNow.showMediaInFolder({ filePath: selectedMedia.filePath });
             playUiSound("confirm");
             return;
           }
+          return;
         }
 
         playUiSound("confirm");
@@ -1384,14 +1387,16 @@ export function ControllerLibraryPage({
               </div>
             ) : (
               <>
-                <div className="xmb-btn-hint">
-                  {controllerType === "ps" ? (
-                    <ButtonPSCross className="xmb-btn-icon" size={24} />
-                  ) : (
-                    <ButtonA className="xmb-btn-icon" size={24} />
-                  )}
-                  <span>Open Folder</span>
-                </div>
+                {platformCapabilities.supportsMediaFolderAccess && (
+                  <div className="xmb-btn-hint">
+                    {controllerType === "ps" ? (
+                      <ButtonPSCross className="xmb-btn-icon" size={24} />
+                    ) : (
+                      <ButtonA className="xmb-btn-icon" size={24} />
+                    )}
+                    <span>Open Folder</span>
+                  </div>
+                )}
                 <div className="xmb-btn-hint">
                   {controllerType === "ps" ? (
                     <ButtonPSCircle className="xmb-btn-icon" size={24} />

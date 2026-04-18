@@ -38,6 +38,7 @@ import {
   rewriteH265TierFlag,
 } from "./sdp";
 import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
+import { openNow } from "../platform";
 
 interface OfferSettings {
   codec: VideoCodec;
@@ -436,6 +437,11 @@ export class GfnWebRtcClient {
   private pendingMouseDy = 0;
   private inputCleanup: Array<() => void> = [];
   private queuedCandidates: RTCIceCandidateInit[] = [];
+  private queuedCandidateKeys = new Set<string>();
+  private remoteCandidates: RTCIceCandidateInit[] = [];
+  private remoteCandidateKeys = new Set<string>();
+  private remoteCandidateAttemptId = 0;
+  private currentRemoteIceUfrag: string | null = null;
 
   // Input mode: all input types (mouse, keyboard, gamepad) work simultaneously
   // Removed exclusive mode switching to allow concurrent input
@@ -486,6 +492,8 @@ export class GfnWebRtcClient {
   private autoPointerLockInProgress = false;
   // Timer for synthetic Escape on pointer lock loss
   private pointerLockEscapeTimer: number | null = null;
+  private relayFallbackTimer: number | null = null;
+  private connectionAttemptId = 0;
   // Fallback keyup if browser swallows Escape keyup while keyboard lock is active.
   private escapeAutoKeyUpTimer: number | null = null;
   // True when we already sent an immediate Escape tap for the current physical hold.
@@ -874,6 +882,68 @@ export class GfnWebRtcClient {
     this.emitStats();
   }
 
+  private clearCandidateState(): void {
+    this.queuedCandidates = [];
+    this.queuedCandidateKeys.clear();
+    this.remoteCandidates = [];
+    this.remoteCandidateKeys.clear();
+  }
+
+  private clearReplayCandidateState(attemptId: number, remoteIceUfrag: string | null = null): void {
+    this.remoteCandidates = [];
+    this.remoteCandidateKeys.clear();
+    this.remoteCandidateAttemptId = attemptId;
+    this.currentRemoteIceUfrag = remoteIceUfrag;
+  }
+
+  private remoteCandidateKey(candidate: RTCIceCandidateInit): string {
+    return JSON.stringify([
+      candidate.candidate,
+      candidate.sdpMid ?? null,
+      candidate.sdpMLineIndex ?? null,
+      candidate.usernameFragment ?? null,
+    ]);
+  }
+
+  private rememberRemoteCandidate(candidate: RTCIceCandidateInit, attemptId = this.connectionAttemptId): boolean {
+    if (this.remoteCandidateAttemptId !== attemptId) {
+      this.remoteCandidates = [];
+      this.remoteCandidateKeys.clear();
+      this.remoteCandidateAttemptId = attemptId;
+    }
+    const key = this.remoteCandidateKey(candidate);
+    if (this.remoteCandidateKeys.has(key)) {
+      return false;
+    }
+    this.remoteCandidateKeys.add(key);
+    this.remoteCandidates.push(candidate);
+    return true;
+  }
+
+  private queueRemoteCandidate(candidate: RTCIceCandidateInit): void {
+    const key = this.remoteCandidateKey(candidate);
+    if (this.queuedCandidateKeys.has(key)) {
+      return;
+    }
+    this.queuedCandidateKeys.add(key);
+    this.queuedCandidates.push(candidate);
+  }
+
+  private matchesQueuedRemoteIceScope(candidate: RTCIceCandidateInit): boolean {
+    return this.matchesLiveRemoteIceScope(candidate);
+  }
+
+  private matchesLiveRemoteIceScope(candidate: RTCIceCandidateInit): boolean {
+    if (!this.currentRemoteIceUfrag || !candidate.usernameFragment) {
+      return true;
+    }
+    return candidate.usernameFragment === this.currentRemoteIceUfrag;
+  }
+
+  private isHealthyIceState(state: RTCIceConnectionState | null | undefined): boolean {
+    return state === "connected" || state === "completed";
+  }
+
   private closeDataChannels(): void {
     if (this.controlChannel) {
       this.controlChannel.onmessage = null;
@@ -904,6 +974,10 @@ export class GfnWebRtcClient {
     if (this.gamepadPollTimer !== null) {
       window.clearTimeout(this.gamepadPollTimer);
       this.gamepadPollTimer = null;
+    }
+    if (this.relayFallbackTimer !== null) {
+      window.clearTimeout(this.relayFallbackTimer);
+      this.relayFallbackTimer = null;
     }
   }
 
@@ -1122,7 +1196,7 @@ export class GfnWebRtcClient {
 
     if (!requestedViaSender) {
       try {
-        await window.openNow.requestKeyframe({
+        await openNow.requestKeyframe({
           reason,
           backlogFrames,
           attempt: this.decoderRecoveryAttemptCount + 1,
@@ -2004,6 +2078,23 @@ export class GfnWebRtcClient {
     };
   }
 
+  private bindControlChannel(channel: RTCDataChannel, connectionLabel = "Peer connection"): void {
+    this.controlChannel = channel;
+    this.controlChannel.binaryType = "arraybuffer";
+    this.controlChannel.onmessage = (msgEvent) => {
+      void this.onControlChannelMessage(msgEvent.data as string | Blob | ArrayBuffer);
+    };
+    this.controlChannel.onclose = () => {
+      this.log(`${connectionLabel} control channel closed`);
+      if (this.controlChannel === channel) {
+        this.controlChannel = null;
+      }
+    };
+    this.controlChannel.onerror = () => {
+      this.log(`${connectionLabel} control channel error`);
+    };
+  }
+
   private mapTimerNotificationCode(rawCode: number): StreamTimeWarning["code"] | null {
     // Mirrors official client behavior from timerNotification -> StreamWarningType.
     if (rawCode === 1 || rawCode === 2) {
@@ -2064,8 +2155,8 @@ export class GfnWebRtcClient {
     this.options.onTimeWarning?.({ code: mappedCode, secondsLeft });
   }
 
-  private async flushQueuedCandidates(): Promise<void> {
-    if (!this.pc || !this.pc.remoteDescription) {
+  private async flushQueuedCandidates(targetPc: RTCPeerConnection, attemptId: number): Promise<void> {
+    if (!targetPc.remoteDescription) {
       return;
     }
 
@@ -2074,7 +2165,12 @@ export class GfnWebRtcClient {
       if (!candidate) {
         continue;
       }
-      await this.pc.addIceCandidate(candidate);
+      this.queuedCandidateKeys.delete(this.remoteCandidateKey(candidate));
+      if (!this.matchesQueuedRemoteIceScope(candidate)) {
+        continue;
+      }
+      this.rememberRemoteCandidate(candidate, attemptId);
+      await targetPc.addIceCandidate(candidate);
     }
   }
 
@@ -3333,7 +3429,9 @@ export class GfnWebRtcClient {
   }
 
   async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
+    const connectionAttemptId = ++this.connectionAttemptId;
     this.cleanupPeerConnection();
+    this.clearReplayCandidateState(connectionAttemptId);
     this.log("=== handleOffer START ===");
     this.log(`Session: id=${session.sessionId}, status=${session.status}, serverIp=${session.serverIp}`);
     this.log(`Signaling: server=${session.signalingServer}, url=${session.signalingUrl}`);
@@ -3412,7 +3510,7 @@ export class GfnWebRtcClient {
         sdpMLineIndex: payload.sdpMLineIndex,
         usernameFragment: payload.usernameFragment,
       };
-      window.openNow.sendIceCandidate(candidate).catch((error) => {
+      openNow.sendIceCandidate(candidate).catch((error) => {
         this.log(`Failed to send local ICE candidate: ${String(error)}`);
       });
     };
@@ -3429,21 +3527,7 @@ export class GfnWebRtcClient {
       if (channel.label !== "control_channel") {
         return;
       }
-
-      this.controlChannel = channel;
-      this.controlChannel.binaryType = "arraybuffer";
-      this.controlChannel.onmessage = (msgEvent) => {
-        void this.onControlChannelMessage(msgEvent.data as string | Blob | ArrayBuffer);
-      };
-      this.controlChannel.onclose = () => {
-        this.log("Control channel closed");
-        if (this.controlChannel === channel) {
-          this.controlChannel = null;
-        }
-      };
-      this.controlChannel.onerror = () => {
-        this.log("Control channel error");
-      };
+      this.bindControlChannel(channel);
     };
 
     pc.onicecandidateerror = (event: Event) => {
@@ -3492,6 +3576,7 @@ export class GfnWebRtcClient {
 
     // 2. Extract server's ice-ufrag BEFORE any modifications (needed for manual candidate injection)
     const serverIceUfrag = extractIceUfragFromOffer(processedOffer);
+    this.currentRemoteIceUfrag = serverIceUfrag || null;
     this.log(`Server ICE ufrag: "${serverIceUfrag}"`);
 
     const preferredHevcProfileId = hevcPreferredProfileId(settings.colorQuality);
@@ -3550,7 +3635,7 @@ export class GfnWebRtcClient {
     this.log("Setting remote description (offer)...");
     await pc.setRemoteDescription({ type: "offer", sdp: filteredOffer });
     this.log("Remote description set successfully");
-    await this.flushQueuedCandidates();
+    await this.flushQueuedCandidates(pc, connectionAttemptId);
 
     // Attach microphone track to the correct transceiver after remote description is set
     if (this.micManager) {
@@ -3633,7 +3718,7 @@ export class GfnWebRtcClient {
       credentials,
     });
 
-    await window.openNow.sendAnswer({
+    await openNow.sendAnswer({
       sdp: finalSdp,
       nvstSdp,
     });
@@ -3679,6 +3764,63 @@ export class GfnWebRtcClient {
     }
 
     this.log("=== handleOffer COMPLETE — waiting for ICE connectivity and tracks ===");
+
+    // Relay/TURN fallback: if ICE never reaches connected (or fails), and
+    // the session-provided ICE servers include TURN server URLs, attempt to
+    // recreate the PeerConnection with `iceTransportPolicy: 'relay'` to force
+    // use of TURN relays. This helps clients behind restrictive NAT/firewalls.
+    let triedRelay = false;
+    const relayFallbackTimeoutMs = 7000;
+    const isCurrentConnectionAttempt = (): boolean => this.connectionAttemptId === connectionAttemptId;
+
+    const attemptRelayFallback = async (): Promise<void> => {
+      if (triedRelay) return;
+      if (!isCurrentConnectionAttempt() || this.pc !== pc) return;
+      triedRelay = true;
+      if (this.relayFallbackTimer !== null) {
+        window.clearTimeout(this.relayFallbackTimer);
+        this.relayFallbackTimer = null;
+      }
+
+      try {
+        const hasTurn = (session.iceServers ?? []).some((s) =>
+          (s.urls ?? []).some((u) => typeof u === "string" && (u.startsWith("turn:") || u.startsWith("turns:"))),
+        );
+        if (!hasTurn) {
+          this.log("Relay fallback: no TURN servers present in session. Skipping relay attempt.");
+          return;
+        }
+
+        this.log("Relay fallback skipped: forcing a new relay-only answer would require a fresh remote offer from signaling, so the existing peer connection is left intact.");
+      } catch (e) {
+        if (!isCurrentConnectionAttempt()) return;
+        this.log(`Relay fallback failed: ${String(e)}`);
+      }
+    };
+
+    // Trigger fallback on ICE failure or timeout
+    pc.oniceconnectionstatechange = () => {
+      if (!isCurrentConnectionAttempt() || this.pc !== pc) return;
+      this.log(`ICE connection state: ${pc.iceConnectionState}`);
+      if (pc.iceConnectionState === "failed" && !triedRelay) {
+        void attemptRelayFallback();
+      }
+    };
+
+    const fallbackPc = pc;
+    const fallbackSessionId = session.sessionId;
+    const fallbackTimer = window.setTimeout(() => {
+      if (this.relayFallbackTimer !== fallbackTimer) {
+        return;
+      }
+      if (isCurrentConnectionAttempt() && !triedRelay && this.pc === fallbackPc && session.sessionId === fallbackSessionId && this.pc.connectionState !== "connected" && !this.isHealthyIceState(this.pc.iceConnectionState)) {
+        void attemptRelayFallback();
+      }
+      if (this.relayFallbackTimer === fallbackTimer) {
+        this.relayFallbackTimer = null;
+      }
+    }, relayFallbackTimeoutMs);
+    this.relayFallbackTimer = fallbackTimer;
   }
 
   async addRemoteCandidate(candidate: IceCandidatePayload): Promise<void> {
@@ -3689,9 +3831,17 @@ export class GfnWebRtcClient {
       sdpMLineIndex: candidate.sdpMLineIndex ?? undefined,
       usernameFragment: candidate.usernameFragment ?? undefined,
     };
-
     if (!this.pc || !this.pc.remoteDescription) {
-      this.queuedCandidates.push(init);
+      this.queueRemoteCandidate(init);
+      return;
+    }
+
+    if (!this.matchesLiveRemoteIceScope(init)) {
+      return;
+    }
+
+    const isNewCandidate = this.rememberRemoteCandidate(init);
+    if (!isNewCandidate) {
       return;
     }
 
@@ -3700,6 +3850,7 @@ export class GfnWebRtcClient {
 
   dispose(): void {
     this.cleanupPeerConnection();
+    this.clearCandidateState();
 
     // Cleanup microphone
     if (this.micManager) {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import type { GameInfo, PrintedWasteQueueData, PrintedWasteZone } from "@shared/gfn";
+import { openNow } from "../platform";
 
 // ── Constants / helpers ───────────────────────────────────────────────────────
 
@@ -133,7 +134,7 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
     let cancelled = false;
     void (async () => {
       try {
-        const data = await window.openNow.fetchPrintedWasteQueue();
+        const data = await openNow.fetchPrintedWasteQueue();
         if (!cancelled) setQueueData(data);
       } catch {
         if (!cancelled) setFetchError("Could not load queue data. You can still launch with default routing.");
@@ -153,7 +154,7 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
       if (inFlight) return;
       inFlight = true;
       try {
-        const data = await window.openNow.fetchPrintedWasteQueue();
+        const data = await openNow.fetchPrintedWasteQueue();
         if (cancelled) return;
         setQueueData(data);
         setFetchError(null);
@@ -183,7 +184,7 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
     let cancelled = false;
     void (async () => {
       try {
-        const mapping = await window.openNow.fetchPrintedWasteServerMapping();
+        const mapping = await openNow.fetchPrintedWasteServerMapping();
         if (cancelled) return;
         const nextNuked = new Set<string>();
         for (const [zoneId, meta] of Object.entries(mapping)) {
@@ -267,7 +268,7 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
     setIsPinging(true);
     void (async () => {
       try {
-        const results = await window.openNow.pingRegions(regionsToTest);
+        const results = await openNow.pingRegions(regionsToTest);
         if (cancelled) return;
         const map = new Map(seedMap);
         for (const r of results) map.set(r.url, r.pingMs);
