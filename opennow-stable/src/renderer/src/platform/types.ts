@@ -3,6 +3,7 @@ import type { OpenNowApi } from "@shared/gfn";
 export interface PlatformCapabilities {
   isAndroid: boolean;
   isElectron: boolean;
+  remoteIceCandidatesIncludeUsernameFragment: boolean;
   supportsQuitApp: boolean;
   supportsPointerLockToggle: boolean;
   supportsDesktopFullscreen: boolean;

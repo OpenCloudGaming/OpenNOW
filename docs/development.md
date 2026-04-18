@@ -45,7 +45,7 @@ npm run dist
 npm run dist:signed
 ```
 
-GitHub Actions also builds a testable Android debug APK artifact in the `auto-build` workflow for pull requests, pushes to `main` and `dev`, plus manual workflow runs.
+GitHub Actions also builds a testable Android debug APK artifact in the `auto-build` workflow for manual runs, plus pull requests and pushes to `main`/`dev` when the workflow path filters match (`opennow-stable/**` or `.github/workflows/auto-build.yml`).
 
 ## Workspace Layout
 

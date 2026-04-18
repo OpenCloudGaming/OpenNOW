@@ -933,7 +933,7 @@ export class GfnWebRtcClient {
     if (!this.currentRemoteIceUfrag) {
       return true;
     }
-    if (!platformCapabilities.isAndroid && !candidate.usernameFragment) {
+    if (!platformCapabilities.remoteIceCandidatesIncludeUsernameFragment && !candidate.usernameFragment) {
       return true;
     }
     return candidate.usernameFragment === this.currentRemoteIceUfrag;

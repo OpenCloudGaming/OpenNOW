@@ -10,6 +10,7 @@ export const electronPlatform: OpenNowPlatform = {
     capabilities: {
       isAndroid: false,
       isElectron: true,
+      remoteIceCandidatesIncludeUsernameFragment: false,
       supportsQuitApp: true,
       supportsPointerLockToggle: true,
       supportsDesktopFullscreen: true,

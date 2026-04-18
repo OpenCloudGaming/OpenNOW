@@ -844,4 +844,4 @@ void CapacitorApp.addListener("backButton", () => {
   }
 });
 
-export const capacitorPlatform: OpenNowPlatform = { info: { kind: "android", capabilities: { isAndroid: true, isElectron: false, supportsQuitApp: false, supportsPointerLockToggle: false, supportsDesktopFullscreen: false, supportsLogExport: false, supportsCacheDeletion: false, supportsMediaFolderAccess: false, supportsScreenshotExport: false, supportsPersistentMedia: true, supportsKeyboardShortcuts: false, supportsControllerExitApp: false } }, api };
+export const capacitorPlatform: OpenNowPlatform = { info: { kind: "android", capabilities: { isAndroid: true, isElectron: false, remoteIceCandidatesIncludeUsernameFragment: true, supportsQuitApp: false, supportsPointerLockToggle: false, supportsDesktopFullscreen: false, supportsLogExport: false, supportsCacheDeletion: false, supportsMediaFolderAccess: false, supportsScreenshotExport: false, supportsPersistentMedia: true, supportsKeyboardShortcuts: false, supportsControllerExitApp: false } }, api };
