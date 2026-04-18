@@ -52,8 +52,8 @@ jobs:
             os: blacksmith-4vcpu-ubuntu-2404
             builder_args: "--linux AppImage deb --x64"
             artifact_paths: |
-              opennow-stable/dist-release/*-x64.AppImage
-              opennow-stable/dist-release/*-x64.deb
+              opennow-stable/dist-release/*-x86_64.AppImage
+              opennow-stable/dist-release/*-amd64.deb
           - label: linux-arm64
             os: blacksmith-4vcpu-ubuntu-2404-arm
             builder_args: "--linux AppImage deb --arm64"
