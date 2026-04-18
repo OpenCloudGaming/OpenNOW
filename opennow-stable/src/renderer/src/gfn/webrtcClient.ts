@@ -38,7 +38,7 @@ import {
   rewriteH265TierFlag,
 } from "./sdp";
 import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
-import { openNow } from "../platform";
+import { openNow, platformCapabilities } from "../platform";
 
 interface OfferSettings {
   codec: VideoCodec;
@@ -931,6 +931,9 @@ export class GfnWebRtcClient {
 
   private matchesCurrentRemoteIceScope(candidate: RTCIceCandidateInit): boolean {
     if (!this.currentRemoteIceUfrag) {
+      return true;
+    }
+    if (!platformCapabilities.isAndroid && !candidate.usernameFragment) {
       return true;
     }
     return candidate.usernameFragment === this.currentRemoteIceUfrag;

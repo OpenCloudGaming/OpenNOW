@@ -4,7 +4,6 @@ const config: CapacitorConfig = {
   appId: "com.opencloudgaming.opennow",
   appName: "OpenNOW",
   webDir: "dist",
-  bundledWebRuntime: false,
   server: {
     androidScheme: "https",
   },

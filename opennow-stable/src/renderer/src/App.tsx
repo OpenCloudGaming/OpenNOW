@@ -1938,6 +1938,10 @@ export function App(): JSX.Element {
     settings.shortcutToggleRecording,
   ]);
 
+  const isSessionFullscreenActive = useCallback(() => {
+    return Boolean(document.fullscreenElement) || document.body.dataset.androidFullscreen === "true";
+  }, []);
+
   const setSessionFullscreen = useCallback(async (nextFullscreen: boolean) => {
     try {
       if (nextFullscreen) {
@@ -1957,8 +1961,8 @@ export function App(): JSX.Element {
   }, []);
 
   const toggleSessionFullscreen = useCallback(async () => {
-    await setSessionFullscreen(!document.fullscreenElement);
-  }, [setSessionFullscreen]);
+    await setSessionFullscreen(!isSessionFullscreenActive());
+  }, [isSessionFullscreenActive, setSessionFullscreen]);
 
   const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
     const lockTarget = (target.parentElement as HTMLElement | null) ?? target;
@@ -1971,7 +1975,7 @@ export function App(): JSX.Element {
       }
     };
 
-    if (settings.autoFullScreen && !document.fullscreenElement) {
+    if (settings.autoFullScreen && !isSessionFullscreenActive()) {
       await setSessionFullscreen(true);
     }
 
@@ -1990,7 +1994,7 @@ export function App(): JSX.Element {
         throw err;
       })
       .catch(() => {});
-  }, [setSessionFullscreen, settings.autoFullScreen]);
+  }, [isSessionFullscreenActive, setSessionFullscreen, settings.autoFullScreen]);
 
   const handleRequestPointerLock = useCallback(() => {
     if (videoRef.current) {
@@ -2054,13 +2058,13 @@ export function App(): JSX.Element {
       return;
     }
 
-    if (autoFullscreenRequestedRef.current || document.fullscreenElement) {
+    if (autoFullscreenRequestedRef.current || isSessionFullscreenActive()) {
       return;
     }
 
     autoFullscreenRequestedRef.current = true;
     void setSessionFullscreen(true);
-  }, [setSessionFullscreen, settings.autoFullScreen, streamStatus]);
+  }, [isSessionFullscreenActive, setSessionFullscreen, settings.autoFullScreen, streamStatus]);
 
   // Anti-AFK interval
   useEffect(() => {

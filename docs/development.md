@@ -171,7 +171,7 @@ Additional CI output:
 
 | Target | Output |
 | --- | --- |
-| Android testing | Unsigned debug APK artifact uploaded from `auto-build` |
+| Android testing | Debug APK artifact uploaded from `auto-build` |
 
 ## Notes For Contributors
 
