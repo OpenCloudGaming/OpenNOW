@@ -440,6 +440,8 @@ export class GfnWebRtcClient {
   private queuedCandidateKeys = new Set<string>();
   private remoteCandidates: RTCIceCandidateInit[] = [];
   private remoteCandidateKeys = new Set<string>();
+  private remoteCandidateAttemptId = 0;
+  private currentRemoteIceUfrag: string | null = null;
 
   // Input mode: all input types (mouse, keyboard, gamepad) work simultaneously
   // Removed exclusive mode switching to allow concurrent input
@@ -887,9 +889,11 @@ export class GfnWebRtcClient {
     this.remoteCandidateKeys.clear();
   }
 
-  private clearReplayCandidateState(): void {
+  private clearReplayCandidateState(attemptId: number, remoteIceUfrag: string | null = null): void {
     this.remoteCandidates = [];
     this.remoteCandidateKeys.clear();
+    this.remoteCandidateAttemptId = attemptId;
+    this.currentRemoteIceUfrag = remoteIceUfrag;
   }
 
   private remoteCandidateKey(candidate: RTCIceCandidateInit): string {
@@ -901,7 +905,12 @@ export class GfnWebRtcClient {
     ]);
   }
 
-  private rememberRemoteCandidate(candidate: RTCIceCandidateInit): boolean {
+  private rememberRemoteCandidate(candidate: RTCIceCandidateInit, attemptId = this.connectionAttemptId): boolean {
+    if (this.remoteCandidateAttemptId !== attemptId) {
+      this.remoteCandidates = [];
+      this.remoteCandidateKeys.clear();
+      this.remoteCandidateAttemptId = attemptId;
+    }
     const key = this.remoteCandidateKey(candidate);
     if (this.remoteCandidateKeys.has(key)) {
       return false;
@@ -918,6 +927,12 @@ export class GfnWebRtcClient {
     }
     this.queuedCandidateKeys.add(key);
     this.queuedCandidates.push(candidate);
+  }
+
+  private matchesCurrentRemoteIceScope(candidate: RTCIceCandidateInit): boolean {
+    return !this.currentRemoteIceUfrag
+      || !candidate.usernameFragment
+      || candidate.usernameFragment === this.currentRemoteIceUfrag;
   }
 
   private isHealthyIceState(state: RTCIceConnectionState | null | undefined): boolean {
@@ -2135,7 +2150,7 @@ export class GfnWebRtcClient {
     this.options.onTimeWarning?.({ code: mappedCode, secondsLeft });
   }
 
-  private async flushQueuedCandidates(targetPc: RTCPeerConnection): Promise<void> {
+  private async flushQueuedCandidates(targetPc: RTCPeerConnection, attemptId: number): Promise<void> {
     if (!targetPc.remoteDescription) {
       return;
     }
@@ -2146,7 +2161,10 @@ export class GfnWebRtcClient {
         continue;
       }
       this.queuedCandidateKeys.delete(this.remoteCandidateKey(candidate));
-      this.rememberRemoteCandidate(candidate);
+      if (!this.matchesCurrentRemoteIceScope(candidate)) {
+        continue;
+      }
+      this.rememberRemoteCandidate(candidate, attemptId);
       await targetPc.addIceCandidate(candidate);
     }
   }
@@ -3406,9 +3424,9 @@ export class GfnWebRtcClient {
   }
 
   async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
-    this.cleanupPeerConnection();
-    this.clearReplayCandidateState();
     const connectionAttemptId = ++this.connectionAttemptId;
+    this.cleanupPeerConnection();
+    this.clearReplayCandidateState(connectionAttemptId);
     this.log("=== handleOffer START ===");
     this.log(`Session: id=${session.sessionId}, status=${session.status}, serverIp=${session.serverIp}`);
     this.log(`Signaling: server=${session.signalingServer}, url=${session.signalingUrl}`);
@@ -3553,6 +3571,7 @@ export class GfnWebRtcClient {
 
     // 2. Extract server's ice-ufrag BEFORE any modifications (needed for manual candidate injection)
     const serverIceUfrag = extractIceUfragFromOffer(processedOffer);
+    this.currentRemoteIceUfrag = serverIceUfrag || null;
     this.log(`Server ICE ufrag: "${serverIceUfrag}"`);
 
     const preferredHevcProfileId = hevcPreferredProfileId(settings.colorQuality);
@@ -3611,7 +3630,7 @@ export class GfnWebRtcClient {
     this.log("Setting remote description (offer)...");
     await pc.setRemoteDescription({ type: "offer", sdp: filteredOffer });
     this.log("Remote description set successfully");
-    await this.flushQueuedCandidates(pc);
+    await this.flushQueuedCandidates(pc, connectionAttemptId);
 
     // Attach microphone track to the correct transceiver after remote description is set
     if (this.micManager) {
@@ -3849,7 +3868,7 @@ export class GfnWebRtcClient {
         for (const candidate of replayableRemoteCandidates) {
           await relayPc.addIceCandidate(candidate);
         }
-        await this.flushQueuedCandidates(relayPc);
+        await this.flushQueuedCandidates(relayPc, connectionAttemptId);
         if (!isCurrentConnectionAttempt() || this.pc !== relayPc) return;
 
         if (this.micManager) {
@@ -3960,13 +3979,17 @@ export class GfnWebRtcClient {
       sdpMLineIndex: candidate.sdpMLineIndex ?? undefined,
       usernameFragment: candidate.usernameFragment ?? undefined,
     };
-    const isNewCandidate = this.rememberRemoteCandidate(init);
-    if (!isNewCandidate) {
+    if (!this.pc || !this.pc.remoteDescription) {
+      this.queueRemoteCandidate(init);
       return;
     }
 
-    if (!this.pc || !this.pc.remoteDescription) {
-      this.queueRemoteCandidate(init);
+    if (!this.matchesCurrentRemoteIceScope(init)) {
+      return;
+    }
+
+    const isNewCandidate = this.rememberRemoteCandidate(init);
+    if (!isNewCandidate) {
       return;
     }
 
