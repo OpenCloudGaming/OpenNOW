@@ -358,6 +358,20 @@ export interface GameVariant {
   gfnStatus?: string;
 }
 
+export const OWNED_LIBRARY_STATUSES = ["MANUAL", "PLATFORM_SYNC", "IN_LIBRARY"] as const;
+
+export function normalizeGameStore(store: string): string {
+  return store.toUpperCase().replace(/[\s-]+/g, "_");
+}
+
+export function isOwnedLibraryStatus(status?: string): boolean {
+  return typeof status === "string" && OWNED_LIBRARY_STATUSES.includes(status as (typeof OWNED_LIBRARY_STATUSES)[number]);
+}
+
+export function isOwnedVariant(variant: Pick<GameVariant, "libraryStatus">): boolean {
+  return isOwnedLibraryStatus(variant.libraryStatus);
+}
+
 export interface GameInfo {
 
   id: string;
@@ -381,6 +395,15 @@ export interface GameInfo {
   isInLibrary?: boolean;
   selectedVariantIndex: number;
   variants: GameVariant[];
+}
+
+export function isGameInLibrary(game: Pick<GameInfo, "variants">): boolean {
+  return game.variants.some((variant) => isOwnedVariant(variant));
+}
+
+export function isEpicStore(store: string): boolean {
+  const key = normalizeGameStore(store);
+  return key === "EPIC_GAMES_STORE" || key === "EPIC" || key === "EGS";
 }
 
 export interface CatalogFilterOption {

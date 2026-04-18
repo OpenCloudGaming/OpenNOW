@@ -49,6 +49,7 @@ import { useElapsedSeconds } from "./utils/useElapsedSeconds";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
 import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
+import { chooseAccountLinked, getEpicOwnershipLaunchError } from "./lib/launchOwnership";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
@@ -259,7 +260,7 @@ function parseNumericId(value: string | undefined): number | null {
 }
 
 function defaultVariantId(game: GameInfo): string {
-  return game.variants[0]?.id ?? game.id;
+  return game.variants[game.selectedVariantIndex]?.id ?? game.variants[0]?.id ?? game.id;
 }
 
 function getSelectedVariant(game: GameInfo, variantId: string): GameVariant | undefined {
@@ -303,22 +304,6 @@ function matchesGameSearch(game: GameInfo, query: string): boolean {
   ]
     .filter((value): value is string => typeof value === "string" && value.length > 0)
     .some((value) => value.toLowerCase().includes(normalizedQuery));
-}
-
-function chooseAccountLinked(game: GameInfo, selectedVariant?: GameVariant): boolean {
-  if (game.playType === "INSTALL_TO_PLAY") {
-    return false;
-  }
-  if (selectedVariant?.librarySelected) {
-    return true;
-  }
-  if (selectedVariant?.libraryStatus === "IN_LIBRARY") {
-    return true;
-  }
-  if (game.isInLibrary) {
-    return true;
-  }
-  return false;
 }
 
 function areStringArraysEqual(left: string[], right: string[]): boolean {
@@ -2555,6 +2540,20 @@ export function App(): JSX.Element {
       return;
     }
 
+    const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
+    const selectedVariant = getSelectedVariant(game, selectedVariantId);
+    const epicOwnershipError = getEpicOwnershipLaunchError(selectedVariant);
+    if (epicOwnershipError) {
+      setStreamingGame(game);
+      setStreamingStore(selectedVariant?.store ?? null);
+      setLaunchError({
+        stage: "queue",
+        title: epicOwnershipError.title,
+        description: epicOwnershipError.description,
+      });
+      return;
+    }
+
     launchInFlightRef.current = true;
     launchAbortRef.current = false;
     let loadingStep: StreamLoadingStatus = "queue";
@@ -2564,12 +2563,10 @@ export function App(): JSX.Element {
     };
 
     setSessionStartedAtMs(null);
-  setRemoteStreamWarning(null);
-  setLocalSessionTimerWarning(null);
+    setRemoteStreamWarning(null);
+    setLocalSessionTimerWarning(null);
     setLaunchError(null);
     resetStatsOverlayToPreference();
-    const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
-    const selectedVariant = getSelectedVariant(game, selectedVariantId);
     startPlaytimeSession(game.id);
     updateLoadingStep("queue");
     setQueuePosition(undefined);
