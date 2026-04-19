@@ -3,10 +3,12 @@ import UIKit
 import WebKit
 import OSLog
 import AVFoundation
+import GameController
 
 struct StreamerView: View {
     let session: ActiveSession
     let settings: AppSettings
+    let onTouchLayoutChange: (String, TouchControlLayout) -> Void
     let onClose: () -> Void
     var onRetry: (() -> Void)? = nil
     private let logger = Logger(subsystem: "OpenNOWiOS", category: "StreamerView")
@@ -20,7 +22,11 @@ struct StreamerView: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            StreamerWebView(session: session, settings: settings) { event in
+            StreamerWebView(
+                session: session,
+                settings: settings,
+                onTouchLayoutChange: onTouchLayoutChange
+            ) { event in
                 logger.info("Streamer event: \(event, privacy: .public)")
                 statusText = event
                 if event.hasPrefix("Status: ") {
@@ -160,6 +166,7 @@ struct StreamerView: View {
 private struct StreamerWebView: UIViewRepresentable {
     let session: ActiveSession
     let settings: AppSettings
+    let onTouchLayoutChange: (String, TouchControlLayout) -> Void
     let onEvent: (String) -> Void
     private static let desktopLikeUserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -172,7 +179,7 @@ private struct StreamerWebView: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onEvent: onEvent)
+        Coordinator(onEvent: onEvent, onTouchLayoutChange: onTouchLayoutChange)
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -191,11 +198,16 @@ private struct StreamerWebView: UIViewRepresentable {
         let baseURL = URL(string: "https://play.geforcenow.com")
         context.coordinator.cachedHTML = html
         context.coordinator.cachedBaseURL = baseURL
+        context.coordinator.attach(webView: webView)
         webView.loadHTMLString(html, baseURL: baseURL)
         return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+
+    static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
 
     private func buildHTML(for session: ActiveSession, settings: AppSettings) -> String {
         struct Bridge: Encodable {
@@ -212,12 +224,17 @@ private struct StreamerWebView: UIViewRepresentable {
             let width: Int
             let height: Int
             let showStatsOverlay: Bool
+            let gameTitle: String
+            let touchProfile: String
+            let touchLayout: TouchControlLayout
+            let allowNativeTouchPassthrough: Bool
         }
 
         let signalingServer = session.signalingServer ?? session.serverIp ?? URL(string: session.streamingBaseUrl)?.host ?? ""
         let signalingUrl = session.signalingUrl ?? "wss://\(signalingServer):443/nvst/"
         let serverIp = session.serverIp ?? signalingServer
         let profile = Self.streamProfile(for: settings)
+        let touchProfile = Self.touchProfile(for: session.game.title)
         let bridge = Bridge(
             sessionId: session.id,
             signalingServer: signalingServer,
@@ -231,7 +248,11 @@ private struct StreamerWebView: UIViewRepresentable {
             maxBitrateKbps: profile.maxBitrateKbps,
             width: profile.width,
             height: profile.height,
-            showStatsOverlay: settings.showStatsOverlay
+            showStatsOverlay: settings.showStatsOverlay,
+            gameTitle: session.game.title,
+            touchProfile: touchProfile,
+            touchLayout: settings.touchLayout(for: touchProfile),
+            allowNativeTouchPassthrough: touchProfile == "fortnite-mobile" && settings.fortnitePrefersNativeTouch
         )
         let data = (try? JSONEncoder().encode(bridge)) ?? Data("{}".utf8)
         let payload = String(data: data, encoding: .utf8) ?? "{}"
@@ -243,19 +264,30 @@ private struct StreamerWebView: UIViewRepresentable {
   <style>
     html,body{margin:0;padding:0;background:#000;width:100%;height:100%;overflow:hidden}
     #video{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
-    #infoTab{position:fixed;right:0;top:50%;transform:translateY(-50%);z-index:35;
-      border:none;border-radius:12px 0 0 12px;padding:10px 8px;background:rgba(28,28,30,0.78);
-      color:#fff;font:12px -apple-system;font-weight:600;letter-spacing:.2px;cursor:pointer;
-      backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.16);
-      border-right:none;}
-    #infoPanel{position:fixed;right:12px;top:50%;transform:translate(130%, -50%);z-index:34;
-      width:min(280px,calc(100vw - 34px));max-height:75vh;overflow:auto;padding:12px;border-radius:14px;
-      color:#fff;background:rgba(22,22,25,0.8);border:1px solid rgba(255,255,255,0.16);
+    #hudToggle{position:fixed;right:16px;bottom:16px;z-index:36;width:52px;height:52px;border-radius:18px;
+      border:1px solid rgba(255,255,255,0.22);background:rgba(20,20,22,0.72);color:#fff;cursor:pointer;
+      font:600 18px -apple-system;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+      box-shadow:0 10px 28px rgba(0,0,0,0.34);}
+    #hudPanel{position:fixed;right:16px;bottom:80px;z-index:35;width:min(320px,calc(100vw - 32px));
+      max-height:min(72vh,520px);overflow:auto;padding:14px;border-radius:20px;
+      color:#fff;background:rgba(18,18,22,0.74);border:1px solid rgba(255,255,255,0.14);
       font:12px -apple-system;transition:transform .22s ease,opacity .22s ease;opacity:0;
+      transform:translateY(20px) scale(0.98);pointer-events:none;
       backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);}
-    #infoPanel.open{transform:translate(0,-50%);opacity:1;}
+    #hudPanel.open{transform:translateY(0) scale(1);opacity:1;pointer-events:auto;}
+    .hudRow{display:flex;gap:8px;align-items:center;justify-content:space-between;}
+    .hudGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0;}
     .infoAction{width:100%;padding:9px 10px;border-radius:10px;border:1px solid rgba(255,255,255,0.24);
       background:rgba(255,255,255,0.08);color:#fff;font:12px -apple-system;font-weight:600;cursor:pointer;}
+    .layoutPanel{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);}
+    .layoutPanel label{display:block;margin-top:10px;color:rgba(255,255,255,0.82);}
+    .layoutPanel input[type=range]{width:100%;margin-top:6px;}
+    .layoutHint{margin-top:8px;line-height:1.4;color:rgba(255,255,255,0.62);}
+    #gpPad.layoutEditing .layoutGroup{outline:1px dashed rgba(120,210,255,0.9);background:rgba(120,210,255,0.1);border-radius:18px;}
+    #gpPad.layoutEditing .layoutGroup::after{content:'Drag';position:absolute;left:50%;top:-18px;transform:translateX(-50%);
+      padding:2px 7px;border-radius:999px;background:rgba(10,10,12,0.84);border:1px solid rgba(120,210,255,0.55);
+      color:#c8f2ff;font:600 10px -apple-system;letter-spacing:0.02em;pointer-events:none;}
+    .layoutGroup{position:absolute;pointer-events:auto;touch-action:none;transform:translate(-50%,-50%);}
   </style>
 </head>
 <body>
@@ -269,30 +301,36 @@ private struct StreamerWebView: UIViewRepresentable {
   <div id="touchHint" style="position:fixed;left:50%;bottom:60px;transform:translateX(-50%);
     color:rgba(255,255,255,0.45);font:11px -apple-system;pointer-events:none;user-select:none;
     text-align:center;transition:opacity 1s;">Drag to move · Tap to click · 2-finger tap for right click</div>
-  <button id="infoTab" onclick="toggleInfoPanel()">Info</button>
-  <aside id="infoPanel">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;">
+  <button id="hudToggle" onclick="toggleHudPanel()" aria-label="Toggle stream controls">•••</button>
+  <aside id="hudPanel">
+    <div class="hudRow" style="margin-bottom:10px;">
       <strong style="font-size:13px;">Stream Controls</strong>
-      <button onclick="toggleInfoPanel()" style="border:none;background:transparent;color:#fff;font-size:16px;line-height:1;cursor:pointer;">×</button>
+      <button onclick="toggleHudPanel(false)" style="border:none;background:transparent;color:#fff;font-size:16px;line-height:1;cursor:pointer;">×</button>
     </div>
-    <div style="display:grid;gap:8px;margin-bottom:10px;">
+    <div class="hudGrid">
       <button id="audioBtn" class="infoAction" onclick="unlockAudio()">Enable Audio</button>
-      <button id="gpEmuBtn" class="infoAction" onclick="toggleGamepadEmulation()">Controller Emulation: On</button>
+      <button id="statsBtn" class="infoAction" onclick="toggleStatsOverlay()">Stats: Hidden</button>
+      <button id="kbBtn" class="infoAction" onclick="toggleKeyboard()">Keyboard</button>
+      <button id="gpBtn" class="infoAction" onclick="toggleGamepad()">Touch Controller</button>
     </div>
     <div style="line-height:1.45;color:rgba(255,255,255,0.86);">
-      <div style="margin-bottom:6px;"><strong>Touchpad:</strong> drag to move, tap to click, two-finger tap for right click.</div>
-      <div style="margin-bottom:6px;"><strong>Controller:</strong> circular stick moves, ABXY map to game input, right stick assists mouse look.</div>
+      <div id="touchModeDescription" style="margin-bottom:6px;"><strong>Touchpad:</strong> drag to move, tap to click, two-finger tap for right click.</div>
+      <div style="margin-bottom:6px;"><strong>Controller:</strong> native controllers pass through Nvidia's real gamepad packets; the touch controller is optional.</div>
       <div id="controllerState" style="color:rgba(255,255,255,0.65);">Controller: waiting...</div>
     </div>
+    <div class="layoutPanel">
+      <div class="hudRow">
+        <strong style="font-size:13px;">Touch Layout</strong>
+        <button id="gpEditBtn" class="infoAction" style="width:auto;padding:8px 12px;">Edit Layout</button>
+      </div>
+      <label for="gpScaleRange">Control Size <span id="gpScaleValue">100%</span></label>
+      <input id="gpScaleRange" type="range" min="70" max="160" step="1" value="100">
+      <div class="hudGrid" style="margin-top:10px;">
+        <button id="gpResetBtn" class="infoAction">Reset Layout</button>
+      </div>
+      <div class="layoutHint" id="layoutHint">Turn on edit mode to drag each touch-control cluster and resize the whole layout.</div>
+    </div>
   </aside>
-  <button id="kbBtn" onclick="toggleKeyboard()" style="position:fixed;right:16px;bottom:16px;z-index:20;
-    width:48px;height:48px;border-radius:50%;background:rgba(30,30,30,0.75);color:#fff;
-    border:1px solid rgba(255,255,255,0.25);font-size:22px;cursor:pointer;
-    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">⌨</button>
-  <button id="gpBtn" onclick="toggleGamepad()" style="position:fixed;right:16px;bottom:72px;z-index:20;
-    width:48px;height:48px;border-radius:50%;background:rgba(30,30,30,0.75);color:#fff;
-    border:1px solid rgba(255,255,255,0.25);font-size:22px;cursor:pointer;
-    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">🎮</button>
   <div id="kbBar" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:30;
     background:rgba(20,20,20,0.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
     padding:8px 12px;border-top:1px solid rgba(255,255,255,0.1);">
@@ -305,26 +343,64 @@ private struct StreamerWebView: UIViewRepresentable {
         border:none;border-radius:8px;font-size:14px;cursor:pointer;">Done</button>
     </div>
   </div>
-  <div id="gpPad" style="display:none;position:fixed;left:0;right:0;bottom:12px;z-index:25;pointer-events:none;">
-    <div style="display:flex;justify-content:space-between;gap:16px;padding:0 12px;">
+  <div id="gpPad" style="display:none;position:fixed;left:0;right:0;top:0;bottom:12px;z-index:25;pointer-events:none;">
+    <div id="gpTopLeft" class="layoutGroup">
+      <div style="display:flex;gap:8px;pointer-events:auto;">
+        <button data-mask="256" class="gpAux gpShoulder">LB</button>
+        <button data-trigger="left" class="gpAux gpTrigger">LT</button>
+      </div>
+    </div>
+    <div id="gpTopCenter" class="layoutGroup">
+      <div style="display:flex;gap:8px;pointer-events:auto;">
+        <button data-mask="32" class="gpAux gpSmall">View</button>
+        <button data-mask="16" class="gpAux gpSmall">Menu</button>
+      </div>
+    </div>
+    <div id="gpTopRight" class="layoutGroup">
+      <div style="display:flex;gap:8px;pointer-events:auto;">
+        <button data-trigger="right" class="gpAux gpTrigger">RT</button>
+        <button data-mask="512" class="gpAux gpShoulder">RB</button>
+      </div>
+    </div>
+    <div id="gpLeftStick" class="layoutGroup">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:auto;">
       <div id="joyBase" style="position:relative;width:146px;height:146px;border-radius:50%;
-        pointer-events:auto;touch-action:none;background:rgba(20,20,20,0.72);
+        touch-action:none;background:rgba(20,20,20,0.72);
         border:1px solid rgba(255,255,255,0.2);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
         box-shadow:inset 0 0 0 1px rgba(255,255,255,0.08);">
         <div id="joyStick" style="position:absolute;left:50%;top:50%;width:62px;height:62px;border-radius:50%;
           transform:translate(-50%,-50%);background:rgba(255,255,255,0.18);
           border:1px solid rgba(255,255,255,0.35);box-shadow:0 6px 18px rgba(0,0,0,0.3);"></div>
       </div>
-      <div style="display:grid;grid-template-columns:56px 56px;grid-template-rows:56px 56px;gap:8px;pointer-events:auto;">
-        <button data-key="j" class="gpKey">X</button>
-        <button data-key="l" class="gpKey">Y</button>
-        <button data-key="k" class="gpKey">A</button>
-        <button data-key="i" class="gpKey">B</button>
+      <button data-mask="64" class="gpAux gpSmall">L3</button>
       </div>
     </div>
-    <div style="display:flex;justify-content:center;margin-top:10px;pointer-events:auto;">
+    <div id="gpRightCluster" class="layoutGroup">
+      <div style="display:flex;align-items:flex-end;gap:18px;pointer-events:auto;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
+        <button data-mask="1024" class="gpAux gpSmall">Home</button>
+        <div id="lookBase" style="position:relative;width:124px;height:124px;border-radius:50%;pointer-events:auto;
+          touch-action:none;background:rgba(18,18,20,0.46);border:1px solid rgba(255,255,255,0.16);
+          backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">
+          <div id="lookStick" style="position:absolute;left:50%;top:50%;width:48px;height:48px;border-radius:50%;
+            transform:translate(-50%,-50%);background:rgba(255,255,255,0.14);
+            border:1px solid rgba(255,255,255,0.22);"></div>
+        </div>
+        <button data-mask="128" class="gpAux gpSmall">R3</button>
+      </div>
+      <div style="display:grid;grid-template-columns:56px 56px;grid-template-rows:56px 56px;gap:8px;pointer-events:auto;">
+        <button data-mask="16384" class="gpKey">X</button>
+        <button data-mask="32768" class="gpKey">Y</button>
+        <button data-mask="4096" class="gpKey">A</button>
+        <button data-mask="8192" class="gpKey">B</button>
+      </div>
+      </div>
+    </div>
+    <div id="gpBottomCenter" class="layoutGroup">
+      <div style="display:flex;justify-content:center;pointer-events:auto;">
       <button id="gpHide" style="padding:8px 12px;border-radius:999px;background:rgba(20,20,20,0.82);
-        color:#fff;border:1px solid rgba(255,255,255,0.25);font-size:12px;">Hide gamepad</button>
+        color:#fff;border:1px solid rgba(255,255,255,0.25);font-size:12px;">Hide touch controls</button>
+      </div>
     </div>
   </div>
   <script>
@@ -358,11 +434,17 @@ private struct StreamerWebView: UIViewRepresentable {
   const peerId = 2;
   const peerName = "peer-" + Math.floor(Math.random() * 1e10);
   const statsEl = document.getElementById('stats');
-  const infoPanel = document.getElementById('infoPanel');
-  const infoTab = document.getElementById('infoTab');
+  const hudPanel = document.getElementById('hudPanel');
+  const hudToggle = document.getElementById('hudToggle');
   const audioBtn = document.getElementById('audioBtn');
-  const gpEmuBtn = document.getElementById('gpEmuBtn');
+  const statsBtn = document.getElementById('statsBtn');
   const controllerState = document.getElementById('controllerState');
+  const touchModeDescription = document.getElementById('touchModeDescription');
+  const gpEditBtn = document.getElementById('gpEditBtn');
+  const gpResetBtn = document.getElementById('gpResetBtn');
+  const gpScaleRange = document.getElementById('gpScaleRange');
+  const gpScaleValue = document.getElementById('gpScaleValue');
+  const layoutHint = document.getElementById('layoutHint');
   const remoteMediaStream = new MediaStream();
   let inputProtocolVersion = 2;
   let inputHandshakeComplete = false;
@@ -374,28 +456,202 @@ private struct StreamerWebView: UIViewRepresentable {
     enablePartiallyReliableTransferHid: DEFAULT_PR_HID_MASK
   };
   let offerAccepted = false;
-  let infoPanelOpen = false;
+  let hudPanelOpen = false;
   let audioUnlocked = false;
   let audioRetryTimer = null;
-  let gamepadEmulationEnabled = true;
+  let statsVisible = !!cfg.showStatsOverlay;
+  let nativeGamepadState = null;
+  const GAMEPAD_PACKET_SIZE = 38;
+  const GAMEPAD_DEADZONE = 0.15;
+  const GAMEPAD_KEEPALIVE_MS = 1000;
+  const GAMEPAD_DPAD_UP = 0x0001;
+  const GAMEPAD_DPAD_DOWN = 0x0002;
+  const GAMEPAD_DPAD_LEFT = 0x0004;
+  const GAMEPAD_DPAD_RIGHT = 0x0008;
+  const GAMEPAD_START = 0x0010;
+  const GAMEPAD_BACK = 0x0020;
+  const GAMEPAD_LS = 0x0040;
+  const GAMEPAD_RS = 0x0080;
+  const GAMEPAD_LB = 0x0100;
+  const GAMEPAD_RB = 0x0200;
+  const GAMEPAD_GUIDE = 0x0400;
+  const GAMEPAD_A = 0x1000;
+  const GAMEPAD_B = 0x2000;
+  const GAMEPAD_X = 0x4000;
+  const GAMEPAD_Y = 0x8000;
+  const TOUCH_LAYOUT_SCALE_MIN = 0.7;
+  const TOUCH_LAYOUT_SCALE_MAX = 1.6;
+  const FORTNITE_NATIVE_TOUCH = !!cfg.allowNativeTouchPassthrough;
 
   function post(type, message) {
     try { window.webkit.messageHandlers.opennow.postMessage({ type, message }); } catch (_) {}
   }
+  function postPayload(type, payload) {
+    try { window.webkit.messageHandlers.opennow.postMessage({ type, payload }); } catch (_) {}
+  }
   function log(message) { post("log", message); }
   function fail(message) { post("error", message); }
-  function toggleInfoPanel(forceOpen) {
-    infoPanelOpen = typeof forceOpen === 'boolean' ? forceOpen : !infoPanelOpen;
-    if (infoPanel) {
-      infoPanel.classList.toggle('open', infoPanelOpen);
+  function defaultTouchLayoutForProfile(profile) {
+    if (profile === 'fortnite-mobile') {
+      return {
+        scale: 1.05,
+        topLeft: { x: 0.16, y: 0.11 },
+        topCenter: { x: 0.50, y: 0.11 },
+        topRight: { x: 0.84, y: 0.11 },
+        leftStick: { x: 0.17, y: 0.81 },
+        rightCluster: { x: 0.84, y: 0.78 },
+        bottomCenter: { x: 0.50, y: 0.91 }
+      };
     }
-    if (infoTab) {
-      infoTab.textContent = infoPanelOpen ? 'Close' : 'Info';
+    return {
+      scale: 1,
+      topLeft: { x: 0.14, y: 0.12 },
+      topCenter: { x: 0.50, y: 0.12 },
+      topRight: { x: 0.86, y: 0.12 },
+      leftStick: { x: 0.18, y: 0.80 },
+      rightCluster: { x: 0.83, y: 0.79 },
+      bottomCenter: { x: 0.50, y: 0.92 }
+    };
+  }
+  function clamp01(value, min = 0.08, max = 0.92) {
+    return Math.max(min, Math.min(max, Number.isFinite(value) ? value : 0.5));
+  }
+  function sanitizePoint(raw, fallback, minX = 0.08, maxX = 0.92, minY = 0.08, maxY = 0.94) {
+    return {
+      x: clamp01(raw?.x ?? fallback.x, minX, maxX),
+      y: clamp01(raw?.y ?? fallback.y, minY, maxY)
+    };
+  }
+  function sanitizeTouchLayout(raw) {
+    const fallback = defaultTouchLayoutForProfile(cfg.touchProfile);
+    return {
+      scale: Math.max(TOUCH_LAYOUT_SCALE_MIN, Math.min(TOUCH_LAYOUT_SCALE_MAX, Number(raw?.scale ?? fallback.scale) || fallback.scale)),
+      topLeft: sanitizePoint(raw?.topLeft, fallback.topLeft),
+      topCenter: sanitizePoint(raw?.topCenter, fallback.topCenter),
+      topRight: sanitizePoint(raw?.topRight, fallback.topRight),
+      leftStick: sanitizePoint(raw?.leftStick, fallback.leftStick, 0.10, 0.40, 0.45, 0.92),
+      rightCluster: sanitizePoint(raw?.rightCluster, fallback.rightCluster, 0.60, 0.92, 0.42, 0.92),
+      bottomCenter: sanitizePoint(raw?.bottomCenter, fallback.bottomCenter, 0.20, 0.80, 0.70, 0.97)
+    };
+  }
+  let touchLayout = sanitizeTouchLayout(cfg.touchLayout);
+  let layoutEditing = false;
+  let touchLayoutPersistTimer = null;
+  const touchGroupElements = {
+    topLeft: document.getElementById('gpTopLeft'),
+    topCenter: document.getElementById('gpTopCenter'),
+    topRight: document.getElementById('gpTopRight'),
+    leftStick: document.getElementById('gpLeftStick'),
+    rightCluster: document.getElementById('gpRightCluster'),
+    bottomCenter: document.getElementById('gpBottomCenter')
+  };
+  const layoutDragState = { key: null, pointerId: null, offsetX: 0, offsetY: 0 };
+  function toggleHudPanel(forceOpen) {
+    hudPanelOpen = typeof forceOpen === 'boolean' ? forceOpen : !hudPanelOpen;
+    if (hudPanel) {
+      hudPanel.classList.toggle('open', hudPanelOpen);
+    }
+    if (hudToggle) {
+      hudToggle.textContent = hudPanelOpen ? '×' : '•••';
     }
   }
   function updateAudioButton() {
     if (!audioBtn) return;
     audioBtn.textContent = video.muted ? 'Enable Audio' : 'Audio On';
+  }
+  function updateStatsButton() {
+    if (!statsBtn) return;
+    statsBtn.textContent = `Stats: ${statsVisible ? 'Shown' : 'Hidden'}`;
+  }
+  function updateTouchControllerButton() {
+    if (!gpBtn) return;
+    const visible = gpPad && gpPad.style.display !== 'none';
+    const profileLabel = cfg.touchProfile === 'fortnite-mobile' ? 'Touch Controller Overlay' : 'Touch Controller';
+    gpBtn.textContent = visible ? `Hide ${profileLabel}` : `Show ${profileLabel}`;
+  }
+  function updateTouchModeCopy() {
+    if (!touchModeDescription) return;
+    if (FORTNITE_NATIVE_TOUCH) {
+      touchModeDescription.innerHTML = '<strong>Touch:</strong> Fortnite is using a mobile-touch device profile, so the game can surface its native touch UI without mouse emulation.';
+      if (touchHint) {
+        touchHint.textContent = 'Fortnite mobile touch mode is active.';
+      }
+      return;
+    }
+    touchModeDescription.innerHTML = '<strong>Touchpad:</strong> drag to move, tap to click, two-finger tap for right click.';
+    if (touchHint) {
+      touchHint.textContent = 'Drag to move · Tap to click · 2-finger tap for right click';
+    }
+  }
+  function applyTouchpadMode() {
+    updateTouchModeCopy();
+    if (!touchpad) return;
+    if (FORTNITE_NATIVE_TOUCH) {
+      touchpad.style.pointerEvents = 'none';
+      touchpad.style.display = 'none';
+    } else {
+      touchpad.style.pointerEvents = 'auto';
+      touchpad.style.display = 'block';
+    }
+  }
+  function scheduleTouchLayoutPersist() {
+    if (touchLayoutPersistTimer) {
+      clearTimeout(touchLayoutPersistTimer);
+    }
+    touchLayoutPersistTimer = setTimeout(() => {
+      touchLayoutPersistTimer = null;
+      postPayload('touch-layout', { profile: cfg.touchProfile, layout: touchLayout });
+    }, 140);
+  }
+  function applyTouchLayout() {
+    const scale = touchLayout.scale;
+    Object.entries(touchGroupElements).forEach(([key, element]) => {
+      if (!element || !touchLayout[key]) return;
+      const point = touchLayout[key];
+      element.style.left = `${(point.x * 100).toFixed(2)}%`;
+      element.style.top = `${(point.y * 100).toFixed(2)}%`;
+      element.style.transform = `translate(-50%, -50%) scale(${scale})`;
+    });
+    if (gpPad) {
+      gpPad.classList.toggle('layoutEditing', layoutEditing);
+    }
+    if (gpScaleRange) {
+      gpScaleRange.value = String(Math.round(scale * 100));
+    }
+    if (gpScaleValue) {
+      gpScaleValue.textContent = `${Math.round(scale * 100)}%`;
+    }
+    if (gpEditBtn) {
+      gpEditBtn.textContent = layoutEditing ? 'Done Editing' : 'Edit Layout';
+    }
+    if (layoutHint) {
+      layoutHint.textContent = layoutEditing
+        ? 'Drag any highlighted touch-control cluster, then use the size slider if needed.'
+        : 'Turn on edit mode to drag each touch-control cluster and resize the whole layout.';
+    }
+  }
+  function resetTouchLayout() {
+    touchLayout = sanitizeTouchLayout(defaultTouchLayoutForProfile(cfg.touchProfile));
+    applyTouchLayout();
+    scheduleTouchLayoutPersist();
+  }
+  function setLayoutEditing(nextEditing) {
+    layoutEditing = !!nextEditing;
+    if (layoutEditing) {
+      setGamepadVisible(true);
+      unlockAudio();
+    }
+    applyTouchLayout();
+  }
+  function applyStatsVisibility() {
+    if (statsEl) {
+      statsEl.style.display = statsVisible ? 'block' : 'none';
+    }
+    updateStatsButton();
+  }
+  function toggleStatsOverlay() {
+    statsVisible = !statsVisible;
+    applyStatsVisibility();
   }
   async function unlockAudio() {
     if (!video.muted) {
@@ -422,12 +678,6 @@ private struct StreamerWebView: UIViewRepresentable {
     await unlockAudio();
     if (video.muted) {
       scheduleAudioRetry();
-    }
-  }
-  function toggleGamepadEmulation() {
-    gamepadEmulationEnabled = !gamepadEmulationEnabled;
-    if (gpEmuBtn) {
-      gpEmuBtn.textContent = `Controller Emulation: ${gamepadEmulationEnabled ? 'On' : 'Off'}`;
     }
   }
   window.addEventListener('error', (event) => {
@@ -779,6 +1029,65 @@ private struct StreamerWebView: UIViewRepresentable {
     view.setUint16(10, buf.byteLength, false);
     new Uint8Array(wrapped, 12).set(new Uint8Array(buf));
     return wrapped;
+  }
+  function wrapGamepadReliable(payload) {
+    if (inputProtocolVersion <= 2) return payload;
+    const wrapped = new Uint8Array(12 + payload.byteLength);
+    const view = new DataView(wrapped.buffer);
+    wrapped[0] = 0x23;
+    writeTimestampBE(view, 1);
+    wrapped[9] = 0x21;
+    view.setUint16(10, payload.byteLength, false);
+    wrapped.set(new Uint8Array(payload), 12);
+    return wrapped;
+  }
+  function wrapGamepadPartiallyReliable(payload, gamepadIndex, sequenceNumber) {
+    if (inputProtocolVersion <= 2) return payload;
+    const wrapped = new Uint8Array(16 + payload.byteLength);
+    const view = new DataView(wrapped.buffer);
+    wrapped[0] = 0x23;
+    writeTimestampBE(view, 1);
+    wrapped[9] = 0x26;
+    wrapped[10] = gamepadIndex & 0xFF;
+    view.setUint16(11, sequenceNumber & 0xFFFF, false);
+    wrapped[13] = 0x21;
+    view.setUint16(14, payload.byteLength, false);
+    wrapped.set(new Uint8Array(payload), 16);
+    return wrapped;
+  }
+  function nextGamepadSequence(index) {
+    if (!window.__opennowGamepadSequence) {
+      window.__opennowGamepadSequence = new Map();
+    }
+    const current = window.__opennowGamepadSequence.get(index) ?? 1;
+    window.__opennowGamepadSequence.set(index, (current + 1) % 65536);
+    return current;
+  }
+  function encodeGamepadState(payload, bitmap, usePartiallyReliable) {
+    const bytes = new ArrayBuffer(GAMEPAD_PACKET_SIZE);
+    const view = new DataView(bytes);
+    view.setUint32(0, 12, true);
+    view.setUint16(4, 26, true);
+    view.setUint16(6, payload.controllerId & 0x03, true);
+    view.setUint16(8, bitmap & 0xFFFF, true);
+    view.setUint16(10, 20, true);
+    view.setUint16(12, payload.buttons & 0xFFFF, true);
+    const packedTriggers = (payload.leftTrigger & 0xFF) | ((payload.rightTrigger & 0xFF) << 8);
+    view.setUint16(14, packedTriggers, true);
+    view.setInt16(16, payload.leftStickX, true);
+    view.setInt16(18, payload.leftStickY, true);
+    view.setInt16(20, payload.rightStickX, true);
+    view.setInt16(22, payload.rightStickY, true);
+    view.setUint16(24, 0, true);
+    view.setUint16(26, 85, true);
+    view.setUint16(28, 0, true);
+    const ts = nowBigUs();
+    view.setUint32(30, Number(ts & 0xFFFFFFFFn), true);
+    view.setUint32(34, Number(ts >> 32n), true);
+    if (usePartiallyReliable) {
+      return wrapGamepadPartiallyReliable(bytes, payload.controllerId, nextGamepadSequence(payload.controllerId));
+    }
+    return wrapGamepadReliable(bytes);
   }
   function normalizeCodec(name) {
     const upper = String(name || '').toUpperCase();
@@ -1331,6 +1640,8 @@ private struct StreamerWebView: UIViewRepresentable {
   const gpHide = document.getElementById('gpHide');
   const joyBase = document.getElementById('joyBase');
   const joyStick = document.getElementById('joyStick');
+  const lookBase = document.getElementById('lookBase');
+  const lookStick = document.getElementById('lookStick');
   let kbPrevLen = 0;
   let lastTX = 0, lastTY = 0;
   let tapStartX = 0, tapStartY = 0;
@@ -1356,22 +1667,26 @@ private struct StreamerWebView: UIViewRepresentable {
   const MAX_MOUSE_DELTA_PER_FRAME = 64;
   const touchpad = document.getElementById('touchpad');
   const touchHint = document.getElementById('touchHint');
-  const activePadKeys = new Map();
-  /** Keys driven only by physical gamepad (never cleared by virtual joystick). */
-  const GAMEPAD_ONLY_KEYS = new Set(['k', 'j', 'l', 'i', 'q', 'e', '\n']);
   let joystickTouchId = null;
   let joystickWindowCleanup = null;
   const joystickMaxOffset = 42;
-  if (!cfg.showStatsOverlay && statsEl) {
-    statsEl.style.display = 'none';
-  }
+  let lookTouchId = null;
+  let lookWindowCleanup = null;
+  const lookMaxOffset = 34;
+  let virtualGamepadButtons = 0;
+  let virtualLeftStickX = 0;
+  let virtualLeftStickY = 0;
+  let virtualRightStickX = 0;
+  let virtualRightStickY = 0;
+  let virtualLeftTrigger = 0;
+  let virtualRightTrigger = 0;
+  let gamepadBitmap = 0;
+  let lastGamepadSendMs = 0;
+  let lastSentGamepadState = null;
   function setGamepadVisible(visible) {
+    if (!gpPad) return;
     gpPad.style.display = visible ? 'block' : 'none';
-    if (gpBtn) {
-      gpBtn.style.opacity = visible ? '0.75' : '1';
-      gpBtn.textContent = visible ? '🙈' : '🎮';
-      gpBtn.title = visible ? 'Hide gamepad' : 'Show gamepad';
-    }
+    updateTouchControllerButton();
   }
 
   function toggleKeyboard() {
@@ -1390,9 +1705,62 @@ private struct StreamerWebView: UIViewRepresentable {
     kbInput.blur();
   }
   function toggleGamepad() {
+    if (!gpPad) return;
     unlockAudio();
     setGamepadVisible(gpPad.style.display === 'none');
   }
+  function hookLayoutDrag(key, element) {
+    if (!element) return;
+    const stopDrag = () => {
+      layoutDragState.key = null;
+      layoutDragState.pointerId = null;
+    };
+    const updateFromTouch = (touch) => {
+      if (!touch || layoutDragState.key !== key) return;
+      const x = (touch.clientX - layoutDragState.offsetX) / window.innerWidth;
+      const y = (touch.clientY - layoutDragState.offsetY) / window.innerHeight;
+      const nextLayout = { ...touchLayout };
+      const fallback = touchLayout[key];
+      nextLayout[key] = sanitizePoint({ x, y }, fallback);
+      touchLayout = sanitizeTouchLayout(nextLayout);
+      applyTouchLayout();
+      scheduleTouchLayoutPersist();
+    };
+    element.addEventListener('touchstart', (e) => {
+      if (!layoutEditing) return;
+      const touch = e.changedTouches[0];
+      if (!touch) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = element.getBoundingClientRect();
+      layoutDragState.key = key;
+      layoutDragState.pointerId = touch.identifier;
+      layoutDragState.offsetX = touch.clientX - (rect.left + (rect.width / 2));
+      layoutDragState.offsetY = touch.clientY - (rect.top + (rect.height / 2));
+    }, { passive: false });
+    element.addEventListener('touchmove', (e) => {
+      if (!layoutEditing || layoutDragState.key !== key) return;
+      const touch = Array.from(e.touches).find((item) => item.identifier === layoutDragState.pointerId);
+      if (!touch) return;
+      e.preventDefault();
+      updateFromTouch(touch);
+    }, { passive: false });
+    element.addEventListener('touchend', (e) => {
+      if (!layoutEditing || layoutDragState.key !== key) return;
+      const ended = Array.from(e.changedTouches).some((item) => item.identifier === layoutDragState.pointerId);
+      if (!ended) return;
+      e.preventDefault();
+      stopDrag();
+    }, { passive: false });
+    element.addEventListener('touchcancel', () => {
+      if (layoutDragState.key === key) {
+        stopDrag();
+      }
+    }, { passive: false });
+  }
+  window.__opennowNativeGamepadState = function(state) {
+    nativeGamepadState = state && state.connected ? state : null;
+  };
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
   }
@@ -1506,17 +1874,19 @@ private struct StreamerWebView: UIViewRepresentable {
   function hookVirtualGamepadButtons() {
     const btns = document.querySelectorAll('.gpKey');
     btns.forEach((btn) => {
-      const key = btn.getAttribute('data-key');
+      const mask = Number(btn.getAttribute('data-mask') || '0');
       const down = (e) => {
+        if (layoutEditing) return;
         e.preventDefault();
         unlockAudio();
         btn.style.transform = 'scale(0.95)';
-        sendVirtualKey(key, true);
+        if (mask) virtualGamepadButtons |= mask;
       };
       const up = (e) => {
+        if (layoutEditing) return;
         e.preventDefault();
         btn.style.transform = 'scale(1)';
-        sendVirtualKey(key, false);
+        if (mask) virtualGamepadButtons &= ~mask;
       };
       btn.addEventListener('touchstart', down, { passive: false });
       btn.addEventListener('touchend', up, { passive: false });
@@ -1529,12 +1899,52 @@ private struct StreamerWebView: UIViewRepresentable {
       btn.style.webkitBackdropFilter = 'blur(8px)';
       btn.style.fontSize = '18px';
     });
+    const auxBtns = document.querySelectorAll('.gpAux');
+    auxBtns.forEach((btn) => {
+      const mask = Number(btn.getAttribute('data-mask') || '0');
+      const trigger = btn.getAttribute('data-trigger');
+      const down = (e) => {
+        if (layoutEditing) return;
+        e.preventDefault();
+        unlockAudio();
+        btn.style.transform = 'scale(0.95)';
+        if (mask) virtualGamepadButtons |= mask;
+        if (trigger === 'left') virtualLeftTrigger = 1;
+        if (trigger === 'right') virtualRightTrigger = 1;
+      };
+      const up = (e) => {
+        if (layoutEditing) return;
+        e.preventDefault();
+        btn.style.transform = 'scale(1)';
+        if (mask) virtualGamepadButtons &= ~mask;
+        if (trigger === 'left') virtualLeftTrigger = 0;
+        if (trigger === 'right') virtualRightTrigger = 0;
+      };
+      btn.addEventListener('touchstart', down, { passive: false });
+      btn.addEventListener('touchend', up, { passive: false });
+      btn.addEventListener('touchcancel', up, { passive: false });
+      btn.style.background = 'rgba(30,30,30,0.72)';
+      btn.style.color = '#fff';
+      btn.style.border = '1px solid rgba(255,255,255,0.25)';
+      btn.style.borderRadius = btn.classList.contains('gpSmall') ? '12px' : '16px';
+      btn.style.backdropFilter = 'blur(8px)';
+      btn.style.webkitBackdropFilter = 'blur(8px)';
+      btn.style.fontSize = btn.classList.contains('gpSmall') ? '12px' : '15px';
+    });
   }
   function resetVirtualJoystick() {
     if (joyStick) {
       joyStick.style.transform = 'translate(-50%,-50%)';
     }
-    setJoystickMoveKeys(false, false, false, false);
+    virtualLeftStickX = 0;
+    virtualLeftStickY = 0;
+  }
+  function resetLookStick() {
+    if (lookStick) {
+      lookStick.style.transform = 'translate(-50%,-50%)';
+    }
+    virtualRightStickX = 0;
+    virtualRightStickY = 0;
   }
   function updateVirtualJoystickFromTouch(touch) {
     if (!joyBase || !touch) return;
@@ -1552,22 +1962,27 @@ private struct StreamerWebView: UIViewRepresentable {
     if (joyStick) {
       joyStick.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
     }
-    const threshold = joystickMaxOffset * 0.28;
-    setJoystickMoveKeys(dx < -threshold, dx > threshold, dy < -threshold, dy > threshold);
+    virtualLeftStickX = clamp(dx / joystickMaxOffset, -1, 1);
+    virtualLeftStickY = clamp(dy / joystickMaxOffset, -1, 1);
   }
-  function setJoystickMoveKeys(left, right, up, down) {
-    setPadKeyState('a', left);
-    setPadKeyState('d', right);
-    setPadKeyState('w', up);
-    setPadKeyState('s', down);
-  }
-  function releaseGamepadOnlyKeys() {
-    GAMEPAD_ONLY_KEYS.forEach((key) => {
-      if (activePadKeys.get(key) === true) {
-        sendVirtualKey(key, false);
-        activePadKeys.delete(key);
-      }
-    });
+  function updateLookStickFromTouch(touch) {
+    if (!lookBase || !touch) return;
+    const rect = lookBase.getBoundingClientRect();
+    const centerX = rect.left + (rect.width / 2);
+    const centerY = rect.top + (rect.height / 2);
+    let dx = touch.clientX - centerX;
+    let dy = touch.clientY - centerY;
+    const distance = Math.hypot(dx, dy);
+    if (distance > lookMaxOffset && distance > 0) {
+      const scale = lookMaxOffset / distance;
+      dx *= scale;
+      dy *= scale;
+    }
+    if (lookStick) {
+      lookStick.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    }
+    virtualRightStickX = clamp(dx / lookMaxOffset, -1, 1);
+    virtualRightStickY = clamp(dy / lookMaxOffset, -1, 1);
   }
   function hookVirtualJoystick() {
     if (!joyBase) return;
@@ -1594,6 +2009,7 @@ private struct StreamerWebView: UIViewRepresentable {
       resetVirtualJoystick();
     };
     const onStart = (e) => {
+      if (layoutEditing) return;
       if (joystickTouchId != null) return;
       e.preventDefault();
       e.stopPropagation();
@@ -1615,87 +2031,222 @@ private struct StreamerWebView: UIViewRepresentable {
     };
     joyBase.addEventListener('touchstart', onStart, { passive: false, capture: true });
   }
-  function setPadKeyState(key, isDown) {
-    if (!key) return;
-    const currentlyDown = activePadKeys.get(key) === true;
-    if (currentlyDown === isDown) return;
-    activePadKeys.set(key, isDown);
-    sendVirtualKey(key, isDown);
+  function hookLookStick() {
+    if (!lookBase) return;
+    const detachWindowListeners = () => {
+      if (typeof lookWindowCleanup === 'function') {
+        lookWindowCleanup();
+        lookWindowCleanup = null;
+      }
+    };
+    const onWindowMove = (e) => {
+      if (lookTouchId == null) return;
+      const t = Array.from(e.touches).find((item) => item.identifier === lookTouchId);
+      if (!t) return;
+      e.preventDefault();
+      updateLookStickFromTouch(t);
+    };
+    const onWindowEnd = (e) => {
+      if (lookTouchId == null) return;
+      const endedHere = Array.from(e.changedTouches).some((item) => item.identifier === lookTouchId);
+      if (!endedHere) return;
+      e.preventDefault();
+      lookTouchId = null;
+      detachWindowListeners();
+      resetLookStick();
+    };
+    const onStart = (e) => {
+      if (layoutEditing) return;
+      if (lookTouchId != null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      unlockAudio();
+      detachWindowListeners();
+      const t = e.changedTouches[0];
+      if (!t) return;
+      lookTouchId = t.identifier;
+      const opts = { passive: false, capture: true };
+      window.addEventListener('touchmove', onWindowMove, opts);
+      window.addEventListener('touchend', onWindowEnd, opts);
+      window.addEventListener('touchcancel', onWindowEnd, opts);
+      lookWindowCleanup = () => {
+        window.removeEventListener('touchmove', onWindowMove, opts);
+        window.removeEventListener('touchend', onWindowEnd, opts);
+        window.removeEventListener('touchcancel', onWindowEnd, opts);
+      };
+      updateLookStickFromTouch(t);
+    };
+    lookBase.addEventListener('touchstart', onStart, { passive: false, capture: true });
+  }
+  function clearVirtualGamepadState() {
+    virtualGamepadButtons = 0;
+    virtualLeftStickX = 0;
+    virtualLeftStickY = 0;
+    virtualRightStickX = 0;
+    virtualRightStickY = 0;
+    virtualLeftTrigger = 0;
+    virtualRightTrigger = 0;
+    if (joyStick) {
+      joyStick.style.transform = 'translate(-50%,-50%)';
+    }
+    if (lookStick) {
+      lookStick.style.transform = 'translate(-50%,-50%)';
+    }
+  }
+  function normalizeGamepadAxis(value) {
+    const clamped = clamp(value || 0, -1, 1);
+    if (Math.abs(clamped) < GAMEPAD_DEADZONE) return 0;
+    return clamp(clamped < 0 ? Math.round(clamped * 32768) : Math.round(clamped * 32767), -32768, 32767);
+  }
+  function normalizeTriggerValue(value) {
+    return clamp(Math.round(clamp(value || 0, 0, 1) * 255), 0, 255);
+  }
+  function buttonValue(buttons, index) {
+    const raw = buttons?.[index];
+    if (raw == null) return 0;
+    if (typeof raw === 'number') return raw;
+    if (typeof raw.value === 'number') return raw.value;
+    return raw.pressed ? 1 : 0;
+  }
+  function mapGamepadButtons(buttons) {
+    let mapped = 0;
+    if (buttonValue(buttons, 0) > 0) mapped |= GAMEPAD_A;
+    if (buttonValue(buttons, 1) > 0) mapped |= GAMEPAD_B;
+    if (buttonValue(buttons, 2) > 0) mapped |= GAMEPAD_X;
+    if (buttonValue(buttons, 3) > 0) mapped |= GAMEPAD_Y;
+    if (buttonValue(buttons, 4) > 0) mapped |= GAMEPAD_LB;
+    if (buttonValue(buttons, 5) > 0) mapped |= GAMEPAD_RB;
+    if (buttonValue(buttons, 8) > 0) mapped |= GAMEPAD_BACK;
+    if (buttonValue(buttons, 9) > 0) mapped |= GAMEPAD_START;
+    if (buttonValue(buttons, 10) > 0) mapped |= GAMEPAD_LS;
+    if (buttonValue(buttons, 11) > 0) mapped |= GAMEPAD_RS;
+    if (buttonValue(buttons, 12) > 0) mapped |= GAMEPAD_DPAD_UP;
+    if (buttonValue(buttons, 13) > 0) mapped |= GAMEPAD_DPAD_DOWN;
+    if (buttonValue(buttons, 14) > 0) mapped |= GAMEPAD_DPAD_LEFT;
+    if (buttonValue(buttons, 15) > 0) mapped |= GAMEPAD_DPAD_RIGHT;
+    if (buttonValue(buttons, 16) > 0) mapped |= GAMEPAD_GUIDE;
+    return mapped;
+  }
+  function buildGamepadInputFromState(state, controllerId = 0) {
+    const axes = state?.axes || [0, 0, 0, 0];
+    const buttons = state?.buttons || [];
+    return {
+      controllerId,
+      connected: !!state?.connected,
+      buttons: mapGamepadButtons(buttons),
+      leftTrigger: normalizeTriggerValue(buttonValue(buttons, 6) || state?.leftTrigger),
+      rightTrigger: normalizeTriggerValue(buttonValue(buttons, 7) || state?.rightTrigger),
+      leftStickX: normalizeGamepadAxis(axes[0] || 0),
+      leftStickY: normalizeGamepadAxis(-(axes[1] || 0)),
+      rightStickX: normalizeGamepadAxis(axes[2] || 0),
+      rightStickY: normalizeGamepadAxis(-(axes[3] || 0))
+    };
+  }
+  function currentVirtualGamepadState() {
+    return {
+      id: 'OpenNOW Virtual Controller',
+      connected: gpPad && gpPad.style.display !== 'none',
+      buttons: [
+        (virtualGamepadButtons & GAMEPAD_A) ? 1 : 0,
+        (virtualGamepadButtons & GAMEPAD_B) ? 1 : 0,
+        (virtualGamepadButtons & GAMEPAD_X) ? 1 : 0,
+        (virtualGamepadButtons & GAMEPAD_Y) ? 1 : 0,
+        (virtualGamepadButtons & GAMEPAD_LB) ? 1 : 0,
+        (virtualGamepadButtons & GAMEPAD_RB) ? 1 : 0,
+        virtualLeftTrigger, virtualRightTrigger,
+        (virtualGamepadButtons & GAMEPAD_BACK) ? 1 : 0,
+        (virtualGamepadButtons & GAMEPAD_START) ? 1 : 0,
+        (virtualGamepadButtons & GAMEPAD_LS) ? 1 : 0,
+        (virtualGamepadButtons & GAMEPAD_RS) ? 1 : 0,
+        0, 0, 0, 0,
+        (virtualGamepadButtons & GAMEPAD_GUIDE) ? 1 : 0
+      ],
+      axes: [virtualLeftStickX, virtualLeftStickY, virtualRightStickX, virtualRightStickY],
+      leftTrigger: virtualLeftTrigger,
+      rightTrigger: virtualRightTrigger
+    };
+  }
+  function selectActiveGamepadSource() {
+    if (nativeGamepadState?.connected) {
+      return { label: nativeGamepadState.id || 'iOS Controller', input: buildGamepadInputFromState(nativeGamepadState, 0) };
+    }
+    const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
+    const browserPad = pads.find((pad) => pad && pad.connected);
+    if (browserPad) {
+      return { label: browserPad.id || 'connected', input: buildGamepadInputFromState(browserPad, 0) };
+    }
+    const virtualState = currentVirtualGamepadState();
+    if (virtualState.connected) {
+      return { label: virtualState.id, input: buildGamepadInputFromState(virtualState, 0) };
+    }
+    return null;
+  }
+  function gamepadStatesEqual(a, b) {
+    return !!a && !!b
+      && a.buttons === b.buttons
+      && a.leftTrigger === b.leftTrigger
+      && a.rightTrigger === b.rightTrigger
+      && a.leftStickX === b.leftStickX
+      && a.leftStickY === b.leftStickY
+      && a.rightStickX === b.rightStickX
+      && a.rightStickY === b.rightStickY
+      && a.connected === b.connected;
+  }
+  function sendCurrentGamepadState(state) {
+    const connected = !!state?.connected;
+    const bitmap = connected ? 0x0001 : 0x0000;
+    const usePR = isChannelOpen(partialCh)
+      && (riInputCapabilities.enablePartiallyReliableTransferGamepad & bitmap) !== 0;
+    const payload = encodeGamepadState({
+      controllerId: 0,
+      buttons: state?.buttons ?? 0,
+      leftTrigger: state?.leftTrigger ?? 0,
+      rightTrigger: state?.rightTrigger ?? 0,
+      leftStickX: state?.leftStickX ?? 0,
+      leftStickY: state?.leftStickY ?? 0,
+      rightStickX: state?.rightStickX ?? 0,
+      rightStickY: state?.rightStickY ?? 0
+    }, bitmap, usePR);
+    if (usePR) partialCh.send(payload);
+    else sendInput(payload);
+    gamepadBitmap = bitmap;
+    lastSentGamepadState = connected ? { ...state } : null;
+    lastGamepadSendMs = performance.now();
   }
   function releaseAllPadKeys() {
     joystickTouchId = null;
+    lookTouchId = null;
     if (typeof joystickWindowCleanup === 'function') {
       joystickWindowCleanup();
       joystickWindowCleanup = null;
     }
-    activePadKeys.forEach((isDown, key) => {
-      if (isDown) sendVirtualKey(key, false);
-    });
-    activePadKeys.clear();
-    if (joyStick) {
-      joyStick.style.transform = 'translate(-50%,-50%)';
+    if (typeof lookWindowCleanup === 'function') {
+      lookWindowCleanup();
+      lookWindowCleanup = null;
     }
+    clearVirtualGamepadState();
   }
   function pollGamepadState() {
-    if (!gamepadEmulationEnabled) {
-      releaseAllPadKeys();
-      if (controllerState) controllerState.textContent = 'Controller: emulation paused';
-      requestAnimationFrame(pollGamepadState);
-      return;
-    }
-    const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
-    const pad = pads[0];
-    if (!pad) {
-      releaseGamepadOnlyKeys();
-      if (joystickTouchId == null) {
-        setJoystickMoveKeys(false, false, false, false);
+    const activeSource = selectActiveGamepadSource();
+    if (!activeSource) {
+      clearVirtualGamepadState();
+      if (lastSentGamepadState || gamepadBitmap !== 0) {
+        sendCurrentGamepadState(null);
       }
       if (controllerState) controllerState.textContent = 'Controller: waiting…';
       requestAnimationFrame(pollGamepadState);
       return;
     }
     if (controllerState) {
-      controllerState.textContent = `Controller: ${pad.id || 'connected'}`;
+      controllerState.textContent = `Controller: ${activeSource.label}`;
     }
     unlockAudio();
-    const buttonMap = {
-      0: 'k', // A
-      1: 'j', // B
-      2: 'l', // X
-      3: 'i', // Y
-      4: 'q', // LB
-      5: 'e', // RB
-      9: '\n' // Start
-    };
-    Object.keys(buttonMap).forEach((rawIndex) => {
-      const index = Number(rawIndex);
-      const pressed = !!pad.buttons[index] && pad.buttons[index].pressed;
-      setPadKeyState(buttonMap[index], pressed);
-    });
-    const joyOverridesMove = joystickTouchId != null;
-    if (!joyOverridesMove) {
-      setPadKeyState('w', !!pad.buttons[12]?.pressed);
-      setPadKeyState('s', !!pad.buttons[13]?.pressed);
-      setPadKeyState('a', !!pad.buttons[14]?.pressed);
-      setPadKeyState('d', !!pad.buttons[15]?.pressed);
-
-      const leftDeadzone = 0.32;
-      const lx = pad.axes[0] || 0;
-      const ly = pad.axes[1] || 0;
-      setPadKeyState('a', lx < -leftDeadzone || !!pad.buttons[14]?.pressed);
-      setPadKeyState('d', lx > leftDeadzone || !!pad.buttons[15]?.pressed);
-      setPadKeyState('w', ly < -leftDeadzone || !!pad.buttons[12]?.pressed);
-      setPadKeyState('s', ly > leftDeadzone || !!pad.buttons[13]?.pressed);
-    }
-
-    const rx = pad.axes[2] || 0;
-    const ry = pad.axes[3] || 0;
-    if (Math.abs(rx) > 0.18 || Math.abs(ry) > 0.18) {
-      pendingMoveDx += rx * 8.5;
-      pendingMoveDy += ry * 8.5;
-      if (!moveFrame) {
-        moveFrame = requestAnimationFrame(flushPendingMouseMove);
-      }
+    const nextState = activeSource.input;
+    const nowMs = performance.now();
+    const changed = !gamepadStatesEqual(nextState, lastSentGamepadState);
+    const keepalive = !changed && (nowMs - lastGamepadSendMs) >= GAMEPAD_KEEPALIVE_MS;
+    if (changed || keepalive) {
+      sendCurrentGamepadState(nextState);
     }
     requestAnimationFrame(pollGamepadState);
   }
@@ -1704,6 +2255,7 @@ private struct StreamerWebView: UIViewRepresentable {
   setTimeout(() => { if (touchHint) touchHint.style.opacity = '0'; }, 4000);
 
   touchpad.addEventListener('touchstart', (e) => {
+    if (FORTNITE_NATIVE_TOUCH) return;
     e.preventDefault();
     unlockAudio();
     const touches = e.targetTouches;
@@ -1737,6 +2289,7 @@ private struct StreamerWebView: UIViewRepresentable {
   }, { passive: false });
 
   touchpad.addEventListener('touchmove', (e) => {
+    if (FORTNITE_NATIVE_TOUCH) return;
     e.preventDefault();
     const touches = e.targetTouches;
     if (touches.length === 2) {
@@ -1790,6 +2343,7 @@ private struct StreamerWebView: UIViewRepresentable {
   }, { passive: false });
 
   touchpad.addEventListener('touchend', (e) => {
+    if (FORTNITE_NATIVE_TOUCH) return;
     e.preventDefault();
     const remainingTouches = e.targetTouches;
     if (remainingTouches.length === 0 && zoomScale > 1.01 && pinchGestureMoved) {
@@ -1822,6 +2376,7 @@ private struct StreamerWebView: UIViewRepresentable {
   }, { passive: false });
 
   touchpad.addEventListener('dblclick', (e) => {
+    if (FORTNITE_NATIVE_TOUCH) return;
     e.preventDefault();
     if (zoomScale > 1.01) {
       zoomScale = 1;
@@ -1881,6 +2436,7 @@ private struct StreamerWebView: UIViewRepresentable {
   });
 
   touchpad.addEventListener('wheel', (e) => {
+    if (FORTNITE_NATIVE_TOUCH) return;
     e.preventDefault();
     adjustZoom(e.deltaY < 0 ? ZOOM_DEFAULT_STEP : -ZOOM_DEFAULT_STEP);
   }, { passive: false });
@@ -1940,22 +2496,54 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   hookVirtualGamepadButtons();
   hookVirtualJoystick();
+  hookLookStick();
+  Object.entries(touchGroupElements).forEach(([key, element]) => hookLayoutDrag(key, element));
   if (gpHide) {
-    gpHide.onclick = () => setGamepadVisible(false);
+    gpHide.onclick = () => {
+      if (layoutEditing) return;
+      clearVirtualGamepadState();
+      setGamepadVisible(false);
+    };
   }
-  if (infoPanel) {
-    infoPanel.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+  if (gpEditBtn) {
+    gpEditBtn.onclick = () => {
+      setLayoutEditing(!layoutEditing);
+    };
+  }
+  if (gpResetBtn) {
+    gpResetBtn.onclick = () => {
+      resetTouchLayout();
+      setLayoutEditing(true);
+    };
+  }
+  if (gpScaleRange) {
+    gpScaleRange.addEventListener('input', (e) => {
+      const value = Number(e.target && e.target.value);
+      touchLayout = sanitizeTouchLayout({
+        ...touchLayout,
+        scale: (Number.isFinite(value) ? value : 100) / 100
+      });
+      applyTouchLayout();
+      scheduleTouchLayoutPersist();
+    });
+  }
+  if (hudPanel) {
+    hudPanel.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
   }
   document.addEventListener('touchstart', (e) => {
-    if (!infoPanelOpen) return;
+    if (!hudPanelOpen) return;
     const target = e.target;
-    if (infoPanel && !infoPanel.contains(target) && infoTab && !infoTab.contains(target)) {
-      toggleInfoPanel(false);
+    if (hudPanel && !hudPanel.contains(target) && hudToggle && !hudToggle.contains(target)) {
+      toggleHudPanel(false);
     }
   }, { passive: true });
   setGamepadVisible(false);
+  applyTouchpadMode();
+  applyTouchLayout();
+  applyStatsVisibility();
   video.addEventListener('volumechange', updateAudioButton);
   updateAudioButton();
+  updateTouchControllerButton();
   pollGamepadState();
   // GPU keep-alive: minimal WebGL rAF loop prevents GPUProcess idle-exit during
   // WebRTC negotiation. Runs until the WKWebView is destroyed (streamer dismissed).
@@ -1989,37 +2577,59 @@ private struct StreamerWebView: UIViewRepresentable {
         }
     }
 
+    private static func touchProfile(for gameTitle: String) -> String {
+        let normalized = gameTitle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.contains("fortnite") {
+            return "fortnite-mobile"
+        }
+        return "default"
+    }
+
     private static func streamProfile(for settings: AppSettings) -> StreamProfile {
         let nativeBounds = UIScreen.main.nativeBounds
         let longSide = max(nativeBounds.width, nativeBounds.height)
         let shortSide = min(nativeBounds.width, nativeBounds.height)
         let supports1440 = longSide >= 2500 || shortSide >= 1400 || UIScreen.main.nativeScale >= 3.0
-        let requestedFPS = settings.preferredFPS
-
-        // Pick bitrate based on quality preference to avoid overwhelming mobile links.
-        // "Data Saver" targets lower network usage; "Quality" allows higher bitrate;
-        // "Balanced" stays in the middle while avoiding bursty spikes.
+        let effectiveFPS = min(settings.preferredFPS, 60)
+        let isPad = UIDevice.current.userInterfaceIdiom == .pad
         let quality = settings.preferredQuality.lowercased()
-        let bitrateFor1080: Int = quality == "quality" ? 45_000 : (quality == "data saver" ? 16_000 : 28_000)
-        let bitrateFor1440: Int = quality == "quality" ? 65_000 : (quality == "data saver" ? 24_000 : 40_000)
+        let prefersQuality = quality == "quality"
+        let prefersDataSaver = quality == "data saver"
 
-        // Limit to 1440p only when explicitly requesting high FPS AND device supports it.
-        // iOS uses a conservative 60 fps cap to improve decoder stability.
-        if requestedFPS >= 120 && supports1440 {
-            return StreamProfile(width: 2560, height: 1440, maxBitrateKbps: bitrateFor1440)
+        if isPad, prefersQuality, supports1440, effectiveFPS >= 60 {
+            return StreamProfile(width: 2560, height: 1440, maxBitrateKbps: 36_000)
         }
-        return StreamProfile(width: 1920, height: 1080, maxBitrateKbps: bitrateFor1080)
+        if isPad {
+            let bitrate = prefersQuality ? 24_000 : (prefersDataSaver ? 12_000 : 18_000)
+            return StreamProfile(width: 1920, height: 1080, maxBitrateKbps: bitrate)
+        }
+        let bitrate = prefersQuality ? 18_000 : (prefersDataSaver ? 8_500 : 13_000)
+        return StreamProfile(width: 1280, height: 720, maxBitrateKbps: bitrate)
     }
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         private let onEvent: (String) -> Void
+        private let onTouchLayoutChange: (String, TouchControlLayout) -> Void
         var cachedHTML: String = ""
         var cachedBaseURL: URL?
         private var contentProcessRestartCount = 0
         private static let maxContentProcessRestarts = 5
+        private let controllerBridge = NativeControllerBridge()
 
-        init(onEvent: @escaping (String) -> Void) {
+        init(
+            onEvent: @escaping (String) -> Void,
+            onTouchLayoutChange: @escaping (String, TouchControlLayout) -> Void
+        ) {
             self.onEvent = onEvent
+            self.onTouchLayoutChange = onTouchLayoutChange
+        }
+
+        func attach(webView: WKWebView) {
+            controllerBridge.attach(webView: webView)
+        }
+
+        func detach() {
+            controllerBridge.detach()
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -2042,6 +2652,16 @@ private struct StreamerWebView: UIViewRepresentable {
                 onEvent("Error: \(msg)")
             case "log":
                 onEvent("Log: \(msg)")
+            case "touch-layout":
+                guard let payload = body["payload"] as? [String: Any],
+                      let profile = payload["profile"] as? String,
+                      let layoutObject = payload["layout"],
+                      JSONSerialization.isValidJSONObject(layoutObject),
+                      let layoutData = try? JSONSerialization.data(withJSONObject: layoutObject),
+                      let layout = try? JSONDecoder().decode(TouchControlLayout.self, from: layoutData) else {
+                    return
+                }
+                onTouchLayoutChange(profile, layout)
             default:
                 break
             }
@@ -2063,6 +2683,10 @@ private struct StreamerWebView: UIViewRepresentable {
             onEvent("Error: WebView provisional load failed: \(error.localizedDescription)")
         }
 
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            controllerBridge.attach(webView: webView)
+        }
+
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             contentProcessRestartCount += 1
             if contentProcessRestartCount <= Self.maxContentProcessRestarts, !cachedHTML.isEmpty {
@@ -2075,5 +2699,134 @@ private struct StreamerWebView: UIViewRepresentable {
                 onEvent("Error: Stream WebContent process terminated (restart limit reached)")
             }
         }
+    }
+}
+
+private final class NativeControllerBridge {
+    private weak var webView: WKWebView?
+    private var observers: [NSObjectProtocol] = []
+    private var activeController: GCController?
+    private var publishScheduled = false
+
+    func attach(webView: WKWebView) {
+        self.webView = webView
+        if observers.isEmpty {
+            startMonitoring()
+        }
+        attachCurrentController()
+        publishState()
+    }
+
+    func detach() {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
+        activeController?.extendedGamepad?.valueChangedHandler = nil
+        activeController = nil
+        webView = nil
+        publishScheduled = false
+    }
+
+    private func startMonitoring() {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(
+            forName: .GCControllerDidConnect,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.attachCurrentController()
+            self?.publishState()
+        })
+        observers.append(center.addObserver(
+            forName: .GCControllerDidDisconnect,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.attachCurrentController()
+            self?.publishState()
+        })
+    }
+
+    private func attachCurrentController() {
+        let next = GCController.controllers().first(where: { $0.extendedGamepad != nil })
+        guard activeController !== next else { return }
+        activeController?.extendedGamepad?.valueChangedHandler = nil
+        activeController = next
+        activeController?.extendedGamepad?.valueChangedHandler = { [weak self] _, _ in
+            self?.schedulePublish()
+        }
+        activeController?.controllerPausedHandler = { [weak self] _ in
+            self?.schedulePublish()
+        }
+    }
+
+    private func schedulePublish() {
+        guard !publishScheduled else { return }
+        publishScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
+            guard let self else { return }
+            self.publishScheduled = false
+            self.publishState()
+        }
+    }
+
+    private func publishState() {
+        guard let webView else { return }
+        let payload = controllerPayload()
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8)
+        else { return }
+        webView.evaluateJavaScript("window.__opennowNativeGamepadState(\(json))", completionHandler: nil)
+    }
+
+    private func controllerPayload() -> [String: Any] {
+        guard let controller = activeController,
+              let gamepad = controller.extendedGamepad
+        else {
+            return ["connected": false]
+        }
+
+        var buttons = Array(repeating: 0.0, count: 17)
+        buttons[0] = value(for: gamepad.buttonA)
+        buttons[1] = value(for: gamepad.buttonB)
+        buttons[2] = value(for: gamepad.buttonX)
+        buttons[3] = value(for: gamepad.buttonY)
+        buttons[4] = value(for: gamepad.leftShoulder)
+        buttons[5] = value(for: gamepad.rightShoulder)
+        buttons[6] = value(for: gamepad.leftTrigger)
+        buttons[7] = value(for: gamepad.rightTrigger)
+        buttons[8] = value(for: gamepad.buttonOptions)
+        buttons[9] = value(for: gamepad.buttonMenu)
+        buttons[10] = value(for: gamepad.leftThumbstickButton)
+        buttons[11] = value(for: gamepad.rightThumbstickButton)
+        buttons[12] = value(for: gamepad.dpad.up)
+        buttons[13] = value(for: gamepad.dpad.down)
+        buttons[14] = value(for: gamepad.dpad.left)
+        buttons[15] = value(for: gamepad.dpad.right)
+        if #available(iOS 14.0, *) {
+            buttons[16] = value(for: gamepad.buttonHome)
+        }
+
+        let axes: [Double] = [
+            clampAxis(gamepad.leftThumbstick.xAxis.value),
+            clampAxis(gamepad.leftThumbstick.yAxis.value),
+            clampAxis(gamepad.rightThumbstick.xAxis.value),
+            clampAxis(gamepad.rightThumbstick.yAxis.value)
+        ]
+
+        return [
+            "connected": true,
+            "id": controller.vendorName ?? "iOS Controller",
+            "buttons": buttons,
+            "axes": axes
+        ]
+    }
+
+    private func value(for button: GCControllerButtonInput?) -> Double {
+        guard let button else { return 0 }
+        return Double(button.value)
+    }
+
+    private func clampAxis(_ value: Float) -> Double {
+        Double(max(-1, min(1, value)))
     }
 }

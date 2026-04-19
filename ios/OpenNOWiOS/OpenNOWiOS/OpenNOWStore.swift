@@ -159,6 +159,57 @@ struct AppSettings: Codable, Equatable {
     var keepMicEnabled: Bool
     var showStatsOverlay: Bool
     var selectedProviderIdpId: String
+    var fortnitePrefersNativeTouch: Bool
+    var touchControlLayouts: [String: TouchControlLayout]
+
+    enum CodingKeys: String, CodingKey {
+        case preferredRegion
+        case preferredFPS
+        case preferredQuality
+        case preferredCodec
+        case keepMicEnabled
+        case showStatsOverlay
+        case selectedProviderIdpId
+        case fortnitePrefersNativeTouch
+        case touchControlLayouts
+    }
+
+    init(
+        preferredRegion: String,
+        preferredFPS: Int,
+        preferredQuality: String,
+        preferredCodec: String,
+        keepMicEnabled: Bool,
+        showStatsOverlay: Bool,
+        selectedProviderIdpId: String,
+        fortnitePrefersNativeTouch: Bool,
+        touchControlLayouts: [String: TouchControlLayout]
+    ) {
+        self.preferredRegion = preferredRegion
+        self.preferredFPS = preferredFPS
+        self.preferredQuality = preferredQuality
+        self.preferredCodec = preferredCodec
+        self.keepMicEnabled = keepMicEnabled
+        self.showStatsOverlay = showStatsOverlay
+        self.selectedProviderIdpId = selectedProviderIdpId
+        self.fortnitePrefersNativeTouch = fortnitePrefersNativeTouch
+        self.touchControlLayouts = touchControlLayouts
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        preferredRegion = try container.decodeIfPresent(String.self, forKey: .preferredRegion) ?? "Auto"
+        preferredFPS = try container.decodeIfPresent(Int.self, forKey: .preferredFPS) ?? 60
+        preferredQuality = try container.decodeIfPresent(String.self, forKey: .preferredQuality) ?? "Balanced"
+        preferredCodec = try container.decodeIfPresent(String.self, forKey: .preferredCodec) ?? "Auto"
+        keepMicEnabled = try container.decodeIfPresent(Bool.self, forKey: .keepMicEnabled) ?? false
+        showStatsOverlay = try container.decodeIfPresent(Bool.self, forKey: .showStatsOverlay) ?? true
+        selectedProviderIdpId = try container.decodeIfPresent(String.self, forKey: .selectedProviderIdpId)
+            ?? "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg"
+        fortnitePrefersNativeTouch = try container.decodeIfPresent(Bool.self, forKey: .fortnitePrefersNativeTouch) ?? true
+        touchControlLayouts = try container.decodeIfPresent([String: TouchControlLayout].self, forKey: .touchControlLayouts)
+            ?? TouchControlLayout.defaultProfiles
+    }
 
     static let `default` = AppSettings(
         preferredRegion: "Auto",
@@ -167,8 +218,114 @@ struct AppSettings: Codable, Equatable {
         preferredCodec: "Auto",
         keepMicEnabled: false,
         showStatsOverlay: true,
-        selectedProviderIdpId: "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg"
+        selectedProviderIdpId: "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg",
+        fortnitePrefersNativeTouch: true,
+        touchControlLayouts: TouchControlLayout.defaultProfiles
     )
+
+    func touchLayout(for profile: String) -> TouchControlLayout {
+        touchControlLayouts[profile] ?? TouchControlLayout.preset(for: profile)
+    }
+}
+
+struct TouchControlPoint: Codable, Equatable {
+    var x: Double
+    var y: Double
+
+    enum CodingKeys: String, CodingKey {
+        case x
+        case y
+    }
+
+    init(x: Double, y: Double) {
+        self.x = x
+        self.y = y
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        x = try container.decodeIfPresent(Double.self, forKey: .x) ?? 0.5
+        y = try container.decodeIfPresent(Double.self, forKey: .y) ?? 0.5
+    }
+}
+
+struct TouchControlLayout: Codable, Equatable {
+    var scale: Double
+    var topLeft: TouchControlPoint
+    var topCenter: TouchControlPoint
+    var topRight: TouchControlPoint
+    var leftStick: TouchControlPoint
+    var rightCluster: TouchControlPoint
+    var bottomCenter: TouchControlPoint
+
+    enum CodingKeys: String, CodingKey {
+        case scale
+        case topLeft
+        case topCenter
+        case topRight
+        case leftStick
+        case rightCluster
+        case bottomCenter
+    }
+
+    init(
+        scale: Double,
+        topLeft: TouchControlPoint,
+        topCenter: TouchControlPoint,
+        topRight: TouchControlPoint,
+        leftStick: TouchControlPoint,
+        rightCluster: TouchControlPoint,
+        bottomCenter: TouchControlPoint
+    ) {
+        self.scale = scale
+        self.topLeft = topLeft
+        self.topCenter = topCenter
+        self.topRight = topRight
+        self.leftStick = leftStick
+        self.rightCluster = rightCluster
+        self.bottomCenter = bottomCenter
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let fallback = Self.standard
+        scale = try container.decodeIfPresent(Double.self, forKey: .scale) ?? fallback.scale
+        topLeft = try container.decodeIfPresent(TouchControlPoint.self, forKey: .topLeft) ?? fallback.topLeft
+        topCenter = try container.decodeIfPresent(TouchControlPoint.self, forKey: .topCenter) ?? fallback.topCenter
+        topRight = try container.decodeIfPresent(TouchControlPoint.self, forKey: .topRight) ?? fallback.topRight
+        leftStick = try container.decodeIfPresent(TouchControlPoint.self, forKey: .leftStick) ?? fallback.leftStick
+        rightCluster = try container.decodeIfPresent(TouchControlPoint.self, forKey: .rightCluster) ?? fallback.rightCluster
+        bottomCenter = try container.decodeIfPresent(TouchControlPoint.self, forKey: .bottomCenter) ?? fallback.bottomCenter
+    }
+
+    static let standard = TouchControlLayout(
+        scale: 1,
+        topLeft: .init(x: 0.14, y: 0.12),
+        topCenter: .init(x: 0.50, y: 0.12),
+        topRight: .init(x: 0.86, y: 0.12),
+        leftStick: .init(x: 0.18, y: 0.80),
+        rightCluster: .init(x: 0.83, y: 0.79),
+        bottomCenter: .init(x: 0.50, y: 0.92)
+    )
+
+    static let fortniteMobile = TouchControlLayout(
+        scale: 1.05,
+        topLeft: .init(x: 0.16, y: 0.11),
+        topCenter: .init(x: 0.50, y: 0.11),
+        topRight: .init(x: 0.84, y: 0.11),
+        leftStick: .init(x: 0.17, y: 0.81),
+        rightCluster: .init(x: 0.84, y: 0.78),
+        bottomCenter: .init(x: 0.50, y: 0.91)
+    )
+
+    static let defaultProfiles: [String: TouchControlLayout] = [
+        "default": .standard,
+        "fortnite-mobile": .fortniteMobile
+    ]
+
+    static func preset(for profile: String) -> TouchControlLayout {
+        defaultProfiles[profile] ?? .standard
+    }
 }
 
 private enum GFNConstants {
@@ -381,6 +538,59 @@ private final class GFNTLSDelegate: NSObject, URLSessionDelegate {
             return
         }
         completionHandler(.useCredential, URLCredential(trust: serverTrust))
+    }
+}
+
+private enum StreamDeviceProfile {
+    case desktop
+    case mobileTouch
+
+    var nvDeviceOS: String {
+        switch self {
+        case .desktop:
+            return "WINDOWS"
+        case .mobileTouch:
+            return "IOS"
+        }
+    }
+
+    var nvDeviceType: String {
+        switch self {
+        case .desktop:
+            return "DESKTOP"
+        case .mobileTouch:
+            return "MOBILE"
+        }
+    }
+
+    var clientPlatformName: String {
+        switch self {
+        case .desktop:
+            return "windows"
+        case .mobileTouch:
+            return "ios"
+        }
+    }
+
+    var clientIdentification: String {
+        switch self {
+        case .desktop:
+            return "GFN-PC"
+        case .mobileTouch:
+            return "GFN-MOBILE"
+        }
+    }
+
+    var metadata: [[String: String]] {
+        switch self {
+        case .desktop:
+            return []
+        case .mobileTouch:
+            return [
+                ["key": "MobileTouchInput", "value": "1"],
+                ["key": "InputDeviceClass", "value": "touch"]
+            ]
+        }
     }
 }
 
@@ -743,19 +953,27 @@ private actor GFNAPIClient {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let base = streamingBaseUrl.map { $0.hasSuffix("/") ? String($0.dropLast()) : $0 }
             ?? "https://\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
+        let deviceProfile = Self.streamDeviceProfile(for: game.title, settings: settings)
         let url = URL(string: "\(base)/v2/session?keyboardLayout=en-US&languageCode=en_US")!
         let body = Self.buildSessionBody(
             appId: launchAppId,
             title: game.title,
             fps: settings.preferredFPS,
-            launcherName: launcherName
+            launcherName: launcherName,
+            deviceProfile: deviceProfile
         )
         let clientId = UUID().uuidString
         let deviceId = UUID().uuidString
         let (data, response) = try await request(
             url: url,
             method: "POST",
-            headers: Self.cloudMatchHeaders(token: token, clientId: clientId, deviceId: deviceId, includeOrigin: true),
+            headers: Self.cloudMatchHeaders(
+                token: token,
+                clientId: clientId,
+                deviceId: deviceId,
+                includeOrigin: true,
+                deviceProfile: deviceProfile
+            ),
             body: body
         )
         guard response.statusCode == 200 else {
@@ -1025,15 +1243,27 @@ private actor GFNAPIClient {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let clientId = UUID().uuidString
         let deviceId = UUID().uuidString
+        let deviceProfile = Self.streamDeviceProfile(for: game.title, settings: settings)
         let zoneBase = "https://\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
         let targetHost = candidate.serverIp ?? URL(string: zoneBase)?.host ?? "\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
         let claimURL = URL(string: "https://\(targetHost)/v2/session/\(candidate.id)?keyboardLayout=en-US&languageCode=en_US")!
-        let claimBody = Self.buildClaimBody(sessionId: candidate.id, appId: candidate.appId ?? game.launchAppId ?? "0", settings: settings)
+        let claimBody = Self.buildClaimBody(
+            sessionId: candidate.id,
+            appId: candidate.appId ?? game.launchAppId ?? "0",
+            settings: settings,
+            deviceProfile: deviceProfile
+        )
 
         let (claimData, claimResponse) = try await request(
             url: claimURL,
             method: "PUT",
-            headers: Self.cloudMatchHeaders(token: token, clientId: clientId, deviceId: deviceId, includeOrigin: true),
+            headers: Self.cloudMatchHeaders(
+                token: token,
+                clientId: clientId,
+                deviceId: deviceId,
+                includeOrigin: true,
+                deviceProfile: deviceProfile
+            ),
             body: claimBody
         )
         if !(claimResponse.statusCode == 200 || claimResponse.statusCode == 400) {
@@ -1699,7 +1929,8 @@ private actor GFNAPIClient {
         token: String,
         clientId: String,
         deviceId: String,
-        includeOrigin: Bool
+        includeOrigin: Bool,
+        deviceProfile: StreamDeviceProfile = .desktop
     ) -> [String: String] {
         var headers: [String: String] = [
             "User-Agent": GFNConstants.userAgent,
@@ -1712,8 +1943,8 @@ private actor GFNAPIClient {
             "nv-client-version": GFNConstants.gfnClientVersion,
             "nv-device-make": "APPLE",
             "nv-device-model": UIDevice.current.model,
-            "nv-device-os": "WINDOWS",
-            "nv-device-type": "DESKTOP",
+            "nv-device-os": deviceProfile.nvDeviceOS,
+            "nv-device-type": deviceProfile.nvDeviceType,
             "x-device-id": deviceId
         ]
         if includeOrigin {
@@ -1723,7 +1954,23 @@ private actor GFNAPIClient {
         return headers
     }
 
-    private static func buildSessionBody(appId: String, title: String, fps: Int, launcherName: String) -> Data {
+    private static func buildSessionBody(
+        appId: String,
+        title: String,
+        fps: Int,
+        launcherName: String,
+        deviceProfile: StreamDeviceProfile
+    ) -> Data {
+        let metadata: [[String: String]] = [
+            ["key": "SubSessionId", "value": UUID().uuidString],
+            ["key": "wssignaling", "value": "1"],
+            ["key": "GSStreamerType", "value": "WebRTC"],
+            ["key": "networkType", "value": "Unknown"],
+            ["key": "ClientImeSupport", "value": "0"],
+            ["key": "preferredLauncher", "value": launcherName],
+            ["key": "clientPhysicalResolution", "value": "{\"horizontalPixels\":1920,\"verticalPixels\":1080}"],
+            ["key": "surroundAudioInfo", "value": "2"]
+        ] + deviceProfile.metadata
         let body: [String: Any] = [
             "sessionRequestData": [
                 "appId": appId,
@@ -1731,12 +1978,12 @@ private actor GFNAPIClient {
                 "availableSupportedControllers": [],
                 "networkTestSessionId": NSNull(),
                 "parentSessionId": NSNull(),
-                "clientIdentification": "GFN-PC",
+                "clientIdentification": deviceProfile.clientIdentification,
                 "deviceHashId": UUID().uuidString,
                 "clientVersion": "30.0",
                 "sdkVersion": "1.0",
                 "streamerVersion": 1,
-                "clientPlatformName": "windows",
+                "clientPlatformName": deviceProfile.clientPlatformName,
                 "clientRequestMonitorSettings": [[
                     "widthInPixels": 1920,
                     "heightInPixels": 1080,
@@ -1751,16 +1998,7 @@ private actor GFNAPIClient {
                 ]],
                 "useOps": true,
                 "audioMode": 2,
-                "metaData": [
-                    ["key": "SubSessionId", "value": UUID().uuidString],
-                    ["key": "wssignaling", "value": "1"],
-                    ["key": "GSStreamerType", "value": "WebRTC"],
-                    ["key": "networkType", "value": "Unknown"],
-                    ["key": "ClientImeSupport", "value": "0"],
-                    ["key": "preferredLauncher", "value": launcherName],
-                    ["key": "clientPhysicalResolution", "value": "{\"horizontalPixels\":1920,\"verticalPixels\":1080}"],
-                    ["key": "surroundAudioInfo", "value": "2"]
-                ],
+                "metaData": metadata,
                 "sdrHdrMode": 0,
                 "surroundAudioInfo": 0,
                 "remoteControllersBitmap": 0,
@@ -1793,7 +2031,19 @@ private actor GFNAPIClient {
         return (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
     }
 
-    private static func buildClaimBody(sessionId: String, appId: String, settings: AppSettings) -> Data {
+    private static func buildClaimBody(
+        sessionId: String,
+        appId: String,
+        settings: AppSettings,
+        deviceProfile: StreamDeviceProfile
+    ) -> Data {
+        let metadata: [[String: String]] = [
+            ["key": "SubSessionId", "value": UUID().uuidString],
+            ["key": "wssignaling", "value": "1"],
+            ["key": "GSStreamerType", "value": "WebRTC"],
+            ["key": "networkType", "value": "Unknown"],
+            ["key": "ClientImeSupport", "value": "0"]
+        ] + deviceProfile.metadata
         let body: [String: Any] = [
             "action": 2,
             "data": "RESUME",
@@ -1806,17 +2056,11 @@ private actor GFNAPIClient {
                 "clientVersion": "30.0",
                 "deviceHashId": UUID().uuidString,
                 "internalTitle": NSNull(),
-                "clientPlatformName": "windows",
-                "metaData": [
-                    ["key": "SubSessionId", "value": UUID().uuidString],
-                    ["key": "wssignaling", "value": "1"],
-                    ["key": "GSStreamerType", "value": "WebRTC"],
-                    ["key": "networkType", "value": "Unknown"],
-                    ["key": "ClientImeSupport", "value": "0"]
-                ],
+                "clientPlatformName": deviceProfile.clientPlatformName,
+                "metaData": metadata,
                 "surroundAudioInfo": 0,
                 "clientTimezoneOffset": -TimeZone.current.secondsFromGMT() * 1000,
-                "clientIdentification": "GFN-PC",
+                "clientIdentification": deviceProfile.clientIdentification,
                 "parentSessionId": NSNull(),
                 "appId": Int(appId) ?? 0,
                 "streamerVersion": 1,
@@ -1845,6 +2089,15 @@ private actor GFNAPIClient {
             "metaData": []
         ]
         return (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
+    }
+
+    private static func streamDeviceProfile(for gameTitle: String, settings: AppSettings) -> StreamDeviceProfile {
+        guard settings.fortnitePrefersNativeTouch else { return .desktop }
+        let normalized = gameTitle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.contains("fortnite") {
+            return .mobileTouch
+        }
+        return .desktop
     }
 
     private static func generatePKCE() -> (verifier: String, challenge: String) {
@@ -2315,6 +2568,11 @@ final class OpenNOWStore: ObservableObject {
         if let encoded = try? JSONEncoder().encode(settings) {
             defaults.set(encoded, forKey: settingsKey)
         }
+    }
+
+    func updateTouchControlLayout(_ layout: TouchControlLayout, profile: String) {
+        settings.touchControlLayouts[profile] = layout
+        persistSettings()
     }
 
     var authProviderCode: String? {
