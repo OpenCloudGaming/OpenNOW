@@ -88,6 +88,9 @@ struct MainTabView: View {
                 StreamerView(
                     session: session,
                     settings: store.settings,
+                    onTouchLayoutChange: { profile, layout in
+                        store.updateTouchControlLayout(layout, profile: profile)
+                    },
                     onClose: {
                         presentedStreamerSession = nil
                         streamerAutoRetryCount = 0

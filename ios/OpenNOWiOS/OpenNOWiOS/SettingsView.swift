@@ -55,8 +55,15 @@ struct SettingsView: View {
                         Spacer()
                         Toggle("", isOn: $store.settings.showStatsOverlay)
                     }
+                    HStack {
+                        Label("Fortnite Mobile Touch", systemImage: "hand.tap.fill")
+                        Spacer()
+                        Toggle("", isOn: $store.settings.fortnitePrefersNativeTouch)
+                    }
                 } header: {
                     Label("Experience", systemImage: "star.fill")
+                } footer: {
+                    Text("When enabled, Fortnite sessions advertise a mobile touch device profile so the game can surface its native mobile controls.")
                 }
 
                 Section {
