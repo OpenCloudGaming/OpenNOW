@@ -877,6 +877,8 @@ export function App(): JSX.Element {
   const [navbarActiveSession, setNavbarActiveSession] = useState<ActiveSessionInfo | null>(null);
   const [isResumingNavbarSession, setIsResumingNavbarSession] = useState(false);
   const [isTerminatingNavbarSession, setIsTerminatingNavbarSession] = useState(false);
+  const [accountToRemove, setAccountToRemove] = useState<string | null>(null);
+  const [removeAccountConfirmOpen, setRemoveAccountConfirmOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
   const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
@@ -2398,8 +2400,18 @@ export function App(): JSX.Element {
     }
   }, [loadSessionRuntimeData, refreshNavbarActiveSession, refreshSavedAccounts]);
 
-  const handleRemoveAccount = useCallback(async (userId: string) => {
-    await window.openNow.removeAccount(userId);
+  const handleRemoveAccount = useCallback((userId: string) => {
+    setAccountToRemove(userId);
+    setRemoveAccountConfirmOpen(true);
+  }, []);
+
+  const confirmRemoveAccount = useCallback(async () => {
+    if (!accountToRemove) return;
+    const targetUserId = accountToRemove;
+    setRemoveAccountConfirmOpen(false);
+    setAccountToRemove(null);
+
+    await window.openNow.removeAccount(targetUserId);
     const [accounts, sessionResult] = await Promise.all([
       window.openNow.getSavedAccounts(),
       window.openNow.getAuthSession(),
@@ -2419,7 +2431,7 @@ export function App(): JSX.Element {
     setCatalogSortOptions([]);
     setCatalogTotalCount(0);
     setCatalogSupportedCount(0);
-  }, [loadSessionRuntimeData]);
+  }, [accountToRemove, loadSessionRuntimeData]);
 
   const handleAddAccount = useCallback(() => {
     setAuthSession(null);
@@ -2936,15 +2948,24 @@ export function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (!logoutConfirmOpen) return;
+    if (!logoutConfirmOpen && !removeAccountConfirmOpen) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setLogoutConfirmOpen(false);
+        if (removeAccountConfirmOpen) {
+          setRemoveAccountConfirmOpen(false);
+          setAccountToRemove(null);
+        } else if (logoutConfirmOpen) {
+          setLogoutConfirmOpen(false);
+        }
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        void confirmLogout();
+        if (removeAccountConfirmOpen) {
+          void confirmRemoveAccount();
+        } else if (logoutConfirmOpen) {
+          void confirmLogout();
+        }
       }
     };
 
@@ -2956,7 +2977,11 @@ export function App(): JSX.Element {
       window.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = previousOverflow;
     };
-  }, [confirmLogout, logoutConfirmOpen]);
+  }, [confirmLogout, confirmRemoveAccount, logoutConfirmOpen, removeAccountConfirmOpen]);
+
+  const accountToRemoveDisplayName = useMemo(() => (
+    savedAccounts.find((account) => account.userId === accountToRemove)?.displayName ?? "this account"
+  ), [accountToRemove, savedAccounts]);
 
   const logoutConfirmModal = logoutConfirmOpen && typeof document !== "undefined"
     ? createPortal(
@@ -2992,6 +3017,57 @@ export function App(): JSX.Element {
                 }}
               >
                 Log Out
+              </button>
+            </div>
+            <div className="logout-confirm-hint">
+              <kbd>Enter</kbd> confirm · <kbd>Esc</kbd> cancel
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )
+    : null;
+
+  const removeAccountConfirmModal = removeAccountConfirmOpen && typeof document !== "undefined"
+    ? createPortal(
+        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label="Remove account confirmation">
+          <button
+            type="button"
+            className="logout-confirm-backdrop"
+            onClick={() => {
+              setRemoveAccountConfirmOpen(false);
+              setAccountToRemove(null);
+            }}
+            aria-label="Cancel account removal"
+          />
+          <div className="logout-confirm-card">
+            <div className="logout-confirm-kicker">Accounts</div>
+            <h3 className="logout-confirm-title">Remove account?</h3>
+            <p className="logout-confirm-text">
+              Are you sure you want to remove {accountToRemoveDisplayName} from saved accounts?
+            </p>
+            <p className="logout-confirm-subtext">
+              You can add this account again by signing in.
+            </p>
+            <div className="logout-confirm-actions">
+              <button
+                type="button"
+                className="logout-confirm-btn logout-confirm-btn-cancel"
+                onClick={() => {
+                  setRemoveAccountConfirmOpen(false);
+                  setAccountToRemove(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="logout-confirm-btn logout-confirm-btn-confirm"
+                onClick={() => {
+                  void confirmRemoveAccount();
+                }}
+              >
+                Remove
               </button>
             </div>
             <div className="logout-confirm-hint">
@@ -3871,6 +3947,7 @@ export function App(): JSX.Element {
       )}
 
       {logoutConfirmModal}
+      {removeAccountConfirmModal}
       {queueModalGame && streamStatus === "idle" && (
         <QueueServerSelectModal
           game={queueModalGame}
