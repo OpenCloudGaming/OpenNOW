@@ -755,7 +755,7 @@ private struct StreamerWebView: UIViewRepresentable {
   function startOfferTimeout() {
     clearOfferTimeout();
     offerTimeoutTimer = setTimeout(() => {
-      fail('Offer timeout, retrying signaling');
+      post('status', 'Offer timeout, retrying signaling');
       if (ws && ws.readyState === WebSocket.OPEN) {
         try { ws.close(); } catch (_) {}
       }
@@ -2449,7 +2449,7 @@ private struct StreamerWebView: UIViewRepresentable {
       ws = new WebSocket(signIn, 'x-nv-sessionid.' + cfg.sessionId);
       signalingOpenTimeout = setTimeout(() => {
         if (!ws || ws.readyState !== WebSocket.OPEN) {
-          fail('Signaling connect timeout');
+          post('status', 'Signaling connect timeout');
           try { if (ws) ws.close(); } catch (_) {}
           scheduleReconnect('socket timeout');
         }
@@ -2472,7 +2472,7 @@ private struct StreamerWebView: UIViewRepresentable {
           post('status', 'Signaling error (ignored after offer)');
           return;
         }
-        fail('Signaling error');
+        post('status', 'Signaling error, retrying');
         clearOfferTimeout();
         scheduleReconnect('socket error');
       };
@@ -2642,12 +2642,6 @@ private struct StreamerWebView: UIViewRepresentable {
             switch type {
             case "status":
                 onEvent("Status: \(msg)")
-                if msg.localizedCaseInsensitiveContains("error")
-                    || msg.localizedCaseInsensitiveContains("reconnect")
-                    || msg.localizedCaseInsensitiveContains("timeout")
-                {
-                    onEvent("Error: \(msg)")
-                }
             case "error":
                 onEvent("Error: \(msg)")
             case "log":

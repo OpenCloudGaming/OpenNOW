@@ -67,7 +67,7 @@ struct HomeView: View {
                     .frame(width: 44, height: 44)
                 Text(String(user.displayName.prefix(1)).uppercased())
                     .font(.headline.bold())
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.white)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -267,7 +267,7 @@ private struct JumpBackInCard: View {
                         .foregroundStyle(.primary)
                     Text(subtitle)
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.white)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(statusTint.opacity(0.92), in: Capsule())
@@ -282,7 +282,7 @@ private struct JumpBackInCard: View {
     }
 }
 
-private struct FeaturedGameCard: View {
+struct FeaturedGameCard: View {
     let game: CloudGame
     let onOpenDetails: () -> Void
 
@@ -291,27 +291,14 @@ private struct FeaturedGameCard: View {
             Haptics.light()
             onOpenDetails()
         }) {
-            VStack(alignment: .leading, spacing: 0) {
-                GameArtworkView(game: game, iconSize: 48)
-                    .frame(width: 160, height: 100)
-                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 14))
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(game.title)
-                        .font(.caption.bold())
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(height: 32, alignment: .top)
-                    Text(game.platform)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(height: 14, alignment: .top)
-                }
-                .padding(10)
-            }
-            .frame(width: 160)
-            .glassCard()
+            GameArtworkCard(
+                game: game,
+                artworkHeight: 176,
+                titleFont: .headline.bold(),
+                subtitleFont: .caption.weight(.medium),
+                storeBadgeLimit: 2
+            )
+            .frame(width: 260)
             .contentShape(RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
@@ -366,30 +353,14 @@ struct GameCardView: View {
             Haptics.light()
             onOpenDetails()
         }) {
-            VStack(alignment: .leading, spacing: 8) {
-                GameArtworkView(game: game, iconSize: 32)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 112)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(game.title)
-                        .font(.caption.bold())
-                        .lineLimit(2)
-                        .frame(height: 32, alignment: .topLeading)
-                    Text("\(game.genre) · \(game.platform)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(height: 14, alignment: .topLeading)
-                }
-
-                Spacer(minLength: 0)
-            }
-            .padding(10)
+            GameArtworkCard(
+                game: game,
+                artworkHeight: 220,
+                titleFont: .headline.bold(),
+                subtitleFont: .caption.weight(.medium),
+                storeBadgeLimit: 2
+            )
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .frame(height: 220)
-            .glassCard()
             .contentShape(RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
@@ -411,107 +382,108 @@ struct GameLaunchDetailsSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                GameArtworkView(game: game, iconSize: 40)
-                    .frame(height: 160)
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
-                    .glassCard()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    detailHero
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(game.title)
-                        .font(.title3.bold())
-                    Text("\(game.genre) · \(game.platform)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                if let summary = game.summary, !summary.isEmpty {
-                    Text(summary)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 2)
-                }
-
-                VStack(spacing: 8) {
-                    if let releaseDate = game.releaseDate {
-                        metadataRow(label: "Release", value: releaseDate, icon: "calendar")
-                    }
-                    if let publisher = game.publisher {
-                        metadataRow(label: "Publisher", value: publisher, icon: "building.2")
-                    }
-                    if let developer = game.developer {
-                        metadataRow(label: "Developer", value: developer, icon: "hammer")
-                    }
-                    if let stores = resolvedStores, !stores.isEmpty {
-                        metadataRow(label: "Stores", value: stores.joined(separator: ", "), icon: "bag")
-                    }
-                    if let appId = game.uuid {
-                        metadataRow(label: "Game ID", value: appId, icon: "number")
-                    }
-                }
-
-                if launcherOptions.isEmpty {
-                    Text("This game doesn't expose launch targets yet.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                } else {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Launch With")
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Overview")
                             .font(.headline)
-                        ForEach(launcherOptions) { option in
-                            Button {
-                                Haptics.selection()
-                                selectedOption = option
-                            } label: {
-                                HStack {
-                                    Text(option.storefront.capitalized)
-                                        .font(.subheadline.weight(.semibold))
-                                    Spacer()
-                                    if selectedOption?.id == option.id {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundStyle(brandAccent)
+                        Text(summaryText)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if !resolvedStores.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Storefronts")
+                                .font(.headline)
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 10) {
+                                    ForEach(resolvedStores, id: \.self) { store in
+                                        StorePill(store: store, prominent: true)
                                     }
                                 }
-                                .padding(12)
-                                .glassCard()
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-
-                if let tags = game.tags, !tags.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(tags.prefix(10), id: \.self) { tag in
-                                Text(tag)
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color(.systemFill), in: Capsule())
                             }
                         }
                     }
-                }
 
-                Button {
-                    Haptics.medium()
-                    onLaunch(selectedOption ?? launcherOptions.first)
-                    dismiss()
-                } label: {
-                    Text("Launch")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(brandAccent)
-                .disabled(launcherOptions.isEmpty)
+                    LazyVGrid(columns: detailMetadataColumns, spacing: 12) {
+                        if let releaseDate = game.releaseDate {
+                            GameMetaCard(label: "Release", value: releaseDate, icon: "calendar")
+                        }
+                        if let publisher = game.publisher {
+                            GameMetaCard(label: "Publisher", value: publisher, icon: "building.2")
+                        }
+                        if let developer = game.developer {
+                            GameMetaCard(label: "Developer", value: developer, icon: "hammer")
+                        }
+                        GameMetaCard(label: "Genre", value: game.genre, icon: "sparkles.tv")
+                        GameMetaCard(label: "Platform", value: game.platform, icon: "gamecontroller")
+                        if let appId = game.uuid {
+                            GameMetaCard(label: "Game ID", value: appId, icon: "number")
+                        }
+                    }
 
-                Spacer(minLength: 0)
+                    if launcherOptions.isEmpty {
+                        Text("This game doesn't expose launch targets yet.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Launch With")
+                                .font(.headline)
+                            ForEach(launcherOptions) { option in
+                                Button {
+                                    Haptics.selection()
+                                    selectedOption = option
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        StoreGlyph(store: option.storefront)
+                                            .frame(width: 34, height: 34)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(option.storefront.capitalized)
+                                                .font(.subheadline.weight(.semibold))
+                                            Text("Launch app ID \(option.appId)")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                        Spacer()
+                                        if selectedOption?.id == option.id {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundStyle(brandAccent)
+                                        }
+                                    }
+                                    .padding(14)
+                                    .glassCard()
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    if let tags = game.tags, !tags.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Tags")
+                                .font(.headline)
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(tags.prefix(12), id: \.self) { tag in
+                                        Text(tag)
+                                            .font(.caption.weight(.semibold))
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 6)
+                                            .background(Color(.systemFill), in: Capsule())
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(20)
             }
-            .padding(20)
             .navigationTitle("Game Details")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -525,6 +497,25 @@ struct GameLaunchDetailsSheet: View {
                     }
                 }
             }
+            .safeAreaInset(edge: .bottom) {
+                Button {
+                    Haptics.medium()
+                    onLaunch(selectedOption ?? launcherOptions.first)
+                    dismiss()
+                } label: {
+                    Text(launcherOptions.isEmpty ? "Launch Unavailable" : "Launch")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(brandAccent)
+                .disabled(launcherOptions.isEmpty)
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+                .background(.regularMaterial)
+            }
             .background(appBackground)
         }
         .onAppear {
@@ -532,35 +523,284 @@ struct GameLaunchDetailsSheet: View {
         }
     }
 
-    private var resolvedStores: [String]? {
+    private var resolvedStores: [String] {
         if let stores = game.stores, !stores.isEmpty {
             return stores
         }
         let derived = Array(Set(launcherOptions.map(\.storefront))).sorted()
-        return derived.isEmpty ? nil : derived
+        return derived
+    }
+
+    private var summaryText: String {
+        let trimmed = game.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        return "\(game.title) is available through \(resolvedStores.isEmpty ? game.platform : resolvedStores.joined(separator: ", ")) on OpenNOW."
+    }
+
+    private var detailMetadataColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 12)]
+    }
+
+    private var detailHero: some View {
+        ZStack(alignment: .bottomLeading) {
+            GameArtworkView(game: game, iconSize: 44)
+                .frame(height: 260)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Text(game.genre)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.white.opacity(0.16), in: Capsule())
+
+                    Text(game.platform)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.white.opacity(0.12), in: Capsule())
+                }
+
+                Text(game.title)
+                    .font(.title2.bold())
+                    .foregroundStyle(Color.white)
+                    .lineLimit(2)
+
+                if !resolvedStores.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(Array(resolvedStores.prefix(3)), id: \.self) { store in
+                            StorePill(store: store, prominent: false)
+                        }
+                    }
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.15), .black.opacity(0.48)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .overlay(alignment: .bottomLeading) {
+                Rectangle()
+                    .fill(.ultraThinMaterial.opacity(0.85))
+                    .frame(height: 108)
+                    .mask(
+                        LinearGradient(
+                            colors: [.clear, Color.white.opacity(0.35), Color.white],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .clipShape(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: 0,
+                            bottomLeadingRadius: 24,
+                            bottomTrailingRadius: 24,
+                            topTrailingRadius: 0
+                        )
+                    )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+}
+
+private struct GameArtworkCard: View {
+    let game: CloudGame
+    let artworkHeight: CGFloat
+    let titleFont: Font
+    let subtitleFont: Font
+    let storeBadgeLimit: Int
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            GameArtworkView(game: game, iconSize: 36)
+                .frame(maxWidth: .infinity)
+                .frame(height: artworkHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(game.title)
+                    .font(titleFont)
+                    .foregroundStyle(Color.white)
+                    .lineLimit(2)
+
+                Text("\(game.genre) · \(game.platform)")
+                    .font(subtitleFont)
+                    .foregroundStyle(Color.white.opacity(0.82))
+                    .lineLimit(1)
+
+                if !displayStores.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(displayStores, id: \.self) { store in
+                            StorePill(store: store, prominent: false)
+                        }
+                    }
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(alignment: .bottom) {
+                ZStack(alignment: .bottom) {
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.18), .black.opacity(0.72)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 8)
+    }
+
+    private var displayStores: [String] {
+        Array(gameResolvedStores(game: game).prefix(storeBadgeLimit))
+    }
+}
+
+private struct GameMetaCard: View {
+    let label: String
+    let value: String
+    let icon: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(label, systemImage: icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, minHeight: 88, alignment: .topLeading)
+        .padding(14)
+        .glassCard()
+    }
+}
+
+private struct StorePill: View {
+    let store: String
+    let prominent: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            StoreGlyph(store: store)
+                .frame(width: prominent ? 28 : 22, height: prominent ? 28 : 22)
+            if prominent {
+                Text(storeDisplayName(store))
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+            }
+        }
+        .foregroundColor(prominent ? .primary : .white)
+        .padding(.horizontal, prominent ? 12 : 7)
+        .padding(.vertical, prominent ? 10 : 7)
+        .background(backgroundShape)
     }
 
     @ViewBuilder
-    private func metadataRow(label: String, value: String, icon: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 16, height: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text(value)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
+    private var backgroundShape: some View {
+        if prominent {
+            Capsule()
+                .fill(.regularMaterial)
+                .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+        } else {
+            Capsule()
+                .fill(Color.white.opacity(0.12))
+                .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+private struct StoreGlyph: View {
+    let store: String
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(glyphBackground)
+            if let assetName {
+                Image(assetName)
+                    .resizable()
+                    .renderingMode(.original)
+                    .scaledToFit()
+                    .padding(imagePadding)
+            } else {
+                Image(systemName: "bag.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color.white)
+            }
+        }
+    }
+
+    private var normalizedStore: String {
+        storeNormalizedKey(store)
+    }
+
+    private var glyphBackground: some ShapeStyle {
+        switch normalizedStore {
+        case "steam":
+            return AnyShapeStyle(
+                LinearGradient(
+                    colors: [Color(red: 0.08, green: 0.16, blue: 0.24), Color(red: 0.17, green: 0.42, blue: 0.70)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+        case "epic":
+            return AnyShapeStyle(Color.black)
+        case "xbox":
+            return AnyShapeStyle(
+                LinearGradient(
+                    colors: [Color(red: 0.31, green: 0.66, blue: 0.17), Color(red: 0.15, green: 0.48, blue: 0.12)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+        default:
+            return AnyShapeStyle(Color.gray.opacity(0.8))
+        }
+    }
+
+    private var assetName: String? {
+        switch normalizedStore {
+        case "steam":
+            return "StoreSteam"
+        case "epic":
+            return "StoreEpic"
+        case "xbox":
+            return "StoreXbox"
+        default:
+            return nil
+        }
+    }
+
+    private var imagePadding: CGFloat {
+        switch normalizedStore {
+        case "epic":
+            return 3
+        case "xbox":
+            return 4
+        default:
+            return 2
+        }
     }
 }
 
@@ -586,7 +826,7 @@ struct GameCardSkeletonView: View {
     }
 }
 
-private struct GameArtworkView: View {
+struct GameArtworkView: View {
     let game: CloudGame
     let iconSize: CGFloat
 
@@ -702,6 +942,29 @@ extension View {
                 .frame(width: 0, height: 0)
         )
     }
+}
+
+private func storeNormalizedKey(_ store: String) -> String {
+    store.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+}
+
+private func storeDisplayName(_ store: String) -> String {
+    switch storeNormalizedKey(store) {
+    case "epic", "epic games":
+        return "Epic"
+    case "steam":
+        return "Steam"
+    default:
+        return store.capitalized
+    }
+}
+
+private func gameResolvedStores(game: CloudGame) -> [String] {
+    if let stores = game.stores, !stores.isEmpty {
+        return stores
+    }
+    let derived = Array(Set(game.launchOptions.map(\.storefront))).sorted()
+    return derived.isEmpty ? [game.platform] : derived
 }
 
 private struct UIKitGameDetailsPresenter: UIViewControllerRepresentable {

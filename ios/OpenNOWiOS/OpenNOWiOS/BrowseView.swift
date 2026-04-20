@@ -23,11 +23,11 @@ struct BrowseView: View {
                 if !genres.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
-                            FilterChip(label: "All", isSelected: selectedGenre == nil) {
+                            GameFilterChip(label: "All", isSelected: selectedGenre == nil) {
                                 selectedGenre = nil
                             }
                             ForEach(genres, id: \.self) { genre in
-                                FilterChip(label: genre, isSelected: selectedGenre == genre) {
+                                GameFilterChip(label: genre, isSelected: selectedGenre == genre) {
                                     selectedGenre = (selectedGenre == genre) ? nil : genre
                                 }
                             }
@@ -107,7 +107,7 @@ struct BrowseView: View {
     }
 }
 
-private struct FilterChip: View {
+struct GameFilterChip: View {
     let label: String
     let isSelected: Bool
     let action: () -> Void
