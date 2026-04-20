@@ -1,6 +1,6 @@
-import type { ActiveSessionInfo, AuthUser, SubscriptionInfo } from "@shared/gfn";
-import { House, Library, Settings, User, LogOut, Zap, Timer, HardDrive, X, Loader2, PlayCircle, Square } from "lucide-react";
-import { useEffect, useState, type JSX } from "react";
+import type { ActiveSessionInfo, AuthUser, SavedAccount, SubscriptionInfo } from "@shared/gfn";
+import { House, Library, Settings, User, Zap, Timer, HardDrive, X, Loader2, PlayCircle, Square, ChevronDown, Check, Plus } from "lucide-react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import { createPortal } from "react-dom";
 
 interface NavbarProps {
@@ -14,6 +14,10 @@ interface NavbarProps {
   isTerminatingSession: boolean;
   onResumeSession: () => void;
   onTerminateSession: () => void;
+  savedAccounts: SavedAccount[];
+  onSwitchAccount: (userId: string) => void;
+  onRemoveAccount: (userId: string) => void;
+  onAddAccount: () => void;
   onLogout: () => void;
 }
 
@@ -37,9 +41,15 @@ export function Navbar({
   isTerminatingSession,
   onResumeSession,
   onTerminateSession,
+  savedAccounts,
+  onSwitchAccount,
+  onRemoveAccount,
+  onAddAccount,
   onLogout,
 }: NavbarProps): JSX.Element {
   const [modalType, setModalType] = useState<NavbarModalType>(null);
+  const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
+  const accountContainerRef = useRef<HTMLDivElement | null>(null);
 
   const navItems = [
     { id: "home" as const, label: "Store", icon: House },
@@ -118,6 +128,18 @@ export function Navbar({
   const firstEntitlementStart = formatDateTime(subscription?.firstEntitlementStartDateTime);
   const modalTitle = modalType === "time" ? "Playtime Details" : "Storage Details";
   const activeSessionTitle = activeSessionGameTitle?.trim() || null;
+  const activeUserId = user?.userId ?? null;
+
+  useEffect(() => {
+    if (!accountDropdownOpen) return;
+    const onDocumentPointerDown = (event: MouseEvent) => {
+      if (!accountContainerRef.current?.contains(event.target as Node)) {
+        setAccountDropdownOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", onDocumentPointerDown);
+    return () => window.removeEventListener("mousedown", onDocumentPointerDown);
+  }, [accountDropdownOpen]);
 
   useEffect(() => {
     if (!modalType) return;
@@ -339,24 +361,123 @@ export function Navbar({
         )}
         {user ? (
           <>
-            <div className="navbar-user">
-              {user.avatarUrl ? (
-                <img src={user.avatarUrl} alt={user.displayName} className="navbar-avatar" />
-              ) : (
-                <div className="navbar-avatar-fallback">
-                  <User size={14} />
+            <div className="navbar-account-container" ref={accountContainerRef}>
+              <button
+                type="button"
+                className="navbar-user navbar-user--clickable"
+                onClick={() => setAccountDropdownOpen((previous) => !previous)}
+                aria-expanded={accountDropdownOpen}
+                aria-haspopup="menu"
+              >
+                {user.avatarUrl ? (
+                  <img src={user.avatarUrl} alt={user.displayName} className="navbar-avatar" />
+                ) : (
+                  <div className="navbar-avatar-fallback">
+                    <User size={14} />
+                  </div>
+                )}
+                <div className="navbar-user-info">
+                  <span className="navbar-username">{user.displayName}</span>
+                  {tierInfo && (
+                    <span className={`navbar-tier ${tierInfo.className}`}>{tierInfo.label}</span>
+                  )}
+                </div>
+                <ChevronDown
+                  size={14}
+                  className={`navbar-user-chevron${accountDropdownOpen ? " is-open" : ""}`}
+                />
+              </button>
+              {accountDropdownOpen && (
+                <div className="navbar-account-dropdown" role="menu" aria-label="Switch account">
+                  <div className="navbar-account-dropdown-header">Switch Account</div>
+                  <div className="navbar-account-list">
+                    {savedAccounts.map((account) => {
+                      const accountTierInfo = getTierDisplay(account.membershipTier);
+                      const isActive = activeUserId === account.userId;
+                      const canRemove = !isActive && savedAccounts.length > 1;
+                      return (
+                        <div
+                          key={account.userId}
+                          className={`navbar-account-item${isActive ? " navbar-account-item--active" : ""}`}
+                        >
+                          <button
+                            type="button"
+                            className="navbar-account-item-main"
+                            onClick={() => {
+                              if (!isActive) {
+                                onSwitchAccount(account.userId);
+                              }
+                              setAccountDropdownOpen(false);
+                            }}
+                            disabled={isActive}
+                          >
+                            {account.avatarUrl ? (
+                              <img
+                                src={account.avatarUrl}
+                                alt={account.displayName}
+                                className="navbar-account-item-avatar"
+                              />
+                            ) : (
+                              <div className="navbar-avatar-fallback navbar-account-item-avatar">
+                                <User size={12} />
+                              </div>
+                            )}
+                            <div className="navbar-account-item-info">
+                              <span className="navbar-account-item-name">{account.displayName}</span>
+                              {account.email && <span className="navbar-account-item-email">{account.email}</span>}
+                            </div>
+                            <div className="navbar-account-item-right">
+                              <span className={`navbar-account-item-tier ${accountTierInfo.className}`}>
+                                {accountTierInfo.label}
+                              </span>
+                              {isActive && (
+                                <span className="navbar-account-item-check" aria-label="Active account">
+                                  <Check size={14} />
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                          {canRemove && (
+                            <button
+                              type="button"
+                              className="navbar-account-remove"
+                              aria-label={`Remove ${account.displayName}`}
+                              onClick={() => {
+                                onRemoveAccount(account.userId);
+                              }}
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="navbar-account-divider" />
+                  <button
+                    type="button"
+                    className="navbar-account-add"
+                    onClick={() => {
+                      onAddAccount();
+                      setAccountDropdownOpen(false);
+                    }}
+                  >
+                    <Plus size={14} />
+                    <span>Add account</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="navbar-account-signout-all"
+                    onClick={() => {
+                      onLogout();
+                      setAccountDropdownOpen(false);
+                    }}
+                  >
+                    Sign out all accounts
+                  </button>
                 </div>
               )}
-              <div className="navbar-user-info">
-                <span className="navbar-username">{user.displayName}</span>
-                {tierInfo && (
-                  <span className={`navbar-tier ${tierInfo.className}`}>{tierInfo.label}</span>
-                )}
-              </div>
             </div>
-            <button onClick={onLogout} className="navbar-logout" title="Sign out">
-              <LogOut size={16} />
-            </button>
           </>
         ) : (
           <div className="navbar-guest">

@@ -37,7 +37,8 @@ const TOKEN_REFRESH_WINDOW_MS = 10 * 60 * 1000;
 const CLIENT_TOKEN_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 
 interface PersistedAuthState {
-  session: AuthSession | null;
+  sessions: AuthSession[];
+  activeUserId: string | null;
   selectedProvider: LoginProvider | null;
 }
 
@@ -434,7 +435,8 @@ async function fetchUserInfo(tokens: AuthTokens): Promise<AuthUser> {
 
 export class AuthService {
   private providers: LoginProvider[] = [];
-  private session: AuthSession | null = null;
+  private sessions = new Map<string, AuthSession>();
+  private activeUserId: string | null = null;
   private selectedProvider: LoginProvider = defaultProvider();
   private cachedSubscription: SubscriptionInfo | null = null;
   private cachedVpcId: string | null = null;
@@ -452,23 +454,46 @@ export class AuthService {
 
     try {
       const raw = await readFile(this.statePath, "utf8");
-      const parsed = JSON.parse(raw) as PersistedAuthState;
+      const parsed = JSON.parse(raw) as Partial<PersistedAuthState> & {
+        session?: AuthSession | null;
+      };
       if (parsed.selectedProvider) {
         this.selectedProvider = normalizeProvider(parsed.selectedProvider);
       }
-      if (parsed.session) {
-        this.session = {
+
+      this.sessions.clear();
+      if (Array.isArray(parsed.sessions)) {
+        for (const persistedSession of parsed.sessions) {
+          if (!persistedSession?.user?.userId) {
+            continue;
+          }
+          this.sessions.set(persistedSession.user.userId, {
+            ...persistedSession,
+            provider: normalizeProvider(persistedSession.provider),
+          });
+        }
+      } else if (parsed.session?.user?.userId) {
+        this.sessions.set(parsed.session.user.userId, {
           ...parsed.session,
           provider: normalizeProvider(parsed.session.provider),
-        };
+        });
+      }
 
-        // Refresh the real tier from MES API on session restore
-        // (persisted tier may be stale or was "FREE" from JWT fallback)
+      if (typeof parsed.activeUserId === "string" && this.sessions.has(parsed.activeUserId)) {
+        this.activeUserId = parsed.activeUserId;
+      } else {
+        this.activeUserId = this.sessions.keys().next().value ?? null;
+      }
+
+      const restoredSession = this.getSession();
+      if (restoredSession) {
+        this.selectedProvider = restoredSession.provider;
         await this.enrichUserTier();
         await this.persist();
       }
     } catch {
-      this.session = null;
+      this.sessions.clear();
+      this.activeUserId = null;
       this.selectedProvider = defaultProvider();
       await this.persist();
     }
@@ -476,7 +501,8 @@ export class AuthService {
 
   private async persist(): Promise<void> {
     const payload: PersistedAuthState = {
-      session: this.session,
+      sessions: Array.from(this.sessions.values()),
+      activeUserId: this.activeUserId,
       selectedProvider: this.selectedProvider,
     };
 
@@ -556,12 +582,97 @@ export class AuthService {
     }
   }
 
+  setSession(session: AuthSession | null): void {
+    if (!session) {
+      this.sessions.clear();
+      this.activeUserId = null;
+      this.selectedProvider = defaultProvider();
+      this.clearSubscriptionCache();
+      this.clearVpcCache();
+      void this.persist();
+      return;
+    }
+
+    const normalized: AuthSession = {
+      ...session,
+      provider: normalizeProvider(session.provider),
+    };
+    this.sessions.set(normalized.user.userId, normalized);
+    this.activeUserId = normalized.user.userId;
+    this.selectedProvider = normalized.provider;
+    this.clearSubscriptionCache();
+    this.clearVpcCache();
+    void this.persist();
+  }
+
   getSession(): AuthSession | null {
-    return this.session;
+    if (!this.activeUserId) {
+      return null;
+    }
+    return this.sessions.get(this.activeUserId) ?? null;
+  }
+
+  getSavedAccounts(): Array<{
+    userId: string;
+    displayName: string;
+    email?: string;
+    avatarUrl?: string;
+    membershipTier: string;
+    providerCode: string;
+  }> {
+    return Array.from(this.sessions.values()).map((session) => ({
+      userId: session.user.userId,
+      displayName: session.user.displayName,
+      email: session.user.email,
+      avatarUrl: session.user.avatarUrl,
+      membershipTier: session.user.membershipTier,
+      providerCode: session.provider.code,
+    }));
+  }
+
+  async switchAccount(userId: string): Promise<AuthSession> {
+    const target = this.sessions.get(userId);
+    if (!target) {
+      throw new Error("Saved account not found");
+    }
+    this.activeUserId = userId;
+    this.selectedProvider = target.provider;
+    this.clearSubscriptionCache();
+    this.clearVpcCache();
+
+    const result = await this.ensureValidSessionWithStatus(true);
+    if (!result.session || result.refresh.outcome === "failed") {
+      await this.removeAccount(userId);
+      throw new Error(result.refresh.message);
+    }
+    return result.session;
+  }
+
+  async removeAccount(userId: string): Promise<void> {
+    const removed = this.sessions.delete(userId);
+    if (!removed) {
+      return;
+    }
+    if (this.activeUserId === userId) {
+      this.activeUserId = this.sessions.keys().next().value ?? null;
+    }
+    this.selectedProvider = this.getSession()?.provider ?? defaultProvider();
+    this.clearSubscriptionCache();
+    this.clearVpcCache();
+    await this.persist();
+  }
+
+  async logoutAll(): Promise<void> {
+    this.sessions.clear();
+    this.activeUserId = null;
+    this.selectedProvider = defaultProvider();
+    this.cachedSubscription = null;
+    this.clearVpcCache();
+    await this.persist();
   }
 
   getSelectedProvider(): LoginProvider {
-    return this.selectedProvider;
+    return this.getSession()?.provider ?? this.selectedProvider;
   }
 
   async getRegions(explicitToken?: string): Promise<StreamRegion[]> {
@@ -645,22 +756,32 @@ export class AuthService {
       console.warn("Unable to fetch client token after login. Falling back to OAuth token only:", error);
     }
 
-    this.session = {
+    const nextSession: AuthSession = {
       provider: this.selectedProvider,
       tokens,
       user,
     };
+    this.sessions.set(user.userId, nextSession);
+    this.activeUserId = user.userId;
+    this.selectedProvider = nextSession.provider;
+    this.clearSubscriptionCache();
+    this.clearVpcCache();
 
     // Fetch real membership tier from MES subscription API
     // (JWT does not contain gfn_tier, so fetchUserInfo always falls back to "FREE")
     await this.enrichUserTier();
 
     await this.persist();
-    return this.session;
+    return this.getSession() as AuthSession;
   }
 
   async logout(): Promise<void> {
-    this.session = null;
+    if (!this.activeUserId) {
+      return;
+    }
+    this.sessions.delete(this.activeUserId);
+    this.activeUserId = this.sessions.keys().next().value ?? null;
+    this.selectedProvider = this.getSession()?.provider ?? defaultProvider();
     this.cachedSubscription = null;
     this.clearVpcCache();
     await this.persist();
@@ -685,7 +806,7 @@ export class AuthService {
     const userId = session.user.userId;
 
     // Fetch dynamic regions to get the VPC ID (handles Alliance partners correctly)
-    const { vpcId } = await fetchDynamicRegions(token, this.selectedProvider.streamingServiceUrl);
+    const { vpcId } = await fetchDynamicRegions(token, session.provider.streamingServiceUrl);
 
     const subscription = await fetchSubscription(token, userId, vpcId ?? undefined);
     this.cachedSubscription = subscription;
@@ -789,18 +910,19 @@ export class AuthService {
    * Falls back silently to the existing tier if the fetch fails.
    */
   private async enrichUserTier(): Promise<void> {
-    if (!this.session) return;
+    const session = this.getSession();
+    if (!session) return;
 
     try {
       const subscription = await this.getSubscription();
       if (subscription && subscription.membershipTier) {
-        this.session = {
-          ...this.session,
+        this.sessions.set(session.user.userId, {
+          ...session,
           user: {
-            ...this.session.user,
+            ...session.user,
             membershipTier: subscription.membershipTier,
           },
-        };
+        });
         console.log(`Resolved membership tier: ${subscription.membershipTier}`);
       }
     } catch (error) {
@@ -813,7 +935,8 @@ export class AuthService {
   }
 
   async ensureValidSessionWithStatus(forceRefresh = false): Promise<AuthSessionResult> {
-    if (!this.session) {
+    const currentSession = this.getSession();
+    if (!currentSession) {
       return {
         session: null,
         refresh: {
@@ -825,8 +948,8 @@ export class AuthService {
       };
     }
 
-    const userId = this.session.user.userId;
-    let tokens = this.session.tokens;
+    const userId = currentSession.user.userId;
+    let tokens = currentSession.tokens;
 
     // Official GFN client flow relies on client_token-based refresh. Bootstrap it
     // for older sessions that were saved before we persisted client tokens.
@@ -834,10 +957,10 @@ export class AuthService {
       try {
         const withClientToken = await this.ensureClientToken(tokens, userId);
         if (withClientToken.clientToken && withClientToken.clientToken !== tokens.clientToken) {
-          this.session = {
-            ...this.session,
+          this.sessions.set(userId, {
+            ...currentSession,
             tokens: withClientToken,
-          };
+          });
           tokens = withClientToken;
           await this.persist();
         }
@@ -849,7 +972,7 @@ export class AuthService {
     const shouldRefreshNow = forceRefresh || this.shouldRefresh(tokens);
     if (!shouldRefreshNow) {
       return {
-        session: this.session,
+        session: this.getSession(),
         refresh: {
           attempted: false,
           forced: forceRefresh,
@@ -863,7 +986,8 @@ export class AuthService {
       refreshedTokens: AuthTokens,
       source: "client_token" | "refresh_token",
     ): Promise<AuthSessionResult> => {
-      let user = this.session?.user;
+      const latestSession = this.getSession() ?? currentSession;
+      let user = latestSession.user;
       try {
         user = await fetchUserInfo(refreshedTokens);
         console.debug("auth: fetched user info on token refresh", { userId: user.userId, email: user.email, avatarUrl: user.avatarUrl });
@@ -871,11 +995,12 @@ export class AuthService {
         console.warn("Token refresh succeeded but user info refresh failed. Keeping cached user:", error);
       }
 
-      this.session = {
-        provider: this.session!.provider,
+      const updatedSession: AuthSession = {
+        provider: latestSession.provider,
         tokens: refreshedTokens,
-        user: user ?? this.session!.user,
+        user: user ?? latestSession.user,
       };
+      this.sessions.set(updatedSession.user.userId, updatedSession);
 
       // Re-fetch real tier after token refresh
       this.clearSubscriptionCache();
@@ -884,7 +1009,7 @@ export class AuthService {
 
       const sourceText = source === "client_token" ? "client token" : "refresh token";
       return {
-        session: this.session,
+        session: this.getSession(),
         refresh: {
           attempted: true,
           forced: forceRefresh,
@@ -938,7 +1063,7 @@ export class AuthService {
       if (expired) {
         await this.logout();
         return {
-          session: null,
+          session: this.getSession(),
           refresh: {
             attempted: true,
             forced: forceRefresh,
@@ -949,7 +1074,7 @@ export class AuthService {
       }
 
       return {
-        session: this.session,
+        session: this.getSession(),
         refresh: {
           attempted: true,
           forced: forceRefresh,
@@ -962,7 +1087,7 @@ export class AuthService {
     if (expired) {
       await this.logout();
       return {
-        session: null,
+        session: this.getSession(),
         refresh: {
           attempted: true,
           forced: forceRefresh,
@@ -974,7 +1099,7 @@ export class AuthService {
     }
 
     return {
-      session: this.session,
+      session: this.getSession(),
       refresh: {
         attempted: true,
         forced: forceRefresh,
@@ -993,7 +1118,7 @@ export class AuthService {
   async resolveJwtToken(explicitToken?: string): Promise<string> {
     // Prefer the managed auth session whenever it exists so renderer-side cached
     // tokens cannot bypass refresh logic.
-    if (this.session) {
+    if (this.getSession()) {
       const session = await this.ensureValidSession();
       if (!session) {
         throw new Error("No authenticated session available");
