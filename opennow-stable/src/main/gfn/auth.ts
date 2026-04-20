@@ -640,10 +640,20 @@ export class AuthService {
     this.clearSubscriptionCache();
     this.clearVpcCache();
 
-    const result = await this.ensureValidSessionWithStatus(true);
-    if (!result.session || result.refresh.outcome === "failed") {
+    const result = await this.ensureValidSessionWithStatus(true, userId);
+    const refreshFailed =
+      result.refresh.outcome === "failed" || result.refresh.outcome === "missing_refresh_token";
+    const switchedUserMismatch = result.session?.user.userId !== userId;
+    if (!result.session || refreshFailed || switchedUserMismatch) {
       await this.removeAccount(userId);
-      throw new Error(result.refresh.message);
+      const fallbackMessage = "Failed to switch account due to an invalid or expired session.";
+      if (switchedUserMismatch) {
+        throw new Error("Switched session did not match the selected account.");
+      }
+      if (result.refresh.outcome === "missing_refresh_token") {
+        throw new Error("Saved login for this account is incomplete. Please log in to this account again.");
+      }
+      throw new Error(result.refresh.message || fallbackMessage);
     }
     return result.session;
   }
@@ -934,7 +944,10 @@ export class AuthService {
     return isNearExpiry(tokens.expiresAt, TOKEN_REFRESH_WINDOW_MS);
   }
 
-  async ensureValidSessionWithStatus(forceRefresh = false): Promise<AuthSessionResult> {
+  async ensureValidSessionWithStatus(
+    forceRefresh = false,
+    expectedUserId?: string,
+  ): Promise<AuthSessionResult> {
     const currentSession = this.getSession();
     if (!currentSession) {
       return {
@@ -987,18 +1000,51 @@ export class AuthService {
       source: "client_token" | "refresh_token",
     ): Promise<AuthSessionResult> => {
       const latestSession = this.getSession() ?? currentSession;
-      let user = latestSession.user;
+      let refreshedUser: AuthUser | null = null;
+      let userInfoError: string | undefined;
       try {
-        user = await fetchUserInfo(refreshedTokens);
-        console.debug("auth: fetched user info on token refresh", { userId: user.userId, email: user.email, avatarUrl: user.avatarUrl });
+        refreshedUser = await fetchUserInfo(refreshedTokens);
+        console.debug("auth: fetched user info on token refresh", {
+          userId: refreshedUser.userId,
+          email: refreshedUser.email,
+          avatarUrl: refreshedUser.avatarUrl,
+        });
       } catch (error) {
         console.warn("Token refresh succeeded but user info refresh failed. Keeping cached user:", error);
+        userInfoError = error instanceof Error ? error.message : "Unknown error while fetching user info";
       }
 
+      if (expectedUserId && !refreshedUser) {
+        return {
+          session: latestSession,
+          refresh: {
+            attempted: true,
+            forced: forceRefresh,
+            outcome: "failed",
+            message: "Token refresh could not verify the expected account identity.",
+            error: userInfoError ?? `expected_user_id:${expectedUserId} user_info_unavailable`,
+          },
+        };
+      }
+
+      if (expectedUserId && refreshedUser && refreshedUser.userId !== expectedUserId) {
+        return {
+          session: latestSession,
+          refresh: {
+            attempted: true,
+            forced: forceRefresh,
+            outcome: "failed",
+            message: "Token refresh returned a different account than expected.",
+            error: `expected_user_id:${expectedUserId} actual_user_id:${refreshedUser.userId}`,
+          },
+        };
+      }
+
+      const resolvedUser = refreshedUser ?? latestSession.user;
       const updatedSession: AuthSession = {
         provider: latestSession.provider,
         tokens: refreshedTokens,
-        user: user ?? latestSession.user,
+        user: resolvedUser,
       };
       this.sessions.set(updatedSession.user.userId, updatedSession);
 
