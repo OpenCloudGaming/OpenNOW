@@ -817,6 +817,7 @@ export function App(): JSX.Element {
     hideStreamButtons: false,
     showAntiAfkIndicator: true,
     showStatsOnLaunch: false,
+    hideServerSelector: false,
     controllerMode: false,
     controllerUiSounds: false,
     controllerBackgroundAnimations: false,
@@ -2834,6 +2835,11 @@ export function App(): JSX.Element {
     const isFreeUser = effectiveTier === "FREE";
     const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
     if (isAllianceServer) {
+      setQueueModalData(null);
+      void handlePlayGame(game);
+      return;
+    }
+    if (settings.hideServerSelector) {
       setQueueModalData(null);
       void handlePlayGame(game);
       return;
