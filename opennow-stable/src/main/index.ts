@@ -1026,7 +1026,19 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.AUTH_LOGOUT, async () => {
-    await authService.logout();
+    await authService.logoutAll();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AUTH_GET_SAVED_ACCOUNTS, async () => {
+    return authService.getSavedAccounts();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AUTH_SWITCH_ACCOUNT, async (_event, userId: string) => {
+    return authService.switchAccount(userId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AUTH_REMOVE_ACCOUNT, async (_event, userId: string) => {
+    await authService.removeAccount(userId);
   });
 
   ipcMain.handle(IPC_CHANNELS.SUBSCRIPTION_FETCH, async (_event, payload: SubscriptionFetchRequest) => {
