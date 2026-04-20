@@ -16,11 +16,12 @@
       system:
       let
         pkgs = import nixpkgs { inherit system; };
+        appPackage = builtins.fromJSON (builtins.readFile ./opennow-stable/package.json);
       in
       {
         packages.default = pkgs.buildNpmPackage {
           pname = "opennow";
-          version = "1.0.0";
+          version = appPackage.version;
 
           src = ./opennow-stable;
 
@@ -60,8 +61,27 @@
 
           installPhase = ''
             runHook preInstall
-            mkdir -p $out/lib/opennow
-            cp -r . $out/lib/opennow
+
+            appdir="$TMPDIR/opennow-install"
+            mkdir -p "$appdir" "$out/lib/opennow"
+            if [ -f package.json ]; then
+              cp package.json "$appdir/"
+            fi
+            if [ -f package-lock.json ]; then
+              cp package-lock.json "$appdir/"
+            fi
+            for path in out dist dist-electron; do
+              if [ -e "$path" ]; then
+                cp -r "$path" "$appdir/"
+              fi
+            done
+            if [ -d node_modules ]; then
+              cp -r node_modules "$appdir/"
+              if [ -f "$appdir/package.json" ]; then
+                npm --prefix "$appdir" prune --omit=dev --no-audit --legacy-peer-deps
+              fi
+            fi
+            cp -r "$appdir"/. $out/lib/opennow
 
             mkdir -p $out/bin
             for path in "out/main/index.js" "dist/main/index.js" "dist-electron/main.js"; do
@@ -83,6 +103,24 @@
             fi
             runHook postInstall
           '';
+          desktopItems = [
+            (pkgs.makeDesktopItem {
+              name = "opennow";
+              desktopName = "OpenNOW"; 
+              genericName = "Custom GeForce Now Client Named OpenNOW";
+              comment = "An open-source desktop client for GeForce NOW";
+              exec = "opennow %U";
+              icon = "opennow";
+              keywords = [ "GFN" "GeForceNOW" "cloud" "gaming" ];
+              startupWMClass = "opennow"; 
+              startupNotify = true;
+              categories = [ "Game" "Network" ];
+              mimeTypes = [ 
+                "x-scheme-handler/opennow" 
+                "x-scheme-handler/geforcenow" 
+              ];
+            })
+          ];
         };
       }
     );
