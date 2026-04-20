@@ -152,6 +152,8 @@ export interface Settings {
   hideStreamButtons: boolean;
   showAntiAfkIndicator: boolean;
   showStatsOnLaunch: boolean;
+  /** Skip the free-tier queue server selection modal and launch with default routing */
+  hideServerSelector: boolean;
   controllerMode: boolean;
   controllerUiSounds: boolean;
   autoLoadControllerLibrary: boolean;
