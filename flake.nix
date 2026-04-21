@@ -115,10 +115,6 @@
               startupWMClass = "opennow"; 
               startupNotify = true;
               categories = [ "Game" "Network" ];
-              mimeTypes = [ 
-                "x-scheme-handler/opennow" 
-                "x-scheme-handler/geforcenow" 
-              ];
             })
           ];
         };
