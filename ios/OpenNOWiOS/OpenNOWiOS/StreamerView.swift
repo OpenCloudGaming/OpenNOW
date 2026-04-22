@@ -325,6 +325,8 @@ private struct StreamerWebView: UIViewRepresentable {
       </div>
       <label for="gpScaleRange">Control Size <span id="gpScaleValue">100%</span></label>
       <input id="gpScaleRange" type="range" min="70" max="160" step="1" value="100">
+      <label for="gpOpacityRange">Control Opacity <span id="gpOpacityValue">58%</span></label>
+      <input id="gpOpacityRange" type="range" min="15" max="100" step="1" value="58">
       <div class="hudGrid" style="margin-top:10px;">
         <button id="gpResetBtn" class="infoAction">Reset Layout</button>
       </div>
@@ -444,6 +446,8 @@ private struct StreamerWebView: UIViewRepresentable {
   const gpResetBtn = document.getElementById('gpResetBtn');
   const gpScaleRange = document.getElementById('gpScaleRange');
   const gpScaleValue = document.getElementById('gpScaleValue');
+  const gpOpacityRange = document.getElementById('gpOpacityRange');
+  const gpOpacityValue = document.getElementById('gpOpacityValue');
   const layoutHint = document.getElementById('layoutHint');
   const remoteMediaStream = new MediaStream();
   let inputProtocolVersion = 2;
@@ -481,6 +485,8 @@ private struct StreamerWebView: UIViewRepresentable {
   const GAMEPAD_Y = 0x8000;
   const TOUCH_LAYOUT_SCALE_MIN = 0.7;
   const TOUCH_LAYOUT_SCALE_MAX = 1.6;
+  const TOUCH_LAYOUT_OPACITY_MIN = 0.15;
+  const TOUCH_LAYOUT_OPACITY_MAX = 1.0;
   const FORTNITE_NATIVE_TOUCH = !!cfg.allowNativeTouchPassthrough;
 
   function post(type, message) {
@@ -495,6 +501,7 @@ private struct StreamerWebView: UIViewRepresentable {
     if (profile === 'fortnite-mobile') {
       return {
         scale: 1.05,
+        opacity: 0.52,
         topLeft: { x: 0.16, y: 0.11 },
         topCenter: { x: 0.50, y: 0.11 },
         topRight: { x: 0.84, y: 0.11 },
@@ -505,6 +512,7 @@ private struct StreamerWebView: UIViewRepresentable {
     }
     return {
       scale: 1,
+      opacity: 0.58,
       topLeft: { x: 0.14, y: 0.12 },
       topCenter: { x: 0.50, y: 0.12 },
       topRight: { x: 0.86, y: 0.12 },
@@ -526,6 +534,7 @@ private struct StreamerWebView: UIViewRepresentable {
     const fallback = defaultTouchLayoutForProfile(cfg.touchProfile);
     return {
       scale: Math.max(TOUCH_LAYOUT_SCALE_MIN, Math.min(TOUCH_LAYOUT_SCALE_MAX, Number(raw?.scale ?? fallback.scale) || fallback.scale)),
+      opacity: Math.max(TOUCH_LAYOUT_OPACITY_MIN, Math.min(TOUCH_LAYOUT_OPACITY_MAX, Number(raw?.opacity ?? fallback.opacity) || fallback.opacity)),
       topLeft: sanitizePoint(raw?.topLeft, fallback.topLeft),
       topCenter: sanitizePoint(raw?.topCenter, fallback.topCenter),
       topRight: sanitizePoint(raw?.topRight, fallback.topRight),
@@ -605,12 +614,14 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   function applyTouchLayout() {
     const scale = touchLayout.scale;
+    const overlayOpacity = layoutEditing ? Math.max(touchLayout.opacity, 0.55) : touchLayout.opacity;
     Object.entries(touchGroupElements).forEach(([key, element]) => {
       if (!element || !touchLayout[key]) return;
       const point = touchLayout[key];
       element.style.left = `${(point.x * 100).toFixed(2)}%`;
       element.style.top = `${(point.y * 100).toFixed(2)}%`;
       element.style.transform = `translate(-50%, -50%) scale(${scale})`;
+      element.style.opacity = `${overlayOpacity}`;
     });
     if (gpPad) {
       gpPad.classList.toggle('layoutEditing', layoutEditing);
@@ -620,6 +631,12 @@ private struct StreamerWebView: UIViewRepresentable {
     }
     if (gpScaleValue) {
       gpScaleValue.textContent = `${Math.round(scale * 100)}%`;
+    }
+    if (gpOpacityRange) {
+      gpOpacityRange.value = String(Math.round(touchLayout.opacity * 100));
+    }
+    if (gpOpacityValue) {
+      gpOpacityValue.textContent = `${Math.round(touchLayout.opacity * 100)}%`;
     }
     if (gpEditBtn) {
       gpEditBtn.textContent = layoutEditing ? 'Done Editing' : 'Edit Layout';
@@ -1759,6 +1776,27 @@ private struct StreamerWebView: UIViewRepresentable {
     }, { passive: false });
   }
   window.__opennowNativeGamepadState = function(state) {
+    if (!state) {
+      nativeGamepadState = null;
+      return;
+    }
+    if (Array.isArray(state.controllers)) {
+      const nextControllers = state.controllers.filter((controller) => controller && controller.connected);
+      if (nextControllers.length === 0) {
+        nativeGamepadState = null;
+        return;
+      }
+      const preferredIndex = Number.isFinite(state.activeControllerIndex) ? state.activeControllerIndex : nextControllers[0].index;
+      const activeController = nextControllers.find((controller) => controller.index === preferredIndex) ?? nextControllers[0];
+      nativeGamepadState = {
+        connected: true,
+        id: activeController.id,
+        index: activeController.index,
+        buttons: activeController.buttons,
+        axes: activeController.axes
+      };
+      return;
+    }
     nativeGamepadState = state && state.connected ? state : null;
   };
   function clamp(value, min, max) {
@@ -2168,12 +2206,13 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   function selectActiveGamepadSource() {
     if (nativeGamepadState?.connected) {
-      return { label: nativeGamepadState.id || 'iOS Controller', input: buildGamepadInputFromState(nativeGamepadState, 0) };
+      const nativeIndex = Number.isFinite(nativeGamepadState.index) ? nativeGamepadState.index : 0;
+      return { label: nativeGamepadState.id || 'iOS Controller', input: buildGamepadInputFromState(nativeGamepadState, nativeIndex) };
     }
     const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
     const browserPad = pads.find((pad) => pad && pad.connected);
     if (browserPad) {
-      return { label: browserPad.id || 'connected', input: buildGamepadInputFromState(browserPad, 0) };
+      return { label: browserPad.id || 'connected', input: buildGamepadInputFromState(browserPad, browserPad.index & 0x03) };
     }
     const virtualState = currentVirtualGamepadState();
     if (virtualState.connected) {
@@ -2190,15 +2229,17 @@ private struct StreamerWebView: UIViewRepresentable {
       && a.leftStickY === b.leftStickY
       && a.rightStickX === b.rightStickX
       && a.rightStickY === b.rightStickY
+      && a.controllerId === b.controllerId
       && a.connected === b.connected;
   }
   function sendCurrentGamepadState(state) {
+    const controllerId = connectedControllerId(state);
     const connected = !!state?.connected;
-    const bitmap = connected ? 0x0001 : 0x0000;
+    const bitmap = connected ? (1 << controllerId) : 0x0000;
     const usePR = isChannelOpen(partialCh)
       && (riInputCapabilities.enablePartiallyReliableTransferGamepad & bitmap) !== 0;
     const payload = encodeGamepadState({
-      controllerId: 0,
+      controllerId,
       buttons: state?.buttons ?? 0,
       leftTrigger: state?.leftTrigger ?? 0,
       rightTrigger: state?.rightTrigger ?? 0,
@@ -2212,6 +2253,15 @@ private struct StreamerWebView: UIViewRepresentable {
     gamepadBitmap = bitmap;
     lastSentGamepadState = connected ? { ...state } : null;
     lastGamepadSendMs = performance.now();
+  }
+  function connectedControllerId(state) {
+    if (state?.connected && Number.isFinite(state.controllerId)) {
+      return state.controllerId & 0x03;
+    }
+    if (lastSentGamepadState && Number.isFinite(lastSentGamepadState.controllerId)) {
+      return lastSentGamepadState.controllerId & 0x03;
+    }
+    return 0;
   }
   function releaseAllPadKeys() {
     joystickTouchId = null;
@@ -2527,6 +2577,17 @@ private struct StreamerWebView: UIViewRepresentable {
       scheduleTouchLayoutPersist();
     });
   }
+  if (gpOpacityRange) {
+    gpOpacityRange.addEventListener('input', (e) => {
+      const value = Number(e.target && e.target.value);
+      touchLayout = sanitizeTouchLayout({
+        ...touchLayout,
+        opacity: (Number.isFinite(value) ? value : 58) / 100
+      });
+      applyTouchLayout();
+      scheduleTouchLayoutPersist();
+    });
+  }
   if (hudPanel) {
     hudPanel.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
   }
@@ -2699,7 +2760,8 @@ private struct StreamerWebView: UIViewRepresentable {
 private final class NativeControllerBridge {
     private weak var webView: WKWebView?
     private var observers: [NSObjectProtocol] = []
-    private var activeController: GCController?
+    private var controllers: [GCController] = []
+    private var activeControllerIndex = 0
     private var publishScheduled = false
 
     func attach(webView: WKWebView) {
@@ -2707,15 +2769,16 @@ private final class NativeControllerBridge {
         if observers.isEmpty {
             startMonitoring()
         }
-        attachCurrentController()
+        attachCurrentControllers()
         publishState()
     }
 
     func detach() {
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
-        activeController?.extendedGamepad?.valueChangedHandler = nil
-        activeController = nil
+        clearControllerHandlers()
+        controllers = []
+        activeControllerIndex = 0
         webView = nil
         publishScheduled = false
     }
@@ -2727,7 +2790,7 @@ private final class NativeControllerBridge {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.attachCurrentController()
+            self?.attachCurrentControllers()
             self?.publishState()
         })
         observers.append(center.addObserver(
@@ -2735,21 +2798,40 @@ private final class NativeControllerBridge {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.attachCurrentController()
+            self?.attachCurrentControllers()
             self?.publishState()
         })
     }
 
-    private func attachCurrentController() {
-        let next = GCController.controllers().first(where: { $0.extendedGamepad != nil })
-        guard activeController !== next else { return }
-        activeController?.extendedGamepad?.valueChangedHandler = nil
-        activeController = next
-        activeController?.extendedGamepad?.valueChangedHandler = { [weak self] _, _ in
-            self?.schedulePublish()
+    private func attachCurrentControllers() {
+        let nextControllers = GCController.controllers().filter { $0.extendedGamepad != nil }
+        let identityChanged = nextControllers.count != controllers.count
+            || zip(nextControllers, controllers).contains(where: { lhs, rhs in lhs !== rhs })
+        guard identityChanged else { return }
+
+        clearControllerHandlers()
+        controllers = nextControllers
+        if controllers.isEmpty {
+            activeControllerIndex = 0
+            return
         }
-        activeController?.controllerPausedHandler = { [weak self] _ in
-            self?.schedulePublish()
+        activeControllerIndex = min(activeControllerIndex, controllers.count - 1)
+        for (index, controller) in controllers.enumerated() {
+            controller.extendedGamepad?.valueChangedHandler = { [weak self] _, _ in
+                self?.activeControllerIndex = index
+                self?.schedulePublish()
+            }
+            controller.controllerPausedHandler = { [weak self] _ in
+                self?.activeControllerIndex = index
+                self?.schedulePublish()
+            }
+        }
+    }
+
+    private func clearControllerHandlers() {
+        for controller in controllers {
+            controller.extendedGamepad?.valueChangedHandler = nil
+            controller.controllerPausedHandler = nil
         }
     }
 
@@ -2773,11 +2855,25 @@ private final class NativeControllerBridge {
     }
 
     private func controllerPayload() -> [String: Any] {
-        guard let controller = activeController,
-              let gamepad = controller.extendedGamepad
-        else {
+        let payloads = controllers.enumerated().compactMap { payload(for: $0.element, index: $0.offset) }
+        guard !payloads.isEmpty else {
             return ["connected": false]
         }
+        let safeActiveIndex = min(activeControllerIndex, payloads.count - 1)
+        let active = payloads[safeActiveIndex]
+        return [
+            "connected": true,
+            "activeControllerIndex": active["index"] as? Int ?? 0,
+            "controllers": payloads,
+            "id": active["id"] as? String ?? "iOS Controller",
+            "index": active["index"] as? Int ?? 0,
+            "buttons": active["buttons"] as? [Double] ?? [],
+            "axes": active["axes"] as? [Double] ?? []
+        ]
+    }
+
+    private func payload(for controller: GCController, index: Int) -> [String: Any]? {
+        guard let gamepad = controller.extendedGamepad else { return nil }
 
         var buttons = Array(repeating: 0.0, count: 17)
         buttons[0] = value(for: gamepad.buttonA)
@@ -2810,6 +2906,7 @@ private final class NativeControllerBridge {
         return [
             "connected": true,
             "id": controller.vendorName ?? "iOS Controller",
+            "index": index & 0x03,
             "buttons": buttons,
             "axes": axes
         ]

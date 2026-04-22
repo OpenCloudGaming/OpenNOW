@@ -251,6 +251,7 @@ struct TouchControlPoint: Codable, Equatable {
 
 struct TouchControlLayout: Codable, Equatable {
     var scale: Double
+    var opacity: Double
     var topLeft: TouchControlPoint
     var topCenter: TouchControlPoint
     var topRight: TouchControlPoint
@@ -260,6 +261,7 @@ struct TouchControlLayout: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case scale
+        case opacity
         case topLeft
         case topCenter
         case topRight
@@ -270,6 +272,7 @@ struct TouchControlLayout: Codable, Equatable {
 
     init(
         scale: Double,
+        opacity: Double,
         topLeft: TouchControlPoint,
         topCenter: TouchControlPoint,
         topRight: TouchControlPoint,
@@ -278,6 +281,7 @@ struct TouchControlLayout: Codable, Equatable {
         bottomCenter: TouchControlPoint
     ) {
         self.scale = scale
+        self.opacity = opacity
         self.topLeft = topLeft
         self.topCenter = topCenter
         self.topRight = topRight
@@ -290,6 +294,7 @@ struct TouchControlLayout: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let fallback = Self.standard
         scale = try container.decodeIfPresent(Double.self, forKey: .scale) ?? fallback.scale
+        opacity = try container.decodeIfPresent(Double.self, forKey: .opacity) ?? fallback.opacity
         topLeft = try container.decodeIfPresent(TouchControlPoint.self, forKey: .topLeft) ?? fallback.topLeft
         topCenter = try container.decodeIfPresent(TouchControlPoint.self, forKey: .topCenter) ?? fallback.topCenter
         topRight = try container.decodeIfPresent(TouchControlPoint.self, forKey: .topRight) ?? fallback.topRight
@@ -300,6 +305,7 @@ struct TouchControlLayout: Codable, Equatable {
 
     static let standard = TouchControlLayout(
         scale: 1,
+        opacity: 0.58,
         topLeft: .init(x: 0.14, y: 0.12),
         topCenter: .init(x: 0.50, y: 0.12),
         topRight: .init(x: 0.86, y: 0.12),
@@ -310,6 +316,7 @@ struct TouchControlLayout: Codable, Equatable {
 
     static let fortniteMobile = TouchControlLayout(
         scale: 1.05,
+        opacity: 0.52,
         topLeft: .init(x: 0.16, y: 0.11),
         topCenter: .init(x: 0.50, y: 0.11),
         topRight: .init(x: 0.84, y: 0.11),
@@ -1184,10 +1191,18 @@ private actor GFNAPIClient {
         }
     }
 
-    func stopRemoteSession(session: AuthSession, candidate: RemoteSessionCandidate, vpcId: String) async throws {
+    func stopRemoteSession(
+        session: AuthSession,
+        candidate: RemoteSessionCandidate,
+        streamingBaseUrl: String,
+        vpcId: String
+    ) async throws {
         let token = session.tokens.idToken ?? session.tokens.accessToken
-        let fallbackHost = "\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
-        let targetHost = candidate.serverIp ?? fallbackHost
+        let targetHost = Self.remoteSessionTargetHost(
+            serverIp: candidate.serverIp,
+            streamingBaseUrl: streamingBaseUrl,
+            vpcId: vpcId
+        )
         let url = URL(string: "https://\(targetHost)/v2/session/\(candidate.id)")!
         let (_, response) = try await request(
             url: url,
@@ -1204,9 +1219,13 @@ private actor GFNAPIClient {
         }
     }
 
-    func fetchActiveSessions(session: AuthSession, vpcId: String) async throws -> [RemoteSessionCandidate] {
+    func fetchActiveSessions(
+        session: AuthSession,
+        streamingBaseUrl: String,
+        vpcId: String
+    ) async throws -> [RemoteSessionCandidate] {
         let token = session.tokens.idToken ?? session.tokens.accessToken
-        let base = "https://\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
+        let base = Self.normalizedStreamingBase(streamingBaseUrl, vpcId: vpcId)
         let url = URL(string: "\(base)/v2/session")!
         let (data, response) = try await request(
             url: url,
@@ -1237,6 +1256,7 @@ private actor GFNAPIClient {
         session: AuthSession,
         candidate: RemoteSessionCandidate,
         game: CloudGame,
+        streamingBaseUrl: String,
         vpcId: String,
         settings: AppSettings
     ) async throws -> ActiveSession {
@@ -1244,8 +1264,12 @@ private actor GFNAPIClient {
         let clientId = UUID().uuidString
         let deviceId = UUID().uuidString
         let deviceProfile = Self.streamDeviceProfile(for: game.title, settings: settings)
-        let zoneBase = "https://\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
-        let targetHost = candidate.serverIp ?? URL(string: zoneBase)?.host ?? "\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
+        let zoneBase = Self.normalizedStreamingBase(streamingBaseUrl, vpcId: vpcId)
+        let targetHost = Self.remoteSessionTargetHost(
+            serverIp: candidate.serverIp,
+            streamingBaseUrl: zoneBase,
+            vpcId: vpcId
+        )
         let claimURL = URL(string: "https://\(targetHost)/v2/session/\(candidate.id)?keyboardLayout=en-US&languageCode=en_US")!
         let claimBody = Self.buildClaimBody(
             sessionId: candidate.id,
@@ -1315,6 +1339,24 @@ private actor GFNAPIClient {
             return "https://\(serverIp)"
         }
         return streamingBaseUrl
+    }
+
+    private static func normalizedStreamingBase(_ streamingBaseUrl: String, vpcId: String) -> String {
+        let trimmed = streamingBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let host = URL(string: trimmed)?.host, !host.isEmpty {
+            return trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
+        }
+        return "https://\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
+    }
+
+    private static func remoteSessionTargetHost(serverIp: String?, streamingBaseUrl: String, vpcId: String) -> String {
+        if let serverIp, !serverIp.isEmpty {
+            return serverIp
+        }
+        if let host = URL(string: normalizedStreamingBase(streamingBaseUrl, vpcId: vpcId))?.host, !host.isEmpty {
+            return host
+        }
+        return "\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
     }
 
     private static func extractZoneId(from streamingBaseUrl: String, fallback: String) -> String {
@@ -2273,7 +2315,11 @@ final class OpenNOWStore: ObservableObject {
             featuredGames = Array(mainGames.prefix(8))
             libraryGames = library
             subscription = sub
-            resumableSessions = (try? await api.fetchActiveSessions(session: refreshed, vpcId: vpcId)) ?? []
+            resumableSessions = (try? await api.fetchActiveSessions(
+                session: refreshed,
+                streamingBaseUrl: refreshed.provider.streamingServiceUrl,
+                vpcId: vpcId
+            )) ?? []
             if let sub {
                 user?.membershipTier = sub.membershipTier
             }
@@ -2337,7 +2383,11 @@ final class OpenNOWStore: ObservableObject {
             let refreshed = try await api.refreshSession(session)
             authSession = refreshed
             persistAuthSession(refreshed)
-            resumableSessions = try await api.fetchActiveSessions(session: refreshed, vpcId: cachedVpcId)
+            resumableSessions = try await api.fetchActiveSessions(
+                session: refreshed,
+                streamingBaseUrl: refreshed.provider.streamingServiceUrl,
+                vpcId: cachedVpcId
+            )
         } catch {
             lastError = "Could not fetch active sessions: \(error.localizedDescription)"
         }
@@ -2352,7 +2402,12 @@ final class OpenNOWStore: ObservableObject {
             let refreshed = try await api.refreshSession(session)
             authSession = refreshed
             persistAuthSession(refreshed)
-            try await api.stopRemoteSession(session: refreshed, candidate: candidate, vpcId: cachedVpcId)
+            try await api.stopRemoteSession(
+                session: refreshed,
+                candidate: candidate,
+                streamingBaseUrl: refreshed.provider.streamingServiceUrl,
+                vpcId: cachedVpcId
+            )
             if activeSession?.id == candidate.id {
                 await endSession()
             } else {
@@ -2387,6 +2442,7 @@ final class OpenNOWStore: ObservableObject {
                 session: refreshed,
                 candidate: candidate,
                 game: game,
+                streamingBaseUrl: refreshed.provider.streamingServiceUrl,
                 vpcId: cachedVpcId,
                 settings: settings
             )
@@ -2575,8 +2631,19 @@ final class OpenNOWStore: ObservableObject {
         persistSettings()
     }
 
+    private var effectiveProvider: LoginProvider? {
+        if let provider = authSession?.provider {
+            return provider
+        }
+        return providers.first(where: { $0.idpId == settings.selectedProviderIdpId }) ?? providers.first
+    }
+
     var authProviderCode: String? {
-        authSession?.provider.code
+        effectiveProvider?.code
+    }
+
+    var shouldUsePrintedWasteQueue: Bool {
+        authProviderCode == "NVIDIA"
     }
 
     func formattedSessionElapsed() -> String {
