@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import type { GameInfo, MediaListingEntry, Settings } from "@shared/gfn";
 import { Star, Clock, Calendar, Repeat2 } from "lucide-react";
@@ -491,7 +491,7 @@ export function ControllerLibraryPage({
 
 
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const container = itemsContainerRef.current;
     if (!container) return;
     const children = Array.from(container.children) as HTMLElement[];
