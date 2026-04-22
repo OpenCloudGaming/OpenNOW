@@ -264,21 +264,45 @@ private struct StreamerWebView: UIViewRepresentable {
   <style>
     html,body{margin:0;padding:0;background:#000;width:100%;height:100%;overflow:hidden}
     #video{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
-    #hudToggle{position:fixed;right:16px;bottom:16px;z-index:36;width:52px;height:52px;border-radius:18px;
-      border:1px solid rgba(255,255,255,0.22);background:rgba(20,20,22,0.72);color:#fff;cursor:pointer;
-      font:600 18px -apple-system;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    #hudToggle{position:fixed;right:max(6px,calc(env(safe-area-inset-right) + 6px));
+      bottom:max(10px,calc(env(safe-area-inset-bottom) + 10px));z-index:36;display:inline-flex;
+      align-items:center;justify-content:center;width:44px;height:44px;padding:0;border-radius:999px;
+      border:1px solid rgba(255,255,255,0.18);background:rgba(16,16,20,0.72);color:#fff;cursor:pointer;
+      font:600 18px -apple-system;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
       box-shadow:0 10px 28px rgba(0,0,0,0.34);}
-    #hudPanel{position:fixed;right:16px;bottom:80px;z-index:35;width:min(320px,calc(100vw - 32px));
-      max-height:min(72vh,520px);overflow:auto;padding:14px;border-radius:20px;
+    #hudToggle:hover,#hudToggle:active{background:rgba(22,22,28,0.84);}
+    #hudToggleGlyph{display:inline-flex;align-items:center;justify-content:center;width:100%;height:100%;
+      font-size:20px;line-height:1;}
+    #hudPanel{position:fixed;right:max(10px,calc(env(safe-area-inset-right) + 10px));
+      bottom:max(62px,calc(env(safe-area-inset-bottom) + 62px));z-index:35;width:min(332px,calc(100vw - 28px));
+      max-height:min(72vh,520px);overflow:auto;padding:14px;border-radius:22px;
       color:#fff;background:rgba(18,18,22,0.74);border:1px solid rgba(255,255,255,0.14);
       font:12px -apple-system;transition:transform .22s ease,opacity .22s ease;opacity:0;
       transform:translateY(20px) scale(0.98);pointer-events:none;
       backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);}
     #hudPanel.open{transform:translateY(0) scale(1);opacity:1;pointer-events:auto;}
-    .hudRow{display:flex;gap:8px;align-items:center;justify-content:space-between;}
-    .hudGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0;}
+    .hudHeader{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;margin-bottom:12px;}
+    .hudHeaderTitle{display:flex;flex-direction:column;gap:4px;min-width:0;}
+    .hudHeaderTitle strong{font-size:14px;}
+    .hudHeaderTitle span{color:rgba(255,255,255,0.64);line-height:1.35;}
+    .hudSection{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);}
+    .hudSectionTitle{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+    .hudSectionTitle strong{font-size:13px;}
+    .hudSectionTitle span{color:rgba(255,255,255,0.55);}
+    .toggleList{display:flex;flex-direction:column;gap:8px;}
+    .toggleRow{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:11px 12px;
+      border-radius:14px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:#fff;
+      font:12px -apple-system;cursor:pointer;text-align:left;}
+    .toggleRow strong{display:block;font-size:12px;font-weight:600;}
+    .toggleRow span{display:block;color:rgba(255,255,255,0.58);margin-top:2px;line-height:1.3;}
+    .toggleRow .toggleValue{flex:0 0 auto;margin-top:0;color:rgba(255,255,255,0.92);font-weight:600;}
+    .toggleRow.is-active{background:rgba(110,186,255,0.14);border-color:rgba(110,186,255,0.26);}
+    .toggleRow.is-disabled{opacity:0.45;}
     .infoAction{width:100%;padding:9px 10px;border-radius:10px;border:1px solid rgba(255,255,255,0.24);
       background:rgba(255,255,255,0.08);color:#fff;font:12px -apple-system;font-weight:600;cursor:pointer;}
+    .hudSummary{display:flex;gap:6px;flex-wrap:wrap;}
+    .hudBadge{padding:5px 8px;border-radius:999px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.72);
+      border:1px solid rgba(255,255,255,0.1);font-size:11px;line-height:1;}
     .layoutPanel{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);}
     .layoutPanel label{display:block;margin-top:10px;color:rgba(255,255,255,0.82);}
     .layoutPanel input[type=range]{width:100%;margin-top:6px;}
@@ -292,42 +316,82 @@ private struct StreamerWebView: UIViewRepresentable {
 </head>
 <body>
   <video id="video" playsinline autoplay muted></video>
-  <div id="stats" style="position:fixed;left:12px;top:12px;z-index:30;padding:6px 10px;
-    color:#d5ffd5;background:rgba(0,0,0,0.58);border:1px solid rgba(255,255,255,0.15);
-    border-radius:10px;font:12px -apple-system;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">
-    FPS -- | Ping -- ms | -- Mbps
+  <div id="stats" style="position:fixed;left:12px;top:12px;z-index:30;display:flex;flex-direction:column;gap:6px;
+    min-width:244px;padding:10px 12px;color:#eef7ee;background:rgba(0,0,0,0.58);border:1px solid rgba(255,255,255,0.15);
+    border-radius:14px;font:12px -apple-system;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);">
+    <div id="statsPrimary">FPS -- | Ping -- ms | Loss -- | Rate -- Mbps</div>
+    <div id="statsMeta" style="display:none;color:rgba(255,255,255,0.7);font-size:11px;"></div>
   </div>
   <div id="touchpad" style="position:fixed;inset:0;z-index:10;touch-action:none;"></div>
   <div id="touchHint" style="position:fixed;left:50%;bottom:60px;transform:translateX(-50%);
     color:rgba(255,255,255,0.45);font:11px -apple-system;pointer-events:none;user-select:none;
     text-align:center;transition:opacity 1s;">Drag to move · Tap to click · 2-finger tap for right click</div>
-  <button id="hudToggle" onclick="toggleHudPanel()" aria-label="Toggle stream controls">•••</button>
+  <button id="hudToggle" onclick="toggleHudPanel()" aria-label="Toggle stream controls">
+    <span id="hudToggleGlyph">&#9881;</span>
+  </button>
   <aside id="hudPanel">
-    <div class="hudRow" style="margin-bottom:10px;">
-      <strong style="font-size:13px;">Stream Controls</strong>
+    <div class="hudHeader">
+      <div class="hudHeaderTitle">
+        <strong>Stream Controls</strong>
+        <span>One compact panel for display, input, and overlay tuning.</span>
+      </div>
       <button onclick="toggleHudPanel(false)" style="border:none;background:transparent;color:#fff;font-size:16px;line-height:1;cursor:pointer;">×</button>
     </div>
-    <div class="hudGrid">
-      <button id="audioBtn" class="infoAction" onclick="unlockAudio()">Enable Audio</button>
-      <button id="statsBtn" class="infoAction" onclick="toggleStatsOverlay()">Stats: Hidden</button>
-      <button id="kbBtn" class="infoAction" onclick="toggleKeyboard()">Keyboard</button>
-      <button id="gpBtn" class="infoAction" onclick="toggleGamepad()">Touch Controller</button>
+    <div class="hudSummary" id="hudSummary">
+      <span class="hudBadge" id="hudStatsBadge">Stats Off</span>
+      <span class="hudBadge" id="hudInputBadge">Touchpad</span>
+      <span class="hudBadge" id="hudAudioBadge">Audio Muted</span>
     </div>
-    <div style="line-height:1.45;color:rgba(255,255,255,0.86);">
-      <div id="touchModeDescription" style="margin-bottom:6px;"><strong>Touchpad:</strong> drag to move, tap to click, two-finger tap for right click.</div>
-      <div style="margin-bottom:6px;"><strong>Controller:</strong> native controllers pass through Nvidia's real gamepad packets; the touch controller is optional.</div>
-      <div id="controllerState" style="color:rgba(255,255,255,0.65);">Controller: waiting...</div>
+    <div class="hudSection">
+      <div class="hudSectionTitle">
+        <strong>Display</strong>
+        <span>Overlay and playback</span>
+      </div>
+      <div class="toggleList">
+        <button id="audioBtn" class="toggleRow" onclick="toggleAudio()">
+          <div><strong>Audio</strong><span>Mute or unmute the stream audio.</span></div>
+          <span class="toggleValue" id="audioValue">Muted</span>
+        </button>
+        <button id="statsBtn" class="toggleRow" onclick="toggleStatsOverlay()">
+          <div><strong>Stream Stats</strong><span>Show FPS, ping, packet loss, bitrate, and optional extras.</span></div>
+          <span class="toggleValue" id="statsValue">Off</span>
+        </button>
+        <button id="clockBtn" class="toggleRow" onclick="toggleStatsClock()">
+          <div><strong>Clock</strong><span>Include the current local time in the stats card.</span></div>
+          <span class="toggleValue" id="clockValue">Off</span>
+        </button>
+        <button id="batteryBtn" class="toggleRow" onclick="toggleStatsBattery()">
+          <div><strong>iPhone Battery</strong><span>Show current battery level and charging state in the stats card.</span></div>
+          <span class="toggleValue" id="batteryValue">Off</span>
+        </button>
+      </div>
+    </div>
+    <div class="hudSection">
+      <div class="hudSectionTitle">
+        <strong>Input</strong>
+        <span id="controllerState">Controller: waiting...</span>
+      </div>
+      <div class="toggleList">
+        <button id="kbBtn" class="toggleRow" onclick="toggleKeyboard()">
+          <div><strong>Keyboard</strong><span>Open or hide the on-screen keyboard bar.</span></div>
+          <span class="toggleValue" id="kbValue">Hidden</span>
+        </button>
+        <button id="gpBtn" class="toggleRow" onclick="toggleGamepad()">
+          <div><strong>Touch Controller</strong><span id="touchModeDescription">Touchpad is active. Optional touch controls stay hidden until needed.</span></div>
+          <span class="toggleValue" id="gpValue">Hidden</span>
+        </button>
+      </div>
     </div>
     <div class="layoutPanel">
-      <div class="hudRow">
-        <strong style="font-size:13px;">Touch Layout</strong>
+      <div class="hudSectionTitle">
+        <strong>Touch Layout</strong>
         <button id="gpEditBtn" class="infoAction" style="width:auto;padding:8px 12px;">Edit Layout</button>
       </div>
       <label for="gpScaleRange">Control Size <span id="gpScaleValue">100%</span></label>
       <input id="gpScaleRange" type="range" min="70" max="160" step="1" value="100">
       <label for="gpOpacityRange">Control Opacity <span id="gpOpacityValue">58%</span></label>
       <input id="gpOpacityRange" type="range" min="15" max="100" step="1" value="58">
-      <div class="hudGrid" style="margin-top:10px;">
+      <div style="display:flex;gap:8px;margin-top:10px;">
         <button id="gpResetBtn" class="infoAction">Reset Layout</button>
       </div>
       <div class="layoutHint" id="layoutHint">Turn on edit mode to drag each touch-control cluster and resize the whole layout.</div>
@@ -436,10 +500,25 @@ private struct StreamerWebView: UIViewRepresentable {
   const peerId = 2;
   const peerName = "peer-" + Math.floor(Math.random() * 1e10);
   const statsEl = document.getElementById('stats');
+  const statsPrimary = document.getElementById('statsPrimary');
+  const statsMeta = document.getElementById('statsMeta');
   const hudPanel = document.getElementById('hudPanel');
   const hudToggle = document.getElementById('hudToggle');
+  const hudToggleGlyph = document.getElementById('hudToggleGlyph');
+  const hudStatsBadge = document.getElementById('hudStatsBadge');
+  const hudInputBadge = document.getElementById('hudInputBadge');
+  const hudAudioBadge = document.getElementById('hudAudioBadge');
   const audioBtn = document.getElementById('audioBtn');
+  const audioValue = document.getElementById('audioValue');
   const statsBtn = document.getElementById('statsBtn');
+  const statsValue = document.getElementById('statsValue');
+  const clockBtn = document.getElementById('clockBtn');
+  const clockValue = document.getElementById('clockValue');
+  const batteryBtn = document.getElementById('batteryBtn');
+  const batteryValue = document.getElementById('batteryValue');
+  const kbBtn = document.getElementById('kbBtn');
+  const kbValue = document.getElementById('kbValue');
+  const gpValue = document.getElementById('gpValue');
   const controllerState = document.getElementById('controllerState');
   const touchModeDescription = document.getElementById('touchModeDescription');
   const gpEditBtn = document.getElementById('gpEditBtn');
@@ -462,9 +541,17 @@ private struct StreamerWebView: UIViewRepresentable {
   let offerAccepted = false;
   let hudPanelOpen = false;
   let audioUnlocked = false;
+  let userMuted = true;
   let audioRetryTimer = null;
   let statsVisible = !!cfg.showStatsOverlay;
+  let showStatsClock = false;
+  let showStatsBattery = false;
+  let deviceBatteryPercent = null;
+  let deviceBatteryCharging = false;
+  let latestStats = { fps: 0, pingMs: 0, packetLossPct: 0, bitrateMbps: 0 };
   let nativeGamepadState = null;
+  let lastControllerStatusText = '';
+  let lastStatsMarkup = '';
   const GAMEPAD_PACKET_SIZE = 38;
   const GAMEPAD_DEADZONE = 0.15;
   const GAMEPAD_KEEPALIVE_MS = 1000;
@@ -561,33 +648,76 @@ private struct StreamerWebView: UIViewRepresentable {
       hudPanel.classList.toggle('open', hudPanelOpen);
     }
     if (hudToggle) {
-      hudToggle.textContent = hudPanelOpen ? '×' : '•••';
+      hudToggle.setAttribute('aria-expanded', hudPanelOpen ? 'true' : 'false');
+      hudToggle.setAttribute('aria-label', hudPanelOpen ? 'Close stream controls' : 'Open stream controls');
+    }
+    if (hudToggleGlyph) {
+      hudToggleGlyph.innerHTML = hudPanelOpen ? '&times;' : '&#9881;';
+    }
+  }
+  function setToggleRowState(element, isActive, isDisabled = false) {
+    if (!element) return;
+    element.classList.toggle('is-active', !!isActive);
+    element.classList.toggle('is-disabled', !!isDisabled);
+    if (isDisabled) {
+      element.setAttribute('aria-disabled', 'true');
+    } else {
+      element.removeAttribute('aria-disabled');
+    }
+  }
+  function updateHudSummary() {
+    if (hudStatsBadge) {
+      hudStatsBadge.textContent = statsVisible ? 'Stats On' : 'Stats Off';
+    }
+    if (hudInputBadge) {
+      hudInputBadge.textContent = gpPad && gpPad.style.display !== 'none' ? 'Touch Controls' : 'Touchpad';
+    }
+    if (hudAudioBadge) {
+      hudAudioBadge.textContent = userMuted || video.muted ? 'Audio Muted' : 'Audio On';
     }
   }
   function updateAudioButton() {
-    if (!audioBtn) return;
-    audioBtn.textContent = video.muted ? 'Enable Audio' : 'Audio On';
+    if (audioValue) {
+      audioValue.textContent = userMuted || video.muted ? 'Muted' : 'On';
+    }
+    setToggleRowState(audioBtn, !(userMuted || video.muted));
+    updateHudSummary();
   }
   function updateStatsButton() {
-    if (!statsBtn) return;
-    statsBtn.textContent = `Stats: ${statsVisible ? 'Shown' : 'Hidden'}`;
+    if (statsValue) {
+      statsValue.textContent = statsVisible ? 'On' : 'Off';
+    }
+    setToggleRowState(statsBtn, statsVisible);
+    const extrasDisabled = !statsVisible;
+    if (clockValue) {
+      clockValue.textContent = showStatsClock ? 'On' : 'Off';
+    }
+    if (batteryValue) {
+      batteryValue.textContent = showStatsBattery ? 'On' : 'Off';
+    }
+    setToggleRowState(clockBtn, showStatsClock, extrasDisabled);
+    setToggleRowState(batteryBtn, showStatsBattery, extrasDisabled);
+    updateHudSummary();
   }
   function updateTouchControllerButton() {
-    if (!gpBtn) return;
     const visible = gpPad && gpPad.style.display !== 'none';
     const profileLabel = cfg.touchProfile === 'fortnite-mobile' ? 'Touch Controller Overlay' : 'Touch Controller';
-    gpBtn.textContent = visible ? `Hide ${profileLabel}` : `Show ${profileLabel}`;
+    if (gpValue) {
+      gpValue.textContent = visible ? 'Visible' : 'Hidden';
+    }
+    setToggleRowState(gpBtn, visible);
+    updateHudSummary();
   }
   function updateTouchModeCopy() {
     if (!touchModeDescription) return;
     if (FORTNITE_NATIVE_TOUCH) {
-      touchModeDescription.innerHTML = '<strong>Touch:</strong> Fortnite is using a mobile-touch device profile, so the game can surface its native touch UI without mouse emulation.';
+      touchModeDescription.textContent = 'Fortnite is using native mobile touch, and the overlay stays optional.';
       if (touchHint) {
         touchHint.textContent = 'Fortnite mobile touch mode is active.';
       }
       return;
     }
-    touchModeDescription.innerHTML = '<strong>Touchpad:</strong> drag to move, tap to click, two-finger tap for right click.';
+    touchModeDescription.textContent = 'Touchpad mode uses drag to move, tap to click, and two-finger tap for right click.';
     if (touchHint) {
       touchHint.textContent = 'Drag to move · Tap to click · 2-finger tap for right click';
     }
@@ -662,15 +792,52 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   function applyStatsVisibility() {
     if (statsEl) {
-      statsEl.style.display = statsVisible ? 'block' : 'none';
+      statsEl.style.display = statsVisible ? 'flex' : 'none';
     }
     updateStatsButton();
+    renderStatsOverlay();
+    if (statsVisible) {
+      ensureStatsTicker();
+      samplePeerStats();
+    } else {
+      stopStatsTicker();
+    }
   }
   function toggleStatsOverlay() {
     statsVisible = !statsVisible;
     applyStatsVisibility();
   }
+  function toggleStatsClock() {
+    if (!statsVisible) return;
+    showStatsClock = !showStatsClock;
+    updateStatsButton();
+    renderStatsOverlay();
+  }
+  function toggleStatsBattery() {
+    if (!statsVisible) return;
+    showStatsBattery = !showStatsBattery;
+    updateStatsButton();
+    renderStatsOverlay();
+  }
+  async function toggleAudio() {
+    userMuted = !userMuted;
+    if (userMuted) {
+      if (audioRetryTimer) {
+        clearTimeout(audioRetryTimer);
+        audioRetryTimer = null;
+      }
+      video.muted = true;
+      audioUnlocked = false;
+      updateAudioButton();
+      return;
+    }
+    await unlockAudio();
+  }
   async function unlockAudio() {
+    if (userMuted) {
+      updateAudioButton();
+      return;
+    }
     if (!video.muted) {
       updateAudioButton();
       return;
@@ -682,16 +849,25 @@ private struct StreamerWebView: UIViewRepresentable {
     updateAudioButton();
   }
   function scheduleAudioRetry() {
+    if (userMuted) return;
     if (audioRetryTimer) return;
     audioRetryTimer = setTimeout(async () => {
       audioRetryTimer = null;
+      if (userMuted) {
+        updateAudioButton();
+        return;
+      }
       await unlockAudio();
-      if (video.muted) {
+      if (video.muted && !userMuted) {
         scheduleAudioRetry();
       }
     }, 750);
   }
   async function ensureAudioActive() {
+    if (userMuted) {
+      updateAudioButton();
+      return;
+    }
     await unlockAudio();
     if (video.muted) {
       scheduleAudioRetry();
@@ -859,21 +1035,61 @@ private struct StreamerWebView: UIViewRepresentable {
       log('Input handshake complete (protocol v' + inputProtocolVersion + ')');
     }
   }
-  function updateStatsOverlay(fps, pingMs, bitrateMbps) {
-    if (!statsEl) return;
-    statsEl.textContent = `FPS ${fps > 0 ? Math.round(fps) : '--'} | Ping ${pingMs > 0 ? Math.round(pingMs) : '--'} ms | ${bitrateMbps > 0 ? bitrateMbps.toFixed(1) : '--'} Mbps`;
+  function renderStatsOverlay() {
+    if (!statsEl || !statsPrimary || !statsMeta) return;
+    const primaryParts = [
+      `FPS ${latestStats.fps > 0 ? Math.round(latestStats.fps) : '--'}`,
+      `Ping ${latestStats.pingMs > 0 ? Math.round(latestStats.pingMs) : '--'} ms`,
+      `Loss ${latestStats.packetLossPct > 0 ? latestStats.packetLossPct.toFixed(1) : '--'}%`,
+      `Rate ${latestStats.bitrateMbps > 0 ? latestStats.bitrateMbps.toFixed(1) : '--'} Mbps`
+    ];
+    const metaParts = [];
+    if (showStatsClock) {
+      metaParts.push(new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+    }
+    if (showStatsBattery) {
+      if (Number.isFinite(deviceBatteryPercent)) {
+        metaParts.push(deviceBatteryCharging ? `Battery ${deviceBatteryPercent}% charging` : `Battery ${deviceBatteryPercent}%`);
+      } else {
+        metaParts.push('Battery unavailable');
+      }
+    }
+    const nextPrimary = primaryParts.join(' | ');
+    const nextMeta = metaParts.join(' | ');
+    const combined = `${nextPrimary}\n${nextMeta}`;
+    if (combined === lastStatsMarkup) return;
+    lastStatsMarkup = combined;
+    statsPrimary.textContent = nextPrimary;
+    if (nextMeta) {
+      statsMeta.style.display = 'block';
+      statsMeta.textContent = nextMeta;
+    } else {
+      statsMeta.style.display = 'none';
+      statsMeta.textContent = '';
+    }
   }
   async function samplePeerStats() {
-    if (!pc || !statsEl || !cfg.showStatsOverlay) return;
+    if (!statsVisible) return;
+    if (!pc || !statsEl) {
+      renderStatsOverlay();
+      return;
+    }
     try {
       const report = await pc.getStats();
       let fps = 0;
       let pingMs = 0;
       let bitrateMbps = 0;
+      let packetLossPct = 0;
       report.forEach((stat) => {
         if (stat.type === 'inbound-rtp' && stat.kind === 'video') {
           if (typeof stat.framesPerSecond === 'number' && stat.framesPerSecond > 0) {
             fps = stat.framesPerSecond;
+          }
+          if (typeof stat.packetsLost === 'number' && typeof stat.packetsReceived === 'number') {
+            const totalPackets = stat.packetsReceived + stat.packetsLost;
+            if (totalPackets > 0) {
+              packetLossPct = Math.max(packetLossPct, (stat.packetsLost / totalPackets) * 100);
+            }
           }
           if (typeof stat.bytesReceived === 'number') {
             if (lastBytesTimestamp > 0 && stat.timestamp > lastBytesTimestamp && stat.bytesReceived >= lastBytesReceived) {
@@ -894,12 +1110,18 @@ private struct StreamerWebView: UIViewRepresentable {
           pingMs = Math.max(pingMs, stat.currentRoundTripTime * 1000);
         }
       });
-      updateStatsOverlay(fps, pingMs, bitrateMbps);
+      latestStats = { fps, pingMs, packetLossPct, bitrateMbps };
+      renderStatsOverlay();
     } catch (_) {}
   }
   function ensureStatsTicker() {
-    if (!cfg.showStatsOverlay || statsTimer) return;
+    if (!statsVisible || statsTimer) return;
     statsTimer = setInterval(samplePeerStats, 1000);
+  }
+  function stopStatsTicker() {
+    if (!statsTimer) return;
+    clearInterval(statsTimer);
+    statsTimer = null;
   }
   function buildSignInUrl() {
     const signalingServer = (cfg.signalingServer || "").trim();
@@ -1561,9 +1783,11 @@ private struct StreamerWebView: UIViewRepresentable {
       if (thisPc.connectionState === 'failed' || thisPc.connectionState === 'disconnected') {
         stopKeyframeTimer();
         resetTransport();
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          scheduleReconnect('peer disconnected');
+        if (offerAccepted) {
+          fail('Peer connection lost; reopen the session');
+          return;
         }
+        scheduleReconnect('peer ' + thisPc.connectionState);
       }
     };
     return pc;
@@ -1710,16 +1934,25 @@ private struct StreamerWebView: UIViewRepresentable {
     if (kbBar.style.display === 'none') showKeyboard();
     else hideKeyboard();
   }
+  function updateKeyboardButton() {
+    const keyboardVisible = kbBar && kbBar.style.display !== 'none';
+    if (kbValue) {
+      kbValue.textContent = keyboardVisible ? 'Visible' : 'Hidden';
+    }
+    setToggleRowState(kbBtn, keyboardVisible);
+  }
   function showKeyboard() {
     unlockAudio();
     kbBar.style.display = 'block';
     kbInput.value = '';
     kbPrevLen = 0;
     setTimeout(() => kbInput.focus(), 80);
+    updateKeyboardButton();
   }
   function hideKeyboard() {
     kbBar.style.display = 'none';
     kbInput.blur();
+    updateKeyboardButton();
   }
   function toggleGamepad() {
     if (!gpPad) return;
@@ -1799,6 +2032,16 @@ private struct StreamerWebView: UIViewRepresentable {
     }
     nativeGamepadState = state && state.connected ? state : null;
   };
+  window.__opennowDeviceStatus = function(state) {
+    deviceBatteryPercent = Number.isFinite(state?.batteryPercent) ? state.batteryPercent : null;
+    deviceBatteryCharging = !!state?.charging;
+    renderStatsOverlay();
+  };
+  function setControllerStatus(text) {
+    if (!controllerState || text === lastControllerStatusText) return;
+    lastControllerStatusText = text;
+    controllerState.textContent = text;
+  }
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
   }
@@ -2283,14 +2526,16 @@ private struct StreamerWebView: UIViewRepresentable {
       if (lastSentGamepadState || gamepadBitmap !== 0) {
         sendCurrentGamepadState(null);
       }
-      if (controllerState) controllerState.textContent = 'Controller: waiting…';
+      setControllerStatus('Controller: waiting…');
       requestAnimationFrame(pollGamepadState);
       return;
     }
-    if (controllerState) {
-      controllerState.textContent = `Controller: ${activeSource.label}`;
+    const nextControllerStatus = `Controller: ${activeSource.label}`;
+    const controllerChanged = nextControllerStatus !== lastControllerStatusText;
+    setControllerStatus(nextControllerStatus);
+    if (controllerChanged && !userMuted) {
+      unlockAudio();
     }
-    unlockAudio();
     const nextState = activeSource.input;
     const nowMs = performance.now();
     const changed = !gamepadStatesEqual(nextState, lastSentGamepadState);
@@ -2604,7 +2849,10 @@ private struct StreamerWebView: UIViewRepresentable {
   applyStatsVisibility();
   video.addEventListener('volumechange', updateAudioButton);
   updateAudioButton();
+  updateStatsButton();
+  updateKeyboardButton();
   updateTouchControllerButton();
+  updateHudSummary();
   pollGamepadState();
   // GPU keep-alive: minimal WebGL rAF loop prevents GPUProcess idle-exit during
   // WebRTC negotiation. Runs until the WKWebView is destroyed (streamer dismissed).
@@ -2676,6 +2924,7 @@ private struct StreamerWebView: UIViewRepresentable {
         private var contentProcessRestartCount = 0
         private static let maxContentProcessRestarts = 5
         private let controllerBridge = NativeControllerBridge()
+        private let deviceStatusBridge = NativeDeviceStatusBridge()
 
         init(
             onEvent: @escaping (String) -> Void,
@@ -2687,10 +2936,12 @@ private struct StreamerWebView: UIViewRepresentable {
 
         func attach(webView: WKWebView) {
             controllerBridge.attach(webView: webView)
+            deviceStatusBridge.attach(webView: webView)
         }
 
         func detach() {
             controllerBridge.detach()
+            deviceStatusBridge.detach()
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -2740,6 +2991,7 @@ private struct StreamerWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             controllerBridge.attach(webView: webView)
+            deviceStatusBridge.attach(webView: webView)
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
@@ -2754,6 +3006,95 @@ private struct StreamerWebView: UIViewRepresentable {
                 onEvent("Error: Stream WebContent process terminated (restart limit reached)")
             }
         }
+    }
+}
+
+private final class NativeDeviceStatusBridge {
+    private weak var webView: WKWebView?
+    private var observers: [NSObjectProtocol] = []
+    private var refreshTimer: Timer?
+    private var wasBatteryMonitoringEnabled = false
+    private var lastJSON = ""
+
+    func attach(webView: WKWebView) {
+        self.webView = webView
+        if observers.isEmpty {
+            startMonitoring()
+        }
+        startRefreshTimer()
+        publishState()
+    }
+
+    func detach() {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+        webView = nil
+        lastJSON = ""
+        if !wasBatteryMonitoringEnabled {
+            UIDevice.current.isBatteryMonitoringEnabled = false
+        }
+    }
+
+    private func startMonitoring() {
+        let device = UIDevice.current
+        wasBatteryMonitoringEnabled = device.isBatteryMonitoringEnabled
+        device.isBatteryMonitoringEnabled = true
+
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(
+            forName: UIDevice.batteryLevelDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.publishState()
+        })
+        observers.append(center.addObserver(
+            forName: UIDevice.batteryStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.publishState()
+        })
+        observers.append(center.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.publishState()
+        })
+    }
+
+    private func startRefreshTimer() {
+        guard refreshTimer == nil else { return }
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.publishState()
+        }
+    }
+
+    private func publishState() {
+        guard let webView else { return }
+        let level = UIDevice.current.batteryLevel
+        let percent = level >= 0 ? Int((level * 100).rounded()) : nil
+        let charging = {
+            switch UIDevice.current.batteryState {
+            case .charging, .full:
+                return true
+            default:
+                return false
+            }
+        }()
+        let payload: [String: Any] = [
+            "batteryPercent": percent ?? NSNull(),
+            "charging": charging
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8)
+        else { return }
+        guard json != lastJSON else { return }
+        lastJSON = json
+        webView.evaluateJavaScript("window.__opennowDeviceStatus(\(json))", completionHandler: nil)
     }
 }
 

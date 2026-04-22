@@ -1,4 +1,5 @@
 import AuthenticationServices
+import ActivityKit
 import CryptoKit
 import Foundation
 import Network
@@ -476,12 +477,15 @@ private final class OAuthLoopbackServer {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, _ in
             guard let self else { return }
             let requestText = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            let firstLine = requestText.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
+            let firstLine = requestText
+                .split(separator: "\n", maxSplits: 1)
+                .first
+                .map { String($0) } ?? ""
             let path = firstLine
                 .split(separator: " ", omittingEmptySubsequences: true)
                 .dropFirst()
                 .first
-                .map(String.init) ?? "/"
+                .map { String($0) } ?? "/"
 
             let callbackURL = URL(string: "http://localhost\(path)") ?? URL(string: GFNConstants.oauthRedirectUri)!
             let queryItems = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems ?? []
@@ -1265,61 +1269,115 @@ private actor GFNAPIClient {
         let deviceId = UUID().uuidString
         let deviceProfile = Self.streamDeviceProfile(for: game.title, settings: settings)
         let zoneBase = Self.normalizedStreamingBase(streamingBaseUrl, vpcId: vpcId)
-        let targetHost = Self.remoteSessionTargetHost(
+        var effectiveServerIp = Self.remoteSessionTargetHost(
             serverIp: candidate.serverIp,
             streamingBaseUrl: zoneBase,
             vpcId: vpcId
         )
-        let claimURL = URL(string: "https://\(targetHost)/v2/session/\(candidate.id)?keyboardLayout=en-US&languageCode=en_US")!
-        let claimBody = Self.buildClaimBody(
-            sessionId: candidate.id,
-            appId: candidate.appId ?? game.launchAppId ?? "0",
-            settings: settings,
-            deviceProfile: deviceProfile
-        )
 
-        let (claimData, claimResponse) = try await request(
-            url: claimURL,
-            method: "PUT",
-            headers: Self.cloudMatchHeaders(
-                token: token,
-                clientId: clientId,
-                deviceId: deviceId,
-                includeOrigin: true,
-                deviceProfile: deviceProfile
-            ),
-            body: claimBody
-        )
-        if !(claimResponse.statusCode == 200 || claimResponse.statusCode == 400) {
-            let text = String(data: claimData, encoding: .utf8) ?? "unknown"
-            throw NSError(domain: "OpenNOW.Session", code: claimResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
+        if Self.isZoneHostname(effectiveServerIp) {
+            do {
+                let preflightURL = URL(string: "https://\(effectiveServerIp)/v2/session/\(candidate.id)")!
+                let (prefetchData, prefetchResponse) = try await request(
+                    url: preflightURL,
+                    method: "GET",
+                    headers: Self.cloudMatchHeaders(
+                        token: token,
+                        clientId: clientId,
+                        deviceId: deviceId,
+                        includeOrigin: false,
+                        deviceProfile: deviceProfile
+                    )
+                )
+                if prefetchResponse.statusCode == 200,
+                   let prefetchJSON = try? parseJSON(prefetchData),
+                   let prefetchSession = prefetchJSON["session"] as? [String: Any],
+                   let realIp = Self.extractServerIp(sessionObj: prefetchSession),
+                   !realIp.isEmpty {
+                    effectiveServerIp = realIp
+                }
+            } catch {
+            }
         }
 
-        let claimJSON = (try? parseJSON(claimData)) ?? [:]
+        var validationSessionObj: [String: Any] = [:]
+        var preClaimStatus: Int?
+        do {
+            let validationURL = URL(string: "https://\(effectiveServerIp)/v2/session/\(candidate.id)")!
+            let (validationData, validationResponse) = try await request(
+                url: validationURL,
+                method: "GET",
+                headers: Self.cloudMatchHeaders(
+                    token: token,
+                    clientId: clientId,
+                    deviceId: deviceId,
+                    includeOrigin: false,
+                    deviceProfile: deviceProfile
+                )
+            )
+            let validationJSON = validationResponse.statusCode == 200 ? (try? parseJSON(validationData)) ?? [:] : [:]
+            validationSessionObj = validationJSON["session"] as? [String: Any] ?? [:]
+            preClaimStatus = validationSessionObj["status"] as? Int
+        } catch {
+        }
+
+        var claimJSON: [String: Any] = [:]
+        if preClaimStatus != 1 {
+            let claimURL = URL(string: "https://\(effectiveServerIp)/v2/session/\(candidate.id)?keyboardLayout=en-US&languageCode=en_US")!
+            let claimBody = Self.buildClaimBody(
+                sessionId: candidate.id,
+                appId: candidate.appId ?? game.launchAppId ?? "0",
+                settings: settings,
+                deviceProfile: deviceProfile
+            )
+
+            let (claimData, claimResponse) = try await request(
+                url: claimURL,
+                method: "PUT",
+                headers: Self.cloudMatchHeaders(
+                    token: token,
+                    clientId: clientId,
+                    deviceId: deviceId,
+                    includeOrigin: true,
+                    deviceProfile: deviceProfile
+                ),
+                body: claimBody
+            )
+            guard claimResponse.statusCode == 200 else {
+                let text = String(data: claimData, encoding: .utf8) ?? "unknown"
+                throw NSError(domain: "OpenNOW.Session", code: claimResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
+            }
+            claimJSON = (try? parseJSON(claimData)) ?? [:]
+        }
+
         let claimSessionObj = claimJSON["session"] as? [String: Any] ?? [:]
-        let claimServerIp = Self.extractServerIp(sessionObj: claimSessionObj) ?? candidate.serverIp
-        let mediaConnectionInfo = Self.extractMediaConnectionInfo(sessionObj: claimSessionObj)
-        let signaling = Self.resolveSignaling(sessionObj: claimSessionObj, fallbackServerIp: claimServerIp)
-        let iceServers = Self.extractIceServers(sessionObj: claimSessionObj)
+        let resolvedSessionObj = claimSessionObj.isEmpty ? validationSessionObj : claimSessionObj
+        let claimServerIp = Self.extractServerIp(sessionObj: claimSessionObj)
+            ?? Self.extractServerIp(sessionObj: validationSessionObj)
+            ?? candidate.serverIp
+            ?? effectiveServerIp
+        let mediaConnectionInfo = Self.extractMediaConnectionInfo(sessionObj: resolvedSessionObj)
+        let signaling = Self.resolveSignaling(sessionObj: resolvedSessionObj, fallbackServerIp: claimServerIp)
+        let iceServers = Self.extractIceServers(sessionObj: resolvedSessionObj)
 
         var active = ActiveSession(
             id: candidate.id,
             game: game,
             startedAt: .now,
-            status: (claimSessionObj["status"] as? Int) ?? candidate.status,
+            status: (resolvedSessionObj["status"] as? Int) ?? candidate.status,
             queuePosition: nil,
-            seatSetupStep: Self.extractSeatSetupStep(sessionObj: claimSessionObj),
+            seatSetupStep: Self.extractSeatSetupStep(sessionObj: resolvedSessionObj),
             serverIp: claimServerIp,
             mediaIp: mediaConnectionInfo.ip,
             mediaPort: mediaConnectionInfo.port,
             signalingServer: signaling.server ?? claimServerIp,
-            signalingUrl: signaling.url ?? claimServerIp.flatMap { "wss://\($0):443/nvst/" },
+            signalingUrl: signaling.url ?? "wss://\(claimServerIp):443/nvst/",
             iceServers: iceServers,
             zone: vpcId,
             streamingBaseUrl: zoneBase,
             clientId: clientId,
             deviceId: deviceId,
-            adState: Self.extractAdState(sessionObj: claimSessionObj)
+            adState: Self.extractAdState(sessionObj: resolvedSessionObj)
         )
 
         for _ in 0..<45 {
@@ -1357,6 +1415,11 @@ private actor GFNAPIClient {
             return host
         }
         return "\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
+    }
+
+    private static func isZoneHostname(_ value: String) -> Bool {
+        let normalized = value.lowercased()
+        return normalized.contains("cloudmatchbeta.nvidiagrid.net") || normalized.contains("cloudmatch.nvidiagrid.net")
     }
 
     private static func extractZoneId(from streamingBaseUrl: String, fallback: String) -> String {
@@ -1596,7 +1659,14 @@ private actor GFNAPIClient {
 
         if resourcePath.hasPrefix("rtsps://") || resourcePath.hasPrefix("rtsp://") {
             let withoutScheme = resourcePath.replacingOccurrences(of: "rtsps://", with: "").replacingOccurrences(of: "rtsp://", with: "")
-            let host = withoutScheme.split(separator: ":").first?.split(separator: "/").first.map(String.init)
+            let hostAndPath = withoutScheme
+                .split(separator: "/", maxSplits: 1)
+                .first
+                .map { String($0) }
+            let host = hostAndPath?
+                .split(separator: ":", maxSplits: 1)
+                .first
+                .map { String($0) }
             if let host, !host.isEmpty {
                 return (host, "wss://\(host)/nvst/")
             }
@@ -1712,7 +1782,11 @@ private actor GFNAPIClient {
         let jwtPayload = Self.decodeJWTPayload(token: tokens.idToken ?? tokens.accessToken)
         if let sub = jwtPayload["sub"] as? String {
             let email = jwtPayload["email"] as? String
-            let displayName = (jwtPayload["preferred_username"] as? String) ?? email?.split(separator: "@").first.map(String.init) ?? "User"
+            let emailDisplayName = email?
+                .split(separator: "@", maxSplits: 1)
+                .first
+                .map { String($0) }
+            let displayName = (jwtPayload["preferred_username"] as? String) ?? emailDisplayName ?? "User"
             return UserProfile(userId: sub, displayName: displayName, email: email, membershipTier: (jwtPayload["gfn_tier"] as? String) ?? "FREE")
         }
 
@@ -1733,7 +1807,11 @@ private actor GFNAPIClient {
             throw NSError(domain: "OpenNOW.Auth", code: 7)
         }
         let email = json["email"] as? String
-        let displayName = (json["preferred_username"] as? String) ?? email?.split(separator: "@").first.map(String.init) ?? "User"
+        let emailDisplayName = email?
+            .split(separator: "@", maxSplits: 1)
+            .first
+            .map { String($0) }
+        let displayName = (json["preferred_username"] as? String) ?? emailDisplayName ?? "User"
         return UserProfile(userId: sub, displayName: displayName, email: email, membershipTier: "FREE")
     }
 
@@ -2215,9 +2293,11 @@ final class OpenNOWStore: ObservableObject {
     private var adReportStateById: [String: SessionAdAction] = [:]
     private var adStartedAtById: [String: Date] = [:]
     private var reopenToken: UUID = UUID()
+    private var currentScenePhase: ScenePhase = .active
 
     private let settingsKey = "OpenNOW.iOS.settings"
     private let authSessionKey = "OpenNOW.iOS.authSession"
+    private let activeSessionSnapshotKey = "OpenNOW.iOS.activeSession"
     private let deviceIdKey = "OpenNOW.iOS.deviceId"
     private let setupPhaseTimeoutSeconds: TimeInterval = 90
 
@@ -2228,7 +2308,10 @@ final class OpenNOWStore: ObservableObject {
         }
         settings = loadedSettings
         authSession = Self.loadAuthSession(from: defaults)
+        activeSession = Self.loadActiveSession(from: defaults)
         user = authSession?.user
+        showStreamLoading = activeSession != nil
+        syncTrackedSessionSurface()
     }
 
     deinit {
@@ -2252,8 +2335,10 @@ final class OpenNOWStore: ObservableObject {
                 user = refreshed.user
                 persistAuthSession(refreshed)
                 await refreshCatalog()
+                restoreTrackedSessionIfNeeded()
             }
         }
+        syncTrackedSessionSurface()
     }
 
     func signIn() async {
@@ -2293,6 +2378,7 @@ final class OpenNOWStore: ObservableObject {
         adReportStateById = [:]
         adStartedAtById = [:]
         defaults.removeObject(forKey: authSessionKey)
+        syncTrackedSessionSurface()
     }
 
     func refreshCatalog() async {
@@ -2360,6 +2446,7 @@ final class OpenNOWStore: ObservableObject {
             adStartedAtById = [:]
             sessionElapsedSeconds = 0
             startSessionTasks()
+            syncTrackedSessionSurface()
             logger.info("Session started id=\(started.id, privacy: .public) status=\(started.status) queue=\(started.queuePosition ?? -1)")
             lastError = nil
         } catch is CancellationError {
@@ -2368,6 +2455,7 @@ final class OpenNOWStore: ObservableObject {
             logger.error("Session launch failed error=\(error.localizedDescription, privacy: .public)")
             showStreamLoading = false
             queueOverlayVisible = false
+            syncTrackedSessionSurface()
             lastError = "Session launch failed: \(error.localizedDescription)"
         }
     }
@@ -2451,6 +2539,7 @@ final class OpenNOWStore: ObservableObject {
             adStartedAtById = [:]
             sessionElapsedSeconds = 0
             startSessionTasks()
+            syncTrackedSessionSurface()
             logger.info("Session resumed id=\(claimed.id, privacy: .public) status=\(claimed.status) queue=\(claimed.queuePosition ?? -1)")
             lastError = nil
         } catch is CancellationError {
@@ -2459,6 +2548,7 @@ final class OpenNOWStore: ObservableObject {
             logger.error("Resume session failed error=\(error.localizedDescription, privacy: .public)")
             showStreamLoading = false
             queueOverlayVisible = false
+            syncTrackedSessionSurface()
             lastError = "Failed to resume session: \(error.localizedDescription)"
         }
     }
@@ -2481,6 +2571,7 @@ final class OpenNOWStore: ObservableObject {
             sessionPollTask?.cancel()
             endSessionPollBackgroundTask()
             sessionElapsedSeconds = 0
+            syncTrackedSessionSurface()
             return
         }
         do {
@@ -2499,6 +2590,7 @@ final class OpenNOWStore: ObservableObject {
         sessionPollTask?.cancel()
         endSessionPollBackgroundTask()
         sessionElapsedSeconds = 0
+        syncTrackedSessionSurface()
     }
 
     func minimizeQueueOverlay() {
@@ -2606,7 +2698,8 @@ final class OpenNOWStore: ObservableObject {
 
     func reopenStreamer() {
         guard let active = activeSession, isReadyForStreamer(active) else { return }
-        setStreamSession(active, reason: "reopenStreamer")
+        launchTask?.cancel()
+        launchTask = Task { await self.reopenCurrentSession(active) }
     }
 
     /// Schedule a streamer reopen with a 0.8s delay.
@@ -2618,6 +2711,11 @@ final class OpenNOWStore: ObservableObject {
             guard let self, self.reopenToken == token else { return }
             self.reopenStreamer()
         }
+    }
+
+    func handleScenePhase(_ phase: ScenePhase) {
+        currentScenePhase = phase
+        syncTrackedSessionSurface()
     }
 
     func persistSettings() {
@@ -2712,6 +2810,7 @@ final class OpenNOWStore: ObservableObject {
                     let polled = try await self.api.pollSession(session: refreshed, activeSession: active)
                     consecutivePollFailures = 0
                     self.activeSession = polled
+                    self.syncTrackedSessionSurface()
                     // Keep the presented streamer session stable while polling continues.
                     // Replacing the fullScreenCover item every poll can trigger reconnect churn.
                     self.logger.info(
@@ -2838,7 +2937,10 @@ final class OpenNOWStore: ObservableObject {
             return true
         }
         // Fallback: treat plain host/ip (possibly with :port) as valid.
-        let hostOnly = signalingServer.split(separator: ":").first.map(String.init) ?? signalingServer
+        let hostOnly = signalingServer
+            .split(separator: ":", maxSplits: 1)
+            .first
+            .map { String($0) } ?? signalingServer
         return !hostOnly.isEmpty
     }
 
@@ -2878,6 +2980,33 @@ final class OpenNOWStore: ObservableObject {
             "Pre-handoff ready id=\(session.id, privacy: .public) signalingServer=\(session.signalingServer ?? "nil", privacy: .public) signalingUrl=\(session.signalingUrl ?? "nil", privacy: .public) mediaIp=\(session.mediaIp ?? "nil", privacy: .public)"
         )
         return session
+    }
+
+    private func reopenCurrentSession(_ session: ActiveSession) async {
+        guard let currentAuth = authSession else {
+            lastError = "Sign in first."
+            return
+        }
+
+        do {
+            let refreshed = try await api.refreshSession(currentAuth)
+            authSession = refreshed
+            persistAuthSession(refreshed)
+            let polled = try await api.pollSession(session: refreshed, activeSession: session)
+            let handoff = await prepareSessionForStreamer(polled)
+
+            guard activeSession?.id == session.id else { return }
+            activeSession = handoff
+            setStreamSession(handoff, reason: "reopenStreamer.refreshed")
+            lastError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            logger.error(
+                "Reopen refresh failed id=\(session.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            lastError = "Failed to reconnect session: \(error.localizedDescription)"
+        }
     }
 
     private var isFreeTierUser: Bool {
@@ -2944,6 +3073,84 @@ final class OpenNOWStore: ObservableObject {
         sessionPollBackgroundTaskId = .invalid
     }
 
+    private func restoreTrackedSessionIfNeeded() {
+        guard let persisted = activeSession else {
+            syncTrackedSessionSurface()
+            return
+        }
+        guard resumableSessions.contains(where: { $0.id == persisted.id }) else {
+            activeSession = nil
+            showStreamLoading = false
+            queueOverlayVisible = false
+            syncTrackedSessionSurface()
+            return
+        }
+        guard sessionPollTask == nil else {
+            syncTrackedSessionSurface()
+            return
+        }
+        showStreamLoading = true
+        queueOverlayVisible = false
+        startSessionTasks()
+        syncTrackedSessionSurface()
+    }
+
+    private func syncTrackedSessionSurface() {
+        persistActiveSession(activeSession)
+        let active = activeSession
+        let state = active.flatMap(queueActivityState(for:))
+        Task {
+            await QueueLiveActivityManager.shared.sync(
+                sessionId: active?.id,
+                gameTitle: active?.game.title,
+                state: state
+            )
+        }
+    }
+
+    private func queueActivityState(for session: ActiveSession) -> QueueActivityAttributes.ContentState? {
+        if streamSession != nil && currentScenePhase == .active {
+            return nil
+        }
+        if isReadyForStreamer(session) || session.status == 3 {
+            return QueueActivityAttributes.ContentState(
+                phase: .ready,
+                headline: "Session ready",
+                detail: "Tap to jump back in",
+                queueLabel: "Ready",
+                queuePosition: session.queuePosition
+            )
+        }
+        if isInQueuePhase(session) {
+            let detail: String
+            let queueLabel: String
+            if let queue = session.queuePosition {
+                detail = queue == 1 ? "Next in queue" : "Queue #\(queue)"
+                queueLabel = queue == 1 ? "Soon" : "Q\(queue)"
+            } else {
+                detail = "Waiting in queue"
+                queueLabel = "Queue"
+            }
+            return QueueActivityAttributes.ContentState(
+                phase: .queued,
+                headline: "In queue",
+                detail: detail,
+                queueLabel: queueLabel,
+                queuePosition: session.queuePosition
+            )
+        }
+        if isInSetupPhase(session) || session.status == 2 {
+            return QueueActivityAttributes.ContentState(
+                phase: .waiting,
+                headline: "Allocating your rig",
+                detail: "Setting up \(session.game.title)",
+                queueLabel: "Wait",
+                queuePosition: session.queuePosition
+            )
+        }
+        return nil
+    }
+
     private func resolveGameForRemoteSession(_ candidate: RemoteSessionCandidate) -> CloudGame? {
         if let appId = candidate.appId {
             if let fromAll = allGames.first(where: { $0.launchAppId == appId }) { return fromAll }
@@ -2975,6 +3182,7 @@ final class OpenNOWStore: ObservableObject {
             "streamSession reason=\(reason, privacy: .public) \(oldId, privacy: .public) -> \(newId, privacy: .public) callsite=\(self.streamSessionChangeCallsite(), privacy: .public)"
         )
         streamSession = session
+        syncTrackedSessionSurface()
     }
 
     private static func loadSettings(from defaults: UserDefaults) -> AppSettings? {
@@ -2987,9 +3195,24 @@ final class OpenNOWStore: ObservableObject {
         return try? JSONDecoder().decode(AuthSession.self, from: data)
     }
 
+    private static func loadActiveSession(from defaults: UserDefaults) -> ActiveSession? {
+        guard let data = defaults.data(forKey: "OpenNOW.iOS.activeSession") else { return nil }
+        return try? JSONDecoder().decode(ActiveSession.self, from: data)
+    }
+
     private func persistAuthSession(_ session: AuthSession) {
         if let encoded = try? JSONEncoder().encode(session) {
             defaults.set(encoded, forKey: authSessionKey)
+        }
+    }
+
+    private func persistActiveSession(_ session: ActiveSession?) {
+        guard let session else {
+            defaults.removeObject(forKey: activeSessionSnapshotKey)
+            return
+        }
+        if let encoded = try? JSONEncoder().encode(session) {
+            defaults.set(encoded, forKey: activeSessionSnapshotKey)
         }
     }
 

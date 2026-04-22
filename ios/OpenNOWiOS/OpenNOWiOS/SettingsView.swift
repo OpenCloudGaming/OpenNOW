@@ -70,7 +70,7 @@ struct SettingsView: View {
                     Button {
                         Task { await store.refreshCatalog() }
                     } label: {
-                        Label("Reload Catalog")
+                        Text("Reload Catalog")
                     }
                     .disabled(store.isLoadingGames)
                 } header: {
@@ -88,7 +88,7 @@ struct SettingsView: View {
                         Button(role: .destructive) {
                             store.signOut()
                         } label: {
-                            Label("Sign Out")
+                            Text("Sign Out")
                         }
                     } header: {
                         Label("Account", systemImage: "person.crop.circle")
@@ -99,7 +99,7 @@ struct SettingsView: View {
                     LabeledContent("Version", value: "1.0")
                     LabeledContent("Platform", value: "iOS")
                     Link(destination: URL(string: "https://github.com/OpenCloudGaming/OpenNOW")!) {
-                        Label("GitHub Repository")
+                        Text("GitHub Repository")
                     }
                 } header: {
                     Label("About", systemImage: "info.circle")

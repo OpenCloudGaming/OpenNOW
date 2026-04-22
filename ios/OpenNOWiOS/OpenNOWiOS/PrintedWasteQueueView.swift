@@ -303,7 +303,9 @@ struct PrintedWasteQueueView: View {
                     Self.isStandardZone(zoneId) && !nukedZones.contains(zoneId)
                 }
                 .map { zoneId, zone in
-                    let components = zone.Region.split(separator: "-", maxSplits: 1).map(String.init)
+                    let components = zone.Region
+                        .split(separator: "-", maxSplits: 1)
+                        .map { String($0) }
                     let region = components.first ?? zone.Region
                     let suffix = components.count > 1 ? components[1] : zone.Region
                     return PrintedWasteZone(
