@@ -455,7 +455,7 @@
    453	                      );
    454	                    })}
    455	                  </div>
-   456	                  <div className="navbar-account-divider" />
+   456	                  <div role="separator" className="navbar-account-divider" />
    457	                  <button
    458	                    type="button"
    459	                    role="menuitem"
