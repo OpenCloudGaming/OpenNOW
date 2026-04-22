@@ -124,6 +124,10 @@ function loadBootstrapVideoPreferences(): BootstrapVideoPreferences {
   }
 }
 
+function hasLinuxNvidiaProprietaryDriver(): boolean {
+  return existsSync("/proc/driver/nvidia/version") || existsSync("/sys/module/nvidia/version");
+}
+
 const bootstrapVideoPrefs = loadBootstrapVideoPreferences();
 console.log(
   `[Main] Video acceleration preference: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
@@ -132,6 +136,8 @@ console.log(
 // --- Platform-specific HW video decode features ---
 const platformFeatures: string[] = [];
 const isLinuxArm = process.platform === "linux" && (process.arch === "arm64" || process.arch === "arm");
+const isLinuxDesktopX64 = process.platform === "linux" && !isLinuxArm;
+const shouldEnableLinuxDesktopVaapi = isLinuxDesktopX64 && !hasLinuxNvidiaProprietaryDriver();
 
 if (process.platform === "win32") {
   // Windows: D3D11 + Media Foundation path for HW decode/encode acceleration
@@ -150,7 +156,7 @@ if (process.platform === "win32") {
     if (bootstrapVideoPrefs.decoderPreference !== "software") {
       platformFeatures.push("UseChromeOSDirectVideoDecoder");
     }
-  } else {
+  } else if (shouldEnableLinuxDesktopVaapi) {
     // Linux x64 desktop GPUs: VA-API path (Intel/AMD).
     if (bootstrapVideoPrefs.decoderPreference !== "software") {
       platformFeatures.push("VaapiVideoDecoder");
@@ -185,7 +191,18 @@ const disableFeatures: string[] = [
   // Prevents mDNS candidate generation — faster ICE connectivity
   "WebRtcHideLocalIpsWithMdns",
 ];
-if (process.platform === "linux" && !isLinuxArm) {
+if (process.platform === "linux") {
+  // Fedora/Bazzite Electron builds have hit renderer crashes in newer Linux font
+  // service backends. Keep Linux on the older path; Chromium changed the feature
+  // names over time, so include both known spellings.
+  disableFeatures.push(
+    "SkiaFontService",
+    "FontationBackend",
+    "FontationsFontBackend",
+    "FontationsLinuxSystemFonts",
+  );
+}
+if (isLinuxDesktopX64) {
   // ChromeOS-only direct video decoder path interferes on regular Linux
   disableFeatures.push("UseChromeOSDirectVideoDecoder");
 }

@@ -77,7 +77,7 @@ body,
 #root {
   width: 100%;
   height: 100%;
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", "DejaVu Sans", sans-serif;
   font-size: 14px;
   line-height: 1.5;
   color: var(--ink);
