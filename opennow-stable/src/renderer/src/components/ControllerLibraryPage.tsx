@@ -59,8 +59,6 @@ type TopCategory = "current" | "all" | "settings" | "media" | "favorites" | `gen
 type SoundKind = "move" | "confirm";
 type SettingsSubcategory = "root" | "Network" | "Audio" | "Video" | "System";
 type MediaSubcategory = "root" | "Videos" | "Screenshots";
-type GameHubMediaItem = MediaListingEntry & { kind: "video" | "screenshot" };
-
 const CATEGORY_STEP_PX = 160;
 const CATEGORY_ACTIVE_HALF_WIDTH_PX = 60;
 const GAME_ACTIVE_CENTER_OFFSET_X_PX = 320;
@@ -181,8 +179,6 @@ export function ControllerLibraryPage({
   const [mediaVideos, setMediaVideos] = useState<MediaListingEntry[]>([]);
   const [mediaScreenshots, setMediaScreenshots] = useState<MediaListingEntry[]>([]);
   const [mediaThumbById, setMediaThumbById] = useState<Record<string, string>>({});
-  const [gameHubMedia, setGameHubMedia] = useState<GameHubMediaItem[]>([]);
-  const [gameHubMediaLoading, setGameHubMediaLoading] = useState(false);
   const [controllerType, setControllerType] = useState<"ps" | "xbox" | "nintendo" | "generic">("generic");
   const [editingBandwidth, setEditingBandwidth] = useState(false);
 
@@ -477,10 +473,8 @@ export function ControllerLibraryPage({
     return current ?? selectedGame.variants[0]?.id ?? "";
   }, [selectedGame, selectedVariantByGameId]);
 
-  const isGameHubCategory = topCategory !== "settings" && topCategory !== "current" && topCategory !== "media";
-  const showGameHub = isGameHubCategory && Boolean(selectedGame);
   const showCurrentDetail = topCategory === "current" && Boolean(currentStreamingGame);
-  const detailVisible = showCurrentDetail || showGameHub;
+  const detailVisible = showCurrentDetail;
 
   const selectedCategoryLabel = useMemo(() => getCategoryLabel(topCategory, currentStreamingGame?.title).label, [topCategory, currentStreamingGame?.title]);
   const selectedGameDescription = useMemo(() => {
@@ -494,66 +488,6 @@ export function ControllerLibraryPage({
     if (currentStreamingGame.id === selectedGame.id) return "Active Session";
     return "Ready To Switch";
   }, [currentStreamingGame, selectedGame]);
-
-  useEffect(() => {
-    if (!showGameHub || !selectedGame?.title || typeof window.openNow?.listMediaByGame !== "function") {
-      setGameHubMedia([]);
-      setGameHubMediaLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setGameHubMedia([]);
-    setGameHubMediaLoading(true);
-
-    const timeoutId = window.setTimeout(() => {
-      void (async () => {
-        try {
-          const listing = await window.openNow.listMediaByGame({ gameTitle: selectedGame.title });
-          if (cancelled) return;
-
-          const recentItems: GameHubMediaItem[] = [
-            ...(listing.videos ?? []).map((item) => ({ ...item, kind: "video" as const })),
-            ...(listing.screenshots ?? []).map((item) => ({ ...item, kind: "screenshot" as const })),
-          ]
-            .sort((left, right) => right.createdAtMs - left.createdAtMs)
-            .slice(0, 2);
-
-          setGameHubMedia(recentItems);
-
-          const thumbEntries = await Promise.all(
-            recentItems.map(async (item): Promise<[string, string | null]> => {
-              if (item.thumbnailDataUrl) return [item.id, item.thumbnailDataUrl];
-              if (item.dataUrl) return [item.id, item.dataUrl];
-              if (typeof window.openNow?.getMediaThumbnail === "function") {
-                const generated = await window.openNow.getMediaThumbnail({ filePath: item.filePath });
-                return [item.id, generated];
-              }
-              return [item.id, null];
-            }),
-          );
-
-          if (cancelled) return;
-          setMediaThumbById((prev) => {
-            const next = { ...prev };
-            for (const [id, url] of thumbEntries) {
-              if (url) next[id] = url;
-            }
-            return next;
-          });
-        } catch {
-          if (!cancelled) setGameHubMedia([]);
-        } finally {
-          if (!cancelled) setGameHubMediaLoading(false);
-        }
-      })();
-    }, 140);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeoutId);
-    };
-  }, [selectedGame?.id, selectedGame?.title, showGameHub]);
 
 
 
@@ -1274,51 +1208,6 @@ export function ControllerLibraryPage({
                       </>
                     );
                   })()}
-                </div>
-              </div>
-            </div>
-          )}
-          {showGameHub && selectedGame && (
-            <div className="xmb-game-hub">
-              <div className="xmb-game-hub-panel">
-                <div className="xmb-game-hub-eyebrow">{topCategory === "all" ? "Game Hub" : selectedCategoryLabel}</div>
-                <div className="xmb-game-hub-title-row">
-                  {favoriteGameIdSet.has(selectedGame.id) && <Star className="xmb-game-hub-favorite" />}
-                  <div className="xmb-game-hub-title">{selectedGame.title}</div>
-                </div>
-                <p className="xmb-game-hub-description">{selectedGameDescription}</p>
-                <div className="xmb-game-meta xmb-game-hub-meta">
-                  {selectedGameSessionState && <span className="xmb-game-meta-chip xmb-game-meta-chip--session">{selectedGameSessionState}</span>}
-                </div>
-
-                <div className="xmb-game-hub-captures">
-                  {gameHubMediaLoading ? (
-                    <div className="xmb-game-hub-capture-empty">Scanning recent captures...</div>
-                  ) : gameHubMedia.length === 0 ? (
-                    <div className="xmb-game-hub-capture-empty">No recent captures.</div>
-                  ) : (
-                    <>
-                      <div className="xmb-game-hub-section-title">Recent Captures</div>
-                      <div className="xmb-game-hub-capture-grid">
-                      {gameHubMedia.map((item) => {
-                        const thumb = mediaThumbById[item.id] ?? item.thumbnailDataUrl ?? item.dataUrl;
-                        const captureLabel = item.kind === "video"
-                          ? `${Math.max(1, Math.round((item.durationMs ?? 0) / 1000))}s Clip`
-                          : "Screenshot";
-
-                        return (
-                          <div key={item.id} className="xmb-game-hub-capture">
-                            {thumb && <img src={thumb} alt={item.fileName} className="xmb-game-hub-capture-image" />}
-                            <div className="xmb-game-hub-capture-meta">
-                              <div className="xmb-game-hub-capture-name">{captureLabel}</div>
-                              <div className="xmb-game-hub-capture-date">{new Date(item.createdAtMs).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                      </div>
-                    </>
-                  )}
                 </div>
               </div>
             </div>
