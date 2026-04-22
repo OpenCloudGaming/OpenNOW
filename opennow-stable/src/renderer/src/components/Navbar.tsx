@@ -367,7 +367,7 @@ export function Navbar({
                 className="navbar-user navbar-user--clickable"
                 onClick={() => setAccountDropdownOpen((previous) => !previous)}
                 aria-expanded={accountDropdownOpen}
-                aria-haspopup="menu"
+                aria-controls={accountDropdownOpen ? "navbar-account-dropdown" : undefined}
               >
                 {user.avatarUrl ? (
                   <img src={user.avatarUrl} alt={user.displayName} className="navbar-avatar" />
@@ -388,9 +388,9 @@ export function Navbar({
                 />
               </button>
               {accountDropdownOpen && (
-                <div className="navbar-account-dropdown" role="menu" aria-label="Switch account">
-                  <div role="none" className="navbar-account-dropdown-header">Switch Account</div>
-                  <div role="none" className="navbar-account-list">
+                <div id="navbar-account-dropdown" className="navbar-account-dropdown" aria-label="Switch account">
+                  <div className="navbar-account-dropdown-header">Switch Account</div>
+                  <div className="navbar-account-list">
                     {savedAccounts.map((account) => {
                       const accountTierInfo = getTierDisplay(account.membershipTier);
                       const isActive = activeUserId === account.userId;
@@ -398,12 +398,10 @@ export function Navbar({
                       return (
                         <div
                           key={account.userId}
-                          role="none"
                           className={`navbar-account-item${isActive ? " navbar-account-item--active" : ""}`}
                         >
                           <button
                             type="button"
-                            role="menuitem"
                             className="navbar-account-item-main"
                             onClick={() => {
                               if (!isActive) {
@@ -456,10 +454,9 @@ export function Navbar({
                       );
                     })}
                   </div>
-                  <div role="separator" className="navbar-account-divider" />
+                  <div className="navbar-account-divider" aria-hidden="true" />
                   <button
                     type="button"
-                    role="menuitem"
                     className="navbar-account-add"
                     onClick={() => {
                       onAddAccount();
@@ -471,7 +468,6 @@ export function Navbar({
                   </button>
                   <button
                     type="button"
-                    role="menuitem"
                     className="navbar-account-signout-all"
                     onClick={() => {
                       onLogout();
