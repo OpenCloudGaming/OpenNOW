@@ -17,6 +17,7 @@ import type {
   StreamRegion,
   SubscriptionInfo,
 } from "@shared/gfn";
+import { buildDesktopGfnHeaders, GFN_USER_AGENT } from "./clientIdentity";
 import { fetchSubscription, fetchDynamicRegions } from "./subscription";
 
 const SERVICE_URLS_ENDPOINT = "https://pcs.geforcenow.com/v1/serviceUrls";
@@ -28,9 +29,6 @@ const AUTH_ENDPOINT = "https://login.nvidia.com/authorize";
 const CLIENT_ID = "ZU7sPN-miLujMD95LfOQ453IB0AtjM8sMyvgJ9wCXEQ";
 const SCOPES = "openid consent email tk_client age";
 const DEFAULT_IDP_ID = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg";
-
-const GFN_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
 
 const REDIRECT_PORTS = [2259, 6460, 7119, 8870, 9096];
 const TOKEN_REFRESH_WINDOW_MS = 10 * 60 * 1000;
@@ -576,20 +574,10 @@ export class AuthService {
       token = session ? session.tokens.idToken ?? session.tokens.accessToken : undefined;
     }
 
-    const headers: Record<string, string> = {
-      Accept: "application/json",
-      "nv-client-id": "ec7e38d4-03af-4b58-b131-cfb0495903ab",
-      "nv-client-type": "BROWSER",
-      "nv-client-version": "2.0.80.173",
-      "nv-client-streamer": "WEBRTC",
-      "nv-device-os": "WINDOWS",
-      "nv-device-type": "DESKTOP",
-      "User-Agent": GFN_USER_AGENT,
-    };
-
-    if (token) {
-      headers.Authorization = `GFNJWT ${token}`;
-    }
+    const headers = buildDesktopGfnHeaders({
+      accept: "application/json",
+      token,
+    });
 
     let response: Response;
     try {
@@ -730,20 +718,10 @@ export class AuthService {
       token = session ? session.tokens.idToken ?? session.tokens.accessToken : undefined;
     }
 
-    const headers: Record<string, string> = {
-      Accept: "application/json",
-      "nv-client-id": "ec7e38d4-03af-4b58-b131-cfb0495903ab",
-      "nv-client-type": "BROWSER",
-      "nv-client-version": "2.0.80.173",
-      "nv-client-streamer": "WEBRTC",
-      "nv-device-os": "WINDOWS",
-      "nv-device-type": "DESKTOP",
-      "User-Agent": GFN_USER_AGENT,
-    };
-
-    if (token) {
-      headers.Authorization = `GFNJWT ${token}`;
-    }
+    const headers = buildDesktopGfnHeaders({
+      accept: "application/json",
+      token,
+    });
 
     try {
       const response = await fetch(`${base}v2/serverInfo`, {

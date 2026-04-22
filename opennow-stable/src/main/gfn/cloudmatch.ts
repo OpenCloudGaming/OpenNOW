@@ -25,12 +25,13 @@ import {
   resolveGfnKeyboardLayout,
 } from "@shared/gfn";
 
+import {
+  buildDesktopCloudMatchIdentity,
+  buildDesktopGfnHeaders,
+  GFN_STREAM_TRANSPORT_METADATA,
+} from "./clientIdentity";
 import type { CloudMatchRequest, CloudMatchResponse, GetSessionsResponse } from "./types";
 import { SessionError } from "./errorCodes";
-
-const GFN_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
-const GFN_CLIENT_VERSION = "2.0.80.173";
 const SESSION_MODIFY_ACTION_AD_UPDATE = 6;
 const READY_SESSION_STATUSES = new Set([2, 3]);
 
@@ -410,29 +411,15 @@ interface RequestHeadersOptions {
 function requestHeaders(options: RequestHeadersOptions): Record<string, string> {
   const clientId = options.clientId ?? crypto.randomUUID();
   const deviceId = options.deviceId ?? crypto.randomUUID();
-
-  const headers: Record<string, string> = {
-    "User-Agent": GFN_USER_AGENT,
-    Authorization: `GFNJWT ${options.token}`,
-    "Content-Type": "application/json",
-    "nv-browser-type": "CHROME",
-    "nv-client-id": clientId,
-    "nv-client-streamer": "NVIDIA-CLASSIC",
-    "nv-client-type": "NATIVE",
-    "nv-client-version": GFN_CLIENT_VERSION,
-    "nv-device-make": "UNKNOWN",
-    "nv-device-model": "UNKNOWN",
-    "nv-device-os": process.platform === "win32" ? "WINDOWS" : process.platform === "darwin" ? "MACOS" : "LINUX",
-    "nv-device-type": "DESKTOP",
-    "x-device-id": deviceId,
-  };
-
-  if (options.includeOrigin !== false) {
-    headers["Origin"] = "https://play.geforcenow.com";
-    headers["Referer"] = "https://play.geforcenow.com/";
-  }
-
-  return headers;
+  return buildDesktopGfnHeaders({
+    contentType: "application/json",
+    includeBrowserType: true,
+    includeDeviceDetails: true,
+    includeOrigin: options.includeOrigin !== false,
+    clientId,
+    deviceId,
+    token: options.token,
+  });
 }
 
 function parseResolution(input: string): { width: number; height: number } {
@@ -471,12 +458,10 @@ function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest
       availableSupportedControllers: [],
       networkTestSessionId: null,
       parentSessionId: null,
-      clientIdentification: "GFN-PC",
+      ...buildDesktopCloudMatchIdentity(),
       deviceHashId: crypto.randomUUID(),
-      clientVersion: "30.0",
       sdkVersion: "1.0",
       streamerVersion: 1,
-      clientPlatformName: "windows",
       clientRequestMonitorSettings: [
         {
           widthInPixels: width,
@@ -496,7 +481,7 @@ function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest
       metaData: [
         { key: "SubSessionId", value: crypto.randomUUID() },
         { key: "wssignaling", value: "1" },
-        { key: "GSStreamerType", value: "WebRTC" },
+        { key: "GSStreamerType", value: GFN_STREAM_TRANSPORT_METADATA },
         { key: "networkType", value: "Unknown" },
         { key: "ClientImeSupport", value: "0" },
         {
@@ -1210,20 +1195,18 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
       sdrHdrMode: 0,
       networkTestSessionId: null,
       availableSupportedControllers: [],
-      clientVersion: "30.0",
+      ...buildDesktopCloudMatchIdentity(),
       deviceHashId: deviceId,
       internalTitle: null,
-      clientPlatformName: "windows",
       metaData: [
         { key: "SubSessionId", value: subSessionId },
         { key: "wssignaling", value: "1" },
-        { key: "GSStreamerType", value: "WebRTC" },
+        { key: "GSStreamerType", value: GFN_STREAM_TRANSPORT_METADATA },
         { key: "networkType", value: "Unknown" },
         { key: "ClientImeSupport", value: "0" },
       ],
       surroundAudioInfo: 0,
       clientTimezoneOffset: timezoneMs,
-      clientIdentification: "GFN-PC",
       parentSessionId: null,
       appId: parseInt(appId, 10),
       streamerVersion: 1,
@@ -1349,21 +1332,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   // For status=1 (still launching) we bypass the claim and fall through to the polling loop.
   if (preClaimStatus !== 1) {
     const payload = buildClaimRequestBody(input.sessionId, appId, settings);
-
-    const headers: Record<string, string> = {
-      "User-Agent": GFN_USER_AGENT,
-      Authorization: `GFNJWT ${input.token}`,
-      "Content-Type": "application/json",
-      Origin: "https://play.geforcenow.com",
-      Referer: "https://play.geforcenow.com/",
-      "nv-client-id": clientId,
-      "nv-client-streamer": "NVIDIA-CLASSIC",
-      "nv-client-type": "NATIVE",
-      "nv-client-version": GFN_CLIENT_VERSION,
-      "nv-device-os": process.platform === "win32" ? "WINDOWS" : process.platform === "darwin" ? "MACOS" : "LINUX",
-      "nv-device-type": "DESKTOP",
-      "x-device-id": deviceId,
-    };
+    const headers = requestHeaders({ token: input.token, clientId, deviceId });
 
     console.log(`[CloudMatch] claimSession PUT ${claimUrl}`);
     console.log(`[CloudMatch] claimSession body: ${JSON.stringify(payload)}`);

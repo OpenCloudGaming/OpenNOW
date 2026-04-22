@@ -9,15 +9,10 @@ import type {
   StorageAddon,
   StreamRegion,
 } from "@shared/gfn";
+import { buildDesktopGfnHeaders } from "./clientIdentity";
 
 /** MES API endpoint URL */
 const MES_URL = "https://mes.geforcenow.com/v4/subscriptions";
-
-/** LCARS Client ID */
-const LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
-
-/** GFN client version */
-const GFN_CLIENT_VERSION = "2.0.80.173";
 
 interface SubscriptionResponse {
   firstEntitlementStartDateTime?: string;
@@ -113,16 +108,11 @@ export async function fetchSubscription(
   url.searchParams.append("userId", userId);
 
   const response = await fetch(url.toString(), {
-    headers: {
-      Authorization: `GFNJWT ${token}`,
-      Accept: "application/json",
-      "nv-client-id": LCARS_CLIENT_ID,
-      "nv-client-type": "NATIVE",
-      "nv-client-version": GFN_CLIENT_VERSION,
-      "nv-client-streamer": "NVIDIA-CLASSIC",
-      "nv-device-os": "WINDOWS",
-      "nv-device-type": "DESKTOP",
-    },
+    headers: buildDesktopGfnHeaders({
+      accept: "application/json",
+      contentType: "application/json",
+      token,
+    }),
   });
 
   if (!response.ok) {
@@ -253,19 +243,10 @@ export async function fetchDynamicRegions(
     : `${streamingBaseUrl}/`;
   const url = `${base}v2/serverInfo`;
 
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-    "nv-client-id": LCARS_CLIENT_ID,
-    "nv-client-type": "BROWSER",
-    "nv-client-version": GFN_CLIENT_VERSION,
-    "nv-client-streamer": "WEBRTC",
-    "nv-device-os": "WINDOWS",
-    "nv-device-type": "DESKTOP",
-  };
-
-  if (token) {
-    headers.Authorization = `GFNJWT ${token}`;
-  }
+  const headers = buildDesktopGfnHeaders({
+    accept: "application/json",
+    token,
+  });
 
   let response: Response;
   try {
