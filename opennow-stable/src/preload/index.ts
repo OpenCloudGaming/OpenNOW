@@ -167,6 +167,7 @@ const api: OpenNowApi = {
   fetchPrintedWasteServerMapping: (): Promise<PrintedWasteServerMapping> =>
     ipcRenderer.invoke(IPC_CHANNELS.PRINTEDWASTE_SERVER_MAPPING_FETCH),
   getThanksData: (): Promise<ThankYouDataResult> => ipcRenderer.invoke(IPC_CHANNELS.COMMUNITY_GET_THANKS),
+  clearDiscordActivity: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.DISCORD_CLEAR_ACTIVITY),
 };
 
 contextBridge.exposeInMainWorld("openNow", api);

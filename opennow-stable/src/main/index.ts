@@ -1248,6 +1248,10 @@ function registerIpcHandlers(): void {
     return getActiveSessions(jwt, baseUrl);
   });
 
+  ipcMain.handle(IPC_CHANNELS.DISCORD_CLEAR_ACTIVITY, async () => {
+    void clearActivity();
+  });
+
   ipcMain.handle(IPC_CHANNELS.CLAIM_SESSION, async (_event, payload: SessionClaimRequest) => {
     try {
       const token = await resolveJwt(payload.token);

@@ -1358,7 +1358,12 @@ export function App(): JSX.Element {
     if (!options?.keepLaunchError) {
       setLaunchError(null);
     }
-  }, [diagnosticsStore, resetStatsOverlayToPreference]);
+
+    // Clear Discord activity when returning to idle state
+    if (settings.discordRichPresence) {
+      void window.openNow.clearDiscordActivity();
+    }
+  }, [diagnosticsStore, resetStatsOverlayToPreference, settings.discordRichPresence]);
 
   // Session ref sync
   useEffect(() => {

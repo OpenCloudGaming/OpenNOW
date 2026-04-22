@@ -822,6 +822,8 @@ export interface OpenNowApi {
   /** Fetch PrintedWaste server mapping metadata (includes nuked status) */
   fetchPrintedWasteServerMapping(): Promise<PrintedWasteServerMapping>;
   getThanksData(): Promise<ThankYouDataResult>;
+  /** Clear Discord rich presence activity */
+  clearDiscordActivity(): Promise<void>;
 }
 
 export interface ScreenshotSaveRequest {
