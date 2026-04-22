@@ -665,14 +665,14 @@ private struct PrintedWasteLaunchSheetModifier: ViewModifier {
     func body(content: Content) -> some View {
         let sheetBinding = Binding<GameLaunchRequest?>(
             get: {
-                store.authProviderCode == "BPC" ? nil : pendingLaunchRequest
+                store.shouldUsePrintedWasteQueue ? pendingLaunchRequest : nil
             },
             set: { pendingLaunchRequest = $0 }
         )
 
         content
             .onChange(of: pendingLaunchRequest?.id) { _, _ in
-                guard store.authProviderCode == "BPC",
+                guard !store.shouldUsePrintedWasteQueue,
                       let request = pendingLaunchRequest else { return }
                 store.scheduleLaunch(game: request.game, zoneUrl: nil, launchOption: request.launchOption)
                 pendingLaunchRequest = nil
