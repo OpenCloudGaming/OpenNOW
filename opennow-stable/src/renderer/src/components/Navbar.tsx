@@ -388,15 +388,22 @@ export function Navbar({
                 />
               </button>
               {accountDropdownOpen && (
-                <div id="navbar-account-dropdown" className="navbar-account-dropdown" aria-label="Switch account">
-                  <div className="navbar-account-dropdown-header">Switch Account</div>
-                  <div className="navbar-account-list">
+                <div
+                  id="navbar-account-dropdown"
+                  className="navbar-account-dropdown"
+                  role="region"
+                  aria-labelledby="navbar-account-dropdown-header"
+                >
+                  <div id="navbar-account-dropdown-header" className="navbar-account-dropdown-header">
+                    Switch Account
+                  </div>
+                  <ul className="navbar-account-list">
                     {savedAccounts.map((account) => {
                       const accountTierInfo = getTierDisplay(account.membershipTier);
                       const isActive = activeUserId === account.userId;
                       const canRemove = !isActive && savedAccounts.length > 1;
                       return (
-                        <div
+                        <li
                           key={account.userId}
                           className={`navbar-account-item${isActive ? " navbar-account-item--active" : ""}`}
                         >
@@ -449,10 +456,10 @@ export function Navbar({
                               <X size={12} />
                             </button>
                           )}
-                        </div>
+                        </li>
                       );
                     })}
-                  </div>
+                  </ul>
                   <div className="navbar-account-divider" aria-hidden="true" />
                   <button
                     type="button"
