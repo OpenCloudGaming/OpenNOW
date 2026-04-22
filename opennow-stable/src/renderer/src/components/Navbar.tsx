@@ -367,7 +367,7 @@
    367	                className="navbar-user navbar-user--clickable"
    368	                onClick={() => setAccountDropdownOpen((previous) => !previous)}
    369	                aria-expanded={accountDropdownOpen}
-   370	                aria-haspopup="listbox"
+   370	                aria-haspopup="menu"
    371	              >
    372	                {user.avatarUrl ? (
    373	                  <img src={user.avatarUrl} alt={user.displayName} className="navbar-avatar" />
@@ -388,7 +388,7 @@
    388	                />
    389	              </button>
    390	              {accountDropdownOpen && (
-   391	                <div className="navbar-account-dropdown" role="list" aria-label="Switch account">
+   391	                <div className="navbar-account-dropdown" role="menu" aria-label="Switch account">
    392	                  <div className="navbar-account-dropdown-header">Switch Account</div>
    393	                  <div className="navbar-account-list">
    394	                    {savedAccounts.map((account) => {
@@ -402,6 +402,7 @@
    402	                        >
    403	                          <button
    404	                            type="button"
+   405	                            role="menuitem"
    405	                            className="navbar-account-item-main"
    406	                            onClick={() => {
    407	                              if (!isActive) {
@@ -440,6 +441,7 @@
    440	                          {canRemove && (
    441	                            <button
    442	                              type="button"
+   443	                              role="menuitem"
    443	                              className="navbar-account-remove"
    444	                              aria-label={`Remove ${account.displayName}`}
    445	                              onClick={() => {
@@ -456,6 +458,7 @@
    456	                  <div className="navbar-account-divider" />
    457	                  <button
    458	                    type="button"
+   459	                    role="menuitem"
    459	                    className="navbar-account-add"
    460	                    onClick={() => {
    461	                      onAddAccount();
@@ -467,6 +470,7 @@
    467	                  </button>
    468	                  <button
    469	                    type="button"
+   470	                    role="menuitem"
    470	                    className="navbar-account-signout-all"
    471	                    onClick={() => {
    472	                      onLogout();

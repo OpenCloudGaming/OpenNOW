@@ -1103,7 +1103,7 @@
   1103	      if (expired) {
   1104	        await this.logout();
   1105	        return {
-  1106	          session: null,
+  1106	          session: this.getSession(),
   1107	          refresh: {
   1108	            attempted: true,
   1109	            forced: forceRefresh,
