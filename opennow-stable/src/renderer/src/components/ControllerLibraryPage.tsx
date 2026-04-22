@@ -135,8 +135,8 @@ export function ControllerLibraryPage({
   const initialCategoryIndex = (() => {
     const hasFavorites = Array.isArray(favoriteGameIds) && favoriteGameIds.length > 0;
     if (currentStreamingGame) {
-      // TOP_CATEGORIES: current, settings, all, favorites, ...genres
-      return hasFavorites ? 3 : 0;
+      // TOP_CATEGORIES: current (game title), settings, all, favorites, ...genres
+      return 0;
     }
     // TOP_CATEGORIES without `current`: settings, all, favorites, ...genres
     return hasFavorites ? 2 : 1;
