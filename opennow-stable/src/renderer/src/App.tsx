@@ -1686,12 +1686,13 @@ export function App(): JSX.Element {
     return accounts;
   }, []);
 
-  const refreshNavbarActiveSession = useCallback(async (): Promise<void> => {
-    if (!authSession) {
+  const refreshNavbarActiveSession = useCallback(async (sessionOverride?: AuthSession): Promise<void> => {
+    const session = sessionOverride ?? authSession;
+    if (!session) {
       setNavbarActiveSession(null);
       return;
     }
-    const token = authSession.tokens.idToken ?? authSession.tokens.accessToken;
+    const token = session.tokens.idToken ?? session.tokens.accessToken;
     if (!token || !effectiveStreamingBaseUrl) {
       setNavbarActiveSession(null);
       return;
@@ -2390,7 +2391,7 @@ export function App(): JSX.Element {
       setProviderIdpId(session.provider.idpId);
       await refreshSavedAccounts();
       await loadSessionRuntimeData(session);
-      await refreshNavbarActiveSession();
+      await refreshNavbarActiveSession(session);
     } catch (error) {
       console.warn("Failed to switch account:", error);
       setLoginError(error instanceof Error ? error.message : "Failed to switch account");
