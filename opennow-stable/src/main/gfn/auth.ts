@@ -14,6 +14,7 @@ import type {
   AuthTokens,
   AuthUser,
   LoginProvider,
+  SavedAccount,
   StreamRegion,
   SubscriptionInfo,
 } from "@shared/gfn";
@@ -612,14 +613,7 @@ export class AuthService {
     return this.sessions.get(this.activeUserId) ?? null;
   }
 
-  getSavedAccounts(): Array<{
-    userId: string;
-    displayName: string;
-    email?: string;
-    avatarUrl?: string;
-    membershipTier: string;
-    providerCode: string;
-  }> {
+  getSavedAccounts(): SavedAccount[] {
     return Array.from(this.sessions.values()).map((session) => ({
       userId: session.user.userId,
       displayName: session.user.displayName,

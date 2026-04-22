@@ -366,8 +366,9 @@ export function Navbar({
                 type="button"
                 className="navbar-user navbar-user--clickable"
                 onClick={() => setAccountDropdownOpen((previous) => !previous)}
-                aria-expanded={accountDropdownOpen}
                 aria-haspopup="menu"
+                aria-expanded={accountDropdownOpen}
+                aria-controls="navbar-account-dropdown"
               >
                 {user.avatarUrl ? (
                   <img src={user.avatarUrl} alt={user.displayName} className="navbar-avatar" />
@@ -388,15 +389,22 @@ export function Navbar({
                 />
               </button>
               {accountDropdownOpen && (
-                <div className="navbar-account-dropdown" role="menu" aria-label="Switch account">
-                  <div className="navbar-account-dropdown-header">Switch Account</div>
-                  <div className="navbar-account-list">
+                <div
+                  id="navbar-account-dropdown"
+                  className="navbar-account-dropdown"
+                  role="region"
+                  aria-labelledby="navbar-account-dropdown-header"
+                >
+                  <div id="navbar-account-dropdown-header" className="navbar-account-dropdown-header">
+                    Switch Account
+                  </div>
+                  <ul className="navbar-account-list">
                     {savedAccounts.map((account) => {
                       const accountTierInfo = getTierDisplay(account.membershipTier);
                       const isActive = activeUserId === account.userId;
                       const canRemove = !isActive && savedAccounts.length > 1;
                       return (
-                        <div
+                        <li
                           key={account.userId}
                           className={`navbar-account-item${isActive ? " navbar-account-item--active" : ""}`}
                         >
@@ -449,11 +457,11 @@ export function Navbar({
                               <X size={12} />
                             </button>
                           )}
-                        </div>
+                        </li>
                       );
                     })}
-                  </div>
-                  <div className="navbar-account-divider" />
+                  </ul>
+                  <div className="navbar-account-divider" aria-hidden="true" />
                   <button
                     type="button"
                     className="navbar-account-add"

@@ -1026,7 +1026,7 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.AUTH_LOGOUT, async () => {
-    await authService.logoutAll();
+    await authService.logout();
   });
 
   ipcMain.handle(IPC_CHANNELS.AUTH_GET_SAVED_ACCOUNTS, async () => {
