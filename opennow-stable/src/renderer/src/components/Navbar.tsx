@@ -440,7 +440,6 @@ export function Navbar({
                           {canRemove && (
                             <button
                               type="button"
-                              role="menuitem"
                               className="navbar-account-remove"
                               aria-label={`Remove ${account.displayName}`}
                               onClick={() => {
