@@ -27,6 +27,12 @@
     "test": "tsx --test src/renderer/src/gfn/inputProtocol.test.ts"
   },
   "dependencies": {
+    "@capacitor/app": "^8.1.0",
+    "@capacitor/core": "^8.3.0",
+    "@capacitor/device": "^8.0.2",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.2",
     "discord-rpc": "^4.0.1",
     "electron-updater": "^6.8.3",
     "lucide-react": "^1.7.0",
@@ -36,13 +42,7 @@
   },
   "devDependencies": {
     "@capacitor/android": "^8.3.0",
-    "@capacitor/app": "^8.1.0",
     "@capacitor/cli": "^8.3.0",
-    "@capacitor/core": "^8.3.0",
-    "@capacitor/device": "^8.0.2",
-    "@capacitor/filesystem": "^8.1.2",
-    "@capacitor/preferences": "^8.0.1",
-    "@capacitor/status-bar": "^8.0.2",
     "@types/discord-rpc": "^4.0.10",
     "@types/node": "^22.19.17",
     "@types/react": "^19.2.14",

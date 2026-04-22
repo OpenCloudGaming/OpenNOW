@@ -1050,6 +1050,7 @@ body,
   padding: 20px;
   margin-top: var(--navbar-h);
   will-change: scroll-position;
+  min-width: 0;
 }
 
 /* ======================================================
@@ -1605,7 +1606,7 @@ body.controller-mode.controller-hide-cursor * {
 .home-search {
   flex: 1;
   position: relative;
-  min-width: 260px;
+  min-width: 0;
   max-width: 340px;
 }
 
@@ -1687,6 +1688,7 @@ body.controller-mode.controller-hide-cursor * {
   font-weight: 500;
   white-space: nowrap;
   margin-left: auto;
+  min-width: 0;
 }
 
 .home-filter-dropdown {
@@ -1883,7 +1885,7 @@ body.controller-mode.controller-hide-cursor * {
 .library-search {
   flex: 1;
   position: relative;
-  min-width: 260px;
+  min-width: 0;
   max-width: 340px;
 }
 
@@ -1924,6 +1926,7 @@ body.controller-mode.controller-hide-cursor * {
   font-weight: 500;
   white-space: nowrap;
   margin-left: auto;
+  min-width: 0;
 }
 
 .library-grid-area {
@@ -1991,6 +1994,80 @@ body.controller-mode.controller-hide-cursor * {
   grid-template-columns: repeat(auto-fill, minmax(calc(200px * var(--game-poster-scale, 1)), 1fr));
   gap: 12px;
   padding-bottom: 16px;
+}
+
+@media (max-width: 900px) {
+  .main-content {
+    padding: 14px;
+  }
+
+  .home-toolbar,
+  .library-toolbar {
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .home-search,
+  .library-search {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+
+  .home-sort,
+  .library-sort,
+  .home-filter-dropdown {
+    flex: 1 1 calc(50% - 5px);
+    min-width: 0;
+  }
+
+  .home-sort,
+  .library-sort,
+  .home-filter-dropdown-trigger {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .home-sort select,
+  .library-sort select {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .home-count,
+  .library-count {
+    width: 100%;
+    margin-left: 0;
+    white-space: normal;
+  }
+
+  .home-filter-dropdown-menu {
+    left: 0;
+    right: 0;
+    min-width: 0;
+    max-width: min(100vw - 28px, 440px);
+  }
+
+  .game-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(160px, 100%), 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .home-sort,
+  .library-sort,
+  .home-filter-dropdown {
+    flex-basis: 100%;
+  }
+
+  .home-page,
+  .library-page {
+    gap: 12px;
+  }
+
+  .game-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
 }
 
 
