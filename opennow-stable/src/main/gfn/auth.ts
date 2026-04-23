@@ -629,23 +629,34 @@ export class AuthService {
     if (!target) {
       throw new Error("Saved account not found");
     }
+
+    const previousActiveUserId = this.activeUserId;
+    const previousSelectedProvider = this.selectedProvider;
+
     this.activeUserId = userId;
     this.selectedProvider = target.provider;
     this.clearSubscriptionCache();
     this.clearVpcCache();
 
     const result = await this.ensureValidSessionWithStatus(true, userId);
-    const refreshFailed =
-      result.refresh.outcome === "failed" || result.refresh.outcome === "missing_refresh_token";
+    const missingRefreshToken = result.refresh.outcome === "missing_refresh_token";
+    const refreshFailed = result.refresh.outcome === "failed";
     const switchedUserMismatch = result.session?.user.userId !== userId;
-    if (!result.session || refreshFailed || switchedUserMismatch) {
-      await this.removeAccount(userId);
+    if (!result.session || refreshFailed || missingRefreshToken || switchedUserMismatch) {
       const fallbackMessage = "Failed to switch account due to an invalid or expired session.";
+
+      if (missingRefreshToken) {
+        await this.removeAccount(userId);
+        throw new Error("Saved login for this account is incomplete. Please log in to this account again.");
+      }
+
+      this.activeUserId = previousActiveUserId;
+      this.selectedProvider = previousSelectedProvider;
+      this.clearSubscriptionCache();
+      this.clearVpcCache();
+
       if (switchedUserMismatch) {
         throw new Error("Switched session did not match the selected account.");
-      }
-      if (result.refresh.outcome === "missing_refresh_token") {
-        throw new Error("Saved login for this account is incomplete. Please log in to this account again.");
       }
       throw new Error(result.refresh.message || fallbackMessage);
     }
