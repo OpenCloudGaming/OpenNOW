@@ -1,7 +1,17 @@
 import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage, AspectRatio, KeyboardLayout } from "@shared/gfn";
+import type {
+  VideoCodec,
+  ColorQuality,
+  VideoAccelerationPreference,
+  MicrophoneMode,
+  GameLanguage,
+  AspectRatio,
+  KeyboardLayout,
+  StreamClientMode,
+  NativeStreamerBackendPreference,
+} from "@shared/gfn";
 import { DEFAULT_KEYBOARD_LAYOUT, getDefaultStreamPreferences, normalizeStreamPreferences } from "@shared/gfn";
 
 export interface Settings {
@@ -15,6 +25,10 @@ export interface Settings {
   fps: number;
   /** Maximum bitrate in Mbps (cap at 150) */
   maxBitrateMbps: number;
+  /** Stream client implementation to use for new sessions */
+  streamClientMode: StreamClientMode;
+  /** Native streamer backend preference for new native sessions */
+  nativeStreamerBackend: NativeStreamerBackendPreference;
   /** Preferred video codec */
   codec: VideoCodec;
   /** Preferred video decode acceleration mode */
@@ -107,6 +121,8 @@ const DEFAULT_SETTINGS: Settings = {
   posterSizeScale: 1,
   fps: 60,
   maxBitrateMbps: 75,
+  streamClientMode: "web",
+  nativeStreamerBackend: "auto",
   codec: DEFAULT_STREAM_PREFERENCES.codec,
   decoderPreference: "auto",
   encoderPreference: "auto",

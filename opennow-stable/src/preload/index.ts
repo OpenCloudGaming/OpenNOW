@@ -18,6 +18,8 @@ import type {
   SignalingConnectRequest,
   SendAnswerRequest,
   IceCandidatePayload,
+  NativeInputPacket,
+  NativeRenderSurfaceUpdate,
   KeyframeRequest,
   Settings,
   SubscriptionFetchRequest,
@@ -86,6 +88,12 @@ const api: OpenNowApi = {
   sendAnswer: (input: SendAnswerRequest) => ipcRenderer.invoke(IPC_CHANNELS.SEND_ANSWER, input),
   sendIceCandidate: (input: IceCandidatePayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.SEND_ICE_CANDIDATE, input),
+  sendNativeInput: (input: NativeInputPacket) => {
+    ipcRenderer.send(IPC_CHANNELS.NATIVE_INPUT, input);
+  },
+  updateNativeRenderSurface: (input: NativeRenderSurfaceUpdate) => {
+    ipcRenderer.send(IPC_CHANNELS.NATIVE_RENDER_SURFACE, input);
+  },
   requestKeyframe: (input: KeyframeRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.REQUEST_KEYFRAME, input),
   onSignalingEvent: (listener: (event: MainToRendererSignalingEvent) => void) => {

@@ -61,6 +61,12 @@ const allColorQualityOptions: { value: ColorQuality; label: string; description:
 
 const colorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [...allColorQualityOptions];
 
+const nativeStreamerBackendOptions: Array<{ value: Settings["nativeStreamerBackend"]; label: string }> = [
+  { value: "auto", label: "Auto" },
+  { value: "gstreamer", label: "GStreamer" },
+  { value: "stub", label: "Stub" },
+];
+
 /* ── Static fallbacks (used when MES API is unavailable) ─────────── */
 
 interface ResolutionPreset {
@@ -1704,6 +1710,44 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     value={settings.maxBitrateMbps}
                     onChange={(e) => handleChange("maxBitrateMbps", parseInt(e.target.value, 10))}
                   />
+                </div>
+
+                <div className="settings-row settings-row--column">
+                  <div className="settings-row-top settings-row-top--compact">
+                    <label className="settings-label settings-label--wrap">
+                      <span className="settings-label-title">
+                        Native Streamer
+                        <span className="settings-inline-badge settings-inline-badge--beta">Experimental</span>
+                      </span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.streamClientMode === "native"}
+                        onChange={(e) => handleChange("streamClientMode", e.target.checked ? "native" : "web")}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+                  <span className="settings-subtle-hint">
+                    Use the native streamer process for new sessions when available. OpenNOW falls back to the web streamer if the native path cannot accept the stream.
+                  </span>
+                  {settings.streamClientMode === "native" && (
+                    <div className="settings-row">
+                      <label className="settings-label">Native Backend</label>
+                      <select
+                        className="settings-text-input settings-select"
+                        value={settings.nativeStreamerBackend}
+                        onChange={(e) => handleChange("nativeStreamerBackend", e.target.value as Settings["nativeStreamerBackend"])}
+                      >
+                        {nativeStreamerBackendOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
 
                 <div className="settings-row settings-row--column">

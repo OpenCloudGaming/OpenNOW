@@ -22,6 +22,8 @@ export const IPC_CHANNELS = {
   DISCONNECT_SIGNALING: "gfn:disconnect-signaling",
   SEND_ANSWER: "gfn:send-answer",
   SEND_ICE_CANDIDATE: "gfn:send-ice-candidate",
+  NATIVE_INPUT: "gfn:native-input",
+  NATIVE_RENDER_SURFACE: "gfn:native-render-surface",
   REQUEST_KEYFRAME: "gfn:request-keyframe",
   SIGNALING_EVENT: "gfn:signaling-event",
   TOGGLE_FULLSCREEN: "window:toggle-fullscreen",

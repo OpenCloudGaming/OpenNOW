@@ -6,6 +6,7 @@ import { copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile, re
 import * as net from "node:net";
 import { randomUUID, createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { Buffer } from "node:buffer";
 
 // Keyboard shortcuts reference (matching Rust implementation):
 // Screenshot keybind - configurable, handled in renderer
@@ -15,6 +16,7 @@ import { spawn } from "node:child_process";
 
 import { IPC_CHANNELS } from "@shared/ipc";
 import { initLogCapture, exportLogs } from "@shared/logger";
+import type { NativeStreamerInputPacket } from "@shared/nativeStreamer";
 import { cacheManager } from "./services/cacheManager";
 import { refreshScheduler } from "./services/refreshScheduler";
 import { cacheEventBus } from "./services/cacheEventBus";
@@ -43,8 +45,12 @@ import type {
   SignalingConnectRequest,
   SendAnswerRequest,
   IceCandidatePayload,
+  NativeInputPacket,
+  NativeRenderSurface,
+  NativeRenderSurfaceUpdate,
   KeyframeRequest,
   Settings,
+  NativeStreamerSessionContext,
   SubscriptionFetchRequest,
   SessionConflictChoice,
   PingResult,
@@ -85,6 +91,7 @@ import { GfnSignalingClient } from "./gfn/signaling";
 import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
 import { connectDiscordRpc, setActivity, clearActivity, destroyDiscordRpc, getCurrentActivity, isDiscordRpcConnected } from "./discordRpc";
 import { createAppUpdaterController, type AppUpdaterController } from "./updater";
+import { NativeStreamerManager } from "./nativeStreamer/manager";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -225,6 +232,10 @@ app.commandLine.appendSwitch("max-gum-fps", "999");
 let mainWindow: BrowserWindow | null = null;
 let signalingClient: GfnSignalingClient | null = null;
 let signalingClientKey: string | null = null;
+let nativeStreamerManager: NativeStreamerManager | null = null;
+let nativeStreamerContext: NativeStreamerSessionContext | null = null;
+let nativeStreamerFallbackSessionId: string | null = null;
+const MAX_NATIVE_INPUT_PACKET_BYTES = 4096;
 let authService: AuthService;
 let settingsManager: SettingsManager;
 let appUpdater: AppUpdaterController | null = null;
@@ -254,6 +265,10 @@ function runShutdownCleanup(reason = "app-quit"): void {
   signalingClient?.disconnect();
   signalingClient = null;
   signalingClientKey = null;
+  nativeStreamerManager?.dispose(reason);
+  nativeStreamerManager = null;
+  nativeStreamerContext = null;
+  nativeStreamerFallbackSessionId = null;
   void destroyDiscordRpc();
   appUpdater?.dispose();
   appUpdater = null;
@@ -676,6 +691,170 @@ async function listRecordings(): Promise<RecordingEntry[]> {
 function emitToRenderer(event: MainToRendererSignalingEvent): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(IPC_CHANNELS.SIGNALING_EVENT, event);
+  }
+}
+
+function getNativeStreamerManager(): NativeStreamerManager {
+  nativeStreamerManager ??= new NativeStreamerManager({
+    mainDir: __dirname,
+    getBackendPreference: () => settingsManager?.get("nativeStreamerBackend") ?? "auto",
+    emit: emitToRenderer,
+    sendAnswer: async (payload) => {
+      if (!signalingClient) {
+        throw new Error("Signaling is not connected");
+      }
+      await signalingClient.sendAnswer(payload);
+    },
+    sendIceCandidate: async (candidate) => {
+      if (!signalingClient) {
+        throw new Error("Signaling is not connected");
+      }
+      await signalingClient.sendIceCandidate(candidate);
+    },
+  });
+  return nativeStreamerManager;
+}
+
+function isNativeStreamerSelected(): boolean {
+  return settingsManager?.get("streamClientMode") === "native";
+}
+
+function nativeWindowHandleToHex(window: BrowserWindow): string | null {
+  const handle = window.getNativeWindowHandle();
+  if (handle.byteLength >= 8) {
+    return `0x${handle.readBigUInt64LE(0).toString(16)}`;
+  }
+  if (handle.byteLength >= 4) {
+    return `0x${handle.readUInt32LE(0).toString(16)}`;
+  }
+  return null;
+}
+
+function normalizeNativeRenderSurface(
+  window: BrowserWindow,
+  input: NativeRenderSurfaceUpdate,
+): NativeRenderSurface | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+
+  const windowHandle = nativeWindowHandleToHex(window);
+  if (!windowHandle) {
+    return null;
+  }
+
+  const deviceScaleFactor = Number.isFinite(input.deviceScaleFactor)
+    ? Math.min(8, Math.max(0.25, input.deviceScaleFactor))
+    : 1;
+  const rect = input.rect;
+  const visible = input.visible === true
+    && rect !== null
+    && Number.isFinite(rect.x)
+    && Number.isFinite(rect.y)
+    && Number.isFinite(rect.width)
+    && Number.isFinite(rect.height)
+    && rect.width >= 2
+    && rect.height >= 2;
+
+  return {
+    windowHandle,
+    deviceScaleFactor,
+    visible,
+    rect: visible
+      ? {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.max(2, Math.round(rect.width)),
+          height: Math.max(2, Math.round(rect.height)),
+        }
+      : null,
+  };
+}
+
+function normalizeNativeInputPacket(input: unknown): NativeStreamerInputPacket | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+
+  const packet = input as { payload?: unknown; partiallyReliable?: unknown };
+  const rawPayload = packet.payload;
+  let bytes: Uint8Array;
+
+  if (rawPayload instanceof ArrayBuffer) {
+    bytes = new Uint8Array(rawPayload);
+  } else if (ArrayBuffer.isView(rawPayload)) {
+    bytes = new Uint8Array(rawPayload.buffer, rawPayload.byteOffset, rawPayload.byteLength);
+  } else if (Array.isArray(rawPayload)) {
+    if (
+      rawPayload.length === 0
+      || rawPayload.length > MAX_NATIVE_INPUT_PACKET_BYTES
+      || rawPayload.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+    ) {
+      return null;
+    }
+    bytes = Uint8Array.from(rawPayload);
+  } else {
+    return null;
+  }
+
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_NATIVE_INPUT_PACKET_BYTES) {
+    return null;
+  }
+
+  return {
+    payloadBase64: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"),
+    partiallyReliable: packet.partiallyReliable === true,
+  };
+}
+
+function routeSignalingEvent(event: MainToRendererSignalingEvent): void {
+  if (event.type === "disconnected") {
+    void nativeStreamerManager?.stop(`signaling disconnected: ${event.reason}`);
+    nativeStreamerContext = null;
+    nativeStreamerFallbackSessionId = null;
+    emitToRenderer(event);
+    return;
+  }
+
+  const context = nativeStreamerContext;
+  const nativeFallbackActive =
+    context !== null && nativeStreamerFallbackSessionId === context.session.sessionId;
+
+  if (!isNativeStreamerSelected() || !context || nativeFallbackActive) {
+    emitToRenderer(event);
+    return;
+  }
+
+  if (event.type === "offer") {
+    void handleNativeStreamerOffer(event.sdp, context);
+    return;
+  }
+
+  if (event.type === "remote-ice") {
+    if (nativeStreamerManager?.isRunning()) {
+      void nativeStreamerManager.addRemoteIce(event.candidate).catch((error) => {
+        emitToRenderer({ type: "error", message: `Native streamer ICE failed: ${String(error)}` });
+      });
+    }
+    return;
+  }
+
+  emitToRenderer(event);
+}
+
+async function handleNativeStreamerOffer(sdp: string, context: NativeStreamerSessionContext): Promise<void> {
+  try {
+    await getNativeStreamerManager().handleOffer(sdp, context);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[NativeStreamer] Falling back to web streamer:", message);
+    nativeStreamerFallbackSessionId = context.session.sessionId;
+    await nativeStreamerManager?.stop("native streamer fallback").catch(() => undefined);
+    emitToRenderer({
+      type: "error",
+      message: `Native streamer failed: ${message}. Falling back to web streamer.`,
+    });
+    emitToRenderer({ type: "offer", sdp });
   }
 }
 
@@ -1351,6 +1530,9 @@ function registerIpcHandlers(): void {
     IPC_CHANNELS.CONNECT_SIGNALING,
     async (_event, payload: SignalingConnectRequest): Promise<void> => {
       const nextKey = `${payload.sessionId}|${payload.signalingServer}|${payload.signalingUrl ?? ""}`;
+      nativeStreamerContext = payload.nativeStreamer ?? null;
+      nativeStreamerFallbackSessionId = null;
+
       if (signalingClient && signalingClientKey === nextKey) {
         console.log("[Signaling] Reuse existing signaling connection (duplicate connect request ignored)");
         return;
@@ -1359,6 +1541,7 @@ function registerIpcHandlers(): void {
       if (signalingClient) {
         signalingClient.disconnect();
       }
+      await nativeStreamerManager?.stop("signaling reconnect");
 
       signalingClient = new GfnSignalingClient(
         payload.signalingServer,
@@ -1366,12 +1549,15 @@ function registerIpcHandlers(): void {
         payload.signalingUrl,
       );
       signalingClientKey = nextKey;
-      signalingClient.onEvent(emitToRenderer);
+      signalingClient.onEvent(routeSignalingEvent);
       await signalingClient.connect();
     },
   );
 
   ipcMain.handle(IPC_CHANNELS.DISCONNECT_SIGNALING, async (): Promise<void> => {
+    await nativeStreamerManager?.stop("signaling disconnect");
+    nativeStreamerContext = null;
+    nativeStreamerFallbackSessionId = null;
     signalingClient?.disconnect();
     signalingClient = null;
     signalingClientKey = null;
@@ -1389,6 +1575,42 @@ function registerIpcHandlers(): void {
       throw new Error("Signaling is not connected");
     }
     return signalingClient.sendIceCandidate(payload);
+  });
+
+  ipcMain.on(IPC_CHANNELS.NATIVE_INPUT, (_event, payload: NativeInputPacket) => {
+    if (!isNativeStreamerSelected()) {
+      return;
+    }
+
+    const context = nativeStreamerContext;
+    if (!context || nativeStreamerFallbackSessionId === context.session.sessionId) {
+      return;
+    }
+
+    const packet = normalizeNativeInputPacket(payload);
+    if (!packet) {
+      return;
+    }
+
+    nativeStreamerManager?.sendInput(packet);
+  });
+
+  ipcMain.on(IPC_CHANNELS.NATIVE_RENDER_SURFACE, (event, payload: NativeRenderSurfaceUpdate) => {
+    if (!isNativeStreamerSelected()) {
+      return;
+    }
+
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window || window.isDestroyed()) {
+      return;
+    }
+
+    const surface = normalizeNativeRenderSurface(window, payload);
+    if (!surface) {
+      return;
+    }
+
+    getNativeStreamerManager().updateSurface(surface);
   });
 
   ipcMain.handle(IPC_CHANNELS.REQUEST_KEYFRAME, async (_event, payload: KeyframeRequest) => {
@@ -1494,6 +1716,13 @@ function registerIpcHandlers(): void {
       if (key === "autoCheckForUpdates") {
         appUpdater?.setAutomaticChecksEnabled(value as boolean);
       }
+      if ((key === "streamClientMode" && value !== "native") || key === "nativeStreamerBackend") {
+        void nativeStreamerManager?.stop(
+          key === "nativeStreamerBackend" ? "native streamer backend changed" : "native streamer disabled",
+        );
+        nativeStreamerContext = null;
+        nativeStreamerFallbackSessionId = null;
+      }
       if (key === "discordRichPresence") {
         if (value) {
           void connectDiscordRpc().then(() => discordMonitor.start());
@@ -1510,6 +1739,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
     const resetSettings = settingsManager.reset();
     appUpdater?.setAutomaticChecksEnabled(resetSettings.autoCheckForUpdates);
+    void nativeStreamerManager?.stop("settings reset");
+    nativeStreamerContext = null;
+    nativeStreamerFallbackSessionId = null;
     return resetSettings;
   });
 

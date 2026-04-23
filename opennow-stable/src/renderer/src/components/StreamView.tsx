@@ -184,7 +184,10 @@ function StreamStatsHud({
 }): JSX.Element {
   const stats = useStreamDiagnosticsStore(diagnosticsStore);
   const bitrateMbps = (stats.bitrateKbps / 1000).toFixed(1);
-  const hasResolution = stats.resolution && stats.resolution !== "";
+  const hasResolution = stats.nativeRendererActive || stats.resolution !== "";
+  const primaryText = stats.nativeRendererActive
+    ? "Native renderer"
+    : `${stats.resolution} · ${stats.decodeFps}fps`;
   const hasCodec = stats.codec && stats.codec !== "";
   const regionLabel = stats.serverRegion || serverRegion || "";
   const decodeColor = getTimingColor(stats.decodeTimeMs, 8, 16);
@@ -203,7 +206,7 @@ function StreamStatsHud({
     <div className="sv-stats">
       <div className="sv-stats-head">
         {hasResolution ? (
-          <span className="sv-stats-primary">{stats.resolution} · {stats.decodeFps}fps</span>
+          <span className="sv-stats-primary">{primaryText}</span>
         ) : (
           <span className="sv-stats-primary sv-stats-wait">Connecting...</span>
         )}
@@ -432,7 +435,7 @@ function StreamTitleBar({
 }): JSX.Element | null {
   const hasResolution = useStreamDiagnosticsSelector(
     diagnosticsStore,
-    (stats) => stats.resolution !== "",
+    (stats) => stats.nativeRendererActive || stats.resolution !== "",
   );
 
   if (!hasResolution || !showHints) {
@@ -461,7 +464,7 @@ function StreamEmptyState({
 }): JSX.Element | null {
   const hasResolution = useStreamDiagnosticsSelector(
     diagnosticsStore,
-    (stats) => stats.resolution !== "",
+    (stats) => stats.nativeRendererActive || stats.resolution !== "",
   );
 
   if (hasResolution) {
@@ -1338,6 +1341,77 @@ export function StreamView({
       (audioRef as React.MutableRefObject<HTMLAudioElement | null>).current = element;
     }
   }, [audioRef]);
+
+  useEffect(() => {
+    const updateSurface = window.openNow?.updateNativeRenderSurface;
+    if (typeof updateSurface !== "function") {
+      return undefined;
+    }
+
+    let frame = 0;
+    const publish = (): void => {
+      const element = localVideoRef.current;
+      const dpr = window.devicePixelRatio || 1;
+      if (!element || document.visibilityState === "hidden") {
+        updateSurface({ rect: null, visible: false, deviceScaleFactor: dpr });
+        return;
+      }
+
+      const rect = element.getBoundingClientRect();
+      const width = Math.round(rect.width * dpr);
+      const height = Math.round(rect.height * dpr);
+      const visible = width >= 2 && height >= 2;
+      updateSurface({
+        deviceScaleFactor: dpr,
+        visible,
+        rect: visible
+          ? {
+              x: Math.round(rect.left * dpr),
+              y: Math.round(rect.top * dpr),
+              width,
+              height,
+            }
+          : null,
+      });
+    };
+
+    const schedule = (): void => {
+      if (frame !== 0) {
+        return;
+      }
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        publish();
+      });
+    };
+
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+    if (observer && localVideoRef.current) {
+      observer.observe(localVideoRef.current);
+    }
+
+    window.addEventListener("resize", schedule);
+    window.addEventListener("fullscreenchange", schedule);
+    document.addEventListener("visibilitychange", schedule);
+    window.visualViewport?.addEventListener("resize", schedule);
+    window.visualViewport?.addEventListener("scroll", schedule);
+    const interval = window.setInterval(schedule, 1000);
+    schedule();
+
+    return () => {
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame);
+      }
+      observer?.disconnect();
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("fullscreenchange", schedule);
+      document.removeEventListener("visibilitychange", schedule);
+      window.visualViewport?.removeEventListener("resize", schedule);
+      window.visualViewport?.removeEventListener("scroll", schedule);
+      window.clearInterval(interval);
+      updateSurface({ rect: null, visible: false, deviceScaleFactor: window.devicePixelRatio || 1 });
+    };
+  }, []);
 
   useEffect(() => {
     const handlePointerLockChange = () => {

@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "npm --prefix opennow-stable run dev",
     "build": "npm --prefix opennow-stable run build",
+    "native:check": "npm --prefix opennow-stable run native:check",
+    "native:build": "npm --prefix opennow-stable run native:build",
     "typecheck": "npm --prefix opennow-stable run typecheck",
     "dist": "npm --prefix opennow-stable run dist",
     "dist:signed": "npm --prefix opennow-stable run dist:signed"

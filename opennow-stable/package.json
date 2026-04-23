@@ -20,6 +20,8 @@
     "preview": "electron-vite preview",
     "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
     "dist:signed": "npm run build && electron-builder",
+    "native:check": "cargo check --manifest-path ../native/opennow-streamer/Cargo.toml",
+    "native:build": "node scripts/build-native-streamer.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.json",
     "test": "tsx --test src/shared/gfn.test.ts src/renderer/src/lib/launchOwnership.test.ts src/renderer/src/components/GameCard.test.ts src/renderer/src/gfn/inputProtocol.test.ts"
   },
@@ -68,6 +70,15 @@
       "dist/**",
       "dist-electron/**",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../native/opennow-streamer/bin",
+        "to": "native/opennow-streamer",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "asar": true,
     "win": {

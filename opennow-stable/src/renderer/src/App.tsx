@@ -21,6 +21,8 @@ import type {
   SessionStopRequest,
   Settings,
   SubscriptionInfo,
+  SignalingConnectRequest,
+  StreamSettings,
   StreamRegion,
   VideoCodec,
   PrintedWasteQueueData,
@@ -367,6 +369,7 @@ function defaultDiagnostics(): StreamDiagnostics {
   return {
     connectionState: "closed",
     inputReady: false,
+    nativeRendererActive: false,
     connectedGamepads: 0,
     resolution: "",
     codec: "",
@@ -796,6 +799,8 @@ export function App(): JSX.Element {
     posterSizeScale: 1,
     fps: 60,
     maxBitrateMbps: 75,
+    streamClientMode: "web",
+    nativeStreamerBackend: "auto",
     codec: DEFAULT_STREAM_PREFERENCES.codec,
     decoderPreference: "auto",
     encoderPreference: "auto",
@@ -1122,6 +1127,7 @@ export function App(): JSX.Element {
   const launchInFlightRef = useRef(false);
   const launchAbortRef = useRef(false);
   const streamStatusRef = useRef<StreamStatus>(streamStatus);
+  const nativeInputProtocolVersionRef = useRef<number | null>(null);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const adReportQueueRef = useRef<Promise<void>>(Promise.resolve());
   const adReportStateRef = useRef<Record<string, SessionAdAction>>({});
@@ -1364,6 +1370,38 @@ export function App(): JSX.Element {
       void window.openNow.clearDiscordActivity();
     }
   }, [diagnosticsStore, resetStatsOverlayToPreference, settings.discordRichPresence]);
+
+  const buildCurrentStreamSettings = useCallback((): StreamSettings => ({
+    resolution: settings.resolution,
+    fps: settings.fps,
+    maxBitrateMbps: settings.maxBitrateMbps,
+    codec: settings.codec,
+    colorQuality: settings.colorQuality,
+    keyboardLayout: settings.keyboardLayout,
+    gameLanguage: settings.gameLanguage,
+    enableL4S: settings.enableL4S,
+    enableCloudGsync: settings.enableCloudGsync,
+  }), [
+    settings.codec,
+    settings.colorQuality,
+    settings.enableCloudGsync,
+    settings.enableL4S,
+    settings.fps,
+    settings.gameLanguage,
+    settings.keyboardLayout,
+    settings.maxBitrateMbps,
+    settings.resolution,
+  ]);
+
+  const buildSignalingConnectRequest = useCallback((activeSession: SessionInfo): SignalingConnectRequest => ({
+    sessionId: activeSession.sessionId,
+    signalingServer: activeSession.signalingServer,
+    signalingUrl: activeSession.signalingUrl,
+    nativeStreamer: {
+      session: activeSession,
+      settings: buildCurrentStreamSettings(),
+    },
+  }), [buildCurrentStreamSettings]);
 
   // Session ref sync
   useEffect(() => {
@@ -2169,6 +2207,38 @@ export function App(): JSX.Element {
 
   // Signaling events
   useEffect(() => {
+    const ensureStreamClient = (): GfnWebRtcClient | null => {
+      if (!clientRef.current && videoRef.current && audioRef.current) {
+        clientRef.current = new GfnWebRtcClient({
+          videoElement: videoRef.current,
+          audioElement: audioRef.current,
+          autoFullScreen: settings.autoFullScreen,
+          microphoneMode: settings.microphoneMode,
+          microphoneDeviceId: settings.microphoneDeviceId || undefined,
+          mouseSensitivity: settings.mouseSensitivity,
+          mouseAcceleration: settings.mouseAcceleration,
+          onLog: (line: string) => console.log(`[WebRTC] ${line}`),
+          onStats: (stats) => diagnosticsStore.set(stats),
+          onEscHoldProgress: (visible, progress) => {
+            setEscHoldReleaseIndicator({ visible, progress });
+          },
+          onTimeWarning: (warning) => {
+            setRemoteStreamWarning({
+              code: warning.code,
+              message: warningMessage(warning.code),
+              tone: warningTone(warning.code),
+              secondsLeft: warning.secondsLeft,
+            });
+          },
+          onMicStateChange: (state) => {
+            console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
+          },
+        });
+      }
+
+      return clientRef.current;
+    };
+
     const unsubscribe = window.openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {
       console.log(`[App] Signaling event: ${event.type}`, event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "", event.type === "remote-ice" ? event.candidate : "");
       try {
@@ -2186,40 +2256,17 @@ export function App(): JSX.Element {
             iceServersCount: activeSession.iceServers?.length,
           }));
 
-          if (!clientRef.current && videoRef.current && audioRef.current) {
-            clientRef.current = new GfnWebRtcClient({
-              videoElement: videoRef.current,
-              audioElement: audioRef.current,
-              autoFullScreen: settings.autoFullScreen,
-              microphoneMode: settings.microphoneMode,
-              microphoneDeviceId: settings.microphoneDeviceId || undefined,
-              mouseSensitivity: settings.mouseSensitivity,
-              mouseAcceleration: settings.mouseAcceleration,
-              onLog: (line: string) => console.log(`[WebRTC] ${line}`),
-              onStats: (stats) => diagnosticsStore.set(stats),
-              onEscHoldProgress: (visible, progress) => {
-                setEscHoldReleaseIndicator({ visible, progress });
-              },
-              onTimeWarning: (warning) => {
-                setRemoteStreamWarning({
-                  code: warning.code,
-                  message: warningMessage(warning.code),
-                  tone: warningTone(warning.code),
-                  secondsLeft: warning.secondsLeft,
-                });
-              },
-              onMicStateChange: (state) => {
-                console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
-              },
-            });
+          const existingClient = clientRef.current;
+          const streamClient = ensureStreamClient();
+          if (!existingClient && streamClient) {
             // Auto-start microphone if mode is enabled
             if (settings.microphoneMode !== "disabled") {
-              void clientRef.current.startMicrophone();
+              void streamClient.startMicrophone();
             }
           }
 
-          if (clientRef.current) {
-            await clientRef.current.handleOffer(event.sdp, activeSession, {
+          if (streamClient) {
+            await streamClient.handleOffer(event.sdp, activeSession, {
               codec: settings.codec,
               colorQuality: settings.colorQuality,
               resolution: settings.resolution,
@@ -2229,10 +2276,29 @@ export function App(): JSX.Element {
             setLaunchError(null);
             setStreamStatus("streaming");
           }
+        } else if (event.type === "native-stream-started") {
+          console.log("[App] Native streamer started:", event.message ?? "");
+          const streamClient = ensureStreamClient();
+          streamClient?.activateNativeInput(nativeInputProtocolVersionRef.current ?? undefined);
+          setLaunchError(null);
+          setStreamStatus("streaming");
+        } else if (event.type === "native-input-ready") {
+          console.log("[App] Native input protocol ready:", event.protocolVersion);
+          nativeInputProtocolVersionRef.current = event.protocolVersion;
+          const streamClient = ensureStreamClient();
+          streamClient?.setNativeInputProtocolVersion(event.protocolVersion);
+        } else if (event.type === "native-stream-stopped") {
+          console.warn("[App] Native streamer stopped:", event.reason ?? "stopped");
+          nativeInputProtocolVersionRef.current = null;
+          clientRef.current?.dispose();
+          clientRef.current = null;
+          resetLaunchRuntime();
+          launchInFlightRef.current = false;
         } else if (event.type === "remote-ice") {
           await clientRef.current?.addRemoteCandidate(event.candidate);
         } else if (event.type === "disconnected") {
           console.warn("Signaling disconnected:", event.reason);
+          nativeInputProtocolVersionRef.current = null;
           clientRef.current?.dispose();
           clientRef.current = null;
           resetLaunchRuntime();
@@ -2517,14 +2583,11 @@ export function App(): JSX.Element {
 
     setSession(claimed);
     sessionRef.current = claimed;
+    nativeInputProtocolVersionRef.current = null;
     setQueuePosition(undefined);
     setStreamStatus("connecting");
-    await window.openNow.connectSignaling({
-      sessionId: claimed.sessionId,
-      signalingServer: claimed.signalingServer,
-      signalingUrl: claimed.signalingUrl,
-    });
-  }, [authSession, effectiveStreamingBaseUrl, findGameContextForSession, resetStatsOverlayToPreference, settings]);
+    await window.openNow.connectSignaling(buildSignalingConnectRequest(claimed));
+  }, [authSession, buildSignalingConnectRequest, effectiveStreamingBaseUrl, findGameContextForSession, settings]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
@@ -2799,11 +2862,7 @@ export function App(): JSX.Element {
         status: sessionToConnect.status,
       });
 
-      await window.openNow.connectSignaling({
-        sessionId: sessionToConnect.sessionId,
-        signalingServer: sessionToConnect.signalingServer,
-        signalingUrl: sessionToConnect.signalingUrl,
-      });
+      await window.openNow.connectSignaling(buildSignalingConnectRequest(sessionToConnect));
     } catch (error) {
       if (launchAbortRef.current) {
         return;
@@ -2821,6 +2880,7 @@ export function App(): JSX.Element {
   }, [
     authSession,
     allKnownGames,
+    buildSignalingConnectRequest,
     claimAndConnectSession,
     effectiveStreamingBaseUrl,
     refreshNavbarActiveSession,

@@ -1,5 +1,8 @@
 export type VideoCodec = "H264" | "H265" | "AV1";
 export type VideoAccelerationPreference = "auto" | "hardware" | "software";
+export type StreamClientMode = "web" | "native";
+export type NativeStreamerBackend = "stub" | "gstreamer";
+export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
 
 /** Color quality (bit depth + chroma subsampling), matching Rust ColorQuality enum */
 export type ColorQuality = "8bit_420" | "8bit_444" | "10bit_420" | "10bit_444";
@@ -131,6 +134,8 @@ export interface Settings {
   posterSizeScale: number;
   fps: number;
   maxBitrateMbps: number;
+  streamClientMode: StreamClientMode;
+  nativeStreamerBackend: NativeStreamerBackendPreference;
   codec: VideoCodec;
   decoderPreference: VideoAccelerationPreference;
   encoderPreference: VideoAccelerationPreference;
@@ -656,6 +661,7 @@ export interface SignalingConnectRequest {
   sessionId: string;
   signalingServer: string;
   signalingUrl?: string;
+  nativeStreamer?: NativeStreamerSessionContext;
 }
 
 export interface IceCandidatePayload {
@@ -670,6 +676,33 @@ export interface SendAnswerRequest {
   nvstSdp?: string;
 }
 
+export interface NativeStreamerSessionContext {
+  session: SessionInfo;
+  settings: StreamSettings;
+}
+
+export interface NativeInputPacket {
+  payload: ArrayBuffer | Uint8Array | number[];
+  partiallyReliable?: boolean;
+}
+
+export interface NativeRenderSurfaceRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface NativeRenderSurfaceUpdate {
+  rect: NativeRenderSurfaceRect | null;
+  visible: boolean;
+  deviceScaleFactor: number;
+}
+
+export interface NativeRenderSurface extends NativeRenderSurfaceUpdate {
+  windowHandle?: string;
+}
+
 export interface KeyframeRequest {
   reason: string;
   backlogFrames: number;
@@ -681,6 +714,9 @@ export type MainToRendererSignalingEvent =
   | { type: "disconnected"; reason: string }
   | { type: "offer"; sdp: string }
   | { type: "remote-ice"; candidate: IceCandidatePayload }
+  | { type: "native-stream-started"; message?: string }
+  | { type: "native-stream-stopped"; reason?: string }
+  | { type: "native-input-ready"; protocolVersion: number }
   | { type: "error"; message: string }
   | { type: "log"; message: string };
 
@@ -748,6 +784,8 @@ export interface OpenNowApi {
   disconnectSignaling(): Promise<void>;
   sendAnswer(input: SendAnswerRequest): Promise<void>;
   sendIceCandidate(input: IceCandidatePayload): Promise<void>;
+  sendNativeInput(input: NativeInputPacket): void;
+  updateNativeRenderSurface(input: NativeRenderSurfaceUpdate): void;
   requestKeyframe(input: KeyframeRequest): Promise<void>;
   onSignalingEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void;
   /** Listen for F11 fullscreen toggle from main process */
