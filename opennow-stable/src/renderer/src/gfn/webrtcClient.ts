@@ -37,6 +37,7 @@ import {
   rewriteH265LevelIdByProfile,
   rewriteH265TierFlag,
 } from "./sdp";
+import { FULLSCREEN_KEYBOARD_LOCK_CODES } from "./keyboardLock";
 import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
 
 interface OfferSettings {
@@ -2100,9 +2101,7 @@ export class GfnWebRtcClient {
     }
 
     try {
-      await nav.keyboard.lock([
-        "Escape", "F11", "BrowserBack", "BrowserForward", "BrowserRefresh",
-      ]);
+      await nav.keyboard.lock(FULLSCREEN_KEYBOARD_LOCK_CODES);
       this.log("Keyboard lock acquired (Escape captured in fullscreen)");
     } catch (error) {
       this.log(`Keyboard lock failed: ${String(error)}`);
