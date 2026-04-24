@@ -1,6 +1,6 @@
 import { app } from "electron";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
@@ -37,6 +37,7 @@ interface NativeStreamerCallbacks {
 interface NativeStreamerManagerOptions extends NativeStreamerCallbacks {
   mainDir: string;
   getBackendPreference(): NativeStreamerBackendPreference;
+  getExecutablePathOverride(): string;
 }
 
 interface PendingRequest {
@@ -52,6 +53,14 @@ const MAX_INPUT_STDIN_BUFFER_BYTES = 64 * 1024;
 
 function nativeStreamerExecutableName(): string {
   return process.platform === "win32" ? "opennow-streamer.exe" : "opennow-streamer";
+}
+
+function isExistingFile(path: string): boolean {
+  try {
+    return existsSync(path) && statSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function formatError(error: unknown): string {
@@ -309,6 +318,14 @@ export class NativeStreamerManager {
 
   private resolveExecutablePath(): string {
     const exeName = nativeStreamerExecutableName();
+    const configuredPath = this.options.getExecutablePathOverride().trim();
+    if (configuredPath) {
+      if (isExistingFile(configuredPath)) {
+        return configuredPath;
+      }
+      throw new Error(`Configured native streamer executable was not found: ${configuredPath}`);
+    }
+
     const candidates = [
       process.env.OPENNOW_NATIVE_STREAMER,
       join(process.resourcesPath, "native", "opennow-streamer", exeName),
@@ -322,7 +339,7 @@ export class NativeStreamerManager {
       resolve(app.getAppPath(), "../native/opennow-streamer/target/debug", exeName),
     ].filter((candidate): candidate is string => Boolean(candidate));
 
-    const found = candidates.find((candidate) => existsSync(candidate));
+    const found = candidates.find((candidate) => isExistingFile(candidate));
     if (found) {
       return found;
     }

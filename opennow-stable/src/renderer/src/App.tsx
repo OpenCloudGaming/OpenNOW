@@ -804,6 +804,7 @@ export function App(): JSX.Element {
     maxBitrateMbps: 75,
     streamClientMode: "web",
     nativeStreamerBackend: "auto",
+    nativeStreamerExecutablePath: "",
     codec: DEFAULT_STREAM_PREFERENCES.codec,
     decoderPreference: "auto",
     encoderPreference: "auto",

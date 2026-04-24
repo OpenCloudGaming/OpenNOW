@@ -29,6 +29,8 @@ export interface Settings {
   streamClientMode: StreamClientMode;
   /** Native streamer backend preference for new native sessions */
   nativeStreamerBackend: NativeStreamerBackendPreference;
+  /** Optional path to a custom native streamer executable */
+  nativeStreamerExecutablePath: string;
   /** Preferred video codec */
   codec: VideoCodec;
   /** Preferred video decode acceleration mode */
@@ -123,6 +125,7 @@ const DEFAULT_SETTINGS: Settings = {
   maxBitrateMbps: 75,
   streamClientMode: "web",
   nativeStreamerBackend: "auto",
+  nativeStreamerExecutablePath: "",
   codec: DEFAULT_STREAM_PREFERENCES.codec,
   decoderPreference: "auto",
   encoderPreference: "auto",

@@ -3006,6 +3006,55 @@ button.game-card-store-chip.owned.active:hover {
   gap: 8px;
 }
 
+.settings-native-streamer-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.settings-path-setting {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-path-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-path-input {
+  flex: 1;
+  min-width: 220px;
+}
+
+.settings-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--panel-border-solid);
+  border-radius: 6px;
+  background: var(--bg-a);
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+
+.settings-icon-button:hover {
+  color: var(--accent);
+  border-color: rgba(88, 217, 138, 0.35);
+  background: var(--accent-surface);
+}
+
 .settings-input-hint {
   font-size: 0.82rem;
   color: var(--error);

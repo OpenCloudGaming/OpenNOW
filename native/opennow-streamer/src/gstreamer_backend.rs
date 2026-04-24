@@ -1515,6 +1515,12 @@ mod win32_renderer_window {
         scancode: u16,
     }
 
+    #[derive(Clone, Copy)]
+    struct EscapeKeyPress {
+        scancode: u16,
+        hold_timer_armed: bool,
+    }
+
     static INPUT_EVENT_SENDER: OnceLock<Mutex<Option<Sender<NativeWindowInputEvent>>>> =
         OnceLock::new();
     static ORIGINAL_WNDPROCS: OnceLock<Mutex<HashMap<isize, isize>>> = OnceLock::new();
@@ -1523,6 +1529,7 @@ mod win32_renderer_window {
     static STARTED_AT: OnceLock<Instant> = OnceLock::new();
     static ESCAPE_HOLD_HWND: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
     static ESCAPE_HOLD_TOKEN: OnceLock<AtomicU64> = OnceLock::new();
+    static ESCAPE_KEY_PRESS: OnceLock<Mutex<Option<EscapeKeyPress>>> = OnceLock::new();
 
     #[link(name = "user32")]
     unsafe extern "system" {
@@ -1830,6 +1837,7 @@ mod win32_renderer_window {
 
     unsafe fn release_input_capture(hwnd: Hwnd) {
         cancel_escape_hold_to_minimize_timer();
+        clear_escape_key_press();
         let slot = CAPTURED_HWND.get_or_init(|| Mutex::new(None));
         let mut should_release = false;
         if let Ok(mut captured) = slot.lock() {
@@ -2113,6 +2121,11 @@ mod win32_renderer_window {
             release_current_input_capture();
             return;
         }
+        if keycode == VK_ESCAPE {
+            drop(keys);
+            handle_escape_keyboard_state(scancode, pressed);
+            return;
+        }
         let was_present = keys.contains_key(&scancode);
         if pressed {
             if was_present {
@@ -2125,14 +2138,6 @@ mod win32_renderer_window {
             }
             keys.remove(&scancode);
         }
-        if keycode == VK_ESCAPE {
-            if pressed {
-                start_escape_hold_to_minimize_timer();
-            } else {
-                cancel_escape_hold_to_minimize_timer();
-            }
-        }
-
         let modifiers = current_modifier_flags(&keys);
         drop(keys);
 
@@ -2141,6 +2146,69 @@ mod win32_renderer_window {
             keycode,
             scancode,
             modifiers,
+            timestamp_us: timestamp_us(),
+        });
+    }
+
+    unsafe fn handle_escape_keyboard_state(scancode: u16, pressed: bool) {
+        let slot = ESCAPE_KEY_PRESS.get_or_init(|| Mutex::new(None));
+        let Ok(mut escape_press) = slot.lock() else {
+            return;
+        };
+
+        if pressed {
+            let should_start_hold_timer = if let Some(current) = escape_press.as_mut() {
+                let should_start = !current.hold_timer_armed && captured_hwnd().is_some();
+                if should_start {
+                    current.hold_timer_armed = true;
+                }
+                should_start
+            } else {
+                let hold_timer_armed = captured_hwnd().is_some();
+                *escape_press = Some(EscapeKeyPress {
+                    scancode,
+                    hold_timer_armed,
+                });
+                hold_timer_armed
+            };
+            drop(escape_press);
+            if should_start_hold_timer {
+                start_escape_hold_to_minimize_timer();
+            }
+            return;
+        }
+
+        let Some(escape_press) = escape_press.take() else {
+            cancel_escape_hold_to_minimize_timer();
+            return;
+        };
+        let scancode = escape_press.scancode;
+
+        cancel_escape_hold_to_minimize_timer();
+        send_escape_tap(scancode);
+    }
+
+    fn clear_escape_key_press() {
+        let slot = ESCAPE_KEY_PRESS.get_or_init(|| Mutex::new(None));
+        if let Ok(mut escape_press) = slot.lock() {
+            *escape_press = None;
+        }
+    }
+
+    fn send_escape_tap(scancode: u16) {
+        let keydown_timestamp_us = timestamp_us();
+        emit_input_event(NativeWindowInputEvent::Key {
+            pressed: true,
+            keycode: VK_ESCAPE,
+            scancode,
+            modifiers: 0,
+            timestamp_us: keydown_timestamp_us,
+        });
+        emit_input_event(NativeWindowInputEvent::Key {
+            pressed: false,
+            keycode: VK_ESCAPE,
+            scancode,
+            modifiers: 0,
             timestamp_us: timestamp_us(),
         });
     }

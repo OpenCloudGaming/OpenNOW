@@ -1,4 +1,4 @@
-import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, FolderOpen } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -681,6 +681,17 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     },
     [onSettingChange]
   );
+
+  const handleSelectNativeStreamerExecutable = useCallback(async () => {
+    try {
+      const selectedPath = await window.openNow.selectNativeStreamerExecutable();
+      if (selectedPath) {
+        handleChange("nativeStreamerExecutablePath", selectedPath);
+      }
+    } catch (error) {
+      console.error("[SettingsPage] Failed to select native streamer executable:", error);
+    }
+  }, [handleChange]);
 
   const handleColorQualityChange = useCallback(
     (cq: ColorQuality) => {
@@ -1733,19 +1744,59 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     Use the native streamer process for new sessions when available. OpenNOW falls back to the web streamer if the native path cannot accept the stream.
                   </span>
                   {settings.streamClientMode === "native" && (
-                    <div className="settings-row">
-                      <label className="settings-label">Native Backend</label>
-                      <select
-                        className="settings-text-input settings-select"
-                        value={settings.nativeStreamerBackend}
-                        onChange={(e) => handleChange("nativeStreamerBackend", e.target.value as Settings["nativeStreamerBackend"])}
-                      >
-                        {nativeStreamerBackendOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
+                    <div className="settings-native-streamer-options">
+                      <div className="settings-row">
+                        <label className="settings-label">Native Backend</label>
+                        <select
+                          className="settings-text-input settings-select"
+                          value={settings.nativeStreamerBackend}
+                          onChange={(e) => handleChange("nativeStreamerBackend", e.target.value as Settings["nativeStreamerBackend"])}
+                        >
+                          {nativeStreamerBackendOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="settings-row settings-row--top-aligned">
+                        <label className="settings-label">Streamer Executable</label>
+                        <div className="settings-path-setting">
+                          <div className="settings-path-control">
+                            <input
+                              type="text"
+                              className="settings-text-input settings-path-input"
+                              value={settings.nativeStreamerExecutablePath}
+                              onChange={(e) => handleChange("nativeStreamerExecutablePath", e.target.value)}
+                              placeholder="Use bundled executable"
+                              spellCheck={false}
+                            />
+                            <button
+                              type="button"
+                              className="settings-icon-button"
+                              onClick={handleSelectNativeStreamerExecutable}
+                              title="Browse for streamer executable"
+                              aria-label="Browse for streamer executable"
+                            >
+                              <FolderOpen size={15} />
+                            </button>
+                            {settings.nativeStreamerExecutablePath && (
+                              <button
+                                type="button"
+                                className="settings-icon-button"
+                                onClick={() => handleChange("nativeStreamerExecutablePath", "")}
+                                title="Use bundled executable"
+                                aria-label="Use bundled executable"
+                              >
+                                <X size={15} />
+                              </button>
+                            )}
+                          </div>
+                          <span className="settings-subtle-hint">
+                            Leave empty to use the bundled streamer or OPENNOW_NATIVE_STREAMER.
+                          </span>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>

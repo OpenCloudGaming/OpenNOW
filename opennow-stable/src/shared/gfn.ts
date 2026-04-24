@@ -136,6 +136,7 @@ export interface Settings {
   maxBitrateMbps: number;
   streamClientMode: StreamClientMode;
   nativeStreamerBackend: NativeStreamerBackendPreference;
+  nativeStreamerExecutablePath: string;
   codec: VideoCodec;
   decoderPreference: VideoAccelerationPreference;
   encoderPreference: VideoAccelerationPreference;
@@ -802,6 +803,7 @@ export interface OpenNowApi {
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
   resetSettings(): Promise<Settings>;
+  selectNativeStreamerExecutable(): Promise<string | null>;
   getMicrophonePermission(): Promise<MicrophonePermissionResult>;
   /** Export logs in redacted format */
   exportLogs(format?: "text" | "json"): Promise<string>;

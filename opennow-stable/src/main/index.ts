@@ -698,6 +698,7 @@ function getNativeStreamerManager(): NativeStreamerManager {
   nativeStreamerManager ??= new NativeStreamerManager({
     mainDir: __dirname,
     getBackendPreference: () => settingsManager?.get("nativeStreamerBackend") ?? "auto",
+    getExecutablePathOverride: () => settingsManager?.get("nativeStreamerExecutablePath") ?? "",
     emit: emitToRenderer,
     sendAnswer: async (payload) => {
       if (!signalingClient) {
@@ -1716,9 +1717,17 @@ function registerIpcHandlers(): void {
       if (key === "autoCheckForUpdates") {
         appUpdater?.setAutomaticChecksEnabled(value as boolean);
       }
-      if ((key === "streamClientMode" && value !== "native") || key === "nativeStreamerBackend") {
+      if (
+        (key === "streamClientMode" && value !== "native")
+        || key === "nativeStreamerBackend"
+        || key === "nativeStreamerExecutablePath"
+      ) {
         void nativeStreamerManager?.stop(
-          key === "nativeStreamerBackend" ? "native streamer backend changed" : "native streamer disabled",
+          key === "nativeStreamerBackend"
+            ? "native streamer backend changed"
+            : key === "nativeStreamerExecutablePath"
+              ? "native streamer executable changed"
+              : "native streamer disabled",
         );
         nativeStreamerContext = null;
         nativeStreamerFallbackSessionId = null;
@@ -1743,6 +1752,29 @@ function registerIpcHandlers(): void {
     nativeStreamerContext = null;
     nativeStreamerFallbackSessionId = null;
     return resetSettings;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SETTINGS_SELECT_NATIVE_STREAMER_EXECUTABLE, async (): Promise<string | null> => {
+    const filters = process.platform === "win32"
+      ? [
+          { name: "Executable", extensions: ["exe"] },
+          { name: "All Files", extensions: ["*"] },
+        ]
+      : [{ name: "All Files", extensions: ["*"] }];
+
+    const options: Electron.OpenDialogOptions = {
+      title: "Select OpenNOW streamer executable",
+      properties: ["openFile"],
+      filters,
+    };
+    const result = mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+    return result.filePaths[0] ?? null;
   });
 
   ipcMain.handle(IPC_CHANNELS.MICROPHONE_PERMISSION_GET, async (): Promise<MicrophonePermissionResult> => {

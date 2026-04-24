@@ -38,6 +38,7 @@ export const IPC_CHANNELS = {
   SETTINGS_GET: "settings:get",
   SETTINGS_SET: "settings:set",
   SETTINGS_RESET: "settings:reset",
+  SETTINGS_SELECT_NATIVE_STREAMER_EXECUTABLE: "settings:select-native-streamer-executable",
   MICROPHONE_PERMISSION_GET: "microphone:permission:get",
   LOGS_EXPORT: "logs:export",
   LOGS_GET_RENDERER: "logs:get-renderer",
