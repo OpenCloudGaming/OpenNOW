@@ -2508,10 +2508,6 @@ export function App(): JSX.Element {
     setQueuePosition(undefined);
     setLaunchError(null);
     setStreamStatus("connecting");
-    if (!canProceedWithClaimedReconnect()) {
-      console.log("[Recovery] Skipping signaling connect due to explicit shutdown");
-      return;
-    }
     await window.openNow.connectSignaling({
       sessionId: claimed.sessionId,
       signalingServer: claimed.signalingServer,
