@@ -4,6 +4,11 @@ import {
   PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
 } from "./inputProtocol";
 
+// The native streamer does not yet rebind server-side split stream/channel
+// changes, so keep this disabled until the native path supports it.
+const ENABLE_240_FPS_SPLIT_ENCODE = false;
+const ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES = false;
+
 interface IceCredentials {
   ufrag: string;
   pwd: string;
@@ -525,9 +530,13 @@ export function buildNvstSdp(params: NvstParams): string {
     lines.push(
       "a=video.enableNextCaptureMode:1",
       "a=vqos.maxStreamFpsEstimate:240",
-      "a=video.videoSplitEncodeStripsPerFrame:3",
-      "a=video.updateSplitEncodeStateDynamically:1",
     );
+    if (ENABLE_240_FPS_SPLIT_ENCODE) {
+      lines.push(
+        "a=video.videoSplitEncodeStripsPerFrame:3",
+        `a=video.updateSplitEncodeStateDynamically:${ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES ? 1 : 0}`,
+      );
+    }
   }
 
   // Out-of-focus handling + disable ALL dynamic resolution control

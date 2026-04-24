@@ -6,6 +6,13 @@ use std::collections::{HashMap, HashSet};
 use crate::input::{PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL, PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL};
 use crate::protocol::{ColorQuality, VideoCodec};
 
+// The official web client enables dynamic split encode for 240 FPS. The native
+// GStreamer path does not yet rebind server-side split stream/channel changes,
+// so do not advertise split encode until that support exists.
+const ENABLE_OUT_OF_FOCUS_FPS_ADJUSTMENT: bool = false;
+const ENABLE_240_FPS_SPLIT_ENCODE: bool = false;
+const ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES: bool = false;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IceCredentials {
     pub ufrag: String,
@@ -616,13 +623,29 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
         lines.extend([
             "a=video.enableNextCaptureMode:1".to_owned(),
             "a=vqos.maxStreamFpsEstimate:240".to_owned(),
-            "a=video.videoSplitEncodeStripsPerFrame:3".to_owned(),
-            "a=video.updateSplitEncodeStateDynamically:1".to_owned(),
         ]);
+        if ENABLE_240_FPS_SPLIT_ENCODE {
+            lines.push("a=video.videoSplitEncodeStripsPerFrame:3".to_owned());
+            lines.push(format!(
+                "a=video.updateSplitEncodeStateDynamically:{}",
+                if ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES {
+                    1
+                } else {
+                    0
+                }
+            ));
+        }
     }
 
     lines.extend([
-        "a=vqos.adjustStreamingFpsDuringOutOfFocus:1".to_owned(),
+        format!(
+            "a=vqos.adjustStreamingFpsDuringOutOfFocus:{}",
+            if ENABLE_OUT_OF_FOCUS_FPS_ADJUSTMENT {
+                1
+            } else {
+                0
+            }
+        ),
         "a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1".to_owned(),
         "a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1".to_owned(),
         "a=vqos.resControl.cpmRtc.featureMask:0".to_owned(),
@@ -963,7 +986,34 @@ mod tests {
         assert!(nvst.contains("a=video.maxFPS:120"));
         assert!(nvst.contains("a=video.bitDepth:10"));
         assert!(nvst.contains("a=packetPacing.numGroups:3"));
+        assert!(nvst.contains("a=vqos.adjustStreamingFpsDuringOutOfFocus:0"));
+        assert!(!nvst.contains("a=video.updateSplitEncodeStateDynamically:1"));
         assert!(nvst.contains("a=ri.partialReliableThresholdMs:16"));
         assert!(nvst.ends_with('\n'));
+    }
+
+    #[test]
+    fn does_not_advertise_unsupported_240_fps_split_encode() {
+        let nvst = build_nvst_sdp(&NvstParams {
+            width: 1920,
+            height: 1080,
+            fps: 240,
+            max_bitrate_kbps: 75_000,
+            partial_reliable_threshold_ms: 16,
+            codec: VideoCodec::H265,
+            color_quality: ColorQuality::EightBit420,
+            credentials: IceCredentials {
+                ufrag: "ufrag".to_owned(),
+                pwd: "pwd".to_owned(),
+                fingerprint: "AA:BB".to_owned(),
+            },
+            hid_device_mask: None,
+            enable_partially_reliable_transfer_gamepad: None,
+            enable_partially_reliable_transfer_hid: None,
+        });
+
+        assert!(nvst.contains("a=vqos.maxStreamFpsEstimate:240"));
+        assert!(!nvst.contains("a=video.videoSplitEncodeStripsPerFrame"));
+        assert!(!nvst.contains("a=video.updateSplitEncodeStateDynamically"));
     }
 }
