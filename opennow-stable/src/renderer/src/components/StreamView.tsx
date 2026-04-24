@@ -198,6 +198,7 @@ function StreamStatsHud({
   const inputQueueColor = getInputQueueColor(stats.inputQueueBufferedBytes, stats.inputQueueDropCount);
   const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
   const partiallyReliableQueueText = `${(stats.partiallyReliableInputQueueBufferedBytes / 1024).toFixed(1)}KB`;
+  const mouseResidualText = `${stats.mouseResidualMagnitude.toFixed(2)}px`;
 
   return (
     <div className="sv-stats">
@@ -244,6 +245,11 @@ function StreamStatsHud({
             {stats.partiallyReliableInputOpen ? `${stats.mouseMoveTransport === "partially_reliable" ? "mouse" : "open"} · ${partiallyReliableQueueText}` : "off"}
           </span>
         </span>
+        <span className="sv-stats-chip" title="Mouse flush cadence and packet rate">
+          MF <span className="sv-stats-chip-val" style={{ color: stats.mouseAdaptiveFlushActive ? "var(--warning)" : "var(--success)" }}>
+            {stats.mouseFlushIntervalMs.toFixed(0)}ms · {stats.mousePacketsPerSecond}/s
+          </span>
+        </span>
         {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
           <span className="sv-stats-chip" title={stats.lagReasonDetail}>
             Lag <span className="sv-stats-chip-val" style={{ color: getLagReasonColor(stats.lagReason) }}>{getLagReasonLabel(stats.lagReason)}</span>
@@ -252,7 +258,7 @@ function StreamStatsHud({
       </div>
 
       <div className="sv-stats-foot">
-        Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · PR peak {(stats.partiallyReliableInputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms
+        Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · PR peak {(stats.partiallyReliableInputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms · residual {mouseResidualText}
       </div>
 
       {(stats.decoderPressureActive || stats.decoderRecoveryAttempts > 0) && (
