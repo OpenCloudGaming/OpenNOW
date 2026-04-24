@@ -6,12 +6,12 @@ use std::collections::{HashMap, HashSet};
 use crate::input::{PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL, PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL};
 use crate::protocol::{ColorQuality, VideoCodec};
 
-// The official web client enables dynamic split encode for 240 FPS. The native
-// GStreamer path does not yet rebind server-side split stream/channel changes,
-// so do not advertise split encode until that support exists.
+// Match the official web client's 240 FPS profile. Disabling split encode at
+// this frame rate can leave H265 streams smeared because the server/client
+// repair and frame-state assumptions no longer line up.
 const ENABLE_OUT_OF_FOCUS_FPS_ADJUSTMENT: bool = false;
-const ENABLE_240_FPS_SPLIT_ENCODE: bool = false;
-const ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES: bool = false;
+const ENABLE_240_FPS_SPLIT_ENCODE: bool = true;
+const ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES: bool = true;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IceCredentials {
@@ -298,7 +298,54 @@ pub fn build_nvst_sdp_for_answer(params: &NvstParams, answer_sdp: &str) -> Resul
 
     let mut answer_params = params.clone();
     answer_params.credentials = credentials;
+    if let Some(codec) = extract_negotiated_video_codec(answer_sdp) {
+        answer_params.codec = codec;
+    }
     Ok(build_nvst_sdp(&answer_params))
+}
+
+pub fn extract_negotiated_video_codec(sdp: &str) -> Option<VideoCodec> {
+    let lines = split_lines_lossless(sdp);
+    let mut in_video_section = false;
+    let mut video_payloads = Vec::new();
+    let mut codec_by_payload_type: HashMap<String, String> = HashMap::new();
+
+    for line in &lines {
+        if line.starts_with("m=video") {
+            in_video_section = true;
+            video_payloads = line.split_whitespace().skip(3).map(str::to_owned).collect();
+            continue;
+        }
+        if line.starts_with("m=") && in_video_section {
+            in_video_section = false;
+        }
+        if !in_video_section || !line.starts_with("a=rtpmap:") {
+            continue;
+        }
+
+        let rest = line.strip_prefix("a=rtpmap:").unwrap_or_default();
+        let mut parts = rest.split_whitespace();
+        let Some(pt) = parts.next() else {
+            continue;
+        };
+        let Some(codec_part) = parts.next() else {
+            continue;
+        };
+        let codec_name = normalize_codec(codec_part.split('/').next().unwrap_or_default());
+        if !codec_name.is_empty() {
+            codec_by_payload_type.insert(pt.to_owned(), codec_name);
+        }
+    }
+
+    video_payloads
+        .iter()
+        .filter_map(|pt| codec_by_payload_type.get(pt))
+        .find_map(|codec| match codec.as_str() {
+            "H264" => Some(VideoCodec::H264),
+            "H265" => Some(VideoCodec::H265),
+            "AV1" => Some(VideoCodec::AV1),
+            _ => None,
+        })
 }
 
 fn line_ending(sdp: &str) -> &'static str {
@@ -437,6 +484,12 @@ pub fn prefer_codec(sdp: &str, codec: VideoCodec, options: PreferCodecOptions) -
                 .is_some_and(|name| name == "RTX")
         {
             allowed.insert(rtx_pt);
+        }
+    }
+
+    for (pt, codec_name) in &codec_by_payload_type {
+        if matches!(codec_name.as_str(), "FLEXFEC-03") {
+            allowed.insert(pt.clone());
         }
     }
 
@@ -634,6 +687,9 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
                     0
                 }
             ));
+            lines.push("a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535".to_owned());
+            lines
+                .push("a=vqos.rtcPreemptiveIdrSettings.minNackPacketCaptureAgeMs:65535".to_owned());
         }
     }
 
@@ -923,6 +979,62 @@ mod tests {
     }
 
     #[test]
+    fn extracts_negotiated_video_codec_from_answer_payload_order() {
+        let answer_sdp = [
+            "v=0",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111",
+            "a=rtpmap:111 OPUS/48000/2",
+            "m=video 9 UDP/TLS/RTP/SAVPF 101 102",
+            "a=rtpmap:101 AV1/90000",
+            "a=rtpmap:102 rtx/90000",
+            "a=fmtp:102 apt=101",
+        ]
+        .join("\n");
+
+        assert_eq!(
+            extract_negotiated_video_codec(&answer_sdp),
+            Some(VideoCodec::AV1)
+        );
+    }
+
+    #[test]
+    fn builds_nvst_sdp_for_answer_uses_negotiated_av1_codec() {
+        let params = NvstParams {
+            width: 2560,
+            height: 1440,
+            fps: 120,
+            max_bitrate_kbps: 150_000,
+            partial_reliable_threshold_ms: 16,
+            codec: VideoCodec::H265,
+            color_quality: ColorQuality::EightBit420,
+            credentials: IceCredentials {
+                ufrag: "remote-user".to_owned(),
+                pwd: "remote-password".to_owned(),
+                fingerprint: "AA:BB".to_owned(),
+            },
+            hid_device_mask: None,
+            enable_partially_reliable_transfer_gamepad: None,
+            enable_partially_reliable_transfer_hid: None,
+        };
+        let answer_sdp = [
+            "v=0",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111",
+            "a=ice-ufrag:local-user",
+            "a=ice-pwd:local-password",
+            "a=fingerprint:sha-256 CC:DD",
+            "m=video 9 UDP/TLS/RTP/SAVPF 101",
+            "a=rtpmap:101 AV1/90000",
+        ]
+        .join("\n");
+
+        let nvst = build_nvst_sdp_for_answer(&params, &answer_sdp).expect("nvst sdp");
+
+        assert!(nvst.contains("a=video.scalingFeature1:1"));
+        assert!(nvst.contains("a=video.enableAv1RcPrecisionFactor:1"));
+        assert!(nvst.contains("a=vqos.drc.minQpHeadroom:20"));
+    }
+
+    #[test]
     fn munges_answer_bitrate_and_opus_stereo() {
         let sdp = "m=video 9 UDP/TLS/RTP/SAVPF 96\nm=audio 9 UDP/TLS/RTP/SAVPF 111\na=fmtp:111 minptime=10;useinbandfec=1";
         let munged = munge_answer_sdp(sdp, 75000);
@@ -935,7 +1047,7 @@ mod tests {
     fn filters_video_codec_and_keeps_matching_rtx() {
         let sdp = [
             "v=0",
-            "m=video 9 UDP/TLS/RTP/SAVPF 96 97 98 99 100",
+            "m=video 9 UDP/TLS/RTP/SAVPF 96 97 98 99 100 101",
             "a=rtpmap:96 H264/90000",
             "a=rtpmap:97 rtx/90000",
             "a=fmtp:97 apt=96",
@@ -944,6 +1056,7 @@ mod tests {
             "a=rtpmap:99 rtx/90000",
             "a=fmtp:99 apt=98",
             "a=rtpmap:100 AV1/90000",
+            "a=rtpmap:101 flexfec-03/90000",
             "m=audio 9 UDP/TLS/RTP/SAVPF 111",
         ]
         .join("\n");
@@ -954,9 +1067,10 @@ mod tests {
                 prefer_hevc_profile_id: Some(1),
             },
         );
-        assert!(filtered.contains("m=video 9 UDP/TLS/RTP/SAVPF 98 99"));
+        assert!(filtered.contains("m=video 9 UDP/TLS/RTP/SAVPF 98 99 101"));
         assert!(!filtered.contains("a=rtpmap:96 H264/90000"));
         assert!(filtered.contains("a=rtpmap:99 rtx/90000"));
+        assert!(filtered.contains("a=rtpmap:101 flexfec-03/90000"));
         assert!(filtered.contains("m=audio 9 UDP/TLS/RTP/SAVPF 111"));
     }
 
@@ -993,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn does_not_advertise_unsupported_240_fps_split_encode() {
+    fn advertises_official_240_fps_split_encode_profile() {
         let nvst = build_nvst_sdp(&NvstParams {
             width: 1920,
             height: 1080,
@@ -1013,7 +1127,9 @@ mod tests {
         });
 
         assert!(nvst.contains("a=vqos.maxStreamFpsEstimate:240"));
-        assert!(!nvst.contains("a=video.videoSplitEncodeStripsPerFrame"));
-        assert!(!nvst.contains("a=video.updateSplitEncodeStateDynamically"));
+        assert!(nvst.contains("a=video.videoSplitEncodeStripsPerFrame:3"));
+        assert!(nvst.contains("a=video.updateSplitEncodeStateDynamically:1"));
+        assert!(nvst.contains("a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535"));
+        assert!(nvst.contains("a=vqos.rtcPreemptiveIdrSettings.minNackPacketCaptureAgeMs:65535"));
     }
 }

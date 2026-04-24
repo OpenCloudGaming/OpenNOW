@@ -6,8 +6,8 @@ use crate::protocol::{
 };
 use crate::sdp::{
     duplicate_session_webrtc_attributes_to_media, extract_ice_credentials, fix_server_ip,
-    parse_resolution, sanitize_ice_pwd_for_gstreamer, summarize_media_transport_attributes,
-    NvstParams,
+    parse_resolution, prefer_codec, sanitize_ice_pwd_for_gstreamer,
+    summarize_media_transport_attributes, NvstParams, PreferCodecOptions,
 };
 use std::env;
 use std::sync::mpsc::Sender;
@@ -145,6 +145,13 @@ pub fn prepare_native_offer(
         offer_sdp,
         &context.session.server_ip,
     ));
+    let fixed_offer_sdp = prefer_codec(
+        &fixed_offer_sdp,
+        context.settings.codec,
+        PreferCodecOptions {
+            prefer_hevc_profile_id: Some(preferred_hevc_profile_id(context.settings.color_quality)),
+        },
+    );
     let (gstreamer_offer_sdp, gstreamer_ice_pwd_replacements) =
         sanitize_ice_pwd_for_gstreamer(&fixed_offer_sdp);
     let credentials = extract_ice_credentials(&fixed_offer_sdp);
@@ -348,6 +355,14 @@ fn color_quality_bit_depth(color_quality: ColorQuality) -> u8 {
     color_quality.bit_depth()
 }
 
+fn preferred_hevc_profile_id(color_quality: ColorQuality) -> u8 {
+    if color_quality.bit_depth() >= 10 {
+        2
+    } else {
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,6 +409,50 @@ mod tests {
                 .map(|info| info.port),
             Some(49003),
         );
+    }
+
+    #[test]
+    fn prepares_offer_filters_remote_video_to_requested_codec() {
+        let offer = [
+            "v=0",
+            "a=group:BUNDLE 0 1",
+            "a=ice-ufrag:user",
+            "a=ice-pwd:pass",
+            "a=fingerprint:sha-256 AA:BB",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111",
+            "a=rtpmap:111 OPUS/48000/2",
+            "m=video 9 UDP/TLS/RTP/SAVPF 96 97 98 99 100",
+            "a=rtpmap:96 AV1/90000",
+            "a=rtpmap:97 rtx/90000",
+            "a=fmtp:97 apt=96",
+            "a=rtpmap:98 H265/90000",
+            "a=fmtp:98 profile-id=2;level-id=186",
+            "a=rtpmap:99 rtx/90000",
+            "a=fmtp:99 apt=98",
+            "a=rtpmap:100 flexfec-03/90000",
+        ]
+        .join("\n");
+
+        let prepared = prepare_native_offer(&context("1920x1080"), &offer).expect("valid offer");
+
+        assert!(prepared
+            .gstreamer_offer_sdp
+            .contains("a=rtpmap:98 H265/90000"));
+        assert!(prepared
+            .gstreamer_offer_sdp
+            .contains("a=rtpmap:99 rtx/90000"));
+        assert!(!prepared
+            .gstreamer_offer_sdp
+            .contains("a=rtpmap:96 AV1/90000"));
+        assert!(!prepared
+            .gstreamer_offer_sdp
+            .contains("a=rtpmap:97 rtx/90000"));
+        assert!(prepared
+            .gstreamer_offer_sdp
+            .contains("m=video 9 UDP/TLS/RTP/SAVPF 98 99 100"));
+        assert!(prepared
+            .gstreamer_offer_sdp
+            .contains("a=rtpmap:100 flexfec-03/90000"));
     }
 
     #[test]

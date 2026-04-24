@@ -4,10 +4,11 @@ import {
   PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
 } from "./inputProtocol";
 
-// The native streamer does not yet rebind server-side split stream/channel
-// changes, so keep this disabled until the native path supports it.
-const ENABLE_240_FPS_SPLIT_ENCODE = false;
-const ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES = false;
+// Match the official web client's 240 FPS profile. Disabling split encode at
+// this frame rate can leave H265 streams smeared because the server/client
+// repair and frame-state assumptions no longer line up.
+const ENABLE_240_FPS_SPLIT_ENCODE = true;
+const ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES = true;
 
 interface IceCredentials {
   ufrag: string;
@@ -535,6 +536,8 @@ export function buildNvstSdp(params: NvstParams): string {
       lines.push(
         "a=video.videoSplitEncodeStripsPerFrame:3",
         `a=video.updateSplitEncodeStateDynamically:${ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES ? 1 : 0}`,
+        "a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535",
+        "a=vqos.rtcPreemptiveIdrSettings.minNackPacketCaptureAgeMs:65535",
       );
     }
   }

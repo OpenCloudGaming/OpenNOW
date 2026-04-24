@@ -451,6 +451,21 @@ function timezoneOffsetMs(): number {
   return -new Date().getTimezoneOffset() * 60 * 1000;
 }
 
+function webRtcSessionMetadata(width: number, height: number): Array<{ key: string; value: string }> {
+  return [
+    { key: "SubSessionId", value: crypto.randomUUID() },
+    { key: "wssignaling", value: "1" },
+    { key: "GSStreamerType", value: "WebRTC" },
+    { key: "networkType", value: "Unknown" },
+    { key: "ClientImeSupport", value: "0" },
+    {
+      key: "clientPhysicalResolution",
+      value: JSON.stringify({ horizontalPixels: width, verticalPixels: height }),
+    },
+    { key: "surroundAudioInfo", value: "2" },
+  ];
+}
+
 function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest {
   const { width, height } = parseResolution(input.settings.resolution);
   const cq = input.settings.colorQuality;
@@ -479,32 +494,27 @@ function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest
       clientPlatformName: "windows",
       clientRequestMonitorSettings: [
         {
+          monitorId: 0,
+          positionX: 0,
+          positionY: 0,
           widthInPixels: width,
           heightInPixels: height,
           framesPerSecond: input.settings.fps,
           sdrHdrMode: hdrEnabled ? 1 : 0,
-          displayData: {
-            desiredContentMaxLuminance: hdrEnabled ? 1000 : 0,
-            desiredContentMinLuminance: 0,
-            desiredContentMaxFrameAverageLuminance: hdrEnabled ? 500 : 0,
-          },
+          displayData: hdrEnabled
+            ? {
+                desiredContentMaxLuminance: 1000,
+                desiredContentMinLuminance: 0,
+                desiredContentMaxFrameAverageLuminance: 500,
+              }
+            : null,
+          hdr10PlusGamingData: null,
           dpi: 100,
         },
       ],
       useOps: true,
       audioMode: 2,
-      metaData: [
-        { key: "SubSessionId", value: crypto.randomUUID() },
-        { key: "wssignaling", value: "1" },
-        { key: "GSStreamerType", value: "WebRTC" },
-        { key: "networkType", value: "Unknown" },
-        { key: "ClientImeSupport", value: "0" },
-        {
-          key: "clientPhysicalResolution",
-          value: JSON.stringify({ horizontalPixels: width, verticalPixels: height }),
-        },
-        { key: "surroundAudioInfo", value: "2" },
-      ],
+      metaData: webRtcSessionMetadata(width, height),
       sdrHdrMode: hdrEnabled ? 1 : 0,
       clientDisplayHdrCapabilities: hdrEnabled
         ? {
@@ -1196,8 +1206,8 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
   // The session is already configured on the server side. Sending different fps, resolution,
   // codec, etc. causes HTTP 400 from the server because those parameters are immutable for
   // an already-streaming session. Only send the action and minimal required fields.
+  const { width, height } = parseResolution(settings.resolution);
   const deviceId = crypto.randomUUID();
-  const subSessionId = crypto.randomUUID();
   const timezoneMs = timezoneOffsetMs();
 
   return {
@@ -1214,13 +1224,7 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
       deviceHashId: deviceId,
       internalTitle: null,
       clientPlatformName: "windows",
-      metaData: [
-        { key: "SubSessionId", value: subSessionId },
-        { key: "wssignaling", value: "1" },
-        { key: "GSStreamerType", value: "WebRTC" },
-        { key: "networkType", value: "Unknown" },
-        { key: "ClientImeSupport", value: "0" },
-      ],
+      metaData: webRtcSessionMetadata(width, height),
       surroundAudioInfo: 0,
       clientTimezoneOffset: timezoneMs,
       clientIdentification: "GFN-PC",

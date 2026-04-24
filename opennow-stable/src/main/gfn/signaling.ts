@@ -199,10 +199,7 @@ export class GfnSignalingClient {
     }
 
     if (parsed.peer_info) {
-      if (
-        typeof parsed.peer_info.id === "number" &&
-        (parsed.peer_info.name === this.peerName || this.peerId === 0)
-      ) {
+      if (typeof parsed.peer_info.id === "number" && parsed.peer_info.name === this.peerName) {
         this.peerId = parsed.peer_info.id;
         console.log(`[Signaling] Local peer id assigned: ${this.peerId}`);
       }
