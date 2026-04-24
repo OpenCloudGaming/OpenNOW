@@ -712,6 +712,12 @@ function getNativeStreamerManager(): NativeStreamerManager {
       }
       await signalingClient.sendIceCandidate(candidate);
     },
+    requestKeyframe: async (payload) => {
+      if (!signalingClient) {
+        throw new Error("Signaling is not connected");
+      }
+      await signalingClient.requestKeyframe(payload);
+    },
   });
   return nativeStreamerManager;
 }

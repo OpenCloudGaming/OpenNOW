@@ -111,6 +111,17 @@ export type NativeStreamerEvent =
       protocolVersion: number;
     }
   | {
+      type: "video-stall";
+      stallMs: number;
+      decodedFps: number;
+      sinkFps: number;
+      sinkRendered?: number;
+      sinkDropped?: number;
+      zeroCopyD3D11: boolean;
+      zeroCopyD3D12: boolean;
+      recoveryAttempt: number;
+    }
+  | {
       type: "error";
       code?: string;
       message: string;

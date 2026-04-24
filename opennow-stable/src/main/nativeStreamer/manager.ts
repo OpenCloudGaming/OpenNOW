@@ -6,6 +6,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import type {
   IceCandidatePayload,
+  KeyframeRequest,
   MainToRendererSignalingEvent,
   NativeStreamerBackendPreference,
   NativeRenderSurface,
@@ -31,6 +32,7 @@ type NativeStreamerCommandInput = NativeStreamerCommand extends infer T
 interface NativeStreamerCallbacks {
   sendAnswer(payload: SendAnswerRequest): Promise<void>;
   sendIceCandidate(candidate: IceCandidatePayload): Promise<void>;
+  requestKeyframe(payload: KeyframeRequest): Promise<void>;
   emit(event: MainToRendererSignalingEvent): void;
 }
 
@@ -519,6 +521,31 @@ export class NativeStreamerManager {
     if (message.type === "input-ready") {
       console.log(`[NativeStreamer] Input protocol ready: v${message.protocolVersion}`);
       this.options.emit({ type: "native-input-ready", protocolVersion: message.protocolVersion });
+      return;
+    }
+
+    if (message.type === "video-stall") {
+      const stats = [
+        `stall=${message.stallMs}ms`,
+        `decoded=${message.decodedFps.toFixed(1)}fps`,
+        `sink=${message.sinkFps.toFixed(1)}fps`,
+        `rendered=${message.sinkRendered ?? "n/a"}`,
+        `dropped=${message.sinkDropped ?? "n/a"}`,
+        `zeroCopyD3D11=${message.zeroCopyD3D11}`,
+        `zeroCopyD3D12=${message.zeroCopyD3D12}`,
+      ].join(" ");
+      console.warn(`[NativeStreamer] Video stall recovery attempt ${message.recoveryAttempt}: ${stats}`);
+      this.options.emit({
+        type: "log",
+        message: `[NativeStreamer] Video stall recovery attempt ${message.recoveryAttempt}: ${stats}`,
+      });
+      void this.options.requestKeyframe({
+        reason: "native-video-stall",
+        backlogFrames: 0,
+        attempt: message.recoveryAttempt,
+      }).catch((error) => {
+        console.warn("[NativeStreamer] Failed to request video keyframe after stall:", error);
+      });
       return;
     }
 

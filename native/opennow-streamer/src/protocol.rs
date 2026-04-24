@@ -211,6 +211,21 @@ pub struct SendAnswerRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoStallEvent {
+    pub stall_ms: u64,
+    pub decoded_fps: f64,
+    pub sink_fps: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sink_rendered: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sink_dropped: Option<u64>,
+    pub zero_copy_d3d11: bool,
+    pub zero_copy_d3d12: bool,
+    pub recovery_attempt: u8,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
 #[serde(tag = "type")]
 pub enum Event {
@@ -232,6 +247,8 @@ pub enum Event {
         #[serde(rename = "protocolVersion")]
         protocol_version: u16,
     },
+    #[serde(rename = "video-stall")]
+    VideoStall(VideoStallEvent),
     #[serde(rename = "error")]
     Error { code: String, message: String },
 }
@@ -278,5 +295,25 @@ mod tests {
             packet.payload_bytes().expect("legacy payload").as_ref(),
             &[7, 8, 9]
         );
+    }
+
+    #[test]
+    fn video_stall_event_serializes_as_flat_native_event() {
+        let event = Event::VideoStall(VideoStallEvent {
+            stall_ms: 2_500,
+            decoded_fps: 0.0,
+            sink_fps: 0.0,
+            sink_rendered: Some(42),
+            sink_dropped: Some(1),
+            zero_copy_d3d11: true,
+            zero_copy_d3d12: false,
+            recovery_attempt: 1,
+        });
+        let value = serde_json::to_value(event).expect("serializes");
+
+        assert_eq!(value["type"], "video-stall");
+        assert_eq!(value["stallMs"], 2_500);
+        assert_eq!(value["sinkRendered"], 42);
+        assert_eq!(value["recoveryAttempt"], 1);
     }
 }

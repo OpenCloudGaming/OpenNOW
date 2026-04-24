@@ -9,7 +9,7 @@ use crate::input::{
 use crate::protocol::{
     missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeRenderRect,
     NativeRenderSurface, NativeStreamerCapabilities, NativeStreamerSessionContext, Response,
-    SendAnswerRequest, PROTOCOL_VERSION,
+    SendAnswerRequest, VideoStallEvent, PROTOCOL_VERSION,
 };
 use crate::sdp::{
     build_nvst_sdp_for_answer, extract_negotiated_video_codec, munge_answer_sdp, IceCredentials,
@@ -23,7 +23,7 @@ use gstreamer_video as gst_video;
 use gstreamer_webrtc as gst_webrtc;
 use std::collections::HashSet;
 use std::ffi::{c_void, CString};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -37,6 +37,11 @@ const VIDEO_COMPRESSED_QUEUE_MAX_BUFFERS: u32 = 6;
 const VIDEO_QUEUE_MAX_BUFFERS: u32 = 1;
 const AUDIO_QUEUE_MAX_BUFFERS: u32 = 2;
 const VIDEO_SINK_RATE_LOG_INTERVAL: Duration = Duration::from_secs(1);
+const VIDEO_STALL_WARNING_MS: u64 = 2_500;
+const VIDEO_STALL_SECOND_ATTEMPT_MS: u64 = 5_000;
+const VIDEO_STALL_RESYNC_MS: u64 = 8_000;
+const VIDEO_STALL_MIN_KEYFRAME_REQUEST_MS: u64 = 2_000;
+const VIDEO_LIVENESS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 const HEARTBEAT_STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const NATIVE_INPUT_BRIDGE_POLL_INTERVAL: Duration = Duration::from_millis(1);
@@ -48,6 +53,202 @@ const NATIVE_PRESENT_MAX_FPS_ENV: &str = "OPENNOW_NATIVE_PRESENT_MAX_FPS";
 
 #[cfg(target_os = "windows")]
 static NATIVE_INPUT_STARTED_AT: OnceLock<Instant> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VideoRateSnapshot {
+    decoded_fps: f64,
+    sink_fps: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VideoStallAction {
+    None,
+    RequestKeyframe { attempt: u8, stall_ms: u64 },
+    Resync { attempt: u8, stall_ms: u64 },
+    Recovered { stall_ms: u64 },
+}
+
+#[derive(Debug, Clone)]
+struct VideoStallTracker {
+    in_stall: bool,
+    stall_started_ms: u64,
+    last_request_ms: Option<u64>,
+    next_attempt: u8,
+}
+
+impl Default for VideoStallTracker {
+    fn default() -> Self {
+        Self {
+            in_stall: false,
+            stall_started_ms: 0,
+            last_request_ms: None,
+            next_attempt: 1,
+        }
+    }
+}
+
+impl VideoStallTracker {
+    fn evaluate(&mut self, now_ms: u64, last_video_ms: u64) -> VideoStallAction {
+        let stall_ms = now_ms.saturating_sub(last_video_ms);
+        if stall_ms < VIDEO_STALL_WARNING_MS {
+            if self.in_stall {
+                let recovered_ms = now_ms.saturating_sub(self.stall_started_ms);
+                *self = Self::default();
+                return VideoStallAction::Recovered {
+                    stall_ms: recovered_ms,
+                };
+            }
+            return VideoStallAction::None;
+        }
+
+        if !self.in_stall {
+            self.in_stall = true;
+            self.stall_started_ms = last_video_ms;
+            self.next_attempt = 1;
+        }
+
+        let next_due_ms = match self.next_attempt {
+            1 => VIDEO_STALL_WARNING_MS,
+            2 => VIDEO_STALL_SECOND_ATTEMPT_MS,
+            3 => VIDEO_STALL_RESYNC_MS,
+            _ => return VideoStallAction::None,
+        };
+        if stall_ms < next_due_ms {
+            return VideoStallAction::None;
+        }
+        if self.last_request_ms.is_some_and(|last| {
+            now_ms.saturating_sub(last) < VIDEO_STALL_MIN_KEYFRAME_REQUEST_MS
+        }) {
+            return VideoStallAction::None;
+        }
+
+        let attempt = self.next_attempt;
+        self.next_attempt = self.next_attempt.saturating_add(1);
+        self.last_request_ms = Some(now_ms);
+        if attempt >= 3 {
+            VideoStallAction::Resync { attempt, stall_ms }
+        } else {
+            VideoStallAction::RequestKeyframe { attempt, stall_ms }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct VideoLivenessState {
+    started_at: Instant,
+    last_decoded_ms: AtomicU64,
+    last_sink_ms: AtomicU64,
+    decoded_total: AtomicU64,
+    sink_total: AtomicU64,
+    zero_copy_d3d11: AtomicBool,
+    zero_copy_d3d12: AtomicBool,
+}
+
+impl VideoLivenessState {
+    fn new() -> Self {
+        Self {
+            started_at: Instant::now(),
+            last_decoded_ms: AtomicU64::new(0),
+            last_sink_ms: AtomicU64::new(0),
+            decoded_total: AtomicU64::new(0),
+            sink_total: AtomicU64::new(0),
+            zero_copy_d3d11: AtomicBool::new(false),
+            zero_copy_d3d12: AtomicBool::new(false),
+        }
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+    }
+
+    fn record_decoded_buffer(&self) {
+        self.last_decoded_ms.store(self.now_ms(), Ordering::Relaxed);
+        self.decoded_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_sink_buffer(&self) {
+        self.last_sink_ms.store(self.now_ms(), Ordering::Relaxed);
+        self.sink_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn update_caps(&self, caps: &str) {
+        self.zero_copy_d3d11
+            .store(caps.contains("memory:D3D11Memory"), Ordering::Relaxed);
+        self.zero_copy_d3d12
+            .store(caps.contains("memory:D3D12Memory"), Ordering::Relaxed);
+    }
+
+    fn zero_copy_d3d11(&self) -> bool {
+        self.zero_copy_d3d11.load(Ordering::Relaxed)
+    }
+
+    fn zero_copy_d3d12(&self) -> bool {
+        self.zero_copy_d3d12.load(Ordering::Relaxed)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct VideoLivenessMonitor {
+    state: Arc<VideoLivenessState>,
+    stop: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
+    thread: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+impl Default for VideoLivenessMonitor {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(VideoLivenessState::new()),
+            stop: Arc::new(AtomicBool::new(false)),
+            started: Arc::new(AtomicBool::new(false)),
+            thread: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+impl VideoLivenessMonitor {
+    fn record_decoded_buffer(&self) {
+        self.state.record_decoded_buffer();
+    }
+
+    fn record_sink_buffer(&self) {
+        self.state.record_sink_buffer();
+    }
+
+    fn update_caps(&self, caps: &str) {
+        self.state.update_caps(caps);
+    }
+
+    fn start(
+        &self,
+        pipeline: gst::Pipeline,
+        sink: gst::Element,
+        event_sender: Option<Sender<Event>>,
+    ) {
+        if self.started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        self.stop.store(false, Ordering::SeqCst);
+        let state = self.state.clone();
+        let stop = self.stop.clone();
+        let thread = thread::spawn(move || {
+            run_video_liveness_watchdog(state, stop, pipeline, sink, event_sender);
+        });
+        if let Ok(mut slot) = self.thread.lock() {
+            *slot = Some(thread);
+        }
+    }
+
+    fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.started.store(false, Ordering::SeqCst);
+        let handle = self.thread.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
+    }
+}
 
 // gstreamer-rs exposes the generic ICE transport but not the NICE stream that
 // owns remote credentials. GFN uses UUID ICE passwords, so we need the actual
@@ -779,6 +980,7 @@ struct GstreamerPipeline {
     native_window_input_bridge: Option<NativeWindowInputBridge>,
     render_state: GstreamerRenderState,
     present_max_fps: Arc<AtomicU32>,
+    video_liveness: VideoLivenessMonitor,
     event_sender: Option<Sender<Event>>,
     original_remote_ice_credentials: Option<IceCredentials>,
     original_remote_ice_credentials_restored: bool,
@@ -798,9 +1000,15 @@ impl GstreamerPipeline {
 
         let input_state = GstreamerInputState::default();
         let render_state = GstreamerRenderState::default();
+        let video_liveness = VideoLivenessMonitor::default();
         wire_local_ice_events(&webrtc, event_sender.clone())?;
         wire_webrtc_state_events(&webrtc, event_sender.clone());
         wire_remote_data_channels(&webrtc, event_sender.clone());
+        start_gstreamer_bus_diagnostics(
+            &pipeline,
+            event_sender.clone(),
+            video_liveness.stop.clone(),
+        );
         let present_max_fps = Arc::new(AtomicU32::new(0));
         wire_incoming_media_sink(
             &pipeline,
@@ -808,6 +1016,7 @@ impl GstreamerPipeline {
             event_sender.clone(),
             render_state.clone(),
             present_max_fps.clone(),
+            video_liveness.clone(),
         );
 
         pipeline
@@ -826,6 +1035,7 @@ impl GstreamerPipeline {
             native_window_input_bridge: None,
             render_state,
             present_max_fps,
+            video_liveness,
             event_sender,
             original_remote_ice_credentials: None,
             original_remote_ice_credentials_restored: false,
@@ -1166,6 +1376,7 @@ impl GstreamerPipeline {
             bridge.stop();
         }
         self.input_state.stop_heartbeat();
+        self.video_liveness.stop();
         self.pipeline
             .set_state(gst::State::Null)
             .map(|_| ())
@@ -2880,6 +3091,250 @@ fn send_log(event_sender: &Option<Sender<Event>>, level: &'static str, message: 
     }
 }
 
+fn run_video_liveness_watchdog(
+    state: Arc<VideoLivenessState>,
+    stop: Arc<AtomicBool>,
+    pipeline: gst::Pipeline,
+    sink: gst::Element,
+    event_sender: Option<Sender<Event>>,
+) {
+    let mut tracker = VideoStallTracker::default();
+    let mut last_rate_at = Instant::now();
+    let mut last_decoded_total = state.decoded_total.load(Ordering::Relaxed);
+    let mut last_sink_total = state.sink_total.load(Ordering::Relaxed);
+    let mut rates = VideoRateSnapshot {
+        decoded_fps: 0.0,
+        sink_fps: 0.0,
+    };
+
+    while !stop.load(Ordering::SeqCst) {
+        thread::sleep(VIDEO_LIVENESS_POLL_INTERVAL);
+
+        let elapsed = last_rate_at.elapsed();
+        if elapsed >= VIDEO_SINK_RATE_LOG_INTERVAL {
+            let decoded_total = state.decoded_total.load(Ordering::Relaxed);
+            let sink_total = state.sink_total.load(Ordering::Relaxed);
+            let elapsed_secs = elapsed.as_secs_f64().max(0.001);
+            rates = VideoRateSnapshot {
+                decoded_fps: decoded_total.saturating_sub(last_decoded_total) as f64 / elapsed_secs,
+                sink_fps: sink_total.saturating_sub(last_sink_total) as f64 / elapsed_secs,
+            };
+            last_decoded_total = decoded_total;
+            last_sink_total = sink_total;
+            last_rate_at = Instant::now();
+        }
+
+        let last_sink_ms = state.last_sink_ms.load(Ordering::Relaxed);
+        if last_sink_ms == 0 {
+            continue;
+        }
+
+        match tracker.evaluate(state.now_ms(), last_sink_ms) {
+            VideoStallAction::None => {}
+            VideoStallAction::RequestKeyframe { attempt, stall_ms } => {
+                emit_video_stall_event(
+                    &event_sender,
+                    &sink,
+                    &state,
+                    rates,
+                    attempt,
+                    stall_ms,
+                    false,
+                );
+            }
+            VideoStallAction::Resync { attempt, stall_ms } => {
+                emit_video_stall_event(
+                    &event_sender,
+                    &sink,
+                    &state,
+                    rates,
+                    attempt,
+                    stall_ms,
+                    true,
+                );
+                match pipeline.recalculate_latency() {
+                    Ok(()) => send_log(
+                        &event_sender,
+                        "warn",
+                        "Requested GStreamer latency recalculation after native video stall.".to_owned(),
+                    ),
+                    Err(error) => send_log(
+                        &event_sender,
+                        "warn",
+                        format!(
+                            "Failed to request GStreamer latency recalculation after native video stall: {error}."
+                        ),
+                    ),
+                }
+            }
+            VideoStallAction::Recovered { stall_ms } => {
+                send_log(
+                    &event_sender,
+                    "info",
+                    format!("Native video recovered after {stall_ms} ms."),
+                );
+            }
+        }
+    }
+}
+
+fn emit_video_stall_event(
+    event_sender: &Option<Sender<Event>>,
+    sink: &gst::Element,
+    state: &VideoLivenessState,
+    rates: VideoRateSnapshot,
+    recovery_attempt: u8,
+    stall_ms: u64,
+    will_resync: bool,
+) {
+    let stats = read_sink_stats(sink);
+    let resync_suffix = if will_resync {
+        " Requesting keyframe and resyncing GStreamer latency."
+    } else {
+        " Requesting keyframe."
+    };
+    send_log(
+        event_sender,
+        "warn",
+        format!(
+            "Native video stall detected: stall={stall_ms}ms decoded={:.1}fps sink={:.1}fps rendered={} dropped={} zeroCopyD3D11={} zeroCopyD3D12={}.{}",
+            rates.decoded_fps,
+            rates.sink_fps,
+            stats
+                .rendered
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_owned()),
+            stats
+                .dropped
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_owned()),
+            state.zero_copy_d3d11(),
+            state.zero_copy_d3d12(),
+            resync_suffix
+        ),
+    );
+    if let Some(event_sender) = event_sender {
+        let _ = event_sender.send(Event::VideoStall(VideoStallEvent {
+            stall_ms,
+            decoded_fps: rates.decoded_fps,
+            sink_fps: rates.sink_fps,
+            sink_rendered: stats.rendered,
+            sink_dropped: stats.dropped,
+            zero_copy_d3d11: state.zero_copy_d3d11(),
+            zero_copy_d3d12: state.zero_copy_d3d12(),
+            recovery_attempt,
+        }));
+    }
+}
+
+fn start_gstreamer_bus_diagnostics(
+    pipeline: &gst::Pipeline,
+    event_sender: Option<Sender<Event>>,
+    stop: Arc<AtomicBool>,
+) {
+    let Some(bus) = pipeline.bus() else {
+        send_log(
+            &event_sender,
+            "warn",
+            "GStreamer pipeline has no bus; native diagnostics will be limited.".to_owned(),
+        );
+        return;
+    };
+
+    thread::spawn(move || {
+        while !stop.load(Ordering::SeqCst) {
+            let Some(message) = bus.timed_pop_filtered(
+                gst::ClockTime::from_mseconds(250),
+                &[
+                    gst::MessageType::Error,
+                    gst::MessageType::Warning,
+                    gst::MessageType::Qos,
+                    gst::MessageType::Latency,
+                    gst::MessageType::StateChanged,
+                    gst::MessageType::Eos,
+                ],
+            ) else {
+                continue;
+            };
+
+            match message.view() {
+                gst::MessageView::Error(error) => send_log(
+                    &event_sender,
+                    "error",
+                    format!(
+                        "GStreamer bus error from {}: {}; debug={:?}.",
+                        message_src_name(&message),
+                        error.error(),
+                        error.debug()
+                    ),
+                ),
+                gst::MessageView::Warning(warning) => send_log(
+                    &event_sender,
+                    "warn",
+                    format!(
+                        "GStreamer bus warning from {}: {}; debug={:?}.",
+                        message_src_name(&message),
+                        warning.error(),
+                        warning.debug()
+                    ),
+                ),
+                gst::MessageView::Qos(_) => send_log(
+                    &event_sender,
+                    "debug",
+                    format!(
+                        "GStreamer bus QoS from {}: {}.",
+                        message_src_name(&message),
+                        message_structure_summary(&message)
+                    ),
+                ),
+                gst::MessageView::Latency(_) => send_log(
+                    &event_sender,
+                    "debug",
+                    format!("GStreamer bus latency update from {}.", message_src_name(&message)),
+                ),
+                gst::MessageView::StateChanged(state) => {
+                    if message
+                        .src()
+                        .and_then(|src| src.clone().downcast::<gst::Pipeline>().ok())
+                        .is_some()
+                    {
+                        send_log(
+                            &event_sender,
+                            "debug",
+                            format!(
+                                "GStreamer pipeline state changed: {:?} -> {:?} pending {:?}.",
+                                state.old(),
+                                state.current(),
+                                state.pending()
+                            ),
+                        );
+                    }
+                }
+                gst::MessageView::Eos(_) => send_log(
+                    &event_sender,
+                    "warn",
+                    format!("GStreamer bus EOS from {}.", message_src_name(&message)),
+                ),
+                _ => {}
+            }
+        }
+    });
+}
+
+fn message_src_name(message: &gst::Message) -> String {
+    message
+        .src()
+        .map(|src| src.path_string().to_string())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn message_structure_summary(message: &gst::Message) -> String {
+    message
+        .structure()
+        .map(|structure| structure.to_string())
+        .unwrap_or_else(|| "no structure".to_owned())
+}
+
 fn resolve_present_max_fps(requested_fps: u32) -> u32 {
     if let Ok(value) = std::env::var(NATIVE_PRESENT_MAX_FPS_ENV) {
         let value = value.trim().to_ascii_lowercase();
@@ -2938,6 +3393,7 @@ fn wire_incoming_media_sink(
     event_sender: Option<Sender<Event>>,
     render_state: GstreamerRenderState,
     present_max_fps: Arc<AtomicU32>,
+    video_liveness: VideoLivenessMonitor,
 ) {
     let pipeline = pipeline.downgrade();
     let streaming_reported = Arc::new(AtomicBool::new(false));
@@ -2968,6 +3424,7 @@ fn wire_incoming_media_sink(
                 &event_sender,
                 &streaming_reported,
                 present_max_fps.clone(),
+                video_liveness.clone(),
             ) {
                 Ok(()) => return,
                 Err(error) => send_log(
@@ -2990,6 +3447,7 @@ fn wire_incoming_media_sink(
         let decode_sender = event_sender.clone();
         let decode_render_state = render_state.clone();
         let decode_streaming_reported = streaming_reported.clone();
+        let decode_video_liveness = video_liveness.clone();
         decodebin.connect_pad_added(move |_decodebin, decoded_pad| {
             let Some(pipeline) = decode_pipeline.upgrade() else {
                 return;
@@ -3001,6 +3459,7 @@ fn wire_incoming_media_sink(
                 &decode_render_state,
                 &decode_sender,
                 &decode_streaming_reported,
+                &decode_video_liveness,
             ) {
                 send_log(&decode_sender, "warn", error);
                 if let Err(fallback_error) =
@@ -3228,6 +3687,7 @@ fn link_rtp_video_pad(
     event_sender: &Option<Sender<Event>>,
     streaming_reported: &Arc<AtomicBool>,
     present_max_fps: Arc<AtomicU32>,
+    video_liveness: VideoLivenessMonitor,
 ) -> Result<(), String> {
     if src_pad.is_linked() {
         return Ok(());
@@ -3286,12 +3746,13 @@ fn link_rtp_video_pad(
                     (spec.role == RtpVideoChainRole::PostDecodeQueue).then_some(element)
                 })
         {
-            watch_video_decoded_rate(post_decode_queue, event_sender);
+            watch_video_decoded_rate(post_decode_queue, event_sender, Some(video_liveness.clone()));
         }
         render_state.set_video_sink(sink.clone(), event_sender);
         install_present_limiter(sink, present_max_fps, event_sender);
         watch_first_sink_buffer(sink, "video", event_sender, streaming_reported);
-        watch_video_sink_rate(sink, event_sender);
+        watch_video_sink_rate(sink, event_sender, Some(video_liveness.clone()));
+        video_liveness.start(pipeline.clone(), sink.clone(), event_sender.clone());
 
         for element in &elements {
             element.sync_state_with_parent().map_err(|error| {
@@ -3334,6 +3795,7 @@ fn link_decoded_media_pad(
     render_state: &GstreamerRenderState,
     event_sender: &Option<Sender<Event>>,
     streaming_reported: &Arc<AtomicBool>,
+    video_liveness: &VideoLivenessMonitor,
 ) -> Result<(), String> {
     if src_pad.is_linked() {
         return Ok(());
@@ -3348,6 +3810,7 @@ fn link_decoded_media_pad(
             Some(render_state),
             event_sender,
             streaming_reported,
+            Some(video_liveness),
         ),
         DecodedMediaKind::Audio => link_media_chain(
             pipeline,
@@ -3362,6 +3825,7 @@ fn link_decoded_media_pad(
             None,
             event_sender,
             streaming_reported,
+            None,
         ),
         DecodedMediaKind::Unknown => Err(format!(
             "Unsupported decoded media caps {:?}; routing to fallback sink.",
@@ -3393,6 +3857,7 @@ fn link_media_chain(
     render_state: Option<&GstreamerRenderState>,
     event_sender: &Option<Sender<Event>>,
     streaming_reported: &Arc<AtomicBool>,
+    video_liveness: Option<&VideoLivenessMonitor>,
 ) -> Result<(), String> {
     let mut elements = Vec::with_capacity(factories.len());
     for (factory, sync_property) in factories {
@@ -3445,6 +3910,12 @@ fn link_media_chain(
             }
         }
         watch_first_sink_buffer(sink, media_label, event_sender, streaming_reported);
+        if media_label == "video" {
+            if let Some(video_liveness) = video_liveness {
+                watch_video_sink_rate(sink, event_sender, Some(video_liveness.clone()));
+                video_liveness.start(pipeline.clone(), sink.clone(), event_sender.clone());
+            }
+        }
     }
 
     for element in &elements {
@@ -3501,7 +3972,11 @@ fn watch_first_sink_buffer(
     });
 }
 
-fn watch_video_sink_rate(sink: &gst::Element, event_sender: &Option<Sender<Event>>) {
+fn watch_video_sink_rate(
+    sink: &gst::Element,
+    event_sender: &Option<Sender<Event>>,
+    video_liveness: Option<VideoLivenessMonitor>,
+) {
     let Some(sink_pad) = sink.static_pad("sink") else {
         return;
     };
@@ -3511,10 +3986,15 @@ fn watch_video_sink_rate(sink: &gst::Element, event_sender: &Option<Sender<Event
         "Native video sink rate",
         Some(sink),
         event_sender,
+        video_liveness.map(|monitor| (monitor, VideoLivenessPadKind::Sink)),
     );
 }
 
-fn watch_video_decoded_rate(queue: &gst::Element, event_sender: &Option<Sender<Event>>) {
+fn watch_video_decoded_rate(
+    queue: &gst::Element,
+    event_sender: &Option<Sender<Event>>,
+    video_liveness: Option<VideoLivenessMonitor>,
+) {
     let Some(queue_sink_pad) = queue.static_pad("sink") else {
         return;
     };
@@ -3523,6 +4003,7 @@ fn watch_video_decoded_rate(queue: &gst::Element, event_sender: &Option<Sender<E
         "Native decoded video rate before present queue",
         None,
         event_sender,
+        video_liveness.map(|monitor| (monitor, VideoLivenessPadKind::Decoded)),
     );
 }
 
@@ -3603,16 +4084,30 @@ struct PresentLimiterState {
     active_fps: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VideoLivenessPadKind {
+    Decoded,
+    Sink,
+}
+
 fn watch_video_pad_rate(
     pad: &gst::Pad,
     label: &'static str,
     sink: Option<gst::Element>,
     event_sender: &Option<Sender<Event>>,
+    video_liveness: Option<(VideoLivenessMonitor, VideoLivenessPadKind)>,
 ) {
     let sender = event_sender.clone();
     let state = Arc::new(Mutex::new((Instant::now(), 0u32)));
 
     pad.add_probe(gst::PadProbeType::BUFFER, move |pad, _info| {
+        if let Some((monitor, kind)) = &video_liveness {
+            match kind {
+                VideoLivenessPadKind::Decoded => monitor.record_decoded_buffer(),
+                VideoLivenessPadKind::Sink => monitor.record_sink_buffer(),
+            }
+        }
+
         let Ok(mut state) = state.lock() else {
             return gst::PadProbeReturn::Ok;
         };
@@ -3628,6 +4123,9 @@ fn watch_video_pad_rate(
                 .unwrap_or_else(|| "unknown caps".to_owned());
             let zero_copy_d3d11 = caps.contains("memory:D3D11Memory");
             let zero_copy_d3d12 = caps.contains("memory:D3D12Memory");
+            if let Some((monitor, _)) = &video_liveness {
+                monitor.update_caps(&caps);
+            }
             let caps_framerate =
                 caps_framerate_summary(&caps).unwrap_or_else(|| "unknown".to_owned());
             let sink_stats = sink
@@ -3651,27 +4149,48 @@ fn watch_video_pad_rate(
 }
 
 fn sink_stats_summary(sink: &gst::Element) -> String {
-    if sink.find_property("stats").is_none() {
+    let stats = read_sink_stats(sink);
+    if !stats.available {
         return "sinkStats=unavailable".to_owned();
     }
 
-    let stats = sink.property::<gst::Structure>("stats");
-    let rendered = stats.get::<u64>("rendered").ok();
-    let dropped = stats.get::<u64>("dropped").ok();
-    let average_rate = stats.get::<f64>("average-rate").ok();
-
     format!(
         "sinkStats rendered={} dropped={} averageRate={}",
-        rendered
+        stats
+            .rendered
             .map(|value| value.to_string())
             .unwrap_or_else(|| "n/a".to_owned()),
-        dropped
+        stats
+            .dropped
             .map(|value| value.to_string())
             .unwrap_or_else(|| "n/a".to_owned()),
-        average_rate
+        stats
+            .average_rate
             .map(|value| format!("{value:.1}"))
             .unwrap_or_else(|| "n/a".to_owned())
     )
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct VideoSinkStats {
+    available: bool,
+    rendered: Option<u64>,
+    dropped: Option<u64>,
+    average_rate: Option<f64>,
+}
+
+fn read_sink_stats(sink: &gst::Element) -> VideoSinkStats {
+    if sink.find_property("stats").is_none() {
+        return VideoSinkStats::default();
+    }
+
+    let stats = sink.property::<gst::Structure>("stats");
+    VideoSinkStats {
+        available: true,
+        rendered: stats.get::<u64>("rendered").ok(),
+        dropped: stats.get::<u64>("dropped").ok(),
+        average_rate: stats.get::<f64>("average-rate").ok(),
+    }
 }
 
 fn caps_framerate_summary(caps: &str) -> Option<String> {
@@ -4230,6 +4749,67 @@ mod tests {
         let caps = "video/x-raw(memory:D3D11Memory), format=(string)NV12, framerate=(fraction)240/1; zeroCopyD3D11=true";
         assert_eq!(caps_framerate_summary(caps).as_deref(), Some("240/1"));
         assert_eq!(caps_framerate_summary("video/x-raw").as_deref(), None);
+    }
+
+    #[test]
+    fn video_stall_tracker_waits_until_threshold() {
+        let mut tracker = VideoStallTracker::default();
+
+        assert_eq!(tracker.evaluate(2_499, 0), VideoStallAction::None);
+    }
+
+    #[test]
+    fn video_stall_tracker_progresses_recovery_attempts() {
+        let mut tracker = VideoStallTracker::default();
+
+        assert_eq!(
+            tracker.evaluate(2_500, 0),
+            VideoStallAction::RequestKeyframe {
+                attempt: 1,
+                stall_ms: 2_500,
+            },
+        );
+        assert_eq!(tracker.evaluate(3_000, 0), VideoStallAction::None);
+        assert_eq!(
+            tracker.evaluate(5_000, 0),
+            VideoStallAction::RequestKeyframe {
+                attempt: 2,
+                stall_ms: 5_000,
+            },
+        );
+        assert_eq!(
+            tracker.evaluate(8_000, 0),
+            VideoStallAction::Resync {
+                attempt: 3,
+                stall_ms: 8_000,
+            },
+        );
+        assert_eq!(tracker.evaluate(12_000, 0), VideoStallAction::None);
+    }
+
+    #[test]
+    fn video_stall_tracker_resets_after_recovery() {
+        let mut tracker = VideoStallTracker::default();
+
+        assert_eq!(
+            tracker.evaluate(2_500, 0),
+            VideoStallAction::RequestKeyframe {
+                attempt: 1,
+                stall_ms: 2_500,
+            },
+        );
+        assert_eq!(
+            tracker.evaluate(2_600, 2_600),
+            VideoStallAction::Recovered { stall_ms: 2_600 },
+        );
+        assert_eq!(tracker.evaluate(3_000, 2_600), VideoStallAction::None);
+        assert_eq!(
+            tracker.evaluate(5_100, 2_600),
+            VideoStallAction::RequestKeyframe {
+                attempt: 1,
+                stall_ms: 2_500,
+            },
+        );
     }
 
     #[test]
