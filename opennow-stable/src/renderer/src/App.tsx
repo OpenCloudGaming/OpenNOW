@@ -180,6 +180,7 @@ type SignalingRecoveryState = {
   inFlight: Promise<boolean> | null;
   explicitShutdown: boolean;
   appId: number | null;
+  generation: number;
 };
 
 const APP_PAGE_ORDER: AppPage[] = ["home", "library", "settings"];
@@ -1158,6 +1159,7 @@ export function App(): JSX.Element {
     inFlight: null,
     explicitShutdown: false,
     appId: null,
+    generation: 0,
   });
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const adReportQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -1403,6 +1405,7 @@ export function App(): JSX.Element {
   const resetSignalingRecoveryState = useCallback((options?: {
     keepExplicitShutdown?: boolean;
   }): void => {
+    signalingRecoveryRef.current.generation += 1;
     signalingRecoveryRef.current.attemptCount = 0;
     signalingRecoveryRef.current.inFlight = null;
     signalingRecoveryRef.current.appId = null;
@@ -1412,8 +1415,14 @@ export function App(): JSX.Element {
   }, []);
 
   const markExplicitSignalingShutdown = useCallback((): void => {
+    signalingRecoveryRef.current.generation += 1;
     signalingRecoveryRef.current.explicitShutdown = true;
     signalingRecoveryRef.current.inFlight = null;
+  }, []);
+
+  const isRecoveryGenerationCurrent = useCallback((generation: number): boolean => {
+    const state = signalingRecoveryRef.current;
+    return state.generation === generation && !state.explicitShutdown;
   }, []);
 
   // Session ref sync
@@ -2449,7 +2458,18 @@ export function App(): JSX.Element {
     throw new Error("Active session is missing app metadata required for resume.");
   }, []);
 
-  const applyClaimedSessionAndConnect = useCallback(async (claimed: SessionInfo): Promise<void> => {
+  const applyClaimedSessionAndConnect = useCallback(async (
+    claimed: SessionInfo,
+    expectedRecoveryGeneration?: number,
+  ): Promise<void> => {
+    if (
+      expectedRecoveryGeneration !== undefined
+      && !isRecoveryGenerationCurrent(expectedRecoveryGeneration)
+    ) {
+      console.log("[Recovery] Skipping claimed session apply due to stale recovery generation");
+      return;
+    }
+
     console.log("Claimed session:", {
       sessionId: claimed.sessionId,
       signalingServer: claimed.signalingServer,
@@ -2458,6 +2478,13 @@ export function App(): JSX.Element {
     });
 
     await sleep(1000);
+    if (
+      expectedRecoveryGeneration !== undefined
+      && !isRecoveryGenerationCurrent(expectedRecoveryGeneration)
+    ) {
+      console.log("[Recovery] Skipping reconnect due to stale recovery generation after delay");
+      return;
+    }
 
     setSession(claimed);
     sessionRef.current = claimed;
@@ -2465,12 +2492,19 @@ export function App(): JSX.Element {
     setLaunchError(null);
     setStreamStatus("connecting");
     signalingRecoveryRef.current.explicitShutdown = false;
+    if (
+      expectedRecoveryGeneration !== undefined
+      && !isRecoveryGenerationCurrent(expectedRecoveryGeneration)
+    ) {
+      console.log("[Recovery] Skipping signaling connect due to stale recovery generation");
+      return;
+    }
     await window.openNow.connectSignaling({
       sessionId: claimed.sessionId,
       signalingServer: claimed.signalingServer,
       signalingUrl: claimed.signalingUrl,
     });
-  }, []);
+  }, [isRecoveryGenerationCurrent]);
 
   const claimAndConnectSession = useCallback(async (existingSession: ActiveSessionInfo): Promise<void> => {
     const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
@@ -2513,10 +2547,11 @@ export function App(): JSX.Element {
 
   const attemptSessionRecovery = useCallback(async (reason: string): Promise<boolean> => {
     const recoveryState = signalingRecoveryRef.current;
+    const recoveryGeneration = recoveryState.generation;
     const currentStatus = streamStatusRef.current;
     const currentSession = sessionRef.current;
 
-    if (recoveryState.explicitShutdown) {
+    if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
       console.log("[Recovery] Skipping signaling recovery after explicit shutdown");
       return false;
     }
@@ -2563,13 +2598,17 @@ export function App(): JSX.Element {
         if (attemptDelayMs > 0) {
           await sleep(attemptDelayMs);
         }
-        if (recoveryState.explicitShutdown) {
+        if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
           console.log("[Recovery] Aborting attempt after explicit shutdown");
           return false;
         }
 
         try {
           const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
+          if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
+            console.log("[Recovery] Aborting attempt after active session lookup due to stale generation");
+            return false;
+          }
           const previousAppId = recoveryState.appId;
           const currentSessionId = currentSession.sessionId;
           const sameSessionCandidate =
@@ -2623,6 +2662,10 @@ export function App(): JSX.Element {
               enableCloudGsync: settings.enableCloudGsync,
             },
           });
+          if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
+            console.log("[Recovery] Discarding claimed session due to stale recovery generation");
+            return false;
+          }
 
           const matchedContext = findGameContextForSession(candidate);
           if (matchedContext) {
@@ -2632,7 +2675,11 @@ export function App(): JSX.Element {
             setStreamingStore(null);
           }
 
-          await applyClaimedSessionAndConnect(claimed);
+          await applyClaimedSessionAndConnect(claimed, recoveryGeneration);
+          if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
+            console.log("[Recovery] Recovery generation changed before connect completed");
+            return false;
+          }
           recoveryState.attemptCount = 0;
           return true;
         } catch (error) {
@@ -2660,6 +2707,7 @@ export function App(): JSX.Element {
     authSession,
     effectiveStreamingBaseUrl,
     findGameContextForSession,
+    isRecoveryGenerationCurrent,
     resolveSessionClaimAppId,
     settings,
   ]);
