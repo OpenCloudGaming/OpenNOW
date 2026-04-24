@@ -39,6 +39,75 @@ interface SettingsPageProps {
 type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 
 type SettingsSectionId = "stream" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
+type SettingsSearchScopeId =
+  | "stream-region"
+  | "stream-video"
+  | "stream-codec-diagnostics"
+  | "game"
+  | "audio"
+  | "input"
+  | "interface"
+  | "about"
+  | "thanks";
+
+const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string[]> = {
+  "stream-region": ["stream", "region", "latency", "ping", "server", "route", "auto best"],
+  "stream-video": [
+    "stream",
+    "video",
+    "quality",
+    "codec",
+    "fps",
+    "resolution",
+    "bitrate",
+    "aspect ratio",
+    "l4s",
+    "cloud gsync",
+    "video acceleration",
+  ],
+  "stream-codec-diagnostics": [
+    "stream",
+    "codec diagnostics",
+    "diagnostics",
+    "decode",
+    "encode",
+    "gpu",
+    "cpu",
+    "test codecs",
+  ],
+  game: ["game", "language", "keyboard layout", "store", "launch"],
+  audio: ["audio", "microphone", "mic", "push to talk", "voice activity"],
+  input: [
+    "input",
+    "mouse",
+    "keyboard layout",
+    "shortcut",
+    "hotkey",
+    "keybind",
+    "controls",
+    "anti afk",
+    "pointer lock",
+    "recording",
+    "screenshot",
+  ],
+  interface: [
+    "interface",
+    "ui",
+    "overlay",
+    "controller mode",
+    "controller mode library",
+    "auto-load controller library",
+    "library",
+    "fullscreen",
+    "discord",
+    "rich presence",
+    "poster",
+    "session timer",
+    "counter",
+  ],
+  about: ["about", "update", "version", "logs", "cache", "download"],
+  thanks: ["thanks", "contributors", "supporters", "sponsors", "community"],
+};
 
 const POSTER_SIZE_MIN = 75;
 const POSTER_SIZE_MAX = 135;
@@ -1093,7 +1162,28 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   }, []);
 
   useEffect(() => {
-    if (activeSection !== "thanks") {
+    const normalizedSearch = settingsSearch.trim().toLowerCase();
+    const showAll = normalizedSearch.length > 0;
+    const shouldShowThanks = activeSection === "thanks" || (showAll && (() => {
+      const terms = SETTINGS_SCOPE_SEARCH_TERMS["thanks"];
+      const searchTokens = normalizedSearch.split(/[^a-z0-9]+/).filter((token) => token.length > 0);
+      if (searchTokens.length === 0) {
+        return true;
+      }
+      const searchableWords = Array.from(
+        new Set(
+          terms
+            .join(" ")
+            .toLowerCase()
+            .split(/[^a-z0-9]+/)
+            .filter((word) => word.length > 0),
+        ),
+      );
+      const tokenMatchesWord = (token: string, word: string): boolean => token === word || word.startsWith(token);
+      return searchTokens.every((token) => searchableWords.some((word) => tokenMatchesWord(token, word)));
+    })());
+
+    if (!shouldShowThanks) {
       thanksRequestIdRef.current += 1;
       setThanksLoadState((current) => (current === "loading" || current === "error" ? "idle" : current));
       setThanksFetchError(null);
@@ -1141,7 +1231,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         setThanksLoadState("error");
       },
     );
-  }, [activeSection, thanksData, thanksLoadState]);
+  }, [activeSection, thanksData, thanksLoadState, settingsSearch]);
 
   const renderPersonLink = useCallback((person: ThankYouContributor | ThankYouSupporter, content: JSX.Element) => {
     if (!person.profileUrl) {
@@ -1297,13 +1387,42 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     </div>
   );
 
-  const showAll = settingsSearch.length > 0;
-  const showStream = activeSection === "stream" || showAll;
-  const showGame = activeSection === "game" || showAll;
-  const showAudio = activeSection === "audio" || showAll;
-  const showInput = activeSection === "input" || showAll;
-  const showInterface = activeSection === "interface" || showAll;
-  const showAbout = activeSection === "about" || showAll;
+  const normalizedSettingsSearch = settingsSearch.trim().toLowerCase();
+  const showAll = normalizedSettingsSearch.length > 0;
+  const tokenMatchesWord = (token: string, word: string): boolean => token === word || word.startsWith(token);
+  const scopeMatchesSearch = (scopeId: SettingsSearchScopeId): boolean => {
+    if (!showAll) {
+      return true;
+    }
+    const terms = SETTINGS_SCOPE_SEARCH_TERMS[scopeId];
+    const searchTokens = normalizedSettingsSearch.split(/[^a-z0-9]+/).filter((token) => token.length > 0);
+    if (searchTokens.length === 0) {
+      return true;
+    }
+    const searchableWords = Array.from(
+      new Set(
+        terms
+          .join(" ")
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .filter((word) => word.length > 0),
+      ),
+    );
+    return searchTokens.every((token) => searchableWords.some((word) => tokenMatchesWord(token, word)));
+  };
+
+  const showStreamRegion = showAll ? scopeMatchesSearch("stream-region") : activeSection === "stream";
+  const showStreamVideo = showAll ? scopeMatchesSearch("stream-video") : activeSection === "stream";
+  const showStreamCodecDiagnostics = showAll ? scopeMatchesSearch("stream-codec-diagnostics") : activeSection === "stream";
+  const showStream = showStreamRegion || showStreamVideo || showStreamCodecDiagnostics;
+  const showGame = showAll ? scopeMatchesSearch("game") : activeSection === "game";
+  const showAudio = showAll ? scopeMatchesSearch("audio") : activeSection === "audio";
+  const showInput = showAll ? scopeMatchesSearch("input") : activeSection === "input";
+  const showInterface = showAll ? scopeMatchesSearch("interface") : activeSection === "interface";
+  const showAbout = showAll ? scopeMatchesSearch("about") : activeSection === "about";
+  const showThanks = showAll ? scopeMatchesSearch("thanks") : activeSection === "thanks";
+  const hasAnySearchMatches = showStream || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
+  const shouldRenderSettingsSections = showAll || activeSection !== "thanks";
 
   return (
     <div className="settings-page">
@@ -1347,7 +1466,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             <button
               key={item.id}
               type="button"
-              className={`settings-nav-item ${activeSection === item.id ? "active" : ""}`}
+              className={`settings-nav-item ${!showAll && activeSection === item.id ? "active" : ""}`}
               onClick={() => { setActiveSection(item.id); setSettingsSearch(""); }}
             >
               {item.icon}
@@ -1359,14 +1478,22 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
       {/* ── Content ───────────────────────────────────────── */}
       <div className="settings-content">
-        {activeSection === "thanks" ? (
-          thanksTabContent
+        {showAll && !hasAnySearchMatches ? (
+          <section className="settings-section">
+            <div className="settings-thanks-state settings-thanks-state--muted">
+              <span>No settings matched "{settingsSearch.trim()}".</span>
+            </div>
+          </section>
         ) : (
           <>
+            {showThanks && thanksTabContent}
+            {shouldRenderSettingsSections && (
+              <>
             {/* ═══ STREAM ════════════════════════════════════ */}
             {showStream && (
               <>
                 {/* ── Region ── */}
+                {showStreamRegion && (
                 <section className="settings-section">
                   {showAll && <div className="settings-section-context">Stream</div>}
                   <div className="settings-section-header">
@@ -1531,7 +1658,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               </div>
             </section>
 
-            {/* ── Video ── */}
+                )}
+            {showStreamVideo && (
             <section className="settings-section">
               {showAll && <div className="settings-section-context">Stream</div>}
               <div className="settings-section-header">
@@ -1752,7 +1880,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               </div>
             </section>
 
-            {/* ── Codec Diagnostics (advanced disclosure) ── */}
+            )}
+            {showStreamCodecDiagnostics && (
             <div className="settings-advanced-wrap">
               <button
                 type="button"
@@ -1839,6 +1968,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </section>
               )}
             </div>
+            )}
           </>
         )}
 
@@ -2784,8 +2914,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               </div>
             </div>
           </section>
-        )}
-      </>
+                )}
+              </>
+            )}
+          </>
         )}
       </div>
       </div>
