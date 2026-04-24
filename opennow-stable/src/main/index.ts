@@ -83,7 +83,7 @@ import {
 import { fetchSubscription, fetchDynamicRegions } from "./gfn/subscription";
 import { GfnSignalingClient } from "./gfn/signaling";
 import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
-import { connectDiscordRpc, setActivity, clearActivity, destroyDiscordRpc } from "./discordRpc";
+import { connectDiscordRpc, setActivity, clearActivity, destroyDiscordRpc, getCurrentActivity, isDiscordRpcConnected } from "./discordRpc";
 import { createAppUpdaterController, type AppUpdaterController } from "./updater";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -229,6 +229,164 @@ let authService: AuthService;
 let settingsManager: SettingsManager;
 let appUpdater: AppUpdaterController | null = null;
 const SCREENSHOT_LIMIT = 60;
+const EXPLICIT_SHUTDOWN_FORCE_EXIT_DELAY_MS = 2000;
+let isShutdownRequested = false;
+let isShutdownCleanupComplete = false;
+let isUpdaterInstallQuitInProgress = false;
+let explicitShutdownFallbackTimer: NodeJS.Timeout | null = null;
+
+function clearExplicitShutdownFallback(): void {
+  if (explicitShutdownFallbackTimer) {
+    clearTimeout(explicitShutdownFallbackTimer);
+    explicitShutdownFallbackTimer = null;
+  }
+}
+
+function runShutdownCleanup(reason = "app-quit"): void {
+  if (isShutdownCleanupComplete) {
+    return;
+  }
+
+  isShutdownCleanupComplete = true;
+  console.log(`[Main] Running shutdown cleanup (${reason})`);
+
+  refreshScheduler.stop();
+  signalingClient?.disconnect();
+  signalingClient = null;
+  signalingClientKey = null;
+  void destroyDiscordRpc();
+  appUpdater?.dispose();
+  appUpdater = null;
+
+  const windowToClose = mainWindow;
+  if (windowToClose && !windowToClose.isDestroyed()) {
+    mainWindow = null;
+    try {
+      windowToClose.close();
+    } catch (error) {
+      console.warn("[Main] Failed to close main window during shutdown:", error);
+    }
+
+    if (!windowToClose.isDestroyed()) {
+      try {
+        windowToClose.destroy();
+      } catch (error) {
+        console.warn("[Main] Failed to destroy main window during shutdown:", error);
+      }
+    }
+  }
+}
+
+function scheduleExplicitShutdownFallback(reason: string, exitCode = 0): void {
+  if (explicitShutdownFallbackTimer || isUpdaterInstallQuitInProgress) {
+    return;
+  }
+
+  explicitShutdownFallbackTimer = setTimeout(() => {
+    explicitShutdownFallbackTimer = null;
+    console.warn(`[Main] Explicit shutdown fallback triggered (${reason}); forcing process exit.`);
+    app.exit(exitCode);
+  }, EXPLICIT_SHUTDOWN_FORCE_EXIT_DELAY_MS);
+  explicitShutdownFallbackTimer.unref?.();
+}
+
+function requestAppShutdown(options: { reason?: string; forceExitFallback?: boolean; exitCode?: number } = {}): void {
+  const { reason = "app-quit", forceExitFallback = false, exitCode = 0 } = options;
+
+  if (!isShutdownRequested) {
+    isShutdownRequested = true;
+    discordMonitor.stop();
+    runShutdownCleanup(reason);
+  }
+
+  if (forceExitFallback) {
+    scheduleExplicitShutdownFallback(reason, exitCode);
+  }
+
+  app.quit();
+}
+
+/**
+ * Periodically verifies that the Discord Rich Presence status accurately
+ * reflects the user's actual game session state.
+ */
+class DiscordStatusMonitor {
+  private timer: NodeJS.Timeout | null = null;
+  private readonly intervalMs = 60 * 1000;
+  private isSyncing = false;
+  private hasPerformedInitialSync = false;
+
+  start(): void {
+    if (this.timer) return;
+    this.timer = setInterval(() => void this.sync(), this.intervalMs);
+    void this.sync();
+  }
+
+  stop(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  async sync(): Promise<void> {
+    if (this.isSyncing) return;
+    this.isSyncing = true;
+
+    try {
+      if (!settingsManager.get("discordRichPresence")) {
+        this.stop();
+        void clearActivity();
+        return;
+      }
+
+      if (!isDiscordRpcConnected()) {
+        await connectDiscordRpc().catch(() => {});
+      }
+
+      // On first run, always clear regardless of auth state — the app just started
+      // and any stale status from the previous session must be wiped.
+      if (!this.hasPerformedInitialSync) {
+        console.log("[DiscordRPC] Startup: clearing any stale Discord status.");
+        await clearActivity().catch(() => {});
+        this.hasPerformedInitialSync = true;
+      }
+
+      const token = await resolveJwt().catch(() => null);
+      if (!token) return;
+
+      const provider = authService.getSelectedProvider();
+      const streamingBaseUrl = provider.streamingServiceUrl;
+      const activeSessions = await getActiveSessions(token, streamingBaseUrl).catch(() => []);
+
+      const activeSession = activeSessions.find((s) => [1, 2, 3].includes(s.status));
+      const currentActivity = getCurrentActivity();
+
+      if (activeSession) {
+        const sessionAppId = activeSession.appId.toString();
+
+        if (!currentActivity || currentActivity.appId !== sessionAppId) {
+          const title = (currentActivity?.appId === sessionAppId && currentActivity.gameName)
+            ? currentActivity.gameName
+            : sessionAppId;
+          const startTime = (currentActivity?.appId === sessionAppId && currentActivity.startTimestamp)
+            ? currentActivity.startTimestamp
+            : new Date();
+          void setActivity(title, startTime, sessionAppId);
+        }
+      } else if (currentActivity) {
+        console.log("[DiscordRPC] Monitor clearing stale status.");
+        void clearActivity();
+      }
+    } catch (err) {
+      console.warn("[DiscordRPC] Monitor sync failed:", (err as Error).message);
+    } finally {
+      this.isSyncing = false;
+    }
+  }
+}
+
+const discordMonitor = new DiscordStatusMonitor();
 
 function getScreenshotDirectory(): string {
   return join(app.getPath("pictures"), "OpenNOW", "Screenshots");
@@ -1087,7 +1245,7 @@ function registerIpcHandlers(): void {
       const preChecked = await tryClaimExisting();
       if (preChecked) {
         if (settingsManager.get("discordRichPresence")) {
-          void setActivity(payload.internalTitle || payload.appId, new Date());
+          void setActivity(payload.internalTitle || payload.appId, new Date(), payload.appId);
         }
         return preChecked;
       }
@@ -1104,7 +1262,7 @@ function registerIpcHandlers(): void {
       }
       const sessionResult = await createSession({ ...payload, token, streamingBaseUrl });
       if (settingsManager.get("discordRichPresence")) {
-        void setActivity(payload.internalTitle || payload.appId, new Date());
+        void setActivity(payload.internalTitle || payload.appId, new Date(), payload.appId);
       }
       return sessionResult;
     } catch (error) {
@@ -1117,7 +1275,7 @@ function registerIpcHandlers(): void {
         const fallback = await tryClaimExisting();
         if (fallback) {
           if (settingsManager.get("discordRichPresence")) {
-            void setActivity(payload.internalTitle || payload.appId, new Date());
+            void setActivity(payload.internalTitle || payload.appId, new Date(), payload.appId);
           }
           return fallback;
         }
@@ -1171,6 +1329,10 @@ function registerIpcHandlers(): void {
     const jwt = await resolveJwt(token);
     const baseUrl = streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
     return getActiveSessions(jwt, baseUrl);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.DISCORD_CLEAR_ACTIVITY, async () => {
+    void clearActivity();
   });
 
   ipcMain.handle(IPC_CHANNELS.CLAIM_SESSION, async (_event, payload: SessionClaimRequest) => {
@@ -1268,7 +1430,10 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.QUIT_APP, async () => {
-    app.quit();
+    requestAppShutdown({
+      reason: "renderer-explicit-exit",
+      forceExitFallback: true,
+    });
   });
 
   ipcMain.handle(IPC_CHANNELS.APP_UPDATER_GET_STATE, async (): Promise<AppUpdaterState> => {
@@ -1337,8 +1502,9 @@ function registerIpcHandlers(): void {
       }
       if (key === "discordRichPresence") {
         if (value) {
-          void connectDiscordRpc();
+          void connectDiscordRpc().then(() => discordMonitor.start());
         } else {
+          discordMonitor.stop();
           void destroyDiscordRpc();
         }
       }
@@ -1897,11 +2063,18 @@ app.whenReady().then(async () => {
   appUpdater = createAppUpdaterController({
     onStateChanged: emitUpdaterStateToRenderer,
     automaticChecksEnabled: settingsManager.get("autoCheckForUpdates"),
+    onBeforeQuitAndInstall: () => {
+      isUpdaterInstallQuitInProgress = true;
+      clearExplicitShutdownFallback();
+    },
+    onQuitAndInstallError: () => {
+      isUpdaterInstallQuitInProgress = false;
+    },
   });
 
-  // Connect Discord Rich Presence if the user has opted in
+  // Connect and start Discord Rich Presence monitor if the user has opted in
   if (settingsManager.get("discordRichPresence")) {
-    void connectDiscordRpc();
+    void connectDiscordRpc().then(() => discordMonitor.start());
   }
 
   // Set up permission handlers for getUserMedia, fullscreen, pointer lock
@@ -1970,6 +2143,9 @@ app.whenReady().then(async () => {
   appUpdater.initialize();
 
   app.on("activate", async () => {
+    if (isShutdownRequested) {
+      return;
+    }
     if (BrowserWindow.getAllWindows().length === 0) {
       await createMainWindow();
     }
@@ -1978,18 +2154,21 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
-    app.quit();
+    requestAppShutdown({ reason: "window-all-closed" });
   }
 });
 
 app.on("before-quit", () => {
-  refreshScheduler.stop();
-  signalingClient?.disconnect();
-  signalingClient = null;
-  signalingClientKey = null;
-  void destroyDiscordRpc();
-  appUpdater?.dispose();
-  appUpdater = null;
+  isShutdownRequested = true;
+  runShutdownCleanup(isUpdaterInstallQuitInProgress ? "before-quit-updater-install" : "before-quit");
+});
+
+app.on("will-quit", () => {
+  clearExplicitShutdownFallback();
+});
+
+app.on("quit", () => {
+  clearExplicitShutdownFallback();
 });
 
 // Export for use by other modules

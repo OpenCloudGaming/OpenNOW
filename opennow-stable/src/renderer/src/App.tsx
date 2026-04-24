@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, JSX } from "react";
+import { createPortal } from "react-dom";
 
 import type {
   ActiveSessionInfo,
@@ -48,6 +49,7 @@ import { useElapsedSeconds } from "./utils/useElapsedSeconds";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
 import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
+import { chooseAccountLinked, getEpicOwnershipLaunchError } from "./lib/launchOwnership";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
@@ -104,7 +106,6 @@ const SESSION_AD_PROGRESS_CHECK_INTERVAL_MS = 1000;
 const SESSION_AD_START_TIMEOUT_MS = 30000;
 const SESSION_AD_FORCE_PLAY_TIMEOUT_MS = 10000;
 const SESSION_AD_STUCK_TIMEOUT_MS = 30000;
-const SESSION_READY_TIMEOUT_MS = 180000;
 const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
 const CATALOG_PREFERENCES_LOCALSTORAGE_KEY = "opennow.catalogPreferences.v1";
 const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
@@ -143,7 +144,6 @@ function saveCatalogPreferences(prefs: CatalogPreferences): void {
   }
 }
 
-type GameSource = "main" | "library";
 type AppPage = "home" | "library" | "settings";
 type StreamStatus = "idle" | "queue" | "setup" | "starting" | "connecting" | "streaming";
 type StreamLoadingStatus = "queue" | "setup" | "starting" | "connecting";
@@ -270,7 +270,7 @@ function parseNumericId(value: string | undefined): number | null {
 }
 
 function defaultVariantId(game: GameInfo): string {
-  return game.variants[0]?.id ?? game.id;
+  return game.variants[game.selectedVariantIndex]?.id ?? game.variants[0]?.id ?? game.id;
 }
 
 function getSelectedVariant(game: GameInfo, variantId: string): GameVariant | undefined {
@@ -314,22 +314,6 @@ function matchesGameSearch(game: GameInfo, query: string): boolean {
   ]
     .filter((value): value is string => typeof value === "string" && value.length > 0)
     .some((value) => value.toLowerCase().includes(normalizedQuery));
-}
-
-function chooseAccountLinked(game: GameInfo, selectedVariant?: GameVariant): boolean {
-  if (game.playType === "INSTALL_TO_PLAY") {
-    return false;
-  }
-  if (selectedVariant?.librarySelected) {
-    return true;
-  }
-  if (selectedVariant?.libraryStatus === "IN_LIBRARY") {
-    return true;
-  }
-  if (game.isInLibrary) {
-    return true;
-  }
-  return false;
 }
 
 function areStringArraysEqual(left: string[], right: string[]): boolean {
@@ -810,7 +794,6 @@ export function App(): JSX.Element {
   // Games State
   const [games, setGames] = useState<GameInfo[]>([]);
   const [libraryGames, setLibraryGames] = useState<GameInfo[]>([]);
-  const [source, setSource] = useState<GameSource>("main");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedGameId, setSelectedGameId] = useState("");
   const [variantByGameId, setVariantByGameId] = useState<Record<string, string>>({});
@@ -851,6 +834,7 @@ export function App(): JSX.Element {
     hideStreamButtons: false,
     showAntiAfkIndicator: true,
     showStatsOnLaunch: false,
+    hideServerSelector: false,
     controllerMode: false,
     controllerUiSounds: false,
     controllerBackgroundAnimations: false,
@@ -894,6 +878,7 @@ export function App(): JSX.Element {
   const [navbarActiveSession, setNavbarActiveSession] = useState<ActiveSessionInfo | null>(null);
   const [isResumingNavbarSession, setIsResumingNavbarSession] = useState(false);
   const [isTerminatingNavbarSession, setIsTerminatingNavbarSession] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
   const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
   const [queueModalData, setQueueModalData] = useState<PrintedWasteQueueData | null>(null);
@@ -1400,7 +1385,12 @@ export function App(): JSX.Element {
     if (!options?.keepLaunchError) {
       setLaunchError(null);
     }
-  }, [diagnosticsStore, resetStatsOverlayToPreference]);
+
+    // Clear Discord activity when returning to idle state
+    if (settings.discordRichPresence) {
+      void window.openNow.clearDiscordActivity();
+    }
+  }, [diagnosticsStore, resetStatsOverlayToPreference, settings.discordRichPresence]);
 
   const resetSignalingRecoveryState = useCallback((options?: {
     keepExplicitShutdown?: boolean;
@@ -2317,7 +2307,6 @@ export function App(): JSX.Element {
     setCatalogSelectedFilterIds((previous) => areStringArraysEqual(previous, catalogResult.selectedFilterIds) ? previous : catalogResult.selectedFilterIds);
     setCatalogTotalCount(catalogResult.totalCount);
     setCatalogSupportedCount(catalogResult.numberSupported);
-    setSource("main");
     setSelectedGameId((previous) => catalogResult.games.some((game) => game.id === previous) ? previous : (catalogResult.games[0]?.id ?? ""));
     applyVariantSelections(catalogResult.games);
   }, [applyVariantSelections]);
@@ -2366,8 +2355,8 @@ export function App(): JSX.Element {
     }
   }, [applyCatalogBrowseResult, applyVariantSelections, loadSubscriptionInfo, providerIdpId, catalogFilterKey, catalogSelectedSortId]);
 
-  // Logout handler
-  const handleLogout = useCallback(async () => {
+  const confirmLogout = useCallback(async () => {
+    setLogoutConfirmOpen(false);
     await window.openNow.logout();
     setAuthSession(null);
     setGames([]);
@@ -2384,12 +2373,16 @@ export function App(): JSX.Element {
     setCatalogSelectedFilterIds([]);
     setCatalogTotalCount(0);
     setCatalogSupportedCount(0);
-    setSource("main");
     setSelectedGameId("");
   }, [resetLaunchRuntime]);
 
+  // Logout handler
+  const handleLogout = useCallback(() => {
+    setLogoutConfirmOpen(true);
+  }, []);
+
   // Load games handler
-  const loadGames = useCallback(async (targetSource: GameSource) => {
+  const loadGames = useCallback(async (targetSource: "main" | "library") => {
     setIsLoadingGames(true);
     try {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
@@ -2412,7 +2405,6 @@ export function App(): JSX.Element {
 
       const result = await window.openNow.fetchLibraryGames({ token, providerStreamingBaseUrl: baseUrl });
       setLibraryGames(result);
-      setSource("library");
       setSelectedGameId((previous) => result.some((game) => game.id === previous) ? previous : (result[0]?.id ?? ""));
       applyVariantSelections(result);
     } catch (error) {
@@ -2423,14 +2415,14 @@ export function App(): JSX.Element {
   }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
   useEffect(() => {
-    if (!authSession || source !== "main") {
+    if (!authSession || currentPage !== "home") {
       return;
     }
     const handle = window.setTimeout(() => {
       void loadGames("main");
     }, searchQuery.trim() ? 220 : 0);
     return () => window.clearTimeout(handle);
-  }, [authSession, loadGames, searchQuery, source, catalogFilterKey, catalogSelectedSortId]);
+  }, [authSession, currentPage, loadGames, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
   const handleSelectGameVariant = useCallback((gameId: string, variantId: string): void => {
     setVariantByGameId((prev) => {
@@ -2859,6 +2851,20 @@ export function App(): JSX.Element {
       return;
     }
 
+    const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
+    const selectedVariant = getSelectedVariant(game, selectedVariantId);
+    const epicOwnershipError = getEpicOwnershipLaunchError(selectedVariant);
+    if (epicOwnershipError) {
+      setStreamingGame(game);
+      setStreamingStore(selectedVariant?.store ?? null);
+      setLaunchError({
+        stage: "queue",
+        title: epicOwnershipError.title,
+        description: epicOwnershipError.description,
+      });
+      return;
+    }
+
     launchInFlightRef.current = true;
     launchAbortRef.current = false;
     resetSignalingRecoveryState();
@@ -2869,12 +2875,10 @@ export function App(): JSX.Element {
     };
 
     setSessionStartedAtMs(null);
-  setRemoteStreamWarning(null);
-  setLocalSessionTimerWarning(null);
+    setRemoteStreamWarning(null);
+    setLocalSessionTimerWarning(null);
     setLaunchError(null);
     resetStatsOverlayToPreference();
-    const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
-    const selectedVariant = getSelectedVariant(game, selectedVariantId);
     startPlaytimeSession(game.id);
     updateLoadingStep("queue");
     setQueuePosition(undefined);
@@ -2986,12 +2990,11 @@ export function App(): JSX.Element {
       setQueuePosition(newSession.queuePosition);
 
       // Poll for readiness.
-      // Queue mode: no timeout - users wait indefinitely and see position updates.
-      // Setup/Starting mode: 180s timeout applies while machine is being allocated.
+      // Queue and setup/starting modes wait indefinitely until the session becomes ready
+      // or the launch is explicitly aborted. Some rigs take much longer than 180s.
       let finalSession: SessionInfo | null = null;
       let latestSession = newSession;
       let isInQueueMode = isSessionInQueue(newSession);
-      let setupTimeoutStartAt: number | null = isInQueueMode ? null : Date.now();
       let attempt = 0;
 
       while (true) {
@@ -3065,13 +3068,8 @@ export function App(): JSX.Element {
         setSession(mergedSession);
         setQueuePosition(mergedSession.queuePosition);
 
-        // Check if queue just cleared - transition from queue mode to setup mode
-        const wasInQueueMode = isInQueueMode;
+        // Check if queue just cleared so the loading UI can transition to setup mode.
         isInQueueMode = isSessionInQueue(mergedSession);
-        if (wasInQueueMode && !isInQueueMode) {
-          // Queue just cleared, start timeout counting from now.
-          setupTimeoutStartAt = Date.now();
-        }
 
         console.log(
           `Poll attempt ${attempt}: status=${mergedSession.status}, seatSetupStep=${mergedSession.seatSetupStep ?? "n/a"}, queuePosition=${mergedSession.queuePosition ?? "n/a"}, serverIp=${mergedSession.serverIp}, queueMode=${isInQueueMode}, adsRequired=${isSessionAdsRequired(mergedSession.adState)}`,
@@ -3089,14 +3087,9 @@ export function App(): JSX.Element {
           updateLoadingStep("setup");
         }
 
-        // Only check timeout when NOT in queue mode (i.e., during setup/starting)
-        if (!isInQueueMode && setupTimeoutStartAt !== null && Date.now() - setupTimeoutStartAt >= SESSION_READY_TIMEOUT_MS) {
-          throw new Error(`Session did not become ready in time (${Math.round(SESSION_READY_TIMEOUT_MS / 1000)}s)`);
-        }
       }
 
       // finalSession is guaranteed to be set here (we only exit the loop via break when session is ready)
-      // Timeout only applies during setup/starting phase, not during queue wait
 
       setQueuePosition(undefined);
       updateLoadingStep("connecting");
@@ -3155,6 +3148,11 @@ export function App(): JSX.Element {
     const isFreeUser = effectiveTier === "FREE";
     const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
     if (isAllianceServer) {
+      setQueueModalData(null);
+      void handlePlayGame(game);
+      return;
+    }
+    if (settings.hideServerSelector) {
       setQueueModalData(null);
       void handlePlayGame(game);
       return;
@@ -3220,6 +3218,74 @@ export function App(): JSX.Element {
     setQueueModalGame(null);
     setQueueModalData(null);
   }, []);
+
+  useEffect(() => {
+    if (!logoutConfirmOpen) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setLogoutConfirmOpen(false);
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void confirmLogout();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [confirmLogout, logoutConfirmOpen]);
+
+  const logoutConfirmModal = logoutConfirmOpen && typeof document !== "undefined"
+    ? createPortal(
+        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label="Log out confirmation">
+          <button
+            type="button"
+            className="logout-confirm-backdrop"
+            onClick={() => setLogoutConfirmOpen(false)}
+            aria-label="Cancel log out"
+          />
+          <div className="logout-confirm-card">
+            <div className="logout-confirm-kicker">Session</div>
+            <h3 className="logout-confirm-title">Log out of OpenNOW?</h3>
+            <p className="logout-confirm-text">
+              You&apos;re about to sign out of this device and return to guest mode.
+            </p>
+            <p className="logout-confirm-subtext">
+              Your cloud session data stays on the service. This just clears your local app session.
+            </p>
+            <div className="logout-confirm-actions">
+              <button
+                type="button"
+                className="logout-confirm-btn logout-confirm-btn-cancel"
+                onClick={() => setLogoutConfirmOpen(false)}
+              >
+                Stay Signed In
+              </button>
+              <button
+                type="button"
+                className="logout-confirm-btn logout-confirm-btn-confirm"
+                onClick={() => {
+                  void confirmLogout();
+                }}
+              >
+                Log Out
+              </button>
+            </div>
+            <div className="logout-confirm-hint">
+              <kbd>Enter</kbd> confirm · <kbd>Esc</kbd> cancel
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )
+    : null;
 
   const handleResumeFromNavbar = useCallback(async () => {
     if (
@@ -3979,17 +4045,6 @@ export function App(): JSX.Element {
         {currentPage === "home" && (
           <HomePage
             games={filteredGames}
-            source="main"
-            onSourceChange={(nextSource) => {
-              if (nextSource === "library") {
-                setCurrentPage("library");
-                if (libraryGames.length === 0 && authSession) {
-                  void loadGames("library");
-                }
-                return;
-              }
-              void loadGames("main");
-            }}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             onPlayGame={handleInitiatePlay}
@@ -4098,6 +4153,7 @@ export function App(): JSX.Element {
         </div>
       )}
 
+      {logoutConfirmModal}
       {queueModalGame && streamStatus === "idle" && (
         <QueueServerSelectModal
           game={queueModalGame}

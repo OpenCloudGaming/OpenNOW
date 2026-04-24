@@ -51,6 +51,7 @@ class RefreshScheduler {
     this.refreshTimer = setInterval(() => {
       void this.performRefresh();
     }, this.refreshIntervalMs);
+    this.refreshTimer.unref?.();
   }
 
   stop(): void {
@@ -148,6 +149,7 @@ class RefreshScheduler {
       this.refreshTimer = setInterval(() => {
         void this.performRefresh();
       }, this.refreshIntervalMs);
+      this.refreshTimer.unref?.();
     }
   }
 }

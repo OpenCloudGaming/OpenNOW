@@ -87,6 +87,7 @@ export class GfnSignalingClient {
     this.heartbeatTimer = setInterval(() => {
       this.sendJson({ hb: 1 });
     }, 5000);
+    this.heartbeatTimer.unref?.();
   }
 
   private clearHeartbeat(): void {

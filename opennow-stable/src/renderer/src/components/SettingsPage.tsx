@@ -2382,6 +2382,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                   <div className="settings-row">
                     <label className="settings-label">
+                      Hide Server Selector
+                      <span className="settings-hint">Skip the free-tier server selection dialog and always launch with OpenNOW's default routing.</span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.hideServerSelector}
+                        onChange={(e) => handleChange("hideServerSelector", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
+                  <div className="settings-row">
+                    <label className="settings-label">
                       Show Anti-AFK Indicator
                       <span className="settings-hint">Show the ANTI-AFK ON badge while Anti-AFK is enabled during streaming.</span>
                     </label>
