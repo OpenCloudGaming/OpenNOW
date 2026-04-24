@@ -373,8 +373,11 @@ function defaultDiagnostics(): StreamDiagnostics {
     connectedGamepads: 0,
     resolution: "",
     codec: "",
+    hardwareAcceleration: "",
+    colorCodec: "",
     isHdr: false,
     bitrateKbps: 0,
+    targetBitrateKbps: 0,
     decodeFps: 0,
     renderFps: 0,
     packetsLost: 0,
@@ -902,6 +905,7 @@ export function App(): JSX.Element {
   const codecTestPromiseRef = useRef<Promise<CodecTestResult[] | null> | null>(null);
   const codecStartupTestAttemptedRef = useRef(false);
   const navbarSessionActionInFlightRef = useRef<"resume" | "terminate" | null>(null);
+  const nativeStreamingRef = useRef(false);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
     setShowStatsOverlay(settings.showStatsOnLaunch);
@@ -1354,6 +1358,7 @@ export function App(): JSX.Element {
     setLocalSessionTimerWarning(null);
     setEscHoldReleaseIndicator({ visible: false, progress: 0 });
     resetStatsOverlayToPreference();
+    nativeStreamingRef.current = false;
     diagnosticsStore.set(defaultDiagnostics());
 
     if (!options?.keepStreamingContext) {
@@ -2077,7 +2082,8 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     const isSessionConnecting = streamStatus === "connecting" || streamStatus === "streaming";
-    if (!settings.autoFullScreen || !isSessionConnecting) {
+    const isNativeStreamerSession = settings.streamClientMode === "native" || nativeStreamingRef.current;
+    if (!settings.autoFullScreen || !isSessionConnecting || isNativeStreamerSession) {
       autoFullscreenRequestedRef.current = false;
       return;
     }
@@ -2088,7 +2094,7 @@ export function App(): JSX.Element {
 
     autoFullscreenRequestedRef.current = true;
     void setSessionFullscreen(true);
-  }, [setSessionFullscreen, settings.autoFullScreen, streamStatus]);
+  }, [setSessionFullscreen, settings.autoFullScreen, settings.streamClientMode, streamStatus]);
 
   // Anti-AFK interval
   useEffect(() => {
@@ -2266,6 +2272,7 @@ export function App(): JSX.Element {
           }
 
           if (streamClient) {
+            nativeStreamingRef.current = false;
             await streamClient.handleOffer(event.sdp, activeSession, {
               codec: settings.codec,
               colorQuality: settings.colorQuality,
@@ -2278,8 +2285,23 @@ export function App(): JSX.Element {
           }
         } else if (event.type === "native-stream-started") {
           console.log("[App] Native streamer started:", event.message ?? "");
+          nativeStreamingRef.current = true;
+          try {
+            if (document.fullscreenElement) {
+              await document.exitFullscreen();
+            }
+            await window.openNow.setFullscreen(false);
+          } catch {
+            // Native rendering owns fullscreen; failing to leave Electron fullscreen is non-fatal.
+          }
           const streamClient = ensureStreamClient();
-          streamClient?.activateNativeInput(nativeInputProtocolVersionRef.current ?? undefined);
+          streamClient?.activateNativeInput(nativeInputProtocolVersionRef.current ?? undefined, {
+            codec: settings.codec,
+            colorQuality: settings.colorQuality,
+            resolution: settings.resolution,
+            fps: settings.fps,
+            maxBitrateKbps: settings.maxBitrateMbps * 1000,
+          });
           setLaunchError(null);
           setStreamStatus("streaming");
         } else if (event.type === "native-input-ready") {
@@ -2289,6 +2311,7 @@ export function App(): JSX.Element {
           streamClient?.setNativeInputProtocolVersion(event.protocolVersion);
         } else if (event.type === "native-stream-stopped") {
           console.warn("[App] Native streamer stopped:", event.reason ?? "stopped");
+          nativeStreamingRef.current = false;
           nativeInputProtocolVersionRef.current = null;
           clientRef.current?.dispose();
           clientRef.current = null;
@@ -2298,6 +2321,7 @@ export function App(): JSX.Element {
           await clientRef.current?.addRemoteCandidate(event.candidate);
         } else if (event.type === "disconnected") {
           console.warn("Signaling disconnected:", event.reason);
+          nativeStreamingRef.current = false;
           nativeInputProtocolVersionRef.current = null;
           clientRef.current?.dispose();
           clientRef.current = null;

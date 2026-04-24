@@ -183,11 +183,19 @@ function StreamStatsHud({
   serverRegion?: string;
 }): JSX.Element {
   const stats = useStreamDiagnosticsStore(diagnosticsStore);
-  const bitrateMbps = (stats.bitrateKbps / 1000).toFixed(1);
+  const hasLiveBitrate = stats.bitrateKbps > 0;
+  const bitrateKbps = hasLiveBitrate ? stats.bitrateKbps : stats.targetBitrateKbps;
+  const bitrateMbps = bitrateKbps > 0 ? (bitrateKbps / 1000).toFixed(1) : "--";
+  const bitrateLabel = hasLiveBitrate
+    ? `${bitrateMbps} Mbps`
+    : stats.targetBitrateKbps > 0
+      ? `Target ${bitrateMbps} Mbps`
+      : "-- Mbps";
   const hasResolution = stats.nativeRendererActive || stats.resolution !== "";
-  const primaryText = stats.nativeRendererActive
-    ? "Native renderer"
-    : `${stats.resolution} · ${stats.decodeFps}fps`;
+  const displayFps = Math.max(stats.decodeFps, stats.renderFps);
+  const primaryText = hasResolution
+    ? `${stats.resolution || "Native renderer"}${displayFps > 0 ? ` · ${displayFps}fps` : ""}`
+    : "";
   const hasCodec = stats.codec && stats.codec !== "";
   const regionLabel = stats.serverRegion || serverRegion || "";
   const decodeColor = getTimingColor(stats.decodeTimeMs, 8, 16);
@@ -220,7 +228,7 @@ function StreamStatsHud({
           {hasCodec ? stats.codec : "N/A"}
           {stats.isHdr && <span className="sv-stats-hdr">HDR</span>}
         </span>
-        <span className="sv-stats-sub-right">{bitrateMbps} Mbps</span>
+        <span className="sv-stats-sub-right">{bitrateLabel}</span>
       </div>
 
       <div className="sv-stats-metrics">
@@ -257,6 +265,12 @@ function StreamStatsHud({
       <div className="sv-stats-foot">
         Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · PR peak {(stats.partiallyReliableInputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms
       </div>
+
+      {(stats.hardwareAcceleration || stats.colorCodec) && (
+        <div className="sv-stats-foot">
+          {[stats.hardwareAcceleration, stats.colorCodec].filter(Boolean).join(" · ")}
+        </div>
+      )}
 
       {(stats.decoderPressureActive || stats.decoderRecoveryAttempts > 0) && (
         <div className="sv-stats-foot">
@@ -506,13 +520,13 @@ function VideoFocusOnReady({
   isConnecting: boolean;
   videoRef: React.RefObject<HTMLVideoElement | null>;
 }): null {
-  const hasResolution = useStreamDiagnosticsSelector(
+  const shouldFocusVideo = useStreamDiagnosticsSelector(
     diagnosticsStore,
-    (stats) => stats.resolution !== "",
+    (stats) => stats.resolution !== "" && !stats.nativeRendererActive,
   );
 
   useEffect(() => {
-    if (!isConnecting && videoRef.current && hasResolution) {
+    if (!isConnecting && videoRef.current && shouldFocusVideo) {
       const timer = window.setTimeout(() => {
         if (videoRef.current && document.activeElement !== videoRef.current) {
           videoRef.current.focus();
@@ -521,7 +535,7 @@ function VideoFocusOnReady({
       }, 100);
       return () => clearTimeout(timer);
     }
-  }, [hasResolution, isConnecting, videoRef]);
+  }, [isConnecting, shouldFocusVideo, videoRef]);
 
   return null;
 }
@@ -698,6 +712,11 @@ export function StreamView({
     typeof window.openNow?.listScreenshots === "function" &&
     typeof window.openNow?.deleteScreenshot === "function" &&
     typeof window.openNow?.saveScreenshotAs === "function";
+  const nativeRendererActive = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => stats.nativeRendererActive,
+  );
+  const showStatsHud = showStats && !nativeRendererActive && !isConnecting;
 
   // Recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -2020,8 +2039,8 @@ export function StreamView({
         </div>
       )}
 
-      {/* Stats HUD (top-right) */}
-      {showStats && !isConnecting && (
+      {/* Stats HUD */}
+      {showStatsHud && (
         <StreamStatsHud diagnosticsStore={diagnosticsStore} serverRegion={serverRegion} />
       )}
 

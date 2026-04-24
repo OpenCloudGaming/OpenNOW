@@ -59,6 +59,32 @@ function hevcPreferredProfileId(colorQuality: ColorQuality): 1 | 2 {
   return colorQuality.startsWith("10bit") ? 2 : 1;
 }
 
+function describeColorQuality(colorQuality: ColorQuality): string {
+  switch (colorQuality) {
+    case "8bit_420":
+      return "8-bit 4:2:0";
+    case "8bit_444":
+      return "8-bit 4:4:4";
+    case "10bit_420":
+      return "10-bit 4:2:0";
+    case "10bit_444":
+      return "10-bit 4:4:4";
+    default:
+      return colorQuality;
+  }
+}
+
+function describeNativeHardwareAcceleration(): string {
+  const platform = navigator.platform.toLowerCase();
+  if (platform.includes("win")) {
+    return "GStreamer D3D11/DXVA";
+  }
+  if (platform.includes("mac")) {
+    return "GStreamer VideoToolbox";
+  }
+  return "GStreamer VAAPI/V4L2";
+}
+
 export interface StreamDiagnostics {
   // Connection state
   connectionState: RTCPeerConnectionState | "closed";
@@ -69,8 +95,11 @@ export interface StreamDiagnostics {
   // Video stats
   resolution: string;
   codec: string;
+  hardwareAcceleration: string;
+  colorCodec: string;
   isHdr: boolean;
   bitrateKbps: number;
+  targetBitrateKbps: number;
   decodeFps: number;
   renderFps: number;
 
@@ -563,8 +592,11 @@ export class GfnWebRtcClient {
     connectedGamepads: 0,
     resolution: "",
     codec: "",
+    hardwareAcceleration: "Chromium GPU decode",
+    colorCodec: "",
     isHdr: false,
     bitrateKbps: 0,
+    targetBitrateKbps: 0,
     decodeFps: 0,
     renderFps: 0,
     packetsLost: 0,
@@ -611,6 +643,7 @@ export class GfnWebRtcClient {
     // Detect GPU once on construction
     this.gpuType = detectGpuType();
     this.diagnostics.gpuType = this.gpuType;
+    this.diagnostics.hardwareAcceleration = "Chromium GPU decode";
 
     // Initialize microphone manager if mode is enabled
     const micMode = options.microphoneMode ?? "disabled";
@@ -840,8 +873,11 @@ export class GfnWebRtcClient {
       connectedGamepads: 0,
       resolution: "",
       codec: "",
+      hardwareAcceleration: "Chromium GPU decode",
+      colorCodec: "",
       isHdr: false,
       bitrateKbps: 0,
+      targetBitrateKbps: 0,
       decodeFps: 0,
       renderFps: 0,
       packetsLost: 0,
@@ -886,6 +922,32 @@ export class GfnWebRtcClient {
     this.diagnostics.partiallyReliableInputOpen = false;
     this.diagnostics.mouseMoveTransport = "reliable";
     this.emitStats();
+  }
+
+  private applyStreamSettingsDiagnostics(
+    settings: OfferSettings,
+    codec: VideoCodec,
+    nativeRendererActive: boolean,
+  ): void {
+    this.currentCodec = codec;
+    this.currentResolution = settings.resolution;
+    this.isHdr = settings.colorQuality.startsWith("10bit");
+    this.negotiatedMaxBitrateKbps = Math.max(
+      GfnWebRtcClient.DECODER_MIN_RECOVERY_BITRATE_KBPS,
+      Math.floor(settings.maxBitrateKbps),
+    );
+    this.currentBitrateCeilingKbps = this.negotiatedMaxBitrateKbps;
+
+    this.diagnostics.resolution = settings.resolution;
+    this.diagnostics.codec = codec;
+    this.diagnostics.hardwareAcceleration = nativeRendererActive
+      ? describeNativeHardwareAcceleration()
+      : "Chromium GPU decode";
+    this.diagnostics.colorCodec = describeColorQuality(settings.colorQuality);
+    this.diagnostics.isHdr = this.isHdr;
+    this.diagnostics.targetBitrateKbps = this.negotiatedMaxBitrateKbps;
+    this.diagnostics.decodeFps = settings.fps;
+    this.diagnostics.renderFps = settings.fps;
   }
 
   private closeDataChannels(): void {
@@ -1575,7 +1637,7 @@ export class GfnWebRtcClient {
     this.inputEncoder.resetGamepadSequences();
   }
 
-  public activateNativeInput(protocolVersion?: number): void {
+  public activateNativeInput(protocolVersion?: number, settings?: OfferSettings): void {
     this.cleanupPeerConnection();
     this.nativeInputActive = true;
     this.inputReady = true;
@@ -1590,7 +1652,12 @@ export class GfnWebRtcClient {
     this.diagnostics.connectionState = "connected";
     this.diagnostics.inputReady = true;
     this.diagnostics.nativeRendererActive = true;
-    this.diagnostics.codec = "GStreamer";
+    if (settings) {
+      this.applyStreamSettingsDiagnostics(settings, settings.codec, true);
+    } else {
+      this.diagnostics.hardwareAcceleration = describeNativeHardwareAcceleration();
+      this.diagnostics.codec = this.currentCodec || "Native";
+    }
     this.diagnostics.lagReason = "stable";
     this.diagnostics.lagReasonDetail = "Native streamer input bridge active";
     this.diagnostics.partiallyReliableInputOpen = true;
@@ -1598,10 +1665,9 @@ export class GfnWebRtcClient {
       ? "partially_reliable"
       : "reliable";
     this.emitStats();
-    this.installInputCapture(this.options.videoElement);
-    this.setupGamepadPolling();
-    this.log(`Native input forwarding active (protocol v${nativeProtocolVersion})`);
-    void this.attemptAutoPointerLock(this.shouldAutoFullscreen()).catch(() => {});
+    this.detachInputCapture();
+    this.inputPaused = false;
+    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller polling is handled by the native renderer.`);
   }
 
   public setNativeInputProtocolVersion(protocolVersion: number): void {
@@ -1617,9 +1683,6 @@ export class GfnWebRtcClient {
     this.lastGamepadSendMs = 0;
     this.log(`Native input protocol updated to v${version}`);
 
-    if (this.nativeInputActive) {
-      this.setupGamepadPolling();
-    }
   }
 
   private attachTrack(track: MediaStreamTrack): void {
@@ -3653,6 +3716,8 @@ export class GfnWebRtcClient {
       this.log(`Warning: ${settings.codec} not reported in browser codec list; forcing requested codec anyway`);
     }
     this.log(`Effective codec: ${effectiveCodec} (preferred HEVC profile-id=${preferredHevcProfileId})`);
+    this.applyStreamSettingsDiagnostics(settings, effectiveCodec, false);
+    this.emitStats();
     const filteredOffer = preferCodec(processedOffer, effectiveCodec, {
       preferHevcProfileId: preferredHevcProfileId,
     });
