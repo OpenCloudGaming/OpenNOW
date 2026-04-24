@@ -1,5 +1,6 @@
 use crate::backend::{
-    prepare_native_offer, prepared_offer_events, BackendReply, NativeStreamerBackend,
+    normalize_bitrate_kbps, prepare_native_offer, prepared_offer_events,
+    update_context_bitrate_limit, BackendReply, NativeStreamerBackend,
 };
 use crate::input::{
     GamepadInput, InputEncoder, KeyboardPayload, MouseButtonPayload, MouseMovePayload,
@@ -4026,6 +4027,26 @@ impl NativeStreamerBackend for GstreamerBackend {
         }
 
         BackendReply::response(Response::Ok { id: command.id })
+    }
+
+    fn update_bitrate_limit(&mut self, command: CommandEnvelope) -> BackendReply {
+        let Some(max_bitrate_kbps) = command.max_bitrate_kbps else {
+            return BackendReply::response(missing_field(&command.id, "maxBitrateKbps"));
+        };
+
+        let max_bitrate_kbps = normalize_bitrate_kbps(max_bitrate_kbps);
+        update_context_bitrate_limit(&mut self.active_context, max_bitrate_kbps);
+
+        BackendReply {
+            events: vec![Event::Log {
+                level: "info",
+                message: format!(
+                    "Updated native bitrate limit to {max_bitrate_kbps} Kbps. The active GFN server bitrate cap is negotiated in NVST SDP and will apply on the next native offer/reconnect."
+                ),
+            }],
+            response: Some(Response::Ok { id: command.id }),
+            should_continue: true,
+        }
     }
 
     fn stop(&mut self, command: CommandEnvelope) -> BackendReply {

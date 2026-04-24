@@ -19,10 +19,13 @@ pub trait NativeStreamerBackend {
     fn add_remote_ice(&mut self, command: CommandEnvelope) -> BackendReply;
     fn send_input(&mut self, command: CommandEnvelope) -> BackendReply;
     fn update_render_surface(&mut self, command: CommandEnvelope) -> BackendReply;
+    fn update_bitrate_limit(&mut self, command: CommandEnvelope) -> BackendReply;
     fn stop(&mut self, command: CommandEnvelope) -> BackendReply;
 }
 
 const BACKEND_ENV: &str = "OPENNOW_NATIVE_STREAMER_BACKEND";
+const MIN_BITRATE_KBPS: u32 = 5_000;
+const MAX_BITRATE_KBPS: u32 = 150_000;
 
 pub fn create_backend(event_sender: Option<Sender<Event>>) -> Box<dyn NativeStreamerBackend> {
     let requested = env::var(BACKEND_ENV)
@@ -224,6 +227,23 @@ pub fn prepared_offer_events(prepared: &PreparedNativeOffer) -> Vec<Event> {
     events
 }
 
+pub fn normalize_bitrate_kbps(value: u32) -> u32 {
+    value.clamp(MIN_BITRATE_KBPS, MAX_BITRATE_KBPS)
+}
+
+pub fn bitrate_kbps_to_mbps(value: u32) -> u32 {
+    normalize_bitrate_kbps(value).div_ceil(1000)
+}
+
+pub fn update_context_bitrate_limit(
+    context: &mut Option<NativeStreamerSessionContext>,
+    max_bitrate_kbps: u32,
+) {
+    if let Some(context) = context {
+        context.settings.max_bitrate_mbps = bitrate_kbps_to_mbps(max_bitrate_kbps);
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct StubBackend {
     active_context: Option<NativeStreamerSessionContext>,
@@ -332,6 +352,26 @@ impl NativeStreamerBackend for StubBackend {
         }
 
         BackendReply::response(Response::Ok { id: command.id })
+    }
+
+    fn update_bitrate_limit(&mut self, command: CommandEnvelope) -> BackendReply {
+        let Some(max_bitrate_kbps) = command.max_bitrate_kbps else {
+            return BackendReply::response(missing_field(&command.id, "maxBitrateKbps"));
+        };
+
+        let max_bitrate_kbps = normalize_bitrate_kbps(max_bitrate_kbps);
+        update_context_bitrate_limit(&mut self.active_context, max_bitrate_kbps);
+
+        BackendReply {
+            events: vec![Event::Log {
+                level: "info",
+                message: format!(
+                    "Updated native bitrate limit to {max_bitrate_kbps} Kbps for the next native offer."
+                ),
+            }],
+            response: Some(Response::Ok { id: command.id }),
+            should_continue: true,
+        }
     }
 
     fn stop(&mut self, command: CommandEnvelope) -> BackendReply {
@@ -464,6 +504,14 @@ mod tests {
                 resolution: "bad".to_owned(),
             },
         );
+    }
+
+    #[test]
+    fn normalizes_native_bitrate_limits_to_slider_bounds() {
+        assert_eq!(normalize_bitrate_kbps(1_000), 5_000);
+        assert_eq!(normalize_bitrate_kbps(75_000), 75_000);
+        assert_eq!(normalize_bitrate_kbps(250_000), 150_000);
+        assert_eq!(bitrate_kbps_to_mbps(75_500), 76);
     }
 
     #[test]

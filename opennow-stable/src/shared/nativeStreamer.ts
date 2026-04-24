@@ -60,6 +60,11 @@ export type NativeStreamerCommand =
     }
   | {
       id: string;
+      type: "bitrate";
+      maxBitrateKbps: number;
+    }
+  | {
+      id: string;
       type: "stop";
       reason?: string;
     };

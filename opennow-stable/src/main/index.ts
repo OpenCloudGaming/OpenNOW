@@ -720,6 +720,33 @@ function isNativeStreamerSelected(): boolean {
   return settingsManager?.get("streamClientMode") === "native";
 }
 
+function normalizeMaxBitrateMbps(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+
+  return Math.min(150, Math.max(5, Math.round(value)));
+}
+
+function updateNativeStreamerBitrateSetting(value: unknown): void {
+  const maxBitrateMbps = normalizeMaxBitrateMbps(value);
+  if (maxBitrateMbps === null) {
+    return;
+  }
+
+  if (nativeStreamerContext) {
+    nativeStreamerContext = {
+      ...nativeStreamerContext,
+      settings: {
+        ...nativeStreamerContext.settings,
+        maxBitrateMbps,
+      },
+    };
+  }
+
+  nativeStreamerManager?.updateBitrateLimit(maxBitrateMbps * 1000);
+}
+
 function nativeWindowHandleToHex(window: BrowserWindow): string | null {
   const handle = window.getNativeWindowHandle();
   if (handle.byteLength >= 8) {
@@ -1731,6 +1758,9 @@ function registerIpcHandlers(): void {
         );
         nativeStreamerContext = null;
         nativeStreamerFallbackSessionId = null;
+      }
+      if (key === "maxBitrateMbps") {
+        updateNativeStreamerBitrateSetting(value);
       }
       if (key === "discordRichPresence") {
         if (value) {

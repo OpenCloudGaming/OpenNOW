@@ -24,6 +24,8 @@ pub struct CommandEnvelope {
     #[serde(default)]
     pub surface: Option<NativeRenderSurface>,
     #[serde(default)]
+    pub max_bitrate_kbps: Option<u32>,
+    #[serde(default)]
     pub reason: Option<String>,
 }
 

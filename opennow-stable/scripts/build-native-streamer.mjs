@@ -15,10 +15,15 @@ const packageBinaryDir = join(crateRoot, "bin");
 const packageBinary = join(packageBinaryDir, exeName);
 
 const cargoArgs = ["build", "--release", "--manifest-path", manifestPath];
-const nativeFeatures = process.env.OPENNOW_NATIVE_STREAMER_FEATURES?.trim();
-if (nativeFeatures) {
+const nativeFeatures = process.env.OPENNOW_NATIVE_STREAMER_FEATURES?.trim() || "gstreamer";
+if (nativeFeatures && nativeFeatures.toLowerCase() !== "none") {
   cargoArgs.push("--features", nativeFeatures);
 }
+console.log(
+  nativeFeatures.toLowerCase() === "none"
+    ? "Building native streamer without optional features."
+    : `Building native streamer with features: ${nativeFeatures}`,
+);
 
 const result = spawnSync("cargo", cargoArgs, {
   cwd: repoRoot,

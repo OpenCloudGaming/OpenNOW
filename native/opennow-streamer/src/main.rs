@@ -85,6 +85,9 @@ fn handle_command(
         "surface" => {
             return write_reply(backend.update_render_surface(command));
         }
+        "bitrate" => {
+            return write_reply(backend.update_bitrate_limit(command));
+        }
         "stop" => {
             return write_reply(backend.stop(command));
         }

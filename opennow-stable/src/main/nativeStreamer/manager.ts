@@ -46,10 +46,15 @@ interface PendingRequest {
   timeout: NodeJS.Timeout;
 }
 
-const START_TIMEOUT_MS = 8000;
+const HELLO_TIMEOUT_MS = 10000;
+const CONTROL_TIMEOUT_MS = 8000;
+const SESSION_START_TIMEOUT_MS = 45000;
+const SURFACE_UPDATE_TIMEOUT_MS = 15000;
 const OFFER_TIMEOUT_MS = 20000;
 const STOP_TIMEOUT_MS = 1200;
 const MAX_INPUT_STDIN_BUFFER_BYTES = 64 * 1024;
+const MIN_NATIVE_BITRATE_KBPS = 5_000;
+const MAX_NATIVE_BITRATE_KBPS = 150_000;
 
 function nativeStreamerExecutableName(): string {
   return process.platform === "win32" ? "opennow-streamer.exe" : "opennow-streamer";
@@ -65,6 +70,17 @@ function isExistingFile(path: string): boolean {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeBitrateKbps(value: number): number {
+  if (!Number.isFinite(value)) {
+    return MIN_NATIVE_BITRATE_KBPS;
+  }
+
+  return Math.min(
+    MAX_NATIVE_BITRATE_KBPS,
+    Math.max(MIN_NATIVE_BITRATE_KBPS, Math.round(value)),
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -115,7 +131,7 @@ export class NativeStreamerManager {
       await this.request({
         type: "start",
         context,
-      }, START_TIMEOUT_MS);
+      }, SESSION_START_TIMEOUT_MS);
       this.activeSessionId = context.session.sessionId;
     }
 
@@ -156,7 +172,7 @@ export class NativeStreamerManager {
     await this.request({
       type: "remote-ice",
       candidate,
-    }, START_TIMEOUT_MS);
+    }, CONTROL_TIMEOUT_MS);
   }
 
   sendInput(input: NativeStreamerInputPacket): void {
@@ -206,6 +222,19 @@ export class NativeStreamerManager {
   updateSurface(surface: NativeRenderSurface): void {
     this.lastSurface = surface;
     void this.flushSurfaceUpdate();
+  }
+
+  updateBitrateLimit(maxBitrateKbps: number): void {
+    if (!this.child || !this.activeSessionId) {
+      return;
+    }
+
+    void this.request({
+      type: "bitrate",
+      maxBitrateKbps: normalizeBitrateKbps(maxBitrateKbps),
+    }, CONTROL_TIMEOUT_MS).catch((error) => {
+      console.warn("[NativeStreamer] Failed to update native bitrate limit:", error);
+    });
   }
 
   async stop(reason = "stopped"): Promise<void> {
@@ -290,7 +319,7 @@ export class NativeStreamerManager {
     const response = await this.request({
       type: "hello",
       protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
-    }, START_TIMEOUT_MS);
+    }, HELLO_TIMEOUT_MS);
 
     if (response.type !== "ready") {
       throw new Error(`Native streamer returned ${response.type} instead of ready.`);
@@ -400,7 +429,7 @@ export class NativeStreamerManager {
       const surface = this.lastSurface;
 
       try {
-        await this.request({ type: "surface", surface }, START_TIMEOUT_MS);
+        await this.request({ type: "surface", surface }, SURFACE_UPDATE_TIMEOUT_MS);
       } catch (error) {
         console.warn("[NativeStreamer] Failed to update native render surface:", error);
         break;
