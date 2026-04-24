@@ -116,9 +116,10 @@ impl VideoStallTracker {
         if stall_ms < next_due_ms {
             return VideoStallAction::None;
         }
-        if self.last_request_ms.is_some_and(|last| {
-            now_ms.saturating_sub(last) < VIDEO_STALL_MIN_KEYFRAME_REQUEST_MS
-        }) {
+        if self
+            .last_request_ms
+            .is_some_and(|last| now_ms.saturating_sub(last) < VIDEO_STALL_MIN_KEYFRAME_REQUEST_MS)
+        {
             return VideoStallAction::None;
         }
 
@@ -158,7 +159,10 @@ impl VideoLivenessState {
     }
 
     fn now_ms(&self) -> u64 {
-        self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+        self.started_at
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64
     }
 
     fn record_decoded_buffer(&self) {
@@ -279,6 +283,7 @@ enum RtpVideoChainRole {
     Parser,
     PreDecodeQueue,
     Decoder,
+    PostDecodeConverter,
     PostDecodeCapsFilter,
     PostDecodeQueue,
     Sink,
@@ -311,6 +316,15 @@ impl RtpVideoApi {
             Self::D3D11 => Some("video/x-raw(memory:D3D11Memory)"),
             Self::D3D12 => Some("video/x-raw(memory:D3D12Memory)"),
             _ => None,
+        }
+    }
+
+    fn post_decode_converter_factory(self) -> Option<&'static str> {
+        match self {
+            Self::D3D11 | Self::D3D12 => None,
+            // Non-D3D hardware decoders are not guaranteed to negotiate directly with every
+            // platform sink. Keep these paths reliable with an explicit raw-video conversion stage.
+            Self::VideoToolbox | Self::Vaapi | Self::V4L2 | Self::Software => Some("videoconvert"),
         }
     }
 
@@ -360,7 +374,9 @@ impl RtpVideoApi {
     fn sink_fallback_factories(self) -> &'static [&'static str] {
         match self {
             Self::VideoToolbox => &["osxvideosink", "autovideosink"],
-            Self::Vaapi | Self::V4L2 => &["waylandsink", "ximagesink", "xvimagesink", "autovideosink"],
+            Self::Vaapi | Self::V4L2 => {
+                &["waylandsink", "ximagesink", "xvimagesink", "autovideosink"]
+            }
             Self::Software => &["glimagesink", "waylandsink", "ximagesink", "xvimagesink"],
             _ => &[],
         }
@@ -3345,7 +3361,10 @@ fn start_gstreamer_bus_diagnostics(
                 gst::MessageView::Latency(_) => send_log(
                     &event_sender,
                     "debug",
-                    format!("GStreamer bus latency update from {}.", message_src_name(&message)),
+                    format!(
+                        "GStreamer bus latency update from {}.",
+                        message_src_name(&message)
+                    ),
                 ),
                 gst::MessageView::StateChanged(state) => {
                     if message
@@ -3664,6 +3683,12 @@ fn rtp_video_chain_definition(
             memory_caps,
         ));
     }
+    if let Some(converter) = video_api.post_decode_converter_factory() {
+        specs.push(RtpVideoChainSpec::new(
+            converter,
+            RtpVideoChainRole::PostDecodeConverter,
+        ));
+    }
     specs.push(RtpVideoChainSpec::new(
         "queue",
         RtpVideoChainRole::PostDecodeQueue,
@@ -3695,7 +3720,11 @@ fn preferred_rtp_video_apis() -> Vec<RtpVideoApi> {
 fn default_rtp_video_api_priority() -> Vec<RtpVideoApi> {
     #[cfg(target_os = "windows")]
     {
-        vec![RtpVideoApi::D3D12, RtpVideoApi::D3D11, RtpVideoApi::Software]
+        vec![
+            RtpVideoApi::D3D12,
+            RtpVideoApi::D3D11,
+            RtpVideoApi::Software,
+        ]
     }
     #[cfg(target_os = "macos")]
     {
@@ -3776,6 +3805,9 @@ fn configure_rtp_video_chain_element(element: &gst::Element, spec: RtpVideoChain
             if let Some(caps) = spec.caps.and_then(|caps| caps.parse::<gst::Caps>().ok()) {
                 element.set_property("caps", &caps);
             }
+        }
+        RtpVideoChainRole::PostDecodeConverter => {
+            set_property_if_supported(element, "qos", false);
         }
         RtpVideoChainRole::PostDecodeQueue => {
             configure_queue_for_low_latency(element, "video");
@@ -3863,7 +3895,11 @@ fn link_rtp_video_pad(
                     (spec.role == RtpVideoChainRole::PostDecodeQueue).then_some(element)
                 })
         {
-            watch_video_decoded_rate(post_decode_queue, event_sender, Some(video_liveness.clone()));
+            watch_video_decoded_rate(
+                post_decode_queue,
+                event_sender,
+                Some(video_liveness.clone()),
+            );
         }
         render_state.set_video_sink(sink.clone(), event_sender);
         install_present_limiter(sink, present_max_fps, event_sender);
@@ -3914,6 +3950,11 @@ fn format_video_chain_selection(
         .find(|spec| spec.role == RtpVideoChainRole::Sink)
         .map(|spec| spec.factory)
         .unwrap_or("unknown");
+    let converter = specs
+        .iter()
+        .find(|spec| spec.role == RtpVideoChainRole::PostDecodeConverter)
+        .map(|spec| spec.factory)
+        .unwrap_or("none");
     let memory = specs
         .iter()
         .find(|spec| spec.role == RtpVideoChainRole::PostDecodeCapsFilter)
@@ -3926,7 +3967,7 @@ fn format_video_chain_selection(
     };
 
     format!(
-        "Selected native {acceleration} video path for RTP {encoding}: backend={}, decoder={decoder}, renderer={sink}, memory={memory}.",
+        "Selected native {acceleration} video path for RTP {encoding}: backend={}, decoder={decoder}, converter={converter}, renderer={sink}, memory={memory}.",
         video_api.label()
     )
 }
@@ -4898,20 +4939,27 @@ mod tests {
         let vt =
             rtp_video_chain_definition("H264", RtpVideoApi::VideoToolbox).expect("VideoToolbox");
         assert_eq!(vt[3].factory, "vtdec");
+        assert!(vt.iter().any(|spec| spec.factory == "videoconvert"));
         assert_eq!(vt.last().map(|spec| spec.factory), Some("glimagesink"));
         assert!(!vt.iter().any(|spec| spec.factory == "capsfilter"));
 
         let vaapi = rtp_video_chain_definition("AV1", RtpVideoApi::Vaapi).expect("VAAPI AV1");
         assert_eq!(vaapi[3].factory, "vaav1dec");
+        assert!(vaapi.iter().any(|spec| spec.factory == "videoconvert"));
         assert_eq!(vaapi.last().map(|spec| spec.factory), Some("glimagesink"));
 
         let v4l2 = rtp_video_chain_definition("H265", RtpVideoApi::V4L2).expect("V4L2 H265");
         assert_eq!(v4l2[3].factory, "v4l2slh265dec");
+        assert!(v4l2.iter().any(|spec| spec.factory == "videoconvert"));
 
         let software =
             rtp_video_chain_definition("H264", RtpVideoApi::Software).expect("software H264");
         assert_eq!(software[3].factory, "avdec_h264");
-        assert_eq!(software.last().map(|spec| spec.factory), Some("autovideosink"));
+        assert!(software.iter().any(|spec| spec.factory == "videoconvert"));
+        assert_eq!(
+            software.last().map(|spec| spec.factory),
+            Some("autovideosink")
+        );
     }
 
     #[test]
@@ -4922,6 +4970,7 @@ mod tests {
 
         assert!(message.contains("backend=software"));
         assert!(message.contains("decoder=avdec_h264"));
+        assert!(message.contains("converter=videoconvert"));
         assert!(message.contains("memory=system-memory"));
     }
 
