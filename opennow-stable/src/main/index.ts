@@ -314,6 +314,7 @@ class DiscordStatusMonitor {
   private timer: NodeJS.Timeout | null = null;
   private readonly intervalMs = 60 * 1000;
   private isSyncing = false;
+  private hasPerformedInitialSync = false;
 
   start(): void {
     if (this.timer) return;
@@ -343,25 +344,30 @@ class DiscordStatusMonitor {
         await connectDiscordRpc().catch(() => {});
       }
 
-      const token = await resolveJwt().catch(() => null);
-      if (!token) {
-        this.isSyncing = false;
-        return;
+      // On first run, always clear regardless of auth state — the app just started
+      // and any stale status from the previous session must be wiped.
+      if (!this.hasPerformedInitialSync) {
+        console.log("[DiscordRPC] Startup: clearing any stale Discord status.");
+        await clearActivity().catch(() => {});
+        this.hasPerformedInitialSync = true;
       }
+
+      const token = await resolveJwt().catch(() => null);
+      if (!token) return;
 
       const provider = authService.getSelectedProvider();
       const streamingBaseUrl = provider.streamingServiceUrl;
       const activeSessions = await getActiveSessions(token, streamingBaseUrl).catch(() => []);
-      
+
       const activeSession = activeSessions.find((s) => [1, 2, 3].includes(s.status));
       const currentActivity = getCurrentActivity();
 
       if (activeSession) {
         const sessionAppId = activeSession.appId.toString();
-        
+
         if (!currentActivity || currentActivity.appId !== sessionAppId) {
           const title = (currentActivity?.appId === sessionAppId && currentActivity.gameName)
-            ? currentActivity.gameName 
+            ? currentActivity.gameName
             : sessionAppId;
           const startTime = (currentActivity?.appId === sessionAppId && currentActivity.startTimestamp)
             ? currentActivity.startTimestamp
