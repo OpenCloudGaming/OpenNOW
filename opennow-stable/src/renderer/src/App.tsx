@@ -2796,6 +2796,13 @@ export function App(): JSX.Element {
             throw error;
           });
           if (!recovered) {
+            if (
+              signalingRecoveryRef.current.explicitShutdown
+              || !RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)
+            ) {
+              console.log("[Recovery] Ignoring disconnect after explicit shutdown or non-recoverable status");
+              return;
+            }
             clientRef.current?.dispose();
             clientRef.current = null;
             setLaunchError({
@@ -2811,6 +2818,13 @@ export function App(): JSX.Element {
           console.error("Signaling error:", event.message);
         }
       } catch (error) {
+        if (
+          signalingRecoveryRef.current.explicitShutdown
+          || !RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)
+        ) {
+          console.log("[Recovery] Suppressing signaling error after explicit shutdown or non-recoverable status");
+          return;
+        }
         console.error("Signaling event error:", error);
         clientRef.current?.dispose();
         clientRef.current = null;
