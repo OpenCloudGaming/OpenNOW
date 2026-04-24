@@ -1374,7 +1374,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       return true;
     }
     const terms = SETTINGS_SCOPE_SEARCH_TERMS[scopeId];
-    const searchTokens = normalizedSettingsSearch.split(/\s+/).filter((token) => token.length > 0);
+    const searchTokens = normalizedSettingsSearch.split(/[^a-z0-9]+/).filter((token) => token.length > 0);
     if (searchTokens.length === 0) {
       return true;
     }
