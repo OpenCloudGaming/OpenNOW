@@ -2609,13 +2609,15 @@ export class GfnWebRtcClient {
       const { scaleX, scaleY } = getPointerScale();
       const dxQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDxFloat);
       const dyQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDyFloat);
-      this.pendingMouseDxFloat = dxQuantized.residual;
-      this.pendingMouseDyFloat = dyQuantized.residual;
       const dxServer = Math.max(-32768, Math.min(32767, Math.round(dxQuantized.send * scaleX)));
       const dyServer = Math.max(-32768, Math.min(32767, Math.round(dyQuantized.send * scaleY)));
       if (dxServer === 0 && dyServer === 0) {
+        // Keep pending movement intact until a non-zero packet is sent.
+        // Otherwise quantized integer deltas can be dropped when server scaling rounds to zero.
         return;
       }
+      this.pendingMouseDxFloat = dxQuantized.residual;
+      this.pendingMouseDyFloat = dyQuantized.residual;
 
       const payload = this.inputEncoder.encodeMouseMove({
         dx: dxServer,
