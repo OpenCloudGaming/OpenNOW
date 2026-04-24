@@ -10,9 +10,12 @@ const repoRoot = resolve(packageRoot, "..");
 const crateRoot = join(repoRoot, "native", "opennow-streamer");
 const manifestPath = join(crateRoot, "Cargo.toml");
 const exeName = process.platform === "win32" ? "opennow-streamer.exe" : "opennow-streamer";
+const platformKey = `${process.platform}-${process.arch}`;
 const builtBinary = join(crateRoot, "target", "release", exeName);
 const packageBinaryDir = join(crateRoot, "bin");
 const packageBinary = join(packageBinaryDir, exeName);
+const packagePlatformBinaryDir = join(packageBinaryDir, platformKey);
+const packagePlatformBinary = join(packagePlatformBinaryDir, exeName);
 
 const cargoArgs = ["build", "--release", "--manifest-path", manifestPath];
 const nativeFeatures = process.env.OPENNOW_NATIVE_STREAMER_FEATURES?.trim() || "gstreamer";
@@ -41,10 +44,14 @@ if (!existsSync(builtBinary)) {
 }
 
 mkdirSync(packageBinaryDir, { recursive: true });
+mkdirSync(packagePlatformBinaryDir, { recursive: true });
 copyFileSync(builtBinary, packageBinary);
+copyFileSync(builtBinary, packagePlatformBinary);
 
 if (process.platform !== "win32") {
   chmodSync(packageBinary, 0o755);
+  chmodSync(packagePlatformBinary, 0o755);
 }
 
 console.log(`Copied native streamer to ${packageBinary}`);
+console.log(`Copied native streamer to ${packagePlatformBinary}`);

@@ -288,6 +288,10 @@ enum RtpVideoChainRole {
 enum RtpVideoApi {
     D3D11,
     D3D12,
+    VideoToolbox,
+    Vaapi,
+    V4L2,
+    Software,
 }
 
 impl RtpVideoApi {
@@ -295,13 +299,18 @@ impl RtpVideoApi {
         match self {
             Self::D3D11 => "D3D11",
             Self::D3D12 => "D3D12",
+            Self::VideoToolbox => "VideoToolbox",
+            Self::Vaapi => "VAAPI",
+            Self::V4L2 => "V4L2",
+            Self::Software => "software",
         }
     }
 
-    fn memory_caps(self) -> &'static str {
+    fn memory_caps(self) -> Option<&'static str> {
         match self {
-            Self::D3D11 => "video/x-raw(memory:D3D11Memory)",
-            Self::D3D12 => "video/x-raw(memory:D3D12Memory)",
+            Self::D3D11 => Some("video/x-raw(memory:D3D11Memory)"),
+            Self::D3D12 => Some("video/x-raw(memory:D3D12Memory)"),
+            _ => None,
         }
     }
 
@@ -309,6 +318,10 @@ impl RtpVideoApi {
         match self {
             Self::D3D11 => "d3d11videosink",
             Self::D3D12 => "d3d12videosink",
+            Self::VideoToolbox => "glimagesink",
+            Self::Vaapi => "glimagesink",
+            Self::V4L2 => "glimagesink",
+            Self::Software => "autovideosink",
         }
     }
 
@@ -320,8 +333,41 @@ impl RtpVideoApi {
             (Self::D3D12, "H265" | "HEVC") => Some("d3d12h265dec"),
             (Self::D3D12, "H264") => Some("d3d12h264dec"),
             (Self::D3D12, "AV1") => Some("d3d12av1dec"),
+            (Self::VideoToolbox, "H265" | "HEVC" | "H264") => Some("vtdec"),
+            (Self::Vaapi, "H265" | "HEVC") => Some("vah265dec"),
+            (Self::Vaapi, "H264") => Some("vah264dec"),
+            (Self::Vaapi, "AV1") => Some("vaav1dec"),
+            (Self::V4L2, "H265" | "HEVC") => Some("v4l2slh265dec"),
+            (Self::V4L2, "H264") => Some("v4l2slh264dec"),
+            (Self::Software, "H265" | "HEVC") => Some("avdec_h265"),
+            (Self::Software, "H264") => Some("avdec_h264"),
+            (Self::Software, "AV1") => Some("avdec_av1"),
             _ => None,
         }
+    }
+
+    fn fallback_decoder_factories(self, codec: &str) -> &'static [&'static str] {
+        match (self, codec) {
+            (Self::Vaapi, "H265" | "HEVC") => &["vaapih265dec"],
+            (Self::Vaapi, "H264") => &["vaapih264dec"],
+            (Self::Vaapi, "AV1") => &["vaapiav1dec"],
+            (Self::V4L2, "H265" | "HEVC") => &["v4l2h265dec"],
+            (Self::V4L2, "H264") => &["v4l2h264dec"],
+            _ => &[],
+        }
+    }
+
+    fn sink_fallback_factories(self) -> &'static [&'static str] {
+        match self {
+            Self::VideoToolbox => &["osxvideosink", "autovideosink"],
+            Self::Vaapi | Self::V4L2 => &["waylandsink", "ximagesink", "xvimagesink", "autovideosink"],
+            Self::Software => &["glimagesink", "waylandsink", "ximagesink", "xvimagesink"],
+            _ => &[],
+        }
+    }
+
+    fn is_gpu_path(self) -> bool {
+        !matches!(self, Self::Software)
     }
 }
 
@@ -1094,7 +1140,16 @@ impl GstreamerPipeline {
     }
 
     #[cfg(not(target_os = "windows"))]
-    fn ensure_native_window_input_bridge(&mut self) {}
+    fn ensure_native_window_input_bridge(&mut self) {
+        send_log(
+            &self.event_sender,
+            "warn",
+            format!(
+                "Native OS-level input capture is not implemented for {}; Electron input forwarding remains active.",
+                std::env::consts::OS
+            ),
+        );
+    }
 
     fn negotiate_answer(
         &mut self,
@@ -3586,7 +3641,7 @@ fn rtp_video_chain_definition(
     video_api: RtpVideoApi,
 ) -> Option<Vec<RtpVideoChainSpec>> {
     let codec = encoding.to_ascii_uppercase();
-    Some(vec![
+    let mut specs = vec![
         RtpVideoChainSpec::new(
             rtp_video_depayloader_factory(codec.as_str())?,
             RtpVideoChainRole::Depayloader,
@@ -3600,17 +3655,27 @@ fn rtp_video_chain_definition(
             video_api.decoder_factory(codec.as_str())?,
             RtpVideoChainRole::Decoder,
         ),
-        RtpVideoChainSpec::with_caps(
+    ];
+
+    if let Some(memory_caps) = video_api.memory_caps() {
+        specs.push(RtpVideoChainSpec::with_caps(
             "capsfilter",
             RtpVideoChainRole::PostDecodeCapsFilter,
-            video_api.memory_caps(),
-        ),
-        RtpVideoChainSpec::new("queue", RtpVideoChainRole::PostDecodeQueue),
-        RtpVideoChainSpec::new(video_api.sink_factory(), RtpVideoChainRole::Sink),
-    ])
+            memory_caps,
+        ));
+    }
+    specs.push(RtpVideoChainSpec::new(
+        "queue",
+        RtpVideoChainRole::PostDecodeQueue,
+    ));
+    specs.push(RtpVideoChainSpec::new(
+        video_api.sink_factory(),
+        RtpVideoChainRole::Sink,
+    ));
+
+    Some(specs)
 }
 
-#[cfg(target_os = "windows")]
 fn preferred_rtp_video_apis() -> Vec<RtpVideoApi> {
     match std::env::var(NATIVE_VIDEO_API_ENV)
         .unwrap_or_else(|_| "auto".to_owned())
@@ -3619,26 +3684,73 @@ fn preferred_rtp_video_apis() -> Vec<RtpVideoApi> {
     {
         "d3d11" => vec![RtpVideoApi::D3D11],
         "d3d12" => vec![RtpVideoApi::D3D12],
-        _ => vec![RtpVideoApi::D3D12, RtpVideoApi::D3D11],
+        "videotoolbox" | "vt" => vec![RtpVideoApi::VideoToolbox],
+        "vaapi" | "va" => vec![RtpVideoApi::Vaapi],
+        "v4l2" | "v4l2stateless" => vec![RtpVideoApi::V4L2],
+        "software" | "sw" => vec![RtpVideoApi::Software],
+        _ => default_rtp_video_api_priority(),
     }
 }
 
-#[cfg(target_os = "windows")]
+fn default_rtp_video_api_priority() -> Vec<RtpVideoApi> {
+    #[cfg(target_os = "windows")]
+    {
+        vec![RtpVideoApi::D3D12, RtpVideoApi::D3D11, RtpVideoApi::Software]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        vec![RtpVideoApi::VideoToolbox, RtpVideoApi::Software]
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        vec![RtpVideoApi::V4L2, RtpVideoApi::Vaapi, RtpVideoApi::Software]
+    }
+    #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
+    {
+        vec![RtpVideoApi::Vaapi, RtpVideoApi::V4L2, RtpVideoApi::Software]
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        vec![RtpVideoApi::Software]
+    }
+}
+
 fn rtp_video_chain_specs(encoding: &str) -> Option<(RtpVideoApi, Vec<RtpVideoChainSpec>)> {
     preferred_rtp_video_apis()
         .into_iter()
         .find_map(|video_api| {
-            let specs = rtp_video_chain_definition(encoding, video_api)?;
-            specs
-                .iter()
-                .all(|spec| gst::ElementFactory::find(spec.factory).is_some())
-                .then_some((video_api, specs))
+            let codec = encoding.to_ascii_uppercase();
+            let decoder = select_decoder_factory(video_api, codec.as_str())?;
+            let sink = select_sink_factory(video_api)?;
+            let mut specs = rtp_video_chain_definition(encoding, video_api)?;
+            for spec in &mut specs {
+                if spec.role == RtpVideoChainRole::Decoder {
+                    spec.factory = decoder;
+                } else if spec.role == RtpVideoChainRole::Sink {
+                    spec.factory = sink;
+                }
+            }
+            required_video_chain_elements_available(&specs).then_some((video_api, specs))
         })
 }
 
-#[cfg(not(target_os = "windows"))]
-fn rtp_video_chain_specs(_encoding: &str) -> Option<(RtpVideoApi, Vec<RtpVideoChainSpec>)> {
-    None
+fn select_decoder_factory(video_api: RtpVideoApi, codec: &str) -> Option<&'static str> {
+    let primary = video_api.decoder_factory(codec)?;
+    std::iter::once(primary)
+        .chain(video_api.fallback_decoder_factories(codec).iter().copied())
+        .find(|factory| gst::ElementFactory::find(factory).is_some())
+}
+
+fn select_sink_factory(video_api: RtpVideoApi) -> Option<&'static str> {
+    std::iter::once(video_api.sink_factory())
+        .chain(video_api.sink_fallback_factories().iter().copied())
+        .find(|factory| gst::ElementFactory::find(factory).is_some())
+}
+
+fn required_video_chain_elements_available(specs: &[RtpVideoChainSpec]) -> bool {
+    specs
+        .iter()
+        .all(|spec| gst::ElementFactory::find(spec.factory).is_some())
 }
 
 fn configure_rtp_video_chain_element(element: &gst::Element, spec: RtpVideoChainSpec) {
@@ -3695,12 +3807,17 @@ fn link_rtp_video_pad(
 
     let (video_api, specs) = rtp_video_chain_specs(encoding).ok_or_else(|| {
         format!(
-            "Explicit low-latency GPU decode chain is unavailable for RTP {encoding}; set {NATIVE_VIDEO_API_ENV}=d3d11 or d3d12 to force a path."
+            "Explicit low-latency decode chain is unavailable for RTP {encoding}; install the platform GStreamer plugin packages or set {NATIVE_VIDEO_API_ENV}=software to force software decode."
         )
     })?;
     let mut elements = Vec::with_capacity(specs.len());
 
     let result = (|| -> Result<(), String> {
+        send_log(
+            event_sender,
+            "info",
+            format_video_chain_selection(encoding, video_api, &specs),
+        );
         for spec in &specs {
             let element = make_element(spec.factory)?;
             configure_rtp_video_chain_element(&element, *spec);
@@ -3780,6 +3897,38 @@ fn link_rtp_video_pad(
         ),
     );
     Ok(())
+}
+
+fn format_video_chain_selection(
+    encoding: &str,
+    video_api: RtpVideoApi,
+    specs: &[RtpVideoChainSpec],
+) -> String {
+    let decoder = specs
+        .iter()
+        .find(|spec| spec.role == RtpVideoChainRole::Decoder)
+        .map(|spec| spec.factory)
+        .unwrap_or("unknown");
+    let sink = specs
+        .iter()
+        .find(|spec| spec.role == RtpVideoChainRole::Sink)
+        .map(|spec| spec.factory)
+        .unwrap_or("unknown");
+    let memory = specs
+        .iter()
+        .find(|spec| spec.role == RtpVideoChainRole::PostDecodeCapsFilter)
+        .and_then(|spec| spec.caps)
+        .unwrap_or("system-memory");
+    let acceleration = if video_api.is_gpu_path() {
+        "hardware"
+    } else {
+        "software"
+    };
+
+    format!(
+        "Selected native {acceleration} video path for RTP {encoding}: backend={}, decoder={decoder}, renderer={sink}, memory={memory}.",
+        video_api.label()
+    )
 }
 
 fn element_factory_name(element: &gst::Element) -> String {
@@ -4742,6 +4891,38 @@ mod tests {
         assert_eq!(av1[3].factory, "d3d11av1dec");
         assert_eq!(av1[4].factory, "capsfilter");
         assert_eq!(av1[6].factory, "d3d11videosink");
+    }
+
+    #[test]
+    fn maps_cross_platform_video_paths_to_expected_decoders() {
+        let vt =
+            rtp_video_chain_definition("H264", RtpVideoApi::VideoToolbox).expect("VideoToolbox");
+        assert_eq!(vt[3].factory, "vtdec");
+        assert_eq!(vt.last().map(|spec| spec.factory), Some("glimagesink"));
+        assert!(!vt.iter().any(|spec| spec.factory == "capsfilter"));
+
+        let vaapi = rtp_video_chain_definition("AV1", RtpVideoApi::Vaapi).expect("VAAPI AV1");
+        assert_eq!(vaapi[3].factory, "vaav1dec");
+        assert_eq!(vaapi.last().map(|spec| spec.factory), Some("glimagesink"));
+
+        let v4l2 = rtp_video_chain_definition("H265", RtpVideoApi::V4L2).expect("V4L2 H265");
+        assert_eq!(v4l2[3].factory, "v4l2slh265dec");
+
+        let software =
+            rtp_video_chain_definition("H264", RtpVideoApi::Software).expect("software H264");
+        assert_eq!(software[3].factory, "avdec_h264");
+        assert_eq!(software.last().map(|spec| spec.factory), Some("autovideosink"));
+    }
+
+    #[test]
+    fn formats_selected_video_chain_diagnostics() {
+        let specs =
+            rtp_video_chain_definition("H264", RtpVideoApi::Software).expect("software H264");
+        let message = format_video_chain_selection("H264", RtpVideoApi::Software, &specs);
+
+        assert!(message.contains("backend=software"));
+        assert!(message.contains("decoder=avdec_h264"));
+        assert!(message.contains("memory=system-memory"));
     }
 
     #[test]

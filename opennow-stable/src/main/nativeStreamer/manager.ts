@@ -62,6 +62,10 @@ function nativeStreamerExecutableName(): string {
   return process.platform === "win32" ? "opennow-streamer.exe" : "opennow-streamer";
 }
 
+function nativeStreamerPlatformKey(): string {
+  return `${process.platform}-${process.arch}`;
+}
+
 function isExistingFile(path: string): boolean {
   try {
     return existsSync(path) && statSync(path).isFile();
@@ -349,6 +353,7 @@ export class NativeStreamerManager {
 
   private resolveExecutablePath(): string {
     const exeName = nativeStreamerExecutableName();
+    const platformKey = nativeStreamerPlatformKey();
     const configuredPath = this.options.getExecutablePathOverride().trim();
     if (configuredPath) {
       if (isExistingFile(configuredPath)) {
@@ -359,14 +364,23 @@ export class NativeStreamerManager {
 
     const candidates = [
       process.env.OPENNOW_NATIVE_STREAMER,
+      join(process.resourcesPath, "native", "opennow-streamer", platformKey, exeName),
       join(process.resourcesPath, "native", "opennow-streamer", exeName),
+      resolve(this.options.mainDir, "../../../native/opennow-streamer/bin", platformKey, exeName),
       resolve(this.options.mainDir, "../../../native/opennow-streamer/bin", exeName),
+      resolve(this.options.mainDir, "../../../native/opennow-streamer/dist", platformKey, exeName),
       resolve(this.options.mainDir, "../../../native/opennow-streamer/dist", exeName),
+      resolve(this.options.mainDir, "../../../native/opennow-streamer/target/release", platformKey, exeName),
       resolve(this.options.mainDir, "../../../native/opennow-streamer/target/release", exeName),
+      resolve(this.options.mainDir, "../../../native/opennow-streamer/target/debug", platformKey, exeName),
       resolve(this.options.mainDir, "../../../native/opennow-streamer/target/debug", exeName),
+      resolve(app.getAppPath(), "../native/opennow-streamer/bin", platformKey, exeName),
       resolve(app.getAppPath(), "../native/opennow-streamer/bin", exeName),
+      resolve(app.getAppPath(), "../native/opennow-streamer/dist", platformKey, exeName),
       resolve(app.getAppPath(), "../native/opennow-streamer/dist", exeName),
+      resolve(app.getAppPath(), "../native/opennow-streamer/target/release", platformKey, exeName),
       resolve(app.getAppPath(), "../native/opennow-streamer/target/release", exeName),
+      resolve(app.getAppPath(), "../native/opennow-streamer/target/debug", platformKey, exeName),
       resolve(app.getAppPath(), "../native/opennow-streamer/target/debug", exeName),
     ].filter((candidate): candidate is string => Boolean(candidate));
 
