@@ -2640,6 +2640,10 @@ export class GfnWebRtcClient {
       }
       this.mouseFlushTimer = window.setTimeout(() => {
         flushMouse();
+        // clearTimers() nulls this timer during teardown; avoid re-arming a zombie loop.
+        if (this.mouseFlushTimer === null) {
+          return;
+        }
         const reliableBufferedAmount = this.reliableInputChannel?.bufferedAmount ?? 0;
         const schedulingDelay = this.inputQueueMaxSchedulingDelayMsWindow;
         const nextInterval = chooseAdaptiveMouseFlushInterval({
