@@ -2462,6 +2462,19 @@ export function App(): JSX.Element {
     claimed: SessionInfo,
     expectedRecoveryGeneration?: number,
   ): Promise<void> => {
+    const canProceedWithClaimedReconnect = (): boolean => {
+      if (
+        expectedRecoveryGeneration !== undefined
+        && !isRecoveryGenerationCurrent(expectedRecoveryGeneration)
+      ) {
+        return false;
+      }
+      if (signalingRecoveryRef.current.explicitShutdown) {
+        return false;
+      }
+      return true;
+    };
+
     if (
       expectedRecoveryGeneration !== undefined
       && !isRecoveryGenerationCurrent(expectedRecoveryGeneration)
@@ -2485,18 +2498,18 @@ export function App(): JSX.Element {
       console.log("[Recovery] Skipping reconnect due to stale recovery generation after delay");
       return;
     }
+    if (!canProceedWithClaimedReconnect()) {
+      console.log("[Recovery] Skipping claimed session apply due to explicit shutdown");
+      return;
+    }
 
     setSession(claimed);
     sessionRef.current = claimed;
     setQueuePosition(undefined);
     setLaunchError(null);
     setStreamStatus("connecting");
-    signalingRecoveryRef.current.explicitShutdown = false;
-    if (
-      expectedRecoveryGeneration !== undefined
-      && !isRecoveryGenerationCurrent(expectedRecoveryGeneration)
-    ) {
-      console.log("[Recovery] Skipping signaling connect due to stale recovery generation");
+    if (!canProceedWithClaimedReconnect()) {
+      console.log("[Recovery] Skipping signaling connect due to explicit shutdown");
       return;
     }
     await window.openNow.connectSignaling({
