@@ -665,6 +665,7 @@ export class AuthService {
         : this.getSession()?.provider ?? defaultProvider();
       this.clearSubscriptionCache();
       this.clearVpcCache();
+      await this.persist();
 
       if (switchedUserMismatch) {
         throw new Error("Switched session did not match the selected account.");
