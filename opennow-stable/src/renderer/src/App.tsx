@@ -19,6 +19,7 @@ import type {
   SessionAdState,
   SessionInfo,
   SessionStopRequest,
+  SavedAccount,
   Settings,
   SubscriptionInfo,
   StreamRegion,
@@ -777,6 +778,7 @@ export function App(): JSX.Element {
 
   // Auth State
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
+  const [savedAccounts, setSavedAccounts] = useState<SavedAccount[]>([]);
   const [providers, setProviders] = useState<LoginProvider[]>([]);
   const [providerIdpId, setProviderIdpId] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -878,6 +880,8 @@ export function App(): JSX.Element {
   const [navbarActiveSession, setNavbarActiveSession] = useState<ActiveSessionInfo | null>(null);
   const [isResumingNavbarSession, setIsResumingNavbarSession] = useState(false);
   const [isTerminatingNavbarSession, setIsTerminatingNavbarSession] = useState(false);
+  const [accountToRemove, setAccountToRemove] = useState<string | null>(null);
+  const [removeAccountConfirmOpen, setRemoveAccountConfirmOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
   const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
@@ -1717,24 +1721,36 @@ export function App(): JSX.Element {
     [],
   );
 
-  const refreshNavbarActiveSession = useCallback(async (): Promise<void> => {
-    if (!authSession) {
+  const refreshSavedAccounts = useCallback(async (): Promise<SavedAccount[]> => {
+    const accounts = await window.openNow.getSavedAccounts();
+    setSavedAccounts(accounts);
+    return accounts;
+  }, []);
+
+  const refreshNavbarActiveSession = useCallback(async (
+    sessionOverride?: AuthSession,
+    streamingBaseUrlOverride?: string,
+  ): Promise<void> => {
+    const session = sessionOverride ?? authSession;
+    if (!session) {
       setNavbarActiveSession(null);
       return;
     }
-    const token = authSession.tokens.idToken ?? authSession.tokens.accessToken;
-    if (!token || !effectiveStreamingBaseUrl) {
+    const token = session.tokens.idToken ?? session.tokens.accessToken;
+    const streamingBaseUrl = streamingBaseUrlOverride
+      ?? (settings.region.trim() ? effectiveStreamingBaseUrl : session.provider.streamingServiceUrl);
+    if (!token || !streamingBaseUrl) {
       setNavbarActiveSession(null);
       return;
     }
     try {
-      const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
+      const activeSessions = await window.openNow.getActiveSessions(token, streamingBaseUrl);
       const candidate = activeSessions.find((entry) => entry.status === 3 || entry.status === 2) ?? null;
       setNavbarActiveSession(candidate);
     } catch (error) {
       console.warn("Failed to refresh active sessions:", error);
     }
-  }, [authSession, effectiveStreamingBaseUrl]);
+  }, [authSession, effectiveStreamingBaseUrl, settings.region]);
 
   const allKnownGames = useMemo(() => [...games, ...libraryGames], [games, libraryGames]);
 
@@ -1806,128 +1822,6 @@ export function App(): JSX.Element {
     }, 10000);
     return () => window.clearInterval(timer);
   }, [authSession, refreshNavbarActiveSession, streamStatus]);
-
-  // Initialize app
-  useEffect(() => {
-    if (hasInitializedRef.current) return;
-    hasInitializedRef.current = true;
-
-    const initialize = async () => {
-      try {
-        // Load settings first
-        const loadedSettings = await window.openNow.getSettings();
-        setSettings(loadedSettings);
-        setShowStatsOverlay(loadedSettings.showStatsOnLaunch);
-        setSettingsLoaded(true);
-
-        // Load providers and session (refresh only if token is near expiry)
-        setStartupStatusMessage("Restoring saved session...");
-        const [providerList, sessionResult] = await Promise.all([
-          window.openNow.getLoginProviders(),
-          window.openNow.getAuthSession(),
-        ]);
-        const persistedSession = sessionResult.session;
-
-        if (sessionResult.refresh.outcome === "refreshed") {
-          setStartupRefreshNotice({
-            tone: "success",
-            text: "Session restored. Token refreshed.",
-          });
-          setStartupStatusMessage("Token refreshed. Loading your account...");
-        } else if (sessionResult.refresh.outcome === "failed") {
-          setStartupRefreshNotice({
-            tone: "warn",
-            text: "Token refresh failed. Using saved session token.",
-          });
-          setStartupStatusMessage("Token refresh failed. Continuing with saved session...");
-        } else if (sessionResult.refresh.outcome === "missing_refresh_token") {
-          setStartupStatusMessage("Saved session has no refresh token. Continuing...");
-        } else if (persistedSession) {
-          setStartupStatusMessage("Session restored.");
-        } else {
-          setStartupStatusMessage("No saved session found.");
-        }
-
-        // Load persisted variant selections from localStorage before applying defaults
-        try {
-          const raw = localStorage.getItem(VARIANT_SELECTION_LOCALSTORAGE_KEY);
-          if (raw) {
-            const parsed = JSON.parse(raw);
-            if (parsed && typeof parsed === "object") {
-              setVariantByGameId(parsed as Record<string, string>);
-            }
-          }
-        } catch (e) {
-          // ignore parse/storage errors
-        }
-
-        // Update isInitializing FIRST so UI knows we're done loading
-        setIsInitializing(false);
-        setProviders(providerList);
-        setAuthSession(persistedSession);
-
-        const activeProviderId = persistedSession?.provider?.idpId ?? providerList[0]?.idpId ?? "";
-        setProviderIdpId(activeProviderId);
-
-        if (persistedSession) {
-          // Load regions
-          const token = persistedSession.tokens.idToken ?? persistedSession.tokens.accessToken;
-          const discovered = await window.openNow.getRegions({ token });
-          setRegions(discovered);
-
-          try {
-            await loadSubscriptionInfo(persistedSession);
-          } catch (error) {
-            console.warn("Failed to load subscription info:", error);
-            setSubscriptionInfo(null);
-          }
-
-          // Load games
-          try {
-            const [catalogResult, libGames] = await Promise.all([
-              window.openNow.browseCatalog({
-                token,
-                providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
-                searchQuery: "",
-                sortId: catalogSelectedSortId,
-                filterIds: catalogSelectedFilterIds,
-              }),
-              window.openNow.fetchLibraryGames({
-                token,
-                providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
-              }),
-            ]);
-            applyCatalogBrowseResult(catalogResult);
-            setLibraryGames(libGames);
-            applyVariantSelections(libGames);
-          } catch (catalogError) {
-            console.error("Initialization games load failed:", catalogError);
-            setGames([]);
-            setLibraryGames([]);
-            setCatalogFilterGroups([]);
-            setCatalogSortOptions([]);
-            setCatalogTotalCount(0);
-            setCatalogSupportedCount(0);
-          }
-        } else {
-          setGames([]);
-          setLibraryGames([]);
-          setSubscriptionInfo(null);
-          setCatalogFilterGroups([]);
-          setCatalogSortOptions([]);
-          setCatalogTotalCount(0);
-          setCatalogSupportedCount(0);
-        }
-      } catch (error) {
-        console.error("Initialization failed:", error);
-        setStartupStatusMessage("Session restore failed. Please sign in again.");
-        // Always set isInitializing to false even on error
-        setIsInitializing(false);
-      }
-    };
-
-    void initialize();
-  }, []);
 
   useEffect(() => {
     saveStoredCodecResults(codecResults);
@@ -2311,27 +2205,19 @@ export function App(): JSX.Element {
     applyVariantSelections(catalogResult.games);
   }, [applyVariantSelections]);
 
-  // Login handler
-  const handleLogin = useCallback(async () => {
-    setIsLoggingIn(true);
-    setLoginError(null);
+  const loadSessionRuntimeData = useCallback(async (session: AuthSession): Promise<void> => {
+    const token = session.tokens.idToken ?? session.tokens.accessToken;
+    const discovered = await window.openNow.getRegions({ token });
+    setRegions(discovered);
+
     try {
-      const session = await window.openNow.login({ providerIdpId: providerIdpId || undefined });
-      setAuthSession(session);
-      setProviderIdpId(session.provider.idpId);
+      await loadSubscriptionInfo(session);
+    } catch (error) {
+      console.warn("Failed to load subscription info:", error);
+      setSubscriptionInfo(null);
+    }
 
-      // Load regions
-      const token = session.tokens.idToken ?? session.tokens.accessToken;
-      const discovered = await window.openNow.getRegions({ token });
-      setRegions(discovered);
-
-      try {
-        await loadSubscriptionInfo(session);
-      } catch (error) {
-        console.warn("Failed to load subscription info:", error);
-        setSubscriptionInfo(null);
-      }
-
+    try {
       const [catalogResult, libGames] = await Promise.all([
         window.openNow.browseCatalog({
           token,
@@ -2348,17 +2234,208 @@ export function App(): JSX.Element {
       applyCatalogBrowseResult(catalogResult);
       setLibraryGames(libGames);
       applyVariantSelections(libGames);
+    } catch (catalogError) {
+      console.error("Initialization games load failed:", catalogError);
+      setGames([]);
+      setLibraryGames([]);
+      setCatalogFilterGroups([]);
+      setCatalogSortOptions([]);
+      setCatalogTotalCount(0);
+      setCatalogSupportedCount(0);
+    }
+  }, [
+    applyCatalogBrowseResult,
+    applyVariantSelections,
+    catalogSelectedFilterIds,
+    catalogSelectedSortId,
+    loadSubscriptionInfo,
+  ]);
+
+  // Initialize app
+  useEffect(() => {
+    if (hasInitializedRef.current) return;
+    hasInitializedRef.current = true;
+
+    const initialize = async () => {
+      try {
+        // Load settings first
+        const loadedSettings = await window.openNow.getSettings();
+        setSettings(loadedSettings);
+        setShowStatsOverlay(loadedSettings.showStatsOnLaunch);
+        setSettingsLoaded(true);
+
+        // Load providers and session (refresh only if token is near expiry)
+        setStartupStatusMessage("Restoring saved session...");
+        const [providerList, sessionResult] = await Promise.all([
+          window.openNow.getLoginProviders(),
+          window.openNow.getAuthSession(),
+        ]);
+        const accounts = await window.openNow.getSavedAccounts();
+        const persistedSession = sessionResult.session;
+
+        if (sessionResult.refresh.outcome === "refreshed") {
+          setStartupRefreshNotice({
+            tone: "success",
+            text: "Session restored. Token refreshed.",
+          });
+          setStartupStatusMessage("Token refreshed. Loading your account...");
+        } else if (sessionResult.refresh.outcome === "failed") {
+          setStartupRefreshNotice({
+            tone: "warn",
+            text: "Token refresh failed. Using saved session token.",
+          });
+          setStartupStatusMessage("Token refresh failed. Continuing with saved session...");
+        } else if (sessionResult.refresh.outcome === "missing_refresh_token") {
+          setStartupStatusMessage("Saved session has no refresh token. Continuing...");
+        } else if (persistedSession) {
+          setStartupStatusMessage("Session restored.");
+        } else {
+          setStartupStatusMessage("No saved session found.");
+        }
+
+        // Load persisted variant selections from localStorage before applying defaults
+        try {
+          const raw = localStorage.getItem(VARIANT_SELECTION_LOCALSTORAGE_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === "object") {
+              setVariantByGameId(parsed as Record<string, string>);
+            }
+          }
+        } catch (e) {
+          // ignore parse/storage errors
+        }
+
+        setProviders(providerList);
+        setAuthSession(persistedSession);
+        setSavedAccounts(accounts);
+
+        const activeProviderId = persistedSession?.provider?.idpId ?? providerList[0]?.idpId ?? "";
+        setProviderIdpId(activeProviderId);
+
+        if (persistedSession) {
+          await loadSessionRuntimeData(persistedSession);
+        } else {
+          setRegions([]);
+          setGames([]);
+          setLibraryGames([]);
+          setSubscriptionInfo(null);
+          setCatalogFilterGroups([]);
+          setCatalogSortOptions([]);
+          setCatalogTotalCount(0);
+          setCatalogSupportedCount(0);
+        }
+
+        setIsInitializing(false);
+      } catch (error) {
+        console.error("Initialization failed:", error);
+        setStartupStatusMessage("Session restore failed. Please sign in again.");
+        // Always set isInitializing to false even on error
+        setIsInitializing(false);
+      }
+    };
+
+    void initialize();
+  }, [loadSessionRuntimeData]);
+
+  // Login handler
+  const handleLogin = useCallback(async () => {
+    setIsLoggingIn(true);
+    setLoginError(null);
+    try {
+      const session = await window.openNow.login({ providerIdpId: providerIdpId || undefined });
+      setAuthSession(session);
+      setProviderIdpId(session.provider.idpId);
+      await refreshSavedAccounts();
+      await loadSessionRuntimeData(session);
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "Login failed");
     } finally {
       setIsLoggingIn(false);
     }
-  }, [applyCatalogBrowseResult, applyVariantSelections, loadSubscriptionInfo, providerIdpId, catalogFilterKey, catalogSelectedSortId]);
+  }, [loadSessionRuntimeData, providerIdpId, refreshSavedAccounts]);
+
+  const handleSwitchAccount = useCallback(async (userId: string) => {
+    try {
+      const session = await window.openNow.switchAccount(userId);
+      setAuthSession(session);
+      setProviderIdpId(session.provider.idpId);
+      await refreshSavedAccounts();
+      await loadSessionRuntimeData(session);
+      await refreshNavbarActiveSession(session);
+    } catch (error) {
+      console.warn("Failed to switch account:", error);
+      setLoginError(error instanceof Error ? error.message : "Failed to switch account");
+      try {
+        await refreshSavedAccounts();
+        const sessionResult = await window.openNow.getAuthSession();
+        setAuthSession(sessionResult.session);
+        if (sessionResult.session) {
+          setProviderIdpId(sessionResult.session.provider.idpId);
+          await loadSessionRuntimeData(sessionResult.session);
+          await refreshNavbarActiveSession(sessionResult.session);
+        } else {
+          setRegions([]);
+          setGames([]);
+          setLibraryGames([]);
+          setSubscriptionInfo(null);
+          setNavbarActiveSession(null);
+          setCatalogFilterGroups([]);
+          setCatalogSortOptions([]);
+          setCatalogTotalCount(0);
+          setCatalogSupportedCount(0);
+        }
+      } catch (recoveryError) {
+        console.warn("Failed to recover account state after switch failure:", recoveryError);
+      }
+    }
+  }, [loadSessionRuntimeData, refreshNavbarActiveSession, refreshSavedAccounts]);
+
+  const handleRemoveAccount = useCallback((userId: string) => {
+    setAccountToRemove(userId);
+    setRemoveAccountConfirmOpen(true);
+  }, []);
+
+  const confirmRemoveAccount = useCallback(async () => {
+    if (!accountToRemove) return;
+    const targetUserId = accountToRemove;
+    setRemoveAccountConfirmOpen(false);
+    setAccountToRemove(null);
+
+    await window.openNow.removeAccount(targetUserId);
+    const [accounts, sessionResult] = await Promise.all([
+      window.openNow.getSavedAccounts(),
+      window.openNow.getAuthSession(),
+    ]);
+    setSavedAccounts(accounts);
+    setAuthSession(sessionResult.session);
+    if (sessionResult.session) {
+      setProviderIdpId(sessionResult.session.provider.idpId);
+      await loadSessionRuntimeData(sessionResult.session);
+      await refreshNavbarActiveSession(sessionResult.session);
+      return;
+    }
+    setRegions([]);
+    setGames([]);
+    setLibraryGames([]);
+    setSubscriptionInfo(null);
+    setNavbarActiveSession(null);
+    setCatalogFilterGroups([]);
+    setCatalogSortOptions([]);
+    setCatalogTotalCount(0);
+    setCatalogSupportedCount(0);
+  }, [accountToRemove, loadSessionRuntimeData, refreshNavbarActiveSession]);
+
+  const handleAddAccount = useCallback(() => {
+    setAuthSession(null);
+    setLoginError(null);
+  }, []);
 
   const confirmLogout = useCallback(async () => {
     setLogoutConfirmOpen(false);
-    await window.openNow.logout();
+    await window.openNow.logoutAll();
     setAuthSession(null);
+    setSavedAccounts([]);
     setGames([]);
     setLibraryGames([]);
     setVariantByGameId({});
@@ -3220,15 +3297,24 @@ export function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (!logoutConfirmOpen) return;
+    if (!logoutConfirmOpen && !removeAccountConfirmOpen) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setLogoutConfirmOpen(false);
+        if (removeAccountConfirmOpen) {
+          setRemoveAccountConfirmOpen(false);
+          setAccountToRemove(null);
+        } else if (logoutConfirmOpen) {
+          setLogoutConfirmOpen(false);
+        }
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        void confirmLogout();
+        if (removeAccountConfirmOpen) {
+          void confirmRemoveAccount();
+        } else if (logoutConfirmOpen) {
+          void confirmLogout();
+        }
       }
     };
 
@@ -3240,7 +3326,11 @@ export function App(): JSX.Element {
       window.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = previousOverflow;
     };
-  }, [confirmLogout, logoutConfirmOpen]);
+  }, [confirmLogout, confirmRemoveAccount, logoutConfirmOpen, removeAccountConfirmOpen]);
+
+  const accountToRemoveDisplayName = useMemo(() => (
+    savedAccounts.find((account) => account.userId === accountToRemove)?.displayName ?? "this account"
+  ), [accountToRemove, savedAccounts]);
 
   const logoutConfirmModal = logoutConfirmOpen && typeof document !== "undefined"
     ? createPortal(
@@ -3252,13 +3342,13 @@ export function App(): JSX.Element {
             aria-label="Cancel log out"
           />
           <div className="logout-confirm-card">
-            <div className="logout-confirm-kicker">Session</div>
-            <h3 className="logout-confirm-title">Log out of OpenNOW?</h3>
+            <div className="logout-confirm-kicker">Accounts</div>
+            <h3 className="logout-confirm-title">Sign out all accounts?</h3>
             <p className="logout-confirm-text">
-              You&apos;re about to sign out of this device and return to guest mode.
+              You&apos;re about to remove every saved account from this device and return to guest mode.
             </p>
             <p className="logout-confirm-subtext">
-              Your cloud session data stays on the service. This just clears your local app session.
+              Your cloud session data stays on the service. This just clears local OpenNOW account sessions.
             </p>
             <div className="logout-confirm-actions">
               <button
@@ -3266,7 +3356,7 @@ export function App(): JSX.Element {
                 className="logout-confirm-btn logout-confirm-btn-cancel"
                 onClick={() => setLogoutConfirmOpen(false)}
               >
-                Stay Signed In
+                Stay signed in
               </button>
               <button
                 type="button"
@@ -3275,7 +3365,58 @@ export function App(): JSX.Element {
                   void confirmLogout();
                 }}
               >
-                Log Out
+                Sign out all
+              </button>
+            </div>
+            <div className="logout-confirm-hint">
+              <kbd>Enter</kbd> confirm · <kbd>Esc</kbd> cancel
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )
+    : null;
+
+  const removeAccountConfirmModal = removeAccountConfirmOpen && typeof document !== "undefined"
+    ? createPortal(
+        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label="Remove account confirmation">
+          <button
+            type="button"
+            className="logout-confirm-backdrop"
+            onClick={() => {
+              setRemoveAccountConfirmOpen(false);
+              setAccountToRemove(null);
+            }}
+            aria-label="Cancel account removal"
+          />
+          <div className="logout-confirm-card">
+            <div className="logout-confirm-kicker">Accounts</div>
+            <h3 className="logout-confirm-title">Remove account?</h3>
+            <p className="logout-confirm-text">
+              Are you sure you want to remove {accountToRemoveDisplayName} from saved accounts?
+            </p>
+            <p className="logout-confirm-subtext">
+              You can add this account again by signing in.
+            </p>
+            <div className="logout-confirm-actions">
+              <button
+                type="button"
+                className="logout-confirm-btn logout-confirm-btn-cancel"
+                onClick={() => {
+                  setRemoveAccountConfirmOpen(false);
+                  setAccountToRemove(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="logout-confirm-btn logout-confirm-btn-confirm"
+                onClick={() => {
+                  void confirmRemoveAccount();
+                }}
+              >
+                Remove
               </button>
             </div>
             <div className="logout-confirm-hint">
@@ -4037,7 +4178,13 @@ export function App(): JSX.Element {
           onTerminateSession={() => {
             void handleTerminateNavbarSession();
           }}
-          onLogout={handleLogout}
+          savedAccounts={savedAccounts}
+          onSwitchAccount={handleSwitchAccount}
+          onRemoveAccount={(userId) => {
+            void handleRemoveAccount(userId);
+          }}
+          onAddAccount={handleAddAccount}
+          onLogoutAll={handleLogout}
         />
       )}
 
@@ -4154,6 +4301,7 @@ export function App(): JSX.Element {
       )}
 
       {logoutConfirmModal}
+      {removeAccountConfirmModal}
       {queueModalGame && streamStatus === "idle" && (
         <QueueServerSelectModal
           game={queueModalGame}
