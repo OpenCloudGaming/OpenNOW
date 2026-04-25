@@ -3548,6 +3548,9 @@ export function App(): JSX.Element {
             onVirtualGamepadState={(state) => {
               clientRef.current?.setVirtualGamepadState(state);
             }}
+            onTouchMouseMove={(input) => {
+              clientRef.current?.sendTouchMouseMove(input);
+            }}
           />
         )}
         {isSwitchingGame && settings.controllerMode && streamStatus !== "connecting" && (

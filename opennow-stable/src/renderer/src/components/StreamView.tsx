@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
-import type { JSX } from "react";
-import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen } from "lucide-react";
+import type { CSSProperties, JSX } from "react";
+import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen, Menu, Battery, Wifi, MousePointer2 } from "lucide-react";
 import SideBar from "./SideBar";
 import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsSelector, useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
@@ -27,6 +27,7 @@ import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSe
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { openNow, platformCapabilities } from "../platform";
+import { useElapsedSeconds } from "../utils/useElapsedSeconds";
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -81,6 +82,7 @@ interface StreamViewProps {
   onRequestPointerLock?: () => void;
   onReleasePointerLock?: () => void;
   onVirtualGamepadState?: (state: VirtualGamepadState) => void;
+  onTouchMouseMove?: (input: { dx: number; dy: number; timestampMs?: number }) => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   onScreenshotShortcutChange: (value: string) => void;
@@ -552,6 +554,64 @@ function VideoFocusOnReady({
 }
 
 type StickValue = { x: number; y: number };
+type TouchPlacement = "default" | "compact" | "lower" | "split";
+type AndroidTouchSettings = {
+  enabled: boolean;
+  size: number;
+  opacity: number;
+  placement: TouchPlacement;
+  mousePad: boolean;
+};
+
+const ANDROID_TOUCH_SETTINGS_KEY = "opennow.android.touchControls.v1";
+const DEFAULT_ANDROID_TOUCH_SETTINGS: AndroidTouchSettings = {
+  enabled: true,
+  size: 1,
+  opacity: 0.74,
+  placement: "default",
+  mousePad: true,
+};
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.max(min, Math.min(max, value));
+}
+
+function readAndroidTouchSettings(): AndroidTouchSettings {
+  if (typeof window === "undefined") {
+    return DEFAULT_ANDROID_TOUCH_SETTINGS;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(ANDROID_TOUCH_SETTINGS_KEY);
+    if (!raw) {
+      return DEFAULT_ANDROID_TOUCH_SETTINGS;
+    }
+    const parsed = JSON.parse(raw) as Partial<AndroidTouchSettings>;
+    const placements: TouchPlacement[] = ["default", "compact", "lower", "split"];
+    return {
+      enabled: parsed.enabled ?? DEFAULT_ANDROID_TOUCH_SETTINGS.enabled,
+      size: clampNumber(Number(parsed.size ?? DEFAULT_ANDROID_TOUCH_SETTINGS.size), 0.72, 1.35),
+      opacity: clampNumber(Number(parsed.opacity ?? DEFAULT_ANDROID_TOUCH_SETTINGS.opacity), 0.25, 1),
+      placement: placements.includes(parsed.placement as TouchPlacement)
+        ? parsed.placement as TouchPlacement
+        : DEFAULT_ANDROID_TOUCH_SETTINGS.placement,
+      mousePad: parsed.mousePad ?? DEFAULT_ANDROID_TOUCH_SETTINGS.mousePad,
+    };
+  } catch {
+    return DEFAULT_ANDROID_TOUCH_SETTINGS;
+  }
+}
+
+function writeAndroidTouchSettings(settings: AndroidTouchSettings): void {
+  try {
+    window.localStorage.setItem(ANDROID_TOUCH_SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    // Non-fatal; controls remain usable for the current session.
+  }
+}
 
 function TouchStick({
   label,
@@ -618,8 +678,10 @@ function TouchStick({
 
 function TouchControllerOverlay({
   onVirtualGamepadState,
+  settings,
 }: {
   onVirtualGamepadState: (state: VirtualGamepadState) => void;
+  settings: AndroidTouchSettings;
 }): JSX.Element {
   const [leftStick, setLeftStick] = useState<StickValue>({ x: 0, y: 0 });
   const [rightStick, setRightStick] = useState<StickValue>({ x: 0, y: 0 });
@@ -716,7 +778,15 @@ function TouchControllerOverlay({
   }, [emit, onVirtualGamepadState]);
 
   return (
-    <div className="sv-touch" aria-label="Touch controller">
+    <div
+      className="sv-touch"
+      data-placement={settings.placement}
+      aria-label="Touch controller"
+      style={{
+        "--sv-touch-scale": settings.size,
+        "--sv-touch-opacity": settings.opacity,
+      } as CSSProperties}
+    >
       <div className="sv-touch-shoulders">
         <button type="button" className="sv-touch-btn sv-touch-btn--shoulder" {...bindButton(GAMEPAD_LB)}>LB</button>
         <button type="button" className="sv-touch-btn sv-touch-btn--trigger" {...bindTrigger("left")}>LT</button>
@@ -745,6 +815,257 @@ function TouchControllerOverlay({
           <button type="button" className="sv-touch-btn sv-touch-btn--face sv-touch-face-a" {...bindButton(GAMEPAD_A)}>A</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function AndroidMousePad({
+  enabled,
+  onTouchMouseMove,
+}: {
+  enabled: boolean;
+  onTouchMouseMove?: (input: { dx: number; dy: number; timestampMs?: number }) => void;
+}): JSX.Element | null {
+  const lastPointRef = useRef<{ x: number; y: number; id: number } | null>(null);
+
+  if (!enabled || !onTouchMouseMove) {
+    return null;
+  }
+
+  return (
+    <div
+      className="sv-android-mousepad"
+      aria-label="Mouse touch area"
+      onPointerDown={(event) => {
+        if (event.pointerType === "mouse") {
+          return;
+        }
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        lastPointRef.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
+      }}
+      onPointerMove={(event) => {
+        const last = lastPointRef.current;
+        if (!last || last.id !== event.pointerId || event.pointerType === "mouse") {
+          return;
+        }
+        event.preventDefault();
+        const dx = event.clientX - last.x;
+        const dy = event.clientY - last.y;
+        lastPointRef.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
+        onTouchMouseMove({ dx, dy, timestampMs: event.timeStamp });
+      }}
+      onPointerUp={(event) => {
+        if (lastPointRef.current?.id === event.pointerId) {
+          lastPointRef.current = null;
+        }
+      }}
+      onPointerCancel={(event) => {
+        if (lastPointRef.current?.id === event.pointerId) {
+          lastPointRef.current = null;
+        }
+      }}
+    />
+  );
+}
+
+type BatterySnapshot = {
+  level: number | null;
+  charging: boolean | null;
+};
+
+type BatteryManagerLike = EventTarget & {
+  level: number;
+  charging: boolean;
+};
+
+type NavigatorWithBattery = Navigator & {
+  getBattery?: () => Promise<BatteryManagerLike>;
+};
+
+function useBatterySnapshot(): BatterySnapshot {
+  const [battery, setBattery] = useState<BatterySnapshot>({ level: null, charging: null });
+
+  useEffect(() => {
+    const getBattery = (navigator as NavigatorWithBattery).getBattery;
+    if (!getBattery) {
+      return;
+    }
+
+    let dead = false;
+    let manager: BatteryManagerLike | null = null;
+    const sync = () => {
+      if (!manager || dead) {
+        return;
+      }
+      setBattery({
+        level: Math.round(manager.level * 100),
+        charging: manager.charging,
+      });
+    };
+
+    void getBattery.call(navigator).then((value) => {
+      if (dead) {
+        return;
+      }
+      manager = value;
+      sync();
+      manager.addEventListener("levelchange", sync);
+      manager.addEventListener("chargingchange", sync);
+    }).catch(() => undefined);
+
+    return () => {
+      dead = true;
+      manager?.removeEventListener("levelchange", sync);
+      manager?.removeEventListener("chargingchange", sync);
+    };
+  }, []);
+
+  return battery;
+}
+
+function AndroidStreamMenu({
+  diagnosticsStore,
+  sessionStartedAtMs,
+  isStreaming,
+  touchSettings,
+  onTouchSettingsChange,
+  onEndSession,
+}: {
+  diagnosticsStore: StreamDiagnosticsStore;
+  sessionStartedAtMs: number | null;
+  isStreaming: boolean;
+  touchSettings: AndroidTouchSettings;
+  onTouchSettingsChange: (settings: AndroidTouchSettings) => void;
+  onEndSession: () => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const battery = useBatterySnapshot();
+  const elapsedSeconds = useElapsedSeconds(sessionStartedAtMs, isStreaming);
+  const stats = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (value) => ({
+      rttMs: value.rttMs,
+      packetLossPercent: value.packetLossPercent,
+      bitrateKbps: value.bitrateKbps,
+      decodeFps: value.decodeFps,
+      connectionState: value.connectionState,
+      inputReady: value.inputReady,
+      lagReason: value.lagReason,
+    }),
+    (prev, next) =>
+      prev.rttMs === next.rttMs &&
+      prev.packetLossPercent === next.packetLossPercent &&
+      prev.bitrateKbps === next.bitrateKbps &&
+      prev.decodeFps === next.decodeFps &&
+      prev.connectionState === next.connectionState &&
+      prev.inputReady === next.inputReady &&
+      prev.lagReason === next.lagReason,
+  );
+  const updateTouchSettings = useCallback((patch: Partial<AndroidTouchSettings>) => {
+    onTouchSettingsChange({ ...touchSettings, ...patch });
+  }, [onTouchSettingsChange, touchSettings]);
+  const batteryText = battery.level === null ? "Battery --" : `Battery ${battery.level}%${battery.charging ? " charging" : ""}`;
+
+  return (
+    <div className="sv-android-menu">
+      <button
+        type="button"
+        className="sv-android-menu-toggle"
+        onClick={() => setOpen((value) => !value)}
+        aria-label="Open stream menu"
+        aria-expanded={open}
+        title="Stream menu"
+      >
+        <Menu size={18} />
+      </button>
+      {open && (
+        <div className="sv-android-menu-panel" role="dialog" aria-label="Stream menu">
+          <div className="sv-android-menu-status">
+            <span><Clock3 size={14} /> {formatElapsed(elapsedSeconds)}</span>
+            <span><Battery size={14} /> {batteryText}</span>
+            <span><Wifi size={14} /> {stats.connectionState} · {stats.inputReady ? "input live" : "input sync"}</span>
+          </div>
+
+          <div className="sv-android-menu-grid">
+            <span>RTT</span>
+            <strong>{stats.rttMs > 0 ? `${stats.rttMs.toFixed(0)}ms` : "--"}</strong>
+            <span>Loss</span>
+            <strong>{stats.packetLossPercent.toFixed(2)}%</strong>
+            <span>Bitrate</span>
+            <strong>{(stats.bitrateKbps / 1000).toFixed(1)} Mbps</strong>
+            <span>FPS</span>
+            <strong>{stats.decodeFps || "--"}</strong>
+          </div>
+
+          <label className="sv-android-switch">
+            <input
+              type="checkbox"
+              checked={touchSettings.enabled}
+              onChange={(event) => updateTouchSettings({ enabled: event.target.checked })}
+            />
+            <span>Touch controls</span>
+          </label>
+
+          <label className="sv-android-switch">
+            <input
+              type="checkbox"
+              checked={touchSettings.mousePad}
+              onChange={(event) => updateTouchSettings({ mousePad: event.target.checked })}
+            />
+            <span><MousePointer2 size={14} /> Finger mouse</span>
+          </label>
+
+          <label className="sv-android-slider">
+            <span>Size {Math.round(touchSettings.size * 100)}%</span>
+            <input
+              type="range"
+              min="72"
+              max="135"
+              step="1"
+              value={Math.round(touchSettings.size * 100)}
+              onChange={(event) => updateTouchSettings({ size: Number(event.target.value) / 100 })}
+            />
+          </label>
+
+          <label className="sv-android-slider">
+            <span>Transparency {Math.round(touchSettings.opacity * 100)}%</span>
+            <input
+              type="range"
+              min="25"
+              max="100"
+              step="1"
+              value={Math.round(touchSettings.opacity * 100)}
+              onChange={(event) => updateTouchSettings({ opacity: Number(event.target.value) / 100 })}
+            />
+          </label>
+
+          <div className="sv-android-placement" aria-label="Touch control placement">
+            {(["default", "compact", "lower", "split"] as TouchPlacement[]).map((placement) => (
+              <button
+                type="button"
+                key={placement}
+                className={touchSettings.placement === placement ? "active" : ""}
+                onClick={() => updateTouchSettings({ placement })}
+              >
+                {placement}
+              </button>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            className="sv-android-quit"
+            onClick={() => {
+              setOpen(false);
+              onEndSession();
+            }}
+          >
+            <LogOut size={15} />
+            <span>Quit session</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -896,6 +1217,7 @@ export function StreamView({
   onRequestPointerLock,
   onReleasePointerLock,
   onVirtualGamepadState,
+  onTouchMouseMove,
   microphoneMode,
   onMicrophoneModeChange,
   onScreenshotShortcutChange,
@@ -933,6 +1255,7 @@ export function StreamView({
   const [usedMimeType, setUsedMimeType] = useState<string | null>(null);
   const [recordingShortcutInput, setRecordingShortcutInput] = useState(shortcuts.recording);
   const [recordingShortcutError, setRecordingShortcutError] = useState<string | null>(null);
+  const [androidTouchSettings, setAndroidTouchSettings] = useState<AndroidTouchSettings>(() => readAndroidTouchSettings());
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingIdRef = useRef<string | null>(null);
   const recordingStartTimeRef = useRef<number>(0);
@@ -946,6 +1269,18 @@ export function StreamView({
     typeof openNow?.abortRecording === "function" &&
     typeof openNow?.listRecordings === "function" &&
     typeof openNow?.deleteRecording === "function";
+
+  const handleAndroidTouchSettingsChange = useCallback((next: AndroidTouchSettings) => {
+    const normalized: AndroidTouchSettings = {
+      enabled: next.enabled,
+      size: clampNumber(next.size, 0.72, 1.35),
+      opacity: clampNumber(next.opacity, 0.25, 1),
+      placement: next.placement,
+      mousePad: next.mousePad,
+    };
+    setAndroidTouchSettings(normalized);
+    writeAndroidTouchSettings(normalized);
+  }, []);
 
   const microphoneModes = useMemo(
     () => [
@@ -2157,8 +2492,27 @@ export function StreamView({
       {/* Gradient background when no video */}
       <StreamEmptyState diagnosticsStore={diagnosticsStore} />
 
-      {platformCapabilities.isAndroid && !isConnecting && onVirtualGamepadState && (
-        <TouchControllerOverlay onVirtualGamepadState={onVirtualGamepadState} />
+      {platformCapabilities.isAndroid && !isConnecting && (
+        <>
+          {onVirtualGamepadState && androidTouchSettings.enabled && (
+            <TouchControllerOverlay
+              onVirtualGamepadState={onVirtualGamepadState}
+              settings={androidTouchSettings}
+            />
+          )}
+          <AndroidMousePad
+            enabled={androidTouchSettings.mousePad}
+            onTouchMouseMove={onTouchMouseMove}
+          />
+          <AndroidStreamMenu
+            diagnosticsStore={diagnosticsStore}
+            sessionStartedAtMs={sessionStartedAtMs}
+            isStreaming={isStreaming}
+            touchSettings={androidTouchSettings}
+            onTouchSettingsChange={handleAndroidTouchSettingsChange}
+            onEndSession={onEndSession}
+          />
+        </>
       )}
 
       {/* Connecting overlay */}

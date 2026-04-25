@@ -129,6 +129,12 @@ export interface VirtualGamepadState {
   rightStickY: number;
 }
 
+export interface TouchMouseMoveInput {
+  dx: number;
+  dy: number;
+  timestampMs?: number;
+}
+
 export type StreamLagReason =
   | "unknown"
   | "stable"
@@ -1979,6 +1985,51 @@ export class GfnWebRtcClient {
     this.previousVirtualGamepadState = { ...gamepadInput };
     this.diagnostics.connectedGamepads = this.connectedGamepads.size + (this.virtualGamepadConnected ? 1 : 0);
     this.emitStats();
+  }
+
+  public sendTouchMouseMove(input: TouchMouseMoveInput): void {
+    if (!this.inputReady || this.inputPaused) {
+      return;
+    }
+
+    const dx = Number.isFinite(input.dx) ? input.dx : 0;
+    const dy = Number.isFinite(input.dy) ? input.dy : 0;
+    if (dx === 0 && dy === 0) {
+      return;
+    }
+
+    let scaleX = 1;
+    let scaleY = 1;
+    const target = this.pointerLockTarget ?? this.options.videoElement;
+    const rect = target.getBoundingClientRect();
+    const resMatch = /^([0-9]+)x([0-9]+)$/.exec(this.currentResolution ?? "");
+    if (rect.width > 0 && rect.height > 0 && resMatch) {
+      const serverWidth = parseInt(resMatch[1], 10);
+      const serverHeight = parseInt(resMatch[2], 10);
+      if (Number.isFinite(serverWidth) && Number.isFinite(serverHeight) && serverWidth > 0 && serverHeight > 0) {
+        scaleX = serverWidth / rect.width;
+        scaleY = serverHeight / rect.height;
+      }
+    }
+
+    const sensitivity = this.mouseSensitivity;
+    const speed = Math.hypot(dx, dy);
+    const strength = Math.max(0, this.mouseAccelerationPercent - 1) / 149;
+    const accelFactor = this.mouseAccelerationPercent > 1
+      ? 1 + Math.min(0.6 * strength, (speed / 50) * strength)
+      : 1;
+    const dxServer = Math.max(-32768, Math.min(32767, Math.round(dx * sensitivity * accelFactor * scaleX)));
+    const dyServer = Math.max(-32768, Math.min(32767, Math.round(dy * sensitivity * accelFactor * scaleY)));
+    if (dxServer === 0 && dyServer === 0) {
+      return;
+    }
+
+    const payload = this.inputEncoder.encodeMouseMove({
+      dx: dxServer,
+      dy: dyServer,
+      timestampUs: timestampUs(input.timestampMs),
+    });
+    this.sendInputPacket(payload, INPUT_MOUSE_REL);
   }
 
   private readGamepadState(gamepad: Gamepad, controllerId: number): GamepadInput {

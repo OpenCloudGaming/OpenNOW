@@ -5639,6 +5639,8 @@ button.game-card-store-chip.active:hover {
   z-index: 1001;
   pointer-events: none;
   touch-action: none;
+  --sv-touch-scale: 1;
+  --sv-touch-opacity: 0.74;
 }
 
 .sv-touch-left,
@@ -5649,6 +5651,8 @@ button.game-card-store-chip.active:hover {
   align-items: end;
   gap: 14px;
   pointer-events: none;
+  transform: scale(var(--sv-touch-scale));
+  transform-origin: bottom left;
 }
 
 .sv-touch-left {
@@ -5659,27 +5663,30 @@ button.game-card-store-chip.active:hover {
 .sv-touch-right {
   right: max(16px, env(safe-area-inset-right));
   grid-template-columns: auto auto;
+  transform-origin: bottom right;
 }
 
 .sv-touch-shoulders {
   position: fixed;
   top: max(12px, env(safe-area-inset-top));
   left: 50%;
-  transform: translateX(-50%);
   display: grid;
   grid-template-columns: repeat(4, minmax(52px, 68px));
   gap: 8px;
   pointer-events: none;
+  transform: translateX(-50%) scale(var(--sv-touch-scale));
+  transform-origin: top center;
 }
 
 .sv-touch-center {
   position: fixed;
   left: 50%;
   bottom: max(18px, env(safe-area-inset-bottom));
-  transform: translateX(-50%);
   display: flex;
   gap: 10px;
   pointer-events: none;
+  transform: translateX(-50%) scale(var(--sv-touch-scale));
+  transform-origin: bottom center;
 }
 
 .sv-touch-stick {
@@ -5696,6 +5703,7 @@ button.game-card-store-chip.active:hover {
   place-items: center;
   pointer-events: auto;
   touch-action: none;
+  opacity: var(--sv-touch-opacity);
 }
 
 .sv-touch-stick-thumb {
@@ -5735,6 +5743,7 @@ button.game-card-store-chip.active:hover {
   align-items: center;
   justify-content: center;
   user-select: none;
+  opacity: var(--sv-touch-opacity);
 }
 
 .sv-touch-btn:active {
@@ -5786,6 +5795,183 @@ button.game-card-store-chip.active:hover {
 .sv-touch-face-a {
   bottom: 0;
   left: 40px;
+}
+
+.sv-touch[data-placement="compact"] .sv-touch-dpad,
+.sv-touch[data-placement="compact"] .sv-touch-shoulders {
+  display: none;
+}
+
+.sv-touch[data-placement="compact"] .sv-touch-left {
+  grid-template-columns: auto;
+}
+
+.sv-touch[data-placement="compact"] .sv-touch-right {
+  grid-template-columns: auto auto;
+}
+
+.sv-touch[data-placement="lower"] .sv-touch-left,
+.sv-touch[data-placement="lower"] .sv-touch-right,
+.sv-touch[data-placement="lower"] .sv-touch-center {
+  bottom: max(8px, env(safe-area-inset-bottom));
+}
+
+.sv-touch[data-placement="lower"] .sv-touch-shoulders {
+  top: max(6px, env(safe-area-inset-top));
+}
+
+.sv-touch[data-placement="split"] .sv-touch-left {
+  bottom: max(82px, calc(env(safe-area-inset-bottom) + 70px));
+}
+
+.sv-touch[data-placement="split"] .sv-touch-right {
+  bottom: max(10px, env(safe-area-inset-bottom));
+}
+
+.sv-android-mousepad {
+  position: fixed;
+  z-index: 1000;
+  left: 18%;
+  right: 18%;
+  top: 18%;
+  bottom: 18%;
+  pointer-events: auto;
+  touch-action: none;
+  background: transparent;
+}
+
+.sv-android-menu {
+  position: fixed;
+  z-index: 1004;
+  right: max(10px, env(safe-area-inset-right));
+  top: max(10px, env(safe-area-inset-top));
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
+.sv-android-menu-toggle {
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(8, 10, 12, 0.72);
+  color: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(12px) saturate(140%);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.36);
+  pointer-events: auto;
+}
+
+.sv-android-menu-panel {
+  position: absolute;
+  top: 50px;
+  right: 0;
+  width: min(330px, calc(100vw - 20px));
+  max-height: min(78dvh, 560px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(10, 10, 12, 0.92);
+  color: var(--ink);
+  backdrop-filter: blur(16px) saturate(150%);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.46);
+  pointer-events: auto;
+}
+
+.sv-android-menu-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.sv-android-menu-status span,
+.sv-android-switch span,
+.sv-android-quit {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.sv-android-menu-grid {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr;
+  gap: 6px 10px;
+  padding: 9px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+}
+
+.sv-android-menu-grid strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.sv-android-switch,
+.sv-android-slider {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+}
+
+.sv-android-switch input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.sv-android-slider {
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sv-android-slider input {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.sv-android-placement {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.sv-android-placement button,
+.sv-android-quit {
+  min-height: 34px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.sv-android-placement button.active {
+  border-color: color-mix(in srgb, var(--accent) 55%, rgba(255, 255, 255, 0.13));
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+.sv-android-quit {
+  justify-content: center;
+  color: #ffd0d0;
+  border-color: color-mix(in srgb, var(--error) 45%, rgba(255, 255, 255, 0.13));
 }
 
 @media (max-width: 640px) {
