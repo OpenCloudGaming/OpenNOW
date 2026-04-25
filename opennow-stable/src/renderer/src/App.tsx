@@ -19,6 +19,7 @@ import type {
   SessionAdState,
   SessionInfo,
   SessionStopRequest,
+  SavedAccount,
   Settings,
   SubscriptionInfo,
   StreamRegion,
@@ -175,7 +176,17 @@ type QueueAdReportOptions = {
   errorInfo?: QueueAdErrorInfo;
 };
 
+type SignalingRecoveryState = {
+  attemptCount: number;
+  inFlight: Promise<boolean> | null;
+  explicitShutdown: boolean;
+  appId: number | null;
+  generation: number;
+};
+
 const APP_PAGE_ORDER: AppPage[] = ["home", "library", "settings"];
+const RECOVERABLE_STREAM_STATUSES: readonly StreamStatus[] = ["queue", "setup", "starting", "connecting", "streaming"];
+const SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS = [0, 3000] as const;
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
 
@@ -756,10 +767,18 @@ function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchE
   };
 }
 
+function streamStatusToLoadingStage(status: StreamStatus): StreamLoadingStatus {
+  if (status === "queue" || status === "setup" || status === "starting" || status === "connecting") {
+    return status;
+  }
+  return "connecting";
+}
+
 export function App(): JSX.Element {
 
   // Auth State
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
+  const [savedAccounts, setSavedAccounts] = useState<SavedAccount[]>([]);
   const [providers, setProviders] = useState<LoginProvider[]>([]);
   const [providerIdpId, setProviderIdpId] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -861,6 +880,8 @@ export function App(): JSX.Element {
   const [navbarActiveSession, setNavbarActiveSession] = useState<ActiveSessionInfo | null>(null);
   const [isResumingNavbarSession, setIsResumingNavbarSession] = useState(false);
   const [isTerminatingNavbarSession, setIsTerminatingNavbarSession] = useState(false);
+  const [accountToRemove, setAccountToRemove] = useState<string | null>(null);
+  const [removeAccountConfirmOpen, setRemoveAccountConfirmOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
   const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
@@ -1122,6 +1143,13 @@ export function App(): JSX.Element {
   const launchInFlightRef = useRef(false);
   const launchAbortRef = useRef(false);
   const streamStatusRef = useRef<StreamStatus>(streamStatus);
+  const signalingRecoveryRef = useRef<SignalingRecoveryState>({
+    attemptCount: 0,
+    inFlight: null,
+    explicitShutdown: false,
+    appId: null,
+    generation: 0,
+  });
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const adReportQueueRef = useRef<Promise<void>>(Promise.resolve());
   const adReportStateRef = useRef<Record<string, SessionAdAction>>({});
@@ -1340,6 +1368,9 @@ export function App(): JSX.Element {
     keepLaunchError?: boolean;
     keepStreamingContext?: boolean;
   }): void => {
+    signalingRecoveryRef.current.attemptCount = 0;
+    signalingRecoveryRef.current.inFlight = null;
+    signalingRecoveryRef.current.appId = null;
     setSession(null);
     setStreamStatus("idle");
     setQueuePosition(undefined);
@@ -1364,6 +1395,29 @@ export function App(): JSX.Element {
       void window.openNow.clearDiscordActivity();
     }
   }, [diagnosticsStore, resetStatsOverlayToPreference, settings.discordRichPresence]);
+
+  const resetSignalingRecoveryState = useCallback((options?: {
+    keepExplicitShutdown?: boolean;
+  }): void => {
+    signalingRecoveryRef.current.generation += 1;
+    signalingRecoveryRef.current.attemptCount = 0;
+    signalingRecoveryRef.current.inFlight = null;
+    signalingRecoveryRef.current.appId = null;
+    if (!options?.keepExplicitShutdown) {
+      signalingRecoveryRef.current.explicitShutdown = false;
+    }
+  }, []);
+
+  const markExplicitSignalingShutdown = useCallback((): void => {
+    signalingRecoveryRef.current.generation += 1;
+    signalingRecoveryRef.current.explicitShutdown = true;
+    signalingRecoveryRef.current.inFlight = null;
+  }, []);
+
+  const isRecoveryGenerationCurrent = useCallback((generation: number): boolean => {
+    const state = signalingRecoveryRef.current;
+    return state.generation === generation && !state.explicitShutdown;
+  }, []);
 
   // Session ref sync
   useEffect(() => {
@@ -1667,24 +1721,36 @@ export function App(): JSX.Element {
     [],
   );
 
-  const refreshNavbarActiveSession = useCallback(async (): Promise<void> => {
-    if (!authSession) {
+  const refreshSavedAccounts = useCallback(async (): Promise<SavedAccount[]> => {
+    const accounts = await window.openNow.getSavedAccounts();
+    setSavedAccounts(accounts);
+    return accounts;
+  }, []);
+
+  const refreshNavbarActiveSession = useCallback(async (
+    sessionOverride?: AuthSession,
+    streamingBaseUrlOverride?: string,
+  ): Promise<void> => {
+    const session = sessionOverride ?? authSession;
+    if (!session) {
       setNavbarActiveSession(null);
       return;
     }
-    const token = authSession.tokens.idToken ?? authSession.tokens.accessToken;
-    if (!token || !effectiveStreamingBaseUrl) {
+    const token = session.tokens.idToken ?? session.tokens.accessToken;
+    const streamingBaseUrl = streamingBaseUrlOverride
+      ?? (settings.region.trim() ? effectiveStreamingBaseUrl : session.provider.streamingServiceUrl);
+    if (!token || !streamingBaseUrl) {
       setNavbarActiveSession(null);
       return;
     }
     try {
-      const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
+      const activeSessions = await window.openNow.getActiveSessions(token, streamingBaseUrl);
       const candidate = activeSessions.find((entry) => entry.status === 3 || entry.status === 2) ?? null;
       setNavbarActiveSession(candidate);
     } catch (error) {
       console.warn("Failed to refresh active sessions:", error);
     }
-  }, [authSession, effectiveStreamingBaseUrl]);
+  }, [authSession, effectiveStreamingBaseUrl, settings.region]);
 
   const allKnownGames = useMemo(() => [...games, ...libraryGames], [games, libraryGames]);
 
@@ -1756,128 +1822,6 @@ export function App(): JSX.Element {
     }, 10000);
     return () => window.clearInterval(timer);
   }, [authSession, refreshNavbarActiveSession, streamStatus]);
-
-  // Initialize app
-  useEffect(() => {
-    if (hasInitializedRef.current) return;
-    hasInitializedRef.current = true;
-
-    const initialize = async () => {
-      try {
-        // Load settings first
-        const loadedSettings = await window.openNow.getSettings();
-        setSettings(loadedSettings);
-        setShowStatsOverlay(loadedSettings.showStatsOnLaunch);
-        setSettingsLoaded(true);
-
-        // Load providers and session (refresh only if token is near expiry)
-        setStartupStatusMessage("Restoring saved session...");
-        const [providerList, sessionResult] = await Promise.all([
-          window.openNow.getLoginProviders(),
-          window.openNow.getAuthSession(),
-        ]);
-        const persistedSession = sessionResult.session;
-
-        if (sessionResult.refresh.outcome === "refreshed") {
-          setStartupRefreshNotice({
-            tone: "success",
-            text: "Session restored. Token refreshed.",
-          });
-          setStartupStatusMessage("Token refreshed. Loading your account...");
-        } else if (sessionResult.refresh.outcome === "failed") {
-          setStartupRefreshNotice({
-            tone: "warn",
-            text: "Token refresh failed. Using saved session token.",
-          });
-          setStartupStatusMessage("Token refresh failed. Continuing with saved session...");
-        } else if (sessionResult.refresh.outcome === "missing_refresh_token") {
-          setStartupStatusMessage("Saved session has no refresh token. Continuing...");
-        } else if (persistedSession) {
-          setStartupStatusMessage("Session restored.");
-        } else {
-          setStartupStatusMessage("No saved session found.");
-        }
-
-        // Load persisted variant selections from localStorage before applying defaults
-        try {
-          const raw = localStorage.getItem(VARIANT_SELECTION_LOCALSTORAGE_KEY);
-          if (raw) {
-            const parsed = JSON.parse(raw);
-            if (parsed && typeof parsed === "object") {
-              setVariantByGameId(parsed as Record<string, string>);
-            }
-          }
-        } catch (e) {
-          // ignore parse/storage errors
-        }
-
-        // Update isInitializing FIRST so UI knows we're done loading
-        setIsInitializing(false);
-        setProviders(providerList);
-        setAuthSession(persistedSession);
-
-        const activeProviderId = persistedSession?.provider?.idpId ?? providerList[0]?.idpId ?? "";
-        setProviderIdpId(activeProviderId);
-
-        if (persistedSession) {
-          // Load regions
-          const token = persistedSession.tokens.idToken ?? persistedSession.tokens.accessToken;
-          const discovered = await window.openNow.getRegions({ token });
-          setRegions(discovered);
-
-          try {
-            await loadSubscriptionInfo(persistedSession);
-          } catch (error) {
-            console.warn("Failed to load subscription info:", error);
-            setSubscriptionInfo(null);
-          }
-
-          // Load games
-          try {
-            const [catalogResult, libGames] = await Promise.all([
-              window.openNow.browseCatalog({
-                token,
-                providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
-                searchQuery: "",
-                sortId: catalogSelectedSortId,
-                filterIds: catalogSelectedFilterIds,
-              }),
-              window.openNow.fetchLibraryGames({
-                token,
-                providerStreamingBaseUrl: persistedSession.provider.streamingServiceUrl,
-              }),
-            ]);
-            applyCatalogBrowseResult(catalogResult);
-            setLibraryGames(libGames);
-            applyVariantSelections(libGames);
-          } catch (catalogError) {
-            console.error("Initialization games load failed:", catalogError);
-            setGames([]);
-            setLibraryGames([]);
-            setCatalogFilterGroups([]);
-            setCatalogSortOptions([]);
-            setCatalogTotalCount(0);
-            setCatalogSupportedCount(0);
-          }
-        } else {
-          setGames([]);
-          setLibraryGames([]);
-          setSubscriptionInfo(null);
-          setCatalogFilterGroups([]);
-          setCatalogSortOptions([]);
-          setCatalogTotalCount(0);
-          setCatalogSupportedCount(0);
-        }
-      } catch (error) {
-        console.error("Initialization failed:", error);
-        setStartupStatusMessage("Session restore failed. Please sign in again.");
-        // Always set isInitializing to false even on error
-        setIsInitializing(false);
-      }
-    };
-
-    void initialize();
-  }, []);
 
   useEffect(() => {
     saveStoredCodecResults(codecResults);
@@ -2167,87 +2111,6 @@ export function App(): JSX.Element {
     return () => window.clearTimeout(timer);
   }, [remoteStreamWarning]);
 
-  // Signaling events
-  useEffect(() => {
-    const unsubscribe = window.openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {
-      console.log(`[App] Signaling event: ${event.type}`, event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "", event.type === "remote-ice" ? event.candidate : "");
-      try {
-        if (event.type === "offer") {
-          const activeSession = sessionRef.current;
-          if (!activeSession) {
-            console.warn("[App] Received offer but no active session in sessionRef!");
-            return;
-          }
-          console.log("[App] Active session for offer:", JSON.stringify({
-            sessionId: activeSession.sessionId,
-            serverIp: activeSession.serverIp,
-            signalingServer: activeSession.signalingServer,
-            mediaConnectionInfo: activeSession.mediaConnectionInfo,
-            iceServersCount: activeSession.iceServers?.length,
-          }));
-
-          if (!clientRef.current && videoRef.current && audioRef.current) {
-            clientRef.current = new GfnWebRtcClient({
-              videoElement: videoRef.current,
-              audioElement: audioRef.current,
-              autoFullScreen: settings.autoFullScreen,
-              microphoneMode: settings.microphoneMode,
-              microphoneDeviceId: settings.microphoneDeviceId || undefined,
-              mouseSensitivity: settings.mouseSensitivity,
-              mouseAcceleration: settings.mouseAcceleration,
-              onLog: (line: string) => console.log(`[WebRTC] ${line}`),
-              onStats: (stats) => diagnosticsStore.set(stats),
-              onEscHoldProgress: (visible, progress) => {
-                setEscHoldReleaseIndicator({ visible, progress });
-              },
-              onTimeWarning: (warning) => {
-                setRemoteStreamWarning({
-                  code: warning.code,
-                  message: warningMessage(warning.code),
-                  tone: warningTone(warning.code),
-                  secondsLeft: warning.secondsLeft,
-                });
-              },
-              onMicStateChange: (state) => {
-                console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
-              },
-            });
-            // Auto-start microphone if mode is enabled
-            if (settings.microphoneMode !== "disabled") {
-              void clientRef.current.startMicrophone();
-            }
-          }
-
-          if (clientRef.current) {
-            await clientRef.current.handleOffer(event.sdp, activeSession, {
-              codec: settings.codec,
-              colorQuality: settings.colorQuality,
-              resolution: settings.resolution,
-              fps: settings.fps,
-              maxBitrateKbps: settings.maxBitrateMbps * 1000,
-            });
-            setLaunchError(null);
-            setStreamStatus("streaming");
-          }
-        } else if (event.type === "remote-ice") {
-          await clientRef.current?.addRemoteCandidate(event.candidate);
-        } else if (event.type === "disconnected") {
-          console.warn("Signaling disconnected:", event.reason);
-          clientRef.current?.dispose();
-          clientRef.current = null;
-          resetLaunchRuntime();
-          launchInFlightRef.current = false;
-        } else if (event.type === "error") {
-          console.error("Signaling error:", event.message);
-        }
-      } catch (error) {
-        console.error("Signaling event error:", error);
-      }
-    });
-
-    return () => unsubscribe();
-  }, [resetLaunchRuntime, settings]);
-
   // Save settings when changed
   const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
@@ -2342,27 +2205,19 @@ export function App(): JSX.Element {
     applyVariantSelections(catalogResult.games);
   }, [applyVariantSelections]);
 
-  // Login handler
-  const handleLogin = useCallback(async () => {
-    setIsLoggingIn(true);
-    setLoginError(null);
+  const loadSessionRuntimeData = useCallback(async (session: AuthSession): Promise<void> => {
+    const token = session.tokens.idToken ?? session.tokens.accessToken;
+    const discovered = await window.openNow.getRegions({ token });
+    setRegions(discovered);
+
     try {
-      const session = await window.openNow.login({ providerIdpId: providerIdpId || undefined });
-      setAuthSession(session);
-      setProviderIdpId(session.provider.idpId);
+      await loadSubscriptionInfo(session);
+    } catch (error) {
+      console.warn("Failed to load subscription info:", error);
+      setSubscriptionInfo(null);
+    }
 
-      // Load regions
-      const token = session.tokens.idToken ?? session.tokens.accessToken;
-      const discovered = await window.openNow.getRegions({ token });
-      setRegions(discovered);
-
-      try {
-        await loadSubscriptionInfo(session);
-      } catch (error) {
-        console.warn("Failed to load subscription info:", error);
-        setSubscriptionInfo(null);
-      }
-
+    try {
       const [catalogResult, libGames] = await Promise.all([
         window.openNow.browseCatalog({
           token,
@@ -2379,17 +2234,208 @@ export function App(): JSX.Element {
       applyCatalogBrowseResult(catalogResult);
       setLibraryGames(libGames);
       applyVariantSelections(libGames);
+    } catch (catalogError) {
+      console.error("Initialization games load failed:", catalogError);
+      setGames([]);
+      setLibraryGames([]);
+      setCatalogFilterGroups([]);
+      setCatalogSortOptions([]);
+      setCatalogTotalCount(0);
+      setCatalogSupportedCount(0);
+    }
+  }, [
+    applyCatalogBrowseResult,
+    applyVariantSelections,
+    catalogSelectedFilterIds,
+    catalogSelectedSortId,
+    loadSubscriptionInfo,
+  ]);
+
+  // Initialize app
+  useEffect(() => {
+    if (hasInitializedRef.current) return;
+    hasInitializedRef.current = true;
+
+    const initialize = async () => {
+      try {
+        // Load settings first
+        const loadedSettings = await window.openNow.getSettings();
+        setSettings(loadedSettings);
+        setShowStatsOverlay(loadedSettings.showStatsOnLaunch);
+        setSettingsLoaded(true);
+
+        // Load providers and session (refresh only if token is near expiry)
+        setStartupStatusMessage("Restoring saved session...");
+        const [providerList, sessionResult] = await Promise.all([
+          window.openNow.getLoginProviders(),
+          window.openNow.getAuthSession(),
+        ]);
+        const accounts = await window.openNow.getSavedAccounts();
+        const persistedSession = sessionResult.session;
+
+        if (sessionResult.refresh.outcome === "refreshed") {
+          setStartupRefreshNotice({
+            tone: "success",
+            text: "Session restored. Token refreshed.",
+          });
+          setStartupStatusMessage("Token refreshed. Loading your account...");
+        } else if (sessionResult.refresh.outcome === "failed") {
+          setStartupRefreshNotice({
+            tone: "warn",
+            text: "Token refresh failed. Using saved session token.",
+          });
+          setStartupStatusMessage("Token refresh failed. Continuing with saved session...");
+        } else if (sessionResult.refresh.outcome === "missing_refresh_token") {
+          setStartupStatusMessage("Saved session has no refresh token. Continuing...");
+        } else if (persistedSession) {
+          setStartupStatusMessage("Session restored.");
+        } else {
+          setStartupStatusMessage("No saved session found.");
+        }
+
+        // Load persisted variant selections from localStorage before applying defaults
+        try {
+          const raw = localStorage.getItem(VARIANT_SELECTION_LOCALSTORAGE_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === "object") {
+              setVariantByGameId(parsed as Record<string, string>);
+            }
+          }
+        } catch (e) {
+          // ignore parse/storage errors
+        }
+
+        setProviders(providerList);
+        setAuthSession(persistedSession);
+        setSavedAccounts(accounts);
+
+        const activeProviderId = persistedSession?.provider?.idpId ?? providerList[0]?.idpId ?? "";
+        setProviderIdpId(activeProviderId);
+
+        if (persistedSession) {
+          await loadSessionRuntimeData(persistedSession);
+        } else {
+          setRegions([]);
+          setGames([]);
+          setLibraryGames([]);
+          setSubscriptionInfo(null);
+          setCatalogFilterGroups([]);
+          setCatalogSortOptions([]);
+          setCatalogTotalCount(0);
+          setCatalogSupportedCount(0);
+        }
+
+        setIsInitializing(false);
+      } catch (error) {
+        console.error("Initialization failed:", error);
+        setStartupStatusMessage("Session restore failed. Please sign in again.");
+        // Always set isInitializing to false even on error
+        setIsInitializing(false);
+      }
+    };
+
+    void initialize();
+  }, [loadSessionRuntimeData]);
+
+  // Login handler
+  const handleLogin = useCallback(async () => {
+    setIsLoggingIn(true);
+    setLoginError(null);
+    try {
+      const session = await window.openNow.login({ providerIdpId: providerIdpId || undefined });
+      setAuthSession(session);
+      setProviderIdpId(session.provider.idpId);
+      await refreshSavedAccounts();
+      await loadSessionRuntimeData(session);
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "Login failed");
     } finally {
       setIsLoggingIn(false);
     }
-  }, [applyCatalogBrowseResult, applyVariantSelections, loadSubscriptionInfo, providerIdpId, catalogFilterKey, catalogSelectedSortId]);
+  }, [loadSessionRuntimeData, providerIdpId, refreshSavedAccounts]);
+
+  const handleSwitchAccount = useCallback(async (userId: string) => {
+    try {
+      const session = await window.openNow.switchAccount(userId);
+      setAuthSession(session);
+      setProviderIdpId(session.provider.idpId);
+      await refreshSavedAccounts();
+      await loadSessionRuntimeData(session);
+      await refreshNavbarActiveSession(session);
+    } catch (error) {
+      console.warn("Failed to switch account:", error);
+      setLoginError(error instanceof Error ? error.message : "Failed to switch account");
+      try {
+        await refreshSavedAccounts();
+        const sessionResult = await window.openNow.getAuthSession();
+        setAuthSession(sessionResult.session);
+        if (sessionResult.session) {
+          setProviderIdpId(sessionResult.session.provider.idpId);
+          await loadSessionRuntimeData(sessionResult.session);
+          await refreshNavbarActiveSession(sessionResult.session);
+        } else {
+          setRegions([]);
+          setGames([]);
+          setLibraryGames([]);
+          setSubscriptionInfo(null);
+          setNavbarActiveSession(null);
+          setCatalogFilterGroups([]);
+          setCatalogSortOptions([]);
+          setCatalogTotalCount(0);
+          setCatalogSupportedCount(0);
+        }
+      } catch (recoveryError) {
+        console.warn("Failed to recover account state after switch failure:", recoveryError);
+      }
+    }
+  }, [loadSessionRuntimeData, refreshNavbarActiveSession, refreshSavedAccounts]);
+
+  const handleRemoveAccount = useCallback((userId: string) => {
+    setAccountToRemove(userId);
+    setRemoveAccountConfirmOpen(true);
+  }, []);
+
+  const confirmRemoveAccount = useCallback(async () => {
+    if (!accountToRemove) return;
+    const targetUserId = accountToRemove;
+    setRemoveAccountConfirmOpen(false);
+    setAccountToRemove(null);
+
+    await window.openNow.removeAccount(targetUserId);
+    const [accounts, sessionResult] = await Promise.all([
+      window.openNow.getSavedAccounts(),
+      window.openNow.getAuthSession(),
+    ]);
+    setSavedAccounts(accounts);
+    setAuthSession(sessionResult.session);
+    if (sessionResult.session) {
+      setProviderIdpId(sessionResult.session.provider.idpId);
+      await loadSessionRuntimeData(sessionResult.session);
+      await refreshNavbarActiveSession(sessionResult.session);
+      return;
+    }
+    setRegions([]);
+    setGames([]);
+    setLibraryGames([]);
+    setSubscriptionInfo(null);
+    setNavbarActiveSession(null);
+    setCatalogFilterGroups([]);
+    setCatalogSortOptions([]);
+    setCatalogTotalCount(0);
+    setCatalogSupportedCount(0);
+  }, [accountToRemove, loadSessionRuntimeData, refreshNavbarActiveSession]);
+
+  const handleAddAccount = useCallback(() => {
+    setAuthSession(null);
+    setLoginError(null);
+  }, []);
 
   const confirmLogout = useCallback(async () => {
     setLogoutConfirmOpen(false);
-    await window.openNow.logout();
+    await window.openNow.logoutAll();
     setAuthSession(null);
+    setSavedAccounts([]);
     setGames([]);
     setLibraryGames([]);
     setVariantByGameId({});
@@ -2470,6 +2516,74 @@ export function App(): JSX.Element {
     });
   }, []);
 
+  const resolveSessionClaimAppId = useCallback((existingSession: ActiveSessionInfo): string => {
+    const trackedAppId = signalingRecoveryRef.current.appId;
+    if (Number.isFinite(existingSession.appId) && existingSession.appId > 0) {
+      return String(existingSession.appId);
+    }
+    if (trackedAppId && Number.isFinite(trackedAppId)) {
+      return String(trackedAppId);
+    }
+    throw new Error("Active session is missing app metadata required for resume.");
+  }, []);
+
+  const applyClaimedSessionAndConnect = useCallback(async (
+    claimed: SessionInfo,
+    expectedRecoveryGeneration?: number,
+  ): Promise<void> => {
+    const canProceedWithClaimedReconnect = (): boolean => {
+      if (
+        expectedRecoveryGeneration !== undefined
+        && !isRecoveryGenerationCurrent(expectedRecoveryGeneration)
+      ) {
+        return false;
+      }
+      if (signalingRecoveryRef.current.explicitShutdown) {
+        return false;
+      }
+      return true;
+    };
+
+    if (
+      expectedRecoveryGeneration !== undefined
+      && !isRecoveryGenerationCurrent(expectedRecoveryGeneration)
+    ) {
+      console.log("[Recovery] Skipping claimed session apply due to stale recovery generation");
+      return;
+    }
+
+    console.log("Claimed session:", {
+      sessionId: claimed.sessionId,
+      signalingServer: claimed.signalingServer,
+      signalingUrl: claimed.signalingUrl,
+      status: claimed.status,
+    });
+
+    await sleep(1000);
+    if (
+      expectedRecoveryGeneration !== undefined
+      && !isRecoveryGenerationCurrent(expectedRecoveryGeneration)
+    ) {
+      console.log("[Recovery] Skipping reconnect due to stale recovery generation after delay");
+      return;
+    }
+    if (!canProceedWithClaimedReconnect()) {
+      console.log("[Recovery] Skipping claimed session apply due to explicit shutdown");
+      return;
+    }
+
+    setSession(claimed);
+    sessionRef.current = claimed;
+    setQueuePosition(undefined);
+    setLaunchError(null);
+    setStreamStatus("connecting");
+    await window.openNow.connectSignaling({
+      sessionId: claimed.sessionId,
+      signalingServer: claimed.signalingServer,
+      signalingUrl: claimed.signalingUrl,
+    });
+  }, [isRecoveryGenerationCurrent]);
+
   const claimAndConnectSession = useCallback(async (existingSession: ActiveSessionInfo): Promise<void> => {
     const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
     if (!token) {
@@ -2492,7 +2606,7 @@ export function App(): JSX.Element {
       streamingBaseUrl: effectiveStreamingBaseUrl,
       serverIp: existingSession.serverIp,
       sessionId: existingSession.sessionId,
-      appId: String(existingSession.appId),
+      appId: resolveSessionClaimAppId(existingSession),
       settings: {
         resolution: settings.resolution,
         fps: settings.fps,
@@ -2506,25 +2620,293 @@ export function App(): JSX.Element {
       },
     });
 
-    console.log("Claimed session:", {
-      sessionId: claimed.sessionId,
-      signalingServer: claimed.signalingServer,
-      signalingUrl: claimed.signalingUrl,
-      status: claimed.status,
+    await applyClaimedSessionAndConnect(claimed);
+  }, [applyClaimedSessionAndConnect, authSession, effectiveStreamingBaseUrl, findGameContextForSession, resolveSessionClaimAppId, settings]);
+
+  const attemptSessionRecovery = useCallback(async (reason: string): Promise<boolean> => {
+    const recoveryState = signalingRecoveryRef.current;
+    const recoveryGeneration = recoveryState.generation;
+    const currentStatus = streamStatusRef.current;
+    const currentSession = sessionRef.current;
+
+    if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
+      console.log("[Recovery] Skipping signaling recovery after explicit shutdown");
+      return false;
+    }
+    if (!RECOVERABLE_STREAM_STATUSES.includes(currentStatus)) {
+      console.log("[Recovery] Stream status is not recoverable:", currentStatus);
+      return false;
+    }
+    if (!currentSession) {
+      console.warn("[Recovery] No active session available for signaling recovery");
+      return false;
+    }
+    if (recoveryState.inFlight) {
+      console.log("[Recovery] Reusing in-flight signaling recovery attempt");
+      return recoveryState.inFlight;
+    }
+
+    const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
+    if (!token) {
+      throw new Error("Connection to the running session was lost and your login token is no longer available for resume.");
+    }
+
+    if (recoveryState.attemptCount >= SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS.length) {
+      console.warn("[Recovery] Recovery budget exhausted");
+      return false;
+    }
+
+    const attemptPromise = (async (): Promise<boolean> => {
+      clientRef.current?.dispose();
+      clientRef.current = null;
+      setStreamStatus("connecting");
+      await window.openNow.disconnectSignaling().catch(() => {});
+
+      let lastError: Error | null = null;
+      while (recoveryState.attemptCount < SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS.length) {
+        const attemptIndex = recoveryState.attemptCount;
+        recoveryState.attemptCount += 1;
+        const attemptNumber = recoveryState.attemptCount;
+        const attemptDelayMs = SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS[attemptIndex] ?? 0;
+
+        console.warn(
+          `[Recovery] Attempt ${attemptNumber}/${SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS.length} after signaling disconnect: ${reason}`,
+        );
+
+        if (attemptDelayMs > 0) {
+          await sleep(attemptDelayMs);
+        }
+        if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
+          console.log("[Recovery] Aborting attempt after explicit shutdown");
+          return false;
+        }
+
+        try {
+          const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
+          if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
+            console.log("[Recovery] Aborting attempt after active session lookup due to stale generation");
+            return false;
+          }
+          const previousAppId = recoveryState.appId;
+          const currentSessionId = currentSession.sessionId;
+          const sameSessionCandidate =
+            activeSessions.find((entry) => entry.sessionId === currentSessionId && entry.serverIp && isSessionReadyForConnect(entry.status)) ??
+            null;
+
+          let candidate = sameSessionCandidate;
+          if (!candidate && previousAppId !== null) {
+            candidate =
+              activeSessions.find((entry) => (
+                entry.appId === previousAppId &&
+                entry.serverIp &&
+                isSessionReadyForConnect(entry.status) &&
+                entry.sessionId === currentSessionId
+              )) ??
+              activeSessions.find((entry) => (
+                entry.appId === previousAppId &&
+                entry.serverIp &&
+                isSessionReadyForConnect(entry.status)
+              )) ??
+              null;
+          }
+
+          if (!candidate) {
+            const hasQueueOnlyMatch = activeSessions.some((entry) => entry.sessionId === currentSessionId && entry.status === 1);
+            if (hasQueueOnlyMatch) {
+              throw new Error("The session is still queued and cannot be reclaimed until the server marks it ready again.");
+            }
+            throw new Error("The running session could not be found anymore, so resume was not possible.");
+          }
+
+          if (!candidate.serverIp) {
+            throw new Error("The running session is missing a server address, so resume was not possible.");
+          }
+
+          const claimed = await window.openNow.claimSession({
+            token,
+            streamingBaseUrl: effectiveStreamingBaseUrl,
+            serverIp: candidate.serverIp,
+            sessionId: candidate.sessionId,
+            appId: resolveSessionClaimAppId(candidate),
+            settings: {
+              resolution: settings.resolution,
+              fps: settings.fps,
+              maxBitrateMbps: settings.maxBitrateMbps,
+              codec: settings.codec,
+              colorQuality: settings.colorQuality,
+              keyboardLayout: settings.keyboardLayout,
+              gameLanguage: settings.gameLanguage,
+              enableL4S: settings.enableL4S,
+              enableCloudGsync: settings.enableCloudGsync,
+            },
+          });
+          if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
+            console.log("[Recovery] Discarding claimed session due to stale recovery generation");
+            return false;
+          }
+
+          const matchedContext = findGameContextForSession(candidate);
+          if (matchedContext) {
+            setStreamingGame(matchedContext.game);
+            setStreamingStore(matchedContext.variant?.store ?? null);
+          } else {
+            setStreamingStore(null);
+          }
+
+          await applyClaimedSessionAndConnect(claimed, recoveryGeneration);
+          if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
+            console.log("[Recovery] Recovery generation changed before connect completed");
+            return false;
+          }
+          recoveryState.attemptCount = 0;
+          return true;
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          console.warn(`[Recovery] Attempt ${attemptNumber} failed:`, lastError.message);
+        }
+      }
+
+      if (lastError) {
+        throw lastError;
+      }
+      return false;
+    })();
+
+    recoveryState.inFlight = attemptPromise;
+    try {
+      return await attemptPromise;
+    } finally {
+      if (signalingRecoveryRef.current.inFlight === attemptPromise) {
+        signalingRecoveryRef.current.inFlight = null;
+      }
+    }
+  }, [
+    applyClaimedSessionAndConnect,
+    authSession,
+    effectiveStreamingBaseUrl,
+    findGameContextForSession,
+    isRecoveryGenerationCurrent,
+    resolveSessionClaimAppId,
+    settings,
+  ]);
+
+  // Signaling events
+  useEffect(() => {
+    const unsubscribe = window.openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {
+      console.log(`[App] Signaling event: ${event.type}`, event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "", event.type === "remote-ice" ? event.candidate : "");
+      try {
+        if (event.type === "offer") {
+          const activeSession = sessionRef.current;
+          if (!activeSession) {
+            console.warn("[App] Received offer but no active session in sessionRef!");
+            return;
+          }
+          console.log("[App] Active session for offer:", JSON.stringify({
+            sessionId: activeSession.sessionId,
+            serverIp: activeSession.serverIp,
+            signalingServer: activeSession.signalingServer,
+            mediaConnectionInfo: activeSession.mediaConnectionInfo,
+            iceServersCount: activeSession.iceServers?.length,
+          }));
+
+          if (!clientRef.current && videoRef.current && audioRef.current) {
+            clientRef.current = new GfnWebRtcClient({
+              videoElement: videoRef.current,
+              audioElement: audioRef.current,
+              autoFullScreen: settings.autoFullScreen,
+              microphoneMode: settings.microphoneMode,
+              microphoneDeviceId: settings.microphoneDeviceId || undefined,
+              mouseSensitivity: settings.mouseSensitivity,
+              mouseAcceleration: settings.mouseAcceleration,
+              onLog: (line: string) => console.log(`[WebRTC] ${line}`),
+              onStats: (stats) => diagnosticsStore.set(stats),
+              onEscHoldProgress: (visible, progress) => {
+                setEscHoldReleaseIndicator({ visible, progress });
+              },
+              onTimeWarning: (warning) => {
+                setRemoteStreamWarning({
+                  code: warning.code,
+                  message: warningMessage(warning.code),
+                  tone: warningTone(warning.code),
+                  secondsLeft: warning.secondsLeft,
+                });
+              },
+              onMicStateChange: (state) => {
+                console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
+              },
+            });
+            if (settings.microphoneMode !== "disabled") {
+              void clientRef.current.startMicrophone();
+            }
+          }
+
+          if (clientRef.current) {
+            await clientRef.current.handleOffer(event.sdp, activeSession, {
+              codec: settings.codec,
+              colorQuality: settings.colorQuality,
+              resolution: settings.resolution,
+              fps: settings.fps,
+              maxBitrateKbps: settings.maxBitrateMbps * 1000,
+            });
+            setLaunchError(null);
+            setStreamStatus("streaming");
+            resetSignalingRecoveryState({ keepExplicitShutdown: true });
+          }
+        } else if (event.type === "remote-ice") {
+          await clientRef.current?.addRemoteCandidate(event.candidate);
+        } else if (event.type === "disconnected") {
+          console.warn("Signaling disconnected:", event.reason);
+          const recovered = await attemptSessionRecovery(event.reason).catch((error) => {
+            console.error("[Recovery] Signaling recovery failed:", error);
+            throw error;
+          });
+          if (!recovered) {
+            if (
+              signalingRecoveryRef.current.explicitShutdown
+              || !RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)
+            ) {
+              console.log("[Recovery] Ignoring disconnect after explicit shutdown or non-recoverable status");
+              return;
+            }
+            clientRef.current?.dispose();
+            clientRef.current = null;
+            setLaunchError({
+              stage: streamStatusToLoadingStage(streamStatusRef.current),
+              title: "Session Connection Lost",
+              description: "The connection to your running session was lost and could not be restored automatically. Try resuming it again from the app.",
+            });
+            resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
+            void refreshNavbarActiveSession();
+            launchInFlightRef.current = false;
+          }
+        } else if (event.type === "error") {
+          console.error("Signaling error:", event.message);
+        }
+      } catch (error) {
+        if (
+          signalingRecoveryRef.current.explicitShutdown
+          || !RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)
+        ) {
+          console.log("[Recovery] Suppressing signaling error after explicit shutdown or non-recoverable status");
+          return;
+        }
+        console.error("Signaling event error:", error);
+        clientRef.current?.dispose();
+        clientRef.current = null;
+        const message = error instanceof Error ? error.message : "The connection to the running session was lost and resume failed.";
+        setLaunchError({
+          stage: streamStatusToLoadingStage(streamStatusRef.current),
+          title: "Session Connection Lost",
+          description: message,
+        });
+        resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
+        void refreshNavbarActiveSession();
+        launchInFlightRef.current = false;
+      }
     });
 
-    await sleep(1000);
-
-    setSession(claimed);
-    sessionRef.current = claimed;
-    setQueuePosition(undefined);
-    setStreamStatus("connecting");
-    await window.openNow.connectSignaling({
-      sessionId: claimed.sessionId,
-      signalingServer: claimed.signalingServer,
-      signalingUrl: claimed.signalingUrl,
-    });
-  }, [authSession, effectiveStreamingBaseUrl, findGameContextForSession, resetStatsOverlayToPreference, settings]);
+    return () => unsubscribe();
+  }, [attemptSessionRecovery, diagnosticsStore, refreshNavbarActiveSession, resetLaunchRuntime, resetSignalingRecoveryState, settings]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
@@ -2562,6 +2944,7 @@ export function App(): JSX.Element {
 
     launchInFlightRef.current = true;
     launchAbortRef.current = false;
+    resetSignalingRecoveryState();
     let loadingStep: StreamLoadingStatus = "queue";
     const updateLoadingStep = (next: StreamLoadingStatus): void => {
       loadingStep = next;
@@ -2608,6 +2991,7 @@ export function App(): JSX.Element {
       }
 
       const numericAppId = Number(appId);
+      signalingRecoveryRef.current.appId = numericAppId;
       const matchedGameContext = findSessionContextForAppId(allKnownGames, variantByGameId, numericAppId) ?? {
         game,
         variant: selectedVariant,
@@ -2824,6 +3208,7 @@ export function App(): JSX.Element {
     claimAndConnectSession,
     effectiveStreamingBaseUrl,
     refreshNavbarActiveSession,
+    resetSignalingRecoveryState,
     resetLaunchRuntime,
     resetStatsOverlayToPreference,
     selectedProvider,
@@ -2912,15 +3297,24 @@ export function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (!logoutConfirmOpen) return;
+    if (!logoutConfirmOpen && !removeAccountConfirmOpen) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setLogoutConfirmOpen(false);
+        if (removeAccountConfirmOpen) {
+          setRemoveAccountConfirmOpen(false);
+          setAccountToRemove(null);
+        } else if (logoutConfirmOpen) {
+          setLogoutConfirmOpen(false);
+        }
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        void confirmLogout();
+        if (removeAccountConfirmOpen) {
+          void confirmRemoveAccount();
+        } else if (logoutConfirmOpen) {
+          void confirmLogout();
+        }
       }
     };
 
@@ -2932,7 +3326,11 @@ export function App(): JSX.Element {
       window.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = previousOverflow;
     };
-  }, [confirmLogout, logoutConfirmOpen]);
+  }, [confirmLogout, confirmRemoveAccount, logoutConfirmOpen, removeAccountConfirmOpen]);
+
+  const accountToRemoveDisplayName = useMemo(() => (
+    savedAccounts.find((account) => account.userId === accountToRemove)?.displayName ?? "this account"
+  ), [accountToRemove, savedAccounts]);
 
   const logoutConfirmModal = logoutConfirmOpen && typeof document !== "undefined"
     ? createPortal(
@@ -2944,13 +3342,13 @@ export function App(): JSX.Element {
             aria-label="Cancel log out"
           />
           <div className="logout-confirm-card">
-            <div className="logout-confirm-kicker">Session</div>
-            <h3 className="logout-confirm-title">Log out of OpenNOW?</h3>
+            <div className="logout-confirm-kicker">Accounts</div>
+            <h3 className="logout-confirm-title">Sign out all accounts?</h3>
             <p className="logout-confirm-text">
-              You&apos;re about to sign out of this device and return to guest mode.
+              You&apos;re about to remove every saved account from this device and return to guest mode.
             </p>
             <p className="logout-confirm-subtext">
-              Your cloud session data stays on the service. This just clears your local app session.
+              Your cloud session data stays on the service. This just clears local OpenNOW account sessions.
             </p>
             <div className="logout-confirm-actions">
               <button
@@ -2958,7 +3356,7 @@ export function App(): JSX.Element {
                 className="logout-confirm-btn logout-confirm-btn-cancel"
                 onClick={() => setLogoutConfirmOpen(false)}
               >
-                Stay Signed In
+                Stay signed in
               </button>
               <button
                 type="button"
@@ -2967,7 +3365,58 @@ export function App(): JSX.Element {
                   void confirmLogout();
                 }}
               >
-                Log Out
+                Sign out all
+              </button>
+            </div>
+            <div className="logout-confirm-hint">
+              <kbd>Enter</kbd> confirm · <kbd>Esc</kbd> cancel
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )
+    : null;
+
+  const removeAccountConfirmModal = removeAccountConfirmOpen && typeof document !== "undefined"
+    ? createPortal(
+        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label="Remove account confirmation">
+          <button
+            type="button"
+            className="logout-confirm-backdrop"
+            onClick={() => {
+              setRemoveAccountConfirmOpen(false);
+              setAccountToRemove(null);
+            }}
+            aria-label="Cancel account removal"
+          />
+          <div className="logout-confirm-card">
+            <div className="logout-confirm-kicker">Accounts</div>
+            <h3 className="logout-confirm-title">Remove account?</h3>
+            <p className="logout-confirm-text">
+              Are you sure you want to remove {accountToRemoveDisplayName} from saved accounts?
+            </p>
+            <p className="logout-confirm-subtext">
+              You can add this account again by signing in.
+            </p>
+            <div className="logout-confirm-actions">
+              <button
+                type="button"
+                className="logout-confirm-btn logout-confirm-btn-cancel"
+                onClick={() => {
+                  setRemoveAccountConfirmOpen(false);
+                  setAccountToRemove(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="logout-confirm-btn logout-confirm-btn-confirm"
+                onClick={() => {
+                  void confirmRemoveAccount();
+                }}
+              >
+                Remove
               </button>
             </div>
             <div className="logout-confirm-hint">
@@ -2995,6 +3444,7 @@ export function App(): JSX.Element {
 
     navbarSessionActionInFlightRef.current = "resume";
     launchInFlightRef.current = true;
+    resetSignalingRecoveryState();
     setIsResumingNavbarSession(true);
     let loadingStep: StreamLoadingStatus = "setup";
     const updateLoadingStep = (next: StreamLoadingStatus): void => {
@@ -3018,6 +3468,7 @@ export function App(): JSX.Element {
     updateLoadingStep("setup");
 
     try {
+      signalingRecoveryRef.current.appId = navbarActiveSession.appId;
       await claimAndConnectSession(navbarActiveSession);
       setNavbarActiveSession(null);
     } catch (error) {
@@ -3040,6 +3491,7 @@ export function App(): JSX.Element {
     navbarActiveSession,
     findGameContextForSession,
     refreshNavbarActiveSession,
+    resetSignalingRecoveryState,
     resetLaunchRuntime,
     resetStatsOverlayToPreference,
     selectedProvider,
@@ -3100,6 +3552,7 @@ export function App(): JSX.Element {
       if (status !== "idle" && status !== "streaming") {
         launchAbortRef.current = true;
       }
+      markExplicitSignalingShutdown();
       await window.openNow.disconnectSignaling();
 
       const current = sessionRef.current;
@@ -3123,7 +3576,7 @@ export function App(): JSX.Element {
     } catch (error) {
       console.error("Stop failed:", error);
     }
-  }, [endPlaytimeSession, refreshNavbarActiveSession, resetLaunchRuntime, resolveExitPrompt, stopSessionByTarget, streamingGame]);
+  }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime, resolveExitPrompt, stopSessionByTarget, streamingGame]);
 
   const handleSwitchGame = useCallback(async (game: GameInfo) => {
     setControllerOverlayOpen(false);
@@ -3174,12 +3627,13 @@ export function App(): JSX.Element {
   }, [handleStopStream, handlePlayGame]);
 
   const handleDismissLaunchError = useCallback(async () => {
+    markExplicitSignalingShutdown();
     await window.openNow.disconnectSignaling().catch(() => {});
     clientRef.current?.dispose();
     clientRef.current = null;
     resetLaunchRuntime();
     void refreshNavbarActiveSession();
-  }, [refreshNavbarActiveSession, resetLaunchRuntime]);
+  }, [markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime]);
 
   const releasePointerLockIfNeeded = useCallback(async () => {
     if (document.pointerLockElement) {
@@ -3724,7 +4178,13 @@ export function App(): JSX.Element {
           onTerminateSession={() => {
             void handleTerminateNavbarSession();
           }}
-          onLogout={handleLogout}
+          savedAccounts={savedAccounts}
+          onSwitchAccount={handleSwitchAccount}
+          onRemoveAccount={(userId) => {
+            void handleRemoveAccount(userId);
+          }}
+          onAddAccount={handleAddAccount}
+          onLogoutAll={handleLogout}
         />
       )}
 
@@ -3841,6 +4301,7 @@ export function App(): JSX.Element {
       )}
 
       {logoutConfirmModal}
+      {removeAccountConfirmModal}
       {queueModalGame && streamStatus === "idle" && (
         <QueueServerSelectModal
           game={queueModalGame}

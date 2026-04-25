@@ -266,6 +266,15 @@ export interface AuthSession {
   user: AuthUser;
 }
 
+export interface SavedAccount {
+  userId: string;
+  displayName: string;
+  email?: string;
+  avatarUrl?: string;
+  membershipTier: string;
+  providerCode: string;
+}
+
 export interface ThankYouContributor {
   login: string;
   avatarUrl: string;
@@ -728,6 +737,10 @@ export interface OpenNowApi {
   getRegions(input?: RegionsFetchRequest): Promise<StreamRegion[]>;
   login(input: AuthLoginRequest): Promise<AuthSession>;
   logout(): Promise<void>;
+  logoutAll(): Promise<void>;
+  getSavedAccounts(): Promise<SavedAccount[]>;
+  switchAccount(userId: string): Promise<AuthSession>;
+  removeAccount(userId: string): Promise<void>;
   fetchSubscription(input: SubscriptionFetchRequest): Promise<SubscriptionInfo>;
   fetchMainGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   fetchLibraryGames(input: GamesFetchRequest): Promise<GameInfo[]>;
