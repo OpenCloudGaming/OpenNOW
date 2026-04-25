@@ -86,6 +86,7 @@ export async function setActivity(gameName: string, startTimestamp: Date, appId?
     lastActivity = pendingActivity;
     pendingActivity = null;
   } catch (err) {
+    pendingActivity = null;
     console.warn("[DiscordRPC] setActivity failed:", (err as Error).message);
   }
 }
