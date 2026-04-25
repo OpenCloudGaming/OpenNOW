@@ -656,8 +656,11 @@ body,
 .navbar-user-info {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
   gap: 0;
   line-height: 1.2;
+  text-align: left;
 }
 
 .navbar-username {
@@ -717,21 +720,34 @@ body,
 }
 
 .navbar-account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   max-height: 230px;
   overflow-y: auto;
-  padding: 0 6px 6px;
+  margin: 0;
+  padding: 0 8px 8px;
+  list-style: none;
 }
 
 .navbar-account-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  min-height: 56px;
   border-radius: var(--r-sm);
-  transition: background var(--t-fast);
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.035);
+  overflow: hidden;
+  transition: background var(--t-fast), border-color var(--t-fast);
 }
 
 .navbar-account-item--active {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, rgba(255, 255, 255, 0.035));
+}
+
+.navbar-account-item:not(.navbar-account-item--active):hover {
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .navbar-account-item-main {
@@ -746,13 +762,10 @@ body,
   color: inherit;
   font-family: inherit;
   text-align: left;
-  padding: 8px 8px;
+  padding: 9px 10px;
+  align-self: stretch;
   cursor: pointer;
-  transition: background var(--t-fast);
-}
-
-.navbar-account-item-main:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--bg-c) 76%, transparent);
+  transition: color var(--t-fast);
 }
 
 .navbar-account-item-main:disabled {
@@ -797,6 +810,8 @@ body,
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  min-width: 52px;
+  justify-content: flex-end;
 }
 
 .navbar-account-item-tier {
@@ -826,10 +841,15 @@ body,
 }
 
 .navbar-account-remove {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
+  align-self: stretch;
+  width: 38px;
+  min-height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: none;
+  border-left: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 0;
   background: transparent;
   color: var(--ink-muted);
   cursor: pointer;

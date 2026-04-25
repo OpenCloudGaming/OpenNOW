@@ -406,6 +406,7 @@ export function Navbar({
                       return (
                         <li
                           key={account.userId}
+                          role="none"
                           className={`navbar-account-item${isActive ? " navbar-account-item--active" : ""}`}
                         >
                           <button
