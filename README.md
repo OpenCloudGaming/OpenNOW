@@ -89,7 +89,7 @@ Current packaging targets:
 ## Settings
 
 <p align="center">
-  <img src="OpenNOW_Settings.png" alt="OpenNOW logo" width="180" />
+  <img src="OpenNOW_Settings.png" alt="OpenNOW Settings" width="700" />
 </p>
 
 ## Nix
