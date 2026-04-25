@@ -7,6 +7,21 @@ import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsSelector, useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import type { StreamLagReason } from "../gfn/webrtcClient";
 import type { MicState } from "../gfn/microphoneManager";
+import type { VirtualGamepadState } from "../gfn/webrtcClient";
+import {
+  GAMEPAD_A,
+  GAMEPAD_B,
+  GAMEPAD_BACK,
+  GAMEPAD_DPAD_DOWN,
+  GAMEPAD_DPAD_LEFT,
+  GAMEPAD_DPAD_RIGHT,
+  GAMEPAD_DPAD_UP,
+  GAMEPAD_LB,
+  GAMEPAD_RB,
+  GAMEPAD_START,
+  GAMEPAD_X,
+  GAMEPAD_Y,
+} from "../gfn/inputProtocol";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
@@ -65,6 +80,7 @@ interface StreamViewProps {
   onMouseAccelerationChange: (value: number) => void;
   onRequestPointerLock?: () => void;
   onReleasePointerLock?: () => void;
+  onVirtualGamepadState?: (state: VirtualGamepadState) => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   onScreenshotShortcutChange: (value: string) => void;
@@ -166,6 +182,17 @@ type MicBadgeState = {
   connectedGamepads: number;
   micState: MicState;
   micEnabled: boolean;
+};
+
+const EMPTY_VIRTUAL_GAMEPAD_STATE: VirtualGamepadState = {
+  connected: true,
+  buttons: 0,
+  leftTrigger: 0,
+  rightTrigger: 0,
+  leftStickX: 0,
+  leftStickY: 0,
+  rightStickX: 0,
+  rightStickY: 0,
 };
 
 function isMicBadgeStateEqual(prev: MicBadgeState, next: MicBadgeState): boolean {
@@ -524,6 +551,204 @@ function VideoFocusOnReady({
   return null;
 }
 
+type StickValue = { x: number; y: number };
+
+function TouchStick({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: StickValue;
+  onChange: (value: StickValue) => void;
+}): JSX.Element {
+  const baseRef = useRef<HTMLDivElement | null>(null);
+
+  const updateFromPointer = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const rect = baseRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const radius = Math.max(1, Math.min(rect.width, rect.height) / 2);
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const rawX = (event.clientX - centerX) / radius;
+    const rawY = (event.clientY - centerY) / radius;
+    const magnitude = Math.hypot(rawX, rawY);
+    const scale = magnitude > 1 ? 1 / magnitude : 1;
+    onChange({ x: rawX * scale, y: rawY * scale });
+  }, [onChange]);
+
+  return (
+    <div
+      ref={baseRef}
+      className="sv-touch-stick"
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        updateFromPointer(event);
+      }}
+      onPointerMove={(event) => {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.preventDefault();
+          updateFromPointer(event);
+        }
+      }}
+      onPointerUp={(event) => {
+        event.preventDefault();
+        event.currentTarget.releasePointerCapture(event.pointerId);
+        onChange({ x: 0, y: 0 });
+      }}
+      onPointerCancel={(event) => {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+        onChange({ x: 0, y: 0 });
+      }}
+      aria-label={label}
+      role="application"
+    >
+      <span
+        className="sv-touch-stick-thumb"
+        style={{
+          transform: `translate(${value.x * 28}px, ${value.y * 28}px)`,
+        }}
+      />
+    </div>
+  );
+}
+
+function TouchControllerOverlay({
+  onVirtualGamepadState,
+}: {
+  onVirtualGamepadState: (state: VirtualGamepadState) => void;
+}): JSX.Element {
+  const [leftStick, setLeftStick] = useState<StickValue>({ x: 0, y: 0 });
+  const [rightStick, setRightStick] = useState<StickValue>({ x: 0, y: 0 });
+  const buttonsRef = useRef(0);
+  const triggersRef = useRef({ left: 0, right: 0 });
+  const leftStickRef = useRef(leftStick);
+  const rightStickRef = useRef(rightStick);
+
+  const emit = useCallback((connected = true) => {
+    onVirtualGamepadState({
+      connected,
+      buttons: connected ? buttonsRef.current : 0,
+      leftTrigger: connected ? triggersRef.current.left : 0,
+      rightTrigger: connected ? triggersRef.current.right : 0,
+      leftStickX: connected ? leftStickRef.current.x : 0,
+      leftStickY: connected ? -leftStickRef.current.y : 0,
+      rightStickX: connected ? rightStickRef.current.x : 0,
+      rightStickY: connected ? -rightStickRef.current.y : 0,
+    });
+  }, [onVirtualGamepadState]);
+
+  const updateLeftStick = useCallback((value: StickValue) => {
+    leftStickRef.current = value;
+    setLeftStick(value);
+    emit();
+  }, [emit]);
+
+  const updateRightStick = useCallback((value: StickValue) => {
+    rightStickRef.current = value;
+    setRightStick(value);
+    emit();
+  }, [emit]);
+
+  const setButton = useCallback((mask: number, pressed: boolean) => {
+    buttonsRef.current = pressed
+      ? buttonsRef.current | mask
+      : buttonsRef.current & ~mask;
+    emit();
+  }, [emit]);
+
+  const setTrigger = useCallback((side: "left" | "right", pressed: boolean) => {
+    triggersRef.current = {
+      ...triggersRef.current,
+      [side]: pressed ? 1 : 0,
+    };
+    emit();
+  }, [emit]);
+
+  const bindButton = (mask: number) => ({
+    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setButton(mask, true);
+    },
+    onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      setButton(mask, false);
+    },
+    onPointerCancel: (event: React.PointerEvent<HTMLButtonElement>) => {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      setButton(mask, false);
+    },
+  });
+
+  const bindTrigger = (side: "left" | "right") => ({
+    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setTrigger(side, true);
+    },
+    onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      setTrigger(side, false);
+    },
+    onPointerCancel: (event: React.PointerEvent<HTMLButtonElement>) => {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      setTrigger(side, false);
+    },
+  });
+
+  useEffect(() => {
+    emit();
+    const keepalive = window.setInterval(() => emit(), 80);
+    return () => {
+      window.clearInterval(keepalive);
+      onVirtualGamepadState({ ...EMPTY_VIRTUAL_GAMEPAD_STATE, connected: false });
+    };
+  }, [emit, onVirtualGamepadState]);
+
+  return (
+    <div className="sv-touch" aria-label="Touch controller">
+      <div className="sv-touch-shoulders">
+        <button type="button" className="sv-touch-btn sv-touch-btn--shoulder" {...bindButton(GAMEPAD_LB)}>LB</button>
+        <button type="button" className="sv-touch-btn sv-touch-btn--trigger" {...bindTrigger("left")}>LT</button>
+        <button type="button" className="sv-touch-btn sv-touch-btn--trigger" {...bindTrigger("right")}>RT</button>
+        <button type="button" className="sv-touch-btn sv-touch-btn--shoulder" {...bindButton(GAMEPAD_RB)}>RB</button>
+      </div>
+      <div className="sv-touch-left">
+        <TouchStick label="Left stick" value={leftStick} onChange={updateLeftStick} />
+        <div className="sv-touch-dpad" aria-label="D-pad">
+          <button type="button" className="sv-touch-btn sv-touch-btn--dpad sv-touch-dpad-up" {...bindButton(GAMEPAD_DPAD_UP)}>U</button>
+          <button type="button" className="sv-touch-btn sv-touch-btn--dpad sv-touch-dpad-left" {...bindButton(GAMEPAD_DPAD_LEFT)}>L</button>
+          <button type="button" className="sv-touch-btn sv-touch-btn--dpad sv-touch-dpad-right" {...bindButton(GAMEPAD_DPAD_RIGHT)}>R</button>
+          <button type="button" className="sv-touch-btn sv-touch-btn--dpad sv-touch-dpad-down" {...bindButton(GAMEPAD_DPAD_DOWN)}>D</button>
+        </div>
+      </div>
+      <div className="sv-touch-center">
+        <button type="button" className="sv-touch-btn sv-touch-btn--menu" {...bindButton(GAMEPAD_BACK)}>View</button>
+        <button type="button" className="sv-touch-btn sv-touch-btn--menu" {...bindButton(GAMEPAD_START)}>Menu</button>
+      </div>
+      <div className="sv-touch-right">
+        <TouchStick label="Right stick" value={rightStick} onChange={updateRightStick} />
+        <div className="sv-touch-face" aria-label="Face buttons">
+          <button type="button" className="sv-touch-btn sv-touch-btn--face sv-touch-face-y" {...bindButton(GAMEPAD_Y)}>Y</button>
+          <button type="button" className="sv-touch-btn sv-touch-btn--face sv-touch-face-x" {...bindButton(GAMEPAD_X)}>X</button>
+          <button type="button" className="sv-touch-btn sv-touch-btn--face sv-touch-face-b" {...bindButton(GAMEPAD_B)}>B</button>
+          <button type="button" className="sv-touch-btn sv-touch-btn--face sv-touch-face-a" {...bindButton(GAMEPAD_A)}>A</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function useMicMeter(
   canvasRef: React.RefObject<HTMLCanvasElement | null>,
   track: MediaStreamTrack | null,
@@ -670,6 +895,7 @@ export function StreamView({
   onMouseAccelerationChange,
   onRequestPointerLock,
   onReleasePointerLock,
+  onVirtualGamepadState,
   microphoneMode,
   onMicrophoneModeChange,
   onScreenshotShortcutChange,
@@ -1930,6 +2156,10 @@ export function StreamView({
 
       {/* Gradient background when no video */}
       <StreamEmptyState diagnosticsStore={diagnosticsStore} />
+
+      {platformCapabilities.isAndroid && !isConnecting && onVirtualGamepadState && (
+        <TouchControllerOverlay onVirtualGamepadState={onVirtualGamepadState} />
+      )}
 
       {/* Connecting overlay */}
       {isConnecting && (

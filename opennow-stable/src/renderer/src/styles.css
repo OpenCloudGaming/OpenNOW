@@ -5633,6 +5633,161 @@ button.game-card-store-chip.active:hover {
   color: var(--accent);
 }
 
+.sv-touch {
+  position: fixed;
+  inset: 0;
+  z-index: 1001;
+  pointer-events: none;
+  touch-action: none;
+}
+
+.sv-touch-left,
+.sv-touch-right {
+  position: fixed;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  display: grid;
+  align-items: end;
+  gap: 14px;
+  pointer-events: none;
+}
+
+.sv-touch-left {
+  left: max(16px, env(safe-area-inset-left));
+  grid-template-columns: auto auto;
+}
+
+.sv-touch-right {
+  right: max(16px, env(safe-area-inset-right));
+  grid-template-columns: auto auto;
+}
+
+.sv-touch-shoulders {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(52px, 68px));
+  gap: 8px;
+  pointer-events: none;
+}
+
+.sv-touch-center {
+  position: fixed;
+  left: 50%;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.sv-touch-stick {
+  width: 112px;
+  aspect-ratio: 1;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(8, 10, 12, 0.34);
+  box-shadow:
+    0 10px 26px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(10px) saturate(135%);
+  display: grid;
+  place-items: center;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.sv-touch-stick-thumb {
+  width: 48px;
+  aspect-ratio: 1;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.34);
+  transition: transform 34ms linear;
+}
+
+.sv-touch-dpad,
+.sv-touch-face {
+  position: relative;
+  width: 124px;
+  aspect-ratio: 1;
+  pointer-events: none;
+}
+
+.sv-touch-btn {
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(8, 10, 12, 0.42);
+  color: rgba(255, 255, 255, 0.76);
+  box-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(10px) saturate(135%);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.sv-touch-btn:active {
+  background: color-mix(in srgb, var(--accent) 26%, rgba(8, 10, 12, 0.52));
+  border-color: color-mix(in srgb, var(--accent) 55%, rgba(255, 255, 255, 0.18));
+  color: #fff;
+  transform: scale(0.96);
+}
+
+.sv-touch-btn--shoulder,
+.sv-touch-btn--trigger,
+.sv-touch-btn--menu {
+  height: 36px;
+  border-radius: 8px;
+}
+
+.sv-touch-btn--menu {
+  min-width: 54px;
+  padding: 0 12px;
+}
+
+.sv-touch-btn--dpad,
+.sv-touch-btn--face {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+}
+
+.sv-touch-dpad-up,
+.sv-touch-face-y {
+  top: 0;
+  left: 40px;
+}
+
+.sv-touch-dpad-left,
+.sv-touch-face-x {
+  top: 40px;
+  left: 0;
+}
+
+.sv-touch-dpad-right,
+.sv-touch-face-b {
+  top: 40px;
+  right: 0;
+}
+
+.sv-touch-dpad-down,
+.sv-touch-face-a {
+  bottom: 0;
+  left: 40px;
+}
+
 @media (max-width: 640px) {
   .sv-session-clock {
     top: 10px;
@@ -5679,6 +5834,76 @@ button.game-card-store-chip.active:hover {
 
   .sv-exit-actions {
     flex-direction: column;
+  }
+
+  .sv-touch-left,
+  .sv-touch-right {
+    gap: 10px;
+  }
+
+  .sv-touch-left {
+    left: max(10px, env(safe-area-inset-left));
+  }
+
+  .sv-touch-right {
+    right: max(10px, env(safe-area-inset-right));
+  }
+
+  .sv-touch-stick {
+    width: 94px;
+  }
+
+  .sv-touch-stick-thumb {
+    width: 40px;
+  }
+
+  .sv-touch-dpad,
+  .sv-touch-face {
+    width: 104px;
+  }
+
+  .sv-touch-btn--dpad,
+  .sv-touch-btn--face {
+    width: 38px;
+    height: 38px;
+  }
+
+  .sv-touch-dpad-up,
+  .sv-touch-face-y {
+    left: 33px;
+  }
+
+  .sv-touch-dpad-left,
+  .sv-touch-face-x {
+    top: 33px;
+  }
+
+  .sv-touch-dpad-right,
+  .sv-touch-face-b {
+    top: 33px;
+  }
+
+  .sv-touch-dpad-down,
+  .sv-touch-face-a {
+    left: 33px;
+  }
+
+  .sv-touch-shoulders {
+    top: max(8px, env(safe-area-inset-top));
+    grid-template-columns: repeat(4, 48px);
+    gap: 6px;
+  }
+
+  .sv-touch-btn--shoulder,
+  .sv-touch-btn--trigger,
+  .sv-touch-btn--menu {
+    height: 32px;
+    border-radius: 8px;
+    font-size: 0.66rem;
+  }
+
+  .sv-touch-center {
+    bottom: max(124px, calc(env(safe-area-inset-bottom) + 112px));
   }
 }
 
@@ -6339,6 +6564,137 @@ button.game-card-store-chip.active:hover {
   color: #fca5a5;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   letter-spacing: 0.01em;
+}
+
+.sload-copy-error,
+.csl-copy-error {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 119, 119, 0.28);
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffd0d0;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  cursor: pointer;
+  transition: transform var(--t-fast), background var(--t-fast), border-color var(--t-fast);
+}
+
+.sload-copy-error:hover,
+.csl-copy-error:hover {
+  background: rgba(255, 119, 119, 0.12);
+  border-color: rgba(255, 119, 119, 0.42);
+}
+
+.sload-copy-error:active,
+.csl-copy-error:active {
+  transform: scale(0.97);
+}
+
+.android-shell .sload {
+  align-items: flex-start;
+  justify-content: center;
+  padding:
+    max(12px, env(safe-area-inset-top))
+    max(12px, env(safe-area-inset-right))
+    max(12px, env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
+  overflow-y: auto;
+}
+
+.android-shell .sload-content {
+  width: min(100%, 420px);
+  max-width: calc(100vw - 24px);
+  min-height: min-content;
+  gap: 18px;
+  padding: 12px 0;
+}
+
+.android-shell .sload-game {
+  width: 100%;
+  min-width: 0;
+}
+
+.android-shell .sload-game-meta {
+  min-width: 0;
+}
+
+.android-shell .sload-title {
+  max-width: 100%;
+}
+
+.android-shell .sload-status,
+.android-shell .sload-status-text {
+  width: 100%;
+  min-width: 0;
+}
+
+.android-shell .sload-error-title,
+.android-shell .sload-error-desc,
+.android-shell .sload-error-code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.android-shell .sload-error-code {
+  white-space: normal;
+}
+
+.android-shell .sload-copy-error {
+  max-width: 100%;
+  flex-shrink: 0;
+}
+
+.android-shell .controller-stream-loading {
+  align-items: flex-start;
+  overflow-y: auto;
+}
+
+.android-shell .csl-content-wrapper {
+  height: auto;
+  min-height: 100%;
+  padding:
+    max(16px, env(safe-area-inset-top))
+    max(12px, env(safe-area-inset-right))
+    max(16px, env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
+}
+
+.android-shell .csl-content {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  max-width: calc(100vw - 24px);
+  min-width: 0;
+}
+
+.android-shell .csl-poster-section {
+  display: none;
+}
+
+.android-shell .csl-info-section,
+.android-shell .csl-status-container,
+.android-shell .csl-error-panel {
+  width: 100%;
+  min-width: 0;
+}
+
+.android-shell .csl-error-title,
+.android-shell .csl-error-description,
+.android-shell .csl-error-code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.android-shell .csl-error-code {
+  white-space: normal;
 }
 
 .sload.sload--error .sload-queue,

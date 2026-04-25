@@ -10,6 +10,7 @@ import {
 import type { SessionAdInfo, SessionAdState } from "@shared/gfn";
 import { formatPlaytime } from "../utils/usePlaytime";
 import type { PlaytimeStore } from "../utils/usePlaytime";
+import { CopyErrorButton } from "./CopyErrorButton";
 import { QueueAdPreview, type QueueAdPlaybackEvent, type QueueAdPreviewHandle } from "./QueueAdPreview";
 
 export interface ControllerStreamLoadingProps {
@@ -26,6 +27,7 @@ export interface ControllerStreamLoadingProps {
     description: string;
     code?: string;
   };
+  copyErrorText?: string;
   onAdPlaybackEvent?: (event: QueueAdPlaybackEvent, adId: string) => void;
   adPreviewRef?: Ref<QueueAdPreviewHandle>;
   playtimeData?: PlaytimeStore;
@@ -81,6 +83,7 @@ export function ControllerStreamLoading({
   activeAd,
   activeAdMediaUrl,
   error,
+  copyErrorText,
   onAdPlaybackEvent,
   adPreviewRef,
   playtimeData = {},
@@ -174,6 +177,7 @@ export function ControllerStreamLoading({
                   <div className="csl-error-title">{error.title}</div>
                   <div className="csl-error-description">{error.description}</div>
                   {error.code && <div className="csl-error-code">{error.code}</div>}
+                  {copyErrorText && <CopyErrorButton text={copyErrorText} className="csl-copy-error" />}
                 </div>
               )}
 

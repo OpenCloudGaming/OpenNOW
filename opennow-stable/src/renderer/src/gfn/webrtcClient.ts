@@ -118,6 +118,17 @@ export interface StreamDiagnostics {
   micEnabled: boolean;
 }
 
+export interface VirtualGamepadState {
+  connected: boolean;
+  buttons: number;
+  leftTrigger: number;
+  rightTrigger: number;
+  leftStickX: number;
+  leftStickY: number;
+  rightStickX: number;
+  rightStickY: number;
+}
+
 export type StreamLagReason =
   | "unknown"
   | "stable"
@@ -483,6 +494,8 @@ export class GfnWebRtcClient {
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private connectedGamepads: Set<number> = new Set();
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
+  private virtualGamepadConnected = false;
+  private previousVirtualGamepadState: GamepadInput | null = null;
 
   // Track currently pressed keys (VK codes) for synthetic Escape detection
   private pressedKeys: Set<number> = new Set();
@@ -1618,6 +1631,8 @@ export class GfnWebRtcClient {
     this.resetDiagnostics();
     this.connectedGamepads.clear();
     this.previousGamepadStates.clear();
+    this.virtualGamepadConnected = false;
+    this.previousVirtualGamepadState = null;
     this.gamepadSendCount = 0;
     this.lastGamepadSendMs = 0;
     this.reliableDropLogged = false;
@@ -1906,7 +1921,64 @@ export class GfnWebRtcClient {
       }
     }
 
-    this.diagnostics.connectedGamepads = connectedCount;
+    this.diagnostics.connectedGamepads = connectedCount + (this.virtualGamepadConnected ? 1 : 0);
+  }
+
+  public setVirtualGamepadState(state: VirtualGamepadState): void {
+    if (!this.inputReady || this.inputPaused) {
+      return;
+    }
+
+    const controllerId = 0;
+    const wasConnected = this.virtualGamepadConnected;
+    this.virtualGamepadConnected = state.connected;
+    if (state.connected) {
+      this.gamepadBitmap |= (1 << controllerId);
+    } else {
+      this.gamepadBitmap &= ~(1 << controllerId);
+    }
+
+    const gamepadInput: GamepadInput = {
+      controllerId,
+      buttons: state.buttons & 0xffff,
+      leftTrigger: normalizeToUint8(state.leftTrigger),
+      rightTrigger: normalizeToUint8(state.rightTrigger),
+      leftStickX: normalizeToInt16(state.leftStickX),
+      leftStickY: normalizeToInt16(state.leftStickY),
+      rightStickX: normalizeToInt16(state.rightStickX),
+      rightStickY: normalizeToInt16(state.rightStickY),
+      connected: state.connected,
+      timestampUs: timestampUs(),
+    };
+
+    const stateChanged =
+      !this.previousVirtualGamepadState ||
+      this.previousVirtualGamepadState.connected !== gamepadInput.connected ||
+      this.previousVirtualGamepadState.buttons !== gamepadInput.buttons ||
+      this.previousVirtualGamepadState.leftTrigger !== gamepadInput.leftTrigger ||
+      this.previousVirtualGamepadState.rightTrigger !== gamepadInput.rightTrigger ||
+      this.previousVirtualGamepadState.leftStickX !== gamepadInput.leftStickX ||
+      this.previousVirtualGamepadState.leftStickY !== gamepadInput.leftStickY ||
+      this.previousVirtualGamepadState.rightStickX !== gamepadInput.rightStickX ||
+      this.previousVirtualGamepadState.rightStickY !== gamepadInput.rightStickY;
+    const nowMs = performance.now();
+    const needsKeepalive = nowMs - this.lastGamepadSendMs >= GfnWebRtcClient.GAMEPAD_KEEPALIVE_MS;
+
+    if (!stateChanged && !needsKeepalive && wasConnected === state.connected) {
+      return;
+    }
+
+    const usePR = this.canSendGamepadPartiallyReliable(controllerId);
+    const bytes = this.inputEncoder.encodeGamepadState(gamepadInput, this.gamepadBitmap, usePR);
+    if (usePR) {
+      this.sendGamepad(bytes);
+    } else {
+      this.sendReliable(bytes);
+    }
+    this.lastGamepadSendMs = nowMs;
+    this.previousVirtualGamepadState = { ...gamepadInput };
+    this.diagnostics.connectedGamepads = this.connectedGamepads.size + (this.virtualGamepadConnected ? 1 : 0);
+    this.emitStats();
   }
 
   private readGamepadState(gamepad: Gamepad, controllerId: number): GamepadInput {

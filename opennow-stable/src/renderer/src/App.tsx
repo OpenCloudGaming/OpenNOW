@@ -772,6 +772,18 @@ function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchE
   };
 }
 
+function formatLaunchErrorForCopy(error: LaunchErrorState, gameTitle: string): string {
+  return [
+    "OpenNOW session launch error",
+    `Game: ${gameTitle}`,
+    `Stage: ${error.stage}`,
+    `Title: ${error.title}`,
+    `Description: ${error.description}`,
+    error.codeLabel ? `Code: ${error.codeLabel}` : null,
+    `Time: ${new Date().toISOString()}`,
+  ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
 export function App(): JSX.Element {
 
   // Auth State
@@ -3464,6 +3476,12 @@ export function App(): JSX.Element {
   // Show stream lifecycle (waiting/connecting/streaming/failure)
   if (showLaunchOverlay) {
     const loadingStatus = launchError ? launchError.stage : toLoadingStatus(streamStatus);
+    const currentLaunchErrorCopyText = platformCapabilities.isAndroid && launchError
+      ? formatLaunchErrorForCopy(launchError, streamingGame?.title ?? "Game")
+      : undefined;
+    const switchingLaunchErrorCopyText = platformCapabilities.isAndroid && launchError
+      ? formatLaunchErrorForCopy(launchError, pendingSwitchGameTitle ?? streamingGame?.title ?? "Game")
+      : undefined;
     return (
       <>
         {hasActiveStreamView && (
@@ -3527,6 +3545,9 @@ export function App(): JSX.Element {
             onReleasePointerLock={() => {
               void releasePointerLockIfNeeded();
             }}
+            onVirtualGamepadState={(state) => {
+              clientRef.current?.setVirtualGamepadState(state);
+            }}
           />
         )}
         {isSwitchingGame && settings.controllerMode && streamStatus !== "connecting" && (
@@ -3548,6 +3569,7 @@ export function App(): JSX.Element {
                   }
                 : undefined
             }
+            copyErrorText={switchingLaunchErrorCopyText}
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             adPreviewRef={queueAdPreviewRef}
             playtimeData={playtime}
@@ -3576,6 +3598,7 @@ export function App(): JSX.Element {
                   }
                 : undefined
             }
+            copyErrorText={switchingLaunchErrorCopyText}
             onCancel={() => {
               if (launchError) {
                 void handleDismissLaunchError();
@@ -3658,6 +3681,7 @@ export function App(): JSX.Element {
                   }
                 : undefined
             }
+            copyErrorText={currentLaunchErrorCopyText}
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             adPreviewRef={queueAdPreviewRef}
             playtimeData={playtime}
@@ -3686,6 +3710,7 @@ export function App(): JSX.Element {
                   }
                 : undefined
             }
+            copyErrorText={currentLaunchErrorCopyText}
             onCancel={() => {
               if (launchError) {
                 void handleDismissLaunchError();

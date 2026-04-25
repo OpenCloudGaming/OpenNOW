@@ -11,6 +11,7 @@ import {
 } from "@shared/gfn";
 import type { SessionAdInfo, SessionAdState } from "@shared/gfn";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
+import { CopyErrorButton } from "./CopyErrorButton";
 import { QueueAdPreview, type QueueAdPlaybackEvent, type QueueAdPreviewHandle } from "./QueueAdPreview";
 
 export interface StreamLoadingProps {
@@ -28,6 +29,7 @@ export interface StreamLoadingProps {
     description: string;
     code?: string;
   };
+  copyErrorText?: string;
   onAdPlaybackEvent?: (event: QueueAdPlaybackEvent, adId: string) => void;
   adPreviewRef?: Ref<QueueAdPreviewHandle>;
   onCancel: () => void;
@@ -107,6 +109,7 @@ export function StreamLoading({
   activeAd,
   activeAdMediaUrl,
   error,
+  copyErrorText,
   onAdPlaybackEvent,
   adPreviewRef,
   onCancel,
@@ -213,6 +216,7 @@ export function StreamLoading({
                 <p className="sload-error-title">{error.title}</p>
                 <p className="sload-error-desc">{error.description}</p>
                 {error.code && <p className="sload-error-code">{error.code}</p>}
+                {copyErrorText && <CopyErrorButton text={copyErrorText} className="sload-copy-error" />}
               </>
             )}
             {status === "queue" && estimatedWait && (
