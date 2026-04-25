@@ -10,6 +10,7 @@ const DISCORD_CLIENT_ID = "1479944467112001669";
 let rpcClient: Client | null = null;
 let connected = false;
 let lastActivity: { gameName: string; startTimestamp: Date; appId?: string } | null = null;
+let pendingActivity: { gameName: string; startTimestamp: Date; appId?: string } | null = null;
 
 /**
  * Initialise and connect the Discord RPC client.
@@ -33,7 +34,9 @@ export async function connectDiscordRpc(): Promise<void> {
     connected = true;
     console.log("[DiscordRPC] Connected.");
 
-    if (lastActivity) {
+    if (pendingActivity) {
+      await setActivity(pendingActivity.gameName, pendingActivity.startTimestamp, pendingActivity.appId);
+    } else if (lastActivity) {
       await setActivity(lastActivity.gameName, lastActivity.startTimestamp, lastActivity.appId);
     } else {
       // Upon app start/connection, explicitly clear any stale status from previous runs
@@ -65,6 +68,8 @@ export function isDiscordRpcConnected(): boolean {
  * how long the user has been playing.
  */
 export async function setActivity(gameName: string, startTimestamp: Date, appId?: string): Promise<void> {
+  pendingActivity = { gameName, startTimestamp, appId };
+
   if (!connected || !rpcClient) {
     return;
   }
@@ -76,7 +81,8 @@ export async function setActivity(gameName: string, startTimestamp: Date, appId?
       startTimestamp,
       instance: false,
     });
-    lastActivity = { gameName, startTimestamp, appId };
+    lastActivity = pendingActivity;
+    pendingActivity = null;
   } catch (err) {
     console.warn("[DiscordRPC] setActivity failed:", (err as Error).message);
   }
@@ -87,6 +93,7 @@ export async function setActivity(gameName: string, startTimestamp: Date, appId?
  */
 export async function clearActivity(): Promise<void> {
   lastActivity = null;
+  pendingActivity = null;
 
   if (!connected || !rpcClient) return;
 
@@ -102,6 +109,7 @@ export async function clearActivity(): Promise<void> {
  */
 export async function destroyDiscordRpc(): Promise<void> {
   lastActivity = null;
+  pendingActivity = null;
 
   if (!rpcClient) return;
 
