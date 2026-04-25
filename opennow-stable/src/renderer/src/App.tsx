@@ -2306,8 +2306,6 @@ export function App(): JSX.Element {
           // ignore parse/storage errors
         }
 
-        // Update isInitializing FIRST so UI knows we're done loading
-        setIsInitializing(false);
         setProviders(providerList);
         setAuthSession(persistedSession);
         setSavedAccounts(accounts);
@@ -2327,6 +2325,8 @@ export function App(): JSX.Element {
           setCatalogTotalCount(0);
           setCatalogSupportedCount(0);
         }
+
+        setIsInitializing(false);
       } catch (error) {
         console.error("Initialization failed:", error);
         setStartupStatusMessage("Session restore failed. Please sign in again.");
