@@ -121,6 +121,7 @@ const ANDROID_CATALOG_SORT_OPTIONS: CatalogSortOption[] = [
   { id: "title_za", label: "Title (Z-A)", orderBy: "TITLE_DESC" },
   { id: "last_played", label: "Last played", orderBy: "LAST_PLAYED_DESC" },
 ];
+const ANDROID_CATALOG_CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface LocalhostAuthPlugin {
   startLogin(options: { authUrl: string; port: number; timeoutMs?: number }): Promise<{ code: string; redirectUri?: string }>;
@@ -370,7 +371,37 @@ async function fetchPanels(token: string, panelNames: string[], vpcId: string): 
 function flattenPanels(payload: GraphQlResponse): GameInfo[] { if (payload.errors?.length) throw new Error(payload.errors.map((error) => error.message).join(", ")); const games: GameInfo[] = []; for (const panel of payload.data?.panels ?? []) { for (const section of panel.sections ?? []) { for (const item of section.items ?? []) { if (item.__typename === "GameItem" && item.app) games.push(appToGame(item.app)); } } } return dedupeGames(games); }
 async function fetchAppMetaData(token: string, appIds: string[], vpcId: string): Promise<GraphQlResponse> { const params = new URLSearchParams({ requestType: "appMetaData", extensions: JSON.stringify({ persistedQuery: { sha256Hash: APP_METADATA_QUERY_HASH } }), huId: randomHuId(), variables: JSON.stringify({ vpcId, locale: DEFAULT_LOCALE, appIds: [...new Set(appIds)] }) }); return httpRequest<GraphQlResponse>(`${GFN_GRAPHQL_URL}?${params.toString()}`, { headers: buildCatalogHeaders(token) }); }
 async function enrichGamesWithMetadata(token: string, vpcId: string, games: GameInfo[]): Promise<GameInfo[]> { const uuids = [...new Set(games.map((game) => game.uuid).filter((uuid): uuid is string => Boolean(uuid)))]; if (uuids.length === 0) return games; const appById = new Map<string, AppData>(); for (let index = 0; index < uuids.length; index += 40) { const payload = await fetchAppMetaData(token, uuids.slice(index, index + 40), vpcId); if (payload.errors?.length) throw new Error(payload.errors.map((error) => error.message).join(", ")); for (const app of payload.data?.apps?.items ?? []) appById.set(app.id, app); } return games.map((game) => { if (!game.uuid) return game; const metadata = appById.get(game.uuid); return metadata ? mergeAppMetaIntoGame(game, metadata) : game; }); }
-async function fetchCatalog(kind: "MAIN" | "LIBRARY", token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> { const vpcId = await getVpcId(token, providerStreamingBaseUrl); const payload = await fetchPanels(token, [kind], vpcId); return enrichGamesWithMetadata(token, vpcId, flattenPanels(payload)); }
+async function fetchCatalog(kind: "MAIN" | "LIBRARY", token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl);
+  const payload = await fetchPanels(token, [kind], vpcId);
+  return flattenPanels(payload);
+}
+const androidCatalogCache = new Map<string, { games: GameInfo[]; loadedAtMs: number }>();
+const androidCatalogInflight = new Map<string, Promise<GameInfo[]>>();
+function androidCatalogCacheKey(kind: "MAIN" | "LIBRARY", token: string, providerStreamingBaseUrl?: string): string {
+  return `${kind}:${providerStreamingBaseUrl ?? ""}:${token.slice(-32)}`;
+}
+async function fetchCatalogCached(kind: "MAIN" | "LIBRARY", token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
+  const key = androidCatalogCacheKey(kind, token, providerStreamingBaseUrl);
+  const cached = androidCatalogCache.get(key);
+  if (cached && Date.now() - cached.loadedAtMs < ANDROID_CATALOG_CACHE_TTL_MS) {
+    return cached.games;
+  }
+  const existing = androidCatalogInflight.get(key);
+  if (existing) {
+    return existing;
+  }
+  const request = fetchCatalog(kind, token, providerStreamingBaseUrl)
+    .then((games) => {
+      androidCatalogCache.set(key, { games, loadedAtMs: Date.now() });
+      return games;
+    })
+    .finally(() => {
+      androidCatalogInflight.delete(key);
+    });
+  androidCatalogInflight.set(key, request);
+  return request;
+}
 async function fetchPublicCatalog(): Promise<GameInfo[]> { const payload = await httpRequest<RawPublicGame[]>(PUBLIC_GAMES_URL, { headers: { "User-Agent": GFN_USER_AGENT } }); return payload.filter((item) => item.status === "AVAILABLE" && item.title).map((item) => { const id = String(item.id ?? item.title ?? "unknown"); const steamAppId = item.steamUrl?.split("/app/")[1]?.split("/")[0]; return { id, uuid: id, launchAppId: isNumericId(id) ? id : undefined, title: item.title ?? id, selectedVariantIndex: 0, variants: [{ id, store: "Unknown", supportedControls: [] }], imageUrl: steamAppId ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/library_600x900.jpg` : undefined } satisfies GameInfo; }); }
 function catalogSearchText(game: GameInfo): string {
   return [
@@ -463,7 +494,7 @@ function sortAndroidCatalogGames(games: GameInfo[], sortId: string): GameInfo[] 
 }
 async function browseCatalogRequest(input: CatalogBrowseRequest): Promise<CatalogBrowseResult> {
   const token = await authStore.resolveJwtToken(input.token);
-  const allGames = await fetchCatalog("MAIN", token, input.providerStreamingBaseUrl);
+  const allGames = await fetchCatalogCached("MAIN", token, input.providerStreamingBaseUrl);
   const filterGroups = buildAndroidCatalogFilterGroups(allGames);
   const validFilterIds = new Set(filterGroups.flatMap((group) => group.options.map((option) => option.id)));
   const selectedFilterIds = (input.filterIds ?? []).filter((filterId) => validFilterIds.has(filterId));
@@ -864,8 +895,8 @@ const api: OpenNowApi = {
   login: async (input: AuthLoginRequest) => { await ensureInitialized(); return authStore.login(input); },
   logout: async () => { await ensureInitialized(); await authStore.logout(); },
   fetchSubscription: async (input) => fetchSubscriptionInfo(input),
-  fetchMainGames: async (input) => fetchCatalog("MAIN", await authStore.resolveJwtToken(input.token), input.providerStreamingBaseUrl),
-  fetchLibraryGames: async (input) => fetchCatalog("LIBRARY", await authStore.resolveJwtToken(input.token), input.providerStreamingBaseUrl),
+  fetchMainGames: async (input) => fetchCatalogCached("MAIN", await authStore.resolveJwtToken(input.token), input.providerStreamingBaseUrl),
+  fetchLibraryGames: async (input) => fetchCatalogCached("LIBRARY", await authStore.resolveJwtToken(input.token), input.providerStreamingBaseUrl),
   browseCatalog: async (input) => browseCatalogRequest(input),
   fetchPublicGames: async () => fetchPublicCatalog(),
   resolveLaunchAppId: async (input) => resolveLaunchId(await authStore.resolveJwtToken(input.token), input.appIdOrUuid, input.providerStreamingBaseUrl),

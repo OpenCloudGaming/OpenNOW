@@ -1133,6 +1133,7 @@ export function App(): JSX.Element {
   const clientRef = useRef<GfnWebRtcClient | null>(null);
   const sessionRef = useRef<SessionInfo | null>(null);
   const hasInitializedRef = useRef(false);
+  const suppressAutoGameLoadRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
   const launchAbortRef = useRef(false);
@@ -1822,6 +1823,7 @@ export function App(): JSX.Element {
         }
 
         // Update isInitializing FIRST so UI knows we're done loading
+        suppressAutoGameLoadRef.current = Boolean(persistedSession);
         setIsInitializing(false);
         setProviders(providerList);
         setAuthSession(persistedSession);
@@ -1868,8 +1870,11 @@ export function App(): JSX.Element {
             setCatalogSortOptions([]);
             setCatalogTotalCount(0);
             setCatalogSupportedCount(0);
+          } finally {
+            suppressAutoGameLoadRef.current = false;
           }
         } else {
+          suppressAutoGameLoadRef.current = false;
           setGames([]);
           setLibraryGames([]);
           setSubscriptionInfo(null);
@@ -2363,6 +2368,7 @@ export function App(): JSX.Element {
     setLoginError(null);
     try {
       const session = await openNow.login({ providerIdpId: providerIdpId || undefined });
+      suppressAutoGameLoadRef.current = true;
       setAuthSession(session);
       setProviderIdpId(session.provider.idpId);
 
@@ -2397,6 +2403,7 @@ export function App(): JSX.Element {
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "Login failed");
     } finally {
+      suppressAutoGameLoadRef.current = false;
       setIsLoggingIn(false);
     }
   }, [applyCatalogBrowseResult, applyVariantSelections, loadSubscriptionInfo, providerIdpId, catalogFilterKey, catalogSelectedSortId]);
@@ -2461,7 +2468,7 @@ export function App(): JSX.Element {
   }, [applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
   useEffect(() => {
-    if (!authSession || currentPage !== "home") {
+    if (!authSession || currentPage !== "home" || suppressAutoGameLoadRef.current) {
       return;
     }
     const handle = window.setTimeout(() => {
@@ -3704,7 +3711,10 @@ export function App(): JSX.Element {
 
   // Main app layout
   return (
-    <div className="app-container" style={getAppStyle(settings.posterSizeScale)}>
+    <div
+      className={`app-container ${platformCapabilities.isAndroid ? "android-shell" : ""}`}
+      style={getAppStyle(settings.posterSizeScale)}
+    >
       {startupRefreshNotice && (
         <div className={`auth-refresh-notice auth-refresh-notice--${startupRefreshNotice.tone}`}>
           {startupRefreshNotice.text}

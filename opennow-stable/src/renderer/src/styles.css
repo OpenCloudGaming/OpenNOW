@@ -286,6 +286,12 @@ body,
     linear-gradient(180deg, var(--bg-a), var(--bg-b));
 }
 
+.app-container.android-shell {
+  --navbar-h: 58px;
+  background: var(--bg-a);
+  overflow: hidden;
+}
+
 .auth-refresh-notice {
   position: fixed;
   top: calc(var(--navbar-h) + 10px);
@@ -1040,6 +1046,102 @@ body,
   }
 }
 
+.android-shell .navbar {
+  top: auto;
+  bottom: 0;
+  height: calc(var(--navbar-h) + env(safe-area-inset-bottom, 0px));
+  align-items: flex-start;
+  gap: 6px;
+  padding: 7px max(8px, env(safe-area-inset-left)) calc(7px + env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-right));
+  background: rgba(10, 10, 12, 0.98);
+  border-top: 1px solid var(--panel-border);
+  border-bottom: none;
+  transform: translateZ(0);
+}
+
+.android-shell .navbar-left {
+  display: none;
+}
+
+.android-shell .navbar-nav {
+  position: static;
+  transform: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 44px;
+  margin: 0;
+  justify-content: space-between;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+}
+
+.android-shell .navbar-link {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 4px;
+  border-radius: 0;
+  font-size: 0.68rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.android-shell .navbar-link svg {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+}
+
+.android-shell .navbar-right {
+  flex: 0 0 auto;
+  gap: 4px;
+  min-width: 0;
+  height: 44px;
+}
+
+.android-shell .navbar-user,
+.android-shell .navbar-subscription,
+.android-shell .navbar-session-resume-game,
+.android-shell .navbar-session-terminate-text {
+  display: none;
+}
+
+.android-shell .navbar-session-actions {
+  gap: 4px;
+  height: 100%;
+}
+
+.android-shell .navbar-session-resume,
+.android-shell .navbar-session-terminate,
+.android-shell .navbar-logout {
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.android-shell .navbar-session-resume-text {
+  display: none;
+}
+
+.android-shell .navbar-session-resume:hover:not(:disabled),
+.android-shell .navbar-session-terminate:hover:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+
+.android-shell .navbar-modal {
+  width: calc(100vw - 20px);
+  max-height: calc(100dvh - 96px);
+}
+
 
 /* ======================================================
    MAIN CONTENT — offset for fixed navbar
@@ -1051,6 +1153,14 @@ body,
   margin-top: var(--navbar-h);
   will-change: scroll-position;
   min-width: 0;
+}
+
+.android-shell .main-content {
+  height: 100%;
+  margin-top: 0;
+  padding: 10px 10px calc(var(--navbar-h) + env(safe-area-inset-bottom, 0px) + 12px);
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
 
 /* ======================================================
@@ -2070,6 +2180,115 @@ body.controller-mode.controller-hide-cursor * {
   }
 }
 
+.android-shell .home-page,
+.android-shell .library-page {
+  max-width: none;
+  gap: 10px;
+}
+
+.android-shell .home-toolbar,
+.android-shell .library-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.android-shell .library-title {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.android-shell .library-title h1 {
+  font-size: 0.98rem;
+}
+
+.android-shell .home-search,
+.android-shell .library-search {
+  grid-column: 1 / -1;
+  width: 100%;
+  max-width: none;
+}
+
+.android-shell .home-search-input,
+.android-shell .library-search-input {
+  height: 38px;
+  font-size: 0.86rem;
+}
+
+.android-shell .home-sort,
+.android-shell .library-sort,
+.android-shell .home-filter-dropdown {
+  min-width: 0;
+  width: 100%;
+}
+
+.android-shell .home-filter-dropdown {
+  grid-column: 1;
+}
+
+.android-shell .home-sort,
+.android-shell .library-sort {
+  grid-column: 2;
+}
+
+.android-shell .home-sort,
+.android-shell .library-sort,
+.android-shell .home-filter-dropdown-trigger {
+  height: 36px;
+  justify-content: space-between;
+  padding-inline: 10px;
+  font-size: 0.76rem;
+}
+
+.android-shell .home-sort select,
+.android-shell .library-sort select {
+  max-width: 116px;
+  min-width: 0;
+}
+
+.android-shell .home-count,
+.android-shell .library-count {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin-left: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.android-shell .home-filter-dropdown-menu {
+  position: fixed;
+  top: auto;
+  left: 10px;
+  right: 10px;
+  bottom: calc(var(--navbar-h) + env(safe-area-inset-bottom, 0px) + 10px);
+  min-width: 0;
+  max-width: none;
+  max-height: min(54dvh, 420px);
+  overflow: auto;
+}
+
+.android-shell .home-grid-area,
+.android-shell .library-grid-area {
+  padding-right: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.android-shell .game-grid {
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 8px;
+  padding-bottom: 10px;
+}
+
+@media (max-width: 420px) {
+  .android-shell .game-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 
 /* ======================================================
    GAME CARD
@@ -2292,6 +2511,71 @@ button.game-card-store-chip.active:hover {
   flex-shrink: 0;
 }
 
+.android-shell .game-card {
+  border-radius: 10px;
+  transition: border-color var(--t-fast);
+  contain: content;
+  transform: none;
+  will-change: auto;
+}
+
+.android-shell .game-card::after,
+.android-shell .game-card-overlay {
+  display: none;
+}
+
+.android-shell .game-card:hover,
+.android-shell .game-card:hover .game-card-image {
+  transform: none;
+}
+
+.android-shell .game-card-image-wrapper {
+  flex: none;
+  min-height: 0;
+  padding-top: 132%;
+}
+
+.android-shell .game-card-image {
+  transition: none;
+}
+
+.android-shell .game-card-info {
+  padding: 8px;
+  gap: 4px;
+}
+
+.android-shell .game-card-info::before {
+  inset: -54px 0 0;
+  background: linear-gradient(to bottom, transparent 0%, rgba(6, 8, 7, 0.72) 52%, rgba(6, 8, 7, 0.94) 100%);
+}
+
+.android-shell .game-card-title {
+  font-size: 0.74rem;
+  line-height: 1.22;
+}
+
+.android-shell .game-card-platform {
+  display: none;
+}
+
+.android-shell .game-card-stores {
+  gap: 2px;
+  flex-wrap: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.android-shell .game-card-store-chip {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+}
+
+.android-shell .store-svg {
+  width: 12px;
+  height: 12px;
+}
+
 
 .controller-selected-overlay {
   position: absolute;
@@ -2314,6 +2598,15 @@ button.game-card-store-chip.active:hover {
   gap: 18px;
 }
 
+.android-shell .settings-page {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  min-width: 0;
+  gap: 10px;
+  overflow: hidden;
+}
+
 .settings-header {
   display: flex;
   align-items: center;
@@ -2331,6 +2624,26 @@ button.game-card-store-chip.active:hover {
   font-weight: 700;
   margin: 0;
   flex: 1;
+}
+
+.android-shell .settings-header {
+  gap: 8px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.android-shell .settings-header h1 {
+  min-width: 0;
+  font-size: 1.05rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.android-shell .settings-saved {
+  padding: 5px 9px;
+  font-size: 0.72rem;
+  white-space: nowrap;
 }
 
 .settings-saved {
@@ -2374,11 +2687,21 @@ button.game-card-store-chip.active:hover {
   gap: 14px;
 }
 
+.android-shell .settings-thanks-grid,
+.android-shell .settings-people-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .settings-thanks-hero {
   display: flex;
   align-items: flex-start;
   gap: 14px;
   background: linear-gradient(180deg, rgba(88, 217, 138, 0.08), rgba(88, 217, 138, 0.03));
+}
+
+.android-shell .settings-thanks-hero,
+.android-shell .settings-person-card {
+  min-width: 0;
 }
 
 .settings-thanks-hero-icon {
@@ -2526,6 +2849,11 @@ button.game-card-store-chip.active:hover {
   color: var(--ink-muted);
 }
 
+.android-shell .settings-person-meta {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .settings-thanks-state,
 .settings-thanks-status {
   display: flex;
@@ -2592,6 +2920,12 @@ button.game-card-store-chip.active:hover {
   overflow: hidden;
 }
 
+.android-shell .settings-layout {
+  min-width: 0;
+  border-radius: 10px;
+  flex-direction: column;
+}
+
 .settings-sidebar {
   width: 188px;
   flex-shrink: 0;
@@ -2603,6 +2937,16 @@ button.game-card-store-chip.active:hover {
   padding: 10px 8px;
 }
 
+.android-shell .settings-sidebar {
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 8px;
+  border-right: none;
+  border-bottom: 1px solid var(--panel-border);
+}
+
 .settings-search-wrap {
   display: flex;
   align-items: center;
@@ -2612,6 +2956,13 @@ button.game-card-store-chip.active:hover {
   border: 1px solid var(--panel-border);
   border-radius: 6px;
   margin-bottom: 8px;
+}
+
+.android-shell .settings-search-wrap {
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 0;
+  padding: 8px 10px;
 }
 
 .settings-search-icon {
@@ -2657,6 +3008,15 @@ button.game-card-store-chip.active:hover {
   gap: 2px;
 }
 
+.android-shell .settings-nav {
+  flex-direction: row;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  -webkit-overflow-scrolling: touch;
+}
+
 .settings-nav-item {
   display: flex;
   align-items: center;
@@ -2673,6 +3033,19 @@ button.game-card-store-chip.active:hover {
   text-align: left;
   transition: background var(--t-fast), color var(--t-fast);
   white-space: nowrap;
+}
+
+.android-shell .settings-nav-item {
+  flex: 0 0 auto;
+  gap: 6px;
+  min-height: 36px;
+  padding: 8px 10px;
+  font-size: 0.78rem;
+}
+
+.android-shell .settings-nav-item svg {
+  width: 15px;
+  height: 15px;
 }
 
 .settings-nav-item svg {
@@ -2708,6 +3081,15 @@ button.game-card-store-chip.active:hover {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.android-shell .settings-content {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  gap: 10px;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Advanced disclosure */
@@ -2781,6 +3163,11 @@ button.game-card-store-chip.active:hover {
   gap: 12px 16px;
 }
 
+.android-shell .settings-toggle-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
 .settings-toggle-grid .settings-row {
   flex-direction: column;
   align-items: flex-start;
@@ -2814,6 +3201,13 @@ button.game-card-store-chip.active:hover {
   transition: border-color var(--t-normal);
 }
 
+.android-shell .settings-section {
+  min-width: 0;
+  padding: 12px;
+  border-radius: 10px;
+  overflow: visible;
+}
+
 .settings-section:hover {
   border-color: rgba(255, 255, 255, 0.08);
 }
@@ -2828,6 +3222,13 @@ button.game-card-store-chip.active:hover {
   color: var(--accent);
 }
 
+.android-shell .settings-section-header {
+  min-width: 0;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+}
+
 .settings-section-header svg {
   width: 20px;
   height: 20px;
@@ -2840,6 +3241,14 @@ button.game-card-store-chip.active:hover {
   margin: 0;
 }
 
+.android-shell .settings-section-header h2 {
+  min-width: 0;
+  font-size: 0.92rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Rows */
 .settings-rows {
   display: flex;
@@ -2847,11 +3256,23 @@ button.game-card-store-chip.active:hover {
   gap: 14px;
 }
 
+.android-shell .settings-rows {
+  gap: 12px;
+  min-width: 0;
+}
+
 .settings-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
+}
+
+.android-shell .settings-row {
+  min-width: 0;
+  align-items: stretch;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .settings-row--column {
@@ -2868,6 +3289,11 @@ button.game-card-store-chip.active:hover {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 8px;
+}
+
+.android-shell .settings-row-top {
+  min-width: 0;
+  gap: 8px;
 }
 
 .settings-row-top--compact {
@@ -2910,6 +3336,12 @@ button.game-card-store-chip.active:hover {
   font-weight: 500;
   flex-shrink: 0;
   cursor: default;
+}
+
+.android-shell .settings-label {
+  min-width: 0;
+  font-size: 0.84rem;
+  flex-shrink: 1;
 }
 
 .settings-label--wrap {
@@ -3018,6 +3450,12 @@ button.game-card-store-chip.active:hover {
   border-left: 1px solid var(--panel-border);
 }
 
+.android-shell .settings-controller-subsettings {
+  padding-left: 10px;
+  margin-left: 0;
+  gap: 10px;
+}
+
 .settings-controller-subsettings .settings-row {
   gap: 12px;
 }
@@ -3036,6 +3474,11 @@ button.game-card-store-chip.active:hover {
   transition: border-color var(--t-fast), box-shadow var(--t-fast);
 }
 
+.android-shell .settings-text-input {
+  width: 100%;
+  min-width: 0;
+}
+
 .settings-text-input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-surface);
@@ -3051,10 +3494,21 @@ button.game-card-store-chip.active:hover {
   max-width: 90px;
 }
 
+.android-shell .settings-text-input--narrow {
+  max-width: none;
+}
+
 .settings-input-group {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.android-shell .settings-input-group {
+  min-width: 0;
+  width: 100%;
+  align-items: stretch;
+  flex-direction: column;
 }
 
 .settings-input-hint {
@@ -3078,6 +3532,10 @@ button.game-card-store-chip.active:hover {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+}
+
+.android-shell .settings-shortcut-grid {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .settings-shortcut-row {
@@ -3121,6 +3579,11 @@ button.game-card-store-chip.active:hover {
   gap: 4px;
 }
 
+.android-shell .settings-chip-row {
+  min-width: 0;
+  gap: 6px;
+}
+
 .settings-chip {
   display: flex;
   align-items: center;
@@ -3137,6 +3600,16 @@ button.game-card-store-chip.active:hover {
   transition: color var(--t-fast), background var(--t-fast), border-color var(--t-fast);
   outline: none;
   white-space: nowrap;
+}
+
+.android-shell .settings-chip {
+  min-width: 0;
+  max-width: 100%;
+  padding: 8px 10px;
+  font-size: 0.78rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 
 .settings-chip:hover {
@@ -3231,6 +3704,12 @@ button.game-card-store-chip.active:hover {
   white-space: nowrap;
 }
 
+.android-shell .settings-value-badge {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  font-size: 0.76rem;
+}
+
 /* Slider */
 .settings-slider {
   width: 100%;
@@ -3317,6 +3796,15 @@ button.game-card-store-chip.active:hover {
   min-width: 0;
 }
 
+.android-shell .settings-dropdown,
+.android-shell .settings-dropdown--constrained,
+.android-shell .region-selector {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  flex-basis: auto;
+}
+
 .settings-dropdown--constrained {
   flex: 0 1 320px;
   width: min(320px, 100%);
@@ -3339,6 +3827,13 @@ button.game-card-store-chip.active:hover {
   cursor: pointer;
   transition: border-color var(--t-fast), box-shadow var(--t-fast), opacity var(--t-fast);
   outline: none;
+}
+
+.android-shell .settings-dropdown-selected,
+.android-shell .region-selected {
+  min-width: 0;
+  padding: 10px 11px;
+  font-size: 0.84rem;
 }
 
 .settings-dropdown-selected:hover {
@@ -3388,6 +3883,19 @@ button.game-card-store-chip.active:hover {
   animation: fade-in-down 120ms var(--ease);
 }
 
+.android-shell .settings-dropdown-menu,
+.android-shell .region-dropdown {
+  position: fixed;
+  left: 20px;
+  right: 20px;
+  top: auto;
+  bottom: calc(var(--navbar-h) + env(safe-area-inset-bottom, 0px) + 14px);
+  max-height: min(58dvh, 430px);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  overflow-y: auto;
+}
+
 .settings-dropdown-menu--tall {
   max-height: 260px;
 }
@@ -3407,6 +3915,13 @@ button.game-card-store-chip.active:hover {
   cursor: pointer;
   text-align: left;
   transition: background var(--t-fast), color var(--t-fast);
+}
+
+.android-shell .settings-dropdown-item,
+.android-shell .region-dropdown-item {
+  min-width: 0;
+  padding: 11px 12px;
+  font-size: 0.84rem;
 }
 
 .settings-dropdown-item:hover {
@@ -3495,6 +4010,12 @@ button.game-card-store-chip.active:hover {
   margin-left: auto;
   margin-right: 8px;
   color: var(--ink-muted);
+}
+
+.android-shell .region-selected-ping,
+.android-shell .region-selected-ping-unavailable,
+.android-shell .region-selected-best-info {
+  display: none;
 }
 
 .region-selected-ping.good {
@@ -3805,6 +4326,15 @@ button.game-card-store-chip.active:hover {
   justify-content: flex-end;
 }
 
+.android-shell .settings-footer,
+.android-shell .settings-updater-actions,
+.android-shell .settings-thanks-actions {
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .settings-save-btn {
   display: flex;
   align-items: center;
@@ -3820,6 +4350,16 @@ button.game-card-store-chip.active:hover {
   cursor: pointer;
   transition: transform var(--t-normal), box-shadow var(--t-normal);
   box-shadow: 0 4px 16px var(--accent-glow);
+}
+
+.android-shell .settings-save-btn,
+.android-shell .settings-export-logs-btn,
+.android-shell .settings-delete-cache-btn,
+.android-shell .settings-shortcut-reset-btn,
+.android-shell .settings-exit-btn {
+  width: 100%;
+  min-width: 0;
+  justify-content: center;
 }
 
 .settings-save-btn:hover {
