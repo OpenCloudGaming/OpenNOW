@@ -134,8 +134,6 @@ Then add the package to your configuration:
 }
 ```
 
-Windows ARM64 builds are published as release downloads. The Windows auto-update feed remains `latest.yml` for x64 releases, so ARM64 packages do not participate in in-app auto-update yet.
-
 ### Develop Locally
 
 From the repository root:
