@@ -42,7 +42,6 @@ struct MainTabView: View {
     @AppStorage("queuePillVerticalEdge") private var queuePillVerticalEdgeRaw = ""
     @State private var streamerAutoRetryCount = 0
     @State private var presentedStreamerSession: ActiveSession?
-    @State private var queuePillDragOffset: CGFloat = 0
     private static let maxStreamerAutoRetries = 3
 
     private enum QueuePillVerticalEdge: String {
@@ -181,9 +180,7 @@ struct MainTabView: View {
                         .environmentObject(store)
                         .padding(.top, queuePillEdge == .top ? 8 : 0)
                         .padding(.bottom, queuePillEdge == .bottom ? bottomQueuePillPadding(in: proxy) : 0)
-                        .offset(y: queuePillDragOffset)
                         .queuePillDrag(
-                            offset: $queuePillDragOffset,
                             edgeRawValue: $queuePillVerticalEdgeRaw,
                             proxy: proxy,
                             animation: queueSurfaceAnimation
@@ -334,6 +331,85 @@ private struct QueuePillBackgroundModifier: ViewModifier {
     }
 }
 
+private struct QueuePillDragModifier: ViewModifier {
+    @Binding var edgeRawValue: String
+    let proxy: GeometryProxy
+    let animation: Animation
+    @State private var dragOffset: CGFloat = 0
+    @State private var latchedDuringDrag = false
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content
+            .offset(y: dragOffset)
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 3, coordinateSpace: .global)
+                    .onChanged { value in
+                        guard !latchedDuringDrag else { return }
+
+                        let currentEdge = edgeRawValue.isEmpty ? "top" : edgeRawValue
+                        let snapDistance = min(max(proxy.size.height * 0.12, 68), 118)
+                        let translation = value.translation.height
+                        let nextEdge: String?
+                        if currentEdge == "bottom", translation < -snapDistance {
+                            nextEdge = "top"
+                        } else if currentEdge != "bottom", translation > snapDistance {
+                            nextEdge = "bottom"
+                        } else {
+                            nextEdge = nil
+                        }
+
+                        if let nextEdge {
+                            latchedDuringDrag = true
+                            withAnimation(animation) {
+                                edgeRawValue = nextEdge
+                                dragOffset = 0
+                            }
+                        } else {
+                            var transaction = Transaction()
+                            transaction.animation = nil
+                            withTransaction(transaction) {
+                                dragOffset = translation
+                            }
+                        }
+                    }
+                    .onEnded { value in
+                        defer {
+                            latchedDuringDrag = false
+                        }
+
+                        guard !latchedDuringDrag else {
+                            withAnimation(animation) {
+                                dragOffset = 0
+                            }
+                            return
+                        }
+
+                        let currentEdge = edgeRawValue.isEmpty ? "top" : edgeRawValue
+                        let projectedTranslation = value.translation.height + (value.predictedEndTranslation.height * 0.18)
+                        let snapDistance = min(max(proxy.size.height * 0.12, 68), 118)
+                        let nextEdge: String?
+                        if currentEdge == "bottom", projectedTranslation < -snapDistance {
+                            nextEdge = "top"
+                        } else if currentEdge != "bottom", projectedTranslation > snapDistance {
+                            nextEdge = "bottom"
+                        } else {
+                            nextEdge = nil
+                        }
+                        withAnimation(animation) {
+                            if let nextEdge {
+                                edgeRawValue = nextEdge
+                            }
+                            dragOffset = 0
+                        }
+                    }
+            )
+        #else
+        content
+        #endif
+    }
+}
+
 extension View {
     func queuePillBackground() -> some View {
         modifier(QueuePillBackgroundModifier())
@@ -353,40 +429,11 @@ extension View {
 
     @ViewBuilder
     func queuePillDrag(
-        offset: Binding<CGFloat>,
         edgeRawValue: Binding<String>,
         proxy: GeometryProxy,
         animation: Animation
     ) -> some View {
-        #if os(iOS)
-        self.gesture(
-            DragGesture(minimumDistance: 8, coordinateSpace: .global)
-                .onChanged { value in
-                    var transaction = Transaction()
-                    transaction.animation = nil
-                    withTransaction(transaction) {
-                        offset.wrappedValue = value.translation.height
-                    }
-                }
-                .onEnded { value in
-                    let currentEdge = edgeRawValue.wrappedValue.isEmpty ? "top" : edgeRawValue.wrappedValue
-                    let projectedTranslation = value.translation.height + (value.predictedEndTranslation.height * 0.28)
-                    let snapDistance = min(max(proxy.size.height * 0.16, 92), 150)
-                    let nextEdge: String
-                    if currentEdge == "bottom" {
-                        nextEdge = projectedTranslation < -snapDistance ? "top" : "bottom"
-                    } else {
-                        nextEdge = projectedTranslation > snapDistance ? "bottom" : "top"
-                    }
-                    withAnimation(animation) {
-                        edgeRawValue.wrappedValue = nextEdge
-                        offset.wrappedValue = 0
-                    }
-                }
-        )
-        #else
-        self
-        #endif
+        modifier(QueuePillDragModifier(edgeRawValue: edgeRawValue, proxy: proxy, animation: animation))
     }
 }
 
