@@ -214,7 +214,9 @@ private struct StreamerWebView: UIViewRepresentable {
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
+        uiView.configuration.userContentController.removeScriptMessageHandler(forName: "opennow")
         coordinator.detach()
+    }
     }
 
     private func buildHTML(for session: ActiveSession, settings: AppSettings) -> String {
