@@ -65,8 +65,6 @@ export function isDiscordRpcConnected(): boolean {
  * how long the user has been playing.
  */
 export async function setActivity(gameName: string, startTimestamp: Date, appId?: string): Promise<void> {
-  lastActivity = { gameName, startTimestamp, appId };
-
   if (!connected || !rpcClient) {
     return;
   }
@@ -78,6 +76,7 @@ export async function setActivity(gameName: string, startTimestamp: Date, appId?
       startTimestamp,
       instance: false,
     });
+    lastActivity = { gameName, startTimestamp, appId };
   } catch (err) {
     console.warn("[DiscordRPC] setActivity failed:", (err as Error).message);
   }
