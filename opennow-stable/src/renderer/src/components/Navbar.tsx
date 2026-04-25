@@ -1,6 +1,6 @@
-import type { ActiveSessionInfo, AuthUser, SubscriptionInfo } from "@shared/gfn";
-import { House, Library, Settings, User, LogOut, Zap, Timer, HardDrive, X, Loader2, PlayCircle } from "lucide-react";
-import { useEffect, useState, type JSX } from "react";
+import type { ActiveSessionInfo, AuthUser, SavedAccount, SubscriptionInfo } from "@shared/gfn";
+import { House, Library, Settings, User, Zap, Timer, HardDrive, X, Loader2, PlayCircle, Square, ChevronDown, Check, Plus } from "lucide-react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import { createPortal } from "react-dom";
 
 interface NavbarProps {
@@ -11,8 +11,14 @@ interface NavbarProps {
   activeSession: ActiveSessionInfo | null;
   activeSessionGameTitle: string | null;
   isResumingSession: boolean;
+  isTerminatingSession: boolean;
   onResumeSession: () => void;
-  onLogout: () => void;
+  onTerminateSession: () => void;
+  savedAccounts: SavedAccount[];
+  onSwitchAccount: (userId: string) => void;
+  onRemoveAccount: (userId: string) => void;
+  onAddAccount: () => void;
+  onLogoutAll: () => void;
 }
 
 type NavbarModalType = "time" | "storage" | null;
@@ -32,10 +38,18 @@ export function Navbar({
   activeSession,
   activeSessionGameTitle,
   isResumingSession,
+  isTerminatingSession,
   onResumeSession,
-  onLogout,
+  onTerminateSession,
+  savedAccounts,
+  onSwitchAccount,
+  onRemoveAccount,
+  onAddAccount,
+  onLogoutAll,
 }: NavbarProps): JSX.Element {
   const [modalType, setModalType] = useState<NavbarModalType>(null);
+  const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
+  const accountContainerRef = useRef<HTMLDivElement | null>(null);
 
   const navItems = [
     { id: "home" as const, label: "Store", icon: House },
@@ -114,6 +128,18 @@ export function Navbar({
   const firstEntitlementStart = formatDateTime(subscription?.firstEntitlementStartDateTime);
   const modalTitle = modalType === "time" ? "Playtime Details" : "Storage Details";
   const activeSessionTitle = activeSessionGameTitle?.trim() || null;
+  const activeUserId = user?.userId ?? null;
+
+  useEffect(() => {
+    if (!accountDropdownOpen) return;
+    const onDocumentPointerDown = (event: MouseEvent) => {
+      if (!(event.target instanceof Node) || !accountContainerRef.current?.contains(event.target)) {
+        setAccountDropdownOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", onDocumentPointerDown);
+    return () => window.removeEventListener("mousedown", onDocumentPointerDown);
+  }, [accountDropdownOpen]);
 
   useEffect(() => {
     if (!modalType) return;
@@ -273,23 +299,39 @@ export function Navbar({
 
       <div className="navbar-right">
         {activeSession && (
-          <button
-            type="button"
-            className={`navbar-session-resume${isResumingSession ? " is-loading" : ""}`}
-            title={
-              activeSession.serverIp
-                ? activeSessionTitle
-                  ? `Resume active cloud session: ${activeSessionTitle}`
-                  : "Resume active cloud session"
-                : "Active session found (missing server address)"
-            }
-            onClick={onResumeSession}
-            disabled={isResumingSession || !activeSession.serverIp}
-          >
-            {isResumingSession ? <Loader2 size={14} className="navbar-session-resume-spin" /> : <PlayCircle size={14} />}
-            <span className="navbar-session-resume-text">Resume</span>
-            {activeSessionTitle && <span className="navbar-session-resume-game">{activeSessionTitle}</span>}
-          </button>
+          <div className="navbar-session-actions">
+            <button
+              type="button"
+              className={`navbar-session-resume${isResumingSession ? " is-loading" : ""}`}
+              title={
+                activeSession.serverIp
+                  ? activeSessionTitle
+                    ? `Resume active cloud session: ${activeSessionTitle}`
+                    : "Resume active cloud session"
+                  : "Active session found (missing server address)"
+              }
+              onClick={onResumeSession}
+              disabled={isResumingSession || isTerminatingSession || !activeSession.serverIp}
+            >
+              {isResumingSession ? <Loader2 size={14} className="navbar-session-resume-spin" /> : <PlayCircle size={14} />}
+              <span className="navbar-session-resume-text">Resume</span>
+              {activeSessionTitle && <span className="navbar-session-resume-game">{activeSessionTitle}</span>}
+            </button>
+            <button
+              type="button"
+              className={`navbar-session-terminate${isTerminatingSession ? " is-loading" : ""}`}
+              title={
+                activeSessionTitle
+                  ? `Terminate active cloud session: ${activeSessionTitle}`
+                  : "Terminate active cloud session"
+              }
+              onClick={onTerminateSession}
+              disabled={isResumingSession || isTerminatingSession}
+            >
+              {isTerminatingSession ? <Loader2 size={14} className="navbar-session-resume-spin" /> : <Square size={12} />}
+              <span className="navbar-session-terminate-text">Terminate</span>
+            </button>
+          </div>
         )}
         {(timeLabel || storageLabel) && (
           <div className="navbar-subscription" aria-label="Subscription details">
@@ -319,24 +361,137 @@ export function Navbar({
         )}
         {user ? (
           <>
-            <div className="navbar-user">
-              {user.avatarUrl ? (
-                <img src={user.avatarUrl} alt={user.displayName} className="navbar-avatar" />
-              ) : (
-                <div className="navbar-avatar-fallback">
-                  <User size={14} />
+            <div className="navbar-account-container" ref={accountContainerRef}>
+              <button
+                type="button"
+                className="navbar-user navbar-user--clickable"
+                onClick={() => setAccountDropdownOpen((previous) => !previous)}
+                aria-haspopup="menu"
+                aria-expanded={accountDropdownOpen}
+                aria-controls="navbar-account-dropdown"
+              >
+                {user.avatarUrl ? (
+                  <img src={user.avatarUrl} alt={user.displayName} className="navbar-avatar" />
+                ) : (
+                  <div className="navbar-avatar-fallback">
+                    <User size={14} />
+                  </div>
+                )}
+                <div className="navbar-user-info">
+                  <span className="navbar-username">{user.displayName}</span>
+                  {tierInfo && (
+                    <span className={`navbar-tier ${tierInfo.className}`}>{tierInfo.label}</span>
+                  )}
+                </div>
+                <ChevronDown
+                  size={14}
+                  className={`navbar-user-chevron${accountDropdownOpen ? " is-open" : ""}`}
+                />
+              </button>
+              {accountDropdownOpen && (
+                <div
+                  id="navbar-account-dropdown"
+                  className="navbar-account-dropdown"
+                  role="menu"
+                  aria-labelledby="navbar-account-dropdown-header"
+                >
+                  <div id="navbar-account-dropdown-header" className="navbar-account-dropdown-header">
+                    Switch Account
+                  </div>
+                  <ul className="navbar-account-list">
+                    {savedAccounts.map((account) => {
+                      const accountTierInfo = getTierDisplay(account.membershipTier);
+                      const isActive = activeUserId === account.userId;
+                      const canRemove = !isActive && savedAccounts.length > 1;
+                      return (
+                        <li
+                          key={account.userId}
+                          role="none"
+                          className={`navbar-account-item${isActive ? " navbar-account-item--active" : ""}`}
+                        >
+                          <button
+                            type="button"
+                            className="navbar-account-item-main"
+                            role="menuitem"
+                            onClick={() => {
+                              if (!isActive) {
+                                void onSwitchAccount(account.userId);
+                              }
+                              setAccountDropdownOpen(false);
+                            }}
+                            disabled={isActive}
+                          >
+                            {account.avatarUrl ? (
+                              <img
+                                src={account.avatarUrl}
+                                alt={account.displayName}
+                                className="navbar-account-item-avatar"
+                              />
+                            ) : (
+                              <div className="navbar-avatar-fallback navbar-account-item-avatar">
+                                <User size={12} />
+                              </div>
+                            )}
+                            <div className="navbar-account-item-info">
+                              <span className="navbar-account-item-name">{account.displayName}</span>
+                              {account.email && <span className="navbar-account-item-email">{account.email}</span>}
+                            </div>
+                            <div className="navbar-account-item-right">
+                              <span className={`navbar-account-item-tier ${accountTierInfo.className}`}>
+                                {accountTierInfo.label}
+                              </span>
+                              {isActive && (
+                                <span className="navbar-account-item-check" aria-label="Active account">
+                                  <Check size={14} />
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                          {canRemove && (
+                            <button
+                              type="button"
+                              className="navbar-account-remove"
+                              role="menuitem"
+                              aria-label={`Remove ${account.displayName}`}
+                              onClick={() => {
+                                setAccountDropdownOpen(false);
+                                onRemoveAccount(account.userId);
+                              }}
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <div className="navbar-account-divider" aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="navbar-account-add"
+                    role="menuitem"
+                    onClick={() => {
+                      onAddAccount();
+                      setAccountDropdownOpen(false);
+                    }}
+                  >
+                    <Plus size={14} />
+                    <span>Add account</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="navbar-account-signout-all"
+                    role="menuitem"
+                    onClick={() => {
+                      setAccountDropdownOpen(false);
+                      onLogoutAll();
+                    }}
+                  >
+                    Sign out all accounts
+                  </button>
                 </div>
               )}
-              <div className="navbar-user-info">
-                <span className="navbar-username">{user.displayName}</span>
-                {tierInfo && (
-                  <span className={`navbar-tier ${tierInfo.className}`}>{tierInfo.label}</span>
-                )}
-              </div>
             </div>
-            <button onClick={onLogout} className="navbar-logout" title="Sign out">
-              <LogOut size={16} />
-            </button>
           </>
         ) : (
           <div className="navbar-guest">

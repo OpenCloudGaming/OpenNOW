@@ -49,5 +49,7 @@ opennow-stable/package-lock.json
 AGENTS.md
 release-notes.md
 
+# Nix
+result
 .deriveddata/
 .deriveddata-device/

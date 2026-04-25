@@ -210,3 +210,46 @@ export function formatShortcutForDisplay(raw: string, isMac: boolean): string {
   parts.push(parsed.key);
   return parts.join("+");
 }
+
+const MODIFIER_ONLY_CODES = new Set([
+  "ControlLeft",
+  "ControlRight",
+  "AltLeft",
+  "AltRight",
+  "ShiftLeft",
+  "ShiftRight",
+  "MetaLeft",
+  "MetaRight",
+  "OSLeft",
+  "OSRight",
+]);
+
+/**
+ * Builds a canonical shortcut string from a keydown event (for press-to-bind UIs).
+ * Returns null for modifier-only keys, unknown keys, or invalid combinations.
+ */
+export function shortcutFromKeyboardEvent(event: KeyboardEvent): string | null {
+  if (event.repeat) {
+    return null;
+  }
+  if (MODIFIER_ONLY_CODES.has(event.code)) {
+    return null;
+  }
+
+  const fromCode = normalizeEventCode(event.code);
+  const fromKey = normalizeKeyToken(normalizeEventKey(event.key));
+  const keyToken = fromCode ?? fromKey;
+  if (!keyToken) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  if (event.ctrlKey) parts.push("Ctrl");
+  if (event.altKey) parts.push("Alt");
+  if (event.shiftKey) parts.push("Shift");
+  if (event.metaKey) parts.push("Meta");
+  parts.push(keyToken);
+
+  const parsed = normalizeShortcut(parts.join("+"));
+  return parsed.valid ? parsed.canonical : null;
+}

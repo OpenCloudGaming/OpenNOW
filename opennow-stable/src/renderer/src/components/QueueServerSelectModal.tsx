@@ -58,6 +58,8 @@ const REGION_META: Record<string, { label: string; flag: string }> = {
 const REGION_ORDER = ["US", "CA", "EU", "JP", "KR", "THAI", "MY"];
 const PRINTEDWASTE_PING_CACHE_KEY = "opennow.printedwaste-pings.v1";
 const QUEUE_REFRESH_INTERVAL_MS = 2 * 60 * 1000;
+const AUTO_PING_WEIGHT = 0.75;
+const AUTO_QUEUE_WEIGHT = 0.25;
 
 interface PingCacheEntry {
   url: string;
@@ -252,9 +254,9 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
         .sort((a, b) => a.queuePosition - b.queuePosition),
     ];
 
-    // Ping every uncached standard zone in this pass so recommendations are based on
-    // complete latency data instead of a partial subset.
-    const zonesToPing = prioritized.filter((zone) => !seedMap.has(zone.routingUrl));
+    // Always ping every standard zone so Auto recommendations are based on
+    // fresh measurements instead of stale cached latency.
+    const zonesToPing = prioritized;
 
     if (zonesToPing.length === 0) {
       setIsPinging(false);
@@ -310,7 +312,8 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
 
   // ── Recommendations ───────────────────────────────────────────────────────
 
-  // Auto: weighted lowest score (40% ping + 60% queue). Falls back to queue-only
+  // Auto: weighted lowest score with strict ping preference (75% ping + 25% queue).
+  // Falls back to queue-only
   // when ping data isn't in yet.
   const autoZone = useMemo<ZoneInfo | null>(() => {
     if (zones.length === 0) return null;
@@ -319,8 +322,11 @@ export function QueueServerSelectModal({ game, initialQueueData = null, onConfir
     const maxPing  = Math.max(...pool.map((z) => z.pingMs ?? 999), 1);
     const maxQueue = Math.max(...pool.map((z) => z.queuePosition), 1);
     return pool.reduce((best, z) => {
-      const score = ((z.pingMs ?? maxPing) / maxPing) * 0.4 + (z.queuePosition / maxQueue) * 0.6;
-      const bScore = ((best.pingMs ?? maxPing) / maxPing) * 0.4 + (best.queuePosition / maxQueue) * 0.6;
+      const score = ((z.pingMs ?? maxPing) / maxPing) * AUTO_PING_WEIGHT + (z.queuePosition / maxQueue) * AUTO_QUEUE_WEIGHT;
+      const bScore = ((best.pingMs ?? maxPing) / maxPing) * AUTO_PING_WEIGHT + (best.queuePosition / maxQueue) * AUTO_QUEUE_WEIGHT;
+      if (score === bScore && z.pingMs !== null && best.pingMs !== null) {
+        return z.pingMs < best.pingMs ? z : best;
+      }
       return score < bScore ? z : best;
     }, pool[0]!);
   }, [zones]);

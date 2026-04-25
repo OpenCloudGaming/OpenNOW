@@ -4,10 +4,15 @@ export const IPC_CHANNELS = {
   AUTH_GET_REGIONS: "auth:get-regions",
   AUTH_LOGIN: "auth:login",
   AUTH_LOGOUT: "auth:logout",
+  AUTH_LOGOUT_ALL: "auth:logout-all",
+  AUTH_GET_SAVED_ACCOUNTS: "auth:get-saved-accounts",
+  AUTH_SWITCH_ACCOUNT: "auth:switch-account",
+  AUTH_REMOVE_ACCOUNT: "auth:remove-account",
   PING_REGIONS: "gfn:ping-regions",
   SUBSCRIPTION_FETCH: "subscription:fetch",
   GAMES_FETCH_MAIN: "games:fetch-main",
   GAMES_FETCH_LIBRARY: "games:fetch-library",
+  GAMES_BROWSE_CATALOG: "games:browse-catalog",
   GAMES_FETCH_PUBLIC: "games:fetch-public",
   GAMES_RESOLVE_LAUNCH_ID: "games:resolve-launch-id",
   CREATE_SESSION: "gfn:create-session",
@@ -27,6 +32,11 @@ export const IPC_CHANNELS = {
   SET_FULLSCREEN: "window:set-fullscreen",
   TOGGLE_POINTER_LOCK: "window:toggle-pointer-lock",
   QUIT_APP: "app:quit",
+  APP_UPDATER_GET_STATE: "app-updater:get-state",
+  APP_UPDATER_CHECK: "app-updater:check",
+  APP_UPDATER_DOWNLOAD: "app-updater:download",
+  APP_UPDATER_INSTALL: "app-updater:install",
+  APP_UPDATER_STATE_CHANGED: "app-updater:state-changed",
   SETTINGS_GET: "settings:get",
   SETTINGS_SET: "settings:set",
   SETTINGS_RESET: "settings:reset",
@@ -55,6 +65,8 @@ export const IPC_CHANNELS = {
   // PrintedWaste queue integration
   PRINTEDWASTE_QUEUE_FETCH: "printedwaste:queue-fetch",
   PRINTEDWASTE_SERVER_MAPPING_FETCH: "printedwaste:server-mapping-fetch",
+  // Discord Rich Presence
+  DISCORD_CLEAR_ACTIVITY: "discord:clear-activity",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

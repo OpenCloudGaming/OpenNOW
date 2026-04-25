@@ -128,6 +128,7 @@ export interface MicrophonePermissionResult {
 export interface Settings {
   resolution: string;
   aspectRatio: AspectRatio;
+  posterSizeScale: number;
   fps: number;
   maxBitrateMbps: number;
   codec: VideoCodec;
@@ -140,6 +141,7 @@ export interface Settings {
   mouseAcceleration: number;
   shortcutToggleStats: string;
   shortcutTogglePointerLock: string;
+  shortcutToggleFullscreen: string;
   shortcutStopStream: string;
   shortcutToggleAntiAfk: string;
   shortcutToggleMicrophone: string;
@@ -148,7 +150,10 @@ export interface Settings {
   microphoneMode: MicrophoneMode;
   microphoneDeviceId: string;
   hideStreamButtons: boolean;
+  showAntiAfkIndicator: boolean;
   showStatsOnLaunch: boolean;
+  /** Skip the free-tier queue server selection modal and launch with default routing */
+  hideServerSelector: boolean;
   controllerMode: boolean;
   controllerUiSounds: boolean;
   autoLoadControllerLibrary: boolean;
@@ -168,8 +173,12 @@ export interface Settings {
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
+  /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
+  enableCloudGsync: boolean;
   /** Show the currently streaming game as Discord Rich Presence activity */
   discordRichPresence: boolean;
+  /** Automatically check GitHub Releases for app updates in the background */
+  autoCheckForUpdates: boolean;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
@@ -257,6 +266,15 @@ export interface AuthSession {
   user: AuthUser;
 }
 
+export interface SavedAccount {
+  userId: string;
+  displayName: string;
+  email?: string;
+  avatarUrl?: string;
+  membershipTier: string;
+  providerCode: string;
+}
+
 export interface ThankYouContributor {
   login: string;
   avatarUrl: string;
@@ -322,6 +340,13 @@ export interface GamesFetchRequest {
   providerStreamingBaseUrl?: string;
 }
 
+export interface CatalogBrowseRequest extends GamesFetchRequest {
+  searchQuery?: string;
+  sortId?: string;
+  filterIds?: string[];
+  fetchCount?: number;
+}
+
 export interface ResolveLaunchIdRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
@@ -338,9 +363,28 @@ export interface GameVariant {
   id: string;
   store: string;
   supportedControls: string[];
+  librarySelected?: boolean;
+  libraryStatus?: string;
+  lastPlayedDate?: string;
+  gfnStatus?: string;
+}
+
+export const OWNED_LIBRARY_STATUSES = ["MANUAL", "PLATFORM_SYNC", "IN_LIBRARY"] as const;
+
+export function normalizeGameStore(store: string): string {
+  return store.toUpperCase().replace(/[\s-]+/g, "_");
+}
+
+export function isOwnedLibraryStatus(status?: string): boolean {
+  return typeof status === "string" && OWNED_LIBRARY_STATUSES.includes(status as (typeof OWNED_LIBRARY_STATUSES)[number]);
+}
+
+export function isOwnedVariant(variant: Pick<GameVariant, "libraryStatus">): boolean {
+  return isOwnedLibraryStatus(variant.libraryStatus);
 }
 
 export interface GameInfo {
+
   id: string;
   uuid?: string;
   launchAppId?: string;
@@ -353,8 +397,58 @@ export interface GameInfo {
   screenshotUrl?: string;
   playType?: string;
   membershipTierLabel?: string;
+  publisherName?: string;
+  contentRatings?: string[];
+  playabilityState?: string;
+  availableStores?: string[];
+  searchText?: string;
+  lastPlayed?: string;
+  isInLibrary?: boolean;
   selectedVariantIndex: number;
   variants: GameVariant[];
+}
+
+export function isGameInLibrary(game: Pick<GameInfo, "variants">): boolean {
+  return game.variants.some((variant) => isOwnedVariant(variant));
+}
+
+export function isEpicStore(store: string): boolean {
+  const key = normalizeGameStore(store);
+  return key === "EPIC_GAMES_STORE" || key === "EPIC" || key === "EGS";
+}
+
+export interface CatalogFilterOption {
+  id: string;
+  rawId: string;
+  label: string;
+  groupId: string;
+  groupLabel: string;
+}
+
+export interface CatalogFilterGroup {
+  id: string;
+  label: string;
+  options: CatalogFilterOption[];
+}
+
+export interface CatalogSortOption {
+  id: string;
+  label: string;
+  orderBy: string;
+}
+
+export interface CatalogBrowseResult {
+  games: GameInfo[];
+  numberReturned: number;
+  numberSupported: number;
+  totalCount: number;
+  hasNextPage: boolean;
+  endCursor?: string;
+  searchQuery: string;
+  selectedSortId: string;
+  selectedFilterIds: string[];
+  filterGroups: CatalogFilterGroup[];
+  sortOptions: CatalogSortOption[];
 }
 
 export interface StreamSettings {
@@ -369,6 +463,8 @@ export interface StreamSettings {
   gameLanguage: GameLanguage;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
+  /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
+  enableCloudGsync: boolean;
 }
 
 export interface SessionCreateRequest {
@@ -377,6 +473,7 @@ export interface SessionCreateRequest {
   appId: string;
   internalTitle: string;
   accountLinked?: boolean;
+  existingSessionStrategy?: ExistingSessionStrategy;
   zone: string;
   settings: StreamSettings;
 }
@@ -547,6 +644,7 @@ export interface ActiveSessionInfo {
   appId: number;
   gpuType?: string;
   status: number;
+  streamingBaseUrl?: string;
   serverIp?: string;
   signalingUrl?: string;
   resolution?: string;
@@ -598,15 +696,55 @@ export type MainToRendererSignalingEvent =
 /** Dialog result for session conflict resolution */
 export type SessionConflictChoice = "resume" | "new" | "cancel";
 
+export type ExistingSessionStrategy = "auto-resume" | "force-new";
+
+export type AppUpdaterStatus =
+  | "disabled"
+  | "idle"
+  | "checking"
+  | "available"
+  | "not-available"
+  | "downloading"
+  | "downloaded"
+  | "error";
+
+export interface AppUpdaterProgress {
+  percent: number;
+  transferred: number;
+  total: number;
+  bytesPerSecond: number;
+}
+
+export interface AppUpdaterState {
+  status: AppUpdaterStatus;
+  currentVersion: string;
+  availableVersion?: string;
+  downloadedVersion?: string;
+  progress?: AppUpdaterProgress;
+  lastCheckedAt?: number;
+  message?: string;
+  errorCode?: string;
+  updateSource: "github-releases";
+  canCheck: boolean;
+  canDownload: boolean;
+  canInstall: boolean;
+  isPackaged: boolean;
+}
+
 export interface OpenNowApi {
   getAuthSession(input?: AuthSessionRequest): Promise<AuthSessionResult>;
   getLoginProviders(): Promise<LoginProvider[]>;
   getRegions(input?: RegionsFetchRequest): Promise<StreamRegion[]>;
   login(input: AuthLoginRequest): Promise<AuthSession>;
   logout(): Promise<void>;
+  logoutAll(): Promise<void>;
+  getSavedAccounts(): Promise<SavedAccount[]>;
+  switchAccount(userId: string): Promise<AuthSession>;
+  removeAccount(userId: string): Promise<void>;
   fetchSubscription(input: SubscriptionFetchRequest): Promise<SubscriptionInfo>;
   fetchMainGames(input: GamesFetchRequest): Promise<GameInfo[]>;
   fetchLibraryGames(input: GamesFetchRequest): Promise<GameInfo[]>;
+  browseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult>;
   fetchPublicGames(): Promise<GameInfo[]>;
   resolveLaunchAppId(input: ResolveLaunchIdRequest): Promise<string | null>;
   createSession(input: SessionCreateRequest): Promise<SessionInfo>;
@@ -628,6 +766,11 @@ export interface OpenNowApi {
   /** Listen for F11 fullscreen toggle from main process */
   onToggleFullscreen(listener: () => void): () => void;
   quitApp(): Promise<void>;
+  getUpdaterState(): Promise<AppUpdaterState>;
+  checkForUpdates(): Promise<AppUpdaterState>;
+  downloadUpdate(): Promise<AppUpdaterState>;
+  installUpdateAndRestart(): Promise<AppUpdaterState>;
+  onUpdaterStateChanged(listener: (state: AppUpdaterState) => void): () => void;
   setFullscreen(v: boolean): Promise<void>;
   toggleFullscreen(): Promise<void>;
   togglePointerLock(): Promise<void>;
@@ -692,6 +835,8 @@ export interface OpenNowApi {
   /** Fetch PrintedWaste server mapping metadata (includes nuked status) */
   fetchPrintedWasteServerMapping(): Promise<PrintedWasteServerMapping>;
   getThanksData(): Promise<ThankYouDataResult>;
+  /** Clear Discord rich presence activity */
+  clearDiscordActivity(): Promise<void>;
 }
 
 export interface ScreenshotSaveRequest {

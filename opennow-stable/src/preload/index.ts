@@ -3,12 +3,15 @@ import electron from "electron";
 import { IPC_CHANNELS } from "@shared/ipc";
 import type {
   AuthLoginRequest,
+  AuthSession,
   AuthSessionRequest,
   GamesFetchRequest,
+  CatalogBrowseRequest,
   ResolveLaunchIdRequest,
   RegionsFetchRequest,
   MainToRendererSignalingEvent,
   OpenNowApi,
+  SavedAccount,
   SessionAdReportRequest,
   SessionCreateRequest,
   SessionPollRequest,
@@ -35,6 +38,7 @@ import type {
   PrintedWasteQueueData,
   PrintedWasteServerMapping,
   ThankYouDataResult,
+  AppUpdaterState,
 } from "@shared/gfn";
 import { parseSerializedSessionErrorTransport } from "@shared/sessionError";
 
@@ -61,11 +65,17 @@ const api: OpenNowApi = {
   getRegions: (input: RegionsFetchRequest = {}) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_REGIONS, input),
   login: (input: AuthLoginRequest) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGIN, input),
   logout: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT),
+  logoutAll: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT_ALL),
+  getSavedAccounts: (): Promise<SavedAccount[]> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_SAVED_ACCOUNTS),
+  switchAccount: (userId: string): Promise<AuthSession> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_SWITCH_ACCOUNT, userId),
+  removeAccount: (userId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_REMOVE_ACCOUNT, userId),
   fetchSubscription: (input: SubscriptionFetchRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.SUBSCRIPTION_FETCH, input),
   fetchMainGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_MAIN, input),
   fetchLibraryGames: (input: GamesFetchRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_LIBRARY, input),
+  browseCatalog: (input: CatalogBrowseRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_BROWSE_CATALOG, input),
   fetchPublicGames: () => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_PUBLIC),
   resolveLaunchAppId: (input: ResolveLaunchIdRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, input),
@@ -103,6 +113,20 @@ const api: OpenNowApi = {
     };
   },
   quitApp: () => ipcRenderer.invoke(IPC_CHANNELS.QUIT_APP),
+  getUpdaterState: (): Promise<AppUpdaterState> => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATER_GET_STATE),
+  checkForUpdates: (): Promise<AppUpdaterState> => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATER_CHECK),
+  downloadUpdate: (): Promise<AppUpdaterState> => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATER_DOWNLOAD),
+  installUpdateAndRestart: (): Promise<AppUpdaterState> => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATER_INSTALL),
+  onUpdaterStateChanged: (listener: (state: AppUpdaterState) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: AppUpdaterState) => {
+      listener(payload);
+    };
+
+    ipcRenderer.on(IPC_CHANNELS.APP_UPDATER_STATE_CHANGED, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.APP_UPDATER_STATE_CHANGED, wrapped);
+    };
+  },
   toggleFullscreen: () => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_FULLSCREEN),
   setFullscreen: (v: boolean) => ipcRenderer.invoke(IPC_CHANNELS.SET_FULLSCREEN, v),
   togglePointerLock: () => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_POINTER_LOCK),
@@ -150,6 +174,7 @@ const api: OpenNowApi = {
   fetchPrintedWasteServerMapping: (): Promise<PrintedWasteServerMapping> =>
     ipcRenderer.invoke(IPC_CHANNELS.PRINTEDWASTE_SERVER_MAPPING_FETCH),
   getThanksData: (): Promise<ThankYouDataResult> => ipcRenderer.invoke(IPC_CHANNELS.COMMUNITY_GET_THANKS),
+  clearDiscordActivity: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.DISCORD_CLEAR_ACTIVITY),
 };
 
 contextBridge.exposeInMainWorld("openNow", api);
