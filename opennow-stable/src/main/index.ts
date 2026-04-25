@@ -366,12 +366,8 @@ class DiscordStatusMonitor {
         const sessionAppId = activeSession.appId.toString();
 
         if (!currentActivity || currentActivity.appId !== sessionAppId) {
-          const title = (currentActivity?.appId === sessionAppId && currentActivity.gameName)
-            ? currentActivity.gameName
-            : sessionAppId;
-          const startTime = (currentActivity?.appId === sessionAppId && currentActivity.startTimestamp)
-            ? currentActivity.startTimestamp
-            : new Date();
+          const title = sessionAppId;
+          const startTime = new Date();
           void setActivity(title, startTime, sessionAppId);
         }
       } else if (currentActivity) {

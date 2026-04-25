@@ -98,8 +98,8 @@
               --add-flags "--enable-features=WaylandWindowDecorations --platform-hint=auto"
 
             mkdir -p $out/share/icons/hicolor/512x512/apps
-            if [ -f "src/renderer/src/assets/opennow-logo.png" ]; then
-              cp src/renderer/src/assets/opennow-logo.png $out/share/icons/hicolor/512x512/apps/opennow.png
+            if [ -f "$out/lib/opennow/src/renderer/src/assets/opennow-logo.png" ]; then
+              cp "$out/lib/opennow/src/renderer/src/assets/opennow-logo.png" $out/share/icons/hicolor/512x512/apps/opennow.png
             fi
             runHook postInstall
           '';
