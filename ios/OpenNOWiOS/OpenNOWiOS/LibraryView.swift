@@ -21,26 +21,6 @@ struct LibraryView: View {
                 }
             }
             .navigationTitle("Library")
-            .navigationBarTitleDisplayMode(.large)
-            .searchable(
-                text: $searchText,
-                placement: .navigationBarDrawer(displayMode: .automatic),
-                prompt: "Search your library…"
-            )
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Picker("Sort", selection: $sortMode) {
-                            ForEach(LibrarySortMode.allCases) { mode in
-                                Label(mode.title, systemImage: mode.icon).tag(mode)
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "arrow.up.arrow.down.circle")
-                    }
-                    .disabled(store.libraryGames.isEmpty && !store.isLoadingGames)
-                }
-            }
         }
         .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails) { game, option in
             pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
@@ -50,24 +30,12 @@ struct LibraryView: View {
 
     private var libraryContent: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 22) {
+            LazyVStack(alignment: .leading, spacing: 18) {
                 libraryHero
                     .padding(.horizontal)
                     .padding(.top, 8)
 
-                if !quickFilters.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(quickFilters) { filter in
-                                GameFilterChip(label: filter.label, isSelected: filter.isSelected) {
-                                    Haptics.selection()
-                                    applyQuickFilter(filter)
-                                }
-                            }
-                        }
-                    }
-                    .padding(.horizontal)
-                }
+                libraryControls
 
                 if !featuredLibraryGames.isEmpty {
                     sectionHeader("Spotlight")
@@ -147,13 +115,13 @@ struct LibraryView: View {
     }
 
     private var libraryHero: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("My Library")
                         .font(.title.bold())
-                    Text("Search, filter, and jump back into the games you already own.")
-                        .font(.subheadline)
+                    Text("\(store.libraryGames.count) games • \(platforms.count) platforms • \(genres.count) genres")
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 16)
@@ -164,12 +132,6 @@ struct LibraryView: View {
                         tint: active.status == 3 ? .green : .orange
                     )
                 }
-            }
-
-            HStack(spacing: 12) {
-                LibraryStatTile(title: "Games", value: "\(store.libraryGames.count)", icon: "books.vertical.fill")
-                LibraryStatTile(title: "Platforms", value: "\(platforms.count)", icon: "shippingbox.fill")
-                LibraryStatTile(title: "Genres", value: "\(genres.count)", icon: "sparkles.tv.fill")
             }
 
             if let active = store.activeSession {
@@ -183,15 +145,15 @@ struct LibraryView: View {
                 } label: {
                     HStack(spacing: 14) {
                         GameArtworkView(game: active.game, iconSize: 28)
-                            .frame(width: 60, height: 60)
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .frame(width: 52, height: 52)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Continue \(active.game.title)")
-                                .font(.headline)
+                                .font(.subheadline.weight(.semibold))
                                 .lineLimit(1)
                             Text(active.status == 3 ? "Return to your current stream" : "Open queue and session status")
-                                .font(.footnote)
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
 
@@ -201,13 +163,64 @@ struct LibraryView: View {
                             .font(.headline.weight(.semibold))
                             .foregroundStyle(brandAccent)
                     }
-                    .padding(16)
+                    .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .glassCard()
                 }
                 .buttonStyle(.plain)
             }
         }
+    }
+
+    private var libraryControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            GameSearchField(text: $searchText, prompt: "Search your library")
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    CatalogFilterMenu(
+                        title: "Platform",
+                        value: selectedPlatform ?? "Any",
+                        icon: "shippingbox",
+                        values: platforms,
+                        selection: $selectedPlatform
+                    )
+
+                    CatalogFilterMenu(
+                        title: "Genre",
+                        value: selectedGenre ?? "Any",
+                        icon: "sparkles.tv",
+                        values: genres,
+                        selection: $selectedGenre
+                    )
+
+                    Menu {
+                        Picker("Sort", selection: $sortMode) {
+                            ForEach(LibrarySortMode.allCases) { mode in
+                                Label(mode.title, systemImage: mode.icon).tag(mode)
+                            }
+                        }
+                    } label: {
+                        Label(sortMode.title, systemImage: sortMode.icon)
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.bordered)
+
+                    if hasActiveFilters {
+                        Button {
+                            Haptics.light()
+                            clearFilters()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Clear filters")
+                    }
+                }
+                .font(.caption.weight(.semibold))
+            }
+        }
+        .padding(.horizontal)
     }
 
     private var featuredShelf: some View {
@@ -277,8 +290,11 @@ struct LibraryView: View {
                     game.title.localizedCaseInsensitiveContains(query) ||
                     game.genre.localizedCaseInsensitiveContains(query) ||
                     game.platform.localizedCaseInsensitiveContains(query) ||
+                    (game.summary?.localizedCaseInsensitiveContains(query) ?? false) ||
+                    (game.longDescription?.localizedCaseInsensitiveContains(query) ?? false) ||
                     (game.publisher?.localizedCaseInsensitiveContains(query) ?? false) ||
                     (game.developer?.localizedCaseInsensitiveContains(query) ?? false) ||
+                    (game.featureLabels?.contains(where: { $0.localizedCaseInsensitiveContains(query) }) ?? false) ||
                     (game.tags?.contains(where: { $0.localizedCaseInsensitiveContains(query) }) ?? false) ||
                     (game.stores?.contains(where: { $0.localizedCaseInsensitiveContains(query) }) ?? false)
             }
@@ -318,7 +334,7 @@ struct LibraryView: View {
     }
 
     private var resultsTitle: String {
-        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && selectedGenre == nil && selectedPlatform == nil {
+        if !hasActiveFilters {
             return "All Games"
         }
         return "Filtered Results"
@@ -327,10 +343,17 @@ struct LibraryView: View {
     private var resultsSubtitle: String {
         let count = filteredGames.count
         let total = store.libraryGames.count
-        if count == total && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && selectedGenre == nil && selectedPlatform == nil {
+        if count == total && !hasActiveFilters {
             return "\(total) games ready to launch"
         }
         return "\(count) of \(total) games"
+    }
+
+    private var hasActiveFilters: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            selectedGenre != nil ||
+            selectedPlatform != nil ||
+            sortMode != .title
     }
 
     private var quickFilters: [LibraryQuickFilter] {

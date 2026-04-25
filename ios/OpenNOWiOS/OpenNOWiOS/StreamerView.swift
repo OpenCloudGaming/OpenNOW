@@ -1,3 +1,4 @@
+#if canImport(WebKit)
 import SwiftUI
 import UIKit
 import WebKit
@@ -9,6 +10,7 @@ struct StreamerView: View {
     let session: ActiveSession
     let settings: AppSettings
     let onTouchLayoutChange: (String, TouchControlLayout) -> Void
+    let onStreamerPreferencesChange: (StreamerPreferences) -> Void
     let onClose: () -> Void
     var onRetry: (() -> Void)? = nil
     private let logger = Logger(subsystem: "OpenNOWiOS", category: "StreamerView")
@@ -25,7 +27,8 @@ struct StreamerView: View {
             StreamerWebView(
                 session: session,
                 settings: settings,
-                onTouchLayoutChange: onTouchLayoutChange
+                onTouchLayoutChange: onTouchLayoutChange,
+                onStreamerPreferencesChange: onStreamerPreferencesChange
             ) { event in
                 logger.info("Streamer event: \(event, privacy: .public)")
                 statusText = event
@@ -167,6 +170,7 @@ private struct StreamerWebView: UIViewRepresentable {
     let session: ActiveSession
     let settings: AppSettings
     let onTouchLayoutChange: (String, TouchControlLayout) -> Void
+    let onStreamerPreferencesChange: (StreamerPreferences) -> Void
     let onEvent: (String) -> Void
     private static let desktopLikeUserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -179,7 +183,11 @@ private struct StreamerWebView: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onEvent: onEvent, onTouchLayoutChange: onTouchLayoutChange)
+        Coordinator(
+            onEvent: onEvent,
+            onTouchLayoutChange: onTouchLayoutChange,
+            onStreamerPreferencesChange: onStreamerPreferencesChange
+        )
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -227,6 +235,7 @@ private struct StreamerWebView: UIViewRepresentable {
             let gameTitle: String
             let touchProfile: String
             let touchLayout: TouchControlLayout
+            let streamerPreferences: StreamerPreferences
             let allowNativeTouchPassthrough: Bool
         }
 
@@ -252,6 +261,7 @@ private struct StreamerWebView: UIViewRepresentable {
             gameTitle: session.game.title,
             touchProfile: touchProfile,
             touchLayout: settings.touchLayout(for: touchProfile),
+            streamerPreferences: settings.streamerPreferences,
             allowNativeTouchPassthrough: touchProfile == "fortnite-mobile" && settings.fortnitePrefersNativeTouch
         )
         let data = (try? JSONEncoder().encode(bridge)) ?? Data("{}".utf8)
@@ -380,6 +390,10 @@ private struct StreamerWebView: UIViewRepresentable {
           <div><strong>Touch Controller</strong><span id="touchModeDescription">Touchpad is active. Optional touch controls stay hidden until needed.</span></div>
           <span class="toggleValue" id="gpValue">Hidden</span>
         </button>
+        <button id="physicalControllerBtn" class="toggleRow" onclick="togglePhysicalControllerPassthrough()">
+          <div><strong>Bluetooth Controller</strong><span>Pass connected controllers through as native GFN gamepad packets.</span></div>
+          <span class="toggleValue" id="physicalControllerValue">On</span>
+        </button>
       </div>
     </div>
     <div class="layoutPanel">
@@ -389,6 +403,10 @@ private struct StreamerWebView: UIViewRepresentable {
       </div>
       <label for="gpScaleRange">Control Size <span id="gpScaleValue">100%</span></label>
       <input id="gpScaleRange" type="range" min="70" max="160" step="1" value="100">
+      <label for="gpButtonRange">Button Size <span id="gpButtonValue">100%</span></label>
+      <input id="gpButtonRange" type="range" min="75" max="150" step="1" value="100">
+      <label for="gpStickRange">Stick Size <span id="gpStickValue">100%</span></label>
+      <input id="gpStickRange" type="range" min="75" max="150" step="1" value="100">
       <label for="gpOpacityRange">Control Opacity <span id="gpOpacityValue">58%</span></label>
       <input id="gpOpacityRange" type="range" min="15" max="100" step="1" value="58">
       <div style="display:flex;gap:8px;margin-top:10px;">
@@ -471,6 +489,16 @@ private struct StreamerWebView: UIViewRepresentable {
   </div>
   <script>
   const cfg = \#(payload);
+  function sanitizeStreamerPreferences(raw) {
+    return {
+      audioMuted: raw?.audioMuted !== false,
+      showStatsClock: raw?.showStatsClock === true,
+      showStatsBattery: raw?.showStatsBattery === true,
+      touchControllerVisible: raw?.touchControllerVisible === true,
+      physicalControllerPassthrough: raw?.physicalControllerPassthrough !== false
+    };
+  }
+  let streamerPreferences = sanitizeStreamerPreferences(cfg.streamerPreferences);
   const video = document.getElementById("video");
   let ws = null;
   let pc = null;
@@ -519,12 +547,18 @@ private struct StreamerWebView: UIViewRepresentable {
   const kbBtn = document.getElementById('kbBtn');
   const kbValue = document.getElementById('kbValue');
   const gpValue = document.getElementById('gpValue');
+  const physicalControllerBtn = document.getElementById('physicalControllerBtn');
+  const physicalControllerValue = document.getElementById('physicalControllerValue');
   const controllerState = document.getElementById('controllerState');
   const touchModeDescription = document.getElementById('touchModeDescription');
   const gpEditBtn = document.getElementById('gpEditBtn');
   const gpResetBtn = document.getElementById('gpResetBtn');
   const gpScaleRange = document.getElementById('gpScaleRange');
   const gpScaleValue = document.getElementById('gpScaleValue');
+  const gpButtonRange = document.getElementById('gpButtonRange');
+  const gpButtonValue = document.getElementById('gpButtonValue');
+  const gpStickRange = document.getElementById('gpStickRange');
+  const gpStickValue = document.getElementById('gpStickValue');
   const gpOpacityRange = document.getElementById('gpOpacityRange');
   const gpOpacityValue = document.getElementById('gpOpacityValue');
   const layoutHint = document.getElementById('layoutHint');
@@ -541,11 +575,11 @@ private struct StreamerWebView: UIViewRepresentable {
   let offerAccepted = false;
   let hudPanelOpen = false;
   let audioUnlocked = false;
-  let userMuted = true;
+  let userMuted = streamerPreferences.audioMuted;
   let audioRetryTimer = null;
   let statsVisible = !!cfg.showStatsOverlay;
-  let showStatsClock = false;
-  let showStatsBattery = false;
+  let showStatsClock = streamerPreferences.showStatsClock;
+  let showStatsBattery = streamerPreferences.showStatsBattery;
   let deviceBatteryPercent = null;
   let deviceBatteryCharging = false;
   let latestStats = { fps: 0, pingMs: 0, packetLossPct: 0, bitrateMbps: 0 };
@@ -572,6 +606,10 @@ private struct StreamerWebView: UIViewRepresentable {
   const GAMEPAD_Y = 0x8000;
   const TOUCH_LAYOUT_SCALE_MIN = 0.7;
   const TOUCH_LAYOUT_SCALE_MAX = 1.6;
+  const TOUCH_LAYOUT_BUTTON_SCALE_MIN = 0.75;
+  const TOUCH_LAYOUT_BUTTON_SCALE_MAX = 1.5;
+  const TOUCH_LAYOUT_STICK_SCALE_MIN = 0.75;
+  const TOUCH_LAYOUT_STICK_SCALE_MAX = 1.5;
   const TOUCH_LAYOUT_OPACITY_MIN = 0.15;
   const TOUCH_LAYOUT_OPACITY_MAX = 1.0;
   const FORTNITE_NATIVE_TOUCH = !!cfg.allowNativeTouchPassthrough;
@@ -589,6 +627,8 @@ private struct StreamerWebView: UIViewRepresentable {
       return {
         scale: 1.05,
         opacity: 0.52,
+        buttonScale: 1.05,
+        stickScale: 1,
         topLeft: { x: 0.16, y: 0.11 },
         topCenter: { x: 0.50, y: 0.11 },
         topRight: { x: 0.84, y: 0.11 },
@@ -600,6 +640,8 @@ private struct StreamerWebView: UIViewRepresentable {
     return {
       scale: 1,
       opacity: 0.58,
+      buttonScale: 1,
+      stickScale: 1,
       topLeft: { x: 0.14, y: 0.12 },
       topCenter: { x: 0.50, y: 0.12 },
       topRight: { x: 0.86, y: 0.12 },
@@ -622,6 +664,8 @@ private struct StreamerWebView: UIViewRepresentable {
     return {
       scale: Math.max(TOUCH_LAYOUT_SCALE_MIN, Math.min(TOUCH_LAYOUT_SCALE_MAX, Number(raw?.scale ?? fallback.scale) || fallback.scale)),
       opacity: Math.max(TOUCH_LAYOUT_OPACITY_MIN, Math.min(TOUCH_LAYOUT_OPACITY_MAX, Number(raw?.opacity ?? fallback.opacity) || fallback.opacity)),
+      buttonScale: Math.max(TOUCH_LAYOUT_BUTTON_SCALE_MIN, Math.min(TOUCH_LAYOUT_BUTTON_SCALE_MAX, Number(raw?.buttonScale ?? fallback.buttonScale) || fallback.buttonScale)),
+      stickScale: Math.max(TOUCH_LAYOUT_STICK_SCALE_MIN, Math.min(TOUCH_LAYOUT_STICK_SCALE_MAX, Number(raw?.stickScale ?? fallback.stickScale) || fallback.stickScale)),
       topLeft: sanitizePoint(raw?.topLeft, fallback.topLeft),
       topCenter: sanitizePoint(raw?.topCenter, fallback.topCenter),
       topRight: sanitizePoint(raw?.topRight, fallback.topRight),
@@ -633,6 +677,7 @@ private struct StreamerWebView: UIViewRepresentable {
   let touchLayout = sanitizeTouchLayout(cfg.touchLayout);
   let layoutEditing = false;
   let touchLayoutPersistTimer = null;
+  let streamerPreferencesPersistTimer = null;
   const touchGroupElements = {
     topLeft: document.getElementById('gpTopLeft'),
     topCenter: document.getElementById('gpTopCenter'),
@@ -708,6 +753,20 @@ private struct StreamerWebView: UIViewRepresentable {
     setToggleRowState(gpBtn, visible);
     updateHudSummary();
   }
+  function updatePhysicalControllerButton() {
+    const enabled = streamerPreferences.physicalControllerPassthrough;
+    if (physicalControllerValue) {
+      physicalControllerValue.textContent = enabled ? 'On' : 'Off';
+    }
+    setToggleRowState(physicalControllerBtn, enabled);
+  }
+  function togglePhysicalControllerPassthrough() {
+    updateStreamerPreference('physicalControllerPassthrough', !streamerPreferences.physicalControllerPassthrough);
+    updatePhysicalControllerButton();
+    if (!streamerPreferences.physicalControllerPassthrough && nativeGamepadState?.connected) {
+      sendCurrentGamepadState(null);
+    }
+  }
   function updateTouchModeCopy() {
     if (!touchModeDescription) return;
     if (FORTNITE_NATIVE_TOUCH) {
@@ -742,8 +801,26 @@ private struct StreamerWebView: UIViewRepresentable {
       postPayload('touch-layout', { profile: cfg.touchProfile, layout: touchLayout });
     }, 140);
   }
+  function scheduleStreamerPreferencesPersist() {
+    if (streamerPreferencesPersistTimer) {
+      clearTimeout(streamerPreferencesPersistTimer);
+    }
+    streamerPreferencesPersistTimer = setTimeout(() => {
+      streamerPreferencesPersistTimer = null;
+      postPayload('streamer-preferences', streamerPreferences);
+    }, 140);
+  }
+  function updateStreamerPreference(key, value) {
+    streamerPreferences = sanitizeStreamerPreferences({
+      ...streamerPreferences,
+      [key]: value
+    });
+    scheduleStreamerPreferencesPersist();
+  }
   function applyTouchLayout() {
     const scale = touchLayout.scale;
+    const buttonScale = touchLayout.buttonScale;
+    const stickScale = touchLayout.stickScale;
     const overlayOpacity = layoutEditing ? Math.max(touchLayout.opacity, 0.55) : touchLayout.opacity;
     Object.entries(touchGroupElements).forEach(([key, element]) => {
       if (!element || !touchLayout[key]) return;
@@ -762,6 +839,18 @@ private struct StreamerWebView: UIViewRepresentable {
     if (gpScaleValue) {
       gpScaleValue.textContent = `${Math.round(scale * 100)}%`;
     }
+    if (gpButtonRange) {
+      gpButtonRange.value = String(Math.round(buttonScale * 100));
+    }
+    if (gpButtonValue) {
+      gpButtonValue.textContent = `${Math.round(buttonScale * 100)}%`;
+    }
+    if (gpStickRange) {
+      gpStickRange.value = String(Math.round(stickScale * 100));
+    }
+    if (gpStickValue) {
+      gpStickValue.textContent = `${Math.round(stickScale * 100)}%`;
+    }
     if (gpOpacityRange) {
       gpOpacityRange.value = String(Math.round(touchLayout.opacity * 100));
     }
@@ -775,6 +864,42 @@ private struct StreamerWebView: UIViewRepresentable {
       layoutHint.textContent = layoutEditing
         ? 'Drag any highlighted touch-control cluster, then use the size slider if needed.'
         : 'Turn on edit mode to drag each touch-control cluster and resize the whole layout.';
+    }
+    applyTouchControlSizing();
+  }
+  function applyTouchControlSizing() {
+    const buttonScale = touchLayout.buttonScale;
+    const stickScale = touchLayout.stickScale;
+    const keySize = Math.round(56 * buttonScale);
+    const auxHeight = Math.round(42 * buttonScale);
+    const auxMinWidth = Math.round(58 * buttonScale);
+    document.querySelectorAll('.gpKey').forEach((btn) => {
+      btn.style.width = `${keySize}px`;
+      btn.style.height = `${keySize}px`;
+      btn.style.fontSize = `${Math.max(14, Math.round(18 * buttonScale))}px`;
+    });
+    document.querySelectorAll('.gpAux').forEach((btn) => {
+      const small = btn.classList.contains('gpSmall');
+      btn.style.minWidth = `${small ? Math.round(48 * buttonScale) : auxMinWidth}px`;
+      btn.style.height = `${small ? Math.round(34 * buttonScale) : auxHeight}px`;
+      btn.style.padding = `0 ${Math.round((small ? 10 : 14) * buttonScale)}px`;
+      btn.style.fontSize = `${Math.max(10, Math.round((small ? 12 : 15) * buttonScale))}px`;
+    });
+    if (joyBase) {
+      joyBase.style.width = `${Math.round(146 * stickScale)}px`;
+      joyBase.style.height = `${Math.round(146 * stickScale)}px`;
+    }
+    if (joyStick) {
+      joyStick.style.width = `${Math.round(62 * stickScale)}px`;
+      joyStick.style.height = `${Math.round(62 * stickScale)}px`;
+    }
+    if (lookBase) {
+      lookBase.style.width = `${Math.round(124 * stickScale)}px`;
+      lookBase.style.height = `${Math.round(124 * stickScale)}px`;
+    }
+    if (lookStick) {
+      lookStick.style.width = `${Math.round(48 * stickScale)}px`;
+      lookStick.style.height = `${Math.round(48 * stickScale)}px`;
     }
   }
   function resetTouchLayout() {
@@ -810,17 +935,20 @@ private struct StreamerWebView: UIViewRepresentable {
   function toggleStatsClock() {
     if (!statsVisible) return;
     showStatsClock = !showStatsClock;
+    updateStreamerPreference('showStatsClock', showStatsClock);
     updateStatsButton();
     renderStatsOverlay();
   }
   function toggleStatsBattery() {
     if (!statsVisible) return;
     showStatsBattery = !showStatsBattery;
+    updateStreamerPreference('showStatsBattery', showStatsBattery);
     updateStatsButton();
     renderStatsOverlay();
   }
   async function toggleAudio() {
     userMuted = !userMuted;
+    updateStreamerPreference('audioMuted', userMuted);
     if (userMuted) {
       if (audioRetryTimer) {
         clearTimeout(audioRetryTimer);
@@ -1924,9 +2052,12 @@ private struct StreamerWebView: UIViewRepresentable {
   let gamepadBitmap = 0;
   let lastGamepadSendMs = 0;
   let lastSentGamepadState = null;
-  function setGamepadVisible(visible) {
+  function setGamepadVisible(visible, persist = true) {
     if (!gpPad) return;
     gpPad.style.display = visible ? 'block' : 'none';
+    if (persist) {
+      updateStreamerPreference('touchControllerVisible', !!visible);
+    }
     updateTouchControllerButton();
   }
 
@@ -2448,7 +2579,7 @@ private struct StreamerWebView: UIViewRepresentable {
     };
   }
   function selectActiveGamepadSource() {
-    if (nativeGamepadState?.connected) {
+    if (streamerPreferences.physicalControllerPassthrough && nativeGamepadState?.connected) {
       const nativeIndex = Number.isFinite(nativeGamepadState.index) ? nativeGamepadState.index : 0;
       return { label: nativeGamepadState.id || 'iOS Controller', input: buildGamepadInputFromState(nativeGamepadState, nativeIndex) };
     }
@@ -2822,6 +2953,28 @@ private struct StreamerWebView: UIViewRepresentable {
       scheduleTouchLayoutPersist();
     });
   }
+  if (gpButtonRange) {
+    gpButtonRange.addEventListener('input', (e) => {
+      const value = Number(e.target && e.target.value);
+      touchLayout = sanitizeTouchLayout({
+        ...touchLayout,
+        buttonScale: (Number.isFinite(value) ? value : 100) / 100
+      });
+      applyTouchLayout();
+      scheduleTouchLayoutPersist();
+    });
+  }
+  if (gpStickRange) {
+    gpStickRange.addEventListener('input', (e) => {
+      const value = Number(e.target && e.target.value);
+      touchLayout = sanitizeTouchLayout({
+        ...touchLayout,
+        stickScale: (Number.isFinite(value) ? value : 100) / 100
+      });
+      applyTouchLayout();
+      scheduleTouchLayoutPersist();
+    });
+  }
   if (gpOpacityRange) {
     gpOpacityRange.addEventListener('input', (e) => {
       const value = Number(e.target && e.target.value);
@@ -2843,7 +2996,7 @@ private struct StreamerWebView: UIViewRepresentable {
       toggleHudPanel(false);
     }
   }, { passive: true });
-  setGamepadVisible(false);
+  setGamepadVisible(streamerPreferences.touchControllerVisible, false);
   applyTouchpadMode();
   applyTouchLayout();
   applyStatsVisibility();
@@ -2852,6 +3005,7 @@ private struct StreamerWebView: UIViewRepresentable {
   updateStatsButton();
   updateKeyboardButton();
   updateTouchControllerButton();
+  updatePhysicalControllerButton();
   updateHudSummary();
   pollGamepadState();
   // GPU keep-alive: minimal WebGL rAF loop prevents GPUProcess idle-exit during
@@ -2919,6 +3073,7 @@ private struct StreamerWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         private let onEvent: (String) -> Void
         private let onTouchLayoutChange: (String, TouchControlLayout) -> Void
+        private let onStreamerPreferencesChange: (StreamerPreferences) -> Void
         var cachedHTML: String = ""
         var cachedBaseURL: URL?
         private var contentProcessRestartCount = 0
@@ -2928,10 +3083,12 @@ private struct StreamerWebView: UIViewRepresentable {
 
         init(
             onEvent: @escaping (String) -> Void,
-            onTouchLayoutChange: @escaping (String, TouchControlLayout) -> Void
+            onTouchLayoutChange: @escaping (String, TouchControlLayout) -> Void,
+            onStreamerPreferencesChange: @escaping (StreamerPreferences) -> Void
         ) {
             self.onEvent = onEvent
             self.onTouchLayoutChange = onTouchLayoutChange
+            self.onStreamerPreferencesChange = onStreamerPreferencesChange
         }
 
         func attach(webView: WKWebView) {
@@ -2968,6 +3125,14 @@ private struct StreamerWebView: UIViewRepresentable {
                     return
                 }
                 onTouchLayoutChange(profile, layout)
+            case "streamer-preferences":
+                guard let payload = body["payload"],
+                      JSONSerialization.isValidJSONObject(payload),
+                      let preferencesData = try? JSONSerialization.data(withJSONObject: payload),
+                      let preferences = try? JSONDecoder().decode(StreamerPreferences.self, from: preferencesData) else {
+                    return
+                }
+                onStreamerPreferencesChange(preferences)
             default:
                 break
             }
@@ -3262,3 +3427,59 @@ private final class NativeControllerBridge {
         Double(max(-1, min(1, value)))
     }
 }
+#else
+import SwiftUI
+
+struct StreamerView: View {
+    let session: ActiveSession
+    let settings: AppSettings
+    let onTouchLayoutChange: (String, TouchControlLayout) -> Void
+    let onStreamerPreferencesChange: (StreamerPreferences) -> Void
+    let onClose: () -> Void
+    var onRetry: (() -> Void)? = nil
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 18) {
+                Image(systemName: "tv.slash")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(.orange)
+
+                Text("Streaming Unavailable")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.white)
+
+                Text("\(session.game.title) is ready, but Apple TV still needs a native streaming client. The current streamer depends on WebKit and in-page WebRTC, which this target does not ship.")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+
+                if let retry = onRetry {
+                    Button("Retry") {
+                        retry()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                Button("Close") {
+                    onClose()
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(28)
+            .background(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color.white.opacity(0.08))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                    )
+            )
+            .padding(.horizontal, 24)
+        }
+    }
+}
+#endif

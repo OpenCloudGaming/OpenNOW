@@ -1,3 +1,10 @@
+#if os(tvOS)
+enum Haptics {
+    static func light() {}
+    static func medium() {}
+    static func selection() {}
+}
+#else
 import UIKit
 
 /// Taptic feedback only on iPhone (skips iPad and Mac Catalyst).
@@ -34,3 +41,4 @@ enum Haptics {
         gen.notificationOccurred(type)
     }
 }
+#endif

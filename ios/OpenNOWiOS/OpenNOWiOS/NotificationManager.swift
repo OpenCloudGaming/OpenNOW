@@ -1,3 +1,22 @@
+#if os(tvOS)
+import Foundation
+
+actor NotificationManager {
+    static let shared = NotificationManager()
+
+    func requestPermission() async {
+    }
+
+    func sendQueueReadyNotification(gameTitle: String) async {
+    }
+
+    func sendQueueSetupNotification(gameTitle: String) async {
+    }
+
+    func cancelSessionNotifications() {
+    }
+}
+#else
 import Foundation
 import UserNotifications
 
@@ -8,7 +27,7 @@ actor NotificationManager {
     private let setupNotificationId = "com.opencloudgaming.opennow.seatSetup"
 
     func requestPermission() async {
-        try? await UNUserNotificationCenter.current()
+        _ = try? await UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .sound, .badge])
     }
 
@@ -44,3 +63,4 @@ actor NotificationManager {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [readyNotificationId, setupNotificationId])
     }
 }
+#endif

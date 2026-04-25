@@ -39,15 +39,45 @@ private struct SplashView: View {
 
 struct MainTabView: View {
     @EnvironmentObject private var store: OpenNOWStore
+    @AppStorage("queuePillVerticalEdge") private var queuePillVerticalEdgeRaw = ""
     @State private var streamerAutoRetryCount = 0
     @State private var presentedStreamerSession: ActiveSession?
+    @State private var queuePillDragOffset: CGFloat = 0
     private static let maxStreamerAutoRetries = 3
 
-    /// Keep the pill at the top on all devices so it does not cover tab content
-    /// (e.g. Session “End Session” and scrollable bottom actions on iPad).
-    private var queuePillAlignment: Alignment { .top }
+    private enum QueuePillVerticalEdge: String {
+        case top
+        case bottom
 
-    private var queuePillPaddingEdge: Edge.Set { .top }
+        var alignment: Alignment {
+            switch self {
+            case .top: return .top
+            case .bottom: return .bottom
+            }
+        }
+
+        var transitionEdge: Edge {
+            switch self {
+            case .top: return .top
+            case .bottom: return .bottom
+            }
+        }
+    }
+
+    private var queuePillEdge: QueuePillVerticalEdge {
+        if let stored = QueuePillVerticalEdge(rawValue: queuePillVerticalEdgeRaw) {
+            return stored
+        }
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .pad ? .bottom : .top
+        #else
+        return .top
+        #endif
+    }
+
+    private var queueSurfaceAnimation: Animation {
+        .spring(response: 0.42, dampingFraction: 0.86)
+    }
 
     var body: some View {
         TabView {
@@ -70,18 +100,13 @@ struct MainTabView: View {
                         .environmentObject(store)
                         .ignoresSafeArea()
                         .zIndex(1000)
-                        .transition(.opacity)
+                        .transition(queueOverlayTransition)
                 }
             }
         }
-        .animation(.easeInOut(duration: 0.32), value: store.queueOverlayVisible)
-        .overlay(alignment: queuePillAlignment) {
-            if store.showStreamLoading && !store.queueOverlayVisible {
-                QueueStatusPill()
-                    .environmentObject(store)
-                    .padding(queuePillPaddingEdge, 8)
-                    .transition(.opacity)
-            }
+        .animation(queueSurfaceAnimation, value: store.queueOverlayVisible)
+        .overlay {
+            queuePillOverlay
         }
         .overlay {
             if let session = presentedStreamerSession {
@@ -90,6 +115,9 @@ struct MainTabView: View {
                     settings: store.settings,
                     onTouchLayoutChange: { profile, layout in
                         store.updateTouchControlLayout(layout, profile: profile)
+                    },
+                    onStreamerPreferencesChange: { preferences in
+                        store.updateStreamerPreferences(preferences)
                     },
                     onClose: {
                         presentedStreamerSession = nil
@@ -125,17 +153,75 @@ struct MainTabView: View {
                 presentedStreamerSession = nil
             }
         }
-        .onChange(of: store.activeSession?.id) { _ in
+        .onChange(of: store.activeSession?.id) { _, _ in
             streamerAutoRetryCount = 0
             if store.activeSession == nil {
                 presentedStreamerSession = nil
             }
         }
     }
+
+    private var queueOverlayTransition: AnyTransition {
+        return .asymmetric(
+            insertion: .opacity,
+            removal: .opacity
+        )
+    }
+
+    @ViewBuilder
+    private var queuePillOverlay: some View {
+        if store.showStreamLoading && !store.queueOverlayVisible {
+            GeometryReader { proxy in
+                VStack {
+                    if queuePillEdge == .bottom {
+                        Spacer(minLength: 0)
+                    }
+
+                    QueueStatusPill(edge: queuePillEdge.transitionEdge)
+                        .environmentObject(store)
+                        .padding(.top, queuePillEdge == .top ? 8 : 0)
+                        .padding(.bottom, queuePillEdge == .bottom ? bottomQueuePillPadding(in: proxy) : 0)
+                        .offset(y: queuePillDragOffset)
+                        .queuePillDrag(
+                            offset: $queuePillDragOffset,
+                            edgeRawValue: $queuePillVerticalEdgeRaw,
+                            proxy: proxy,
+                            animation: queueSurfaceAnimation
+                        )
+                        .transition(
+                            .asymmetric(
+                                insertion: .move(edge: queuePillEdge.transitionEdge).combined(with: .opacity),
+                                removal: .scale(scale: 0.88, anchor: queuePillEdge == .top ? .top : .bottom).combined(with: .opacity)
+                            )
+                        )
+                        .accessibilityHint("Drag up or down to latch the queue pill to the top or bottom.")
+
+                    if queuePillEdge == .top {
+                        Spacer(minLength: 0)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .allowsHitTesting(true)
+            .animation(queueSurfaceAnimation, value: queuePillEdge.rawValue)
+        }
+    }
+
+    private func bottomQueuePillPadding(in proxy: GeometryProxy) -> CGFloat {
+        #if os(iOS)
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            return max(proxy.safeAreaInsets.bottom + 52, 68)
+        }
+        return max(proxy.safeAreaInsets.bottom + 18, 28)
+        #else
+        return 12
+        #endif
+    }
 }
 
 private struct QueueStatusPill: View {
     @EnvironmentObject private var store: OpenNOWStore
+    let edge: Edge
     @State private var isPulsing = false
 
     private var statusColor: Color {
@@ -153,6 +239,7 @@ private struct QueueStatusPill: View {
         guard let session = store.activeSession else { return "Preparing..." }
         switch session.status {
         case 3:
+            guard store.supportsEmbeddedStreamer else { return "Ready on another platform" }
             return store.streamSession == nil ? "Tap to return" : "Streaming"
         case 2:
             return "Ready to connect"
@@ -189,7 +276,7 @@ private struct QueueStatusPill: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
-                    Image(systemName: "chevron.up")
+                    Image(systemName: edge == .top ? "chevron.up" : "chevron.down")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
@@ -223,6 +310,9 @@ private struct QueueStatusPill: View {
         .shadow(color: brandAccent.opacity(0.12), radius: 8, y: 2)
         .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
         .padding(.horizontal, 16)
+        .numericQueueTransition(value: store.activeSession?.queuePosition ?? -1)
+        .animation(.spring(response: 0.34, dampingFraction: 0.8), value: subtitle)
+        .animation(.spring(response: 0.34, dampingFraction: 0.8), value: store.activeSession?.status)
         .onAppear {
             withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
                 isPulsing = true
@@ -244,9 +334,59 @@ private struct QueuePillBackgroundModifier: ViewModifier {
     }
 }
 
-private extension View {
+extension View {
     func queuePillBackground() -> some View {
         modifier(QueuePillBackgroundModifier())
+    }
+
+    @ViewBuilder
+    func numericQueueTransition(value: Int) -> some View {
+        if #available(iOS 17, tvOS 17, *) {
+            self
+                .contentTransition(.numericText())
+                .animation(.spring(response: 0.32, dampingFraction: 0.82), value: value)
+        } else {
+            self
+                .animation(.spring(response: 0.32, dampingFraction: 0.82), value: value)
+        }
+    }
+
+    @ViewBuilder
+    func queuePillDrag(
+        offset: Binding<CGFloat>,
+        edgeRawValue: Binding<String>,
+        proxy: GeometryProxy,
+        animation: Animation
+    ) -> some View {
+        #if os(iOS)
+        self.gesture(
+            DragGesture(minimumDistance: 8, coordinateSpace: .global)
+                .onChanged { value in
+                    var transaction = Transaction()
+                    transaction.animation = nil
+                    withTransaction(transaction) {
+                        offset.wrappedValue = value.translation.height
+                    }
+                }
+                .onEnded { value in
+                    let currentEdge = edgeRawValue.wrappedValue.isEmpty ? "top" : edgeRawValue.wrappedValue
+                    let projectedTranslation = value.translation.height + (value.predictedEndTranslation.height * 0.28)
+                    let snapDistance = min(max(proxy.size.height * 0.16, 92), 150)
+                    let nextEdge: String
+                    if currentEdge == "bottom" {
+                        nextEdge = projectedTranslation < -snapDistance ? "top" : "bottom"
+                    } else {
+                        nextEdge = projectedTranslation > snapDistance ? "bottom" : "top"
+                    }
+                    withAnimation(animation) {
+                        edgeRawValue.wrappedValue = nextEdge
+                        offset.wrappedValue = 0
+                    }
+                }
+        )
+        #else
+        self
+        #endif
     }
 }
 
@@ -260,7 +400,11 @@ let brandGradient = LinearGradient(
 
 var appBackground: some View {
     ZStack {
+        #if os(tvOS)
+        Color.black
+        #else
         Color(.systemBackground)
+        #endif
     }
     .ignoresSafeArea()
 }

@@ -1,7 +1,11 @@
+import AuthenticationServices
 import SwiftUI
 
 struct LoginView: View {
     @EnvironmentObject private var store: OpenNOWStore
+    #if os(tvOS)
+    @Environment(\.webAuthenticationSession) private var webAuthenticationSession
+    #endif
 
     var body: some View {
         ZStack {
@@ -85,6 +89,51 @@ struct LoginView: View {
                 .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
             }
 
+            #if os(tvOS)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Apple TV sign-in is still being debugged here. Recent auth logs appear below.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+
+                if !store.tvAuthLogs.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Auth Logs")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.65))
+                            .textCase(.uppercase)
+                            .kerning(0.5)
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(store.tvAuthLogs.enumerated()), id: \.offset) { _, line in
+                                Text(line)
+                                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.82))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity)
+            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            #else
+            if !store.supportsNativeOAuth {
+                Text("This build still needs a native NVIDIA sign-in flow.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+                    .padding(12)
+                    .frame(maxWidth: .infinity)
+                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            }
+            #endif
+
             if store.providers.count > 1 {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Provider")
@@ -108,8 +157,7 @@ struct LoginView: View {
             }
 
             Button {
-                Haptics.medium()
-                Task { await store.signIn() }
+                handleSignIn()
             } label: {
                 HStack(spacing: 10) {
                     if store.isAuthenticating {
@@ -117,11 +165,18 @@ struct LoginView: View {
                             .progressViewStyle(.circular)
                             .tint(.white)
                             .scaleEffect(0.9)
-                    } else {
+                    } else if store.supportsNativeOAuth {
                         Image(systemName: "bolt.fill")
                             .font(.body.weight(.semibold))
+                    } else {
+                        Image(systemName: "lock.slash")
+                            .font(.body.weight(.semibold))
                     }
-                    Text(store.isAuthenticating ? "Connecting…" : "Sign In with NVIDIA")
+                    Text(
+                        store.isAuthenticating
+                            ? "Connecting…"
+                            : (store.supportsNativeOAuth ? "Sign In with NVIDIA" : "Sign In Unavailable")
+                    )
                         .font(.body.weight(.semibold))
                 }
                 .frame(maxWidth: .infinity)
@@ -144,7 +199,7 @@ struct LoginView: View {
                 .shadow(color: brandAccent.opacity(0.4), radius: store.isAuthenticating ? 0 : 12)
                 .animation(.easeOut(duration: 0.2), value: store.isAuthenticating)
             }
-            .disabled(store.isAuthenticating)
+            .disabled(store.isAuthenticating || !store.supportsNativeOAuth)
             .buttonStyle(.plain)
         }
         .padding(28)
@@ -171,6 +226,23 @@ struct LoginView: View {
             .font(.caption2)
             .foregroundStyle(.white.opacity(0.3))
             .multilineTextAlignment(.center)
+    }
+
+    private func handleSignIn() {
+        Haptics.medium()
+        #if os(tvOS)
+        Task {
+            await store.signInOnTVOS { url, callbackScheme in
+                try await webAuthenticationSession.authenticate(
+                    using: url,
+                    callbackURLScheme: callbackScheme,
+                    preferredBrowserSession: .shared
+                )
+            }
+        }
+        #else
+        Task { await store.signIn() }
+        #endif
     }
 }
 

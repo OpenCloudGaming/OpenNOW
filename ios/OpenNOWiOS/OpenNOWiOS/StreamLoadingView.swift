@@ -77,8 +77,13 @@ struct StreamLoadingView: View {
 
     var body: some View {
         ZStack {
+            #if os(tvOS)
+            Color.black
+                .ignoresSafeArea()
+            #else
             Color(.systemBackground)
                 .ignoresSafeArea()
+            #endif
 
             VStack(spacing: 24) {
                 Spacer()
@@ -115,6 +120,8 @@ struct StreamLoadingView: View {
                         }
                     )
                     .frame(maxWidth: 320)
+                    .numericQueueTransition(value: pos)
+                    .transition(.scale(scale: 0.92).combined(with: .opacity))
                 }
 
                 if let ad = store.activeQueueAd {
@@ -128,6 +135,7 @@ struct StreamLoadingView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                    .numericQueueTransition(value: store.activeSession?.queuePosition ?? -1)
 
                 ProgressView()
                     .progressViewStyle(.circular)
@@ -161,6 +169,9 @@ struct StreamLoadingView: View {
             .padding(.horizontal, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .animation(.spring(response: 0.34, dampingFraction: 0.84), value: currentPhase)
+        .animation(.spring(response: 0.34, dampingFraction: 0.84), value: store.activeSession?.queuePosition)
+        .animation(.easeInOut(duration: 0.22), value: statusMessage)
     }
 
     private var gameHeader: some View {
@@ -389,7 +400,7 @@ private struct QueueAdPlayerCard: View {
                         .onAppear {
                             configurePlayer(url: url)
                         }
-                        .onChange(of: ad.adId) { _ in
+                        .onChange(of: ad.adId) { _, _ in
                             didSendFinish = false
                             hasReportedPlaying = false
                             isPaused = false

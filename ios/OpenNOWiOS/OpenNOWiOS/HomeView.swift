@@ -1,6 +1,105 @@
 import SwiftUI
 import UIKit
 
+final class OpenNOWImageCache {
+    static let shared = OpenNOWImageCache()
+
+    private let cache = NSCache<NSURL, UIImage>()
+
+    private init() {
+        cache.countLimit = 240
+        cache.totalCostLimit = 96 * 1024 * 1024
+    }
+
+    static func configureURLCache() {
+        URLCache.shared = URLCache(
+            memoryCapacity: 64 * 1024 * 1024,
+            diskCapacity: 256 * 1024 * 1024,
+            diskPath: "OpenNOWURLCache"
+        )
+    }
+
+    func image(for url: URL) -> UIImage? {
+        cache.object(forKey: url as NSURL)
+    }
+
+    func insert(_ image: UIImage, for url: URL, cost: Int) {
+        cache.setObject(image, forKey: url as NSURL, cost: cost)
+    }
+
+    func removeAll() {
+        cache.removeAllObjects()
+    }
+}
+
+@MainActor
+private final class CachedRemoteImageLoader: ObservableObject {
+    @Published private(set) var image: UIImage?
+    @Published private(set) var didFail = false
+
+    private var loadedURL: URL?
+
+    func load(_ url: URL) async {
+        if loadedURL == url && (image != nil || didFail) { return }
+
+        loadedURL = url
+        didFail = false
+
+        if let cached = OpenNOWImageCache.shared.image(for: url) {
+            image = cached
+            return
+        }
+
+        image = nil
+
+        do {
+            var request = URLRequest(url: url)
+            request.cachePolicy = .returnCacheDataElseLoad
+            request.timeoutInterval = 15
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                didFail = true
+                return
+            }
+
+            guard let decoded = UIImage(data: data) else {
+                didFail = true
+                return
+            }
+
+            OpenNOWImageCache.shared.insert(decoded, for: url, cost: data.count)
+            image = decoded
+        } catch {
+            didFail = true
+        }
+    }
+}
+
+struct CachedRemoteImage<Content: View, Placeholder: View, Failure: View>: View {
+    let url: URL
+    let content: (Image) -> Content
+    let placeholder: () -> Placeholder
+    let failure: () -> Failure
+
+    @StateObject private var loader = CachedRemoteImageLoader()
+
+    var body: some View {
+        Group {
+            if let image = loader.image {
+                content(Image(uiImage: image))
+            } else if loader.didFail {
+                failure()
+            } else {
+                placeholder()
+            }
+        }
+        .task(id: url) {
+            await loader.load(url)
+        }
+    }
+}
+
 struct HomeView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @State private var pendingLaunchRequest: GameLaunchRequest?
@@ -164,6 +263,7 @@ struct HomeView: View {
     private func jumpBackInSubtitleActive(_ session: ActiveSession) -> String {
         switch session.status {
         case 3:
+            guard store.supportsEmbeddedStreamer else { return "Ready, but tvOS can't stream yet" }
             return store.streamSession == nil ? "Tap to return" : "Streaming"
         case 2:
             return "Connecting"
@@ -293,10 +393,10 @@ struct FeaturedGameCard: View {
         }) {
             GameArtworkCard(
                 game: game,
-                artworkHeight: 176,
+                artworkHeight: 196,
                 titleFont: .headline.bold(),
                 subtitleFont: .caption.weight(.medium),
-                storeBadgeLimit: 2
+                storeBadgeLimit: 0
             )
             .frame(width: 260)
             .contentShape(RoundedRectangle(cornerRadius: 16))
@@ -355,10 +455,10 @@ struct GameCardView: View {
         }) {
             GameArtworkCard(
                 game: game,
-                artworkHeight: 220,
+                artworkHeight: 236,
                 titleFont: .headline.bold(),
                 subtitleFont: .caption.weight(.medium),
-                storeBadgeLimit: 2
+                storeBadgeLimit: 0
             )
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .contentShape(RoundedRectangle(cornerRadius: 16))
@@ -375,9 +475,27 @@ struct GameLaunchDetailsSheet: View {
 
     private var launcherOptions: [GameLaunchOption] {
         if game.launchOptions.isEmpty, let launchAppId = game.launchAppId {
-            return [GameLaunchOption(storefront: "Auto", appId: launchAppId)]
+            return [GameLaunchOption(storefront: "Auto", appId: launchAppId, supportedControls: nil)]
         }
         return game.launchOptions
+    }
+
+    private var launchUnavailableMessage: String? {
+        if !OpenNOWPlatform.supportsEmbeddedStreamer {
+            return OpenNOWPlatform.streamingUnavailableReason
+        }
+        if launcherOptions.isEmpty {
+            return "This game doesn't expose launch targets yet."
+        }
+        return nil
+    }
+
+    private var tagBackgroundColor: Color {
+        #if os(tvOS)
+        return Color.white.opacity(0.12)
+        #else
+        return Color(.systemFill)
+        #endif
     }
 
     var body: some View {
@@ -421,16 +539,21 @@ struct GameLaunchDetailsSheet: View {
                         }
                         GameMetaCard(label: "Genre", value: game.genre, icon: "sparkles.tv")
                         GameMetaCard(label: "Platform", value: game.platform, icon: "gamecontroller")
-                        if let appId = game.uuid {
-                            GameMetaCard(label: "Game ID", value: appId, icon: "number")
+                        if let playType = game.playType {
+                            GameMetaCard(label: "Play Type", value: playType, icon: "play.rectangle")
+                        }
+                        if let tier = game.membershipTierLabel {
+                            GameMetaCard(label: "Membership", value: tier, icon: "person.crop.circle.badge.checkmark")
                         }
                     }
 
-                    if launcherOptions.isEmpty {
-                        Text("This game doesn't expose launch targets yet.")
+                    if let launchUnavailableMessage {
+                        Text(launchUnavailableMessage)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                    } else {
+                    }
+
+                    if !launcherOptions.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Launch With")
                                 .font(.headline)
@@ -445,7 +568,7 @@ struct GameLaunchDetailsSheet: View {
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(option.storefront.capitalized)
                                                 .font(.subheadline.weight(.semibold))
-                                            Text("Launch app ID \(option.appId)")
+                                            Text(launchOptionSubtitle(option))
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
                                                 .lineLimit(1)
@@ -464,18 +587,18 @@ struct GameLaunchDetailsSheet: View {
                         }
                     }
 
-                    if let tags = game.tags, !tags.isEmpty {
+                    if !detailLabels.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
-                            Text("Tags")
+                            Text("Features")
                                 .font(.headline)
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
-                                    ForEach(tags.prefix(12), id: \.self) { tag in
+                                    ForEach(detailLabels.prefix(16), id: \.self) { tag in
                                         Text(tag)
                                             .font(.caption.weight(.semibold))
                                             .padding(.horizontal, 10)
                                             .padding(.vertical, 6)
-                                            .background(Color(.systemFill), in: Capsule())
+                                            .background(tagBackgroundColor, in: Capsule())
                                     }
                                 }
                             }
@@ -485,7 +608,6 @@ struct GameLaunchDetailsSheet: View {
                 .padding(20)
             }
             .navigationTitle("Game Details")
-            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -503,14 +625,14 @@ struct GameLaunchDetailsSheet: View {
                     onLaunch(selectedOption ?? launcherOptions.first)
                     dismiss()
                 } label: {
-                    Text(launcherOptions.isEmpty ? "Launch Unavailable" : "Launch")
+                    Text(launchUnavailableMessage == nil ? "Launch" : "Launch Unavailable")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(brandAccent)
-                .disabled(launcherOptions.isEmpty)
+                .disabled(launchUnavailableMessage != nil)
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
                 .padding(.bottom, 8)
@@ -532,11 +654,27 @@ struct GameLaunchDetailsSheet: View {
     }
 
     private var summaryText: String {
+        let long = game.longDescription?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !long.isEmpty {
+            return long
+        }
         let trimmed = game.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmed.isEmpty {
             return trimmed
         }
         return "\(game.title) is available through \(resolvedStores.isEmpty ? game.platform : resolvedStores.joined(separator: ", ")) on OpenNOW."
+    }
+
+    private var detailLabels: [String] {
+        Array(Set((game.featureLabels ?? []) + (game.tags ?? []))).sorted()
+    }
+
+    private func launchOptionSubtitle(_ option: GameLaunchOption) -> String {
+        let controls = option.supportedControls?.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? []
+        if !controls.isEmpty {
+            return controls.joined(separator: ", ")
+        }
+        return "Ready to launch"
     }
 
     private var detailMetadataColumns: [GridItem] {
@@ -630,11 +768,22 @@ private struct GameArtworkCard: View {
                 .frame(height: artworkHeight)
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.36), .black.opacity(0.88)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: min(artworkHeight * 0.74, 170))
+            .frame(maxHeight: .infinity, alignment: .bottom)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
             VStack(alignment: .leading, spacing: 8) {
                 Text(game.title)
                     .font(titleFont)
                     .foregroundStyle(Color.white)
-                    .lineLimit(2)
+                    .lineLimit(3)
+                    .minimumScaleFactor(0.86)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Text("\(game.genre) · \(game.platform)")
                     .font(subtitleFont)
@@ -650,15 +799,19 @@ private struct GameArtworkCard: View {
                 }
             }
             .padding(14)
+            .padding(.top, 26)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(alignment: .bottom) {
-                ZStack(alignment: .bottom) {
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.18), .black.opacity(0.72)],
-                        startPoint: .top,
-                        endPoint: .bottom
+            .background {
+                Rectangle()
+                    .fill(.ultraThinMaterial.opacity(0.86))
+                    .mask(
+                        LinearGradient(
+                            colors: [.clear, Color.white.opacity(0.35), Color.white],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
                     )
-                }
+                    .allowsHitTesting(false)
             }
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
@@ -710,8 +863,8 @@ private struct StorePill: View {
             }
         }
         .foregroundColor(prominent ? .primary : .white)
-        .padding(.horizontal, prominent ? 12 : 7)
-        .padding(.vertical, prominent ? 10 : 7)
+        .padding(.horizontal, prominent ? 12 : 6)
+        .padding(.vertical, prominent ? 10 : 6)
         .background(backgroundShape)
     }
 
@@ -734,8 +887,10 @@ private struct StoreGlyph: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(glyphBackground)
+            if showsGlyphBackground {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(glyphBackground)
+            }
             if let assetName {
                 Image(assetName)
                     .resizable()
@@ -779,6 +934,10 @@ private struct StoreGlyph: View {
         }
     }
 
+    private var showsGlyphBackground: Bool {
+        normalizedStore != "steam"
+    }
+
     private var assetName: String? {
         switch normalizedStore {
         case "steam":
@@ -794,6 +953,8 @@ private struct StoreGlyph: View {
 
     private var imagePadding: CGFloat {
         switch normalizedStore {
+        case "steam":
+            return 0
         case "epic":
             return 3
         case "xbox":
@@ -835,22 +996,19 @@ struct GameArtworkView: View {
             ZStack {
                 gameColor(for: game.title).opacity(0.2)
                 if let imageUrl = game.imageUrl, let url = URL(string: imageUrl) {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: proxy.size.width, height: proxy.size.height)
-                        case .empty:
-                            Rectangle()
-                                .fill(.quaternary.opacity(0.25))
-                                .frame(width: proxy.size.width, height: proxy.size.height)
-                                .shimmeringSkeleton()
-                        default:
-                            iconFallback
-                                .frame(width: proxy.size.width, height: proxy.size.height)
-                        }
+                    CachedRemoteImage(url: url) { image in
+                        image
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                    } placeholder: {
+                        Rectangle()
+                            .fill(.quaternary.opacity(0.25))
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .shimmeringSkeleton()
+                    } failure: {
+                        iconFallback
+                            .frame(width: proxy.size.width, height: proxy.size.height)
                     }
                 } else {
                     iconFallback
@@ -911,22 +1069,24 @@ func gameColor(for title: String) -> Color {
 }
 
 struct GlassCardModifier: ViewModifier {
+    let cornerRadius: CGFloat
+
     func body(content: Content) -> some View {
         if #available(iOS 26, *) {
             content
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-                .glassEffect(in: RoundedRectangle(cornerRadius: 16))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
+                .glassEffect(in: RoundedRectangle(cornerRadius: cornerRadius))
         } else {
             content
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
                 .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
         }
     }
 }
 
 extension View {
-    func glassCard() -> some View {
-        modifier(GlassCardModifier())
+    func glassCard(cornerRadius: CGFloat = 16) -> some View {
+        modifier(GlassCardModifier(cornerRadius: cornerRadius))
     }
 
     func shimmeringSkeleton() -> some View {
@@ -937,10 +1097,19 @@ extension View {
         selectedGame: Binding<CloudGame?>,
         onLaunch: @escaping (CloudGame, GameLaunchOption?) -> Void
     ) -> some View {
+        #if os(tvOS)
+        sheet(item: selectedGame) { game in
+            GameLaunchDetailsSheet(game: game) { option in
+                onLaunch(game, option)
+                selectedGame.wrappedValue = nil
+            }
+        }
+        #else
         background(
             UIKitGameDetailsPresenter(selectedGame: selectedGame, onLaunch: onLaunch)
                 .frame(width: 0, height: 0)
         )
+        #endif
     }
 }
 
@@ -948,7 +1117,7 @@ private func storeNormalizedKey(_ store: String) -> String {
     store.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }
 
-private func storeDisplayName(_ store: String) -> String {
+func storeDisplayName(_ store: String) -> String {
     switch storeNormalizedKey(store) {
     case "epic", "epic games":
         return "Epic"
@@ -959,7 +1128,7 @@ private func storeDisplayName(_ store: String) -> String {
     }
 }
 
-private func gameResolvedStores(game: CloudGame) -> [String] {
+func gameResolvedStores(game: CloudGame) -> [String] {
     if let stores = game.stores, !stores.isEmpty {
         return stores
     }
@@ -967,6 +1136,7 @@ private func gameResolvedStores(game: CloudGame) -> [String] {
     return derived.isEmpty ? [game.platform] : derived
 }
 
+#if !os(tvOS)
 private struct UIKitGameDetailsPresenter: UIViewControllerRepresentable {
     @Binding var selectedGame: CloudGame?
     let onLaunch: (CloudGame, GameLaunchOption?) -> Void
@@ -1025,3 +1195,4 @@ private struct UIKitGameDetailsPresenter: UIViewControllerRepresentable {
         }
     }
 }
+#endif

@@ -118,7 +118,7 @@ struct SessionView: View {
 
     private func statusLabel(_ status: Int) -> String {
         switch status {
-        case 3: return "Connected"
+        case 3: return store.supportsEmbeddedStreamer ? "Connected" : "Ready"
         case 2: return "Initializing"
         case 1: return "Queued"
         default: return "Status \(status)"
@@ -219,7 +219,11 @@ struct SessionView: View {
                 .padding(.top, 40)
             Text("No Active Session")
                 .font(.title3.bold())
-            Text("Launch a game from Home, Browse, or Library to start streaming.")
+            Text(
+                store.supportsEmbeddedStreamer
+                    ? "Launch a game from Home, Browse, or Library to start streaming."
+                    : "This Apple TV build can browse session state, but streaming is still disabled."
+            )
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -234,6 +238,12 @@ struct SessionView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Active on Account")
                 .font(.headline)
+
+            if !store.supportsEmbeddedStreamer {
+                Text("Resume is disabled on this Apple TV build until the native streamer lands.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if store.resumableSessions.isEmpty {
                 Text("No resumable sessions found.")
@@ -267,7 +277,7 @@ struct SessionView: View {
                             }
                             .buttonStyle(.bordered)
                             .tint(brandAccent)
-                            .disabled(isEndingRemote)
+                            .disabled(isEndingRemote || !store.supportsEmbeddedStreamer)
 
                             Button(role: .destructive) {
                                 Haptics.medium()

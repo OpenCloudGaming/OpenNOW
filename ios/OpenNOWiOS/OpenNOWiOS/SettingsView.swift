@@ -60,10 +60,20 @@ struct SettingsView: View {
                         Spacer()
                         Toggle("", isOn: $store.settings.fortnitePrefersNativeTouch)
                     }
+                    HStack {
+                        Label("Bluetooth Controller Passthrough", systemImage: "gamecontroller.fill")
+                        Spacer()
+                        Toggle("", isOn: $store.settings.streamerPreferences.physicalControllerPassthrough)
+                    }
+                    HStack {
+                        Label("Show Touch Controller", systemImage: "circle.grid.cross.fill")
+                        Spacer()
+                        Toggle("", isOn: $store.settings.streamerPreferences.touchControllerVisible)
+                    }
                 } header: {
                     Label("Experience", systemImage: "star.fill")
                 } footer: {
-                    Text("When enabled, Fortnite sessions advertise a mobile touch device profile so the game can surface its native mobile controls.")
+                    Text("Fortnite mobile touch advertises a mobile device profile. Bluetooth passthrough sends connected controllers using the same gamepad packet path as the desktop streamer.")
                 }
 
                 Section {
@@ -95,9 +105,9 @@ struct SettingsView: View {
                     }
                 }
 
-                Section {
+                Section {   
                     LabeledContent("Version", value: "1.0")
-                    LabeledContent("Platform", value: "iOS")
+                    LabeledContent("Platform", value: OpenNOWPlatform.displayName)
                     Link(destination: URL(string: "https://github.com/OpenCloudGaming/OpenNOW")!) {
                         Text("GitHub Repository")
                     }
@@ -106,8 +116,8 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
-            .scrollContentBackground(.hidden)
             .background(appBackground)
+            .settingsFormBackground()
             .onChange(of: store.settings) { _, _ in
                 store.persistSettings()
             }
@@ -133,6 +143,25 @@ struct SettingsView: View {
                 .pickerStyle(.menu)
                 .tint(.primary)
         }
-        .listRowBackground(Color(.secondarySystemGroupedBackground).opacity(0.75))
+        .listRowBackground(settingsRowBackground)
+    }
+
+    private var settingsRowBackground: Color {
+        #if os(tvOS)
+        return Color.white.opacity(0.08)
+        #else
+        return Color(.secondarySystemGroupedBackground).opacity(0.75)
+        #endif
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func settingsFormBackground() -> some View {
+        #if os(tvOS)
+        self
+        #else
+        self.scrollContentBackground(.hidden)
+        #endif
     }
 }

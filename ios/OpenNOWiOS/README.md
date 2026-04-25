@@ -22,7 +22,7 @@ Current app architecture:
 ## Open In Xcode
 
 1. Open `ios/OpenNOWiOS/OpenNOWiOS.xcodeproj`.
-2. Choose an iOS Simulator or connected device.
+2. Choose an iOS or tvOS simulator/device.
 3. Run the `OpenNOWiOS` target.
 
 ## Notes
@@ -30,3 +30,5 @@ Current app architecture:
 - Deployment target: iOS 17.0
 - Bundle ID (default): `com.opencloudgaming.opennow`
 - App icon slots are scaffolded in `OpenNOWiOS/Assets.xcassets/AppIcon.appiconset`.
+- The shared `OpenNOWiOS` target now builds for tvOS as well.
+- The current Apple TV build is intentionally limited: sign-in uses the tvOS authentication session path, Live Activities are disabled, notifications are stubbed, and in-app streaming still needs a native tvOS player rather than the iOS web-view flow.

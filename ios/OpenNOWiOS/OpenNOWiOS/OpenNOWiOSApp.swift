@@ -6,10 +6,15 @@ final class OpenNOWAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        OpenNOWImageCache.configureURLCache()
         Task { @MainActor in
             await QueueLiveActivityManager.shared.endAll()
         }
         return true
+    }
+
+    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
+        OpenNOWImageCache.shared.removeAll()
     }
 
     func applicationWillTerminate(_ application: UIApplication) {

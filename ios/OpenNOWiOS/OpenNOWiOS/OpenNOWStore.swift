@@ -1,5 +1,4 @@
 import AuthenticationServices
-import ActivityKit
 import CryptoKit
 import Foundation
 import Network
@@ -49,17 +48,22 @@ struct CloudGame: Identifiable, Codable, Equatable {
     let launchOptions: [GameLaunchOption]
     let uuid: String?
     let summary: String?
+    let longDescription: String?
     let publisher: String?
     let developer: String?
     let releaseDate: String?
+    let featureLabels: [String]?
     let tags: [String]?
     let stores: [String]?
+    let playType: String?
+    let membershipTierLabel: String?
 }
 
 struct GameLaunchOption: Identifiable, Codable, Equatable {
     var id: String { "\(storefront)-\(appId)" }
     let storefront: String
     let appId: String
+    let supportedControls: [String]?
 }
 
 struct SessionTelemetry: Codable, Equatable {
@@ -162,6 +166,7 @@ struct AppSettings: Codable, Equatable {
     var selectedProviderIdpId: String
     var fortnitePrefersNativeTouch: Bool
     var touchControlLayouts: [String: TouchControlLayout]
+    var streamerPreferences: StreamerPreferences
 
     enum CodingKeys: String, CodingKey {
         case preferredRegion
@@ -173,6 +178,7 @@ struct AppSettings: Codable, Equatable {
         case selectedProviderIdpId
         case fortnitePrefersNativeTouch
         case touchControlLayouts
+        case streamerPreferences
     }
 
     init(
@@ -184,7 +190,8 @@ struct AppSettings: Codable, Equatable {
         showStatsOverlay: Bool,
         selectedProviderIdpId: String,
         fortnitePrefersNativeTouch: Bool,
-        touchControlLayouts: [String: TouchControlLayout]
+        touchControlLayouts: [String: TouchControlLayout],
+        streamerPreferences: StreamerPreferences
     ) {
         self.preferredRegion = preferredRegion
         self.preferredFPS = preferredFPS
@@ -195,6 +202,7 @@ struct AppSettings: Codable, Equatable {
         self.selectedProviderIdpId = selectedProviderIdpId
         self.fortnitePrefersNativeTouch = fortnitePrefersNativeTouch
         self.touchControlLayouts = touchControlLayouts
+        self.streamerPreferences = streamerPreferences
     }
 
     init(from decoder: Decoder) throws {
@@ -210,6 +218,8 @@ struct AppSettings: Codable, Equatable {
         fortnitePrefersNativeTouch = try container.decodeIfPresent(Bool.self, forKey: .fortnitePrefersNativeTouch) ?? true
         touchControlLayouts = try container.decodeIfPresent([String: TouchControlLayout].self, forKey: .touchControlLayouts)
             ?? TouchControlLayout.defaultProfiles
+        streamerPreferences = try container.decodeIfPresent(StreamerPreferences.self, forKey: .streamerPreferences)
+            ?? .default
     }
 
     static let `default` = AppSettings(
@@ -221,12 +231,60 @@ struct AppSettings: Codable, Equatable {
         showStatsOverlay: true,
         selectedProviderIdpId: "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg",
         fortnitePrefersNativeTouch: true,
-        touchControlLayouts: TouchControlLayout.defaultProfiles
+        touchControlLayouts: TouchControlLayout.defaultProfiles,
+        streamerPreferences: .default
     )
 
     func touchLayout(for profile: String) -> TouchControlLayout {
         touchControlLayouts[profile] ?? TouchControlLayout.preset(for: profile)
     }
+}
+
+struct StreamerPreferences: Codable, Equatable {
+    var audioMuted: Bool
+    var showStatsClock: Bool
+    var showStatsBattery: Bool
+    var touchControllerVisible: Bool
+    var physicalControllerPassthrough: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case audioMuted
+        case showStatsClock
+        case showStatsBattery
+        case touchControllerVisible
+        case physicalControllerPassthrough
+    }
+
+    init(
+        audioMuted: Bool,
+        showStatsClock: Bool,
+        showStatsBattery: Bool,
+        touchControllerVisible: Bool,
+        physicalControllerPassthrough: Bool
+    ) {
+        self.audioMuted = audioMuted
+        self.showStatsClock = showStatsClock
+        self.showStatsBattery = showStatsBattery
+        self.touchControllerVisible = touchControllerVisible
+        self.physicalControllerPassthrough = physicalControllerPassthrough
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        audioMuted = try container.decodeIfPresent(Bool.self, forKey: .audioMuted) ?? Self.default.audioMuted
+        showStatsClock = try container.decodeIfPresent(Bool.self, forKey: .showStatsClock) ?? Self.default.showStatsClock
+        showStatsBattery = try container.decodeIfPresent(Bool.self, forKey: .showStatsBattery) ?? Self.default.showStatsBattery
+        touchControllerVisible = try container.decodeIfPresent(Bool.self, forKey: .touchControllerVisible) ?? Self.default.touchControllerVisible
+        physicalControllerPassthrough = try container.decodeIfPresent(Bool.self, forKey: .physicalControllerPassthrough) ?? Self.default.physicalControllerPassthrough
+    }
+
+    static let `default` = StreamerPreferences(
+        audioMuted: true,
+        showStatsClock: false,
+        showStatsBattery: false,
+        touchControllerVisible: false,
+        physicalControllerPassthrough: true
+    )
 }
 
 struct TouchControlPoint: Codable, Equatable {
@@ -253,6 +311,8 @@ struct TouchControlPoint: Codable, Equatable {
 struct TouchControlLayout: Codable, Equatable {
     var scale: Double
     var opacity: Double
+    var buttonScale: Double
+    var stickScale: Double
     var topLeft: TouchControlPoint
     var topCenter: TouchControlPoint
     var topRight: TouchControlPoint
@@ -263,6 +323,8 @@ struct TouchControlLayout: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case scale
         case opacity
+        case buttonScale
+        case stickScale
         case topLeft
         case topCenter
         case topRight
@@ -274,6 +336,8 @@ struct TouchControlLayout: Codable, Equatable {
     init(
         scale: Double,
         opacity: Double,
+        buttonScale: Double,
+        stickScale: Double,
         topLeft: TouchControlPoint,
         topCenter: TouchControlPoint,
         topRight: TouchControlPoint,
@@ -283,6 +347,8 @@ struct TouchControlLayout: Codable, Equatable {
     ) {
         self.scale = scale
         self.opacity = opacity
+        self.buttonScale = buttonScale
+        self.stickScale = stickScale
         self.topLeft = topLeft
         self.topCenter = topCenter
         self.topRight = topRight
@@ -296,6 +362,8 @@ struct TouchControlLayout: Codable, Equatable {
         let fallback = Self.standard
         scale = try container.decodeIfPresent(Double.self, forKey: .scale) ?? fallback.scale
         opacity = try container.decodeIfPresent(Double.self, forKey: .opacity) ?? fallback.opacity
+        buttonScale = try container.decodeIfPresent(Double.self, forKey: .buttonScale) ?? fallback.buttonScale
+        stickScale = try container.decodeIfPresent(Double.self, forKey: .stickScale) ?? fallback.stickScale
         topLeft = try container.decodeIfPresent(TouchControlPoint.self, forKey: .topLeft) ?? fallback.topLeft
         topCenter = try container.decodeIfPresent(TouchControlPoint.self, forKey: .topCenter) ?? fallback.topCenter
         topRight = try container.decodeIfPresent(TouchControlPoint.self, forKey: .topRight) ?? fallback.topRight
@@ -307,6 +375,8 @@ struct TouchControlLayout: Codable, Equatable {
     static let standard = TouchControlLayout(
         scale: 1,
         opacity: 0.58,
+        buttonScale: 1,
+        stickScale: 1,
         topLeft: .init(x: 0.14, y: 0.12),
         topCenter: .init(x: 0.50, y: 0.12),
         topRight: .init(x: 0.86, y: 0.12),
@@ -318,6 +388,8 @@ struct TouchControlLayout: Codable, Equatable {
     static let fortniteMobile = TouchControlLayout(
         scale: 1.05,
         opacity: 0.52,
+        buttonScale: 1.05,
+        stickScale: 1,
         topLeft: .init(x: 0.16, y: 0.11),
         topCenter: .init(x: 0.50, y: 0.11),
         topRight: .init(x: 0.84, y: 0.11),
@@ -334,6 +406,22 @@ struct TouchControlLayout: Codable, Equatable {
     static func preset(for profile: String) -> TouchControlLayout {
         defaultProfiles[profile] ?? .standard
     }
+}
+
+enum OpenNOWPlatform {
+    #if os(tvOS)
+    static let supportsNativeOAuth = true
+    static let supportsEmbeddedStreamer = false
+    static let displayName = "tvOS"
+    static let authUnavailableReason = ""
+    static let streamingUnavailableReason = "Apple TV streaming still needs a native tvOS player."
+    #else
+    static let supportsNativeOAuth = true
+    static let supportsEmbeddedStreamer = true
+    static let displayName = "iOS"
+    static let authUnavailableReason = ""
+    static let streamingUnavailableReason = ""
+    #endif
 }
 
 private enum GFNConstants {
@@ -357,12 +445,136 @@ private enum GFNConstants {
     static let lcarsClientId = "ec7e38d4-03af-4b58-b131-cfb0495903ab"
     static let gfnClientVersion = "2.0.80.173"
     static let panelsQueryHash = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0"
+    static let appMetadataQueryHash = "39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7"
     static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173"
     static let oauthRedirectUri = "http://localhost:2259"
     static let oauthCallbackScheme = "opennowios"
     static let oauthRedirectPort: UInt16 = 2259
     static let sessionModifyActionAdUpdate = 6
 }
+
+private enum TVAuthDiagnostics {
+    static let notificationName = Notification.Name("OpenNOW.TVAuthDiagnostics")
+
+    #if os(tvOS)
+    private static let logger = Logger(subsystem: "OpenNOWiOS", category: "TVAuth")
+
+    static func record(_ message: String) {
+        logger.notice("\(message, privacy: .public)")
+        NotificationCenter.default.post(
+            name: notificationName,
+            object: nil,
+            userInfo: ["message": message]
+        )
+    }
+    #else
+    static func record(_ message: String) {}
+    #endif
+}
+
+private func oauthCallbackQueryItems(from url: URL) -> [URLQueryItem] {
+    URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+}
+
+private func oauthCallbackHasResult(_ url: URL) -> Bool {
+    let queryItems = oauthCallbackQueryItems(from: url)
+    let hasCode = queryItems.contains(where: { $0.name == "code" && !($0.value ?? "").isEmpty })
+    let hasError = queryItems.contains(where: { $0.name == "error" && !($0.value ?? "").isEmpty })
+    return hasCode || hasError
+}
+
+private func summarizeOAuthCallback(_ url: URL) -> String {
+    let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+    let scheme = components?.scheme ?? url.scheme ?? "unknown"
+    let host = components?.host ?? url.host ?? "-"
+    let rawPath = components?.path ?? url.path
+    let path = rawPath.isEmpty ? "/" : rawPath
+    let queryKeys = (components?.queryItems ?? [])
+        .map(\.name)
+        .sorted()
+        .joined(separator: ",")
+    let querySummary = queryKeys.isEmpty ? "none" : queryKeys
+    return "\(scheme)://\(host)\(path) queryKeys=[\(querySummary)]"
+}
+
+private func normalizedEndpointHost(from value: Any?) -> String? {
+    if let stringValue = value as? String {
+        return normalizedEndpointHost(from: stringValue)
+    }
+    if let stringValues = value as? [String] {
+        return stringValues.compactMap { normalizedEndpointHost(from: $0) }.first
+    }
+    return nil
+}
+
+private func normalizedEndpointHost(from stringValue: String?) -> String? {
+    guard var raw = stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+        return nil
+    }
+    let urlSchemes: Set<String> = ["http", "https", "ws", "wss", "rtsp", "rtsps"]
+    if let components = URLComponents(string: raw),
+       let scheme = components.scheme?.lowercased(),
+       urlSchemes.contains(scheme) {
+        return validEndpointHost(components.host)
+    }
+
+    if raw.hasPrefix("[") {
+        guard let end = raw.firstIndex(of: "]") else { return nil }
+        let hostStart = raw.index(after: raw.startIndex)
+        return validEndpointHost(String(raw[hostStart..<end]))
+    }
+
+    if let separator = raw.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) {
+        raw = String(raw[..<separator])
+    }
+    guard !raw.contains("@") else { return nil }
+
+    let colonCount = raw.filter { $0 == ":" }.count
+    if colonCount == 1, let separator = raw.lastIndex(of: ":") {
+        let portStart = raw.index(after: separator)
+        let port = raw[portStart...]
+        if !port.isEmpty, port.allSatisfy({ $0.isNumber }) {
+            raw = String(raw[..<separator])
+        }
+    }
+
+    return validEndpointHost(raw)
+}
+
+private func validEndpointHost(_ host: String?) -> String? {
+    guard let host else { return nil }
+    let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalized.isEmpty,
+          normalized.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
+        return nil
+    }
+
+    if normalized.contains(":") {
+        let allowedIPv6 = CharacterSet(charactersIn: "0123456789abcdefABCDEF:.")
+        guard normalized.unicodeScalars.allSatisfy({ allowedIPv6.contains($0) }) else {
+            return nil
+        }
+        return normalized
+    }
+
+    let allowedHost = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-")
+    guard normalized.unicodeScalars.allSatisfy({ allowedHost.contains($0) }),
+          !normalized.hasPrefix("."),
+          !normalized.hasSuffix("."),
+          !normalized.hasPrefix("-"),
+          !normalized.hasSuffix("-"),
+          !normalized.contains("..") else {
+        return nil
+    }
+
+    let labels = normalized.split(separator: ".", omittingEmptySubsequences: false)
+    guard labels.allSatisfy({ !$0.isEmpty && !$0.hasPrefix("-") && !$0.hasSuffix("-") }) else {
+        return nil
+    }
+    return normalized
+}
+
+typealias TVOSOAuthPresenter = @MainActor @Sendable (_ url: URL, _ callbackScheme: String) async throws -> URL
 
 enum SessionAdAction: String, Codable {
     case start
@@ -372,27 +584,56 @@ enum SessionAdAction: String, Codable {
     case cancel
 }
 
-private final class OAuthWebAuthenticator: NSObject, ASWebAuthenticationPresentationContextProviding {
+private final class OAuthWebAuthenticator: NSObject {
     private var session: ASWebAuthenticationSession?
 
     func authenticate(url: URL, callbackScheme: String) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
-            let authSession = ASWebAuthenticationSession(
+            TVAuthDiagnostics.record(
+                "Preparing ASWebAuthenticationSession host=\(url.host ?? "unknown") callbackScheme=\(callbackScheme)"
+            )
+            let authSession: ASWebAuthenticationSession
+            #if os(tvOS)
+            authSession = ASWebAuthenticationSession(
+                url: url,
+                callback: .customScheme(callbackScheme)
+            ) { callbackURL, error in
+                if let callbackURL {
+                    TVAuthDiagnostics.record("Auth session completed with \(summarizeOAuthCallback(callbackURL))")
+                    continuation.resume(returning: callbackURL)
+                    return
+                }
+                let authError = error ?? NSError(
+                    domain: "OpenNOWAuth", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Authentication cancelled"]
+                )
+                TVAuthDiagnostics.record("Auth session ended with error: \(authError.localizedDescription)")
+                continuation.resume(throwing: authError)
+            }
+            #else
+            authSession = ASWebAuthenticationSession(
                 url: url,
                 callbackURLScheme: callbackScheme
             ) { callbackURL, error in
                 if let callbackURL {
+                    TVAuthDiagnostics.record("Auth session completed with \(summarizeOAuthCallback(callbackURL))")
                     continuation.resume(returning: callbackURL)
                     return
                 }
-                continuation.resume(throwing: error ?? NSError(
+                let authError = error ?? NSError(
                     domain: "OpenNOWAuth", code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Authentication cancelled"]))
+                    userInfo: [NSLocalizedDescriptionKey: "Authentication cancelled"]
+                )
+                TVAuthDiagnostics.record("Auth session ended with error: \(authError.localizedDescription)")
+                continuation.resume(throwing: authError)
             }
             authSession.presentationContextProvider = self
             authSession.prefersEphemeralWebBrowserSession = false
+            #endif
             self.session = authSession
+            TVAuthDiagnostics.record("Starting ASWebAuthenticationSession.")
             if !authSession.start() {
+                TVAuthDiagnostics.record("ASWebAuthenticationSession failed to start.")
                 continuation.resume(throwing: NSError(
                     domain: "OpenNOWAuth", code: 2,
                     userInfo: [NSLocalizedDescriptionKey: "Could not start sign-in session"]))
@@ -401,22 +642,49 @@ private final class OAuthWebAuthenticator: NSObject, ASWebAuthenticationPresenta
     }
 
     func cancel() {
+        #if !os(tvOS)
         session?.cancel()
+        #endif
         session = nil
-    }
-
-    nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        MainActor.assumeIsolated {
-            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                  let window = scene.windows.first else {
-                return ASPresentationAnchor()
-            }
-            return window
-        }
     }
 }
 
-private final class OAuthLoopbackServer {
+#if !os(tvOS)
+extension OAuthWebAuthenticator: ASWebAuthenticationPresentationContextProviding {
+    nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated {
+                Self.activePresentationAnchor()
+            }
+        }
+
+        return DispatchQueue.main.sync {
+            MainActor.assumeIsolated {
+                Self.activePresentationAnchor()
+            }
+        }
+    }
+
+    @MainActor
+    private static func activePresentationAnchor() -> ASPresentationAnchor {
+        let foregroundScene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        let scene = foregroundScene ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+
+        if let keyWindow = scene?.windows.first(where: { $0.isKeyWindow }) {
+            return keyWindow
+        }
+        if let window = scene?.windows.first {
+            return window
+        }
+
+        return ASPresentationAnchor()
+    }
+}
+#endif
+
+private final class OAuthLoopbackServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "OpenNOW.OAuthLoopback")
     private var listener: NWListener?
     private var continuation: CheckedContinuation<URL, Error>?
@@ -444,6 +712,7 @@ private final class OAuthLoopbackServer {
                     listener.stateUpdateHandler = { [weak self] state in
                         guard let self else { return }
                         if case .failed(let error) = state {
+                            TVAuthDiagnostics.record("Loopback listener failed: \(error.localizedDescription)")
                             self.complete(with: .failure(error))
                         }
                     }
@@ -453,6 +722,7 @@ private final class OAuthLoopbackServer {
                     }
 
                     listener.start(queue: self.queue)
+                    TVAuthDiagnostics.record("Loopback listener started on http://localhost:\(port)")
 
                     self.queue.asyncAfter(deadline: .now() + timeoutSeconds) { [weak self] in
                         self?.complete(
@@ -493,6 +763,7 @@ private final class OAuthLoopbackServer {
             let hasError = queryItems.contains(where: { $0.name == "error" && !($0.value ?? "").isEmpty })
 
             if hasCode || hasError {
+                TVAuthDiagnostics.record("Loopback callback received \(summarizeOAuthCallback(callbackURL))")
                 var redirectComponents = URLComponents()
                 redirectComponents.scheme = "opennowios"
                 redirectComponents.host = "callback"
@@ -505,6 +776,7 @@ private final class OAuthLoopbackServer {
                 })
                 self.complete(with: .success(callbackURL))
             } else {
+                TVAuthDiagnostics.record("Loopback request ignored \(summarizeOAuthCallback(callbackURL))")
                 let httpResponse = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 connection.send(content: Data(httpResponse.utf8), completion: .contentProcessed { _ in
                     connection.cancel()
@@ -606,6 +878,53 @@ private enum StreamDeviceProfile {
 }
 
 private actor GFNAPIClient {
+    #if os(tvOS)
+    private enum OAuthCallbackSource: String {
+        case authSession = "ASWebAuthenticationSession"
+        case loopbackServer = "localhost callback"
+    }
+
+    private actor OAuthCallbackCoordinator {
+        private var didResolve = false
+        private var failures: [String] = []
+        private let continuation: CheckedContinuation<(source: OAuthCallbackSource, url: URL), Error>
+
+        init(continuation: CheckedContinuation<(source: OAuthCallbackSource, url: URL), Error>) {
+            self.continuation = continuation
+        }
+
+        func succeed(source: OAuthCallbackSource, url: URL) -> Bool {
+            guard !didResolve else { return false }
+            didResolve = true
+            continuation.resume(returning: (source, url))
+            return true
+        }
+
+        func fail(source: OAuthCallbackSource, error: Error) -> Bool {
+            guard !didResolve else { return false }
+            failures.append("\(source.rawValue): \(error.localizedDescription)")
+            if failures.count == 2 {
+                didResolve = true
+                continuation.resume(
+                    throwing: NSError(
+                        domain: "OpenNOW.Auth",
+                        code: 13,
+                        userInfo: [NSLocalizedDescriptionKey: failures.joined(separator: " | ")]
+                    )
+                )
+            }
+            return true
+        }
+    }
+    #endif
+
+    private struct PendingOAuthLogin {
+        let provider: LoginProvider
+        let redirectUri: String
+        let codeVerifier: String
+        let authURL: URL
+    }
+
     private let session: URLSession = {
         let delegate = GFNTLSDelegate()
         let config = URLSessionConfiguration.default
@@ -677,9 +996,84 @@ private actor GFNAPIClient {
     }
 
     func login(with provider: LoginProvider, deviceId: String) async throws -> AuthSession {
+        let pending = makePendingOAuthLogin(with: provider, deviceId: deviceId)
+        let callbackServer = OAuthLoopbackServer()
+        let callbackURL: URL
+        do {
+            #if os(tvOS)
+            let callbackResult = try await awaitTVOSOAuthCallback(
+                authUrl: pending.authURL,
+                callbackServer: callbackServer,
+                authenticate: { url, callbackScheme in
+                    try await Self.performOAuthSession(url: url, callbackScheme: callbackScheme)
+                }
+            )
+            callbackURL = callbackResult.url
+            TVAuthDiagnostics.record(
+                "Continuing with \(callbackResult.source.rawValue) using \(summarizeOAuthCallback(callbackURL))"
+            )
+            if callbackResult.source == .loopbackServer {
+                TVAuthDiagnostics.record(
+                    "If the sign-in sheet stays open on Apple TV, dismiss it with Back or Menu after returning to OpenNOW."
+                )
+            }
+            #else
+            let serverTask = Task<URL, Error> {
+                try await callbackServer.waitForCallback(port: GFNConstants.oauthRedirectPort)
+            }
+            callbackURL = try await Self.performOAuthSession(
+                url: pending.authURL,
+                callbackScheme: GFNConstants.oauthCallbackScheme
+            )
+            serverTask.cancel()
+            #endif
+        } catch {
+            callbackServer.stop()
+            TVAuthDiagnostics.record("Sign-in callback failed: \(error.localizedDescription)")
+            throw error
+        }
+        return try await completeOAuthLogin(pending, callbackURL: callbackURL)
+    }
+
+    #if os(tvOS)
+    func login(
+        with provider: LoginProvider,
+        deviceId: String,
+        authenticate: @escaping TVOSOAuthPresenter
+    ) async throws -> AuthSession {
+        let pending = makePendingOAuthLogin(with: provider, deviceId: deviceId)
+        let callbackServer = OAuthLoopbackServer()
+        do {
+            let callbackResult = try await awaitTVOSOAuthCallback(
+                authUrl: pending.authURL,
+                callbackServer: callbackServer,
+                authenticate: authenticate
+            )
+            let callbackURL = callbackResult.url
+            TVAuthDiagnostics.record(
+                "Continuing with \(callbackResult.source.rawValue) using \(summarizeOAuthCallback(callbackURL))"
+            )
+            if callbackResult.source == .loopbackServer {
+                TVAuthDiagnostics.record(
+                    "If the sign-in sheet stays open on Apple TV, dismiss it with Back or Menu after returning to OpenNOW."
+                )
+            }
+            return try await completeOAuthLogin(pending, callbackURL: callbackURL)
+        } catch {
+            callbackServer.stop()
+            TVAuthDiagnostics.record("Sign-in callback failed: \(error.localizedDescription)")
+            throw error
+        }
+    }
+    #endif
+
+    private func makePendingOAuthLogin(with provider: LoginProvider, deviceId: String) -> PendingOAuthLogin {
         let pkce = Self.generatePKCE()
         let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let redirectUri = GFNConstants.oauthRedirectUri
+        TVAuthDiagnostics.record(
+            "Starting sign-in provider=\(provider.displayName) redirect=\(redirectUri)"
+        )
         var authComponents = URLComponents(url: GFNConstants.authEndpoint, resolvingAgainstBaseURL: false)!
         authComponents.queryItems = [
             .init(name: "response_type", value: "code"),
@@ -695,27 +1089,21 @@ private actor GFNAPIClient {
             .init(name: "idp_id", value: provider.idpId)
         ]
 
-        let authUrl = authComponents.url!
+        return PendingOAuthLogin(
+            provider: provider,
+            redirectUri: redirectUri,
+            codeVerifier: pkce.verifier,
+            authURL: authComponents.url!
+        )
+    }
 
-        let callbackServer = OAuthLoopbackServer()
-        let serverTask = Task<URL, Error> {
-            try await callbackServer.waitForCallback(port: GFNConstants.oauthRedirectPort)
-        }
-
-        let callbackURL: URL
-        do {
-            callbackURL = try await performOAuthSession(url: authUrl, callbackScheme: GFNConstants.oauthCallbackScheme)
-            serverTask.cancel()
-        } catch {
-            callbackServer.stop()
-            serverTask.cancel()
-            throw error
-        }
-        let callbackQueryItems = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    private func completeOAuthLogin(_ pending: PendingOAuthLogin, callbackURL: URL) async throws -> AuthSession {
+        let callbackQueryItems = oauthCallbackQueryItems(from: callbackURL)
         if let oauthError = callbackQueryItems.first(where: { $0.name == "error" })?.value {
             let oauthErrorDescription =
                 callbackQueryItems.first(where: { $0.name == "error_description" })?.value ??
                 "Authentication failed."
+            TVAuthDiagnostics.record("OAuth provider returned error=\(oauthError)")
             throw NSError(
                 domain: "OpenNOW.Auth",
                 code: 8,
@@ -723,32 +1111,48 @@ private actor GFNAPIClient {
             )
         }
         guard let authCode = callbackQueryItems.first(where: { $0.name == "code" })?.value else {
-            throw NSError(domain: "OpenNOW.Auth", code: 3, userInfo: [NSLocalizedDescriptionKey: "Sign-in callback did not include an authorization code"])
+            TVAuthDiagnostics.record("Callback did not include an authorization code.")
+            throw NSError(
+                domain: "OpenNOW.Auth",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Sign-in callback did not include an authorization code"]
+            )
         }
 
         let tokenBody = URLQueryItemEncoder.encode([
             "grant_type": "authorization_code",
             "code": authCode,
-            "redirect_uri": redirectUri,
-            "code_verifier": pkce.verifier
+            "redirect_uri": pending.redirectUri,
+            "code_verifier": pending.codeVerifier
         ])
 
         var tokenHeaders = headersForOAuth()
         tokenHeaders["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+        TVAuthDiagnostics.record("Exchanging authorization code for tokens.")
         let (tokenData, tokenResponse) = try await request(
             url: GFNConstants.tokenEndpoint,
             method: "POST",
             headers: tokenHeaders,
             body: tokenBody.data(using: String.Encoding.utf8)
         )
+        TVAuthDiagnostics.record("Token exchange returned HTTP \(tokenResponse.statusCode).")
         guard tokenResponse.statusCode == 200 else {
             let body = String(data: tokenData, encoding: .utf8) ?? "unknown error"
-            throw NSError(domain: "OpenNOW.Auth", code: tokenResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Token exchange failed: \(body)"])
+            throw NSError(
+                domain: "OpenNOW.Auth",
+                code: tokenResponse.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "Token exchange failed: \(body)"]
+            )
         }
 
         let tokenJSON = try parseJSON(tokenData)
         guard let accessToken = tokenJSON["access_token"] as? String else {
-            throw NSError(domain: "OpenNOW.Auth", code: 4, userInfo: [NSLocalizedDescriptionKey: "OAuth response missing access token"])
+            TVAuthDiagnostics.record("OAuth token response was missing access_token.")
+            throw NSError(
+                domain: "OpenNOW.Auth",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "OAuth response missing access token"]
+            )
         }
         let refreshToken = tokenJSON["refresh_token"] as? String
         let idToken = tokenJSON["id_token"] as? String
@@ -762,7 +1166,9 @@ private actor GFNAPIClient {
             clientTokenExpiresAt: nil
         )
 
+        TVAuthDiagnostics.record("Loading NVIDIA user profile.")
         var user = try await fetchUser(tokens: tokens)
+        TVAuthDiagnostics.record("User profile loaded.")
         if let freshClientToken = try? await requestClientToken(accessToken: accessToken) {
             tokens = AuthTokens(
                 accessToken: tokens.accessToken,
@@ -772,19 +1178,92 @@ private actor GFNAPIClient {
                 clientToken: freshClientToken.token,
                 clientTokenExpiresAt: freshClientToken.expiresAt
             )
+            TVAuthDiagnostics.record("Client token refreshed.")
         }
-        if let tier = try? await fetchMembershipTier(token: idToken ?? accessToken, userId: user.userId, streamingBaseUrl: provider.streamingServiceUrl) {
+        if let tier = try? await fetchMembershipTier(
+            token: idToken ?? accessToken,
+            userId: user.userId,
+            streamingBaseUrl: pending.provider.streamingServiceUrl
+        ) {
             user.membershipTier = tier
+            TVAuthDiagnostics.record("Membership tier loaded.")
         }
 
-        return AuthSession(provider: provider, tokens: tokens, user: user)
+        TVAuthDiagnostics.record("Sign-in finished successfully.")
+        return AuthSession(provider: pending.provider, tokens: tokens, user: user)
     }
 
     @MainActor
-    private func performOAuthSession(url: URL, callbackScheme: String) async throws -> URL {
+    private static func performOAuthSession(url: URL, callbackScheme: String) async throws -> URL {
         let authenticator = OAuthWebAuthenticator()
         return try await authenticator.authenticate(url: url, callbackScheme: callbackScheme)
     }
+
+    #if os(tvOS)
+    private func awaitTVOSOAuthCallback(
+        authUrl: URL,
+        callbackServer: OAuthLoopbackServer,
+        authenticate: @escaping TVOSOAuthPresenter
+    ) async throws -> (source: OAuthCallbackSource, url: URL) {
+        try await withCheckedThrowingContinuation { continuation in
+            let coordinator = OAuthCallbackCoordinator(continuation: continuation)
+
+            Task {
+                do {
+                    let callbackURL = try await callbackServer.waitForCallback(port: GFNConstants.oauthRedirectPort)
+                    guard oauthCallbackHasResult(callbackURL) else {
+                        let error = NSError(
+                            domain: "OpenNOW.Auth",
+                            code: 14,
+                            userInfo: [NSLocalizedDescriptionKey: "Loopback callback was missing expected OAuth parameters."]
+                        )
+                        if await coordinator.fail(source: .loopbackServer, error: error) {
+                            TVAuthDiagnostics.record(
+                                "Loopback callback missing OAuth parameters: \(summarizeOAuthCallback(callbackURL))"
+                            )
+                        }
+                        return
+                    }
+                    if await coordinator.succeed(source: .loopbackServer, url: callbackURL) {
+                        TVAuthDiagnostics.record("Loopback callback won the race.")
+                    }
+                } catch {
+                    if await coordinator.fail(source: .loopbackServer, error: error) {
+                        TVAuthDiagnostics.record("Loopback listener ended: \(error.localizedDescription)")
+                    }
+                }
+            }
+
+            Task { @MainActor in
+                do {
+                    TVAuthDiagnostics.record("Launching tvOS WebAuthenticationSession.")
+                    let callbackURL = try await authenticate(authUrl, GFNConstants.oauthCallbackScheme)
+                    guard oauthCallbackHasResult(callbackURL) else {
+                        let error = NSError(
+                            domain: "OpenNOW.Auth",
+                            code: 15,
+                            userInfo: [NSLocalizedDescriptionKey: "ASWebAuthenticationSession returned an unexpected callback URL."]
+                        )
+                        if await coordinator.fail(source: .authSession, error: error) {
+                            TVAuthDiagnostics.record(
+                                "Auth session callback missing OAuth parameters: \(summarizeOAuthCallback(callbackURL))"
+                            )
+                        }
+                        return
+                    }
+                    if await coordinator.succeed(source: .authSession, url: callbackURL) {
+                        TVAuthDiagnostics.record("ASWebAuthenticationSession won the race.")
+                        callbackServer.stop()
+                    }
+                } catch {
+                    if await coordinator.fail(source: .authSession, error: error) {
+                        TVAuthDiagnostics.record("Auth session ended before localhost callback: \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+    }
+    #endif
 
     func refreshSession(_ session: AuthSession) async throws -> AuthSession {
         let nowEpoch = Date().timeIntervalSince1970
@@ -898,13 +1377,15 @@ private actor GFNAPIClient {
         let vpcId = serverInfo.vpcId ?? "GFN-PC"
         let payload = try await fetchPanels(token: token, panelNames: ["MAIN"], vpcId: vpcId)
         let games = Self.flattenPanels(payload: payload)
-        return (games, vpcId)
+        let enrichedGames = (try? await enrichGamesWithMetadata(token: token, vpcId: vpcId, games: games)) ?? games
+        return (enrichedGames, vpcId)
     }
 
     func fetchLibraryGames(session: AuthSession, vpcId: String) async throws -> [CloudGame] {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let payload = try await fetchPanels(token: token, panelNames: ["LIBRARY"], vpcId: vpcId)
-        return Self.flattenPanels(payload: payload)
+        let games = Self.flattenPanels(payload: payload)
+        return (try? await enrichGamesWithMetadata(token: token, vpcId: vpcId, games: games)) ?? games
     }
 
     func fetchSubscription(session: AuthSession, vpcId: String) async throws -> SubscriptionSnapshot {
@@ -962,8 +1443,8 @@ private actor GFNAPIClient {
             throw NSError(domain: "OpenNOW.Session", code: 30, userInfo: [NSLocalizedDescriptionKey: "Selected game has no launch app ID"])
         }
         let token = session.tokens.idToken ?? session.tokens.accessToken
-        let base = streamingBaseUrl.map { $0.hasSuffix("/") ? String($0.dropLast()) : $0 }
-            ?? "https://\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
+        let baseSource = streamingBaseUrl ?? session.provider.streamingServiceUrl
+        let base = baseSource.hasSuffix("/") ? String(baseSource.dropLast()) : baseSource
         let deviceProfile = Self.streamDeviceProfile(for: game.title, settings: settings)
         let url = URL(string: "\(base)/v2/session?keyboardLayout=en-US&languageCode=en_US")!
         let body = Self.buildSessionBody(
@@ -1004,7 +1485,7 @@ private actor GFNAPIClient {
         let queue = sessionObj["queuePosition"] as? Int
         let seatSetupStep = Self.extractSeatSetupStep(sessionObj: sessionObj)
         let control = sessionObj["sessionControlInfo"] as? [String: Any]
-        let serverIp = Self.extractServerIp(sessionObj: sessionObj) ?? (control?["ip"] as? String)
+        let serverIp = Self.extractServerIp(sessionObj: sessionObj) ?? normalizedEndpointHost(from: control?["ip"])
         let mediaConnectionInfo = Self.extractMediaConnectionInfo(sessionObj: sessionObj)
         let signaling = Self.resolveSignaling(sessionObj: sessionObj, fallbackServerIp: serverIp)
         let iceServers = Self.extractIceServers(sessionObj: sessionObj)
@@ -1408,10 +1889,10 @@ private actor GFNAPIClient {
     }
 
     private static func remoteSessionTargetHost(serverIp: String?, streamingBaseUrl: String, vpcId: String) -> String {
-        if let serverIp, !serverIp.isEmpty {
+        if let serverIp = normalizedEndpointHost(from: serverIp) {
             return serverIp
         }
-        if let host = URL(string: normalizedStreamingBase(streamingBaseUrl, vpcId: vpcId))?.host, !host.isEmpty {
+        if let host = normalizedEndpointHost(from: URL(string: normalizedStreamingBase(streamingBaseUrl, vpcId: vpcId))?.host) {
             return host
         }
         return "\(vpcId.lowercased()).cloudmatchbeta.nvidiagrid.net"
@@ -1434,25 +1915,22 @@ private actor GFNAPIClient {
     private static func extractServerIp(sessionObj: [String: Any]) -> String? {
         if let connections = sessionObj["connectionInfo"] as? [[String: Any]] {
             if let usage14 = connections.first(where: { ($0["usage"] as? Int) == 14 }) {
-                if let ip = usage14["ip"] as? String, !ip.isEmpty {
+                if let ip = normalizedEndpointHost(from: usage14["ip"]) {
                     return ip
                 }
-                if let ips = usage14["ip"] as? [String], let first = ips.first, !first.isEmpty {
-                    return first
+                if let resourceHost = normalizedEndpointHost(from: usage14["resourcePath"]) {
+                    return resourceHost
                 }
             }
             if let any = connections.first {
-                if let ip = any["ip"] as? String, !ip.isEmpty {
+                if let ip = normalizedEndpointHost(from: any["ip"]) {
                     return ip
                 }
             }
         }
         if let control = sessionObj["sessionControlInfo"] as? [String: Any] {
-            if let ip = control["ip"] as? String, !ip.isEmpty {
+            if let ip = normalizedEndpointHost(from: control["ip"]) {
                 return ip
-            }
-            if let ips = control["ip"] as? [String], let first = ips.first, !first.isEmpty {
-                return first
             }
         }
         return nil
@@ -1463,15 +1941,10 @@ private actor GFNAPIClient {
         let fallbackServerIp = extractServerIp(sessionObj: sessionObj)
 
         func extractIp(from connection: [String: Any]) -> String? {
-            if let ip = connection["ip"] as? String, !ip.isEmpty {
+            if let ip = normalizedEndpointHost(from: connection["ip"]) {
                 return ip
             }
-            if let ips = connection["ip"] as? [String], let first = ips.first, !first.isEmpty {
-                return first
-            }
-            if let resourcePath = connection["resourcePath"] as? String,
-               let host = URL(string: resourcePath.replacingOccurrences(of: "rtsps://", with: "https://").replacingOccurrences(of: "rtsp://", with: "http://"))?.host,
-               !host.isEmpty {
+            if let host = normalizedEndpointHost(from: connection["resourcePath"]) {
                 return host
             }
             return nil
@@ -1652,27 +2125,18 @@ private actor GFNAPIClient {
         let connections = sessionObj["connectionInfo"] as? [[String: Any]] ?? []
         let signalingConnection = connections.first(where: { ($0["usage"] as? Int) == 14 }) ?? connections.first
         let resourcePath = signalingConnection?["resourcePath"] as? String ?? "/nvst/"
-        let serverIp = fallbackServerIp ?? extractServerIp(sessionObj: sessionObj)
+        let serverIp = normalizedEndpointHost(from: fallbackServerIp) ?? extractServerIp(sessionObj: sessionObj)
         guard let serverIp, !serverIp.isEmpty else {
             return (nil, nil)
         }
 
         if resourcePath.hasPrefix("rtsps://") || resourcePath.hasPrefix("rtsp://") {
-            let withoutScheme = resourcePath.replacingOccurrences(of: "rtsps://", with: "").replacingOccurrences(of: "rtsp://", with: "")
-            let hostAndPath = withoutScheme
-                .split(separator: "/", maxSplits: 1)
-                .first
-                .map { String($0) }
-            let host = hostAndPath?
-                .split(separator: ":", maxSplits: 1)
-                .first
-                .map { String($0) }
-            if let host, !host.isEmpty {
+            if let host = normalizedEndpointHost(from: resourcePath) {
                 return (host, "wss://\(host)/nvst/")
             }
             return (serverIp, "wss://\(serverIp):443/nvst/")
         }
-        if resourcePath.hasPrefix("wss://"), let host = URL(string: resourcePath)?.host {
+        if resourcePath.hasPrefix("wss://"), let host = normalizedEndpointHost(from: resourcePath) {
             return (host, resourcePath)
         }
         if resourcePath.hasPrefix("/") {
@@ -1776,6 +2240,82 @@ private actor GFNAPIClient {
             throw NSError(domain: "OpenNOW.Games", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
         }
         return try parseJSON(data)
+    }
+
+    private func fetchAppMetadata(token: String, appIds: [String], vpcId: String) async throws -> [String: Any] {
+        let uniqueAppIds = Array(Set(appIds.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }))
+        guard !uniqueAppIds.isEmpty else {
+            return ["data": ["apps": ["items": []]]]
+        }
+        let variablesData: [String: Any] = [
+            "vpcId": vpcId,
+            "locale": "en_US",
+            "appIds": uniqueAppIds
+        ]
+        let variables = String(data: try JSONSerialization.data(withJSONObject: variablesData), encoding: .utf8) ?? "{}"
+        let extensionsData: [String: Any] = ["persistedQuery": ["sha256Hash": GFNConstants.appMetadataQueryHash]]
+        let extensions = String(data: try JSONSerialization.data(withJSONObject: extensionsData), encoding: .utf8) ?? "{}"
+        var components = URLComponents(string: GFNConstants.graphQL)!
+        components.queryItems = [
+            .init(name: "requestType", value: "appMetaData"),
+            .init(name: "extensions", value: extensions),
+            .init(name: "huId", value: UUID().uuidString.replacingOccurrences(of: "-", with: "")),
+            .init(name: "variables", value: variables)
+        ]
+        let (data, response) = try await request(
+            url: components.url!,
+            headers: [
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/graphql",
+                "Origin": "https://play.geforcenow.com",
+                "Referer": "https://play.geforcenow.com/",
+                "Authorization": "GFNJWT \(token)",
+                "nv-client-id": GFNConstants.lcarsClientId,
+                "nv-client-type": "NATIVE",
+                "nv-client-version": GFNConstants.gfnClientVersion,
+                "nv-client-streamer": "NVIDIA-CLASSIC",
+                "nv-device-os": "WINDOWS",
+                "nv-device-type": "DESKTOP",
+                "nv-device-make": "UNKNOWN",
+                "nv-device-model": "UNKNOWN",
+                "nv-browser-type": "CHROME",
+                "User-Agent": GFNConstants.userAgent
+            ]
+        )
+        guard response.statusCode == 200 else {
+            let text = String(data: data, encoding: .utf8) ?? "unknown"
+            throw NSError(domain: "OpenNOW.GameMetadata", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
+        }
+        return try parseJSON(data)
+    }
+
+    private func enrichGamesWithMetadata(token: String, vpcId: String, games: [CloudGame]) async throws -> [CloudGame] {
+        let appIds = Array(Set(games.compactMap(\.uuid)))
+        guard !appIds.isEmpty else { return games }
+
+        var metadataById: [String: [String: Any]] = [:]
+        let chunkSize = 40
+        for start in stride(from: 0, to: appIds.count, by: chunkSize) {
+            let chunk = Array(appIds[start..<min(start + chunkSize, appIds.count)])
+            let payload = try await fetchAppMetadata(token: token, appIds: chunk, vpcId: vpcId)
+            if let errors = payload["errors"] as? [[String: Any]], !errors.isEmpty {
+                let message = errors.compactMap { $0["message"] as? String }.joined(separator: ", ")
+                throw NSError(domain: "OpenNOW.GameMetadata", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+            let data = payload["data"] as? [String: Any]
+            let apps = data?["apps"] as? [String: Any]
+            let items = apps?["items"] as? [[String: Any]] ?? []
+            for app in items {
+                if let id = app["id"] as? String {
+                    metadataById[id] = app
+                }
+            }
+        }
+
+        return games.map { game in
+            guard let uuid = game.uuid, let app = metadataById[uuid] else { return game }
+            return Self.mergeGameMetadata(game: game, app: app)
+        }
     }
 
     private func fetchUser(tokens: AuthTokens) async throws -> UserProfile {
@@ -1894,7 +2434,8 @@ private actor GFNAPIClient {
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         let option = GameLaunchOption(
                             storefront: storefront.isEmpty ? "Auto" : storefront,
-                            appId: variantId
+                            appId: variantId,
+                            supportedControls: toOptionalStringArray(variant["supportedControls"])
                         )
                         if seenLaunchOptionIds.insert(option.id).inserted {
                             launchOptions.append(option)
@@ -1905,7 +2446,8 @@ private actor GFNAPIClient {
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         let defaultOption = GameLaunchOption(
                             storefront: selectedStore.isEmpty ? "Auto" : selectedStore,
-                            appId: launchAppId
+                            appId: launchAppId,
+                            supportedControls: toOptionalStringArray(selectedVariant?["supportedControls"])
                         )
                         if seenLaunchOptionIds.insert(defaultOption.id).inserted {
                             launchOptions.insert(defaultOption, at: 0)
@@ -1949,11 +2491,15 @@ private actor GFNAPIClient {
                             launchOptions: launchOptions,
                             uuid: appId,
                             summary: metadata.summary,
+                            longDescription: metadata.longDescription,
                             publisher: metadata.publisher,
                             developer: metadata.developer,
                             releaseDate: metadata.releaseDate,
+                            featureLabels: metadata.featureLabels,
                             tags: metadata.tags,
-                            stores: metadata.stores
+                            stores: metadata.stores,
+                            playType: metadata.playType,
+                            membershipTierLabel: metadata.membershipTierLabel
                         )
                     )
                 }
@@ -1968,16 +2514,23 @@ private actor GFNAPIClient {
         launchOptions: [GameLaunchOption]
     ) -> (
         summary: String?,
+        longDescription: String?,
         publisher: String?,
         developer: String?,
         releaseDate: String?,
+        featureLabels: [String]?,
         tags: [String]?,
-        stores: [String]?
+        stores: [String]?,
+        playType: String?,
+        membershipTierLabel: String?
     ) {
         let summary = toOptionalString(app["description"])
             ?? toOptionalString(app["shortDescription"])
             ?? toOptionalString(app["tagLine"])
             ?? toOptionalString(app["synopsis"])
+        let longDescription = toOptionalString(app["longDescription"])
+            ?? toOptionalString(app["fullDescription"])
+            ?? toOptionalString(app["localizedDescription"])
         let publisher = toOptionalString(app["publisher"])
             ?? toOptionalString((app["publisherInfo"] as? [String: Any])?["name"])
             ?? toOptionalString((app["publisherInfo"] as? [String: Any])?["displayName"])
@@ -1992,18 +2545,108 @@ private actor GFNAPIClient {
             .compactMap { toOptionalString($0["name"]) }
         let tagNames = toOptionalStringArray(app["tags"])
             ?? toOptionalStringArray(app["keywords"])
+        let featureLabels = extractFeatureLabels(app: app)
         let mergedTags = Array(Set((genreNames + (tagNames ?? [])))).sorted()
         let stores = Array(
             Set(launchOptions.map(\.storefront).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
         )
+        let gfn = app["gfn"] as? [String: Any]
         return (
             summary: summary,
+            longDescription: longDescription,
             publisher: publisher,
             developer: developer,
             releaseDate: releaseDate,
+            featureLabels: featureLabels.isEmpty ? nil : featureLabels,
             tags: mergedTags.isEmpty ? nil : mergedTags,
-            stores: stores.isEmpty ? nil : stores.sorted()
+            stores: stores.isEmpty ? nil : stores.sorted(),
+            playType: toOptionalString(gfn?["playType"]),
+            membershipTierLabel: toOptionalString(gfn?["minimumMembershipTierLabel"])
         )
+    }
+
+    private static func mergeGameMetadata(game: CloudGame, app: [String: Any]) -> CloudGame {
+        let metadata = extractGameMetadata(
+            app: app,
+            selectedVariant: selectedVariant(for: game, app: app),
+            launchOptions: launchOptions(for: game, app: app)
+        )
+        let imageUrl: String? = {
+            guard let images = app["images"] as? [String: Any] else { return game.imageUrl }
+            let raw = (images["GAME_BOX_ART"] as? String)
+                ?? (images["TV_BANNER"] as? String)
+                ?? (images["HERO_IMAGE"] as? String)
+            return optimizedImageURL(raw) ?? game.imageUrl
+        }()
+
+        return CloudGame(
+            id: game.id,
+            title: toOptionalString(app["title"]) ?? game.title,
+            genre: game.genre,
+            platform: game.platform,
+            icon: game.icon,
+            imageUrl: imageUrl,
+            launchAppId: game.launchAppId,
+            launchOptions: launchOptions(for: game, app: app),
+            uuid: game.uuid,
+            summary: metadata.summary ?? game.summary,
+            longDescription: metadata.longDescription ?? game.longDescription,
+            publisher: metadata.publisher ?? game.publisher,
+            developer: metadata.developer ?? game.developer,
+            releaseDate: metadata.releaseDate ?? game.releaseDate,
+            featureLabels: metadata.featureLabels ?? game.featureLabels,
+            tags: metadata.tags ?? game.tags,
+            stores: metadata.stores ?? game.stores,
+            playType: metadata.playType ?? game.playType,
+            membershipTierLabel: metadata.membershipTierLabel ?? game.membershipTierLabel
+        )
+    }
+
+    private static func selectedVariant(for game: CloudGame, app: [String: Any]) -> [String: Any]? {
+        let variants = app["variants"] as? [[String: Any]] ?? []
+        if let selected = variants.first(where: { (($0["gfn"] as? [String: Any])?["library"] as? [String: Any])?["selected"] as? Bool == true }) {
+            return selected
+        }
+        if let launchAppId = game.launchAppId,
+           let matching = variants.first(where: { ($0["id"] as? String) == launchAppId }) {
+            return matching
+        }
+        return variants.first
+    }
+
+    private static func launchOptions(for game: CloudGame, app: [String: Any]) -> [GameLaunchOption] {
+        let variants = app["variants"] as? [[String: Any]] ?? []
+        guard !variants.isEmpty else { return game.launchOptions }
+        var options: [GameLaunchOption] = []
+        var seen = Set<String>()
+        for variant in variants {
+            guard let variantId = variant["id"] as? String,
+                  Int(variantId) != nil else {
+                continue
+            }
+            let storefront = ((variant["appStore"] as? String) ?? "Auto")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let option = GameLaunchOption(
+                storefront: storefront.isEmpty ? "Auto" : storefront,
+                appId: variantId,
+                supportedControls: toOptionalStringArray(variant["supportedControls"])
+            )
+            if seen.insert(option.id).inserted {
+                options.append(option)
+            }
+        }
+        return options.isEmpty ? game.launchOptions : options
+    }
+
+    private static func extractFeatureLabels(app: [String: Any]) -> [String] {
+        let buckets = [
+            app["features"],
+            app["gameFeatures"],
+            app["appFeatures"],
+            app["tags"]
+        ]
+        let labels = buckets.flatMap { toOptionalStringArray($0) ?? [] }
+        return Array(Set(labels)).sorted()
     }
 
     private static func toOptionalStringArray(_ value: Any?) -> [String]? {
@@ -2042,7 +2685,7 @@ private actor GFNAPIClient {
     private static func optimizedImageURL(_ raw: String?) -> String? {
         guard let raw, !raw.isEmpty else { return nil }
         guard raw.contains("img.nvidiagrid.net") else { return raw }
-        return "\(raw);f=webp;w=320"
+        return "\(raw)"
     }
 
     private static func cloudMatchHeaders(
@@ -2280,6 +2923,9 @@ final class OpenNOWStore: ObservableObject {
     @Published var streamSession: ActiveSession?
     @Published var lastError: String?
     @Published var isBootstrapping: Bool = true
+    #if os(tvOS)
+    @Published private(set) var tvAuthLogs: [String] = []
+    #endif
 
     private let api = GFNAPIClient()
     private let logger = Logger(subsystem: "OpenNOWiOS", category: "Session")
@@ -2288,12 +2934,19 @@ final class OpenNOWStore: ObservableObject {
     private var telemetryTask: Task<Void, Never>?
     private var sessionPollTask: Task<Void, Never>?
     private var launchTask: Task<Void, Never>?
+    #if os(tvOS)
+    private var sessionPollBackgroundTaskActive = false
+    #else
     private var sessionPollBackgroundTaskId: UIBackgroundTaskIdentifier = .invalid
+    #endif
     private var cachedVpcId: String = "GFN-PC"
     private var adReportStateById: [String: SessionAdAction] = [:]
     private var adStartedAtById: [String: Date] = [:]
     private var reopenToken: UUID = UUID()
     private var currentScenePhase: ScenePhase = .active
+    #if os(tvOS)
+    private var tvAuthLogObserver: NSObjectProtocol?
+    #endif
 
     private let settingsKey = "OpenNOW.iOS.settings"
     private let authSessionKey = "OpenNOW.iOS.authSession"
@@ -2312,13 +2965,33 @@ final class OpenNOWStore: ObservableObject {
         user = authSession?.user
         showStreamLoading = activeSession != nil
         syncTrackedSessionSurface()
+        #if os(tvOS)
+        tvAuthLogObserver = NotificationCenter.default.addObserver(
+            forName: TVAuthDiagnostics.notificationName,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let message = notification.userInfo?["message"] as? String else { return }
+            Task { @MainActor [weak self] in
+                self?.appendTVAuthLog(message)
+            }
+        }
+        #endif
     }
 
     deinit {
         launchTask?.cancel()
         telemetryTask?.cancel()
         sessionPollTask?.cancel()
+        #if os(tvOS)
+        if let tvAuthLogObserver {
+            NotificationCenter.default.removeObserver(tvAuthLogObserver)
+        }
+        #endif
     }
+
+    var supportsNativeOAuth: Bool { OpenNOWPlatform.supportsNativeOAuth }
+    var supportsEmbeddedStreamer: Bool { OpenNOWPlatform.supportsEmbeddedStreamer }
 
     func bootstrap() async {
         defer { isBootstrapping = false }
@@ -2345,6 +3018,14 @@ final class OpenNOWStore: ObservableObject {
         lastError = nil
         isAuthenticating = true
         defer { isAuthenticating = false }
+        #if os(tvOS)
+        clearTVAuthLogs()
+        #endif
+
+        guard supportsNativeOAuth else {
+            lastError = OpenNOWPlatform.authUnavailableReason
+            return
+        }
 
         let provider = providers.first(where: { $0.idpId == settings.selectedProviderIdpId }) ?? GFNConstants.defaultProvider
         do {
@@ -2354,9 +3035,35 @@ final class OpenNOWStore: ObservableObject {
             persistAuthSession(session)
             await refreshCatalog()
         } catch {
+            TVAuthDiagnostics.record("Store sign-in failed: \(error.localizedDescription)")
             lastError = "Sign in failed: \(error.localizedDescription)"
         }
     }
+
+    #if os(tvOS)
+    func signInOnTVOS(authenticate: @escaping TVOSOAuthPresenter) async {
+        lastError = nil
+        isAuthenticating = true
+        defer { isAuthenticating = false }
+        clearTVAuthLogs()
+
+        let provider = providers.first(where: { $0.idpId == settings.selectedProviderIdpId }) ?? GFNConstants.defaultProvider
+        do {
+            let session = try await api.login(
+                with: provider,
+                deviceId: persistentDeviceId(),
+                authenticate: authenticate
+            )
+            authSession = session
+            user = session.user
+            persistAuthSession(session)
+            await refreshCatalog()
+        } catch {
+            TVAuthDiagnostics.record("Store sign-in failed: \(error.localizedDescription)")
+            lastError = "Sign in failed: \(error.localizedDescription)"
+        }
+    }
+    #endif
 
     func signOut() {
         Task { await NotificationManager.shared.cancelSessionNotifications() }
@@ -2422,6 +3129,10 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func launch(game: CloudGame, zoneUrl: String? = nil, launchOption: GameLaunchOption? = nil) async {
+        guard supportsEmbeddedStreamer else {
+            lastError = OpenNOWPlatform.streamingUnavailableReason
+            return
+        }
         guard let session = authSession else {
             lastError = "Sign in first."
             return
@@ -2509,6 +3220,10 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func resumeSession(candidate: RemoteSessionCandidate) async {
+        guard supportsEmbeddedStreamer else {
+            lastError = OpenNOWPlatform.streamingUnavailableReason
+            return
+        }
         guard let session = authSession else {
             lastError = "Sign in first."
             return
@@ -2608,6 +3323,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     var canReopenStreamer: Bool {
+        guard supportsEmbeddedStreamer else { return false }
         guard let active = activeSession else { return false }
         return streamSession == nil && isReadyForStreamer(active)
     }
@@ -2697,6 +3413,10 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func reopenStreamer() {
+        guard supportsEmbeddedStreamer else {
+            lastError = OpenNOWPlatform.streamingUnavailableReason
+            return
+        }
         guard let active = activeSession, isReadyForStreamer(active) else { return }
         launchTask?.cancel()
         launchTask = Task { await self.reopenCurrentSession(active) }
@@ -2705,6 +3425,7 @@ final class OpenNOWStore: ObservableObject {
     /// Schedule a streamer reopen with a 0.8s delay.
     /// Automatically aborts if a new session starts before the delay completes.
     func scheduleStreamerReopen() {
+        guard supportsEmbeddedStreamer else { return }
         let token = UUID()
         reopenToken = token
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
@@ -2726,6 +3447,11 @@ final class OpenNOWStore: ObservableObject {
 
     func updateTouchControlLayout(_ layout: TouchControlLayout, profile: String) {
         settings.touchControlLayouts[profile] = layout
+        persistSettings()
+    }
+
+    func updateStreamerPreferences(_ preferences: StreamerPreferences) {
+        settings.streamerPreferences = preferences
         persistSettings()
     }
 
@@ -2836,6 +3562,17 @@ final class OpenNOWStore: ObservableObject {
                         && readyHoldElapsed >= requiredReadyHoldSeconds
                         && !loggedReadyForStreamer
                     {
+                        if !self.supportsEmbeddedStreamer {
+                            self.logger.notice(
+                                "Session ready but embedded streamer unavailable on \(OpenNOWPlatform.displayName, privacy: .public)."
+                            )
+                            self.lastError = OpenNOWPlatform.streamingUnavailableReason
+                            self.showStreamLoading = false
+                            self.queueOverlayVisible = false
+                            self.syncTrackedSessionSurface()
+                            self.sessionPollTask?.cancel()
+                            continue
+                        }
                         let handoffSession = await self.prepareSessionForStreamer(polled)
                         self.logger.notice(
                             "Session ready for streamer handoff id=\(handoffSession.id, privacy: .public) status=\(handoffSession.status) readyStreak=\(readyPollStreak) readyHoldSeconds=\(Int(readyHoldElapsed)). Presenting iOS streamer."
@@ -2924,7 +3661,7 @@ final class OpenNOWStore: ObservableObject {
 
     private func hasUsableSignalingEndpoint(_ session: ActiveSession) -> Bool {
         let signalingUrl = session.signalingUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !signalingUrl.isEmpty, let parsed = URL(string: signalingUrl), let host = parsed.host, !host.isEmpty {
+        if !signalingUrl.isEmpty, let parsed = URL(string: signalingUrl), normalizedEndpointHost(from: signalingUrl) != nil {
             let scheme = (parsed.scheme ?? "").lowercased()
             if scheme == "wss" || scheme == "ws" || scheme == "rtsps" || scheme == "rtsp" || scheme == "https" {
                 return true
@@ -2933,26 +3670,22 @@ final class OpenNOWStore: ObservableObject {
 
         let signalingServer = session.signalingServer?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !signalingServer.isEmpty else { return false }
-        if let parsed = URL(string: "https://\(signalingServer)"), let host = parsed.host, !host.isEmpty {
+        if let parsed = URL(string: "https://\(signalingServer)"),
+           normalizedEndpointHost(from: parsed.host) != nil {
             return true
         }
-        // Fallback: treat plain host/ip (possibly with :port) as valid.
-        let hostOnly = signalingServer
-            .split(separator: ":", maxSplits: 1)
-            .first
-            .map { String($0) } ?? signalingServer
-        return !hostOnly.isEmpty
+        return normalizedEndpointHost(from: signalingServer) != nil
     }
 
     private func hasUsableMediaEndpoint(_ session: ActiveSession) -> Bool {
         guard session.mediaPort > 0 else { return false }
-        if let mediaIp = session.mediaIp?.trimmingCharacters(in: .whitespacesAndNewlines), !mediaIp.isEmpty {
+        if normalizedEndpointHost(from: session.mediaIp) != nil {
             return true
         }
-        if let serverIp = session.serverIp?.trimmingCharacters(in: .whitespacesAndNewlines), !serverIp.isEmpty {
+        if normalizedEndpointHost(from: session.serverIp) != nil {
             return true
         }
-        if let signalingServer = session.signalingServer?.trimmingCharacters(in: .whitespacesAndNewlines), !signalingServer.isEmpty {
+        if normalizedEndpointHost(from: session.signalingServer) != nil {
             return true
         }
         return false
@@ -3059,18 +3792,26 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func refreshSessionPollBackgroundTask() {
+        #if os(tvOS)
+        sessionPollBackgroundTaskActive = true
+        #else
         endSessionPollBackgroundTask()
         sessionPollBackgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "OpenNOW.SessionPoll") { [weak self] in
             Task { @MainActor [weak self] in
                 self?.endSessionPollBackgroundTask()
             }
         }
+        #endif
     }
 
     private func endSessionPollBackgroundTask() {
+        #if os(tvOS)
+        sessionPollBackgroundTaskActive = false
+        #else
         guard sessionPollBackgroundTaskId != .invalid else { return }
         UIApplication.shared.endBackgroundTask(sessionPollBackgroundTaskId)
         sessionPollBackgroundTaskId = .invalid
+        #endif
     }
 
     private func restoreTrackedSessionIfNeeded() {
@@ -3184,6 +3925,19 @@ final class OpenNOWStore: ObservableObject {
         streamSession = session
         syncTrackedSessionSurface()
     }
+
+    #if os(tvOS)
+    func clearTVAuthLogs() {
+        tvAuthLogs.removeAll(keepingCapacity: true)
+    }
+
+    private func appendTVAuthLog(_ message: String) {
+        tvAuthLogs.append(message)
+        if tvAuthLogs.count > 60 {
+            tvAuthLogs.removeFirst(tvAuthLogs.count - 60)
+        }
+    }
+    #endif
 
     private static func loadSettings(from defaults: UserDefaults) -> AppSettings? {
         guard let data = defaults.data(forKey: "OpenNOW.iOS.settings") else { return nil }

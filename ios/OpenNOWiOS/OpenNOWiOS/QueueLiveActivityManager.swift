@@ -1,3 +1,4 @@
+#if canImport(ActivityKit)
 import ActivityKit
 import Foundation
 import OSLog
@@ -58,3 +59,23 @@ final class QueueLiveActivityManager {
         }
     }
 }
+#else
+import Foundation
+
+@MainActor
+final class QueueLiveActivityManager {
+    static let shared = QueueLiveActivityManager()
+
+    private init() {}
+
+    func sync(
+        sessionId: String?,
+        gameTitle: String?,
+        state: QueueActivityAttributes.ContentState?
+    ) async {
+    }
+
+    func endAll() async {
+    }
+}
+#endif

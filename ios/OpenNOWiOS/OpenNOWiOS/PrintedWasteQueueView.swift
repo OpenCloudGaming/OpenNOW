@@ -1,4 +1,5 @@
 import SwiftUI
+import Network
 
 struct GameLaunchRequest: Identifiable, Equatable {
     let game: CloudGame
@@ -166,7 +167,7 @@ struct PrintedWasteQueueView: View {
                                         }
                                         .buttonStyle(.plain)
                                         .padding(12)
-                                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                                        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14))
                                         .overlay(
                                             RoundedRectangle(cornerRadius: 14)
                                                 .stroke(.white.opacity(0.14), lineWidth: 1)
@@ -182,7 +183,6 @@ struct PrintedWasteQueueView: View {
             }
             .animation(.spring(response: 0.35), value: isLoading)
             .navigationTitle("Choose Server")
-            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") {
@@ -345,14 +345,14 @@ struct PrintedWasteQueueView: View {
     }
 
     private func measurePings() async {
-        let maxConcurrentPings = 6
+        let maxConcurrentPings = 16
         guard !zones.isEmpty else { return }
 
         for start in stride(from: 0, to: zones.count, by: maxConcurrentPings) {
             let end = min(start + maxConcurrentPings, zones.count)
             let batch = Array(zones[start..<end])
 
-            let results = await withTaskGroup(of: (String, Int?).self, returning: [(String, Int?)].self) { group in
+            await withTaskGroup(of: (String, Int?).self) { group in
                 for zone in batch {
                     group.addTask {
                         let ping = await Self.measurePing(to: zone.zoneUrl)
@@ -360,19 +360,20 @@ struct PrintedWasteQueueView: View {
                     }
                 }
 
-                var batchResults: [(String, Int?)] = []
-                for await result in group {
-                    batchResults.append(result)
+                for await (zoneId, pingMs) in group {
+                    if Task.isCancelled {
+                        group.cancelAll()
+                        break
+                    }
+                    if let index = zones.firstIndex(where: { $0.id == zoneId }) {
+                        zones[index].pingMs = pingMs
+                        zones[index].isMeasuring = false
+                    }
                 }
-                return batchResults
             }
 
-            let resultMap = Dictionary(uniqueKeysWithValues: results)
-            for i in zones.indices {
-                if let pingMs = resultMap[zones[i].id] {
-                    zones[i].pingMs = pingMs
-                    zones[i].isMeasuring = false
-                }
+            if Task.isCancelled {
+                return
             }
         }
         persistRoutingRecommendations()
@@ -385,15 +386,20 @@ struct PrintedWasteQueueView: View {
     }
 
     private static func measurePing(to zoneUrl: String) async -> Int? {
-        let warmups = 1
-        let measurements = 2
-        for _ in 0..<warmups {
-            _ = await headProbe(urlString: zoneUrl)
+        guard let url = URL(string: zoneUrl),
+              let host = url.host(),
+              let port = NWEndpoint.Port(rawValue: UInt16(url.port ?? (url.scheme == "https" ? 443 : 80))) else {
+            return nil
         }
 
+        _ = await tcpProbe(host: host, port: port, timeout: 3)
+
         var samples: [Double] = []
-        for _ in 0..<measurements {
-            if let sample = await headProbe(urlString: zoneUrl) {
+        for sampleIndex in 0..<3 {
+            if sampleIndex > 0 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            if let sample = await tcpProbe(host: host, port: port, timeout: 3) {
                 samples.append(sample)
             }
         }
@@ -403,17 +409,42 @@ struct PrintedWasteQueueView: View {
         return Int(average.rounded())
     }
 
-    private static func headProbe(urlString: String) async -> Double? {
-        guard let url = URL(string: urlString) else { return nil }
-        var request = URLRequest(url: url)
-        request.httpMethod = "HEAD"
-        request.timeoutInterval = 5
-        let start = Date()
-        do {
-            _ = try await URLSession.shared.data(for: request)
-            return Date().timeIntervalSince(start) * 1000
-        } catch {
-            return nil
+    private static func tcpProbe(host: String, port: NWEndpoint.Port, timeout: TimeInterval) async -> Double? {
+        await withCheckedContinuation { continuation in
+            let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
+            let start = Date()
+            let lock = NSLock()
+            var didFinish = false
+
+            func finish(_ sample: Double?) {
+                lock.lock()
+                guard !didFinish else {
+                    lock.unlock()
+                    return
+                }
+                didFinish = true
+                lock.unlock()
+
+                connection.stateUpdateHandler = nil
+                connection.cancel()
+                continuation.resume(returning: sample)
+            }
+
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    finish(Date().timeIntervalSince(start) * 1000)
+                case .failed, .cancelled:
+                    finish(nil)
+                default:
+                    break
+                }
+            }
+
+            connection.start(queue: .global(qos: .utility))
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                finish(nil)
+            }
         }
     }
 
@@ -497,17 +528,13 @@ private struct ZoneRow: View {
             .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .liquidBadgeBackground(tint: queueColor(zone.queuePosition), cornerRadius: 8)
+            .liquidBadgeBackground(tint: queueColor(zone.queuePosition).opacity(0.18), cornerRadius: 8)
     }
 
     private var pingBadge: some View {
         Group {
             if zone.isMeasuring {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("-- ms")
-                }
+                Text("Testing")
             } else if let pingMs = zone.pingMs {
                 Text("\(pingMs) ms")
             } else {
@@ -575,17 +602,14 @@ private struct PrintedWasteArtwork: View {
             RoundedRectangle(cornerRadius: 16)
                 .fill(gameColor(for: game.title).opacity(0.18))
             if let imageUrl = game.imageUrl, let url = URL(string: imageUrl) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    case .empty:
-                        ProgressView()
-                    default:
-                        fallbackIcon
-                    }
+                CachedRemoteImage(url: url) { image in
+                    image
+                        .resizable()
+                        .scaledToFill()
+                } placeholder: {
+                    ProgressView()
+                } failure: {
+                    fallbackIcon
                 }
             } else {
                 fallbackIcon
@@ -642,21 +666,12 @@ private struct LiquidBadgeBackgroundModifier: ViewModifier {
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
-        if #available(iOS 26, *) {
-            content
-                .background(
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .fill(.clear)
-                        .glassEffect(in: RoundedRectangle(cornerRadius: cornerRadius))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: cornerRadius)
-                                .stroke(tint.opacity(0.28), lineWidth: 1)
-                        )
-                )
-        } else {
-            content
-                .background(tint, in: RoundedRectangle(cornerRadius: cornerRadius))
-        }
+        content
+            .background(tint, in: RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .stroke(tint.opacity(0.32), lineWidth: 1)
+            )
     }
 }
 

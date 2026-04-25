@@ -28,7 +28,7 @@
 		CC0000000000000000000003 /* OpenNOWWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000013 /* OpenNOWWidgetBundle.swift */; };
 		CC0000000000000000000004 /* QueueLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000014 /* QueueLiveActivityWidget.swift */; };
 		CC0000000000000000000005 /* QueueActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000011 /* QueueActivityAttributes.swift */; };
-		CC0000000000000000000006 /* OpenNOWWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000016 /* OpenNOWWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		CC0000000000000000000006 /* OpenNOWWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000016 /* OpenNOWWidget.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -285,6 +285,7 @@
 /* Begin PBXTargetDependency section */
 		CC0000000000000000000207 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
+			platformFilter = ios;
 			target = CC0000000000000000000201 /* OpenNOWWidget */;
 			targetProxy = CC0000000000000000000101 /* PBXContainerItemProxy */;
 		};
@@ -338,8 +339,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvos*]" = "";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 70;
+				CURRENT_PROJECT_VERSION = 72;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -347,6 +349,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWiOS/Info.plist;
+				"INFOPLIST_FILE[sdk=appletvos*]" = "OpenNOWiOS/Info-tvOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = OpenNOW;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -372,8 +375,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=appletvos*]" = "";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 70;
+				CURRENT_PROJECT_VERSION = 72;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -381,6 +385,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWiOS/Info.plist;
+				"INFOPLIST_FILE[sdk=appletvos*]" = "OpenNOWiOS/Info-tvOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = OpenNOW;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
