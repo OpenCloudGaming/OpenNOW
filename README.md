@@ -86,6 +86,12 @@ Current packaging targets:
 | Linux ARM64 | `AppImage`, `deb` |
 | iOS | `ipa` |
 
+## Settings
+
+<p align="center">
+  <img src="OpenNOW_Settings.png" alt="OpenNOW logo" width="180" />
+</p>
+
 ## Nix
 
 You'll need to add this repo into your flake.nix:
