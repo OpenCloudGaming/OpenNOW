@@ -2395,11 +2395,11 @@ body.controller-mode.controller-hide-cursor * {
   width: 22px;
   height: 22px;
   background: var(--chip);
-  border: none;
+  border: 1px solid transparent;
   padding: 0;
   border-radius: 4px;
   color: var(--ink-muted);
-  transition: color var(--t-fast), background var(--t-fast);
+  transition: color var(--t-fast), background var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
 }
 
 button.game-card-store-chip {
@@ -2411,13 +2411,39 @@ button.game-card-store-chip {
   background: var(--panel-border-solid);
 }
 
+.game-card-store-chip.owned {
+  color: color-mix(in srgb, var(--warning) 70%, #fff);
+  background: color-mix(in srgb, var(--warning) 14%, var(--chip));
+  border-color: color-mix(in srgb, var(--warning) 38%, transparent);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.08), 0 0 14px rgba(251, 191, 36, 0.18);
+}
+
+.game-card-store-chip.owned:hover {
+  color: #fff4cf;
+  background: color-mix(in srgb, var(--warning) 22%, var(--chip));
+  border-color: color-mix(in srgb, var(--warning) 48%, transparent);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.12), 0 0 18px rgba(251, 191, 36, 0.24);
+}
+
 .game-card-store-chip.active {
   color: var(--accent-on);
   background: var(--accent);
+  border-color: transparent;
 }
 
 button.game-card-store-chip.active:hover {
   background: var(--accent-press);
+}
+
+.game-card-store-chip.owned.active {
+  color: #fff8e1;
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.96) 0%, rgba(249, 115, 22, 0.92) 100%);
+  border-color: rgba(251, 191, 36, 0.72);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.24), 0 0 20px rgba(249, 115, 22, 0.38);
+}
+
+button.game-card-store-chip.owned.active:hover {
+  background: linear-gradient(180deg, rgba(251, 191, 36, 1) 0%, rgba(234, 88, 12, 0.96) 100%);
 }
 
 .game-card-store-chip:focus-visible {

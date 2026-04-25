@@ -26,21 +26,40 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: windows
+          - label: windows-x64
             os: blacksmith-4vcpu-windows-2025
-            builder_args: "--win nsis portable"
+            builder_args: "--win nsis portable --x64"
+            artifact_paths: |
+              opennow-stable/dist-release/*-x64.exe
+          - label: windows-arm64
+            os: blacksmith-4vcpu-windows-2025
+            builder_args: "--win nsis portable --arm64"
+            artifact_paths: |
+              opennow-stable/dist-release/*-arm64.exe
           - label: macos-x64
-            os: macos-latest
+            os: blacksmith-6vcpu-macos-latest
             builder_args: "--mac dmg zip --x64"
+            artifact_paths: |
+              opennow-stable/dist-release/*.dmg
+              opennow-stable/dist-release/*-x64.zip
           - label: macos-arm64
-            os: macos-latest
+            os: blacksmith-6vcpu-macos-latest
             builder_args: "--mac dmg zip --arm64"
+            artifact_paths: |
+              opennow-stable/dist-release/*.dmg
+              opennow-stable/dist-release/*-arm64.zip
           - label: linux-x64
             os: blacksmith-4vcpu-ubuntu-2404
             builder_args: "--linux AppImage deb --x64"
+            artifact_paths: |
+              opennow-stable/dist-release/*-x86_64.AppImage
+              opennow-stable/dist-release/*-amd64.deb
           - label: linux-arm64
             os: blacksmith-4vcpu-ubuntu-2404-arm
             builder_args: "--linux AppImage deb --arm64"
+            artifact_paths: |
+              opennow-stable/dist-release/*-arm64.AppImage
+              opennow-stable/dist-release/*-arm64.deb
 
     defaults:
       run:
@@ -99,10 +118,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: opennow-stable-${{ matrix.label }}
-          path: |
-            opennow-stable/dist-release/*.exe
-            opennow-stable/dist-release/*.dmg
-            opennow-stable/dist-release/*.zip
-            opennow-stable/dist-release/*.AppImage
-            opennow-stable/dist-release/*.deb
+          path: ${{ matrix.artifact_paths }}
           if-no-files-found: error

@@ -79,11 +79,62 @@ Current packaging targets:
 
 | Platform | Formats |
 | --- | --- |
-| Windows | NSIS installer, portable executable |
+| Windows x64 | NSIS installer, portable executable, auto-update metadata |
+| Windows ARM64 | NSIS installer, portable executable |
 | macOS | `dmg`, `zip` |
 | Linux x64 | `AppImage`, `deb` |
 | Linux ARM64 | `AppImage`, `deb` |
 | iOS | `ipa` |
+
+## Nix
+
+You'll need to add this repo into your flake.nix:
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    
+    opennow.url = "github:OpenCloudGaming/OpenNOW";
+    opennow.inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  outputs = {
+    self,
+    nixpkgs,
+    opennow,
+    ... }@inputs: {
+  };
+}
+```
+Then add the package to your configuration:
+
+```nix
+# Home-manager
+{
+  pkgs,
+  inputs,
+  ...
+}: {
+  home.packages = with pkgs; [
+    inputs.opennow.packages.${pkgs.system}.default
+  ];
+}
+```
+
+```nix
+# Nix configuration
+{
+  pkgs,
+  inputs,
+  ...
+}: {
+  environment.systemPackages = with pkgs; [
+    inputs.opennow.packages.${pkgs.system}.default
+  ];
+}
+```
+
+Windows ARM64 builds are published as release downloads. The Windows auto-update feed remains `latest.yml` for x64 releases, so ARM64 packages do not participate in in-app auto-update yet.
 
 ### Develop Locally
 
