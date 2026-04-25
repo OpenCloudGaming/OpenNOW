@@ -404,6 +404,10 @@ function defaultDiagnostics(): StreamDiagnostics {
     inputQueueMaxSchedulingDelayMs: 0,
     partiallyReliableInputOpen: false,
     mouseMoveTransport: "reliable",
+    mouseFlushIntervalMs: 8,
+    mousePacketsPerSecond: 0,
+    mouseResidualMagnitude: 0,
+    mouseAdaptiveFlushActive: false,
     lagReason: "unknown",
     lagReasonDetail: "Waiting for stream stats",
     gpuType: "",
@@ -869,10 +873,6 @@ export function App(): JSX.Element {
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("idle");
   const [showStatsOverlay, setShowStatsOverlay] = useState(false);
   const [antiAfkEnabled, setAntiAfkEnabled] = useState(false);
-  const [escHoldReleaseIndicator, setEscHoldReleaseIndicator] = useState<{ visible: boolean; progress: number }>({
-    visible: false,
-    progress: 0,
-  });
   const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: "Game" });
   const [streamingGame, setStreamingGame] = useState<GameInfo | null>(null);
   const [streamingStore, setStreamingStore] = useState<string | null>(null);
@@ -1377,7 +1377,6 @@ export function App(): JSX.Element {
     setSessionStartedAtMs(null);
     setRemoteStreamWarning(null);
     setLocalSessionTimerWarning(null);
-    setEscHoldReleaseIndicator({ visible: false, progress: 0 });
     resetStatsOverlayToPreference();
     diagnosticsStore.set(defaultDiagnostics());
 
@@ -1894,7 +1893,7 @@ export function App(): JSX.Element {
     await setSessionFullscreen(!document.fullscreenElement);
   }, [setSessionFullscreen]);
 
-  const requestEscLockedPointerCapture = useCallback(async (target: HTMLVideoElement) => {
+  const requestPointerLockCapture = useCallback(async (target: HTMLVideoElement) => {
     const lockTarget = (target.parentElement as HTMLElement | null) ?? target;
     const requestPointerLockCompat = async (
       options?: { unadjustedMovement?: boolean },
@@ -1909,13 +1908,6 @@ export function App(): JSX.Element {
       await setSessionFullscreen(true);
     }
 
-    const nav = navigator as any;
-    if (document.fullscreenElement && nav.keyboard?.lock) {
-      await nav.keyboard.lock([
-        "Escape", "F11", "BrowserBack", "BrowserForward", "BrowserRefresh",
-      ]).catch(() => {});
-    }
-
     await requestPointerLockCompat({ unadjustedMovement: true })
       .catch((err: DOMException) => {
         if (err.name === "NotSupportedError") {
@@ -1928,9 +1920,9 @@ export function App(): JSX.Element {
 
   const handleRequestPointerLock = useCallback(() => {
     if (videoRef.current) {
-      void requestEscLockedPointerCapture(videoRef.current);
+      void requestPointerLockCapture(videoRef.current);
     }
-  }, [requestEscLockedPointerCapture]);
+  }, [requestPointerLockCapture]);
 
   const resolveExitPrompt = useCallback((confirmed: boolean) => {
     const resolver = exitPromptResolverRef.current;
@@ -1970,8 +1962,7 @@ export function App(): JSX.Element {
     };
   }, []);
 
-  // Listen for F11 fullscreen toggle from main process (uses W3C Fullscreen API
-  // so navigator.keyboard.lock() can capture Escape in fullscreen)
+  // Listen for F11 fullscreen toggle from main process (uses W3C Fullscreen API)
   useEffect(() => {
     const unsubscribe = window.openNow.onToggleFullscreen(() => {
       void toggleSessionFullscreen();
@@ -2820,9 +2811,6 @@ export function App(): JSX.Element {
               mouseAcceleration: settings.mouseAcceleration,
               onLog: (line: string) => console.log(`[WebRTC] ${line}`),
               onStats: (stats) => diagnosticsStore.set(stats),
-              onEscHoldProgress: (visible, progress) => {
-                setEscHoldReleaseIndicator({ visible, progress });
-              },
               onTimeWarning: (warning) => {
                 setRemoteStreamWarning({
                   code: warning.code,
@@ -3645,7 +3633,6 @@ export function App(): JSX.Element {
         // ignore
       }
       document.exitPointerLock();
-      setEscHoldReleaseIndicator({ visible: false, progress: 0 });
       await sleep(75);
     }
   }, []);
@@ -3749,9 +3736,8 @@ export function App(): JSX.Element {
               // best-effort — client may not be initialised
             }
             document.exitPointerLock();
-            setEscHoldReleaseIndicator({ visible: false, progress: 0 });
           } else {
-            void requestEscLockedPointerCapture(videoRef.current);
+            void requestPointerLockCapture(videoRef.current);
           }
         }
         return;
@@ -3803,7 +3789,7 @@ export function App(): JSX.Element {
     handleExitPromptCancel,
     handleExitPromptConfirm,
     handlePromptedStopStream,
-    requestEscLockedPointerCapture,
+    requestPointerLockCapture,
     settings.clipboardPaste,
     shortcuts,
     streamStatus,
@@ -3935,7 +3921,6 @@ export function App(): JSX.Element {
             serverRegion={session?.serverIp}
             antiAfkEnabled={antiAfkEnabled}
             showAntiAfkIndicator={settings.showAntiAfkIndicator}
-            escHoldReleaseIndicator={escHoldReleaseIndicator}
             exitPrompt={exitPrompt}
             sessionStartedAtMs={sessionStartedAtMs}
             sessionCounterEnabled={settings.sessionCounterEnabled}
