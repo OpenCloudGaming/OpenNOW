@@ -11,6 +11,7 @@ export interface LibraryPageProps {
   isLoading: boolean;
   selectedGameId: string;
   onSelectGame: (id: string) => void;
+  playOnCardSelect?: boolean;
   selectedVariantByGameId: Record<string, string>;
   onSelectGameVariant: (gameId: string, variantId: string) => void;
   libraryCount: number;
@@ -46,6 +47,7 @@ export function LibraryPage({
   isLoading,
   selectedGameId,
   onSelectGame,
+  playOnCardSelect = false,
   selectedVariantByGameId,
   onSelectGameVariant,
   libraryCount,
@@ -113,6 +115,7 @@ export function LibraryPage({
                   isSelected={game.id === selectedGameId}
                   onSelect={() => onSelectGame(game.id)}
                   onPlay={() => onPlayGame(game)}
+                  playOnSelect={playOnCardSelect}
                   selectedVariantId={selectedVariantByGameId[game.id]}
                   onSelectStore={(variantId) => onSelectGameVariant(game.id, variantId)}
                 />

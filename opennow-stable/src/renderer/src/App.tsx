@@ -2844,17 +2844,14 @@ export function App(): JSX.Element {
 
   // Gate handler: shows queue server modal for FREE-tier users before launching
   const handleInitiatePlay = useCallback(async (game: GameInfo) => {
-    const effectiveTier = normalizeMembershipTier(
-      subscriptionInfo?.membershipTier ?? authSession?.user.membershipTier,
-    );
-    const isFreeUser = effectiveTier === "FREE";
+    const shouldUsePrintedWasteGate = shouldShowQueueAdsForMembership(subscriptionInfo, authSession);
     const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
     if (isAllianceServer) {
       setQueueModalData(null);
       void handlePlayGame(game);
       return;
     }
-    if (isFreeUser && streamStatus === "idle" && !launchInFlightRef.current) {
+    if (shouldUsePrintedWasteGate && streamStatus === "idle" && !launchInFlightRef.current) {
       try {
         const [queueResult, mappingResult] = await Promise.allSettled([
           openNow.fetchPrintedWasteQueue(),
@@ -3750,6 +3747,7 @@ export function App(): JSX.Element {
             isLoading={isLoadingGames}
             selectedGameId={selectedGameId}
             onSelectGame={setSelectedGameId}
+            playOnCardSelect={platformCapabilities.isAndroid}
             selectedVariantByGameId={variantByGameId}
             onSelectGameVariant={handleSelectGameVariant}
             filterGroups={catalogFilterGroups}
@@ -3822,6 +3820,7 @@ export function App(): JSX.Element {
               isLoading={isLoadingGames}
               selectedGameId={selectedGameId}
               onSelectGame={setSelectedGameId}
+              playOnCardSelect={platformCapabilities.isAndroid}
               selectedVariantByGameId={variantByGameId}
               onSelectGameVariant={handleSelectGameVariant}
               libraryCount={libraryGames.length}

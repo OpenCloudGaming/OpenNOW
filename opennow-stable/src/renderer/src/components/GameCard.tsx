@@ -8,6 +8,7 @@ interface GameCardProps {
   isSelected?: boolean;
   onPlay: () => void;
   onSelect: () => void;
+  playOnSelect?: boolean;
   selectedVariantId?: string;
   onSelectStore?: (variantId: string) => void;
 }
@@ -189,6 +190,7 @@ export const GameCard = memo(function GameCard({
   isSelected = false,
   onPlay,
   onSelect,
+  playOnSelect = false,
   selectedVariantId,
   onSelectStore,
 }: GameCardProps): JSX.Element {
@@ -212,6 +214,14 @@ export const GameCard = memo(function GameCard({
     onPlay();
   };
 
+  const handleCardClick = (): void => {
+    if (playOnSelect) {
+      onPlay();
+      return;
+    }
+    onSelect();
+  };
+
   const handleStoreClick = (event: React.MouseEvent, variantId: string): void => {
     event.stopPropagation();
     onSelectStore?.(variantId);
@@ -220,7 +230,7 @@ export const GameCard = memo(function GameCard({
   return (
     <div
       className={`game-card ${isSelected ? "selected" : ""}`}
-      onClick={onSelect}
+      onClick={handleCardClick}
       onKeyDown={(event) => {
         if (event.target !== event.currentTarget) {
           return;
@@ -232,7 +242,7 @@ export const GameCard = memo(function GameCard({
       }}
       role="button"
       tabIndex={0}
-      aria-label={`Select ${game.title}`}
+      aria-label={`${playOnSelect ? "Play" : "Select"} ${game.title}`}
     >
       <div
         className="game-card-image-wrapper"
