@@ -31,10 +31,6 @@ interface StreamViewProps {
   serverRegion?: string;
   antiAfkEnabled: boolean;
   showAntiAfkIndicator: boolean;
-  escHoldReleaseIndicator: {
-    visible: boolean;
-    progress: number;
-  };
   exitPrompt: {
     open: boolean;
     gameTitle: string;
@@ -198,6 +194,7 @@ function StreamStatsHud({
   const inputQueueColor = getInputQueueColor(stats.inputQueueBufferedBytes, stats.inputQueueDropCount);
   const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
   const partiallyReliableQueueText = `${(stats.partiallyReliableInputQueueBufferedBytes / 1024).toFixed(1)}KB`;
+  const mouseResidualText = `${stats.mouseResidualMagnitude.toFixed(2)}px`;
 
   return (
     <div className="sv-stats">
@@ -244,6 +241,11 @@ function StreamStatsHud({
             {stats.partiallyReliableInputOpen ? `${stats.mouseMoveTransport === "partially_reliable" ? "mouse" : "open"} · ${partiallyReliableQueueText}` : "off"}
           </span>
         </span>
+        <span className="sv-stats-chip" title="Mouse flush cadence and packet rate">
+          MF <span className="sv-stats-chip-val" style={{ color: stats.mouseAdaptiveFlushActive ? "var(--warning)" : "var(--success)" }}>
+            {stats.mouseFlushIntervalMs.toFixed(0)}ms · {stats.mousePacketsPerSecond}/s
+          </span>
+        </span>
         {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
           <span className="sv-stats-chip" title={stats.lagReasonDetail}>
             Lag <span className="sv-stats-chip-val" style={{ color: getLagReasonColor(stats.lagReason) }}>{getLagReasonLabel(stats.lagReason)}</span>
@@ -252,7 +254,7 @@ function StreamStatsHud({
       </div>
 
       <div className="sv-stats-foot">
-        Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · PR peak {(stats.partiallyReliableInputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms
+        Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · PR peak {(stats.partiallyReliableInputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms · residual {mouseResidualText}
       </div>
 
       {(stats.decoderPressureActive || stats.decoderRecoveryAttempts > 0) && (
@@ -647,7 +649,6 @@ export function StreamView({
   serverRegion,
   antiAfkEnabled,
   showAntiAfkIndicator,
-  escHoldReleaseIndicator,
   exitPrompt,
   sessionStartedAtMs,
   isStreaming,
@@ -802,14 +803,6 @@ export function StreamView({
     };
   }, [isConnecting, sessionClockShowDurationSeconds, sessionClockShowEveryMinutes, sessionCounterEnabled]);
 
-  const escHoldProgress = Math.max(0, Math.min(1, escHoldReleaseIndicator.progress));
-  const escHoldCountdownSeconds = Math.max(0, 5 * (1 - escHoldProgress));
-  const escHoldCountdownLabel = escHoldCountdownSeconds > 0
-    ? `${escHoldCountdownSeconds.toFixed(1)}s`
-    : "0.0s";
-  const escHoldRingRadius = 54;
-  const escHoldRingCircumference = 2 * Math.PI * escHoldRingRadius;
-  const escHoldRingOffset = escHoldRingCircumference * escHoldProgress;
   const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
   const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
@@ -1981,42 +1974,6 @@ export function StreamView({
         onToggleMicrophone={onToggleMicrophone}
         recordingDurationMs={recordingDurationMs}
       />
-
-      {/* Hold-Esc release indicator */}
-      {escHoldReleaseIndicator.visible && !isConnecting && (
-        <>
-          <div className="sv-esc-hold-backdrop" />
-          <div
-            className="sv-esc-hold"
-            role="status"
-            aria-label="Hold Escape to release mouse lock. Keep holding until the timer reaches zero."
-            title="Keep holding Escape to release mouse lock"
-          >
-            <div className="sv-esc-hold-kicker">Mouse lock</div>
-            <div className="sv-esc-hold-ring" aria-hidden="true">
-              <svg className="sv-esc-hold-ring-svg" viewBox="0 0 140 140">
-                <circle className="sv-esc-hold-ring-track" cx="70" cy="70" r={escHoldRingRadius} />
-                <circle
-                  className="sv-esc-hold-ring-progress"
-                  cx="70"
-                  cy="70"
-                  r={escHoldRingRadius}
-                  style={{
-                    strokeDasharray: escHoldRingCircumference,
-                    strokeDashoffset: escHoldRingOffset,
-                  }}
-                />
-              </svg>
-              <div className="sv-esc-hold-ring-core">
-                <span className="sv-esc-hold-time">{escHoldCountdownLabel}</span>
-                <span className="sv-esc-hold-caption">to release</span>
-              </div>
-            </div>
-            <div className="sv-esc-hold-title">Hold Escape</div>
-            <p className="sv-esc-hold-text">Keep holding until the timer reaches zero.</p>
-          </div>
-        </>
-      )}
 
       {exitPrompt.open && !isConnecting && typeof document !== "undefined" && createPortal(
         <div className="sv-exit" role="dialog" aria-modal="true" aria-label="Exit stream confirmation">
