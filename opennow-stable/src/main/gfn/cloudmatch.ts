@@ -1,5 +1,8 @@
 import crypto from "node:crypto";
 import dns from "node:dns";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { app } from "electron";
 
 import type {
   ActiveSessionInfo,
@@ -33,6 +36,9 @@ const GFN_USER_AGENT =
 const GFN_CLIENT_VERSION = "2.0.80.173";
 const SESSION_MODIFY_ACTION_AD_UPDATE = 6;
 const READY_SESSION_STATUSES = new Set([2, 3]);
+const GFN_DEVICE_ID_FILENAME = "gfn-device-id.json";
+
+let cachedStableDeviceId: string | null = null;
 
 const AD_ACTION_CODES: Record<SessionAdAction, number> = {
   start: 1,
@@ -50,6 +56,34 @@ const GFN_AD_MEDIA_PROFILE_ORDER = new Map<string, number>([
 
 function isReadySessionStatus(status: number): boolean {
   return READY_SESSION_STATUSES.has(status);
+}
+
+function getStableDeviceId(): string {
+  if (cachedStableDeviceId) {
+    return cachedStableDeviceId;
+  }
+
+  try {
+    const path = join(app.getPath("userData"), GFN_DEVICE_ID_FILENAME);
+    if (existsSync(path)) {
+      const parsed = JSON.parse(readFileSync(path, "utf-8")) as { deviceId?: unknown };
+      if (typeof parsed.deviceId === "string" && parsed.deviceId.length > 0) {
+        cachedStableDeviceId = parsed.deviceId;
+        return parsed.deviceId;
+      }
+    }
+
+    const deviceId = crypto.randomUUID();
+    writeFileSync(path, JSON.stringify({ deviceId }, null, 2), "utf-8");
+    cachedStableDeviceId = deviceId;
+    return deviceId;
+  } catch (error) {
+    // Fallback to in-memory UUID if disk read/write fails.
+    const fallback = crypto.randomUUID();
+    cachedStableDeviceId = fallback;
+    console.warn("[CloudMatch] Failed to load persisted device ID, using in-memory fallback:", error);
+    return fallback;
+  }
 }
 
 async function resolveHostnameWithFallback(hostname: string): Promise<string | null> {
@@ -1196,7 +1230,7 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
   // The session is already configured on the server side. Sending different fps, resolution,
   // codec, etc. causes HTTP 400 from the server because those parameters are immutable for
   // an already-streaming session. Only send the action and minimal required fields.
-  const deviceId = crypto.randomUUID();
+  const deviceId = getStableDeviceId();
   const subSessionId = crypto.randomUUID();
   const timezoneMs = timezoneOffsetMs();
 
@@ -1262,7 +1296,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     throw new Error("Missing token for session claim");
   }
 
-  const deviceId = crypto.randomUUID();
+  const deviceId = getStableDeviceId();
   const clientId = crypto.randomUUID();
 
   // Provide default values for optional parameters
