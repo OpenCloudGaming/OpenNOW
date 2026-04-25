@@ -36,6 +36,8 @@ export async function connectDiscordRpc(): Promise<void> {
 
     if (pendingActivity) {
       await setActivity(pendingActivity.gameName, pendingActivity.startTimestamp, pendingActivity.appId);
+      // Consume reconnect replay so failed attempts are not reprocessed forever.
+      pendingActivity = null;
     } else if (lastActivity) {
       await setActivity(lastActivity.gameName, lastActivity.startTimestamp, lastActivity.appId);
     } else {
