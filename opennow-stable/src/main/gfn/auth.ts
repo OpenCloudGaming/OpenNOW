@@ -1016,6 +1016,8 @@ export class AuthService {
       source: "client_token" | "refresh_token",
     ): Promise<AuthSessionResult> => {
       const latestSession = this.getSession() ?? currentSession;
+      const baseSession = latestSession.user.userId === userId ? latestSession : currentSession;
+      const expectedRefreshUserId = expectedUserId ?? userId;
       let refreshedUser: AuthUser | null = null;
       let userInfoError: string | undefined;
       try {
@@ -1030,10 +1032,10 @@ export class AuthService {
         userInfoError = error instanceof Error ? error.message : "Unknown error while fetching user info";
       }
 
-      const resolvedUser = refreshedUser ?? latestSession.user;
-      if (expectedUserId && resolvedUser.userId !== expectedUserId) {
+      const resolvedUser = refreshedUser ?? baseSession.user;
+      if (resolvedUser.userId !== expectedRefreshUserId) {
         return {
-          session: latestSession,
+          session: baseSession,
           refresh: {
             attempted: true,
             forced: forceRefresh,
@@ -1042,16 +1044,16 @@ export class AuthService {
               ? "Token refresh returned a different account than expected."
               : "Token refresh kept a cached account identity that did not match the expected account.",
             error: refreshedUser
-              ? `expected_user_id:${expectedUserId} actual_user_id:${refreshedUser.userId}`
+              ? `expected_user_id:${expectedRefreshUserId} actual_user_id:${refreshedUser.userId}`
               : userInfoError
-                ? `expected_user_id:${expectedUserId} cached_user_id:${resolvedUser.userId} user_info_error:${userInfoError}`
-                : `expected_user_id:${expectedUserId} cached_user_id:${resolvedUser.userId}`,
+                ? `expected_user_id:${expectedRefreshUserId} cached_user_id:${resolvedUser.userId} user_info_error:${userInfoError}`
+                : `expected_user_id:${expectedRefreshUserId} cached_user_id:${resolvedUser.userId}`,
           },
         };
       }
 
       const updatedSession: AuthSession = {
-        provider: latestSession.provider,
+        provider: baseSession.provider,
         tokens: refreshedTokens,
         user: resolvedUser,
       };

@@ -2362,27 +2362,31 @@ export function App(): JSX.Element {
       setProviderIdpId(session.provider.idpId);
       await refreshSavedAccounts();
       await loadSessionRuntimeData(session);
-      await refreshNavbarActiveSession(session, session.provider.streamingServiceUrl);
+      await refreshNavbarActiveSession(session);
     } catch (error) {
       console.warn("Failed to switch account:", error);
       setLoginError(error instanceof Error ? error.message : "Failed to switch account");
-      await refreshSavedAccounts();
-      const sessionResult = await window.openNow.getAuthSession();
-      setAuthSession(sessionResult.session);
-      if (sessionResult.session) {
-        setProviderIdpId(sessionResult.session.provider.idpId);
-        await loadSessionRuntimeData(sessionResult.session);
-        await refreshNavbarActiveSession(sessionResult.session, sessionResult.session.provider.streamingServiceUrl);
-      } else {
-        setRegions([]);
-        setGames([]);
-        setLibraryGames([]);
-        setSubscriptionInfo(null);
-        setNavbarActiveSession(null);
-        setCatalogFilterGroups([]);
-        setCatalogSortOptions([]);
-        setCatalogTotalCount(0);
-        setCatalogSupportedCount(0);
+      try {
+        await refreshSavedAccounts();
+        const sessionResult = await window.openNow.getAuthSession();
+        setAuthSession(sessionResult.session);
+        if (sessionResult.session) {
+          setProviderIdpId(sessionResult.session.provider.idpId);
+          await loadSessionRuntimeData(sessionResult.session);
+          await refreshNavbarActiveSession(sessionResult.session);
+        } else {
+          setRegions([]);
+          setGames([]);
+          setLibraryGames([]);
+          setSubscriptionInfo(null);
+          setNavbarActiveSession(null);
+          setCatalogFilterGroups([]);
+          setCatalogSortOptions([]);
+          setCatalogTotalCount(0);
+          setCatalogSupportedCount(0);
+        }
+      } catch (recoveryError) {
+        console.warn("Failed to recover account state after switch failure:", recoveryError);
       }
     }
   }, [loadSessionRuntimeData, refreshNavbarActiveSession, refreshSavedAccounts]);
@@ -2408,7 +2412,7 @@ export function App(): JSX.Element {
     if (sessionResult.session) {
       setProviderIdpId(sessionResult.session.provider.idpId);
       await loadSessionRuntimeData(sessionResult.session);
-      await refreshNavbarActiveSession(sessionResult.session, sessionResult.session.provider.streamingServiceUrl);
+      await refreshNavbarActiveSession(sessionResult.session);
       return;
     }
     setRegions([]);

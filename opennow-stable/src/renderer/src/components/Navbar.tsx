@@ -366,7 +366,7 @@ export function Navbar({
                 type="button"
                 className="navbar-user navbar-user--clickable"
                 onClick={() => setAccountDropdownOpen((previous) => !previous)}
-                aria-haspopup="dialog"
+                aria-haspopup="menu"
                 aria-expanded={accountDropdownOpen}
                 aria-controls="navbar-account-dropdown"
               >
@@ -392,8 +392,7 @@ export function Navbar({
                 <div
                   id="navbar-account-dropdown"
                   className="navbar-account-dropdown"
-                  role="dialog"
-                  aria-modal="false"
+                  role="menu"
                   aria-labelledby="navbar-account-dropdown-header"
                 >
                   <div id="navbar-account-dropdown-header" className="navbar-account-dropdown-header">
@@ -412,9 +411,10 @@ export function Navbar({
                           <button
                             type="button"
                             className="navbar-account-item-main"
+                            role="menuitem"
                             onClick={() => {
                               if (!isActive) {
-                                onSwitchAccount(account.userId);
+                                void onSwitchAccount(account.userId);
                               }
                               setAccountDropdownOpen(false);
                             }}
@@ -450,6 +450,7 @@ export function Navbar({
                             <button
                               type="button"
                               className="navbar-account-remove"
+                              role="menuitem"
                               aria-label={`Remove ${account.displayName}`}
                               onClick={() => {
                                 setAccountDropdownOpen(false);
@@ -467,6 +468,7 @@ export function Navbar({
                   <button
                     type="button"
                     className="navbar-account-add"
+                    role="menuitem"
                     onClick={() => {
                       onAddAccount();
                       setAccountDropdownOpen(false);
@@ -478,6 +480,7 @@ export function Navbar({
                   <button
                     type="button"
                     className="navbar-account-signout-all"
+                    role="menuitem"
                     onClick={() => {
                       setAccountDropdownOpen(false);
                       onLogoutAll();
