@@ -18,7 +18,7 @@ interface NavbarProps {
   onSwitchAccount: (userId: string) => void;
   onRemoveAccount: (userId: string) => void;
   onAddAccount: () => void;
-  onLogout: () => void;
+  onLogoutAll: () => void;
 }
 
 type NavbarModalType = "time" | "storage" | null;
@@ -45,7 +45,7 @@ export function Navbar({
   onSwitchAccount,
   onRemoveAccount,
   onAddAccount,
-  onLogout,
+  onLogoutAll,
 }: NavbarProps): JSX.Element {
   const [modalType, setModalType] = useState<NavbarModalType>(null);
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
@@ -133,7 +133,7 @@ export function Navbar({
   useEffect(() => {
     if (!accountDropdownOpen) return;
     const onDocumentPointerDown = (event: MouseEvent) => {
-      if (!accountContainerRef.current?.contains(event.target as Node)) {
+      if (!(event.target instanceof Node) || !accountContainerRef.current?.contains(event.target)) {
         setAccountDropdownOpen(false);
       }
     };
@@ -366,7 +366,7 @@ export function Navbar({
                 type="button"
                 className="navbar-user navbar-user--clickable"
                 onClick={() => setAccountDropdownOpen((previous) => !previous)}
-                aria-haspopup="menu"
+                aria-haspopup="dialog"
                 aria-expanded={accountDropdownOpen}
                 aria-controls="navbar-account-dropdown"
               >
@@ -392,7 +392,8 @@ export function Navbar({
                 <div
                   id="navbar-account-dropdown"
                   className="navbar-account-dropdown"
-                  role="region"
+                  role="dialog"
+                  aria-modal="false"
                   aria-labelledby="navbar-account-dropdown-header"
                 >
                   <div id="navbar-account-dropdown-header" className="navbar-account-dropdown-header">
@@ -451,6 +452,7 @@ export function Navbar({
                               className="navbar-account-remove"
                               aria-label={`Remove ${account.displayName}`}
                               onClick={() => {
+                                setAccountDropdownOpen(false);
                                 onRemoveAccount(account.userId);
                               }}
                             >
@@ -477,8 +479,8 @@ export function Navbar({
                     type="button"
                     className="navbar-account-signout-all"
                     onClick={() => {
-                      onLogout();
                       setAccountDropdownOpen(false);
+                      onLogoutAll();
                     }}
                   >
                     Sign out all accounts

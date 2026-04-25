@@ -613,6 +613,13 @@ export class AuthService {
     return this.sessions.get(this.activeUserId) ?? null;
   }
 
+  private setActiveAccount(userId: string | null): void {
+    this.activeUserId = userId && this.sessions.has(userId) ? userId : null;
+    this.selectedProvider = this.getSession()?.provider ?? defaultProvider();
+    this.clearSubscriptionCache();
+    this.clearVpcCache();
+  }
+
   getSavedAccounts(): SavedAccount[] {
     return Array.from(this.sessions.values()).map((session) => ({
       userId: session.user.userId,
@@ -647,11 +654,15 @@ export class AuthService {
 
       if (missingRefreshToken) {
         await this.removeAccount(userId);
+        this.setActiveAccount(previousActiveUserId);
+        await this.persist();
         throw new Error("Saved login for this account is incomplete. Please log in to this account again.");
       }
 
       this.activeUserId = previousActiveUserId;
-      this.selectedProvider = previousSelectedProvider;
+      this.selectedProvider = previousActiveUserId && this.sessions.has(previousActiveUserId)
+        ? previousSelectedProvider
+        : this.getSession()?.provider ?? defaultProvider();
       this.clearSubscriptionCache();
       this.clearVpcCache();
 
@@ -669,11 +680,11 @@ export class AuthService {
       return;
     }
     if (this.activeUserId === userId) {
-      this.activeUserId = this.sessions.keys().next().value ?? null;
+      this.setActiveAccount(this.sessions.keys().next().value ?? null);
+    } else {
+      this.clearSubscriptionCache();
+      this.clearVpcCache();
     }
-    this.selectedProvider = this.getSession()?.provider ?? defaultProvider();
-    this.clearSubscriptionCache();
-    this.clearVpcCache();
     await this.persist();
   }
 
@@ -1019,33 +1030,26 @@ export class AuthService {
         userInfoError = error instanceof Error ? error.message : "Unknown error while fetching user info";
       }
 
-      if (expectedUserId && !refreshedUser) {
-        return {
-          session: latestSession,
-          refresh: {
-            attempted: true,
-            forced: forceRefresh,
-            outcome: "failed",
-            message: "Token refresh could not verify the expected account identity.",
-            error: userInfoError ?? `expected_user_id:${expectedUserId} user_info_unavailable`,
-          },
-        };
-      }
-
-      if (expectedUserId && refreshedUser && refreshedUser.userId !== expectedUserId) {
-        return {
-          session: latestSession,
-          refresh: {
-            attempted: true,
-            forced: forceRefresh,
-            outcome: "failed",
-            message: "Token refresh returned a different account than expected.",
-            error: `expected_user_id:${expectedUserId} actual_user_id:${refreshedUser.userId}`,
-          },
-        };
-      }
-
       const resolvedUser = refreshedUser ?? latestSession.user;
+      if (expectedUserId && resolvedUser.userId !== expectedUserId) {
+        return {
+          session: latestSession,
+          refresh: {
+            attempted: true,
+            forced: forceRefresh,
+            outcome: "failed",
+            message: refreshedUser
+              ? "Token refresh returned a different account than expected."
+              : "Token refresh kept a cached account identity that did not match the expected account.",
+            error: refreshedUser
+              ? `expected_user_id:${expectedUserId} actual_user_id:${refreshedUser.userId}`
+              : userInfoError
+                ? `expected_user_id:${expectedUserId} cached_user_id:${resolvedUser.userId} user_info_error:${userInfoError}`
+                : `expected_user_id:${expectedUserId} cached_user_id:${resolvedUser.userId}`,
+          },
+        };
+      }
+
       const updatedSession: AuthSession = {
         provider: latestSession.provider,
         tokens: refreshedTokens,
@@ -1114,7 +1118,7 @@ export class AuthService {
       if (expired) {
         await this.logout();
         return {
-          session: this.getSession(),
+          session: null,
           refresh: {
             attempted: true,
             forced: forceRefresh,
@@ -1138,7 +1142,7 @@ export class AuthService {
     if (expired) {
       await this.logout();
       return {
-        session: this.getSession(),
+        session: null,
         refresh: {
           attempted: true,
           forced: forceRefresh,

@@ -65,6 +65,7 @@ const api: OpenNowApi = {
   getRegions: (input: RegionsFetchRequest = {}) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_REGIONS, input),
   login: (input: AuthLoginRequest) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGIN, input),
   logout: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT),
+  logoutAll: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT_ALL),
   getSavedAccounts: (): Promise<SavedAccount[]> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_SAVED_ACCOUNTS),
   switchAccount: (userId: string): Promise<AuthSession> =>
     ipcRenderer.invoke(IPC_CHANNELS.AUTH_SWITCH_ACCOUNT, userId),

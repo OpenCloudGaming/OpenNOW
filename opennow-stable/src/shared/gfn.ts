@@ -712,6 +712,7 @@ export interface OpenNowApi {
   getRegions(input?: RegionsFetchRequest): Promise<StreamRegion[]>;
   login(input: AuthLoginRequest): Promise<AuthSession>;
   logout(): Promise<void>;
+  logoutAll(): Promise<void>;
   getSavedAccounts(): Promise<SavedAccount[]>;
   switchAccount(userId: string): Promise<AuthSession>;
   removeAccount(userId: string): Promise<void>;

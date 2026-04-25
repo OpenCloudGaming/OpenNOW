@@ -4,6 +4,7 @@ export const IPC_CHANNELS = {
   AUTH_GET_REGIONS: "auth:get-regions",
   AUTH_LOGIN: "auth:login",
   AUTH_LOGOUT: "auth:logout",
+  AUTH_LOGOUT_ALL: "auth:logout-all",
   AUTH_GET_SAVED_ACCOUNTS: "auth:get-saved-accounts",
   AUTH_SWITCH_ACCOUNT: "auth:switch-account",
   AUTH_REMOVE_ACCOUNT: "auth:remove-account",
