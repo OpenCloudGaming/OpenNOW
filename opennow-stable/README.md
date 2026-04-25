@@ -25,13 +25,10 @@ npm run dist
 
 | Platform | Formats |
 | --- | --- |
-| Windows x64 | NSIS installer, portable executable, auto-update metadata |
-| Windows ARM64 | NSIS installer, portable executable |
+| Windows | NSIS installer, portable executable |
 | macOS | `dmg`, `zip` |
 | Linux x64 | `AppImage`, `deb` |
 | Linux ARM64 | `AppImage`, `deb` |
-
-Windows ARM64 packages are published as release downloads only. The current Windows updater channel stays on the x64 `latest.yml` feed.
 
 ## Technical Notes
 

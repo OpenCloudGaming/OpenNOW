@@ -4,10 +4,6 @@ export const IPC_CHANNELS = {
   AUTH_GET_REGIONS: "auth:get-regions",
   AUTH_LOGIN: "auth:login",
   AUTH_LOGOUT: "auth:logout",
-  AUTH_LOGOUT_ALL: "auth:logout-all",
-  AUTH_GET_SAVED_ACCOUNTS: "auth:get-saved-accounts",
-  AUTH_SWITCH_ACCOUNT: "auth:switch-account",
-  AUTH_REMOVE_ACCOUNT: "auth:remove-account",
   PING_REGIONS: "gfn:ping-regions",
   SUBSCRIPTION_FETCH: "subscription:fetch",
   GAMES_FETCH_MAIN: "games:fetch-main",
@@ -65,8 +61,6 @@ export const IPC_CHANNELS = {
   // PrintedWaste queue integration
   PRINTEDWASTE_QUEUE_FETCH: "printedwaste:queue-fetch",
   PRINTEDWASTE_SERVER_MAPPING_FETCH: "printedwaste:server-mapping-fetch",
-  // Discord Rich Presence
-  DISCORD_CLEAR_ACTIVITY: "discord:clear-activity",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
