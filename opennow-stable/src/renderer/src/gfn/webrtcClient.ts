@@ -149,7 +149,6 @@ interface ClientOptions {
   mouseAcceleration?: number;
   onLog: (line: string) => void;
   onStats?: (stats: StreamDiagnostics) => void;
-  onEscHoldProgress?: (visible: boolean, progress: number) => void;
   onTimeWarning?: (warning: StreamTimeWarning) => void;
   onMicStateChange?: (state: MicStateChange) => void;
 }
@@ -546,17 +545,8 @@ export class GfnWebRtcClient {
   private autoPointerLockInProgress = false;
   // Timer for synthetic Escape on pointer lock loss
   private pointerLockEscapeTimer: number | null = null;
-  // Fallback keyup if browser swallows Escape keyup while keyboard lock is active.
-  private escapeAutoKeyUpTimer: number | null = null;
-  // True when we already sent an immediate Escape tap for the current physical hold.
-  private escapeTapDispatchedForCurrentHold = false;
-  // Skip one synthetic Escape when pointer lock was intentionally released via hold.
+  // Skip one synthetic Escape on pointer loss when lock was released intentionally (e.g. F8).
   private suppressNextSyntheticEscape = false;
-  // Hold Escape for 4 seconds to intentionally release mouse lock
-  private escapeHoldReleaseTimer: number | null = null;
-  private escapeHoldIndicatorDelayTimer: number | null = null;
-  private escapeHoldProgressTimer: number | null = null;
-  private escapeHoldStartedAtMs: number | null = null;
   private mouseBackpressureLoggedAtMs = 0;
   private mouseFlushBaseIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
   private mouseAdaptiveFlushActive = false;
@@ -2177,25 +2167,6 @@ export class GfnWebRtcClient {
     }
   }
 
-  private async lockEscapeInFullscreen(): Promise<void> {
-    const nav = navigator as any;
-    if (!document.fullscreenElement) {
-      return;
-    }
-    if (!nav.keyboard?.lock) {
-      return;
-    }
-
-    try {
-      await nav.keyboard.lock([
-        "Escape", "F11", "BrowserBack", "BrowserForward", "BrowserRefresh",
-      ]);
-      this.log("Keyboard lock acquired (Escape captured in fullscreen)");
-    } catch (error) {
-      this.log(`Keyboard lock failed: ${String(error)}`);
-    }
-  }
-
   private async requestPointerLockCompat(
     lockTarget: HTMLElement,
     options?: { unadjustedMovement?: boolean },
@@ -2206,7 +2177,7 @@ export class GfnWebRtcClient {
     }
   }
 
-  private async requestPointerLockWithEscGuard(
+  private async requestPointerLockWithOptionalFullscreen(
     lockTarget: HTMLElement,
     ensureFullscreen: boolean,
   ): Promise<void> {
@@ -2217,8 +2188,6 @@ export class GfnWebRtcClient {
         this.log(`Fullscreen request failed: ${String(error)}`);
       }
     }
-
-    await this.lockEscapeInFullscreen();
 
     try {
       await this.requestPointerLockCompat(lockTarget, { unadjustedMovement: true });
@@ -2246,7 +2215,7 @@ export class GfnWebRtcClient {
       }
 
       try {
-        await this.requestPointerLockWithEscGuard(target, ensureFullscreen);
+        await this.requestPointerLockWithOptionalFullscreen(target, ensureFullscreen);
         this.log("Auto pointer lock acquired");
         return;
       } catch (err) {
@@ -2264,91 +2233,6 @@ export class GfnWebRtcClient {
     }
   }
 
-  private clearEscapeHoldTimer(): void {
-    if (this.escapeHoldReleaseTimer !== null) {
-      window.clearTimeout(this.escapeHoldReleaseTimer);
-      this.escapeHoldReleaseTimer = null;
-    }
-    if (this.escapeHoldIndicatorDelayTimer !== null) {
-      window.clearTimeout(this.escapeHoldIndicatorDelayTimer);
-      this.escapeHoldIndicatorDelayTimer = null;
-    }
-    if (this.escapeHoldProgressTimer !== null) {
-      window.clearInterval(this.escapeHoldProgressTimer);
-      this.escapeHoldProgressTimer = null;
-    }
-    this.escapeHoldStartedAtMs = null;
-    this.options.onEscHoldProgress?.(false, 0);
-  }
-
-  private clearEscapeAutoKeyUpTimer(): void {
-    if (this.escapeAutoKeyUpTimer !== null) {
-      window.clearTimeout(this.escapeAutoKeyUpTimer);
-      this.escapeAutoKeyUpTimer = null;
-    }
-  }
-
-  private scheduleEscapeAutoKeyUp(scancode: number): void {
-    this.clearEscapeAutoKeyUpTimer();
-    this.escapeAutoKeyUpTimer = window.setTimeout(() => {
-      this.escapeAutoKeyUpTimer = null;
-      if (!this.inputReady) {
-        return;
-      }
-      if (!this.pressedKeys.has(0x1B)) {
-        return;
-      }
-
-      this.pressedKeys.delete(0x1B);
-      const payload = this.inputEncoder.encodeKeyUp({
-        keycode: 0x1B,
-        scancode,
-        modifiers: 0,
-        timestampUs: timestampUs(),
-      });
-      this.sendReliable(payload);
-      this.log("Sent Escape keyup fallback (browser suppressed keyup)");
-    }, 120);
-  }
-
-  private startEscapeHoldRelease(lockTarget: HTMLElement): void {
-    if (this.escapeHoldReleaseTimer !== null) {
-      return;
-    }
-
-    this.escapeHoldStartedAtMs = performance.now();
-    this.options.onEscHoldProgress?.(false, 0);
-
-    // Show indicator only after 300ms hold, then fill for remaining 4.7s.
-    this.escapeHoldIndicatorDelayTimer = window.setTimeout(() => {
-      this.escapeHoldIndicatorDelayTimer = null;
-    }, 300);
-
-    this.escapeHoldProgressTimer = window.setInterval(() => {
-      if (this.escapeHoldStartedAtMs === null) {
-        return;
-      }
-      const elapsedMs = performance.now() - this.escapeHoldStartedAtMs;
-      if (elapsedMs < 300) {
-        return;
-      }
-      const progress = Math.min(1, (elapsedMs - 300) / 4700);
-      this.options.onEscHoldProgress?.(true, progress);
-    }, 50);
-
-    this.escapeHoldReleaseTimer = window.setTimeout(() => {
-      this.escapeHoldReleaseTimer = null;
-      this.clearEscapeHoldTimer();
-      if (document.pointerLockElement === lockTarget) {
-        this.log("Escape held for 5s, releasing pointer lock");
-        this.suppressNextSyntheticEscape = true;
-        // Remove Escape from pressedKeys so keyup doesn't send it to stream
-        this.pressedKeys.delete(0x1B);
-        document.exitPointerLock();
-      }
-    }, 5000);
-  }
-
   private shouldSendSyntheticEscapeOnPointerLockLoss(): boolean {
     if (document.visibilityState !== "visible") {
       return false;
@@ -2360,7 +2244,6 @@ export class GfnWebRtcClient {
   }
 
   private releasePressedKeys(reason: string): void {
-    this.clearEscapeAutoKeyUpTimer();
     if (this.pressedKeys.size === 0 || !this.inputReady) {
       this.pressedKeys.clear();
       return;
@@ -2639,36 +2522,40 @@ export class GfnWebRtcClient {
         window.clearTimeout(this.mouseFlushTimer);
       }
       this.mouseFlushTimer = window.setTimeout(() => {
-        flushMouse();
-        // clearTimers() nulls this timer during teardown; avoid re-arming a zombie loop.
-        if (this.mouseFlushTimer === null) {
-          return;
+        try {
+          flushMouse();
+          const reliableBufferedAmount = this.reliableInputChannel?.bufferedAmount ?? 0;
+          const schedulingDelay = this.inputQueueMaxSchedulingDelayMsWindow;
+          const nextInterval = chooseAdaptiveMouseFlushInterval({
+            baseIntervalMs: this.mouseFlushBaseIntervalMs,
+            currentIntervalMs: this.mouseFlushIntervalMs,
+            reliableBufferedAmount,
+            schedulingDelayMs: schedulingDelay,
+            canUsePartiallyReliableMouse: this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL),
+            backpressureThresholdBytes: GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES,
+            minIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MIN_MS,
+            maxIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MAX_MS,
+          });
+          this.mouseAdaptiveFlushActive = nextInterval !== this.mouseFlushBaseIntervalMs;
+          this.mouseFlushIntervalMs = nextInterval;
+          const now = performance.now();
+          if (this.mousePacketRateWindowStartedAtMs <= 0) {
+            this.mousePacketRateWindowStartedAtMs = now;
+          }
+          const elapsed = now - this.mousePacketRateWindowStartedAtMs;
+          if (elapsed >= 1000) {
+            this.mousePacketsPerSecond = Math.round((this.mousePacketsSentInWindow * 1000) / elapsed);
+            this.mousePacketsSentInWindow = 0;
+            this.mousePacketRateWindowStartedAtMs = now;
+          }
+        } catch (err) {
+          this.log(`Mouse flush tick failed (non-fatal): ${String(err)}`);
+        } finally {
+          // clearTimers() nulls this timer during teardown; avoid re-arming a zombie loop.
+          if (this.mouseFlushTimer !== null) {
+            scheduleNextFlush();
+          }
         }
-        const reliableBufferedAmount = this.reliableInputChannel?.bufferedAmount ?? 0;
-        const schedulingDelay = this.inputQueueMaxSchedulingDelayMsWindow;
-        const nextInterval = chooseAdaptiveMouseFlushInterval({
-          baseIntervalMs: this.mouseFlushBaseIntervalMs,
-          currentIntervalMs: this.mouseFlushIntervalMs,
-          reliableBufferedAmount,
-          schedulingDelayMs: schedulingDelay,
-          canUsePartiallyReliableMouse: this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL),
-          backpressureThresholdBytes: GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES,
-          minIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MIN_MS,
-          maxIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MAX_MS,
-        });
-        this.mouseAdaptiveFlushActive = nextInterval !== this.mouseFlushBaseIntervalMs;
-        this.mouseFlushIntervalMs = nextInterval;
-        const now = performance.now();
-        if (this.mousePacketRateWindowStartedAtMs <= 0) {
-          this.mousePacketRateWindowStartedAtMs = now;
-        }
-        const elapsed = now - this.mousePacketRateWindowStartedAtMs;
-        if (elapsed >= 1000) {
-          this.mousePacketsPerSecond = Math.round((this.mousePacketsSentInWindow * 1000) / elapsed);
-          this.mousePacketsSentInWindow = 0;
-          this.mousePacketRateWindowStartedAtMs = now;
-        }
-        scheduleNextFlush();
       }, this.mouseFlushIntervalMs);
     };
     scheduleNextFlush();
@@ -2854,24 +2741,12 @@ export class GfnWebRtcClient {
       event.preventDefault();
       this.pressedKeys.add(mapped.vk);
 
-      if (mapped.vk === 0x1B && isPointerLockActive()) {
-        // Escape with pointer lock active: we start the hold timer for hold-to-exit.
-        // For a quick tap (< 5s), we send Escape on keyup (not here) so we can distinguish tap vs hold.
-        // For a hold (>= 5s), pointer lock is released and we suppress sending Escape to stream.
-        this.escapeTapDispatchedForCurrentHold = false;
-        this.clearEscapeAutoKeyUpTimer();
-        // Start the hold timer (will be cleared on keyup if released before 5s)
-        this.startEscapeHoldRelease(pointerLockTarget);
-        // Don't send keydown yet - wait to see if this is a tap or hold
-        return;
-      }
-
       const payload = this.inputEncoder.encodeKeyDown({
         keycode: mapped.vk,
         scancode: mapped.scancode,
         modifiers: modifierFlags(event),
         // Use a fresh monotonic timestamp for keyboard events. In some
-        // fullscreen/keyboard-lock paths, event.timeStamp can be unstable.
+        // fullscreen paths, event.timeStamp can be unstable.
         timestampUs: timestampUs(),
       });
       this.sendReliable(payload);
@@ -2894,23 +2769,6 @@ export class GfnWebRtcClient {
       }
 
       event.preventDefault();
-      if (mapped.vk === 0x1B) {
-        this.clearEscapeAutoKeyUpTimer();
-        // Check if the hold timer still exists - if so, this was a tap (not a hold)
-        const wasTap = this.escapeHoldReleaseTimer !== null;
-        this.clearEscapeHoldTimer();
-
-        if (wasTap && this.pressedKeys.has(0x1B)) {
-          // This was a quick tap - send Escape to the stream now
-          this.log("Escape tap detected - sending to stream");
-          this.sendKeyPacket(codeMap.Escape.vk, mapped.scancode || codeMap.Escape.scancode, 0, true);
-          this.sendKeyPacket(codeMap.Escape.vk, mapped.scancode || codeMap.Escape.scancode, 0, false);
-        }
-        // If hold timer was already cleared, hold completed and pointer lock was released.
-        // In that case we don't send Escape to stream.
-        this.pressedKeys.delete(mapped.vk);
-        return;
-      }
       this.pressedKeys.delete(mapped.vk);
       const payload = this.inputEncoder.encodeKeyUp({
         keycode: mapped.vk,
@@ -2975,10 +2833,11 @@ export class GfnWebRtcClient {
     };
 
     const onClick = () => {
-      // GFN-style sequence: fullscreen -> keyboard lock (Escape) -> pointer lock.
-      void this.requestPointerLockWithEscGuard(pointerLockTarget, this.shouldAutoFullscreen()).catch((err: DOMException) => {
-        this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
-      });
+      void this.requestPointerLockWithOptionalFullscreen(pointerLockTarget, this.shouldAutoFullscreen()).catch(
+        (err: DOMException) => {
+          this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
+        },
+      );
       videoElement.focus();
     };
 
@@ -2998,8 +2857,6 @@ export class GfnWebRtcClient {
           this.pointerLockEscapeTimer = null;
         }
         this.suppressNextSyntheticEscape = false;
-        this.escapeTapDispatchedForCurrentHold = false;
-        this.clearEscapeHoldTimer();
         return;
       }
 
@@ -3007,7 +2864,6 @@ export class GfnWebRtcClient {
       // current cursor position rather than from a stale last-known position.
       lastAbsX = null;
       lastAbsY = null;
-      this.clearEscapeHoldTimer();
 
       // Pointer lock was lost
       if (!this.inputReady) return;
@@ -3068,7 +2924,7 @@ export class GfnWebRtcClient {
 
         // Re-acquire pointer lock so the user stays in the game
         if (this.pointerLockTarget) {
-          void this.requestPointerLockWithEscGuard(this.pointerLockTarget, false)
+          void this.requestPointerLockWithOptionalFullscreen(this.pointerLockTarget, false)
             .catch(() => {});
         }
       }, 50);
@@ -3084,7 +2940,6 @@ export class GfnWebRtcClient {
       mouseInStreamView = false;
       lastAbsX = null;
       lastAbsY = null;
-      this.clearEscapeHoldTimer();
       this.releasePressedKeys("window blur");
       // Pause all input while window is not focused so no new events
       // (keyboard/gamepad/mouse) are registered or forwarded to the stream.
@@ -3093,7 +2948,6 @@ export class GfnWebRtcClient {
 
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") {
-        this.clearEscapeHoldTimer();
         this.releasePressedKeys(`visibility ${document.visibilityState}`);
         this.inputPaused = true;
         return;
@@ -3113,16 +2967,17 @@ export class GfnWebRtcClient {
       tryAutoLock();
     };
 
-    // Try to lock keyboard (Escape, F11, etc.) when in fullscreen.
-    // This prevents the browser from processing Escape as pointer lock exit.
-    // Only works in fullscreen + secure context + Chromium.
+    // Release any prior Keyboard API lock when leaving fullscreen (e.g. other UI may have locked keys).
     const onFullscreenChange = () => {
-      const nav = navigator as any;
       if (document.fullscreenElement) {
-        void this.lockEscapeInFullscreen();
-      } else {
-        if (nav.keyboard?.unlock) {
+        return;
+      }
+      const nav = navigator as any;
+      if (nav.keyboard?.unlock) {
+        try {
           nav.keyboard.unlock();
+        } catch {
+          /* no-op */
         }
       }
     };
@@ -3131,8 +2986,6 @@ export class GfnWebRtcClient {
     window.addEventListener("gamepadconnected", this.onGamepadConnected);
     window.addEventListener("gamepaddisconnected", this.onGamepadDisconnected);
 
-    // Use document capture for keyboard events so Escape remains observable
-    // when keyboard lock is active in fullscreen.
     document.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("keyup", onKeyUp, true);
     if (pointerMoveEventName) {
@@ -3231,11 +3084,6 @@ export class GfnWebRtcClient {
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onWindowFocus);
 
-    // If already in fullscreen, try to lock keyboard immediately
-    if (document.fullscreenElement) {
-      onFullscreenChange();
-    }
-
     this.inputCleanup.push(() => window.removeEventListener("gamepadconnected", this.onGamepadConnected));
     this.inputCleanup.push(() => window.removeEventListener("gamepaddisconnected", this.onGamepadDisconnected));
     this.inputCleanup.push(() => document.removeEventListener("keydown", onKeyDown, true));
@@ -3268,9 +3116,6 @@ export class GfnWebRtcClient {
           window.clearTimeout(this.pointerLockEscapeTimer);
           this.pointerLockEscapeTimer = null;
         }
-      this.escapeTapDispatchedForCurrentHold = false;
-      this.clearEscapeAutoKeyUpTimer();
-      this.clearEscapeHoldTimer();
       this.releasePressedKeys("input cleanup");
       this.pendingMouseDxFloat = 0;
       this.pendingMouseDyFloat = 0;
