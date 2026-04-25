@@ -83,7 +83,7 @@ import {
 import { fetchSubscription, fetchDynamicRegions } from "./gfn/subscription";
 import { GfnSignalingClient } from "./gfn/signaling";
 import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
-import { connectDiscordRpc, setActivity, clearActivity, destroyDiscordRpc, getCurrentActivity, isDiscordRpcConnected } from "./discordRpc";
+import { connectDiscordRpc, setActivity, clearActivity, destroyDiscordRpc } from "./discordRpc";
 import { createAppUpdaterController, type AppUpdaterController } from "./updater";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -295,7 +295,6 @@ function requestAppShutdown(options: { reason?: string; forceExitFallback?: bool
 
   if (!isShutdownRequested) {
     isShutdownRequested = true;
-    discordMonitor.stop();
     runShutdownCleanup(reason);
   }
 
@@ -305,84 +304,6 @@ function requestAppShutdown(options: { reason?: string; forceExitFallback?: bool
 
   app.quit();
 }
-
-/**
- * Periodically verifies that the Discord Rich Presence status accurately
- * reflects the user's actual game session state.
- */
-class DiscordStatusMonitor {
-  private timer: NodeJS.Timeout | null = null;
-  private readonly intervalMs = 60 * 1000;
-  private isSyncing = false;
-  private hasPerformedInitialSync = false;
-
-  start(): void {
-    if (this.timer) return;
-    this.timer = setInterval(() => void this.sync(), this.intervalMs);
-    void this.sync();
-  }
-
-  stop(): void {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-  }
-
-  async sync(): Promise<void> {
-    if (this.isSyncing) return;
-    this.isSyncing = true;
-
-    try {
-      if (!settingsManager.get("discordRichPresence")) {
-        this.stop();
-        void clearActivity();
-        return;
-      }
-
-      if (!isDiscordRpcConnected()) {
-        await connectDiscordRpc().catch(() => {});
-      }
-
-      // On first run, always clear regardless of auth state — the app just started
-      // and any stale status from the previous session must be wiped.
-      if (!this.hasPerformedInitialSync) {
-        console.log("[DiscordRPC] Startup: clearing any stale Discord status.");
-        await clearActivity().catch(() => {});
-        this.hasPerformedInitialSync = true;
-      }
-
-      const token = await resolveJwt().catch(() => null);
-      if (!token) return;
-
-      const provider = authService.getSelectedProvider();
-      const streamingBaseUrl = provider.streamingServiceUrl;
-      const activeSessions = await getActiveSessions(token, streamingBaseUrl).catch(() => []);
-
-      const activeSession = activeSessions.find((s) => [1, 2, 3].includes(s.status));
-      const currentActivity = getCurrentActivity();
-
-      if (activeSession) {
-        const sessionAppId = activeSession.appId.toString();
-
-        if (!currentActivity || currentActivity.appId !== sessionAppId) {
-          const title = sessionAppId;
-          const startTime = new Date();
-          void setActivity(title, startTime, sessionAppId);
-        }
-      } else if (currentActivity) {
-        console.log("[DiscordRPC] Monitor clearing stale status.");
-        void clearActivity();
-      }
-    } catch (err) {
-      console.warn("[DiscordRPC] Monitor sync failed:", (err as Error).message);
-    } finally {
-      this.isSyncing = false;
-    }
-  }
-}
-
-const discordMonitor = new DiscordStatusMonitor();
 
 function getScreenshotDirectory(): string {
   return join(app.getPath("pictures"), "OpenNOW", "Screenshots");
@@ -1108,22 +1029,6 @@ function registerIpcHandlers(): void {
     await authService.logout();
   });
 
-  ipcMain.handle(IPC_CHANNELS.AUTH_LOGOUT_ALL, async () => {
-    await authService.logoutAll();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.AUTH_GET_SAVED_ACCOUNTS, async () => {
-    return authService.getSavedAccounts();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.AUTH_SWITCH_ACCOUNT, async (_event, userId: string) => {
-    return authService.switchAccount(userId);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.AUTH_REMOVE_ACCOUNT, async (_event, userId: string) => {
-    await authService.removeAccount(userId);
-  });
-
   ipcMain.handle(IPC_CHANNELS.SUBSCRIPTION_FETCH, async (_event, payload: SubscriptionFetchRequest) => {
     const token = await resolveJwt(payload?.token);
     const streamingBaseUrl =
@@ -1257,7 +1162,7 @@ function registerIpcHandlers(): void {
       const preChecked = await tryClaimExisting();
       if (preChecked) {
         if (settingsManager.get("discordRichPresence")) {
-          void setActivity(payload.internalTitle || payload.appId, new Date(), payload.appId);
+          void setActivity(payload.internalTitle || payload.appId, new Date());
         }
         return preChecked;
       }
@@ -1274,7 +1179,7 @@ function registerIpcHandlers(): void {
       }
       const sessionResult = await createSession({ ...payload, token, streamingBaseUrl });
       if (settingsManager.get("discordRichPresence")) {
-        void setActivity(payload.internalTitle || payload.appId, new Date(), payload.appId);
+        void setActivity(payload.internalTitle || payload.appId, new Date());
       }
       return sessionResult;
     } catch (error) {
@@ -1287,7 +1192,7 @@ function registerIpcHandlers(): void {
         const fallback = await tryClaimExisting();
         if (fallback) {
           if (settingsManager.get("discordRichPresence")) {
-            void setActivity(payload.internalTitle || payload.appId, new Date(), payload.appId);
+            void setActivity(payload.internalTitle || payload.appId, new Date());
           }
           return fallback;
         }
@@ -1341,10 +1246,6 @@ function registerIpcHandlers(): void {
     const jwt = await resolveJwt(token);
     const baseUrl = streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
     return getActiveSessions(jwt, baseUrl);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.DISCORD_CLEAR_ACTIVITY, async () => {
-    void clearActivity();
   });
 
   ipcMain.handle(IPC_CHANNELS.CLAIM_SESSION, async (_event, payload: SessionClaimRequest) => {
@@ -1514,9 +1415,8 @@ function registerIpcHandlers(): void {
       }
       if (key === "discordRichPresence") {
         if (value) {
-          void connectDiscordRpc().then(() => discordMonitor.start());
+          void connectDiscordRpc();
         } else {
-          discordMonitor.stop();
           void destroyDiscordRpc();
         }
       }
@@ -2084,9 +1984,9 @@ app.whenReady().then(async () => {
     },
   });
 
-  // Connect and start Discord Rich Presence monitor if the user has opted in
+  // Connect Discord Rich Presence if the user has opted in
   if (settingsManager.get("discordRichPresence")) {
-    void connectDiscordRpc().then(() => discordMonitor.start());
+    void connectDiscordRpc();
   }
 
   // Set up permission handlers for getUserMedia, fullscreen, pointer lock

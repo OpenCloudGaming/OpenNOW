@@ -28,8 +28,6 @@ export function LoginScreen({
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const selectedProvider = providers.find((p) => p.idpId === selectedProviderId);
-  const title = isInitializing ? "Restoring session" : "Sign in";
-  const subtitle = isInitializing ? "Checking saved accounts." : "Cloud gaming, open source.";
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -67,8 +65,8 @@ export function LoginScreen({
         {/* Card */}
         <div className="login-card">
           <div className="login-card-header">
-            <h1>{title}</h1>
-            <p>{subtitle}</p>
+            <h1>Sign in</h1>
+            <p>Cloud gaming, open source.</p>
           </div>
 
           {error && (

@@ -99,10 +99,6 @@ export interface StreamDiagnostics {
   inputQueueMaxSchedulingDelayMs: number;
   partiallyReliableInputOpen: boolean;
   mouseMoveTransport: "reliable" | "partially_reliable";
-  mouseFlushIntervalMs: number;
-  mousePacketsPerSecond: number;
-  mouseResidualMagnitude: number;
-  mouseAdaptiveFlushActive: boolean;
 
   lagReason: StreamLagReason;
   lagReasonDetail: string;
@@ -149,6 +145,7 @@ interface ClientOptions {
   mouseAcceleration?: number;
   onLog: (line: string) => void;
   onStats?: (stats: StreamDiagnostics) => void;
+  onEscHoldProgress?: (visible: boolean, progress: number) => void;
   onTimeWarning?: (warning: StreamTimeWarning) => void;
   onMicStateChange?: (state: MicStateChange) => void;
 }
@@ -204,53 +201,6 @@ function parseRiInputCapabilities(sdp: string): RiInputCapabilities {
   };
 }
 
-export interface AdaptiveMouseFlushDecisionParams {
-  baseIntervalMs: number;
-  currentIntervalMs: number;
-  reliableBufferedAmount: number;
-  schedulingDelayMs: number;
-  canUsePartiallyReliableMouse: boolean;
-  backpressureThresholdBytes: number;
-  minIntervalMs: number;
-  maxIntervalMs: number;
-}
-
-export function chooseAdaptiveMouseFlushInterval(params: AdaptiveMouseFlushDecisionParams): number {
-  const boundedBase = Math.max(params.minIntervalMs, Math.min(params.maxIntervalMs, params.baseIntervalMs));
-  const boundedCurrent = Math.max(params.minIntervalMs, Math.min(params.maxIntervalMs, params.currentIntervalMs));
-  if (!params.canUsePartiallyReliableMouse) {
-    return boundedBase;
-  }
-
-  const highPressure =
-    params.reliableBufferedAmount >= params.backpressureThresholdBytes / 2
-    || params.schedulingDelayMs >= 4;
-  if (highPressure) {
-    return Math.max(boundedBase, Math.min(params.maxIntervalMs, boundedCurrent + 2));
-  }
-
-  const lowPressure = params.reliableBufferedAmount <= 4096 && params.schedulingDelayMs <= 1;
-  if (lowPressure) {
-    return Math.max(params.minIntervalMs, boundedCurrent - 1);
-  }
-
-  if (boundedCurrent > boundedBase) {
-    return Math.max(boundedBase, boundedCurrent - 1);
-  }
-  if (boundedCurrent < boundedBase) {
-    return Math.min(boundedBase, boundedCurrent + 1);
-  }
-  return boundedCurrent;
-}
-
-export function quantizeMouseDeltaWithResidual(accumulatedDelta: number): { send: number; residual: number } {
-  const send = Math.round(accumulatedDelta);
-  return {
-    send,
-    residual: accumulatedDelta - send,
-  };
-}
-
 class MouseDeltaFilter {
   private x = 0;
   private y = 0;
@@ -262,11 +212,6 @@ class MouseDeltaFilter {
   private pendingX = 0;
   private pendingY = 0;
   private sawZero = false;
-  private relaxedForRawInput = false;
-
-  public setRelaxedForRawInput(value: boolean): void {
-    this.relaxedForRawInput = value;
-  }
 
   public getX(): number {
     return this.x;
@@ -320,15 +265,13 @@ class MouseDeltaFilter {
     let accept = true;
 
     const dtMs = tsMs - this.lastTsMs;
-    const directionReversalCosineThreshold = this.relaxedForRawInput ? 0.89 : 0.81;
-    if (dtMs < 0.95 && dot < 0 && magPrev !== 0 && dot * dot > directionReversalCosineThreshold * magIncoming * magPrev) {
+    if (dtMs < 0.95 && dot < 0 && magPrev !== 0 && dot * dot > 0.81 * magIncoming * magPrev) {
       const ratio = Math.sqrt(magIncoming) / Math.sqrt(magPrev);
       let distToInt = Math.abs(ratio - Math.trunc(ratio));
       if (distToInt > 0.5) {
         distToInt = 1 - distToInt;
       }
-      const intRatioRejectThreshold = this.relaxedForRawInput ? 0.07 : 0.1;
-      if (distToInt < intRatioRejectThreshold) {
+      if (distToInt < 0.1) {
         accept = false;
       }
     }
@@ -341,7 +284,7 @@ class MouseDeltaFilter {
       const scale = 1 + 0.1 * Math.max(1, Math.min(16, dtMs));
       const vx2 = 2 * scale * Math.abs(this.velocityX);
       const vy2 = 2 * scale * Math.abs(this.velocityY);
-      const threshold = Math.max(this.relaxedForRawInput ? 9800 : 8100, vx2 * vx2 + vy2 * vy2);
+      const threshold = Math.max(8100, vx2 * vx2 + vy2 * vy2);
       accept = diffMag < threshold;
       if (!accept && (this.rejectedX !== 0 || this.rejectedY !== 0)) {
         const rx = dx - this.rejectedX;
@@ -489,8 +432,8 @@ export class GfnWebRtcClient {
   private statsTimer: number | null = null;
   private statsPollInFlight = false;
   private gamepadPollTimer: number | null = null;
-  private pendingMouseDxFloat = 0;
-  private pendingMouseDyFloat = 0;
+  private pendingMouseDx = 0;
+  private pendingMouseDy = 0;
   private inputCleanup: Array<() => void> = [];
   private queuedCandidates: RTCIceCandidateInit[] = [];
 
@@ -503,8 +446,6 @@ export class GfnWebRtcClient {
   private static readonly MOUSE_FLUSH_FAST_MS = 4;
   private static readonly MOUSE_FLUSH_NORMAL_MS = 8;
   private static readonly MOUSE_FLUSH_SAFE_MS = 16;
-  private static readonly MOUSE_FLUSH_MIN_MS = 2;
-  private static readonly MOUSE_FLUSH_MAX_MS = 20;
   private static readonly DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS = 300;
   private static readonly RELIABLE_MOUSE_BACKPRESSURE_BYTES = 64 * 1024;
   private static readonly BACKPRESSURE_LOG_INTERVAL_MS = 2000;
@@ -545,14 +486,18 @@ export class GfnWebRtcClient {
   private autoPointerLockInProgress = false;
   // Timer for synthetic Escape on pointer lock loss
   private pointerLockEscapeTimer: number | null = null;
-  // Skip one synthetic Escape on pointer loss when lock was released intentionally (e.g. F8).
+  // Fallback keyup if browser swallows Escape keyup while keyboard lock is active.
+  private escapeAutoKeyUpTimer: number | null = null;
+  // True when we already sent an immediate Escape tap for the current physical hold.
+  private escapeTapDispatchedForCurrentHold = false;
+  // Skip one synthetic Escape when pointer lock was intentionally released via hold.
   private suppressNextSyntheticEscape = false;
+  // Hold Escape for 4 seconds to intentionally release mouse lock
+  private escapeHoldReleaseTimer: number | null = null;
+  private escapeHoldIndicatorDelayTimer: number | null = null;
+  private escapeHoldProgressTimer: number | null = null;
+  private escapeHoldStartedAtMs: number | null = null;
   private mouseBackpressureLoggedAtMs = 0;
-  private mouseFlushBaseIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
-  private mouseAdaptiveFlushActive = false;
-  private mousePacketsSentInWindow = 0;
-  private mousePacketsPerSecond = 0;
-  private mousePacketRateWindowStartedAtMs = 0;
   private mouseFlushIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
   private mouseFlushLastTickMs = 0;
   private pendingMouseTimestampUs: bigint | null = null;
@@ -630,10 +575,6 @@ export class GfnWebRtcClient {
     inputQueueMaxSchedulingDelayMs: 0,
     partiallyReliableInputOpen: false,
     mouseMoveTransport: "reliable",
-    mouseFlushIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS,
-    mousePacketsPerSecond: 0,
-    mouseResidualMagnitude: 0,
-    mouseAdaptiveFlushActive: false,
     lagReason: "unknown",
     lagReasonDetail: "Waiting for stream stats",
     gpuType: "",
@@ -910,10 +851,6 @@ export class GfnWebRtcClient {
       inputQueueMaxSchedulingDelayMs: 0,
       partiallyReliableInputOpen: false,
       mouseMoveTransport: "reliable",
-      mouseFlushIntervalMs: this.mouseFlushIntervalMs,
-      mousePacketsPerSecond: this.mousePacketsPerSecond,
-      mouseResidualMagnitude: 0,
-      mouseAdaptiveFlushActive: this.mouseAdaptiveFlushActive,
       lagReason: "unknown",
       lagReasonDetail: "Waiting for stream stats",
       gpuType: this.gpuType,
@@ -957,7 +894,7 @@ export class GfnWebRtcClient {
       this.heartbeatTimer = null;
     }
     if (this.mouseFlushTimer !== null) {
-      window.clearTimeout(this.mouseFlushTimer);
+      window.clearInterval(this.mouseFlushTimer);
       this.mouseFlushTimer = null;
     }
     if (this.statsTimer !== null) {
@@ -1490,10 +1427,6 @@ export class GfnWebRtcClient {
     this.diagnostics.mouseMoveTransport = this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL)
       ? "partially_reliable"
       : "reliable";
-    this.diagnostics.mouseFlushIntervalMs = this.mouseFlushIntervalMs;
-    this.diagnostics.mousePacketsPerSecond = this.mousePacketsPerSecond;
-    this.diagnostics.mouseResidualMagnitude = Math.hypot(this.pendingMouseDxFloat, this.pendingMouseDyFloat);
-    this.diagnostics.mouseAdaptiveFlushActive = this.mouseAdaptiveFlushActive;
 
     const lagClassification = this.classifyLagReason({
       framesReceived,
@@ -1615,17 +1548,11 @@ export class GfnWebRtcClient {
     this.lastGamepadSendMs = 0;
     this.reliableDropLogged = false;
     this.gamepadBitmap = 0;
-    this.pendingMouseDxFloat = 0;
-    this.pendingMouseDyFloat = 0;
+    this.pendingMouseDx = 0;
+    this.pendingMouseDy = 0;
     this.pendingMouseTimestampUs = null;
     this.mouseDeltaFilter.reset();
     this.mouseFlushLastTickMs = 0;
-    this.mouseFlushBaseIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
-    this.mouseFlushIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
-    this.mouseAdaptiveFlushActive = false;
-    this.mousePacketsSentInWindow = 0;
-    this.mousePacketsPerSecond = 0;
-    this.mousePacketRateWindowStartedAtMs = 0;
     this.inputQueuePeakBufferedBytesWindow = 0;
     this.partiallyReliableInputQueuePeakBufferedBytesWindow = 0;
     this.inputQueueMaxSchedulingDelayMsWindow = 0;
@@ -1979,10 +1906,8 @@ export class GfnWebRtcClient {
 
   private sendPartiallyReliable(payload: Uint8Array): void {
     if (this.partiallyReliableInputChannel?.readyState === "open") {
-      const view = payload.byteOffset === 0 && payload.byteLength === payload.buffer.byteLength
-        ? payload
-        : payload.slice();
-      this.partiallyReliableInputChannel.send(view as unknown as ArrayBufferView<ArrayBuffer>);
+      const safePayload = Uint8Array.from(payload);
+      this.partiallyReliableInputChannel.send(safePayload.buffer);
       return;
     }
 
@@ -2157,13 +2082,30 @@ export class GfnWebRtcClient {
 
   public sendReliable(payload: Uint8Array): void {
     if (this.reliableInputChannel?.readyState === "open") {
-      const view = payload.byteOffset === 0 && payload.byteLength === payload.buffer.byteLength
-        ? payload
-        : payload.slice();
-      this.reliableInputChannel.send(view as unknown as ArrayBufferView<ArrayBuffer>);
+      const safePayload = Uint8Array.from(payload);
+      this.reliableInputChannel.send(safePayload.buffer);
     } else if (!this.reliableDropLogged) {
       this.reliableDropLogged = true;
       this.log(`Reliable channel not open (state=${this.reliableInputChannel?.readyState ?? "null"}), dropping event (${payload.length} bytes)`);
+    }
+  }
+
+  private async lockEscapeInFullscreen(): Promise<void> {
+    const nav = navigator as any;
+    if (!document.fullscreenElement) {
+      return;
+    }
+    if (!nav.keyboard?.lock) {
+      return;
+    }
+
+    try {
+      await nav.keyboard.lock([
+        "Escape", "F11", "BrowserBack", "BrowserForward", "BrowserRefresh",
+      ]);
+      this.log("Keyboard lock acquired (Escape captured in fullscreen)");
+    } catch (error) {
+      this.log(`Keyboard lock failed: ${String(error)}`);
     }
   }
 
@@ -2177,7 +2119,7 @@ export class GfnWebRtcClient {
     }
   }
 
-  private async requestPointerLockWithOptionalFullscreen(
+  private async requestPointerLockWithEscGuard(
     lockTarget: HTMLElement,
     ensureFullscreen: boolean,
   ): Promise<void> {
@@ -2188,6 +2130,8 @@ export class GfnWebRtcClient {
         this.log(`Fullscreen request failed: ${String(error)}`);
       }
     }
+
+    await this.lockEscapeInFullscreen();
 
     try {
       await this.requestPointerLockCompat(lockTarget, { unadjustedMovement: true });
@@ -2215,7 +2159,7 @@ export class GfnWebRtcClient {
       }
 
       try {
-        await this.requestPointerLockWithOptionalFullscreen(target, ensureFullscreen);
+        await this.requestPointerLockWithEscGuard(target, ensureFullscreen);
         this.log("Auto pointer lock acquired");
         return;
       } catch (err) {
@@ -2233,6 +2177,91 @@ export class GfnWebRtcClient {
     }
   }
 
+  private clearEscapeHoldTimer(): void {
+    if (this.escapeHoldReleaseTimer !== null) {
+      window.clearTimeout(this.escapeHoldReleaseTimer);
+      this.escapeHoldReleaseTimer = null;
+    }
+    if (this.escapeHoldIndicatorDelayTimer !== null) {
+      window.clearTimeout(this.escapeHoldIndicatorDelayTimer);
+      this.escapeHoldIndicatorDelayTimer = null;
+    }
+    if (this.escapeHoldProgressTimer !== null) {
+      window.clearInterval(this.escapeHoldProgressTimer);
+      this.escapeHoldProgressTimer = null;
+    }
+    this.escapeHoldStartedAtMs = null;
+    this.options.onEscHoldProgress?.(false, 0);
+  }
+
+  private clearEscapeAutoKeyUpTimer(): void {
+    if (this.escapeAutoKeyUpTimer !== null) {
+      window.clearTimeout(this.escapeAutoKeyUpTimer);
+      this.escapeAutoKeyUpTimer = null;
+    }
+  }
+
+  private scheduleEscapeAutoKeyUp(scancode: number): void {
+    this.clearEscapeAutoKeyUpTimer();
+    this.escapeAutoKeyUpTimer = window.setTimeout(() => {
+      this.escapeAutoKeyUpTimer = null;
+      if (!this.inputReady) {
+        return;
+      }
+      if (!this.pressedKeys.has(0x1B)) {
+        return;
+      }
+
+      this.pressedKeys.delete(0x1B);
+      const payload = this.inputEncoder.encodeKeyUp({
+        keycode: 0x1B,
+        scancode,
+        modifiers: 0,
+        timestampUs: timestampUs(),
+      });
+      this.sendReliable(payload);
+      this.log("Sent Escape keyup fallback (browser suppressed keyup)");
+    }, 120);
+  }
+
+  private startEscapeHoldRelease(lockTarget: HTMLElement): void {
+    if (this.escapeHoldReleaseTimer !== null) {
+      return;
+    }
+
+    this.escapeHoldStartedAtMs = performance.now();
+    this.options.onEscHoldProgress?.(false, 0);
+
+    // Show indicator only after 300ms hold, then fill for remaining 4.7s.
+    this.escapeHoldIndicatorDelayTimer = window.setTimeout(() => {
+      this.escapeHoldIndicatorDelayTimer = null;
+    }, 300);
+
+    this.escapeHoldProgressTimer = window.setInterval(() => {
+      if (this.escapeHoldStartedAtMs === null) {
+        return;
+      }
+      const elapsedMs = performance.now() - this.escapeHoldStartedAtMs;
+      if (elapsedMs < 300) {
+        return;
+      }
+      const progress = Math.min(1, (elapsedMs - 300) / 4700);
+      this.options.onEscHoldProgress?.(true, progress);
+    }, 50);
+
+    this.escapeHoldReleaseTimer = window.setTimeout(() => {
+      this.escapeHoldReleaseTimer = null;
+      this.clearEscapeHoldTimer();
+      if (document.pointerLockElement === lockTarget) {
+        this.log("Escape held for 5s, releasing pointer lock");
+        this.suppressNextSyntheticEscape = true;
+        // Remove Escape from pressedKeys so keyup doesn't send it to stream
+        this.pressedKeys.delete(0x1B);
+        document.exitPointerLock();
+      }
+    }, 5000);
+  }
+
   private shouldSendSyntheticEscapeOnPointerLockLoss(): boolean {
     if (document.visibilityState !== "visible") {
       return false;
@@ -2244,6 +2273,7 @@ export class GfnWebRtcClient {
   }
 
   private releasePressedKeys(reason: string): void {
+    this.clearEscapeAutoKeyUpTimer();
     if (this.pressedKeys.size === 0 || !this.inputReady) {
       this.pressedKeys.clear();
       return;
@@ -2391,63 +2421,20 @@ export class GfnWebRtcClient {
     const pointerMoveEventName: "pointerrawupdate" | "pointermove" | null = hasPointerRawUpdate
       ? "pointerrawupdate"
       : (typeof PointerEvent !== "undefined" ? "pointermove" : null);
-    this.mouseFlushBaseIntervalMs = hasPointerRawUpdate
+
+    this.mouseFlushIntervalMs = hasPointerRawUpdate
       ? GfnWebRtcClient.MOUSE_FLUSH_FAST_MS
       : hasCoalescedEvents
         ? GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS
         : GfnWebRtcClient.MOUSE_FLUSH_SAFE_MS;
-    this.mouseFlushIntervalMs = this.mouseFlushBaseIntervalMs;
-    this.mouseAdaptiveFlushActive = false;
     this.mouseFlushLastTickMs = performance.now();
-    this.pendingMouseDxFloat = 0;
-    this.pendingMouseDyFloat = 0;
+    this.pendingMouseDx = 0;
+    this.pendingMouseDy = 0;
     this.pendingMouseTimestampUs = null;
-    this.mousePacketsPerSecond = 0;
-    this.mousePacketsSentInWindow = 0;
-    this.mousePacketRateWindowStartedAtMs = this.mouseFlushLastTickMs;
     this.mouseDeltaFilter.reset();
-    this.mouseDeltaFilter.setRelaxedForRawInput(hasPointerRawUpdate);
     this.log(
       `Mouse input mode: ${pointerMoveEventName ?? "mousemove"}, coalesced=${hasCoalescedEvents ? "yes" : "no"}, flush=${this.mouseFlushIntervalMs}ms`,
     );
-
-    const pointerScaleCache = {
-      rectWidth: 0,
-      rectHeight: 0,
-      scaleX: 1,
-      scaleY: 1,
-      serverWidth: 0,
-      serverHeight: 0,
-      resolution: "",
-    };
-    const getPointerScale = (): typeof pointerScaleCache => {
-      const rect = pointerLockTarget.getBoundingClientRect();
-      const resolution = this.currentResolution ?? "";
-      if (
-        pointerScaleCache.rectWidth === rect.width
-        && pointerScaleCache.rectHeight === rect.height
-        && pointerScaleCache.resolution === resolution
-      ) {
-        return pointerScaleCache;
-      }
-
-      let serverWidth = rect.width;
-      let serverHeight = rect.height;
-      const resMatch = /^([0-9]+)x([0-9]+)$/.exec(resolution);
-      if (resMatch) {
-        serverWidth = parseInt(resMatch[1], 10) || serverWidth;
-        serverHeight = parseInt(resMatch[2], 10) || serverHeight;
-      }
-
-      pointerScaleCache.rectWidth = rect.width;
-      pointerScaleCache.rectHeight = rect.height;
-      pointerScaleCache.serverWidth = serverWidth;
-      pointerScaleCache.serverHeight = serverHeight;
-      pointerScaleCache.scaleX = rect.width > 0 ? serverWidth / rect.width : 1;
-      pointerScaleCache.scaleY = rect.height > 0 ? serverHeight / rect.height : 1;
-      pointerScaleCache.resolution = resolution;
-      return pointerScaleCache;
-    };
 
     const flushMouse = () => {
       const tickNow = performance.now();
@@ -2465,8 +2452,7 @@ export class GfnWebRtcClient {
         return;
       }
 
-      const hasPendingMovement = Math.abs(this.pendingMouseDxFloat) >= 0.5 || Math.abs(this.pendingMouseDyFloat) >= 0.5;
-      if (!hasPendingMovement) {
+      if (this.pendingMouseDx === 0 && this.pendingMouseDy === 0) {
         return;
       }
 
@@ -2484,23 +2470,31 @@ export class GfnWebRtcClient {
           this.mouseBackpressureLoggedAtMs = now;
           this.log(`Dropping stale mouse movement (reliable bufferedAmount=${reliable.bufferedAmount})`);
         }
-        this.pendingMouseDxFloat = 0;
-        this.pendingMouseDyFloat = 0;
+        this.pendingMouseDx = 0;
+        this.pendingMouseDy = 0;
         this.pendingMouseTimestampUs = null;
         return;
       }
-      const { scaleX, scaleY } = getPointerScale();
-      const dxQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDxFloat);
-      const dyQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDyFloat);
-      const dxServer = Math.max(-32768, Math.min(32767, Math.round(dxQuantized.send * scaleX)));
-      const dyServer = Math.max(-32768, Math.min(32767, Math.round(dyQuantized.send * scaleY)));
-      if (dxServer === 0 && dyServer === 0) {
-        // Keep pending movement intact until a non-zero packet is sent.
-        // Otherwise quantized integer deltas can be dropped when server scaling rounds to zero.
-        return;
+
+      // Convert pending element-local deltas into server (virtual) pixels
+      // using the negotiated stream resolution before sending.
+      const rect = pointerLockTarget.getBoundingClientRect();
+      // Determine server resolution; fall back to element size if unknown.
+      let serverWidth = rect.width;
+      let serverHeight = rect.height;
+      const resMatch = /^([0-9]+)x([0-9]+)$/.exec(this.currentResolution ?? "");
+      if (resMatch) {
+        serverWidth = parseInt(resMatch[1], 10) || serverWidth;
+        serverHeight = parseInt(resMatch[2], 10) || serverHeight;
       }
-      this.pendingMouseDxFloat = dxQuantized.residual;
-      this.pendingMouseDyFloat = dyQuantized.residual;
+      const scaleX = rect.width > 0 ? serverWidth / rect.width : 1;
+      const scaleY = rect.height > 0 ? serverHeight / rect.height : 1;
+
+      const dxElem = this.pendingMouseDx;
+      const dyElem = this.pendingMouseDy;
+      // Convert to server pixels and clamp to int16 range
+      const dxServer = Math.max(-32768, Math.min(32767, Math.round(dxElem * scaleX)));
+      const dyServer = Math.max(-32768, Math.min(32767, Math.round(dyElem * scaleY)));
 
       const payload = this.inputEncoder.encodeMouseMove({
         dx: dxServer,
@@ -2508,57 +2502,18 @@ export class GfnWebRtcClient {
         timestampUs: this.pendingMouseTimestampUs ?? timestampUs(),
       });
 
+      this.pendingMouseDx = 0;
+      this.pendingMouseDy = 0;
       this.pendingMouseTimestampUs = null;
       this.sendInputPacket(payload, INPUT_MOUSE_REL);
-      this.mousePacketsSentInWindow += 1;
       // Update simulated absolute pointer (stored in server pixels) if we have a baseline.
       if (simulatedAbsX !== null && simulatedAbsY !== null) {
         simulatedAbsX += dxServer;
         simulatedAbsY += dyServer;
       }
     };
-    const scheduleNextFlush = (): void => {
-      if (this.mouseFlushTimer !== null) {
-        window.clearTimeout(this.mouseFlushTimer);
-      }
-      this.mouseFlushTimer = window.setTimeout(() => {
-        try {
-          flushMouse();
-          const reliableBufferedAmount = this.reliableInputChannel?.bufferedAmount ?? 0;
-          const schedulingDelay = this.inputQueueMaxSchedulingDelayMsWindow;
-          const nextInterval = chooseAdaptiveMouseFlushInterval({
-            baseIntervalMs: this.mouseFlushBaseIntervalMs,
-            currentIntervalMs: this.mouseFlushIntervalMs,
-            reliableBufferedAmount,
-            schedulingDelayMs: schedulingDelay,
-            canUsePartiallyReliableMouse: this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL),
-            backpressureThresholdBytes: GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES,
-            minIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MIN_MS,
-            maxIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MAX_MS,
-          });
-          this.mouseAdaptiveFlushActive = nextInterval !== this.mouseFlushBaseIntervalMs;
-          this.mouseFlushIntervalMs = nextInterval;
-          const now = performance.now();
-          if (this.mousePacketRateWindowStartedAtMs <= 0) {
-            this.mousePacketRateWindowStartedAtMs = now;
-          }
-          const elapsed = now - this.mousePacketRateWindowStartedAtMs;
-          if (elapsed >= 1000) {
-            this.mousePacketsPerSecond = Math.round((this.mousePacketsSentInWindow * 1000) / elapsed);
-            this.mousePacketsSentInWindow = 0;
-            this.mousePacketRateWindowStartedAtMs = now;
-          }
-        } catch (err) {
-          this.log(`Mouse flush tick failed (non-fatal): ${String(err)}`);
-        } finally {
-          // clearTimers() nulls this timer during teardown; avoid re-arming a zombie loop.
-          if (this.mouseFlushTimer !== null) {
-            scheduleNextFlush();
-          }
-        }
-      }, this.mouseFlushIntervalMs);
-    };
-    scheduleNextFlush();
+
+    this.mouseFlushTimer = window.setInterval(flushMouse, this.mouseFlushIntervalMs);
 
     const tryAutoLock = (): void => {
       try {
@@ -2582,7 +2537,17 @@ export class GfnWebRtcClient {
         pendingEntryAbsY = null;
 
         if (typeof targetAbsX === "number" && typeof targetAbsY === "number") {
-          const { scaleX, scaleY, serverWidth, serverHeight } = getPointerScale();
+          const rect = pointerLockTarget.getBoundingClientRect();
+          // Compute server (virtual) resolution and scale factors.
+          let serverWidth = rect.width;
+          let serverHeight = rect.height;
+          const resMatch = /^([0-9]+)x([0-9]+)$/.exec(this.currentResolution ?? "");
+          if (resMatch) {
+            serverWidth = parseInt(resMatch[1], 10) || serverWidth;
+            serverHeight = parseInt(resMatch[2], 10) || serverHeight;
+          }
+          const scaleX = rect.width > 0 ? serverWidth / rect.width : 1;
+          const scaleY = rect.height > 0 ? serverHeight / rect.height : 1;
 
           // Translate the element-local target into server pixels.
           const targetServerX = Math.round(targetAbsX * scaleX);
@@ -2655,8 +2620,8 @@ export class GfnWebRtcClient {
         adjustedDy *= accelFactor;
       }
 
-      this.pendingMouseDxFloat += adjustedDx;
-      this.pendingMouseDyFloat += adjustedDy;
+      this.pendingMouseDx += Math.round(adjustedDx);
+      this.pendingMouseDy += Math.round(adjustedDy);
       this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
     };
 
@@ -2741,12 +2706,24 @@ export class GfnWebRtcClient {
       event.preventDefault();
       this.pressedKeys.add(mapped.vk);
 
+      if (mapped.vk === 0x1B && isPointerLockActive()) {
+        // Escape with pointer lock active: we start the hold timer for hold-to-exit.
+        // For a quick tap (< 5s), we send Escape on keyup (not here) so we can distinguish tap vs hold.
+        // For a hold (>= 5s), pointer lock is released and we suppress sending Escape to stream.
+        this.escapeTapDispatchedForCurrentHold = false;
+        this.clearEscapeAutoKeyUpTimer();
+        // Start the hold timer (will be cleared on keyup if released before 5s)
+        this.startEscapeHoldRelease(pointerLockTarget);
+        // Don't send keydown yet - wait to see if this is a tap or hold
+        return;
+      }
+
       const payload = this.inputEncoder.encodeKeyDown({
         keycode: mapped.vk,
         scancode: mapped.scancode,
         modifiers: modifierFlags(event),
         // Use a fresh monotonic timestamp for keyboard events. In some
-        // fullscreen paths, event.timeStamp can be unstable.
+        // fullscreen/keyboard-lock paths, event.timeStamp can be unstable.
         timestampUs: timestampUs(),
       });
       this.sendReliable(payload);
@@ -2769,6 +2746,23 @@ export class GfnWebRtcClient {
       }
 
       event.preventDefault();
+      if (mapped.vk === 0x1B) {
+        this.clearEscapeAutoKeyUpTimer();
+        // Check if the hold timer still exists - if so, this was a tap (not a hold)
+        const wasTap = this.escapeHoldReleaseTimer !== null;
+        this.clearEscapeHoldTimer();
+
+        if (wasTap && this.pressedKeys.has(0x1B)) {
+          // This was a quick tap - send Escape to the stream now
+          this.log("Escape tap detected - sending to stream");
+          this.sendKeyPacket(codeMap.Escape.vk, mapped.scancode || codeMap.Escape.scancode, 0, true);
+          this.sendKeyPacket(codeMap.Escape.vk, mapped.scancode || codeMap.Escape.scancode, 0, false);
+        }
+        // If hold timer was already cleared, hold completed and pointer lock was released.
+        // In that case we don't send Escape to stream.
+        this.pressedKeys.delete(mapped.vk);
+        return;
+      }
       this.pressedKeys.delete(mapped.vk);
       const payload = this.inputEncoder.encodeKeyUp({
         keycode: mapped.vk,
@@ -2833,11 +2827,10 @@ export class GfnWebRtcClient {
     };
 
     const onClick = () => {
-      void this.requestPointerLockWithOptionalFullscreen(pointerLockTarget, this.shouldAutoFullscreen()).catch(
-        (err: DOMException) => {
-          this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
-        },
-      );
+      // GFN-style sequence: fullscreen -> keyboard lock (Escape) -> pointer lock.
+      void this.requestPointerLockWithEscGuard(pointerLockTarget, this.shouldAutoFullscreen()).catch((err: DOMException) => {
+        this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
+      });
       videoElement.focus();
     };
 
@@ -2857,6 +2850,8 @@ export class GfnWebRtcClient {
           this.pointerLockEscapeTimer = null;
         }
         this.suppressNextSyntheticEscape = false;
+        this.escapeTapDispatchedForCurrentHold = false;
+        this.clearEscapeHoldTimer();
         return;
       }
 
@@ -2864,6 +2859,7 @@ export class GfnWebRtcClient {
       // current cursor position rather than from a stale last-known position.
       lastAbsX = null;
       lastAbsY = null;
+      this.clearEscapeHoldTimer();
 
       // Pointer lock was lost
       if (!this.inputReady) return;
@@ -2924,7 +2920,7 @@ export class GfnWebRtcClient {
 
         // Re-acquire pointer lock so the user stays in the game
         if (this.pointerLockTarget) {
-          void this.requestPointerLockWithOptionalFullscreen(this.pointerLockTarget, false)
+          void this.requestPointerLockWithEscGuard(this.pointerLockTarget, false)
             .catch(() => {});
         }
       }, 50);
@@ -2940,6 +2936,7 @@ export class GfnWebRtcClient {
       mouseInStreamView = false;
       lastAbsX = null;
       lastAbsY = null;
+      this.clearEscapeHoldTimer();
       this.releasePressedKeys("window blur");
       // Pause all input while window is not focused so no new events
       // (keyboard/gamepad/mouse) are registered or forwarded to the stream.
@@ -2948,6 +2945,7 @@ export class GfnWebRtcClient {
 
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") {
+        this.clearEscapeHoldTimer();
         this.releasePressedKeys(`visibility ${document.visibilityState}`);
         this.inputPaused = true;
         return;
@@ -2967,17 +2965,16 @@ export class GfnWebRtcClient {
       tryAutoLock();
     };
 
-    // Release any prior Keyboard API lock when leaving fullscreen (e.g. other UI may have locked keys).
+    // Try to lock keyboard (Escape, F11, etc.) when in fullscreen.
+    // This prevents the browser from processing Escape as pointer lock exit.
+    // Only works in fullscreen + secure context + Chromium.
     const onFullscreenChange = () => {
-      if (document.fullscreenElement) {
-        return;
-      }
       const nav = navigator as any;
-      if (nav.keyboard?.unlock) {
-        try {
+      if (document.fullscreenElement) {
+        void this.lockEscapeInFullscreen();
+      } else {
+        if (nav.keyboard?.unlock) {
           nav.keyboard.unlock();
-        } catch {
-          /* no-op */
         }
       }
     };
@@ -2986,6 +2983,8 @@ export class GfnWebRtcClient {
     window.addEventListener("gamepadconnected", this.onGamepadConnected);
     window.addEventListener("gamepaddisconnected", this.onGamepadDisconnected);
 
+    // Use document capture for keyboard events so Escape remains observable
+    // when keyboard lock is active in fullscreen.
     document.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("keyup", onKeyUp, true);
     if (pointerMoveEventName) {
@@ -3084,6 +3083,11 @@ export class GfnWebRtcClient {
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onWindowFocus);
 
+    // If already in fullscreen, try to lock keyboard immediately
+    if (document.fullscreenElement) {
+      onFullscreenChange();
+    }
+
     this.inputCleanup.push(() => window.removeEventListener("gamepadconnected", this.onGamepadConnected));
     this.inputCleanup.push(() => window.removeEventListener("gamepaddisconnected", this.onGamepadDisconnected));
     this.inputCleanup.push(() => document.removeEventListener("keydown", onKeyDown, true));
@@ -3116,9 +3120,12 @@ export class GfnWebRtcClient {
           window.clearTimeout(this.pointerLockEscapeTimer);
           this.pointerLockEscapeTimer = null;
         }
+      this.escapeTapDispatchedForCurrentHold = false;
+      this.clearEscapeAutoKeyUpTimer();
+      this.clearEscapeHoldTimer();
       this.releasePressedKeys("input cleanup");
-      this.pendingMouseDxFloat = 0;
-      this.pendingMouseDyFloat = 0;
+      this.pendingMouseDx = 0;
+      this.pendingMouseDy = 0;
       this.pendingMouseTimestampUs = null;
       this.mouseDeltaFilter.reset();
       this.pointerLockTarget = null;

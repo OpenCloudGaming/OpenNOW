@@ -61,8 +61,6 @@ export interface Settings {
   showAntiAfkIndicator: boolean;
   /** Show the stats overlay automatically when a stream launches */
   showStatsOnLaunch: boolean;
-  /** Skip the free-tier queue server selection modal and launch with default routing */
-  hideServerSelector: boolean;
   /** Enable controller-first media bar layout for library browsing */
   controllerMode: boolean;
   /** Play subtle sounds in controller library mode */
@@ -128,7 +126,6 @@ const DEFAULT_SETTINGS: Settings = {
   hideStreamButtons: false,
   showAntiAfkIndicator: true,
   showStatsOnLaunch: false,
-  hideServerSelector: false,
   controllerMode: false,
   controllerUiSounds: false,
   controllerBackgroundAnimations: false,

@@ -6,7 +6,6 @@ import type {
   GameInfo,
   GameVariant,
 } from "@shared/gfn";
-import { isOwnedLibraryStatus } from "@shared/gfn";
 import { cacheManager } from "../services/cacheManager";
 
 const GRAPHQL_URL = "https://games.geforce.com/graphql";
@@ -334,7 +333,7 @@ function resolveAppData(app: AppData): AppResolution {
   const lastPlayed = variants
     .map((variant) => variant.gfn?.library?.lastPlayedDate)
     .find((value): value is string => typeof value === "string" && value.length > 0);
-  const isInLibrary = variants.some((variant) => isOwnedLibraryStatus(variant.gfn?.library?.status));
+  const isInLibrary = variants.some((variant) => variant.gfn?.library?.status === "IN_LIBRARY" || variant.gfn?.library?.selected === true);
 
   return {
     numericAppId,
