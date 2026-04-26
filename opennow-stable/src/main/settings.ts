@@ -47,6 +47,8 @@ export interface Settings {
   shortcutScreenshot: string;
   /** Toggle stream recording shortcut */
   shortcutToggleRecording: string;
+  /** Save instant replay clip shortcut */
+  shortcutSaveReplay: string;
   /** How often to re-show the session timer while streaming (0 = off) */
   sessionClockShowEveryMinutes: number;
   /** How long the session timer stays visible when it appears */
@@ -57,6 +59,10 @@ export interface Settings {
   microphoneDeviceId: string;
   /** Hide stream buttons (mic/fullscreen/end-session) while streaming */
   hideStreamButtons: boolean;
+  /** Enable the instant replay buffer for recent stream clips */
+  instantReplayEnabled: boolean;
+  /** Maximum amount of recent stream video to keep in the replay buffer */
+  instantReplayDurationSeconds: number;
   /** Show the Anti-AFK indicator badge while streaming */
   showAntiAfkIndicator: boolean;
   /** Show the stats overlay automatically when a stream launches */
@@ -123,9 +129,12 @@ const DEFAULT_SETTINGS: Settings = {
   shortcutToggleMicrophone: defaultMicShortcut,
   shortcutScreenshot: "F11",
   shortcutToggleRecording: "F12",
+  shortcutSaveReplay: "Ctrl+Shift+R",
   microphoneMode: "disabled",
   microphoneDeviceId: "",
   hideStreamButtons: false,
+  instantReplayEnabled: false,
+  instantReplayDurationSeconds: 30,
   showAntiAfkIndicator: true,
   showStatsOnLaunch: false,
   hideServerSelector: false,

@@ -26,6 +26,7 @@ interface StreamViewProps {
     toggleMicrophone?: string;
     screenshot: string;
     recording: string;
+    saveReplay: string;
   };
   hideStreamButtons?: boolean;
   serverRegion?: string;
@@ -62,12 +63,29 @@ interface StreamViewProps {
   onReleasePointerLock?: () => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
+  instantReplayEnabled: boolean;
+  instantReplayDurationSeconds: number;
   onScreenshotShortcutChange: (value: string) => void;
   onRecordingShortcutChange: (value: string) => void;
+  onSaveReplayShortcutChange: (value: string) => void;
   subscriptionInfo: SubscriptionInfo | null;
   micTrack?: MediaStreamTrack | null;
   className?: string;
 }
+
+const isMac = navigator.platform.toLowerCase().includes('mac');
+
+const shortcutLabels: Record<string, string> = {
+  toggleStats: 'Toggle Stats',
+  togglePointerLock: 'Toggle Mouse Lock',
+  toggleFullscreen: 'Toggle Fullscreen',
+  stopStream: 'Stop Stream',
+  toggleAntiAfk: 'Toggle Anti-AFK',
+  toggleMicrophone: 'Toggle Microphone',
+  screenshot: 'Screenshot',
+  recording: 'Toggle Recording',
+  saveReplay: 'Save Instant Replay',
+};
 
 function getRttColor(rttMs: number): string {
   if (rttMs <= 0) return "var(--ink-muted)";
@@ -156,6 +174,18 @@ function formatWarningSeconds(value: number | undefined): string | null {
   }
   return `${seconds}s`;
 }
+
+const getSupportedRecordingMimeType = (): string => {
+  const mimeTypes = [
+    "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+    "video/mp4;codecs=avc1",
+    "video/mp4",
+    "video/webm;codecs=h264",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ];
+  return mimeTypes.find((m) => MediaRecorder.isTypeSupported(m)) ?? "video/webm";
+};
 
 type MicBadgeState = {
   connectedGamepads: number;
@@ -672,8 +702,11 @@ export function StreamView({
   onReleasePointerLock,
   microphoneMode,
   onMicrophoneModeChange,
+  instantReplayEnabled,
+  instantReplayDurationSeconds,
   onScreenshotShortcutChange,
   onRecordingShortcutChange,
+  onSaveReplayShortcutChange,
   subscriptionInfo,
   micTrack,
   hideStreamButtons = false,
@@ -702,10 +735,20 @@ export function StreamView({
   const [recordings, setRecordings] = useState<RecordingEntry[]>([]);
   const [recordingDurationMs, setRecordingDurationMs] = useState(0);
   const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [instantReplayError, setInstantReplayError] = useState<string | null>(null);
+  const [notification, setNotification] = useState<string | null>(null);
+  const [instantReplayBufferLength, setInstantReplayBufferLength] = useState(0);
+  const [isSavingReplay, setIsSavingReplay] = useState(false);
   const [usedMimeType, setUsedMimeType] = useState<string | null>(null);
   const [recordingShortcutInput, setRecordingShortcutInput] = useState(shortcuts.recording);
   const [recordingShortcutError, setRecordingShortcutError] = useState<string | null>(null);
+  const [saveReplayShortcutInput, setSaveReplayShortcutInput] = useState(shortcuts.saveReplay);
+  const [saveReplayShortcutError, setSaveReplayShortcutError] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const instantReplayBufferRef = useRef<{ data: Blob; timestamp: number }[]>([]);
+  const instantReplayRecorderRef = useRef<MediaRecorder | null>(null);
+  const instantReplayAudioCtxRef = useRef<AudioContext | null>(null);
+  const instantReplayMimeTypeRef = useRef<string>("video/webm");
   const recordingIdRef = useRef<string | null>(null);
   const recordingStartTimeRef = useRef<number>(0);
   const recordingTimerRef = useRef<number | undefined>(undefined);
@@ -718,6 +761,57 @@ export function StreamView({
     typeof window.openNow?.abortRecording === "function" &&
     typeof window.openNow?.listRecordings === "function" &&
     typeof window.openNow?.deleteRecording === "function";
+
+  const buildComposedStream = useCallback((): { composed: MediaStream; audioCtx: AudioContext } | null => {
+    const video = localVideoRef.current;
+    if (!video || !video.srcObject) {
+      return null;
+    }
+
+    const stream = video.srcObject as MediaStream;
+    const audioCtx = new AudioContext();
+    const audioDest = audioCtx.createMediaStreamDestination();
+
+    const audioEl = localAudioRef.current;
+    const gameAudioStream = audioEl?.srcObject instanceof MediaStream ? audioEl.srcObject : null;
+    if (gameAudioStream && gameAudioStream.getAudioTracks().length > 0) {
+      audioCtx.createMediaStreamSource(gameAudioStream).connect(audioDest);
+    }
+
+    if (micTrack && micTrack.readyState === "live") {
+      const micStream = new MediaStream([micTrack]);
+      audioCtx.createMediaStreamSource(micStream).connect(audioDest);
+    }
+
+    return {
+      composed: new MediaStream([
+        ...stream.getVideoTracks(),
+        ...audioDest.stream.getAudioTracks(),
+      ]),
+      audioCtx,
+    };
+  }, [micTrack]);
+
+  const trimInstantReplayBuffer = useCallback(() => {
+    const cutoff = Date.now() - instantReplayDurationSeconds * 1000;
+    instantReplayBufferRef.current = instantReplayBufferRef.current.filter((item) => item.timestamp >= cutoff);
+    setInstantReplayBufferLength(instantReplayBufferRef.current.length);
+  }, [instantReplayDurationSeconds]);
+
+  const stopInstantReplayRecorder = useCallback(() => {
+    const recorder = instantReplayRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+    }
+    instantReplayRecorderRef.current = null;
+    instantReplayAudioCtxRef.current?.close().catch(() => undefined);
+    instantReplayAudioCtxRef.current = null;
+  }, []);
+
+  const clearInstantReplayBuffer = useCallback(() => {
+    instantReplayBufferRef.current = [];
+    setInstantReplayBufferLength(0);
+  }, []);
 
   const microphoneModes = useMemo(
     () => [
@@ -835,6 +929,11 @@ export function StreamView({
     setRecordingShortcutError(null);
   }, [shortcuts.recording]);
 
+  useEffect(() => {
+    setSaveReplayShortcutInput(shortcuts.saveReplay);
+    setSaveReplayShortcutError(null);
+  }, [shortcuts.saveReplay]);
+
   const getScreenshotShortcutError = useCallback((rawValue: string): string | null => {
     const trimmed = rawValue.trim();
     if (!trimmed) {
@@ -853,6 +952,7 @@ export function StreamView({
       shortcuts.toggleAntiAfk,
       shortcuts.toggleMicrophone,
       shortcuts.recording,
+      shortcuts.saveReplay,
       isMacClient ? "Meta+G" : "Ctrl+Shift+G",
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
@@ -865,7 +965,7 @@ export function StreamView({
     }
 
     return null;
-  }, [isMacClient, shortcuts.recording, shortcuts.stopStream, shortcuts.toggleAntiAfk, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
+  }, [isMacClient, shortcuts.recording, shortcuts.saveReplay, shortcuts.stopStream, shortcuts.toggleAntiAfk, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
 
   const getRecordingShortcutError = useCallback((rawValue: string): string | null => {
     const trimmed = rawValue.trim();
@@ -885,6 +985,7 @@ export function StreamView({
       shortcuts.toggleAntiAfk,
       shortcuts.toggleMicrophone,
       shortcuts.screenshot,
+      shortcuts.saveReplay,
       isMacClient ? "Meta+G" : "Ctrl+Shift+G",
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
@@ -897,7 +998,40 @@ export function StreamView({
     }
 
     return null;
-  }, [isMacClient, shortcuts.screenshot, shortcuts.stopStream, shortcuts.toggleAntiAfk, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
+  }, [isMacClient, shortcuts.screenshot, shortcuts.saveReplay, shortcuts.stopStream, shortcuts.toggleAntiAfk, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
+
+  const getSaveReplayShortcutError = useCallback((rawValue: string): string | null => {
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      return "Shortcut cannot be empty.";
+    }
+
+    const normalized = normalizeShortcut(trimmed);
+    if (!normalized.valid) {
+      return "Invalid shortcut format.";
+    }
+
+    const reserved = [
+      shortcuts.toggleStats,
+      shortcuts.togglePointerLock,
+      shortcuts.stopStream,
+      shortcuts.toggleAntiAfk,
+      shortcuts.toggleMicrophone,
+      shortcuts.screenshot,
+      shortcuts.recording,
+      isMacClient ? "Meta+G" : "Ctrl+Shift+G",
+    ]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => normalizeShortcut(value))
+      .filter((parsed) => parsed.valid)
+      .map((parsed) => parsed.canonical);
+
+    if (reserved.includes(normalized.canonical)) {
+      return "Shortcut conflicts with an existing binding.";
+    }
+
+    return null;
+  }, [isMacClient, shortcuts.recording, shortcuts.screenshot, shortcuts.stopStream, shortcuts.toggleAntiAfk, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
 
   const SIDEBAR_TOGGLE_RAW = isMacClient ? "Meta+G" : "Ctrl+Shift+G";
   const sidebarToggleShortcutDisplay = formatShortcutForDisplay(SIDEBAR_TOGGLE_RAW, isMacClient);
@@ -942,6 +1076,27 @@ export function StreamView({
       }
     },
     [getRecordingShortcutError, onRecordingShortcutChange, shortcuts.recording],
+  );
+
+  const applySaveReplayShortcutFromCapture = useCallback(
+    (canonical: string) => {
+      const error = getSaveReplayShortcutError(canonical);
+      if (error) {
+        setSaveReplayShortcutError(error);
+        return;
+      }
+      const normalized = normalizeShortcut(canonical.trim());
+      if (!normalized.valid) {
+        setSaveReplayShortcutError("Invalid shortcut format.");
+        return;
+      }
+      setSaveReplayShortcutError(null);
+      setSaveReplayShortcutInput(normalized.canonical);
+      if (normalized.canonical !== shortcuts.saveReplay) {
+        onSaveReplayShortcutChange(normalized.canonical);
+      }
+    },
+    [getSaveReplayShortcutError, onSaveReplayShortcutChange, shortcuts.saveReplay],
   );
 
   const handleStreamScreenshotShortcutKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
@@ -996,6 +1151,33 @@ export function StreamView({
     }
     e.preventDefault();
     applyRecordingShortcutFromCapture(text);
+  };
+
+  const handleStreamSaveReplayShortcutKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.currentTarget.blur();
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      return;
+    }
+    const captured = shortcutFromKeyboardEvent(e.nativeEvent);
+    if (!captured) {
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    applySaveReplayShortcutFromCapture(captured);
+  };
+
+  const handleStreamSaveReplayShortcutPaste = (e: React.ClipboardEvent<HTMLInputElement>): void => {
+    const text = e.clipboardData.getData("text/plain").trim();
+    if (!text) {
+      return;
+    }
+    e.preventDefault();
+    applySaveReplayShortcutFromCapture(text);
   };
 
   const refreshScreenshots = useCallback(async () => {
@@ -1135,47 +1317,17 @@ export function StreamView({
       return;
     }
 
-    const video = localVideoRef.current;
-    if (!video || !video.srcObject) {
+    const streamInfo = buildComposedStream();
+    if (!streamInfo) {
       setRecordingError("Stream is not ready for recording yet.");
       return;
     }
 
-    const stream = video.srcObject as MediaStream;
-    const mimeTypes = [
-      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-      "video/mp4;codecs=avc1",
-      "video/mp4",
-      "video/webm;codecs=h264",
-      "video/webm;codecs=vp8",
-      "video/webm",
-    ];
-    const mimeType = mimeTypes.find((m) => MediaRecorder.isTypeSupported(m)) ?? "video/webm";
+    const mimeType = getSupportedRecordingMimeType();
     setUsedMimeType(mimeType);
 
-    // Build a composed MediaStream: video tracks + mixed audio (game + mic)
-    const audioCtx = new AudioContext();
+    const { composed, audioCtx } = streamInfo;
     audioCtxRef.current = audioCtx;
-    const audioDest = audioCtx.createMediaStreamDestination();
-
-    // Wire game audio (from the <audio> element's srcObject)
-    const audioEl = localAudioRef.current;
-    const gameAudioStream = audioEl?.srcObject instanceof MediaStream ? audioEl.srcObject : null;
-    if (gameAudioStream && gameAudioStream.getAudioTracks().length > 0) {
-      audioCtx.createMediaStreamSource(gameAudioStream).connect(audioDest);
-    }
-
-    // Wire microphone (if active)
-    if (micTrack && micTrack.readyState === "live") {
-      const micStream = new MediaStream([micTrack]);
-      audioCtx.createMediaStreamSource(micStream).connect(audioDest);
-    }
-
-    // Compose: video tracks from the video element + mixed audio destination track
-    const composed = new MediaStream([
-      ...stream.getVideoTracks(),
-      ...audioDest.stream.getAudioTracks(),
-    ]);
 
     let recordingId: string;
     try {
@@ -1294,7 +1446,7 @@ export function StreamView({
 
     mediaRecorderRef.current = recorder;
     recorder.start(2000);
-  }, [gameTitle, isRecording, micTrack, recordingApiAvailable]);
+  }, [buildComposedStream, gameTitle, isRecording, micTrack, recordingApiAvailable]);
 
   // Cleanup: abort any active recording on unmount
   useEffect(() => {
@@ -1313,6 +1465,129 @@ export function StreamView({
       audioCtxRef.current = null;
     };
   }, []);
+
+  const handleSaveInstantReplay = useCallback(async () => {
+    setInstantReplayError(null);
+    if (!instantReplayEnabled) {
+      setInstantReplayError("Enable Instant Replay in settings to save replay clips.");
+      return;
+    }
+    if (!recordingApiAvailable) {
+      setInstantReplayError("Recording API unavailable. Restart OpenNOW to enable instant replay.");
+      return;
+    }
+
+    const buffer = instantReplayBufferRef.current;
+    if (buffer.length === 0) {
+      setInstantReplayError("No instant replay content is available yet. Wait for the stream to start.");
+      return;
+    }
+
+    setIsSavingReplay(true);
+    try {
+      const mimeType = instantReplayMimeTypeRef.current || getSupportedRecordingMimeType();
+
+      const result = await window.openNow.beginRecording({ mimeType });
+      const recordingId = result.recordingId;
+      const replayBlob = new Blob(buffer.map((item) => item.data), { type: mimeType });
+      await window.openNow.sendRecordingChunk({ recordingId, chunk: await replayBlob.arrayBuffer() });
+
+      const durationMs = Math.max(0, buffer[buffer.length - 1].timestamp - buffer[0].timestamp);
+      let thumbnailDataUrl: string | undefined;
+      const video = localVideoRef.current;
+      if (video && video.videoWidth > 0 && video.videoHeight > 0) {
+        const maxW = 320;
+        const maxH = 180;
+        let w = video.videoWidth;
+        let h = video.videoHeight;
+
+        if (w > maxW) {
+          h = Math.round((maxW / w) * h);
+          w = maxW;
+        }
+        if (h > maxH) {
+          w = Math.round((maxH / h) * w);
+          h = maxH;
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx2d = canvas.getContext("2d");
+        if (ctx2d) {
+          ctx2d.drawImage(video, 0, 0, w, h);
+          thumbnailDataUrl = canvas.toDataURL("image/jpeg", 0.72);
+        }
+      }
+
+      const entry = await window.openNow.finishRecording({
+        recordingId,
+        durationMs,
+        gameTitle,
+        thumbnailDataUrl,
+      });
+      setRecordings((prev) => [entry, ...prev].slice(0, 20));
+      // Keep buffer for overlapping saves
+      // clearInstantReplayBuffer();
+      setNotification("Replay Saved");
+      setTimeout(() => setNotification(null), 3000);
+    } catch (error) {
+      console.error("[StreamView] Failed to save instant replay:", error);
+      setInstantReplayError("Unable to save instant replay.");
+    } finally {
+      setIsSavingReplay(false);
+    }
+  }, [instantReplayEnabled, recordingApiAvailable, gameTitle, clearInstantReplayBuffer]);
+
+  useEffect(() => {
+    if (!instantReplayEnabled) {
+      stopInstantReplayRecorder();
+      clearInstantReplayBuffer();
+      return;
+    }
+
+    if (!recordingApiAvailable) {
+      setInstantReplayError("Recording API unavailable. Restart OpenNOW to enable instant replay.");
+      return;
+    }
+
+    const streamInfo = buildComposedStream();
+    if (!streamInfo) {
+      return;
+    }
+
+    const mimeType = getSupportedRecordingMimeType();
+    instantReplayMimeTypeRef.current = mimeType;
+
+    const { composed, audioCtx } = streamInfo;
+    instantReplayAudioCtxRef.current = audioCtx;
+
+    const recorder = new MediaRecorder(composed, { mimeType });
+    recorder.ondataavailable = (e) => {
+      if (!e.data || e.data.size === 0) return;
+      instantReplayBufferRef.current.push({ data: e.data, timestamp: Date.now() });
+      trimInstantReplayBuffer();
+      setInstantReplayBufferLength(instantReplayBufferRef.current.length);
+    };
+
+    recorder.onerror = () => {
+      setInstantReplayError("Instant replay recording failed.");
+      stopInstantReplayRecorder();
+    };
+
+    recorder.onstop = () => {
+      instantReplayAudioCtxRef.current?.close().catch(() => undefined);
+      instantReplayAudioCtxRef.current = null;
+    };
+
+    instantReplayRecorderRef.current = recorder;
+    recorder.start(1000);
+    setInstantReplayError(null);
+
+    return () => {
+      stopInstantReplayRecorder();
+    };
+  }, [instantReplayEnabled, recordingApiAvailable, buildComposedStream, trimInstantReplayBuffer, stopInstantReplayRecorder, isStreaming]);
 
   const setVideoRef = useCallback((element: HTMLVideoElement | null) => {
     localVideoRef.current = element;
@@ -1392,6 +1667,7 @@ export function StreamView({
 
   useEffect(() => {
     const screenshotShortcut = normalizeShortcut(shortcuts.screenshot);
+    const saveReplayShortcut = normalizeShortcut(shortcuts.saveReplay);
     const recordingShortcut = normalizeShortcut(shortcuts.recording);
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -1408,6 +1684,13 @@ export function StreamView({
         event.preventDefault();
         event.stopPropagation();
         void captureScreenshot();
+        return;
+      }
+
+      if (isShortcutMatch(event, saveReplayShortcut)) {
+        event.preventDefault();
+        event.stopPropagation();
+        void handleSaveInstantReplay();
         return;
       }
 
@@ -1432,7 +1715,7 @@ export function StreamView({
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [captureScreenshot, handleToggleSideBar, isMacClient, shortcuts.screenshot, shortcuts.recording, toggleRecording]);
+  }, [captureScreenshot, handleToggleSideBar, isMacClient, shortcuts.screenshot, shortcuts.saveReplay, shortcuts.recording, toggleRecording]);
 
   return (
     <div className={["sv", className].filter(Boolean).join(" ")}>
@@ -1666,6 +1949,26 @@ export function StreamView({
                   {recordingError && (
                     <span className="sidebar-hint sidebar-hint--error">{recordingError}</span>
                   )}
+                  {instantReplayEnabled && (
+                    <div className="sidebar-row sidebar-row--aligned">
+                      <span className="sidebar-label">
+                        Save Recent Clip
+                        <span className="sidebar-hint">Keep the last {instantReplayDurationSeconds}s ready to save.</span>
+                      </span>
+                      <button
+                        type="button"
+                        className="sidebar-button sidebar-screenshot-button"
+                        onClick={() => { void handleSaveInstantReplay(); }}
+                        disabled={!recordingApiAvailable || isSavingReplay || instantReplayBufferLength === 0}
+                      >
+                        <Save size={14} />
+                        <span>{isSavingReplay ? "Saving..." : "Save Replay"}</span>
+                      </button>
+                    </div>
+                  )}
+                  {instantReplayError && (
+                    <span className="sidebar-hint sidebar-hint--error">{instantReplayError}</span>
+                  )}
                   {recordings.length === 0 ? (
                     <span className="sidebar-hint">No recordings yet. Press {shortcuts.recording} to record.</span>
                   ) : (
@@ -1814,6 +2117,41 @@ export function StreamView({
                     />
                   </div>
                   {recordingShortcutError && <span className="sidebar-hint sidebar-hint--error">{recordingShortcutError}</span>}
+                  <div className="sidebar-row sidebar-row--column">
+                    <div className="sidebar-row-top">
+                      <span className="sidebar-label">Save Instant Replay Shortcut</span>
+                    </div>
+                    <input
+                      type="text"
+                      className={`settings-text-input settings-shortcut-input sidebar-shortcut-input ${saveReplayShortcutError ? "error" : ""}`}
+                      value={saveReplayShortcutInput}
+                      readOnly
+                      onFocus={(event) => event.target.select()}
+                      onPaste={handleStreamSaveReplayShortcutPaste}
+                      onBlur={() => {
+                        const error = getSaveReplayShortcutError(saveReplayShortcutInput);
+                        if (error) {
+                          setSaveReplayShortcutError(error);
+                          return;
+                        }
+                        const normalized = normalizeShortcut(saveReplayShortcutInput.trim());
+                        if (!normalized.valid) {
+                          setSaveReplayShortcutError("Invalid shortcut format.");
+                          return;
+                        }
+                        setSaveReplayShortcutError(null);
+                        setSaveReplayShortcutInput(normalized.canonical);
+                        if (normalized.canonical !== shortcuts.saveReplay) {
+                          onSaveReplayShortcutChange(normalized.canonical);
+                        }
+                      }}
+                      onKeyDown={handleStreamSaveReplayShortcutKeyDown}
+                      placeholder="Click, then press a key"
+                      title="Focus and press the key combination to bind"
+                      spellCheck={false}
+                    />
+                  </div>
+                  {saveReplayShortcutError && <span className="sidebar-hint sidebar-hint--error">{saveReplayShortcutError}</span>}
                   <div className="sidebar-row sidebar-row--aligned">
                     <span className="sidebar-label">Toggle Stats</span>
                     <span className="settings-value-badge">{shortcuts.toggleStats}</span>
@@ -1833,6 +2171,10 @@ export function StreamView({
                     </div>
                   )}
                   <div className="sidebar-row sidebar-row--aligned">
+                    <span className="sidebar-label">Save Instant Replay</span>
+                    <span className="settings-value-badge">{shortcuts.saveReplay}</span>
+                  </div>
+                  <div className="sidebar-row sidebar-row--aligned">
                     <span className="sidebar-label">Toggle Sidebar</span>
                     <span className="settings-value-badge">{sidebarToggleShortcutDisplay}</span>
                   </div>
@@ -1841,6 +2183,25 @@ export function StreamView({
             )}
           </SideBar>
         </>
+      )}
+
+      {showSideBar && (
+        <div className="sv-shortcuts">
+          <div className="sv-shortcuts-title">Shortcuts</div>
+          <div className="sv-shortcuts-list">
+            {Object.entries(shortcuts).map(([key, value]) => {
+              if (!value || value === 'none') return null;
+              let display = formatShortcutForDisplay(value, isMac);
+              if (!display) display = value;
+              return (
+                <div key={key} className="sv-shortcuts-item">
+                  <span className="sv-shortcuts-key">{display}</span>
+                  <span className="sv-shortcuts-desc">{shortcutLabels[key] || key}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       )}
 
       {selectedScreenshot && (
@@ -2049,6 +2410,28 @@ export function StreamView({
         PlatformIcon={PlatformIcon}
         showHints={showHints}
       />
+
+      {/* Notification */}
+      {notification && (
+        <div
+          className="sv-notification"
+          style={{
+            position: 'fixed',
+            top: 10,
+            right: 10,
+            background: 'rgba(0, 128, 0, 0.9)',
+            color: 'white',
+            padding: '10px 15px',
+            borderRadius: '5px',
+            zIndex: 10000,
+            fontSize: '14px',
+            fontWeight: 'bold',
+            boxShadow: '0 2px 10px rgba(0,0,0,0.3)',
+          }}
+        >
+          {notification}
+        </div>
+      )}
     </div>
   );
 }

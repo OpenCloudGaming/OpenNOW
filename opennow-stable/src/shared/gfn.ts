@@ -147,9 +147,12 @@ export interface Settings {
   shortcutToggleMicrophone: string;
   shortcutScreenshot: string;
   shortcutToggleRecording: string;
+  shortcutSaveReplay: string;
   microphoneMode: MicrophoneMode;
   microphoneDeviceId: string;
   hideStreamButtons: boolean;
+  instantReplayEnabled: boolean;
+  instantReplayDurationSeconds: number;
   showAntiAfkIndicator: boolean;
   showStatsOnLaunch: boolean;
   /** Skip the free-tier queue server selection modal and launch with default routing */

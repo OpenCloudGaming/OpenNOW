@@ -222,6 +222,7 @@ const DEFAULT_SHORTCUTS = {
   shortcutToggleMicrophone: "Ctrl+Shift+M",
   shortcutScreenshot: "F11",
   shortcutToggleRecording: "F12",
+  shortcutSaveReplay: "Ctrl+Shift+R",
 } as const;
 
 
@@ -835,9 +836,12 @@ export function App(): JSX.Element {
     shortcutToggleMicrophone: DEFAULT_SHORTCUTS.shortcutToggleMicrophone,
     shortcutScreenshot: DEFAULT_SHORTCUTS.shortcutScreenshot,
     shortcutToggleRecording: DEFAULT_SHORTCUTS.shortcutToggleRecording,
+    shortcutSaveReplay: DEFAULT_SHORTCUTS.shortcutSaveReplay,
     microphoneMode: "disabled",
     microphoneDeviceId: "",
     hideStreamButtons: false,
+    instantReplayEnabled: false,
+    instantReplayDurationSeconds: 30,
     showAntiAfkIndicator: true,
     showStatsOnLaunch: false,
     hideServerSelector: false,
@@ -1859,7 +1863,8 @@ export function App(): JSX.Element {
     const toggleMicrophone = parseWithFallback(settings.shortcutToggleMicrophone, DEFAULT_SHORTCUTS.shortcutToggleMicrophone);
     const screenshot = parseWithFallback(settings.shortcutScreenshot, DEFAULT_SHORTCUTS.shortcutScreenshot);
     const recording = parseWithFallback(settings.shortcutToggleRecording, DEFAULT_SHORTCUTS.shortcutToggleRecording);
-    return { toggleStats, togglePointerLock, toggleFullscreen, stopStream, toggleAntiAfk, toggleMicrophone, screenshot, recording };
+    const saveReplay = parseWithFallback(settings.shortcutSaveReplay, DEFAULT_SHORTCUTS.shortcutSaveReplay);
+    return { toggleStats, togglePointerLock, toggleFullscreen, stopStream, toggleAntiAfk, toggleMicrophone, screenshot, recording, saveReplay };
   }, [
     settings.shortcutToggleStats,
     settings.shortcutTogglePointerLock,
@@ -1869,6 +1874,7 @@ export function App(): JSX.Element {
     settings.shortcutToggleMicrophone,
     settings.shortcutScreenshot,
     settings.shortcutToggleRecording,
+    settings.shortcutSaveReplay,
   ]);
 
   const setSessionFullscreen = useCallback(async (nextFullscreen: boolean) => {
@@ -3916,6 +3922,7 @@ export function App(): JSX.Element {
               toggleMicrophone: formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac),
               screenshot: shortcuts.screenshot.canonical,
               recording: shortcuts.recording.canonical,
+              saveReplay: shortcuts.saveReplay.canonical,
             }}
             hideStreamButtons={settings.hideStreamButtons}
             serverRegion={session?.serverIp}
@@ -3948,11 +3955,16 @@ export function App(): JSX.Element {
             onMouseAccelerationChange={handleMouseAccelerationChange}
             microphoneMode={settings.microphoneMode}
             onMicrophoneModeChange={handleMicrophoneModeChange}
+            instantReplayEnabled={settings.instantReplayEnabled}
+            instantReplayDurationSeconds={settings.instantReplayDurationSeconds}
             onScreenshotShortcutChange={(value) => {
               void updateSetting("shortcutScreenshot", value);
             }}
             onRecordingShortcutChange={(value) => {
               void updateSetting("shortcutToggleRecording", value);
+            }}
+            onSaveReplayShortcutChange={(value) => {
+              void updateSetting("shortcutSaveReplay", value);
             }}
             subscriptionInfo={subscriptionInfo}
             micTrack={clientRef.current?.getMicTrack() ?? null}
