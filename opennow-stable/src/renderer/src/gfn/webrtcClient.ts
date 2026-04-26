@@ -135,6 +135,10 @@ export interface TouchMouseMoveInput {
   timestampMs?: number;
 }
 
+export interface TouchMouseTapInput {
+  timestampMs?: number;
+}
+
 export type StreamLagReason =
   | "unknown"
   | "stable"
@@ -2030,6 +2034,22 @@ export class GfnWebRtcClient {
       timestampUs: timestampUs(input.timestampMs),
     });
     this.sendInputPacket(payload, INPUT_MOUSE_REL);
+  }
+
+  public sendTouchMouseTap(input: TouchMouseTapInput = {}): void {
+    if (!this.inputReady || this.inputPaused) {
+      return;
+    }
+
+    const timestamp = timestampUs(input.timestampMs);
+    this.sendReliable(this.inputEncoder.encodeMouseButtonDown({
+      button: toMouseButton(0),
+      timestampUs: timestamp,
+    }));
+    this.sendReliable(this.inputEncoder.encodeMouseButtonUp({
+      button: toMouseButton(0),
+      timestampUs: timestamp + 1000n,
+    }));
   }
 
   private readGamepadState(gamepad: Gamepad, controllerId: number): GamepadInput {

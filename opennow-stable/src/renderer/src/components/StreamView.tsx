@@ -83,6 +83,7 @@ interface StreamViewProps {
   onReleasePointerLock?: () => void;
   onVirtualGamepadState?: (state: VirtualGamepadState) => void;
   onTouchMouseMove?: (input: { dx: number; dy: number; timestampMs?: number }) => void;
+  onTouchMouseTap?: (input: { timestampMs?: number }) => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   onScreenshotShortcutChange: (value: string) => void;
@@ -822,11 +823,20 @@ function TouchControllerOverlay({
 function AndroidMousePad({
   enabled,
   onTouchMouseMove,
+  onTouchMouseTap,
 }: {
   enabled: boolean;
   onTouchMouseMove?: (input: { dx: number; dy: number; timestampMs?: number }) => void;
+  onTouchMouseTap?: (input: { timestampMs?: number }) => void;
 }): JSX.Element | null {
-  const lastPointRef = useRef<{ x: number; y: number; id: number } | null>(null);
+  const lastPointRef = useRef<{
+    x: number;
+    y: number;
+    startX: number;
+    startY: number;
+    startMs: number;
+    id: number;
+  } | null>(null);
 
   if (!enabled || !onTouchMouseMove) {
     return null;
@@ -842,7 +852,14 @@ function AndroidMousePad({
         }
         event.preventDefault();
         event.currentTarget.setPointerCapture(event.pointerId);
-        lastPointRef.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
+        lastPointRef.current = {
+          x: event.clientX,
+          y: event.clientY,
+          startX: event.clientX,
+          startY: event.clientY,
+          startMs: event.timeStamp,
+          id: event.pointerId,
+        };
       }}
       onPointerMove={(event) => {
         const last = lastPointRef.current;
@@ -856,8 +873,15 @@ function AndroidMousePad({
         onTouchMouseMove({ dx, dy, timestampMs: event.timeStamp });
       }}
       onPointerUp={(event) => {
-        if (lastPointRef.current?.id === event.pointerId) {
+        const last = lastPointRef.current;
+        if (last?.id === event.pointerId) {
+          const movedPx = Math.hypot(event.clientX - last.startX, event.clientY - last.startY);
+          const elapsedMs = event.timeStamp - last.startMs;
           lastPointRef.current = null;
+          if (movedPx <= 10 && elapsedMs <= 280) {
+            event.preventDefault();
+            onTouchMouseTap?.({ timestampMs: event.timeStamp });
+          }
         }
       }}
       onPointerCancel={(event) => {
@@ -1218,6 +1242,7 @@ export function StreamView({
   onReleasePointerLock,
   onVirtualGamepadState,
   onTouchMouseMove,
+  onTouchMouseTap,
   microphoneMode,
   onMicrophoneModeChange,
   onScreenshotShortcutChange,
@@ -2503,6 +2528,7 @@ export function StreamView({
           <AndroidMousePad
             enabled={androidTouchSettings.mousePad}
             onTouchMouseMove={onTouchMouseMove}
+            onTouchMouseTap={onTouchMouseTap}
           />
           <AndroidStreamMenu
             diagnosticsStore={diagnosticsStore}

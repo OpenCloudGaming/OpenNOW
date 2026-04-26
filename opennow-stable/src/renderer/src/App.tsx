@@ -3551,6 +3551,9 @@ export function App(): JSX.Element {
             onTouchMouseMove={(input) => {
               clientRef.current?.sendTouchMouseMove(input);
             }}
+            onTouchMouseTap={(input) => {
+              clientRef.current?.sendTouchMouseTap(input);
+            }}
           />
         )}
         {isSwitchingGame && settings.controllerMode && streamStatus !== "connecting" && (
