@@ -1773,7 +1773,7 @@ export function StreamView({
         handleToggleSideBar();
       }
     };
-
+  }, [captureScreenshot, handleSaveInstantReplay, handleToggleSideBar, isMacClient, shortcuts.screenshot, shortcuts.saveReplay, shortcuts.recording, toggleRecording]);
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [captureScreenshot, handleToggleSideBar, isMacClient, shortcuts.screenshot, shortcuts.saveReplay, shortcuts.recording, toggleRecording]);
