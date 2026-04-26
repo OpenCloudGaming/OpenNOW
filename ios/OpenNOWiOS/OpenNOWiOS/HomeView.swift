@@ -124,6 +124,11 @@ struct HomeView: View {
                         jumpBackInSection
                     }
 
+                    if !store.favoriteGames.isEmpty {
+                        sectionHeader("Favorites")
+                        favoritesSection
+                    }
+
                     if !store.featuredGames.isEmpty || store.isLoadingGames {
                         sectionHeader("Featured")
                         featuredSection
@@ -213,6 +218,19 @@ struct HomeView: View {
                         FeaturedGameCard(game: game) {
                             selectedGameForDetails = game
                         }
+                    }
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    private var favoritesSection: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 14) {
+                ForEach(store.favoriteGames.prefix(12)) { game in
+                    FeaturedGameCard(game: game) {
+                        selectedGameForDetails = game
                     }
                 }
             }
@@ -470,6 +488,7 @@ struct GameCardView: View {
 struct GameLaunchDetailsSheet: View {
     let game: CloudGame
     let onLaunch: (GameLaunchOption?) -> Void
+    @EnvironmentObject private var store: OpenNOWStore
     @Environment(\.dismiss) private var dismiss
     @State private var selectedOption: GameLaunchOption?
 
@@ -609,6 +628,17 @@ struct GameLaunchDetailsSheet: View {
             }
             .navigationTitle("Game Details")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        Haptics.selection()
+                        store.toggleFavorite(game)
+                    } label: {
+                        Image(systemName: store.isFavorite(game) ? "heart.fill" : "heart")
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(store.isFavorite(game) ? .red : .primary)
+                    }
+                    .accessibilityLabel(store.isFavorite(game) ? "Remove from favorites" : "Add to favorites")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         Haptics.light()
@@ -755,6 +785,7 @@ struct GameLaunchDetailsSheet: View {
 }
 
 private struct GameArtworkCard: View {
+    @EnvironmentObject private var store: OpenNOWStore
     let game: CloudGame
     let artworkHeight: CGFloat
     let titleFont: Font
@@ -814,6 +845,16 @@ private struct GameArtworkCard: View {
                     .allowsHitTesting(false)
             }
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .overlay(alignment: .topTrailing) {
+            if store.isFavorite(game) {
+                Image(systemName: "heart.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(8)
+                    .background(.red.opacity(0.88), in: Circle())
+                    .padding(10)
+            }
         }
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -1138,6 +1179,7 @@ func gameResolvedStores(game: CloudGame) -> [String] {
 
 #if !os(tvOS)
 private struct UIKitGameDetailsPresenter: UIViewControllerRepresentable {
+    @EnvironmentObject private var store: OpenNOWStore
     @Binding var selectedGame: CloudGame?
     let onLaunch: (CloudGame, GameLaunchOption?) -> Void
 
@@ -1161,6 +1203,7 @@ private struct UIKitGameDetailsPresenter: UIViewControllerRepresentable {
                     onLaunch(game, option)
                     selectedGame = nil
                 }
+                .environmentObject(store)
             )
             hosted.modalPresentationStyle = .pageSheet
             if let sheet = hosted.sheetPresentationController {

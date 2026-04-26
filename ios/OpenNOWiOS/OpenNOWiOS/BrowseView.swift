@@ -5,6 +5,7 @@ struct BrowseView: View {
     @State private var selectedGenre: String? = nil
     @State private var selectedPlatform: String?
     @State private var selectedStore: String?
+    @State private var favoritesOnly = false
     @State private var sortMode: CatalogSortMode = .title
     @State private var pendingLaunchRequest: GameLaunchRequest?
     @State private var selectedGameForDetails: CloudGame?
@@ -27,7 +28,8 @@ struct BrowseView: View {
             let matchesGenre = selectedGenre == nil || game.genre == selectedGenre
             let matchesPlatform = selectedPlatform == nil || game.platform == selectedPlatform
             let matchesStore = selectedStore.map { gameResolvedStores(game: game).contains($0) } ?? true
-            return matchesGenre && matchesPlatform && matchesStore
+            let matchesFavorite = !favoritesOnly || store.isFavorite(game)
+            return matchesGenre && matchesPlatform && matchesStore && matchesFavorite
         }
 
         switch sortMode {
@@ -55,6 +57,7 @@ struct BrowseView: View {
             selectedGenre != nil ||
             selectedPlatform != nil ||
             selectedStore != nil ||
+            favoritesOnly ||
             sortMode != .title
     }
 
@@ -129,6 +132,16 @@ struct BrowseView: View {
                     }
                     .buttonStyle(.bordered)
 
+                    Button {
+                        Haptics.selection()
+                        favoritesOnly.toggle()
+                    } label: {
+                        Label("Favorites", systemImage: favoritesOnly ? "heart.fill" : "heart")
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(favoritesOnly ? .red : nil)
+
                     if hasActiveFilters {
                         Button {
                             Haptics.light()
@@ -151,6 +164,7 @@ struct BrowseView: View {
         selectedGenre = nil
         selectedPlatform = nil
         selectedStore = nil
+        favoritesOnly = false
         sortMode = .title
     }
 

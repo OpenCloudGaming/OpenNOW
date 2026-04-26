@@ -413,17 +413,11 @@ struct PrintedWasteQueueView: View {
         await withCheckedContinuation { continuation in
             let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
             let start = Date()
-            let lock = NSLock()
-            var didFinish = false
+            let completionState = TCPProbeCompletionState()
 
+            @Sendable
             func finish(_ sample: Double?) {
-                lock.lock()
-                guard !didFinish else {
-                    lock.unlock()
-                    return
-                }
-                didFinish = true
-                lock.unlock()
+                guard completionState.markFinished() else { return }
 
                 connection.stateUpdateHandler = nil
                 connection.cancel()
@@ -682,14 +676,14 @@ private struct PrintedWasteLaunchSheetModifier: ViewModifier {
     func body(content: Content) -> some View {
         let sheetBinding = Binding<GameLaunchRequest?>(
             get: {
-                store.shouldUsePrintedWasteQueue ? pendingLaunchRequest : nil
+                store.shouldPresentPrintedWasteQueue ? pendingLaunchRequest : nil
             },
             set: { pendingLaunchRequest = $0 }
         )
 
         content
             .onChange(of: pendingLaunchRequest?.id) { _, _ in
-                guard !store.shouldUsePrintedWasteQueue,
+                guard !store.shouldPresentPrintedWasteQueue,
                       let request = pendingLaunchRequest else { return }
                 store.scheduleLaunch(game: request.game, zoneUrl: nil, launchOption: request.launchOption)
                 pendingLaunchRequest = nil
@@ -713,6 +707,19 @@ private struct PrintedWasteLaunchSheetModifier: ViewModifier {
                     .presentationBackground(.regularMaterial)
                 }
             }
+    }
+}
+
+private final class TCPProbeCompletionState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didFinish = false
+
+    func markFinished() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !didFinish else { return false }
+        didFinish = true
+        return true
     }
 }
 

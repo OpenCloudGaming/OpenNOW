@@ -158,61 +158,100 @@ struct SessionAdState: Codable, Equatable {
 
 struct AppSettings: Codable, Equatable {
     var preferredRegion: String
+    var preferredResolution: String
     var preferredFPS: Int
     var preferredQuality: String
     var preferredCodec: String
+    var maxBitrateMbps: Int
+    var keyboardLayout: String
+    var gameLanguage: String
+    var enableL4S: Bool
+    var enableCloudGsync: Bool
     var keepMicEnabled: Bool
     var showStatsOverlay: Bool
+    var hideServerSelector: Bool
     var selectedProviderIdpId: String
     var fortnitePrefersNativeTouch: Bool
     var touchControlLayouts: [String: TouchControlLayout]
     var streamerPreferences: StreamerPreferences
+    var favoriteGameIds: [String]
 
     enum CodingKeys: String, CodingKey {
         case preferredRegion
+        case preferredResolution
         case preferredFPS
         case preferredQuality
         case preferredCodec
+        case maxBitrateMbps
+        case keyboardLayout
+        case gameLanguage
+        case enableL4S
+        case enableCloudGsync
         case keepMicEnabled
         case showStatsOverlay
+        case hideServerSelector
         case selectedProviderIdpId
         case fortnitePrefersNativeTouch
         case touchControlLayouts
         case streamerPreferences
+        case favoriteGameIds
     }
 
     init(
         preferredRegion: String,
+        preferredResolution: String,
         preferredFPS: Int,
         preferredQuality: String,
         preferredCodec: String,
+        maxBitrateMbps: Int,
+        keyboardLayout: String,
+        gameLanguage: String,
+        enableL4S: Bool,
+        enableCloudGsync: Bool,
         keepMicEnabled: Bool,
         showStatsOverlay: Bool,
+        hideServerSelector: Bool,
         selectedProviderIdpId: String,
         fortnitePrefersNativeTouch: Bool,
         touchControlLayouts: [String: TouchControlLayout],
-        streamerPreferences: StreamerPreferences
+        streamerPreferences: StreamerPreferences,
+        favoriteGameIds: [String]
     ) {
         self.preferredRegion = preferredRegion
+        self.preferredResolution = preferredResolution
         self.preferredFPS = preferredFPS
         self.preferredQuality = preferredQuality
         self.preferredCodec = preferredCodec
+        self.maxBitrateMbps = maxBitrateMbps
+        self.keyboardLayout = keyboardLayout
+        self.gameLanguage = gameLanguage
+        self.enableL4S = enableL4S
+        self.enableCloudGsync = enableCloudGsync
         self.keepMicEnabled = keepMicEnabled
         self.showStatsOverlay = showStatsOverlay
+        self.hideServerSelector = hideServerSelector
         self.selectedProviderIdpId = selectedProviderIdpId
         self.fortnitePrefersNativeTouch = fortnitePrefersNativeTouch
         self.touchControlLayouts = touchControlLayouts
         self.streamerPreferences = streamerPreferences
+        self.favoriteGameIds = favoriteGameIds
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         preferredRegion = try container.decodeIfPresent(String.self, forKey: .preferredRegion) ?? "Auto"
+        preferredResolution = try container.decodeIfPresent(String.self, forKey: .preferredResolution) ?? "Auto"
         preferredFPS = try container.decodeIfPresent(Int.self, forKey: .preferredFPS) ?? 60
         preferredQuality = try container.decodeIfPresent(String.self, forKey: .preferredQuality) ?? "Balanced"
         preferredCodec = try container.decodeIfPresent(String.self, forKey: .preferredCodec) ?? "Auto"
+        maxBitrateMbps = try container.decodeIfPresent(Int.self, forKey: .maxBitrateMbps) ?? 0
+        keyboardLayout = try container.decodeIfPresent(String.self, forKey: .keyboardLayout) ?? "en-US"
+        gameLanguage = try container.decodeIfPresent(String.self, forKey: .gameLanguage) ?? "en_US"
+        enableL4S = try container.decodeIfPresent(Bool.self, forKey: .enableL4S) ?? false
+        enableCloudGsync = try container.decodeIfPresent(Bool.self, forKey: .enableCloudGsync) ?? false
         keepMicEnabled = try container.decodeIfPresent(Bool.self, forKey: .keepMicEnabled) ?? false
         showStatsOverlay = try container.decodeIfPresent(Bool.self, forKey: .showStatsOverlay) ?? true
+        hideServerSelector = try container.decodeIfPresent(Bool.self, forKey: .hideServerSelector) ?? false
         selectedProviderIdpId = try container.decodeIfPresent(String.self, forKey: .selectedProviderIdpId)
             ?? "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg"
         fortnitePrefersNativeTouch = try container.decodeIfPresent(Bool.self, forKey: .fortnitePrefersNativeTouch) ?? true
@@ -220,23 +259,42 @@ struct AppSettings: Codable, Equatable {
             ?? TouchControlLayout.defaultProfiles
         streamerPreferences = try container.decodeIfPresent(StreamerPreferences.self, forKey: .streamerPreferences)
             ?? .default
+        favoriteGameIds = try container.decodeIfPresent([String].self, forKey: .favoriteGameIds) ?? []
+        migrateLegacyTouchControlDefaults()
     }
 
     static let `default` = AppSettings(
         preferredRegion: "Auto",
+        preferredResolution: "Auto",
         preferredFPS: 60,
         preferredQuality: "Balanced",
         preferredCodec: "Auto",
+        maxBitrateMbps: 0,
+        keyboardLayout: "en-US",
+        gameLanguage: "en_US",
+        enableL4S: false,
+        enableCloudGsync: false,
         keepMicEnabled: false,
         showStatsOverlay: true,
+        hideServerSelector: false,
         selectedProviderIdpId: "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg",
         fortnitePrefersNativeTouch: true,
         touchControlLayouts: TouchControlLayout.defaultProfiles,
-        streamerPreferences: .default
+        streamerPreferences: .default,
+        favoriteGameIds: []
     )
 
     func touchLayout(for profile: String) -> TouchControlLayout {
         touchControlLayouts[profile] ?? TouchControlLayout.preset(for: profile)
+    }
+
+    mutating func migrateLegacyTouchControlDefaults() {
+        if touchControlLayouts["default"] == .legacyStandard || touchControlLayouts["default"] == .legacyShrunkStandard {
+            touchControlLayouts["default"] = .standard
+        }
+        if touchControlLayouts["fortnite-mobile"] == .legacyFortniteMobile || touchControlLayouts["fortnite-mobile"] == .legacyShrunkFortniteMobile {
+            touchControlLayouts["fortnite-mobile"] = .fortniteMobile
+        }
     }
 }
 
@@ -380,12 +438,38 @@ struct TouchControlLayout: Codable, Equatable {
         topLeft: .init(x: 0.14, y: 0.12),
         topCenter: .init(x: 0.50, y: 0.12),
         topRight: .init(x: 0.86, y: 0.12),
+        leftStick: .init(x: 0.18, y: 0.77),
+        rightCluster: .init(x: 0.83, y: 0.76),
+        bottomCenter: .init(x: 0.50, y: 0.88)
+    )
+
+    static let fortniteMobile = TouchControlLayout(
+        scale: 1,
+        opacity: 0.52,
+        buttonScale: 1,
+        stickScale: 1,
+        topLeft: .init(x: 0.16, y: 0.11),
+        topCenter: .init(x: 0.50, y: 0.11),
+        topRight: .init(x: 0.84, y: 0.11),
+        leftStick: .init(x: 0.17, y: 0.77),
+        rightCluster: .init(x: 0.84, y: 0.75),
+        bottomCenter: .init(x: 0.50, y: 0.86)
+    )
+
+    static let legacyStandard = TouchControlLayout(
+        scale: 1,
+        opacity: 0.58,
+        buttonScale: 1,
+        stickScale: 1,
+        topLeft: .init(x: 0.14, y: 0.12),
+        topCenter: .init(x: 0.50, y: 0.12),
+        topRight: .init(x: 0.86, y: 0.12),
         leftStick: .init(x: 0.18, y: 0.80),
         rightCluster: .init(x: 0.83, y: 0.79),
         bottomCenter: .init(x: 0.50, y: 0.92)
     )
 
-    static let fortniteMobile = TouchControlLayout(
+    static let legacyFortniteMobile = TouchControlLayout(
         scale: 1.05,
         opacity: 0.52,
         buttonScale: 1.05,
@@ -398,6 +482,32 @@ struct TouchControlLayout: Codable, Equatable {
         bottomCenter: .init(x: 0.50, y: 0.91)
     )
 
+    static let legacyShrunkStandard = TouchControlLayout(
+        scale: 0.70,
+        opacity: 0.58,
+        buttonScale: 1,
+        stickScale: 1,
+        topLeft: .init(x: 0.14, y: 0.12),
+        topCenter: .init(x: 0.50, y: 0.12),
+        topRight: .init(x: 0.86, y: 0.12),
+        leftStick: .init(x: 0.18, y: 0.77),
+        rightCluster: .init(x: 0.83, y: 0.76),
+        bottomCenter: .init(x: 0.50, y: 0.88)
+    )
+
+    static let legacyShrunkFortniteMobile = TouchControlLayout(
+        scale: 0.70,
+        opacity: 0.52,
+        buttonScale: 1.05,
+        stickScale: 1,
+        topLeft: .init(x: 0.16, y: 0.11),
+        topCenter: .init(x: 0.50, y: 0.11),
+        topRight: .init(x: 0.84, y: 0.11),
+        leftStick: .init(x: 0.17, y: 0.77),
+        rightCluster: .init(x: 0.84, y: 0.75),
+        bottomCenter: .init(x: 0.50, y: 0.86)
+    )
+
     static let defaultProfiles: [String: TouchControlLayout] = [
         "default": .standard,
         "fortnite-mobile": .fortniteMobile
@@ -405,6 +515,172 @@ struct TouchControlLayout: Codable, Equatable {
 
     static func preset(for profile: String) -> TouchControlLayout {
         defaultProfiles[profile] ?? .standard
+    }
+}
+
+struct StreamVideoProfile: Equatable {
+    let width: Int
+    let height: Int
+    let fps: Int
+    let maxBitrateKbps: Int
+
+    var resolutionString: String {
+        "\(width)x\(height)"
+    }
+}
+
+enum StreamSettingsResolver {
+    static let resolutionOptions: [(value: String, label: String)] = [
+        ("Auto", "Auto"),
+        ("1280x720", "720p"),
+        ("1920x1080", "1080p"),
+        ("2560x1440", "1440p"),
+        ("3840x2160", "4K")
+    ]
+
+    static let bitrateOptionsMbps: [Int] = [0, 10, 15, 25, 35, 50, 75, 100]
+
+    static let keyboardLayoutOptions: [(value: String, label: String)] = [
+        ("en-US", "English (US)"),
+        ("en-GB", "English (UK)"),
+        ("de-DE", "German"),
+        ("fr-FR", "French"),
+        ("es-ES", "Spanish"),
+        ("it-IT", "Italian"),
+        ("pt-BR", "Portuguese (Brazil)"),
+        ("pl-PL", "Polish"),
+        ("tr-TR", "Turkish"),
+        ("ja-JP", "Japanese"),
+        ("ko-KR", "Korean"),
+        ("zh-CN", "Chinese (Simplified)")
+    ]
+
+    static let gameLanguageOptions: [(value: String, label: String)] = [
+        ("en_US", "English (US)"),
+        ("en_GB", "English (UK)"),
+        ("de_DE", "German"),
+        ("fr_FR", "French"),
+        ("es_ES", "Spanish"),
+        ("es_MX", "Spanish (Latin America)"),
+        ("it_IT", "Italian"),
+        ("pt_BR", "Portuguese (Brazil)"),
+        ("pl_PL", "Polish"),
+        ("tr_TR", "Turkish"),
+        ("ja_JP", "Japanese"),
+        ("ko_KR", "Korean"),
+        ("zh_CN", "Chinese (Simplified)"),
+        ("zh_TW", "Chinese (Traditional)")
+    ]
+
+    static func profile(for settings: AppSettings) -> StreamVideoProfile {
+        #if os(tvOS)
+        return profile(
+            for: settings,
+            nativeBounds: .zero,
+            nativeScale: 1,
+            userInterfaceIdiom: .tv
+        )
+        #else
+        return profile(
+            for: settings,
+            nativeBounds: UIScreen.main.nativeBounds,
+            nativeScale: UIScreen.main.nativeScale,
+            userInterfaceIdiom: UIDevice.current.userInterfaceIdiom
+        )
+        #endif
+    }
+
+    static func profile(
+        for settings: AppSettings,
+        nativeBounds: CGRect,
+        nativeScale: CGFloat,
+        userInterfaceIdiom: UIUserInterfaceIdiom
+    ) -> StreamVideoProfile {
+        let fps = normalizedFPS(settings.preferredFPS)
+        let requestedResolution = parseResolution(settings.preferredResolution)
+        let base = requestedResolution ?? automaticResolution(
+            settings: settings,
+            nativeBounds: nativeBounds,
+            nativeScale: nativeScale,
+            userInterfaceIdiom: userInterfaceIdiom
+        )
+        let bitrateMbps = normalizedMaxBitrateMbps(settings.maxBitrateMbps)
+            ?? automaticBitrateMbps(width: base.width, height: base.height, fps: fps, quality: settings.preferredQuality)
+        return StreamVideoProfile(
+            width: base.width,
+            height: base.height,
+            fps: fps,
+            maxBitrateKbps: max(5_000, bitrateMbps * 1_000)
+        )
+    }
+
+    static func normalizedKeyboardLayout(_ value: String) -> String {
+        keyboardLayoutOptions.contains(where: { $0.value == value }) ? value : "en-US"
+    }
+
+    static func normalizedGameLanguage(_ value: String) -> String {
+        gameLanguageOptions.contains(where: { $0.value == value }) ? value : "en_US"
+    }
+
+    private static func normalizedFPS(_ value: Int) -> Int {
+        min(max(value, 30), 120)
+    }
+
+    private static func parseResolution(_ value: String) -> (width: Int, height: Int)? {
+        guard value != "Auto" else { return nil }
+        let parts = value.split(separator: "x", maxSplits: 1).map(String.init)
+        guard parts.count == 2,
+              let width = Int(parts[0]),
+              let height = Int(parts[1]),
+              width > 0,
+              height > 0 else {
+            return nil
+        }
+        return (width, height)
+    }
+
+    private static func automaticResolution(
+        settings: AppSettings,
+        nativeBounds: CGRect,
+        nativeScale: CGFloat,
+        userInterfaceIdiom: UIUserInterfaceIdiom
+    ) -> (width: Int, height: Int) {
+        let longSide = max(nativeBounds.width, nativeBounds.height)
+        let shortSide = min(nativeBounds.width, nativeBounds.height)
+        let supports1440 = longSide >= 2500 || shortSide >= 1400 || nativeScale >= 3.0
+        let prefersQuality = settings.preferredQuality.caseInsensitiveCompare("Quality") == .orderedSame
+
+        if userInterfaceIdiom == .pad, prefersQuality, supports1440 {
+            return (2560, 1440)
+        }
+        if userInterfaceIdiom == .pad || userInterfaceIdiom == .tv {
+            return (1920, 1080)
+        }
+        return (1280, 720)
+    }
+
+    private static func automaticBitrateMbps(width: Int, height: Int, fps: Int, quality: String) -> Int {
+        let pixels = width * height
+        let qualityKey = quality.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let base: Int
+
+        if pixels >= 3840 * 2160 {
+            base = qualityKey == "data saver" ? 35 : (qualityKey == "quality" ? 75 : 50)
+        } else if pixels >= 2560 * 1440 {
+            base = qualityKey == "data saver" ? 18 : (qualityKey == "quality" ? 36 : 28)
+        } else if pixels >= 1920 * 1080 {
+            base = qualityKey == "data saver" ? 12 : (qualityKey == "quality" ? 24 : 18)
+        } else {
+            base = qualityKey == "data saver" ? 9 : (qualityKey == "quality" ? 18 : 13)
+        }
+
+        let fpsAdjusted = fps > 60 ? Int((Double(base) * 1.35).rounded()) : base
+        return min(max(fpsAdjusted, 5), 100)
+    }
+
+    private static func normalizedMaxBitrateMbps(_ value: Int) -> Int? {
+        guard value > 0 else { return nil }
+        return min(max(value, 5), 150)
     }
 }
 
@@ -1434,6 +1710,7 @@ private actor GFNAPIClient {
         game: CloudGame,
         vpcId: String,
         settings: AppSettings,
+        streamProfile: StreamVideoProfile,
         streamingBaseUrl: String? = nil,
         launchAppIdOverride: String? = nil,
         launcherName: String = "Auto"
@@ -1446,11 +1723,16 @@ private actor GFNAPIClient {
         let baseSource = streamingBaseUrl ?? session.provider.streamingServiceUrl
         let base = baseSource.hasSuffix("/") ? String(baseSource.dropLast()) : baseSource
         let deviceProfile = Self.streamDeviceProfile(for: game.title, settings: settings)
-        let url = URL(string: "\(base)/v2/session?keyboardLayout=en-US&languageCode=en_US")!
+        let sessionQuery = URLQueryItemEncoder.encode([
+            "keyboardLayout": StreamSettingsResolver.normalizedKeyboardLayout(settings.keyboardLayout),
+            "languageCode": StreamSettingsResolver.normalizedGameLanguage(settings.gameLanguage)
+        ])
+        let url = URL(string: "\(base)/v2/session?\(sessionQuery)")!
         let body = Self.buildSessionBody(
             appId: launchAppId,
             title: game.title,
-            fps: settings.preferredFPS,
+            settings: settings,
+            profile: streamProfile,
             launcherName: launcherName,
             deviceProfile: deviceProfile
         )
@@ -1557,6 +1839,19 @@ private actor GFNAPIClient {
             ((sessionObj["seatSetupInfo"] as? [String: Any])?["queuePosition"] as? Int)
         let seatSetupStep = Self.extractSeatSetupStep(sessionObj: sessionObj)
         let serverIp = Self.extractServerIp(sessionObj: sessionObj) ?? activeSession.serverIp
+        if (status == 2 || status == 3),
+           let serverIp,
+           !Self.isZoneHostname(serverIp),
+           let baseHost = URL(string: base)?.host,
+           Self.isZoneHostname(baseHost) {
+            do {
+                return try await pollSession(session: session, activeSession: activeSession, base: "https://\(serverIp)")
+            } catch {
+                // Zone polling still contains usable queue/session state. If direct
+                // server hydration fails, keep the current response instead of
+                // dropping the user's active session.
+            }
+        }
         let mediaConnectionInfo = Self.extractMediaConnectionInfo(sessionObj: sessionObj)
         let signaling = Self.resolveSignaling(sessionObj: sessionObj, fallbackServerIp: serverIp ?? activeSession.signalingServer)
         let iceServers = Self.extractIceServers(sessionObj: sessionObj)
@@ -1743,11 +2038,12 @@ private actor GFNAPIClient {
         game: CloudGame,
         streamingBaseUrl: String,
         vpcId: String,
-        settings: AppSettings
+        settings: AppSettings,
+        deviceId: String
     ) async throws -> ActiveSession {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let clientId = UUID().uuidString
-        let deviceId = UUID().uuidString
+        let claimDeviceId = deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? UUID().uuidString : deviceId
         let deviceProfile = Self.streamDeviceProfile(for: game.title, settings: settings)
         let zoneBase = Self.normalizedStreamingBase(streamingBaseUrl, vpcId: vpcId)
         var effectiveServerIp = Self.remoteSessionTargetHost(
@@ -1765,7 +2061,7 @@ private actor GFNAPIClient {
                     headers: Self.cloudMatchHeaders(
                         token: token,
                         clientId: clientId,
-                        deviceId: deviceId,
+                        deviceId: claimDeviceId,
                         includeOrigin: false,
                         deviceProfile: deviceProfile
                     )
@@ -1791,7 +2087,7 @@ private actor GFNAPIClient {
                 headers: Self.cloudMatchHeaders(
                     token: token,
                     clientId: clientId,
-                    deviceId: deviceId,
+                    deviceId: claimDeviceId,
                     includeOrigin: false,
                     deviceProfile: deviceProfile
                 )
@@ -1804,12 +2100,17 @@ private actor GFNAPIClient {
 
         var claimJSON: [String: Any] = [:]
         if preClaimStatus != 1 {
-            let claimURL = URL(string: "https://\(effectiveServerIp)/v2/session/\(candidate.id)?keyboardLayout=en-US&languageCode=en_US")!
+            let sessionQuery = URLQueryItemEncoder.encode([
+                "keyboardLayout": StreamSettingsResolver.normalizedKeyboardLayout(settings.keyboardLayout),
+                "languageCode": StreamSettingsResolver.normalizedGameLanguage(settings.gameLanguage)
+            ])
+            let claimURL = URL(string: "https://\(effectiveServerIp)/v2/session/\(candidate.id)?\(sessionQuery)")!
             let claimBody = Self.buildClaimBody(
                 sessionId: candidate.id,
                 appId: candidate.appId ?? game.launchAppId ?? "0",
                 settings: settings,
-                deviceProfile: deviceProfile
+                deviceProfile: deviceProfile,
+                deviceHashId: claimDeviceId
             )
 
             let (claimData, claimResponse) = try await request(
@@ -1818,7 +2119,7 @@ private actor GFNAPIClient {
                 headers: Self.cloudMatchHeaders(
                     token: token,
                     clientId: clientId,
-                    deviceId: deviceId,
+                    deviceId: claimDeviceId,
                     includeOrigin: true,
                     deviceProfile: deviceProfile
                 ),
@@ -1857,7 +2158,7 @@ private actor GFNAPIClient {
             zone: vpcId,
             streamingBaseUrl: zoneBase,
             clientId: clientId,
-            deviceId: deviceId,
+            deviceId: claimDeviceId,
             adState: Self.extractAdState(sessionObj: resolvedSessionObj)
         )
 
@@ -2705,7 +3006,7 @@ private actor GFNAPIClient {
             "nv-client-type": "NATIVE",
             "nv-client-version": GFNConstants.gfnClientVersion,
             "nv-device-make": "APPLE",
-            "nv-device-model": UIDevice.current.model,
+            "nv-device-model": OpenNOWPlatform.displayName,
             "nv-device-os": deviceProfile.nvDeviceOS,
             "nv-device-type": deviceProfile.nvDeviceType,
             "x-device-id": deviceId
@@ -2720,7 +3021,8 @@ private actor GFNAPIClient {
     private static func buildSessionBody(
         appId: String,
         title: String,
-        fps: Int,
+        settings: AppSettings,
+        profile: StreamVideoProfile,
         launcherName: String,
         deviceProfile: StreamDeviceProfile
     ) -> Data {
@@ -2731,7 +3033,7 @@ private actor GFNAPIClient {
             ["key": "networkType", "value": "Unknown"],
             ["key": "ClientImeSupport", "value": "0"],
             ["key": "preferredLauncher", "value": launcherName],
-            ["key": "clientPhysicalResolution", "value": "{\"horizontalPixels\":1920,\"verticalPixels\":1080}"],
+            ["key": "clientPhysicalResolution", "value": "{\"horizontalPixels\":\(profile.width),\"verticalPixels\":\(profile.height)}"],
             ["key": "surroundAudioInfo", "value": "2"]
         ] + deviceProfile.metadata
         let body: [String: Any] = [
@@ -2748,9 +3050,9 @@ private actor GFNAPIClient {
                 "streamerVersion": 1,
                 "clientPlatformName": deviceProfile.clientPlatformName,
                 "clientRequestMonitorSettings": [[
-                    "widthInPixels": 1920,
-                    "heightInPixels": 1080,
-                    "framesPerSecond": fps,
+                    "widthInPixels": profile.width,
+                    "heightInPixels": profile.height,
+                    "framesPerSecond": profile.fps,
                     "sdrHdrMode": 0,
                     "displayData": [
                         "desiredContentMaxLuminance": 0,
@@ -2765,7 +3067,7 @@ private actor GFNAPIClient {
                 "sdrHdrMode": 0,
                 "surroundAudioInfo": 0,
                 "remoteControllersBitmap": 0,
-                "clientTimezoneOffset": -TimeZone.current.secondsFromGMT() * 1000,
+                "clientTimezoneOffset": TimeZone.current.secondsFromGMT() * 1000,
                 "enhancedStreamMode": 1,
                 "appLaunchMode": 1,
                 "secureRTSPSupported": false,
@@ -2774,13 +3076,16 @@ private actor GFNAPIClient {
                 "enablePersistingInGameSettings": true,
                 "userAge": 26,
                 "requestedStreamingFeatures": [
-                    "reflex": fps >= 120,
+                    "reflex": profile.fps >= 120,
                     "bitDepth": 0,
-                    "cloudGsync": false,
-                    "enabledL4S": false,
+                    "cloudGsync": settings.enableCloudGsync,
+                    "enabledL4S": settings.enableL4S,
                     "mouseMovementFlags": 0,
                     "trueHdr": false,
+                    "supportedHidDevices": 0,
                     "profile": 0,
+                    "fallbackToLogicalResolution": false,
+                    "hidDevices": NSNull(),
                     "chromaFormat": 0,
                     "prefilterMode": 0,
                     "prefilterSharpness": 0,
@@ -2798,7 +3103,8 @@ private actor GFNAPIClient {
         sessionId: String,
         appId: String,
         settings: AppSettings,
-        deviceProfile: StreamDeviceProfile
+        deviceProfile: StreamDeviceProfile,
+        deviceHashId: String
     ) -> Data {
         let metadata: [[String: String]] = [
             ["key": "SubSessionId", "value": UUID().uuidString],
@@ -2817,12 +3123,12 @@ private actor GFNAPIClient {
                 "networkTestSessionId": NSNull(),
                 "availableSupportedControllers": [],
                 "clientVersion": "30.0",
-                "deviceHashId": UUID().uuidString,
+                "deviceHashId": deviceHashId,
                 "internalTitle": NSNull(),
                 "clientPlatformName": deviceProfile.clientPlatformName,
                 "metaData": metadata,
                 "surroundAudioInfo": 0,
-                "clientTimezoneOffset": -TimeZone.current.secondsFromGMT() * 1000,
+                "clientTimezoneOffset": TimeZone.current.secondsFromGMT() * 1000,
                 "clientIdentification": deviceProfile.clientIdentification,
                 "parentSessionId": NSNull(),
                 "appId": Int(appId) ?? 0,
@@ -2838,10 +3144,9 @@ private actor GFNAPIClient {
                 "secureRTSPSupported": false,
                 "userAge": 26,
                 "requestedStreamingFeatures": [
-                    "reflex": settings.preferredFPS >= 120,
+                    "reflex": false,
                     "bitDepth": 0,
                     "cloudGsync": false,
-                    "enabledL4S": false,
                     "profile": 0,
                     "fallbackToLogicalResolution": false,
                     "chromaFormat": 0,
@@ -3148,6 +3453,7 @@ final class OpenNOWStore: ObservableObject {
                 game: game,
                 vpcId: cachedVpcId,
                 settings: settings,
+                streamProfile: StreamSettingsResolver.profile(for: settings),
                 streamingBaseUrl: zoneUrl,
                 launchAppIdOverride: launchOption?.appId,
                 launcherName: launchOption?.storefront ?? "Auto"
@@ -3247,7 +3553,8 @@ final class OpenNOWStore: ObservableObject {
                 game: game,
                 streamingBaseUrl: refreshed.provider.streamingServiceUrl,
                 vpcId: cachedVpcId,
-                settings: settings
+                settings: settings,
+                deviceId: persistentDeviceId()
             )
             activeSession = claimed
             adReportStateById = [:]
@@ -3445,6 +3752,24 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
+    func isFavorite(_ game: CloudGame) -> Bool {
+        settings.favoriteGameIds.contains(game.id)
+    }
+
+    func toggleFavorite(_ game: CloudGame) {
+        if let index = settings.favoriteGameIds.firstIndex(of: game.id) {
+            settings.favoriteGameIds.remove(at: index)
+        } else {
+            settings.favoriteGameIds.append(game.id)
+        }
+        persistSettings()
+    }
+
+    func clearFavorites() {
+        settings.favoriteGameIds.removeAll()
+        persistSettings()
+    }
+
     func updateTouchControlLayout(_ layout: TouchControlLayout, profile: String) {
         settings.touchControlLayouts[profile] = layout
         persistSettings()
@@ -3470,6 +3795,10 @@ final class OpenNOWStore: ObservableObject {
         authProviderCode == "NVIDIA"
     }
 
+    var shouldPresentPrintedWasteQueue: Bool {
+        shouldUsePrintedWasteQueue && !settings.hideServerSelector
+    }
+
     func formattedSessionElapsed() -> String {
         let hours = sessionElapsedSeconds / 3600
         let minutes = (sessionElapsedSeconds % 3600) / 60
@@ -3486,8 +3815,24 @@ final class OpenNOWStore: ObservableObject {
         return allGames.filter {
             $0.title.localizedCaseInsensitiveContains(query) ||
             $0.genre.localizedCaseInsensitiveContains(query) ||
-            $0.platform.localizedCaseInsensitiveContains(query)
+            $0.platform.localizedCaseInsensitiveContains(query) ||
+            ($0.summary?.localizedCaseInsensitiveContains(query) ?? false) ||
+            ($0.longDescription?.localizedCaseInsensitiveContains(query) ?? false) ||
+            ($0.publisher?.localizedCaseInsensitiveContains(query) ?? false) ||
+            ($0.developer?.localizedCaseInsensitiveContains(query) ?? false) ||
+            ($0.featureLabels?.contains(where: { $0.localizedCaseInsensitiveContains(query) }) ?? false) ||
+            ($0.tags?.contains(where: { $0.localizedCaseInsensitiveContains(query) }) ?? false) ||
+            ($0.stores?.contains(where: { storeDisplayName($0).localizedCaseInsensitiveContains(query) }) ?? false)
         }
+    }
+
+    var favoriteGames: [CloudGame] {
+        guard !settings.favoriteGameIds.isEmpty else { return [] }
+        var gamesById: [String: CloudGame] = [:]
+        for game in allGames + libraryGames {
+            gamesById[game.id] = game
+        }
+        return settings.favoriteGameIds.compactMap { gamesById[$0] }
     }
 
     private func startSessionTasks() {
@@ -3744,7 +4089,7 @@ final class OpenNOWStore: ObservableObject {
 
     private var isFreeTierUser: Bool {
         let tier = (subscription?.membershipTier ?? user?.membershipTier)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        return ((tier?.isEmpty) != nil) || tier == "FREE"
+        return (tier?.isEmpty ?? true) || tier == "FREE"
     }
 
     private func reportQueueAdAction(
@@ -3894,8 +4239,12 @@ final class OpenNOWStore: ObservableObject {
 
     private func resolveGameForRemoteSession(_ candidate: RemoteSessionCandidate) -> CloudGame? {
         if let appId = candidate.appId {
-            if let fromAll = allGames.first(where: { $0.launchAppId == appId }) { return fromAll }
-            if let fromLibrary = libraryGames.first(where: { $0.launchAppId == appId }) { return fromLibrary }
+            if let fromAll = allGames.first(where: { $0.launchAppId == appId || $0.launchOptions.contains(where: { $0.appId == appId }) }) {
+                return fromAll
+            }
+            if let fromLibrary = libraryGames.first(where: { $0.launchAppId == appId || $0.launchOptions.contains(where: { $0.appId == appId }) }) {
+                return fromLibrary
+            }
         }
         return featuredGames.first ?? allGames.first ?? libraryGames.first
     }

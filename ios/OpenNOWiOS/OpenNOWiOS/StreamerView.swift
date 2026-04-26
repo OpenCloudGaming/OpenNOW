@@ -17,133 +17,144 @@ struct StreamerView: View {
     @State private var statusText = ""
     @State private var latestStatusLine = "Initializing streamer..."
     @State private var isPeerConnected = false
+    @State private var isShowingExitConfirmation = false
 
     private var isShowingConnectionOverlay: Bool {
         !isPeerConnected
     }
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            StreamerWebView(
-                session: session,
-                settings: settings,
-                onTouchLayoutChange: onTouchLayoutChange,
-                onStreamerPreferencesChange: onStreamerPreferencesChange
-            ) { event in
-                logger.info("Streamer event: \(event, privacy: .public)")
-                statusText = event
-                if event.hasPrefix("Status: ") {
-                    latestStatusLine = String(event.dropFirst("Status: ".count))
-                    if latestStatusLine.localizedCaseInsensitiveContains("peer: connected") {
+        GeometryReader { proxy in
+            ZStack(alignment: .topTrailing) {
+                StreamerWebView(
+                    session: session,
+                    settings: settings,
+                    onTouchLayoutChange: onTouchLayoutChange,
+                    onStreamerPreferencesChange: onStreamerPreferencesChange
+                ) { event in
+                    logger.info("Streamer event: \(event, privacy: .public)")
+                    statusText = event
+                    if event.hasPrefix("Status: ") {
+                        latestStatusLine = String(event.dropFirst("Status: ".count))
+                        if latestStatusLine.localizedCaseInsensitiveContains("peer: connected") {
+                            isPeerConnected = true
+                        }
+                    }
+                    if event.localizedCaseInsensitiveContains("peer: connected") {
                         isPeerConnected = true
                     }
-                }
-                if event.localizedCaseInsensitiveContains("peer: connected") {
-                    isPeerConnected = true
-                }
-                if event.hasPrefix("Error:") {
-                    isPeerConnected = false
-                }
-            }
-            .ignoresSafeArea()
-
-            if isShowingConnectionOverlay {
-                ZStack {
-                    Color.black.opacity(0.72)
-                        .ignoresSafeArea()
-
-                    VStack(spacing: 14) {
-                        if statusText.hasPrefix("Error:") {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.system(size: 26, weight: .semibold))
-                                .foregroundStyle(.orange)
-                        } else {
-                            ProgressView()
-                                .progressViewStyle(.circular)
-                                .scaleEffect(1.25)
-                                .tint(.white)
-                        }
-
-                        Text(statusText.hasPrefix("Error:") ? "Connection issue" : "Connecting to stream...")
-                            .font(.headline.weight(.semibold))
-                            .foregroundStyle(.white)
-
-                        Text(statusText.hasPrefix("Error:") ? statusText.replacingOccurrences(of: "Error: ", with: "") : latestStatusLine)
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.85))
-                            .multilineTextAlignment(.center)
-                            .lineLimit(3)
-                            .padding(.horizontal, 12)
-
-                        if statusText.hasPrefix("Error:"), let retry = onRetry {
-                            Button("Retry") {
-                                retry()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.white.opacity(0.22))
-                            .foregroundStyle(.white)
-                            .padding(.top, 4)
-                        }
+                    if event.hasPrefix("Error:") {
+                        isPeerConnected = false
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 18)
-                    .frame(maxWidth: 340)
-                    .background(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(.ultraThinMaterial)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
-                            )
-                    )
-                    .padding(.horizontal, 20)
                 }
-                .transition(.opacity)
-            }
+                .ignoresSafeArea()
 
-            Button {
-                onClose()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.headline.weight(.bold))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .frame(width: 36, height: 36)
-                    .background(
-                        Group {
-                            if #available(iOS 26, *) {
-                                Circle()
-                                    .fill(.regularMaterial)
-                                    .glassEffect(in: Circle())
+                if isShowingConnectionOverlay {
+                    ZStack {
+                        Color.black.opacity(0.72)
+                            .ignoresSafeArea()
+
+                        VStack(spacing: 14) {
+                            if statusText.hasPrefix("Error:") {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 26, weight: .semibold))
+                                    .foregroundStyle(.orange)
                             } else {
-                                Circle()
-                                    .fill(.regularMaterial)
-                                    .overlay(
-                                        Circle()
-                                            .stroke(Color.white.opacity(0.22), lineWidth: 1)
-                                    )
+                                ProgressView()
+                                    .progressViewStyle(.circular)
+                                    .scaleEffect(1.25)
+                                    .tint(.white)
+                            }
+
+                            Text(statusText.hasPrefix("Error:") ? "Connection issue" : "Connecting to stream...")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.white)
+
+                            Text(statusText.hasPrefix("Error:") ? statusText.replacingOccurrences(of: "Error: ", with: "") : latestStatusLine)
+                                .font(.subheadline)
+                                .foregroundStyle(.white.opacity(0.85))
+                                .multilineTextAlignment(.center)
+                                .lineLimit(3)
+                                .padding(.horizontal, 12)
+
+                            if statusText.hasPrefix("Error:"), let retry = onRetry {
+                                Button("Retry") {
+                                    retry()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.white.opacity(0.22))
+                                .foregroundStyle(.white)
+                                .padding(.top, 4)
                             }
                         }
-                    )
-            }
-            .padding(.top, 12)
-            .padding(.trailing, 12)
-
-            if statusText.hasPrefix("Error:") {
-                VStack {
-                    Spacer()
-                    Text(statusText)
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.red.opacity(0.2), in: Capsule())
-                        .overlay(
-                            Capsule()
-                                .stroke(Color.red.opacity(0.45), lineWidth: 1)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 18)
+                        .frame(maxWidth: 340)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(.ultraThinMaterial)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                                )
                         )
-                        .foregroundStyle(.white)
-                        .padding(.bottom, 22)
+                        .padding(.horizontal, 20)
+                    }
+                    .transition(.opacity)
+                }
+
+                Button {
+                    isShowingExitConfirmation = true
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .frame(width: 36, height: 36)
+                        .background(
+                            Group {
+                                if #available(iOS 26, *) {
+                                    Circle()
+                                        .fill(.regularMaterial)
+                                        .glassEffect(in: Circle())
+                                } else {
+                                    Circle()
+                                        .fill(.regularMaterial)
+                                        .overlay(
+                                            Circle()
+                                                .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                                        )
+                                }
+                            }
+                        )
+                }
+                .padding(.top, topControlPadding(in: proxy))
+                .padding(.trailing, trailingControlPadding(in: proxy))
+                .accessibilityLabel("Exit stream")
+
+                if statusText.hasPrefix("Error:") {
+                    VStack {
+                        Spacer()
+                        Text(statusText)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.red.opacity(0.2), in: Capsule())
+                            .overlay(
+                                Capsule()
+                                    .stroke(Color.red.opacity(0.45), lineWidth: 1)
+                            )
+                            .foregroundStyle(.white)
+                            .padding(.bottom, 22)
+                    }
+                }
+
+                if isShowingExitConfirmation {
+                    exitConfirmationOverlay
+                        .ignoresSafeArea()
+                        .transition(.opacity)
                 }
             }
+            .animation(.easeInOut(duration: 0.18), value: isShowingExitConfirmation)
         }
         .background(Color.black.ignoresSafeArea())
         .onAppear {
@@ -164,6 +175,101 @@ struct StreamerView: View {
             )
         }
     }
+
+    private var exitConfirmationOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.5)
+                .onTapGesture {
+                    isShowingExitConfirmation = false
+                }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Session Control")
+                    .font(.caption.weight(.bold))
+                    .textCase(.uppercase)
+                    .foregroundStyle(.white.opacity(0.55))
+
+                Text("Exit Stream?")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.white)
+
+                Text("Do you really want to exit \(session.game.title)?")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.86))
+
+                Text("Your current cloud gaming session will be closed.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.62))
+
+                HStack(spacing: 10) {
+                    Button {
+                        isShowingExitConfirmation = false
+                    } label: {
+                        Text("Keep Playing")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(StreamExitButtonStyle(kind: .cancel))
+
+                    Button(role: .destructive) {
+                        isShowingExitConfirmation = false
+                        onClose()
+                    } label: {
+                        Text("Exit Stream")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(StreamExitButtonStyle(kind: .confirm))
+                }
+                .padding(.top, 6)
+            }
+            .padding(18)
+            .frame(maxWidth: 340)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.34), radius: 28, x: 0, y: 18)
+            )
+            .padding(.horizontal, 24)
+        }
+    }
+
+    private func topControlPadding(in proxy: GeometryProxy) -> CGFloat {
+        max(proxy.safeAreaInsets.top + 10, 28)
+    }
+
+    private func trailingControlPadding(in proxy: GeometryProxy) -> CGFloat {
+        max(proxy.safeAreaInsets.trailing + 12, 12)
+    }
+}
+
+private struct StreamExitButtonStyle: ButtonStyle {
+    enum Kind {
+        case cancel
+        case confirm
+    }
+
+    let kind: Kind
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(kind == .confirm ? Color.white : Color.white.opacity(0.92))
+            .padding(.vertical, 11)
+            .background(
+                Capsule()
+                    .fill(kind == .confirm ? Color.red.opacity(0.88) : Color.white.opacity(0.14))
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.white.opacity(kind == .confirm ? 0.12 : 0.18), lineWidth: 1)
+                    )
+            )
+            .opacity(configuration.isPressed ? 0.72 : 1)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+    }
 }
 
 private struct StreamerWebView: UIViewRepresentable {
@@ -175,12 +281,6 @@ private struct StreamerWebView: UIViewRepresentable {
     private static let desktopLikeUserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-
-    private struct StreamProfile {
-        let width: Int
-        let height: Int
-        let maxBitrateKbps: Int
-    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -217,7 +317,6 @@ private struct StreamerWebView: UIViewRepresentable {
         uiView.configuration.userContentController.removeScriptMessageHandler(forName: "opennow")
         coordinator.detach()
     }
-    }
 
     private func buildHTML(for session: ActiveSession, settings: AppSettings) -> String {
         struct Bridge: Encodable {
@@ -238,7 +337,7 @@ private struct StreamerWebView: UIViewRepresentable {
             let touchProfile: String
             let touchLayout: TouchControlLayout
             let streamerPreferences: StreamerPreferences
-            let allowNativeTouchPassthrough: Bool
+            let prefersTouchControllerOverlay: Bool
         }
 
         let signalingServer = session.signalingServer ?? session.serverIp ?? URL(string: session.streamingBaseUrl)?.host ?? ""
@@ -255,7 +354,7 @@ private struct StreamerWebView: UIViewRepresentable {
             mediaIp: session.mediaIp,
             mediaPort: session.mediaPort,
             preferredCodec: Self.normalizePreferredCodec(settings.preferredCodec),
-            fps: min(settings.preferredFPS, 60),
+            fps: profile.fps,
             maxBitrateKbps: profile.maxBitrateKbps,
             width: profile.width,
             height: profile.height,
@@ -264,7 +363,7 @@ private struct StreamerWebView: UIViewRepresentable {
             touchProfile: touchProfile,
             touchLayout: settings.touchLayout(for: touchProfile),
             streamerPreferences: settings.streamerPreferences,
-            allowNativeTouchPassthrough: touchProfile == "fortnite-mobile" && settings.fortnitePrefersNativeTouch
+            prefersTouchControllerOverlay: touchProfile == "fortnite-mobile" && settings.fortnitePrefersNativeTouch
         )
         let data = (try? JSONEncoder().encode(bridge)) ?? Data("{}".utf8)
         let payload = String(data: data, encoding: .utf8) ?? "{}"
@@ -272,53 +371,53 @@ private struct StreamerWebView: UIViewRepresentable {
 <!doctype html>
 <html>
 <head>
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
   <style>
-    html,body{margin:0;padding:0;background:#000;width:100%;height:100%;overflow:hidden}
-    #video{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+    html,body{margin:0;padding:0;background:#000;width:100%;height:100%;min-height:100%;overflow:hidden;overscroll-behavior:none}
+    #video{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;object-fit:contain;background:#000}
     #hudToggle{position:fixed;right:max(6px,calc(env(safe-area-inset-right) + 6px));
-      bottom:max(10px,calc(env(safe-area-inset-bottom) + 10px));z-index:36;display:inline-flex;
-      align-items:center;justify-content:center;width:44px;height:44px;padding:0;border-radius:999px;
+      bottom:max(8px,calc(env(safe-area-inset-bottom) + 8px));z-index:36;display:inline-flex;
+      align-items:center;justify-content:center;width:40px;height:40px;padding:0;border-radius:999px;
       border:1px solid rgba(255,255,255,0.18);background:rgba(16,16,20,0.72);color:#fff;cursor:pointer;
       font:600 18px -apple-system;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
       box-shadow:0 10px 28px rgba(0,0,0,0.34);}
     #hudToggle:hover,#hudToggle:active{background:rgba(22,22,28,0.84);}
     #hudToggleGlyph{display:inline-flex;align-items:center;justify-content:center;width:100%;height:100%;
       font-size:20px;line-height:1;}
-    #hudPanel{position:fixed;right:max(10px,calc(env(safe-area-inset-right) + 10px));
-      bottom:max(62px,calc(env(safe-area-inset-bottom) + 62px));z-index:35;width:min(332px,calc(100vw - 28px));
-      max-height:min(72vh,520px);overflow:auto;padding:14px;border-radius:22px;
+    #hudPanel{position:fixed;right:max(8px,calc(env(safe-area-inset-right) + 8px));
+      bottom:max(54px,calc(env(safe-area-inset-bottom) + 54px));z-index:35;width:min(300px,calc(100vw - 20px));
+      max-height:min(58vh,360px);overflow:auto;overscroll-behavior:contain;padding:10px;border-radius:18px;
       color:#fff;background:rgba(18,18,22,0.74);border:1px solid rgba(255,255,255,0.14);
-      font:12px -apple-system;transition:transform .22s ease,opacity .22s ease;opacity:0;
+      font:11px -apple-system;transition:transform .22s ease,opacity .22s ease;opacity:0;
       transform:translateY(20px) scale(0.98);pointer-events:none;
       backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);}
     #hudPanel.open{transform:translateY(0) scale(1);opacity:1;pointer-events:auto;}
-    .hudHeader{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;margin-bottom:12px;}
-    .hudHeaderTitle{display:flex;flex-direction:column;gap:4px;min-width:0;}
-    .hudHeaderTitle strong{font-size:14px;}
-    .hudHeaderTitle span{color:rgba(255,255,255,0.64);line-height:1.35;}
-    .hudSection{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);}
-    .hudSectionTitle{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
-    .hudSectionTitle strong{font-size:13px;}
-    .hudSectionTitle span{color:rgba(255,255,255,0.55);}
-    .toggleList{display:flex;flex-direction:column;gap:8px;}
-    .toggleRow{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:11px 12px;
-      border-radius:14px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:#fff;
-      font:12px -apple-system;cursor:pointer;text-align:left;}
-    .toggleRow strong{display:block;font-size:12px;font-weight:600;}
-    .toggleRow span{display:block;color:rgba(255,255,255,0.58);margin-top:2px;line-height:1.3;}
+    .hudHeader{display:flex;gap:8px;align-items:flex-start;justify-content:space-between;margin-bottom:8px;}
+    .hudHeaderTitle{display:flex;flex-direction:column;gap:2px;min-width:0;}
+    .hudHeaderTitle strong{font-size:13px;}
+    .hudHeaderTitle span{display:none;}
+    .hudSection{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);}
+    .hudSectionTitle{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px;}
+    .hudSectionTitle strong{font-size:12px;}
+    .hudSectionTitle span{color:rgba(255,255,255,0.55);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .toggleList{display:flex;flex-direction:column;gap:6px;}
+    .toggleRow{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:8px 9px;
+      border-radius:12px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:#fff;
+      font:11px -apple-system;cursor:pointer;text-align:left;}
+    .toggleRow strong{display:block;font-size:11px;font-weight:600;}
+    .toggleRow div span{display:none;}
     .toggleRow .toggleValue{flex:0 0 auto;margin-top:0;color:rgba(255,255,255,0.92);font-weight:600;}
     .toggleRow.is-active{background:rgba(110,186,255,0.14);border-color:rgba(110,186,255,0.26);}
     .toggleRow.is-disabled{opacity:0.45;}
-    .infoAction{width:100%;padding:9px 10px;border-radius:10px;border:1px solid rgba(255,255,255,0.24);
-      background:rgba(255,255,255,0.08);color:#fff;font:12px -apple-system;font-weight:600;cursor:pointer;}
+    .infoAction{width:100%;padding:7px 9px;border-radius:10px;border:1px solid rgba(255,255,255,0.24);
+      background:rgba(255,255,255,0.08);color:#fff;font:11px -apple-system;font-weight:600;cursor:pointer;}
     .hudSummary{display:flex;gap:6px;flex-wrap:wrap;}
-    .hudBadge{padding:5px 8px;border-radius:999px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.72);
-      border:1px solid rgba(255,255,255,0.1);font-size:11px;line-height:1;}
-    .layoutPanel{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);}
-    .layoutPanel label{display:block;margin-top:10px;color:rgba(255,255,255,0.82);}
-    .layoutPanel input[type=range]{width:100%;margin-top:6px;}
-    .layoutHint{margin-top:8px;line-height:1.4;color:rgba(255,255,255,0.62);}
+    .hudBadge{padding:4px 7px;border-radius:999px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.72);
+      border:1px solid rgba(255,255,255,0.1);font-size:10px;line-height:1;}
+    .layoutPanel{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);}
+    .layoutPanel label{display:block;margin-top:6px;color:rgba(255,255,255,0.82);font-size:11px;}
+    .layoutPanel input[type=range]{width:100%;margin-top:3px;}
+    .layoutHint{display:none;}
     #gpPad.layoutEditing .layoutGroup{outline:1px dashed rgba(120,210,255,0.9);background:rgba(120,210,255,0.1);border-radius:18px;}
     #gpPad.layoutEditing .layoutGroup::after{content:'Drag';position:absolute;left:50%;top:-18px;transform:translateX(-50%);
       padding:2px 7px;border-radius:999px;background:rgba(10,10,12,0.84);border:1px solid rgba(120,210,255,0.55);
@@ -334,8 +433,8 @@ private struct StreamerWebView: UIViewRepresentable {
     <div id="statsPrimary">FPS -- | Ping -- ms | Loss -- | Rate -- Mbps</div>
     <div id="statsMeta" style="display:none;color:rgba(255,255,255,0.7);font-size:11px;"></div>
   </div>
-  <div id="touchpad" style="position:fixed;inset:0;z-index:10;touch-action:none;"></div>
-  <div id="touchHint" style="position:fixed;left:50%;bottom:60px;transform:translateX(-50%);
+  <div id="touchpad" style="position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;z-index:10;touch-action:none;"></div>
+  <div id="touchHint" style="position:fixed;left:50%;bottom:max(50px,calc(env(safe-area-inset-bottom) + 50px));transform:translateX(-50%);
     color:rgba(255,255,255,0.45);font:11px -apple-system;pointer-events:none;user-select:none;
     text-align:center;transition:opacity 1s;">Drag to move · Tap to click · 2-finger tap for right click</div>
   <button id="hudToggle" onclick="toggleHudPanel()" aria-label="Toggle stream controls">
@@ -404,11 +503,11 @@ private struct StreamerWebView: UIViewRepresentable {
         <button id="gpEditBtn" class="infoAction" style="width:auto;padding:8px 12px;">Edit Layout</button>
       </div>
       <label for="gpScaleRange">Control Size <span id="gpScaleValue">100%</span></label>
-      <input id="gpScaleRange" type="range" min="70" max="160" step="1" value="100">
+      <input id="gpScaleRange" type="range" min="50" max="160" step="1" value="100">
       <label for="gpButtonRange">Button Size <span id="gpButtonValue">100%</span></label>
-      <input id="gpButtonRange" type="range" min="75" max="150" step="1" value="100">
+      <input id="gpButtonRange" type="range" min="60" max="150" step="1" value="100">
       <label for="gpStickRange">Stick Size <span id="gpStickValue">100%</span></label>
-      <input id="gpStickRange" type="range" min="75" max="150" step="1" value="100">
+      <input id="gpStickRange" type="range" min="60" max="150" step="1" value="100">
       <label for="gpOpacityRange">Control Opacity <span id="gpOpacityValue">58%</span></label>
       <input id="gpOpacityRange" type="range" min="15" max="100" step="1" value="58">
       <div style="display:flex;gap:8px;margin-top:10px;">
@@ -429,7 +528,7 @@ private struct StreamerWebView: UIViewRepresentable {
         border:none;border-radius:8px;font-size:14px;cursor:pointer;">Done</button>
     </div>
   </div>
-  <div id="gpPad" style="display:none;position:fixed;left:0;right:0;top:0;bottom:12px;z-index:25;pointer-events:none;">
+  <div id="gpPad" style="display:none;position:fixed;left:0;right:0;top:0;bottom:0;width:100vw;height:100vh;height:100dvh;z-index:25;pointer-events:none;">
     <div id="gpTopLeft" class="layoutGroup">
       <div style="display:flex;gap:8px;pointer-events:auto;">
         <button data-mask="256" class="gpAux gpShoulder">LB</button>
@@ -491,6 +590,8 @@ private struct StreamerWebView: UIViewRepresentable {
   </div>
   <script>
   const cfg = \#(payload);
+  const FORTNITE_TOUCH_PROFILE = cfg.touchProfile === 'fortnite-mobile';
+  const PREFERS_TOUCH_CONTROLLER_OVERLAY = !!cfg.prefersTouchControllerOverlay;
   function sanitizeStreamerPreferences(raw) {
     return {
       audioMuted: raw?.audioMuted !== false,
@@ -512,12 +613,17 @@ private struct StreamerWebView: UIViewRepresentable {
   let inputReady = false;
   let reconnectTimer = null;
   let reconnectAttempts = 0;
+  let peerEverConnected = false;
   const maxReconnectAttempts = 10;
   let offerTimeoutTimer = null;
   let signalingOpenTimeout = null;
   let statsTimer = null;
+  let statsPollInFlight = false;
   let lastBytesReceived = 0;
   let lastBytesTimestamp = 0;
+  let lastPacketsReceived = 0;
+  let lastPacketsLost = 0;
+  let stopGpuKeepAlive = null;
   let pendingMoveDx = 0;
   let pendingMoveDy = 0;
   let moveFrame = null;
@@ -584,7 +690,7 @@ private struct StreamerWebView: UIViewRepresentable {
   let showStatsBattery = streamerPreferences.showStatsBattery;
   let deviceBatteryPercent = null;
   let deviceBatteryCharging = false;
-  let latestStats = { fps: 0, pingMs: 0, packetLossPct: 0, bitrateMbps: 0 };
+  let latestStats = { fps: 0, pingMs: 0, packetLossPct: 0, bitrateMbps: 0, hasPacketLoss: false };
   let nativeGamepadState = null;
   let lastControllerStatusText = '';
   let lastStatsMarkup = '';
@@ -606,15 +712,15 @@ private struct StreamerWebView: UIViewRepresentable {
   const GAMEPAD_B = 0x2000;
   const GAMEPAD_X = 0x4000;
   const GAMEPAD_Y = 0x8000;
-  const TOUCH_LAYOUT_SCALE_MIN = 0.7;
+  const TOUCH_LAYOUT_SCALE_MIN = 0.5;
   const TOUCH_LAYOUT_SCALE_MAX = 1.6;
-  const TOUCH_LAYOUT_BUTTON_SCALE_MIN = 0.75;
+  const TOUCH_LAYOUT_BUTTON_SCALE_MIN = 0.6;
   const TOUCH_LAYOUT_BUTTON_SCALE_MAX = 1.5;
-  const TOUCH_LAYOUT_STICK_SCALE_MIN = 0.75;
+  const TOUCH_LAYOUT_STICK_SCALE_MIN = 0.6;
   const TOUCH_LAYOUT_STICK_SCALE_MAX = 1.5;
   const TOUCH_LAYOUT_OPACITY_MIN = 0.15;
   const TOUCH_LAYOUT_OPACITY_MAX = 1.0;
-  const FORTNITE_NATIVE_TOUCH = !!cfg.allowNativeTouchPassthrough;
+  const TOUCH_LAYOUT_VISUAL_BASE_SCALE = 0.70;
 
   function post(type, message) {
     try { window.webkit.messageHandlers.opennow.postMessage({ type, message }); } catch (_) {}
@@ -627,16 +733,16 @@ private struct StreamerWebView: UIViewRepresentable {
   function defaultTouchLayoutForProfile(profile) {
     if (profile === 'fortnite-mobile') {
       return {
-        scale: 1.05,
+        scale: 1,
         opacity: 0.52,
-        buttonScale: 1.05,
+        buttonScale: 1,
         stickScale: 1,
         topLeft: { x: 0.16, y: 0.11 },
         topCenter: { x: 0.50, y: 0.11 },
         topRight: { x: 0.84, y: 0.11 },
-        leftStick: { x: 0.17, y: 0.81 },
-        rightCluster: { x: 0.84, y: 0.78 },
-        bottomCenter: { x: 0.50, y: 0.91 }
+        leftStick: { x: 0.17, y: 0.77 },
+        rightCluster: { x: 0.84, y: 0.75 },
+        bottomCenter: { x: 0.50, y: 0.86 }
       };
     }
     return {
@@ -647,9 +753,9 @@ private struct StreamerWebView: UIViewRepresentable {
       topLeft: { x: 0.14, y: 0.12 },
       topCenter: { x: 0.50, y: 0.12 },
       topRight: { x: 0.86, y: 0.12 },
-      leftStick: { x: 0.18, y: 0.80 },
-      rightCluster: { x: 0.83, y: 0.79 },
-      bottomCenter: { x: 0.50, y: 0.92 }
+      leftStick: { x: 0.18, y: 0.77 },
+      rightCluster: { x: 0.83, y: 0.76 },
+      bottomCenter: { x: 0.50, y: 0.88 }
     };
   }
   function clamp01(value, min = 0.08, max = 0.92) {
@@ -671,9 +777,9 @@ private struct StreamerWebView: UIViewRepresentable {
       topLeft: sanitizePoint(raw?.topLeft, fallback.topLeft),
       topCenter: sanitizePoint(raw?.topCenter, fallback.topCenter),
       topRight: sanitizePoint(raw?.topRight, fallback.topRight),
-      leftStick: sanitizePoint(raw?.leftStick, fallback.leftStick, 0.10, 0.40, 0.45, 0.92),
-      rightCluster: sanitizePoint(raw?.rightCluster, fallback.rightCluster, 0.60, 0.92, 0.42, 0.92),
-      bottomCenter: sanitizePoint(raw?.bottomCenter, fallback.bottomCenter, 0.20, 0.80, 0.70, 0.97)
+      leftStick: sanitizePoint(raw?.leftStick, fallback.leftStick, 0.10, 0.40, 0.45, 0.88),
+      rightCluster: sanitizePoint(raw?.rightCluster, fallback.rightCluster, 0.60, 0.92, 0.42, 0.88),
+      bottomCenter: sanitizePoint(raw?.bottomCenter, fallback.bottomCenter, 0.20, 0.80, 0.70, 0.91)
     };
   }
   let touchLayout = sanitizeTouchLayout(cfg.touchLayout);
@@ -771,10 +877,10 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   function updateTouchModeCopy() {
     if (!touchModeDescription) return;
-    if (FORTNITE_NATIVE_TOUCH) {
-      touchModeDescription.textContent = 'Fortnite is using native mobile touch, and the overlay stays optional.';
+    if (PREFERS_TOUCH_CONTROLLER_OVERLAY) {
+      touchModeDescription.textContent = 'Fortnite uses the touch-controller overlay because GFN does not expose raw iOS touch.';
       if (touchHint) {
-        touchHint.textContent = 'Fortnite mobile touch mode is active.';
+        touchHint.textContent = 'Fortnite touch controls are ready.';
       }
       return;
     }
@@ -786,7 +892,8 @@ private struct StreamerWebView: UIViewRepresentable {
   function applyTouchpadMode() {
     updateTouchModeCopy();
     if (!touchpad) return;
-    if (FORTNITE_NATIVE_TOUCH) {
+    const touchControllerActive = gpPad && gpPad.style.display !== 'none';
+    if (touchControllerActive) {
       touchpad.style.pointerEvents = 'none';
       touchpad.style.display = 'none';
     } else {
@@ -829,7 +936,7 @@ private struct StreamerWebView: UIViewRepresentable {
       const point = touchLayout[key];
       element.style.left = `${(point.x * 100).toFixed(2)}%`;
       element.style.top = `${(point.y * 100).toFixed(2)}%`;
-      element.style.transform = `translate(-50%, -50%) scale(${scale})`;
+      element.style.transform = `translate(-50%, -50%) scale(${scale * TOUCH_LAYOUT_VISUAL_BASE_SCALE})`;
       element.style.opacity = `${overlayOpacity}`;
     });
     if (gpPad) {
@@ -1039,6 +1146,7 @@ private struct StreamerWebView: UIViewRepresentable {
       enablePartiallyReliableTransferHid: DEFAULT_PR_HID_MASK
     };
     offerAccepted = false;
+    peerEverConnected = false;
     clearOfferTimeout();
     if (inputFallbackTimer) {
       clearTimeout(inputFallbackTimer);
@@ -1055,6 +1163,9 @@ private struct StreamerWebView: UIViewRepresentable {
     stopKeyframeTimer();
     lastBytesReceived = 0;
     lastBytesTimestamp = 0;
+    lastPacketsReceived = 0;
+    lastPacketsLost = 0;
+    statsPollInFlight = false;
     for (const track of remoteMediaStream.getTracks()) {
       try { remoteMediaStream.removeTrack(track); } catch (_) {}
     }
@@ -1167,10 +1278,11 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   function renderStatsOverlay() {
     if (!statsEl || !statsPrimary || !statsMeta) return;
+    const lossText = latestStats.hasPacketLoss ? latestStats.packetLossPct.toFixed(1) : '--';
     const primaryParts = [
       `FPS ${latestStats.fps > 0 ? Math.round(latestStats.fps) : '--'}`,
       `Ping ${latestStats.pingMs > 0 ? Math.round(latestStats.pingMs) : '--'} ms`,
-      `Loss ${latestStats.packetLossPct > 0 ? latestStats.packetLossPct.toFixed(1) : '--'}%`,
+      `Loss ${lossText}%`,
       `Rate ${latestStats.bitrateMbps > 0 ? latestStats.bitrateMbps.toFixed(1) : '--'} Mbps`
     ];
     const metaParts = [];
@@ -1204,22 +1316,39 @@ private struct StreamerWebView: UIViewRepresentable {
       renderStatsOverlay();
       return;
     }
+    if (statsPollInFlight) return;
+    statsPollInFlight = true;
     try {
       const report = await pc.getStats();
       let fps = 0;
       let pingMs = 0;
       let bitrateMbps = 0;
       let packetLossPct = 0;
-      report.forEach((stat) => {
+      let hasPacketLoss = false;
+      for (const stat of report.values()) {
         if (stat.type === 'inbound-rtp' && stat.kind === 'video') {
           if (typeof stat.framesPerSecond === 'number' && stat.framesPerSecond > 0) {
             fps = stat.framesPerSecond;
           }
           if (typeof stat.packetsLost === 'number' && typeof stat.packetsReceived === 'number') {
-            const totalPackets = stat.packetsReceived + stat.packetsLost;
-            if (totalPackets > 0) {
-              packetLossPct = Math.max(packetLossPct, (stat.packetsLost / totalPackets) * 100);
+            if (lastPacketsReceived > 0 || lastPacketsLost > 0) {
+              const packetsDelta = stat.packetsReceived - lastPacketsReceived;
+              const lostDelta = stat.packetsLost - lastPacketsLost;
+              const totalDelta = packetsDelta + lostDelta;
+              if (packetsDelta >= 0 && lostDelta >= 0 && totalDelta > 0) {
+                packetLossPct = (lostDelta / totalDelta) * 100;
+                hasPacketLoss = true;
+              }
             }
+            if (!hasPacketLoss) {
+              const totalPackets = stat.packetsReceived + stat.packetsLost;
+              if (totalPackets > 0) {
+                packetLossPct = (stat.packetsLost / totalPackets) * 100;
+                hasPacketLoss = true;
+              }
+            }
+            lastPacketsReceived = stat.packetsReceived;
+            lastPacketsLost = stat.packetsLost;
           }
           if (typeof stat.bytesReceived === 'number') {
             if (lastBytesTimestamp > 0 && stat.timestamp > lastBytesTimestamp && stat.bytesReceived >= lastBytesReceived) {
@@ -1239,14 +1368,17 @@ private struct StreamerWebView: UIViewRepresentable {
         if (stat.type === 'candidate-pair' && stat.nominated && typeof stat.currentRoundTripTime === 'number') {
           pingMs = Math.max(pingMs, stat.currentRoundTripTime * 1000);
         }
-      });
-      latestStats = { fps, pingMs, packetLossPct, bitrateMbps };
+      }
+      latestStats = { fps, pingMs, packetLossPct, bitrateMbps, hasPacketLoss };
       renderStatsOverlay();
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      statsPollInFlight = false;
+    }
   }
   function ensureStatsTicker() {
     if (!statsVisible || statsTimer) return;
-    statsTimer = setInterval(samplePeerStats, 1000);
+    statsTimer = setInterval(samplePeerStats, 1250);
   }
   function stopStatsTicker() {
     if (!statsTimer) return;
@@ -1284,8 +1416,18 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   function extractPublicIp(hostOrIp) {
     if (!hostOrIp) return null;
-    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostOrIp)) return hostOrIp;
-    const first = hostOrIp.split('.')[0] ?? '';
+    let value = String(hostOrIp).trim();
+    try {
+      if (value.includes('://')) value = new URL(value).hostname;
+    } catch (_) {}
+    if (value.startsWith('[')) {
+      const end = value.indexOf(']');
+      if (end > 0) value = value.slice(1, end);
+    } else if (/:\d+$/.test(value) && value.indexOf(':') === value.lastIndexOf(':')) {
+      value = value.replace(/:\d+$/, '');
+    }
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return value;
+    const first = value.split('.')[0] ?? '';
     const parts = first.split('-');
     if (parts.length === 4 && parts.every(p => /^\d{1,3}$/.test(p))) return parts.join('.');
     return null;
@@ -1886,6 +2028,7 @@ private struct StreamerWebView: UIViewRepresentable {
         video.play().catch(() => {});
         ensureAudioActive();
         post('status', 'Streamer connected');
+        if (stopGpuKeepAlive) stopGpuKeepAlive();
         ensureStatsTicker();
         startKeyframeTimer();
       } else if (kind === 'audio') {
@@ -1910,11 +2053,20 @@ private struct StreamerWebView: UIViewRepresentable {
     };
     thisPc.onconnectionstatechange = () => {
       post('status', 'Peer: ' + thisPc.connectionState);
+      if (thisPc.connectionState === 'connected') {
+        peerEverConnected = true;
+        reconnectAttempts = 0;
+      }
       if (thisPc.connectionState === 'failed' || thisPc.connectionState === 'disconnected') {
+        const hadAcceptedOffer = offerAccepted;
+        const hadConnectedPeer = peerEverConnected;
         stopKeyframeTimer();
-        resetTransport();
-        if (offerAccepted) {
-          fail('Peer connection lost; reopen the session');
+        resetTransport(true);
+        if (hadAcceptedOffer) {
+          const message = hadConnectedPeer
+            ? 'Peer connection lost. Retry will refresh the session endpoint.'
+            : 'Peer connection failed after the session offer. Retry will refresh the session endpoint.';
+          fail(message);
           return;
         }
         scheduleReconnect('peer ' + thisPc.connectionState);
@@ -1925,7 +2077,8 @@ private struct StreamerWebView: UIViewRepresentable {
   async function onOffer(sdp) {
     try {
       clearOfferTimeout();
-      const fixedOffer = fixServerIp(sdp, cfg.serverIp || cfg.signalingServer || '');
+      const mediaHostForSdp = cfg.mediaIp || cfg.serverIp || cfg.signalingServer || '';
+      const fixedOffer = fixServerIp(sdp, mediaHostForSdp);
       const parsedRi = parseRiInputCapabilities(fixedOffer);
       partialReliableThresholdMs = parsedRi.partialReliableThresholdMs;
       riInputCapabilities = {
@@ -1966,7 +2119,7 @@ private struct StreamerWebView: UIViewRepresentable {
         ackid: nextAck()
       });
       offerAccepted = true;
-      await injectManualIce(rtc, cfg.mediaIp, cfg.mediaPort, serverIceUfrag);
+      await injectManualIce(rtc, cfg.mediaIp || cfg.serverIp || cfg.signalingServer, cfg.mediaPort, serverIceUfrag);
       post('status', 'Offer accepted');
     } catch (error) {
       fail('Offer handling failed: ' + String(error));
@@ -2056,11 +2209,16 @@ private struct StreamerWebView: UIViewRepresentable {
   let lastSentGamepadState = null;
   function setGamepadVisible(visible, persist = true) {
     if (!gpPad) return;
+    const wasVisible = gpPad.style.display !== 'none';
     gpPad.style.display = visible ? 'block' : 'none';
+    if (!visible && wasVisible) {
+      releaseAllPadKeys();
+    }
     if (persist) {
       updateStreamerPreference('touchControllerVisible', !!visible);
     }
     updateTouchControllerButton();
+    applyTouchpadMode();
   }
 
   function toggleKeyboard() {
@@ -2683,7 +2841,6 @@ private struct StreamerWebView: UIViewRepresentable {
   setTimeout(() => { if (touchHint) touchHint.style.opacity = '0'; }, 4000);
 
   touchpad.addEventListener('touchstart', (e) => {
-    if (FORTNITE_NATIVE_TOUCH) return;
     e.preventDefault();
     unlockAudio();
     const touches = e.targetTouches;
@@ -2717,7 +2874,6 @@ private struct StreamerWebView: UIViewRepresentable {
   }, { passive: false });
 
   touchpad.addEventListener('touchmove', (e) => {
-    if (FORTNITE_NATIVE_TOUCH) return;
     e.preventDefault();
     const touches = e.targetTouches;
     if (touches.length === 2) {
@@ -2771,7 +2927,6 @@ private struct StreamerWebView: UIViewRepresentable {
   }, { passive: false });
 
   touchpad.addEventListener('touchend', (e) => {
-    if (FORTNITE_NATIVE_TOUCH) return;
     e.preventDefault();
     const remainingTouches = e.targetTouches;
     if (remainingTouches.length === 0 && zoomScale > 1.01 && pinchGestureMoved) {
@@ -2804,7 +2959,6 @@ private struct StreamerWebView: UIViewRepresentable {
   }, { passive: false });
 
   touchpad.addEventListener('dblclick', (e) => {
-    if (FORTNITE_NATIVE_TOUCH) return;
     e.preventDefault();
     if (zoomScale > 1.01) {
       zoomScale = 1;
@@ -2864,7 +3018,6 @@ private struct StreamerWebView: UIViewRepresentable {
   });
 
   touchpad.addEventListener('wheel', (e) => {
-    if (FORTNITE_NATIVE_TOUCH) return;
     e.preventDefault();
     adjustZoom(e.deltaY < 0 ? ZOOM_DEFAULT_STEP : -ZOOM_DEFAULT_STEP);
   }, { passive: false });
@@ -2998,7 +3151,7 @@ private struct StreamerWebView: UIViewRepresentable {
       toggleHudPanel(false);
     }
   }, { passive: true });
-  setGamepadVisible(streamerPreferences.touchControllerVisible, false);
+  setGamepadVisible(streamerPreferences.touchControllerVisible || PREFERS_TOUCH_CONTROLLER_OVERLAY, false);
   applyTouchpadMode();
   applyTouchLayout();
   applyStatsVisibility();
@@ -3011,15 +3164,32 @@ private struct StreamerWebView: UIViewRepresentable {
   updateHudSummary();
   pollGamepadState();
   // GPU keep-alive: minimal WebGL rAF loop prevents GPUProcess idle-exit during
-  // WebRTC negotiation. Runs until the WKWebView is destroyed (streamer dismissed).
-  (function() {
+  // WebRTC negotiation. Stop it once video is attached so normal streaming does
+  // not keep an extra animation frame loop alive.
+  stopGpuKeepAlive = (function() {
     var c = document.createElement('canvas');
+    var running = true;
+    var frame = 0;
     c.width = c.height = 1;
     c.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;z-index:-1;';
     document.body.appendChild(c);
     var gl = c.getContext('webgl') || c.getContext('experimental-webgl');
-    if (!gl) { c.remove(); return; }
-    (function loop() { gl.clear(gl.COLOR_BUFFER_BIT); requestAnimationFrame(loop); })();
+    if (!gl) { c.remove(); return null; }
+    (function loop() {
+      if (!running) return;
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      frame = requestAnimationFrame(loop);
+    })();
+    return function() {
+      if (!running) return;
+      running = false;
+      if (frame) cancelAnimationFrame(frame);
+      try {
+        const ext = gl.getExtension('WEBGL_lose_context');
+        if (ext) ext.loseContext();
+      } catch (_) {}
+      c.remove();
+    };
   })();
   // WebContent keep-alive: active media playback prevents iOS from suspending the
   // WebContent process during WebRTC negotiation (no browser-engine entitlements).
@@ -3050,26 +3220,8 @@ private struct StreamerWebView: UIViewRepresentable {
         return "default"
     }
 
-    private static func streamProfile(for settings: AppSettings) -> StreamProfile {
-        let nativeBounds = UIScreen.main.nativeBounds
-        let longSide = max(nativeBounds.width, nativeBounds.height)
-        let shortSide = min(nativeBounds.width, nativeBounds.height)
-        let supports1440 = longSide >= 2500 || shortSide >= 1400 || UIScreen.main.nativeScale >= 3.0
-        let effectiveFPS = min(settings.preferredFPS, 60)
-        let isPad = UIDevice.current.userInterfaceIdiom == .pad
-        let quality = settings.preferredQuality.lowercased()
-        let prefersQuality = quality == "quality"
-        let prefersDataSaver = quality == "data saver"
-
-        if isPad, prefersQuality, supports1440, effectiveFPS >= 60 {
-            return StreamProfile(width: 2560, height: 1440, maxBitrateKbps: 36_000)
-        }
-        if isPad {
-            let bitrate = prefersQuality ? 24_000 : (prefersDataSaver ? 12_000 : 18_000)
-            return StreamProfile(width: 1920, height: 1080, maxBitrateKbps: bitrate)
-        }
-        let bitrate = prefersQuality ? 18_000 : (prefersDataSaver ? 8_500 : 13_000)
-        return StreamProfile(width: 1280, height: 720, maxBitrateKbps: bitrate)
+    private static func streamProfile(for settings: AppSettings) -> StreamVideoProfile {
+        StreamSettingsResolver.profile(for: settings)
     }
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {

@@ -138,6 +138,7 @@ struct MainTabView: View {
         .animation(.easeInOut(duration: 0.28), value: store.showStreamLoading && !store.queueOverlayVisible)
         .animation(.easeInOut(duration: 0.2), value: presentedStreamerSession?.id)
         .onAppear {
+            persistQueuePillEdgeIfNeeded()
             // MainTabView can be recreated by upstream auth/bootstrap state updates.
             // Reattach streamer overlay if store already has an active stream session.
             if let activeStream = store.streamSession {
@@ -182,6 +183,7 @@ struct MainTabView: View {
                         .padding(.bottom, queuePillEdge == .bottom ? bottomQueuePillPadding(in: proxy) : 0)
                         .queuePillDrag(
                             edgeRawValue: $queuePillVerticalEdgeRaw,
+                            defaultEdgeRawValue: queuePillEdge.rawValue,
                             proxy: proxy,
                             animation: queueSurfaceAnimation
                         )
@@ -213,6 +215,11 @@ struct MainTabView: View {
         #else
         return 12
         #endif
+    }
+
+    private func persistQueuePillEdgeIfNeeded() {
+        guard QueuePillVerticalEdge(rawValue: queuePillVerticalEdgeRaw) == nil else { return }
+        queuePillVerticalEdgeRaw = queuePillEdge.rawValue
     }
 }
 
@@ -333,10 +340,20 @@ private struct QueuePillBackgroundModifier: ViewModifier {
 
 private struct QueuePillDragModifier: ViewModifier {
     @Binding var edgeRawValue: String
+    let defaultEdgeRawValue: String
     let proxy: GeometryProxy
     let animation: Animation
     @State private var dragOffset: CGFloat = 0
     @State private var latchedDuringDrag = false
+
+    private var currentEdgeRawValue: String {
+        switch edgeRawValue {
+        case "top", "bottom":
+            return edgeRawValue
+        default:
+            return defaultEdgeRawValue
+        }
+    }
 
     func body(content: Content) -> some View {
         #if os(iOS)
@@ -347,7 +364,7 @@ private struct QueuePillDragModifier: ViewModifier {
                     .onChanged { value in
                         guard !latchedDuringDrag else { return }
 
-                        let currentEdge = edgeRawValue.isEmpty ? "top" : edgeRawValue
+                        let currentEdge = currentEdgeRawValue
                         let snapDistance = min(max(proxy.size.height * 0.12, 68), 118)
                         let translation = value.translation.height
                         let nextEdge: String?
@@ -385,7 +402,7 @@ private struct QueuePillDragModifier: ViewModifier {
                             return
                         }
 
-                        let currentEdge = edgeRawValue.isEmpty ? "top" : edgeRawValue
+                        let currentEdge = currentEdgeRawValue
                         let projectedTranslation = value.translation.height + (value.predictedEndTranslation.height * 0.18)
                         let snapDistance = min(max(proxy.size.height * 0.12, 68), 118)
                         let nextEdge: String?
@@ -397,9 +414,7 @@ private struct QueuePillDragModifier: ViewModifier {
                             nextEdge = nil
                         }
                         withAnimation(animation) {
-                            if let nextEdge {
-                                edgeRawValue = nextEdge
-                            }
+                            edgeRawValue = nextEdge ?? currentEdge
                             dragOffset = 0
                         }
                     }
@@ -430,10 +445,18 @@ extension View {
     @ViewBuilder
     func queuePillDrag(
         edgeRawValue: Binding<String>,
+        defaultEdgeRawValue: String,
         proxy: GeometryProxy,
         animation: Animation
     ) -> some View {
-        modifier(QueuePillDragModifier(edgeRawValue: edgeRawValue, proxy: proxy, animation: animation))
+        modifier(
+            QueuePillDragModifier(
+                edgeRawValue: edgeRawValue,
+                defaultEdgeRawValue: defaultEdgeRawValue,
+                proxy: proxy,
+                animation: animation
+            )
+        )
     }
 }
 

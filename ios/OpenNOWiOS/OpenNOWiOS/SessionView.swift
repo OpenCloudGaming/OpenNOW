@@ -255,18 +255,38 @@ struct SessionView: View {
             } else {
                 ForEach(store.resumableSessions) { candidate in
                     let isEndingRemote = endingRemoteSessionId == candidate.id
-                    HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Session")
-                                .font(.caption.bold())
-                            Text(candidate.id)
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                            if let appId = candidate.appId {
-                                Text("App: \(appId)")
-                                    .font(.caption2)
+                    let game = store.gameForRemoteSession(candidate)
+                    HStack(spacing: 12) {
+                        if let game {
+                            GameArtworkView(game: game, iconSize: 24)
+                                .frame(width: 48, height: 48)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        } else {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(.secondary.opacity(0.14))
+                                Image(systemName: "dot.radiowaves.left.and.right")
+                                    .font(.headline)
                                     .foregroundStyle(.secondary)
+                            }
+                            .frame(width: 48, height: 48)
+                        }
+
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(game?.title ?? "Cloud session")
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
+                            HStack(spacing: 6) {
+                                statusDot(status: candidate.status)
+                                Text(statusLabel(candidate.status))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if let appId = candidate.appId, game == nil {
+                                    Text("App \(appId)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                }
                             }
                         }
                         Spacer()

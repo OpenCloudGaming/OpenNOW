@@ -7,6 +7,7 @@ struct LibraryView: View {
     @State private var searchText = ""
     @State private var selectedGenre: String?
     @State private var selectedPlatform: String?
+    @State private var favoritesOnly = false
     @State private var sortMode: LibrarySortMode = .title
 
     var body: some View {
@@ -206,6 +207,16 @@ struct LibraryView: View {
                     }
                     .buttonStyle(.bordered)
 
+                    Button {
+                        Haptics.selection()
+                        favoritesOnly.toggle()
+                    } label: {
+                        Label("Favorites", systemImage: favoritesOnly ? "heart.fill" : "heart")
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(favoritesOnly ? .red : nil)
+
                     if hasActiveFilters {
                         Button {
                             Haptics.light()
@@ -301,7 +312,8 @@ struct LibraryView: View {
 
             let matchesGenre = selectedGenre == nil || game.genre == selectedGenre
             let matchesPlatform = selectedPlatform == nil || game.platform == selectedPlatform
-            return matchesSearch && matchesGenre && matchesPlatform
+            let matchesFavorite = !favoritesOnly || store.isFavorite(game)
+            return matchesSearch && matchesGenre && matchesPlatform && matchesFavorite
         }
 
         switch sortMode {
@@ -353,6 +365,7 @@ struct LibraryView: View {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
             selectedGenre != nil ||
             selectedPlatform != nil ||
+            favoritesOnly ||
             sortMode != .title
     }
 
@@ -391,6 +404,7 @@ struct LibraryView: View {
         searchText = ""
         selectedGenre = nil
         selectedPlatform = nil
+        favoritesOnly = false
         sortMode = .title
     }
 
