@@ -1,8 +1,8 @@
 import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage, AspectRatio, KeyboardLayout } from "@shared/gfn";
-import { DEFAULT_KEYBOARD_LAYOUT, getDefaultStreamPreferences, normalizeStreamPreferences } from "@shared/gfn";
+import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage, AspectRatio, KeyboardLayout } from "../shared/gfn";
+import { DEFAULT_KEYBOARD_LAYOUT, getDefaultStreamPreferences, normalizeStreamPreferences } from "../shared/gfn";
 
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
@@ -47,6 +47,8 @@ export interface Settings {
   shortcutScreenshot: string;
   /** Toggle stream recording shortcut */
   shortcutToggleRecording: string;
+  /** Save instant replay clip shortcut */
+  shortcutSaveReplay: string;
   /** How often to re-show the session timer while streaming (0 = off) */
   sessionClockShowEveryMinutes: number;
   /** How long the session timer stays visible when it appears */
@@ -57,6 +59,12 @@ export interface Settings {
   microphoneDeviceId: string;
   /** Hide stream buttons (mic/fullscreen/end-session) while streaming */
   hideStreamButtons: boolean;
+  /** Enable the instant replay buffer for recent stream clips */
+  instantReplayEnabled: boolean;
+  /** Maximum amount of recent stream video to keep in the replay buffer */
+  instantReplayDurationSeconds: number;
+  /** Custom output directory for recordings (empty = default ~/Pictures/OpenNOW/Recordings) */
+  recordingOutputPath: string;
   /** Show the Anti-AFK indicator badge while streaming */
   showAntiAfkIndicator: boolean;
   /** Show the stats overlay automatically when a stream launches */
@@ -123,9 +131,13 @@ const DEFAULT_SETTINGS: Settings = {
   shortcutToggleMicrophone: defaultMicShortcut,
   shortcutScreenshot: "F11",
   shortcutToggleRecording: "F12",
+  shortcutSaveReplay: "Ctrl+Shift+R",
   microphoneMode: "disabled",
   microphoneDeviceId: "",
   hideStreamButtons: false,
+  instantReplayEnabled: false,
+  instantReplayDurationSeconds: 30,
+  recordingOutputPath: "",
   showAntiAfkIndicator: true,
   showStatsOnLaunch: false,
   hideServerSelector: false,
