@@ -1,5 +1,15 @@
+---
+description: 
+alwaysApply: true
+---
+
 # AGENTS.md
 
+## Graphify-first policy
+For any codebase question, architecture question, or "where/how/why" query:
+1. Call Graphify MCP first (`graph_stats`, `query_graph`, `get_node`, `get_neighbors`, `shortest_path`) to gather graph context.
+2. Base the answer on Graphify results plus file verification when needed.
+3. If Graphify is unavailable, state that explicitly and continue with normal code search.
 
 ## Core Priorities
 

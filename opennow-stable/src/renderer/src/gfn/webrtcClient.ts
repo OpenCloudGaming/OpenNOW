@@ -150,6 +150,7 @@ interface ClientOptions {
   onLog: (line: string) => void;
   onStats?: (stats: StreamDiagnostics) => void;
   onTimeWarning?: (warning: StreamTimeWarning) => void;
+  onPointerLockDisengagingNoticeChange?: (message: string | null) => void;
   onMicStateChange?: (state: MicStateChange) => void;
 }
 
@@ -547,6 +548,14 @@ export class GfnWebRtcClient {
   private pointerLockEscapeTimer: number | null = null;
   // Skip one synthetic Escape on pointer loss when lock was released intentionally (e.g. F8).
   private suppressNextSyntheticEscape = false;
+  // Timer for the 3-second ESC hold-to-release pointer lock feature
+  private escHoldTimer: number | null = null;
+  // Delay timer before showing "pointer lock disengaging" notice
+  private escHoldNoticeTimer: number | null = null;
+  private pointerLockDisengagingNotice: string | null = null;
+  private interceptedEscapeHoldStartedAtMs: number | null = null;
+  private interceptedEscapeSyntheticSent = false;
+  private escapeKeyLockActive = false;
   private mouseBackpressureLoggedAtMs = 0;
   private mouseFlushBaseIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
   private mouseAdaptiveFlushActive = false;
@@ -849,6 +858,14 @@ export class GfnWebRtcClient {
 
   private log(message: string): void {
     this.options.onLog(message);
+  }
+
+  private setPointerLockDisengagingNotice(message: string | null): void {
+    if (this.pointerLockDisengagingNotice === message) {
+      return;
+    }
+    this.pointerLockDisengagingNotice = message;
+    this.options.onPointerLockDisengagingNoticeChange?.(message);
   }
 
   private emitStats(): void {
@@ -2233,6 +2250,43 @@ export class GfnWebRtcClient {
     }
   }
 
+  private syncEscapeKeyLockState(): void {
+    const nav = navigator as any;
+    const keyboardApi = nav.keyboard;
+    const canLock = typeof keyboardApi?.lock === "function";
+    const canUnlock = typeof keyboardApi?.unlock === "function";
+    if (!canLock && !canUnlock) {
+      this.escapeKeyLockActive = false;
+      return;
+    }
+
+    const shouldLock = Boolean(document.fullscreenElement && document.pointerLockElement);
+    if (shouldLock) {
+      if (!canLock || this.escapeKeyLockActive) {
+        return;
+      }
+      void keyboardApi
+        .lock(["Escape"])
+        .then(() => {
+          this.escapeKeyLockActive = true;
+        })
+        .catch((error: unknown) => {
+          this.escapeKeyLockActive = false;
+          this.log(`Keyboard lock(Escape) request failed: ${String(error)}`);
+        });
+      return;
+    }
+
+    if (canUnlock) {
+      try {
+        keyboardApi.unlock();
+      } catch {
+        // Ignore unlock failures (browser may already have released lock).
+      }
+    }
+    this.escapeKeyLockActive = false;
+  }
+
   private shouldSendSyntheticEscapeOnPointerLockLoss(): boolean {
     if (document.visibilityState !== "visible") {
       return false;
@@ -2741,6 +2795,34 @@ export class GfnWebRtcClient {
       event.preventDefault();
       this.pressedKeys.add(mapped.vk);
 
+      if (isEscapeEvent && isPointerLockActive()) {
+        if (this.escHoldTimer !== null) {
+          window.clearTimeout(this.escHoldTimer);
+        }
+        if (this.escHoldNoticeTimer !== null) {
+          window.clearTimeout(this.escHoldNoticeTimer);
+        }
+        this.setPointerLockDisengagingNotice(null);
+        this.escHoldNoticeTimer = window.setTimeout(() => {
+          this.escHoldNoticeTimer = null;
+          if (this.escHoldTimer === null || !isPointerLockActive()) {
+            return;
+          }
+          this.setPointerLockDisengagingNotice("Pointer lock disengaging - keep holding ESC...");
+        }, 1000);
+        this.escHoldTimer = window.setTimeout(() => {
+          this.escHoldTimer = null;
+          if (this.escHoldNoticeTimer !== null) {
+            window.clearTimeout(this.escHoldNoticeTimer);
+            this.escHoldNoticeTimer = null;
+          }
+          this.setPointerLockDisengagingNotice(null);
+          if (!isPointerLockActive()) return;
+          this.suppressNextSyntheticEscape = true;
+          document.exitPointerLock();
+        }, 3000);
+      }
+
       const payload = this.inputEncoder.encodeKeyDown({
         keycode: mapped.vk,
         scancode: mapped.scancode,
@@ -2770,6 +2852,19 @@ export class GfnWebRtcClient {
 
       event.preventDefault();
       this.pressedKeys.delete(mapped.vk);
+
+      if (isEscapeEvent && this.escHoldTimer !== null) {
+        window.clearTimeout(this.escHoldTimer);
+        this.escHoldTimer = null;
+      }
+      if (isEscapeEvent && this.escHoldNoticeTimer !== null) {
+        window.clearTimeout(this.escHoldNoticeTimer);
+        this.escHoldNoticeTimer = null;
+      }
+      if (isEscapeEvent) {
+        this.setPointerLockDisengagingNotice(null);
+      }
+
       const payload = this.inputEncoder.encodeKeyUp({
         keycode: mapped.vk,
         scancode: mapped.scancode,
@@ -2847,6 +2942,7 @@ export class GfnWebRtcClient {
     // Handle pointer lock changes — send synthetic Escape when lock is lost by browser
     // (matches official GFN client's "pointerLockEscape" feature)
     const onPointerLockChange = () => {
+      this.syncEscapeKeyLockState();
       if (isPointerLockActive()) {
         // Pointer lock gained — cancel any pending synthetic Escape.
         // Reset absolute position tracking since we switch to relative movement.
@@ -2856,6 +2952,13 @@ export class GfnWebRtcClient {
           window.clearTimeout(this.pointerLockEscapeTimer);
           this.pointerLockEscapeTimer = null;
         }
+        if (this.escHoldNoticeTimer !== null) {
+          window.clearTimeout(this.escHoldNoticeTimer);
+          this.escHoldNoticeTimer = null;
+        }
+        this.setPointerLockDisengagingNotice(null);
+        this.interceptedEscapeHoldStartedAtMs = null;
+        this.interceptedEscapeSyntheticSent = false;
         this.suppressNextSyntheticEscape = false;
         return;
       }
@@ -2869,12 +2972,26 @@ export class GfnWebRtcClient {
       if (!this.inputReady) return;
 
       if (this.suppressNextSyntheticEscape) {
+        if (this.escHoldNoticeTimer !== null) {
+          window.clearTimeout(this.escHoldNoticeTimer);
+          this.escHoldNoticeTimer = null;
+        }
+        this.setPointerLockDisengagingNotice(null);
+        this.interceptedEscapeHoldStartedAtMs = null;
+        this.interceptedEscapeSyntheticSent = false;
         this.suppressNextSyntheticEscape = false;
         this.releasePressedKeys("pointer lock intentionally released");
         return;
       }
 
       if (!this.shouldSendSyntheticEscapeOnPointerLockLoss()) {
+        if (this.escHoldNoticeTimer !== null) {
+          window.clearTimeout(this.escHoldNoticeTimer);
+          this.escHoldNoticeTimer = null;
+        }
+        this.setPointerLockDisengagingNotice(null);
+        this.interceptedEscapeHoldStartedAtMs = null;
+        this.interceptedEscapeSyntheticSent = false;
         this.releasePressedKeys("pointer lock lost while unfocused");
         return;
       }
@@ -2885,26 +3002,28 @@ export class GfnWebRtcClient {
       if (escapeWasPressed) {
         // Escape was already tracked as pressed — the normal keyup handler will fire
         // and send Escape keyup to the server. No synthetic needed.
+        // Re-acquire lock immediately so a short ESC press does not permanently end
+        // pointer lock. This must not depend on escHoldTimer because keyup can clear
+        // the timer before pointerlockchange is delivered on some platforms.
+        if (this.pointerLockTarget) {
+          void this.requestPointerLockWithOptionalFullscreen(this.pointerLockTarget, false).catch(() => {});
+        }
         return;
       }
 
-      // Escape was NOT tracked as pressed — browser intercepted it before our keydown fired.
-      // Send synthetic Escape keydown+keyup after 50ms (matches official GFN client).
-      // Also re-acquire pointer lock so the user stays in the game.
-      this.pointerLockEscapeTimer = window.setTimeout(() => {
-        this.pointerLockEscapeTimer = null;
+      // Escape was NOT tracked as pressed — browser intercepted it before our keydown fired
+      // (common on macOS). Drive hold behavior from repeated lock-loss duration instead
+      // of relying on keydown/keyup delivery.
+      const nowMs = performance.now();
+      if (this.interceptedEscapeHoldStartedAtMs === null) {
+        this.interceptedEscapeHoldStartedAtMs = nowMs;
+        this.interceptedEscapeSyntheticSent = false;
+      }
+      const heldMs = nowMs - this.interceptedEscapeHoldStartedAtMs;
 
-        if (!this.inputReady) return;
-
-        if (!this.shouldSendSyntheticEscapeOnPointerLockLoss()) {
-          this.releasePressedKeys("focus changed before synthetic Escape");
-          return;
-        }
-
-        // Release all currently held keys first (matching official client's MS() function)
+      if (!this.interceptedEscapeSyntheticSent) {
         this.releasePressedKeys("pointer lock lost before synthetic Escape");
 
-        // Send synthetic Escape keydown + keyup
         this.log("Sending synthetic Escape (pointer lock lost by browser)");
         const escDown = this.inputEncoder.encodeKeyDown({
           keycode: 0x1B,
@@ -2921,13 +3040,27 @@ export class GfnWebRtcClient {
           timestampUs: timestampUs(),
         });
         this.sendReliable(escUp);
+        this.interceptedEscapeSyntheticSent = true;
+      }
 
-        // Re-acquire pointer lock so the user stays in the game
-        if (this.pointerLockTarget) {
-          void this.requestPointerLockWithOptionalFullscreen(this.pointerLockTarget, false)
-            .catch(() => {});
-        }
-      }, 50);
+      if (heldMs >= 1000) {
+        this.setPointerLockDisengagingNotice("Pointer lock disengaging - keep holding ESC...");
+      } else {
+        this.setPointerLockDisengagingNotice(null);
+      }
+
+      // Held for >=3s: treat as intentional disengage and remain unlocked.
+      if (heldMs >= 3000) {
+        this.setPointerLockDisengagingNotice(null);
+        this.interceptedEscapeHoldStartedAtMs = null;
+        this.interceptedEscapeSyntheticSent = false;
+        return;
+      }
+
+      // Short press path: re-acquire pointer lock quickly.
+      if (this.pointerLockTarget) {
+        void this.requestPointerLockWithOptionalFullscreen(this.pointerLockTarget, false).catch(() => {});
+      }
     };
 
     const onWindowBlur = () => {
@@ -2969,6 +3102,7 @@ export class GfnWebRtcClient {
 
     // Release any prior Keyboard API lock when leaving fullscreen (e.g. other UI may have locked keys).
     const onFullscreenChange = () => {
+      this.syncEscapeKeyLockState();
       if (document.fullscreenElement) {
         return;
       }
@@ -3116,6 +3250,17 @@ export class GfnWebRtcClient {
           window.clearTimeout(this.pointerLockEscapeTimer);
           this.pointerLockEscapeTimer = null;
         }
+        if (this.escHoldTimer !== null) {
+          window.clearTimeout(this.escHoldTimer);
+          this.escHoldTimer = null;
+        }
+        if (this.escHoldNoticeTimer !== null) {
+          window.clearTimeout(this.escHoldNoticeTimer);
+          this.escHoldNoticeTimer = null;
+        }
+        this.setPointerLockDisengagingNotice(null);
+        this.interceptedEscapeHoldStartedAtMs = null;
+        this.interceptedEscapeSyntheticSent = false;
       this.releasePressedKeys("input cleanup");
       this.pendingMouseDxFloat = 0;
       this.pendingMouseDyFloat = 0;
@@ -3127,6 +3272,7 @@ export class GfnWebRtcClient {
       if (nav.keyboard?.unlock) {
         nav.keyboard.unlock();
       }
+      this.escapeKeyLockActive = false;
     });
   }
 
