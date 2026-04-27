@@ -60,7 +60,8 @@ interface ControllerLibraryPageProps {
 }
 
 type Direction = "up" | "down" | "left" | "right";
-type TopCategory = "current" | "all" | "settings" | "media" | "favorites" | `genre:${string}`;
+type TopCategory = "current" | "games" | "settings" | "media";
+type GameSubcategory = "all" | "favorites" | `genre:${string}`;
 type SoundKind = "move" | "confirm";
 type SettingsSubcategory = "root" | "Network" | "Audio" | "Video" | "System" | "Accounts";
 type MediaSubcategory = "root" | "Videos" | "Screenshots";
@@ -79,30 +80,6 @@ function isEditableTarget(target: EventTarget | null): boolean {
   if (target.isContentEditable) return true;
   return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
 }
-
-function getCategoryLabel(categoryId: string, currentGameTitle?: string): { label: string } {
-  if (categoryId === "current") return { label: currentGameTitle || "Current" };
-  if (categoryId === "all") return { label: "All" };
-  if (categoryId === "settings") return { label: "Settings" };
-  if (categoryId === "media") return { label: "Media" };
-  if (categoryId === "favorites") return { label: "Favorites" };
-  const genreName = sanitizeGenreName(categoryId.slice(6));
-  const shorthand: Record<string, string> = {
-    "massively multiplayer online battle arena": "MOBA",
-    "massively multiplayer online": "MMO",
-    "multiplayer online battle arena": "MOBA",
-    "first person shooter": "FPS",
-    "role playing game": "RPG",
-    "real time strategy": "RTS",
-    "simulation": "Sim",
-    "virtual reality": "VR",
-    "third person shooter": "TPS",
-  };
-  const normalized = genreName.toLowerCase();
-  const display = shorthand[normalized] ?? genreName;
-  return { label: display };
-}
-
 
 export function ControllerLibraryPage({
   games,
@@ -141,15 +118,15 @@ export function ControllerLibraryPage({
 }: ControllerLibraryPageProps): JSX.Element {
   const [isEntering, setIsEntering] = useState(true);
   const initialCategoryIndex = (() => {
-    const hasFavorites = Array.isArray(favoriteGameIds) && favoriteGameIds.length > 0;
     if (currentStreamingGame) {
-      // TOP_CATEGORIES: current (game title), settings, all, favorites, ...genres
       return 0;
     }
-    // TOP_CATEGORIES without `current`: settings, all, favorites, ...genres
-    return hasFavorites ? 2 : 1;
+    // TOP_CATEGORIES without `current`: settings, games, media
+    return 1;
   })();
   const [categoryIndex, setCategoryIndex] = useState(initialCategoryIndex);
+  const [gamesSubcategory, setGamesSubcategory] = useState<"root" | "list">("root");
+  const [selectedGameSubcategoryIndex, setSelectedGameSubcategoryIndex] = useState(0);
   const audioContextRef = useRef<AudioContext | null>(null);
   const itemsContainerRef = useRef<HTMLDivElement>(null);
   const currentPosterImgRef = useRef<HTMLImageElement | null>(null);
@@ -307,18 +284,24 @@ export function ControllerLibraryPage({
     return Array.from(genreSet).sort();
   }, [games]);
 
+  const GAME_SUBCATEGORIES = useMemo(() => {
+    const categories: Array<{ id: GameSubcategory; label: string }> = [];
+    categories.push({ id: "all", label: "All" });
+    categories.push({ id: "favorites", label: "Favorites" });
+    for (const genre of allGenres) categories.push({ id: `genre:${genre}`, label: sanitizeGenreName(genre) });
+    return categories;
+  }, [allGenres]);
+
   const TOP_CATEGORIES = useMemo(() => {
     const categories: Array<{ id: TopCategory; label: string }> = [];
     if (currentStreamingGame) {
       categories.push({ id: "current", label: currentStreamingGame.title || "Current Game" });
     }
     categories.push({ id: "settings", label: "Settings" });
-    categories.push({ id: "all", label: "All" });
-    categories.push({ id: "favorites", label: "Favorites" });
+    categories.push({ id: "games", label: "Games" });
     categories.push({ id: "media", label: "Media" });
-    for (const genre of allGenres) categories.push({ id: `genre:${genre}`, label: sanitizeGenreName(genre) });
     return categories;
-  }, [allGenres, currentStreamingGame]);
+  }, [currentStreamingGame]);
 
   const topCategory = (TOP_CATEGORIES[categoryIndex]?.id ?? "all") as unknown as string;
 
@@ -326,6 +309,11 @@ export function ControllerLibraryPage({
     if (TOP_CATEGORIES.length === 0) return;
     setCategoryIndex((prev) => Math.max(0, Math.min(prev, TOP_CATEGORIES.length - 1)));
   }, [TOP_CATEGORIES.length]);
+
+  useEffect(() => {
+    if (GAME_SUBCATEGORIES.length === 0) return;
+    setSelectedGameSubcategoryIndex((prev) => Math.max(0, Math.min(prev, GAME_SUBCATEGORIES.length - 1)));
+  }, [GAME_SUBCATEGORIES.length]);
 
   const settingsBySubcategory = useMemo(() => {
     const micLabel = (() => {
@@ -403,6 +391,14 @@ export function ControllerLibraryPage({
     { id: "screenshots", label: "Screenshots", value: "" },
   ], []);
 
+  const gameRootItems = useMemo(() => {
+    return GAME_SUBCATEGORIES.map((category) => ({
+      id: category.id,
+      label: category.label,
+      value: "",
+    }));
+  }, [GAME_SUBCATEGORIES]);
+
   const mediaAssetItems = useMemo(() => {
     if (mediaSubcategory === "Videos") return mediaVideos;
     if (mediaSubcategory === "Screenshots") return mediaScreenshots;
@@ -412,9 +408,10 @@ export function ControllerLibraryPage({
   const displayItems = useMemo(() => {
     if (topCategory === "current") return currentGameItems;
     if (topCategory === "settings") return settingsBySubcategory[settingsSubcategory] ?? [];
+    if (topCategory === "games" && gamesSubcategory === "root") return gameRootItems;
     if (topCategory === "media" && mediaSubcategory === "root") return mediaRootItems;
     return [];
-  }, [topCategory, currentGameItems, settingsBySubcategory, settingsSubcategory, mediaSubcategory, mediaRootItems]);
+  }, [topCategory, currentGameItems, settingsBySubcategory, settingsSubcategory, gamesSubcategory, gameRootItems, mediaSubcategory, mediaRootItems]);
 
   useEffect(() => {
     let mounted = true;
@@ -492,15 +489,17 @@ export function ControllerLibraryPage({
     };
   }, [topCategory, mediaSubcategory]);
 
+  const activeGameSubcategory = GAME_SUBCATEGORIES[selectedGameSubcategoryIndex]?.id ?? "all";
+
   const categorizedGames = useMemo(() => {
-    if (topCategory === "settings") return [];
-    if (topCategory === "favorites") return games.filter((game) => favoriteGameIdSet.has(game.id));
-    if (topCategory.startsWith("genre:")) {
-      const genreName = topCategory.slice(6);
+    if (topCategory !== "games" || gamesSubcategory !== "list") return [];
+    if (activeGameSubcategory === "favorites") return games.filter((game) => favoriteGameIdSet.has(game.id));
+    if (activeGameSubcategory.startsWith("genre:")) {
+      const genreName = activeGameSubcategory.slice(6);
       return games.filter((game) => game.genres?.includes(genreName));
     }
     return games;
-  }, [games, favoriteGameIdSet, topCategory]);
+  }, [games, favoriteGameIdSet, topCategory, gamesSubcategory, activeGameSubcategory]);
 
   const selectedIndex = useMemo(() => {
     const index = categorizedGames.findIndex((game) => game.id === selectedGameId);
@@ -518,7 +517,6 @@ export function ControllerLibraryPage({
   const showCurrentDetail = topCategory === "current" && Boolean(currentStreamingGame);
   const detailVisible = showCurrentDetail;
 
-  const selectedCategoryLabel = useMemo(() => getCategoryLabel(topCategory, currentStreamingGame?.title).label, [topCategory, currentStreamingGame?.title]);
   const selectedGameDescription = useMemo(() => {
     if (!selectedGame) return "";
     const description = selectedGame.longDescription?.trim() || selectedGame.description?.trim();
@@ -582,6 +580,7 @@ export function ControllerLibraryPage({
         setCategoryIndex((prev) => (prev - 1 + TOP_CATEGORIES.length) % TOP_CATEGORIES.length);
         setSelectedSettingIndex(0);
         setSettingsSubcategory("root");
+        setGamesSubcategory("root");
         setSelectedMediaIndex(0);
         setMediaSubcategory("root");
         return;
@@ -592,6 +591,7 @@ export function ControllerLibraryPage({
         setCategoryIndex((prev) => (prev + 1) % TOP_CATEGORIES.length);
         setSelectedSettingIndex(0);
         setSettingsSubcategory("root");
+        setGamesSubcategory("root");
         setSelectedMediaIndex(0);
         setMediaSubcategory("root");
         return;
@@ -635,6 +635,27 @@ export function ControllerLibraryPage({
           return;
         }
         return;
+      }
+      if (topCategory === "games") {
+        if (gamesSubcategory === "root") {
+          if (direction === "up") {
+            const nextIndex = Math.max(0, selectedGameSubcategoryIndex - 1);
+            if (nextIndex !== selectedGameSubcategoryIndex) {
+              playUiSound("move");
+              setSelectedGameSubcategoryIndex(nextIndex);
+            }
+            return;
+          }
+          if (direction === "down") {
+            const nextIndex = Math.min(displayItems.length - 1, selectedGameSubcategoryIndex + 1);
+            if (nextIndex !== selectedGameSubcategoryIndex) {
+              playUiSound("move");
+              setSelectedGameSubcategoryIndex(nextIndex);
+            }
+            return;
+          }
+          return;
+        }
       }
       if (categorizedGames.length === 0) return;
       if (direction === "up") {
@@ -733,6 +754,28 @@ export function ControllerLibraryPage({
           return;
         }
         playUiSound("confirm");
+      } else if (topCategory === "games") {
+        if (gamesSubcategory === "root") {
+          setGamesSubcategory("list");
+          const firstGame = (() => {
+            const activeCategoryId = GAME_SUBCATEGORIES[selectedGameSubcategoryIndex]?.id ?? "all";
+            if (activeCategoryId === "favorites") return games.find((game) => favoriteGameIdSet.has(game.id));
+            if (activeCategoryId.startsWith("genre:")) {
+              const genreName = activeCategoryId.slice(6);
+              return games.find((game) => game.genres?.includes(genreName));
+            }
+            return games[0];
+          })();
+          if (firstGame) {
+            onSelectGame(firstGame.id);
+          }
+          playUiSound("confirm");
+          return;
+        }
+        if (selectedGame) {
+          onPlayGame(selectedGame);
+          playUiSound("confirm");
+        }
       } else if (topCategory === "media") {
         const item = displayItems[selectedMediaIndex];
         if (mediaSubcategory === "root" && item && (item.id === "videos" || item.id === "screenshots")) {
@@ -752,9 +795,6 @@ export function ControllerLibraryPage({
           }
         }
 
-        playUiSound("confirm");
-      } else if (selectedGame) {
-        onPlayGame(selectedGame);
         playUiSound("confirm");
       }
     };
@@ -880,6 +920,12 @@ export function ControllerLibraryPage({
         setSelectedMediaIndex(lastRootMediaIndex);
         playUiSound("move");
         e.preventDefault();
+        return;
+      }
+      if (topCategory === "games" && gamesSubcategory !== "root") {
+        setGamesSubcategory("root");
+        playUiSound("move");
+        e.preventDefault();
       }
     };
 
@@ -929,11 +975,16 @@ export function ControllerLibraryPage({
           cancelHandler(e);
           return;
         }
+        if (topCategory === "games" && gamesSubcategory !== "root") {
+          cancelHandler(e);
+          return;
+        }
         e.preventDefault();
         if (topCategory === "current" || topCategory === "settings") {
           setCategoryIndex((prev) => (prev - 1 + TOP_CATEGORIES.length) % TOP_CATEGORIES.length);
           setSelectedSettingIndex(0);
           setSettingsSubcategory("root");
+          setGamesSubcategory("root");
           setSelectedMediaIndex(0);
           setMediaSubcategory("root");
         } else {
@@ -956,7 +1007,7 @@ export function ControllerLibraryPage({
       window.removeEventListener("opennow:controller-cancel", cancelHandler);
       window.removeEventListener("keydown", kbdHandler);
     };
-  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, displayItems, mediaAssetItems.length, mediaSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth]);
+  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, selectedGameSubcategoryIndex, displayItems, mediaAssetItems.length, mediaSubcategory, gamesSubcategory, GAME_SUBCATEGORIES, games, favoriteGameIdSet, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, onSettingChange, onSelectGame, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth]);
 
   const renderFaceButton = (kind: "primary" | "secondary" | "tertiary", className: string, size: number): JSX.Element => {
     if (kind === "primary") {
@@ -1034,7 +1085,7 @@ export function ControllerLibraryPage({
             })}
       </div>
 
-      {topCategory !== "settings" && topCategory !== "current" && topCategory !== "media" && (
+      {topCategory === "games" && gamesSubcategory === "list" && (
       <div
         ref={itemsContainerRef}
         className="xmb-items-container"
@@ -1110,18 +1161,32 @@ export function ControllerLibraryPage({
       </div>
       )}
 
-      {(topCategory === "settings" || topCategory === "current" || (topCategory === "media" && mediaSubcategory === "root")) && (
+      {(topCategory === "settings" || topCategory === "current" || (topCategory === "games" && gamesSubcategory === "root") || (topCategory === "media" && mediaSubcategory === "root")) && (
       <div
         ref={itemsContainerRef}
         className="xmb-items-container"
         role="listbox"
-        aria-label={topCategory === "current" ? "Current game actions" : topCategory === "settings" ? "Controller settings" : "Media categories"}
+        aria-label={
+          topCategory === "current"
+            ? "Current game actions"
+            : topCategory === "settings"
+              ? "Controller settings"
+              : topCategory === "games"
+                ? "Game categories"
+                : "Media categories"
+        }
         style={{
-          transform: `translate(${-GAME_ACTIVE_CENTER_OFFSET_X_PX}px, ${-(topCategory === "media" ? selectedMediaIndex : selectedSettingIndex) * 120}px)`,
+          transform: `translate(${-GAME_ACTIVE_CENTER_OFFSET_X_PX}px, ${-(
+            topCategory === "media"
+              ? selectedMediaIndex
+              : topCategory === "games"
+                ? selectedGameSubcategoryIndex
+                : selectedSettingIndex
+          ) * 120}px)`,
         }}
       >
         {displayItems.map((item, idx) => {
-          const isActive = idx === (topCategory === "media" ? selectedMediaIndex : selectedSettingIndex);
+          const isActive = idx === (topCategory === "media" ? selectedMediaIndex : topCategory === "games" ? selectedGameSubcategoryIndex : selectedSettingIndex);
           const isSubcategoryItem = settingsSubcategory === "root" && (item.id === "network" || item.id === "audio" || item.id === "video" || item.id === "system" || item.id === "accounts");
           const isMediaSubcategoryItem = topCategory === "media" && mediaSubcategory === "root" && (item.id === "videos" || item.id === "screenshots");
           const isActiveAccountItem = settingsSubcategory === "Accounts" && item.id === `account:${activeUserId ?? ""}`;
@@ -1338,6 +1403,29 @@ export function ControllerLibraryPage({
               </>
             )}
           </>
+        ) : topCategory === "games" ? (
+          <>
+            {gamesSubcategory === "root" ? (
+              <div className="xmb-btn-hint">
+                {controllerType === "ps" ? (
+                  <ButtonPSCross className="xmb-btn-icon" size={24} />
+                ) : (
+                  <ButtonA className="xmb-btn-icon" size={24} />
+                )}
+                <span>Enter</span>
+              </div>
+            ) : (
+              <>
+                <div className="xmb-btn-hint">{renderFaceButton("primary", "xmb-btn-icon", 24)} <span>{currentStreamingGame && selectedGame && currentStreamingGame.id !== selectedGame.id ? "Switch" : "Play"}</span></div>
+                {selectedGame?.variants.length && selectedGame.variants.length > 1 && (
+                  <div className="xmb-btn-hint">{renderFaceButton("secondary", "xmb-btn-icon", 24)} <span>Variant</span></div>
+                )}
+                {selectedGame && (
+                  <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>{favoriteGameIdSet.has(selectedGame.id) ? "Unfavorite" : "Favorite"}</span></div>
+                )}
+              </>
+            )}
+          </>
         ) : topCategory === "media" ? (
           <>
             {mediaSubcategory === "root" ? (
@@ -1370,17 +1458,7 @@ export function ControllerLibraryPage({
               </>
             )}
           </>
-        ) : (
-          <>
-            <div className="xmb-btn-hint">{renderFaceButton("primary", "xmb-btn-icon", 24)} <span>{currentStreamingGame && selectedGame && currentStreamingGame.id !== selectedGame.id ? "Switch" : "Play"}</span></div>
-            {selectedGame?.variants.length && selectedGame.variants.length > 1 && (
-              <div className="xmb-btn-hint">{renderFaceButton("secondary", "xmb-btn-icon", 24)} <span>Variant</span></div>
-            )}
-            {selectedGame && (
-              <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>{favoriteGameIdSet.has(selectedGame.id) ? "Unfavorite" : "Favorite"}</span></div>
-            )}
-          </>
-        )}
+        ) : null}
       </div>
     </div>
   );
