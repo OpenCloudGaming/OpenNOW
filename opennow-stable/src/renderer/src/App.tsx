@@ -981,6 +981,11 @@ export function App(): JSX.Element {
       return true;
     }
 
+    // At XMB root in controller mode, Circle/B should not navigate pages.
+    if (settings.controllerMode && currentPage === "library") {
+      return true;
+    }
+
     if (controllerOverlayOpenRef.current) {
       setControllerOverlayOpen(false);
       return true;
