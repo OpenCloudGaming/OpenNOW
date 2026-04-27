@@ -37,6 +37,7 @@ interface ControllerLibraryPageProps {
     microphoneDeviceId?: string;
     controllerUiSounds?: boolean;
     controllerBackgroundAnimations?: boolean;
+    controllerBackgroundTheme?: "aurora" | "nebula" | "sunset" | "midnight";
     autoLoadControllerLibrary?: boolean;
     autoFullScreen?: boolean;
     aspectRatio?: string;
@@ -346,6 +347,13 @@ export function ControllerLibraryPage({
         { id: "autoFullScreen", label: "Auto Full Screen", value: (settings as any).autoFullScreen ? "On" : "Off" },
         { id: "autoLoad", label: "Auto-Load Library", value: (settings as any).autoLoadControllerLibrary ? "On" : "Off" },
         { id: "backgroundAnimations", label: "Background Animations", value: ((settings as any).controllerBackgroundAnimations ? "On" : "Off") },
+        {
+          id: "backgroundTheme",
+          label: "Background Theme",
+          value: settings.controllerBackgroundTheme
+            ? settings.controllerBackgroundTheme.charAt(0).toUpperCase() + settings.controllerBackgroundTheme.slice(1)
+            : "Aurora",
+        },
         { id: "exitControllerMode", label: "Exit Controller Mode", value: "" },
       ],
     } as Record<string, Array<{ id: string; label: string; value: string }>>;
@@ -761,6 +769,13 @@ export function ControllerLibraryPage({
           } else if (setting.id === "backgroundAnimations") {
             onSettingChange("controllerBackgroundAnimations" as any, !((settings as any).controllerBackgroundAnimations || false));
             playUiSound("move");
+          } else if (setting.id === "backgroundTheme") {
+            const themes = ["aurora", "nebula", "sunset", "midnight"] as const;
+            const currentTheme = settings.controllerBackgroundTheme ?? "aurora";
+            const currentIdx = themes.indexOf(currentTheme);
+            const nextTheme = themes[(currentIdx + 1) % themes.length];
+            onSettingChange("controllerBackgroundTheme" as any, nextTheme as any);
+            playUiSound("move");
           } else if (setting.id === "l4s") {
             onSettingChange("enableL4S" as any, !((settings as any).enableL4S || false));
             playUiSound("move");
@@ -906,7 +921,8 @@ export function ControllerLibraryPage({
       : <ButtonY className={className} size={size} />;
   };
 
-  const wrapperClassName = `xmb-wrapper ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"}`;
+  const controllerBackgroundTheme = settings.controllerBackgroundTheme ?? "aurora";
+  const wrapperClassName = `xmb-wrapper xmb-theme-${controllerBackgroundTheme} ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"}`;
 
   if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") return <div className={wrapperClassName}><div className="xmb-bg-layer"><div className="xmb-bg-gradient" /></div><div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh'}}>Loading...</div></div>;
 

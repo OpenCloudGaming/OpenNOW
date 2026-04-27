@@ -54,4 +54,6 @@ result
 .deriveddata/
 .deriveddata-device/
 graphify-out/
+.cursor/agents/code-writer.md
+.cursor/agents/graphify-planner-diagnoser.md
 .cursor/

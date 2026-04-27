@@ -6688,6 +6688,87 @@ button.game-card-store-chip.owned.active:hover {
     linear-gradient(90deg, rgba(0, 0, 0, 0.12) 0%, rgba(0, 0, 0, 0) 24%, rgba(0, 0, 0, 0) 76%, rgba(0, 0, 0, 0.16) 100%);
 }
 
+.xmb-wrapper.xmb-theme-nebula .xmb-bg-layer {
+  background:
+    radial-gradient(128% 78% at 50% -8%, rgba(190, 173, 255, 0.25) 0%, rgba(124, 94, 252, 0.1) 30%, rgba(5, 8, 24, 0) 58%),
+    linear-gradient(180deg, #10072c 0%, #0a1127 34%, #07091a 66%, #03030a 100%);
+}
+
+.xmb-wrapper.xmb-theme-nebula .xmb-bg-gradient {
+  background:
+    linear-gradient(118deg, transparent 21%, rgba(231, 225, 255, 0.08) 28%, rgba(219, 206, 255, 0.21) 31%, rgba(165, 139, 255, 0.2) 35%, rgba(231, 225, 255, 0.07) 39%, transparent 44%),
+    linear-gradient(128deg, transparent 30%, rgba(186, 172, 255, 0.08) 37%, rgba(237, 231, 255, 0.2) 41%, rgba(153, 122, 255, 0.2) 44%, rgba(237, 231, 255, 0.06) 48%, transparent 54%),
+    radial-gradient(circle at 52% 48%, rgba(210, 194, 255, 0.08), transparent 34%);
+}
+
+.xmb-wrapper.xmb-theme-nebula .xmb-bg-gradient::before {
+  background:
+    radial-gradient(76% 12% at 30% 54%, rgba(236, 228, 255, 0.32) 0%, rgba(236, 228, 255, 0.18) 18%, rgba(236, 228, 255, 0) 58%),
+    radial-gradient(84% 14% at 67% 60%, rgba(170, 143, 255, 0.24) 0%, rgba(170, 143, 255, 0.12) 16%, rgba(170, 143, 255, 0) 60%);
+  opacity: 0.8;
+}
+
+.xmb-wrapper.xmb-theme-nebula .xmb-bg-gradient::after {
+  background:
+    radial-gradient(78% 12% at 58% 40%, rgba(194, 172, 255, 0.2) 0%, rgba(194, 172, 255, 0.1) 18%, rgba(194, 172, 255, 0) 58%),
+    radial-gradient(70% 10% at 41% 70%, rgba(249, 244, 255, 0.16) 0%, rgba(249, 244, 255, 0.08) 16%, rgba(249, 244, 255, 0) 52%);
+  opacity: 0.5;
+}
+
+.xmb-wrapper.xmb-theme-sunset .xmb-bg-layer {
+  background:
+    radial-gradient(120% 74% at 46% -12%, rgba(255, 200, 130, 0.28) 0%, rgba(255, 130, 110, 0.12) 32%, rgba(46, 12, 20, 0) 58%),
+    linear-gradient(180deg, #3a0d20 0%, #2a1028 36%, #150a1f 66%, #08050f 100%);
+}
+
+.xmb-wrapper.xmb-theme-sunset .xmb-bg-gradient {
+  background:
+    linear-gradient(118deg, transparent 21%, rgba(255, 227, 198, 0.08) 28%, rgba(255, 206, 157, 0.22) 31%, rgba(255, 144, 114, 0.2) 34%, rgba(255, 224, 202, 0.07) 38%, transparent 44%),
+    linear-gradient(128deg, transparent 30%, rgba(255, 183, 138, 0.08) 37%, rgba(255, 217, 191, 0.2) 40%, rgba(255, 128, 128, 0.2) 44%, rgba(255, 225, 206, 0.06) 48%, transparent 54%),
+    radial-gradient(circle at 52% 48%, rgba(255, 214, 172, 0.08), transparent 34%);
+}
+
+.xmb-wrapper.xmb-theme-sunset .xmb-bg-gradient::before {
+  background:
+    radial-gradient(76% 12% at 30% 54%, rgba(255, 232, 203, 0.34) 0%, rgba(255, 232, 203, 0.2) 18%, rgba(255, 232, 203, 0) 58%),
+    radial-gradient(84% 14% at 67% 60%, rgba(255, 154, 117, 0.24) 0%, rgba(255, 154, 117, 0.12) 16%, rgba(255, 154, 117, 0) 60%);
+  opacity: 0.82;
+}
+
+.xmb-wrapper.xmb-theme-sunset .xmb-bg-gradient::after {
+  background:
+    radial-gradient(78% 12% at 58% 40%, rgba(255, 193, 149, 0.2) 0%, rgba(255, 193, 149, 0.1) 18%, rgba(255, 193, 149, 0) 58%),
+    radial-gradient(70% 10% at 41% 70%, rgba(255, 246, 236, 0.16) 0%, rgba(255, 246, 236, 0.08) 16%, rgba(255, 246, 236, 0) 52%);
+  opacity: 0.52;
+}
+
+.xmb-wrapper.xmb-theme-midnight .xmb-bg-layer {
+  background:
+    radial-gradient(116% 70% at 50% -10%, rgba(140, 196, 255, 0.16) 0%, rgba(91, 136, 255, 0.08) 30%, rgba(4, 8, 20, 0) 56%),
+    linear-gradient(180deg, #071121 0%, #060d1b 34%, #040916 66%, #020409 100%);
+}
+
+.xmb-wrapper.xmb-theme-midnight .xmb-bg-gradient {
+  background:
+    linear-gradient(118deg, transparent 21%, rgba(215, 236, 255, 0.07) 28%, rgba(188, 222, 255, 0.17) 31%, rgba(119, 176, 255, 0.16) 34%, rgba(215, 236, 255, 0.05) 38%, transparent 44%),
+    linear-gradient(128deg, transparent 30%, rgba(162, 201, 255, 0.06) 37%, rgba(214, 235, 255, 0.17) 40%, rgba(114, 161, 255, 0.14) 44%, rgba(214, 235, 255, 0.05) 48%, transparent 54%),
+    radial-gradient(circle at 52% 48%, rgba(186, 221, 255, 0.06), transparent 34%);
+}
+
+.xmb-wrapper.xmb-theme-midnight .xmb-bg-gradient::before {
+  background:
+    radial-gradient(76% 12% at 30% 54%, rgba(224, 238, 255, 0.28) 0%, rgba(224, 238, 255, 0.16) 18%, rgba(224, 238, 255, 0) 58%),
+    radial-gradient(84% 14% at 67% 60%, rgba(126, 176, 255, 0.22) 0%, rgba(126, 176, 255, 0.12) 16%, rgba(126, 176, 255, 0) 60%);
+  opacity: 0.78;
+}
+
+.xmb-wrapper.xmb-theme-midnight .xmb-bg-gradient::after {
+  background:
+    radial-gradient(78% 12% at 58% 40%, rgba(166, 203, 255, 0.18) 0%, rgba(166, 203, 255, 0.09) 18%, rgba(166, 203, 255, 0) 58%),
+    radial-gradient(70% 10% at 41% 70%, rgba(239, 247, 255, 0.14) 0%, rgba(239, 247, 255, 0.07) 16%, rgba(239, 247, 255, 0) 52%);
+  opacity: 0.5;
+}
+
 .xmb-categories-container {
   position: absolute;
   top: 25%;
