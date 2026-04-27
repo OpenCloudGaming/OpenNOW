@@ -6956,7 +6956,7 @@ button.game-card-store-chip.owned.active:hover {
   25%  { transform: translate3d(5%, -7%, 0) scale(1.06); filter: blur(24px) brightness(1.04); }
   50%  { transform: translate3d(7%, 5%, 0) scale(1.08);  filter: blur(30px) brightness(1.0);  }
   75%  { transform: translate3d(-4%, 7%, 0) scale(1.04); filter: blur(26px) brightness(0.96); }
-  100% { transform: translate3d(-6%, -5%, 0) scale(1.02); filter: blur(28px) brightness(1.02); }
+  100% { transform: translate3d(-6%, -5%, 0) scale(1.0);  filter: blur(28px) brightness(0.92); }
 }
 
 @keyframes xmb-mesh-orb-b {
