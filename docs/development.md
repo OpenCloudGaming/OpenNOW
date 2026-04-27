@@ -153,8 +153,8 @@ Current build matrix:
 | Windows ARM64 | NSIS installer, portable executable |
 | macOS x64 | `dmg`, `zip` |
 | macOS arm64 | `dmg`, `zip` |
-| Linux x64 | `AppImage`, `deb` |
-| Linux ARM64 | `AppImage`, `deb` |
+| Linux x64 | `AppImage`, `deb`, `pacman` |
+| Linux ARM64 | `AppImage`, `deb`, `pacman` |
 
 Windows ARM64 artifacts are release downloads only for now. The Windows auto-update channel remains the x64 `latest.yml` feed so ARM64 packaging cannot overwrite updater metadata.
 

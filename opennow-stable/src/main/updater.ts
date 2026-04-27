@@ -3,8 +3,9 @@ import electronUpdater from "electron-updater";
 import type { AppUpdater, ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from "electron-updater";
 
 import type { AppUpdaterState } from "@shared/gfn";
+import { chooseUpdaterKind, hasSystemCommand, readLinuxPackageType } from "./updaterPlatform";
 
-const { autoUpdater } = electronUpdater;
+const { autoUpdater, PacmanUpdater } = electronUpdater;
 
 const STARTUP_CHECK_DELAY_MS = 12_000;
 const PERIODIC_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -63,8 +64,27 @@ function normalizeErrorMessage(error: unknown): string {
   if (/net::|network|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|offline/i.test(message)) {
     return "Unable to reach GitHub Releases right now.";
   }
+  if (/Neither dpkg nor apt command found|Cannot install \.deb package/i.test(message)) {
+    return "This Linux install cannot apply Debian packages. Install the AppImage or Arch package from GitHub Releases.";
+  }
 
   return message || "Update check failed.";
+}
+
+function createRuntimeUpdater(): AppUpdater {
+  const packageType = readLinuxPackageType();
+  const updaterKind = chooseUpdaterKind({
+    platform: process.platform,
+    packageType,
+    hasCommand: hasSystemCommand,
+  });
+
+  if (updaterKind === "pacman") {
+    console.warn("[updater] Debian package marker detected on a pacman system; using PacmanUpdater.");
+    return new PacmanUpdater();
+  }
+
+  return autoUpdater;
 }
 
 function createDisabledState(currentVersion: string, message: string): AppUpdaterState {
@@ -107,7 +127,7 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
     };
   }
 
-  const updater: AppUpdater = autoUpdater;
+  const updater: AppUpdater = createRuntimeUpdater();
   const token = pickRuntimeToken();
   if (token) {
     updater.requestHeaders = {

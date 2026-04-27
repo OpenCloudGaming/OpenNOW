@@ -117,25 +117,31 @@ jobs:
             artifact_paths: |
               opennow-stable/dist-release/*.dmg
               opennow-stable/dist-release/*-x64.zip
+              opennow-stable/dist-release/*-x64.zip.blockmap
+              opennow-stable/dist-release/latest-mac-x64.yml
           - label: macos-arm64
             os: macos-latest
             builder_args: "--mac dmg zip --arm64"
             artifact_paths: |
               opennow-stable/dist-release/*.dmg
               opennow-stable/dist-release/*-arm64.zip
+              opennow-stable/dist-release/*-arm64.zip.blockmap
+              opennow-stable/dist-release/latest-mac-arm64.yml
           - label: linux-x64
             os: blacksmith-4vcpu-ubuntu-2404
-            builder_args: "--linux AppImage deb --x64"
+            builder_args: "--linux AppImage deb pacman --x64"
             artifact_paths: |
               opennow-stable/dist-release/*-x86_64.AppImage
               opennow-stable/dist-release/*-amd64.deb
+              opennow-stable/dist-release/*.pacman
               opennow-stable/dist-release/latest-linux.yml
           - label: linux-arm64
             os: blacksmith-4vcpu-ubuntu-2404-arm
-            builder_args: "--linux AppImage deb --arm64"
+            builder_args: "--linux AppImage deb pacman --arm64"
             artifact_paths: |
               opennow-stable/dist-release/*-arm64.AppImage
               opennow-stable/dist-release/*-arm64.deb
+              opennow-stable/dist-release/*.pacman
               opennow-stable/dist-release/latest-linux-arm64.yml
 
     defaults:
@@ -176,7 +182,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y fakeroot rpm
+          sudo apt-get install -y fakeroot rpm xz-utils
 
       - name: Install FPM for arm64 deb builds
         if: matrix.label == 'linux-arm64'
@@ -193,6 +199,15 @@ jobs:
 
       - name: Package installers
         run: npx electron-builder --publish never ${{ matrix.builder_args }}
+
+      - name: Preserve macOS update metadata by architecture
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          case "${{ matrix.label }}" in
+            macos-x64) cp dist-release/latest-mac.yml dist-release/latest-mac-x64.yml ;;
+            macos-arm64) cp dist-release/latest-mac.yml dist-release/latest-mac-arm64.yml ;;
+          esac
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -213,11 +228,17 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-artifacts
           merge-multiple: true
+
+      - name: Merge macOS update metadata
+        run: node .github/scripts/merge-mac-update-metadata.mjs release-artifacts
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2

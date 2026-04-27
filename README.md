@@ -79,8 +79,8 @@ Current packaging targets:
 | Windows x64 | NSIS installer, portable executable, auto-update metadata |
 | Windows ARM64 | NSIS installer, portable executable |
 | macOS | `dmg`, `zip` |
-| Linux x64 | `AppImage`, `deb` |
-| Linux ARM64 | `AppImage`, `deb` |
+| Linux x64 | `AppImage`, `deb`, `pacman` |
+| Linux ARM64 | `AppImage`, `deb`, `pacman` |
 
 Windows ARM64 builds are published as release downloads. The Windows auto-update feed remains `latest.yml` for x64 releases, so ARM64 packages do not participate in in-app auto-update yet.
 
