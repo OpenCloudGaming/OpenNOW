@@ -2593,18 +2593,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 {settings.controllerMode && (
                   <div className="settings-controller-subsettings">
                     <div className="settings-row">
-                      <label className="settings-label">Exit Controller Mode</label>
-                      <div>
-                        <button
-                          className="settings-exit-btn"
-                          onClick={() => handleChange("controllerMode", false)}
-                        >
-                          Exit
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="settings-row">
                       <label className="settings-label">
                         Controller UI Sounds
                         <span className="settings-hint">Play subtle move, open, and back sounds inside controller mode only.</span>

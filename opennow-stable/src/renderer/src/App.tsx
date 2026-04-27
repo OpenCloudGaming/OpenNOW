@@ -4058,6 +4058,9 @@ export function App(): JSX.Element {
               pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
+              savedAccounts={savedAccounts}
+              activeUserId={authSession?.user.userId}
+              onSwitchAccount={handleSwitchAccount}
               subscriptionInfo={subscriptionInfo}
               playtimeData={playtime}
               sessionStartedAtMs={sessionStartedAtMs}
@@ -4236,6 +4239,9 @@ export function App(): JSX.Element {
               pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
+              savedAccounts={savedAccounts}
+              activeUserId={authSession?.user.userId}
+              onSwitchAccount={handleSwitchAccount}
               subscriptionInfo={subscriptionInfo}
               playtimeData={playtime}
               sessionStartedAtMs={sessionStartedAtMs}
