@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage, AspectRatio, KeyboardLayout } from "@shared/gfn";
+import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage, AspectRatio, KeyboardLayout, ControllerBackgroundTheme } from "@shared/gfn";
 import { DEFAULT_KEYBOARD_LAYOUT, getDefaultStreamPreferences, normalizeStreamPreferences } from "@shared/gfn";
 
 export interface Settings {
@@ -69,6 +69,8 @@ export interface Settings {
   controllerUiSounds: boolean;
   /** Enable animated background visuals for controller-mode loading screens */
   controllerBackgroundAnimations: boolean;
+  /** Visual background theme for controller-mode UI */
+  controllerBackgroundTheme: ControllerBackgroundTheme;
   /** Auto-load controller library at startup when controller mode is enabled */
   autoLoadControllerLibrary: boolean;
   /** Automatically enter fullscreen when controller-mode triggers it */
@@ -132,6 +134,7 @@ const DEFAULT_SETTINGS: Settings = {
   controllerMode: false,
   controllerUiSounds: false,
   controllerBackgroundAnimations: false,
+  controllerBackgroundTheme: "aurora",
   autoLoadControllerLibrary: false,
   autoFullScreen: false,
   favoriteGameIds: [],

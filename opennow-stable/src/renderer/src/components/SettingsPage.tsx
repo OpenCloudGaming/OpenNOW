@@ -2636,6 +2636,23 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                     <div className="settings-row">
                       <label className="settings-label">
+                        Controller Background Theme
+                        <span className="settings-hint">Choose the controller-mode background style.</span>
+                      </label>
+                      <select
+                        className="settings-select"
+                        value={settings.controllerBackgroundTheme}
+                        onChange={(e) => handleChange("controllerBackgroundTheme", e.target.value as any)}
+                      >
+                        <option value="aurora">Aurora (Default)</option>
+                        <option value="nebula">Nebula</option>
+                        <option value="sunset">Sunset</option>
+                        <option value="midnight">Midnight</option>
+                      </select>
+                    </div>
+
+                    <div className="settings-row">
+                      <label className="settings-label">
                         Auto-Load Controller Library
                         <span className="settings-hint">Automatically open the controller library at startup when controller mode is enabled.</span>
                       </label>
