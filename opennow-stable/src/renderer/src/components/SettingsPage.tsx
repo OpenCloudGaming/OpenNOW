@@ -2636,8 +2636,24 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                     <div className="settings-row">
                       <label className="settings-label">
+                        Controller Background Style
+                        <span className="settings-hint">Choose the visual layout (ribbon, mesh, or grid/noise) for controller-mode backgrounds.</span>
+                      </label>
+                      <select
+                        className="settings-select"
+                        value={settings.controllerBackgroundStyle}
+                        onChange={(e) => handleChange("controllerBackgroundStyle", e.target.value as any)}
+                      >
+                        <option value="ribbon">Ribbon (Default)</option>
+                        <option value="mesh">Soft Mesh</option>
+                        <option value="grid">Grid + Noise</option>
+                      </select>
+                    </div>
+
+                    <div className="settings-row">
+                      <label className="settings-label">
                         Controller Background Theme
-                        <span className="settings-hint">Choose the controller-mode background style.</span>
+                        <span className="settings-hint">Choose the color palette used by the selected background style.</span>
                       </label>
                       <select
                         className="settings-select"

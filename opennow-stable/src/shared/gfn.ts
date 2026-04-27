@@ -101,6 +101,7 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
 export type ControllerBackgroundTheme = "aurora" | "nebula" | "sunset" | "midnight";
+export type ControllerBackgroundStyle = "ribbon" | "mesh" | "grid";
 export type RuntimePlatform =
   | "aix"
   | "android"
@@ -160,6 +161,8 @@ export interface Settings {
   autoLoadControllerLibrary: boolean;
   /** When true, controller-mode overlays will show animated background orbs */
   controllerBackgroundAnimations: boolean;
+  /** Visual composition style for controller-mode background surfaces */
+  controllerBackgroundStyle: ControllerBackgroundStyle;
   /** Visual background theme for controller-mode UI surfaces */
   controllerBackgroundTheme: ControllerBackgroundTheme;
   /** When true, the app will automatically enter fullscreen when controller mode triggers it */
