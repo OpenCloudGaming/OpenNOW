@@ -85,7 +85,7 @@ import {
 import { DEFAULT_SETTINGS } from "@shared/settings";
 import type { OpenNowPlatform } from "../types";
 import { BrowserSignalingClient } from "./browserSignaling";
-import { nativeRequest } from "./http";
+import { isNativeHttpError, nativeRequest } from "./http";
 import { appendBase64File, clearDirectory, deleteFile, ensureDir, getPreferenceJson, readDir, readFileBase64, removePreference, setPreferenceJson, writeBase64File } from "./storage";
 
 const AUTH_STATE_KEY = "opennow.android.auth-state.v1";
@@ -771,7 +771,46 @@ async function createSessionRequest(input: SessionCreateRequest): Promise<Sessio
   const response = await httpRequest<CloudMatchResponse>(`${streamingBaseUrl}/v2/session?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`, { method: "POST", headers: requestHeaders({ token, clientId, deviceId, deviceMake, deviceModel }), data: buildSessionRequestBody(input) });
   return toSessionInfo(input.zone, streamingBaseUrl, response, clientId, deviceId);
 }
-async function pollSessionRequest(input: SessionPollRequest): Promise<SessionInfo> { const token = await authStore.resolveJwtToken(input.token); const clientId = input.clientId ?? crypto.randomUUID(); const deviceId = input.deviceId ?? (await Device.getId()).identifier ?? crypto.randomUUID(); const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp); const response = await httpRequest<CloudMatchResponse>(`${base}/v2/session/${input.sessionId}`, { headers: requestHeaders({ token, clientId, deviceId, includeOrigin: false }) }); const baseHost = new URL(base).hostname; const realServerIp = streamingServerIp(response); const polledViaZone = isZoneHostname(baseHost); const realIpDiffers = Boolean(realServerIp && realServerIp.length > 0 && !isZoneHostname(realServerIp) && realServerIp !== input.serverIp); if (polledViaZone && realIpDiffers && isReadySessionStatus(response.session.status)) { const directBase = `https://${realServerIp}`; try { const directResponse = await httpRequest<CloudMatchResponse>(`${directBase}/v2/session/${input.sessionId}`, { headers: requestHeaders({ token, clientId, deviceId, includeOrigin: false }) }); if (directResponse.requestStatus.statusCode === 1) return toSessionInfo(input.zone, directBase, directResponse, clientId, deviceId); } catch {} } return toSessionInfo(input.zone, base, response, clientId, deviceId); }
+async function pollSessionRequest(input: SessionPollRequest): Promise<SessionInfo> {
+  const token = await authStore.resolveJwtToken(input.token);
+  const clientId = input.clientId ?? crypto.randomUUID();
+  const deviceId = input.deviceId ?? (await Device.getId()).identifier ?? crypto.randomUUID();
+  const zoneBase = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
+  let base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
+  const headers = requestHeaders({ token, clientId, deviceId, includeOrigin: false });
+  const readSession = (targetBase: string) => httpRequest<CloudMatchResponse>(`${targetBase}/v2/session/${input.sessionId}`, { headers });
+
+  let response: CloudMatchResponse;
+  try {
+    response = await readSession(base);
+  } catch (error) {
+    const shouldRetryViaZone =
+      base !== zoneBase &&
+      isNativeHttpError(error) &&
+      (error.status === 403 || error.status === 404 || error.status === 409);
+
+    if (!shouldRetryViaZone) {
+      throw error;
+    }
+
+    console.warn(`[Android] Direct session poll failed with HTTP ${error.status}; retrying via zone endpoint.`);
+    base = zoneBase;
+    response = await readSession(zoneBase);
+  }
+
+  const baseHost = new URL(base).hostname;
+  const realServerIp = streamingServerIp(response);
+  const polledViaZone = isZoneHostname(baseHost);
+  const realIpDiffers = Boolean(realServerIp && realServerIp.length > 0 && !isZoneHostname(realServerIp) && realServerIp !== input.serverIp);
+  if (polledViaZone && realIpDiffers && isReadySessionStatus(response.session.status)) {
+    const directBase = `https://${realServerIp}`;
+    try {
+      const directResponse = await readSession(directBase);
+      if (directResponse.requestStatus.statusCode === 1) return toSessionInfo(input.zone, directBase, directResponse, clientId, deviceId);
+    } catch {}
+  }
+  return toSessionInfo(input.zone, base, response, clientId, deviceId);
+}
 async function stopSessionRequest(input: SessionStopRequest): Promise<void> { const token = await authStore.resolveJwtToken(input.token); const clientId = input.clientId ?? crypto.randomUUID(); const deviceId = input.deviceId ?? (await Device.getId()).identifier ?? crypto.randomUUID(); const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp); await httpRequest<string>(`${base}/v2/session/${input.sessionId}`, { method: "DELETE", headers: requestHeaders({ token, clientId, deviceId }), responseType: "text" }); }
 async function reportSessionAdRequest(input: SessionAdReportRequest): Promise<SessionInfo> { const token = await authStore.resolveJwtToken(input.token); const clientId = input.clientId ?? crypto.randomUUID(); const deviceId = input.deviceId ?? (await Device.getId()).identifier ?? crypto.randomUUID(); const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp); const clientTimestamp = input.clientTimestamp ?? Math.floor(Date.now() / 1000); const response = await httpRequest<CloudMatchResponse>(`${base}/v2/session/${input.sessionId}`, { method: "PUT", headers: requestHeaders({ token, clientId, deviceId }), data: { action: SESSION_MODIFY_ACTION_AD_UPDATE, adUpdates: [{ adId: input.adId, adAction: AD_ACTION_CODES[input.action], clientTimestamp, ...(typeof input.watchedTimeInMs === "number" ? { watchedTimeInMs: input.watchedTimeInMs } : {}), ...(typeof input.pausedTimeInMs === "number" ? { pausedTimeInMs: input.pausedTimeInMs } : {}), ...(input.cancelReason ? { cancelReason: input.cancelReason } : {}), ...(input.errorInfo ? { errorInfo: input.errorInfo } : {}) }] } }); return toSessionInfo(input.zone, base, response, clientId, deviceId); }
 async function getActiveSessionsRequest(token: string, streamingBaseUrl?: string): Promise<ActiveSessionInfo[]> { const base = resolveStreamingBaseUrl("", streamingBaseUrl || authStore.getSelectedProvider().streamingServiceUrl); try { const response = await httpRequest<CloudMatchResponse>(`${base}/v2/session`, { headers: requestHeaders({ token, clientId: LCARS_CLIENT_ID, deviceId: crypto.randomUUID(), includeOrigin: false }) }); if (response.requestStatus.statusCode !== 1) return []; return (response.sessions ?? []).filter((session) => session.status === 1 || session.status === 2 || session.status === 3).map((session) => { const connection = session.connectionInfo?.find((entry) => entry.usage === 14 && (entry.ip || entry.resourcePath)) ?? session.connectionInfo?.find((entry) => entry.ip || entry.resourcePath); const controlIpRaw = session.sessionControlInfo?.ip; const controlIp = Array.isArray(controlIpRaw) ? controlIpRaw[0] : controlIpRaw; const serverIp = resolveActiveSessionServerIp(connection, controlIp); const { signalingServer, signalingUrl } = resolveActiveSessionSignaling(connection, serverIp); const monitor = session.monitorSettings?.[0]; const rawAppId = session.sessionRequestData?.appId ?? session.appId; const appId = typeof rawAppId === "string" || typeof rawAppId === "number" ? Number(rawAppId) : 0; return { sessionId: session.sessionId, appId: Number.isFinite(appId) ? appId : 0, gpuType: session.gpuType, status: session.status, streamingBaseUrl: base, serverIp, signalingServer, signalingUrl, resolution: session.resolution ?? (monitor?.widthInPixels && monitor?.heightInPixels ? `${monitor.widthInPixels}x${monitor.heightInPixels}` : undefined), fps: session.fps ?? monitor?.framesPerSecond }; }); } catch { return []; } }

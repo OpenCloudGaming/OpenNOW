@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import type { CSSProperties, JSX } from "react";
-import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen, Menu, Battery, Wifi, MousePointer2 } from "lucide-react";
+import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen, Menu, Battery, Wifi, MousePointer2, Keyboard, CornerDownLeft, Delete } from "lucide-react";
 import SideBar from "./SideBar";
 import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsSelector, useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
@@ -84,6 +84,8 @@ interface StreamViewProps {
   onVirtualGamepadState?: (state: VirtualGamepadState) => void;
   onTouchMouseMove?: (input: { dx: number; dy: number; timestampMs?: number }) => void;
   onTouchMouseTap?: (input: { timestampMs?: number }) => void;
+  onSendText?: (text: string) => number;
+  onSendKeyPress?: (key: "Backspace" | "Enter") => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   onScreenshotShortcutChange: (value: string) => void;
@@ -829,6 +831,7 @@ function AndroidMousePad({
   onTouchMouseMove?: (input: { dx: number; dy: number; timestampMs?: number }) => void;
   onTouchMouseTap?: (input: { timestampMs?: number }) => void;
 }): JSX.Element | null {
+  const padRef = useRef<HTMLDivElement | null>(null);
   const lastPointRef = useRef<{
     x: number;
     y: number;
@@ -837,6 +840,39 @@ function AndroidMousePad({
     startMs: number;
     id: number;
   } | null>(null);
+  const hoverPointRef = useRef<{ x: number; y: number } | null>(null);
+  const [cursor, setCursor] = useState({ x: 0, y: 0, visible: false });
+
+  const clampCursor = useCallback((x: number, y: number) => {
+    const rect = padRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return { x, y };
+    }
+    return {
+      x: clampNumber(x, 0, rect.width),
+      y: clampNumber(y, 0, rect.height),
+    };
+  }, []);
+
+  const setCursorFromClientPoint = useCallback((clientX: number, clientY: number) => {
+    const rect = padRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const next = clampCursor(clientX - rect.left, clientY - rect.top);
+    setCursor({ ...next, visible: true });
+  }, [clampCursor]);
+
+  const moveCursorBy = useCallback((dx: number, dy: number, clientX: number, clientY: number) => {
+    setCursor((previous) => {
+      if (!previous.visible) {
+        const rect = padRef.current?.getBoundingClientRect();
+        if (!rect) return previous;
+        const next = clampCursor(clientX - rect.left, clientY - rect.top);
+        return { ...next, visible: true };
+      }
+      const next = clampCursor(previous.x + dx, previous.y + dy);
+      return { ...next, visible: true };
+    });
+  }, [clampCursor]);
 
   if (!enabled || !onTouchMouseMove) {
     return null;
@@ -844,14 +880,18 @@ function AndroidMousePad({
 
   return (
     <div
+      ref={padRef}
       className="sv-android-mousepad"
       aria-label="Mouse touch area"
       onPointerDown={(event) => {
-        if (event.pointerType === "mouse") {
-          return;
-        }
         event.preventDefault();
         event.currentTarget.setPointerCapture(event.pointerId);
+        hoverPointRef.current = { x: event.clientX, y: event.clientY };
+        if (event.pointerType === "mouse") {
+          setCursorFromClientPoint(event.clientX, event.clientY);
+        } else {
+          moveCursorBy(0, 0, event.clientX, event.clientY);
+        }
         lastPointRef.current = {
           x: event.clientX,
           y: event.clientY,
@@ -863,33 +903,71 @@ function AndroidMousePad({
       }}
       onPointerMove={(event) => {
         const last = lastPointRef.current;
-        if (!last || last.id !== event.pointerId || event.pointerType === "mouse") {
+        if (!last || last.id !== event.pointerId) {
+          if (event.pointerType === "mouse") {
+            const previous = hoverPointRef.current;
+            hoverPointRef.current = { x: event.clientX, y: event.clientY };
+            setCursorFromClientPoint(event.clientX, event.clientY);
+            if (previous) {
+              const dx = event.clientX - previous.x;
+              const dy = event.clientY - previous.y;
+              if (dx !== 0 || dy !== 0) {
+                onTouchMouseMove({ dx, dy, timestampMs: event.timeStamp });
+              }
+            }
+          }
           return;
         }
         event.preventDefault();
         const dx = event.clientX - last.x;
         const dy = event.clientY - last.y;
-        lastPointRef.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
-        onTouchMouseMove({ dx, dy, timestampMs: event.timeStamp });
+        lastPointRef.current = {
+          ...last,
+          x: event.clientX,
+          y: event.clientY,
+        };
+        hoverPointRef.current = { x: event.clientX, y: event.clientY };
+        if (dx !== 0 || dy !== 0) {
+          moveCursorBy(dx, dy, event.clientX, event.clientY);
+          onTouchMouseMove({ dx, dy, timestampMs: event.timeStamp });
+        }
       }}
       onPointerUp={(event) => {
         const last = lastPointRef.current;
         if (last?.id === event.pointerId) {
+          event.preventDefault();
           const movedPx = Math.hypot(event.clientX - last.startX, event.clientY - last.startY);
           const elapsedMs = event.timeStamp - last.startMs;
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
           lastPointRef.current = null;
-          if (movedPx <= 10 && elapsedMs <= 280) {
-            event.preventDefault();
+          hoverPointRef.current = { x: event.clientX, y: event.clientY };
+          setCursorFromClientPoint(event.clientX, event.clientY);
+          if (movedPx <= 10 && elapsedMs <= 360) {
             onTouchMouseTap?.({ timestampMs: event.timeStamp });
           }
         }
       }}
       onPointerCancel={(event) => {
         if (lastPointRef.current?.id === event.pointerId) {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
           lastPointRef.current = null;
         }
       }}
-    />
+      onPointerLeave={(event) => {
+        if (event.pointerType === "mouse" && !lastPointRef.current) {
+          hoverPointRef.current = null;
+        }
+      }}
+    >
+      <span
+        className={`sv-android-cursor${cursor.visible ? " is-visible" : ""}`}
+        style={{ left: cursor.x, top: cursor.y }}
+      />
+    </div>
   );
 }
 
@@ -955,6 +1033,8 @@ function AndroidStreamMenu({
   touchSettings,
   onTouchSettingsChange,
   onEndSession,
+  onSendText,
+  onSendKeyPress,
 }: {
   diagnosticsStore: StreamDiagnosticsStore;
   sessionStartedAtMs: number | null;
@@ -962,10 +1042,13 @@ function AndroidStreamMenu({
   touchSettings: AndroidTouchSettings;
   onTouchSettingsChange: (settings: AndroidTouchSettings) => void;
   onEndSession: () => void;
+  onSendText?: (text: string) => number;
+  onSendKeyPress?: (key: "Backspace" | "Enter") => void;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const battery = useBatterySnapshot();
   const elapsedSeconds = useElapsedSeconds(sessionStartedAtMs, isStreaming);
+  const textInputRef = useRef<HTMLInputElement | null>(null);
   const stats = useStreamDiagnosticsSelector(
     diagnosticsStore,
     (value) => ({
@@ -990,6 +1073,13 @@ function AndroidStreamMenu({
     onTouchSettingsChange({ ...touchSettings, ...patch });
   }, [onTouchSettingsChange, touchSettings]);
   const batteryText = battery.level === null ? "Battery --" : `Battery ${battery.level}%${battery.charging ? " charging" : ""}`;
+  const sendInputText = useCallback((input: HTMLInputElement) => {
+    const text = input.value;
+    input.value = "";
+    if (text.length > 0) {
+      onSendText?.(text);
+    }
+  }, [onSendText]);
 
   return (
     <div className="sv-android-menu">
@@ -1039,6 +1129,65 @@ function AndroidStreamMenu({
             />
             <span><MousePointer2 size={14} /> Finger mouse</span>
           </label>
+
+          <div className="sv-android-text-input">
+            <label>
+              <span><Keyboard size={14} /> Stream text</span>
+              <input
+                ref={textInputRef}
+                type="text"
+                inputMode="text"
+                autoCapitalize="none"
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                placeholder="Type to stream"
+                onInput={(event) => sendInputText(event.currentTarget)}
+                onPaste={(event) => {
+                  event.preventDefault();
+                  const text = event.clipboardData.getData("text");
+                  if (text) {
+                    onSendText?.(text);
+                  }
+                  event.currentTarget.value = "";
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Backspace") {
+                    event.preventDefault();
+                    onSendKeyPress?.("Backspace");
+                    return;
+                  }
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    onSendKeyPress?.("Enter");
+                    event.currentTarget.value = "";
+                  }
+                }}
+              />
+            </label>
+            <div className="sv-android-text-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  onSendKeyPress?.("Enter");
+                  textInputRef.current?.focus();
+                }}
+                aria-label="Send Enter"
+              >
+                <CornerDownLeft size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onSendKeyPress?.("Backspace");
+                  textInputRef.current?.focus();
+                }}
+                aria-label="Send Backspace"
+              >
+                <Delete size={15} />
+              </button>
+            </div>
+          </div>
 
           <label className="sv-android-slider">
             <span>Size {Math.round(touchSettings.size * 100)}%</span>
@@ -1243,6 +1392,8 @@ export function StreamView({
   onVirtualGamepadState,
   onTouchMouseMove,
   onTouchMouseTap,
+  onSendText,
+  onSendKeyPress,
   microphoneMode,
   onMicrophoneModeChange,
   onScreenshotShortcutChange,
@@ -2537,6 +2688,8 @@ export function StreamView({
             touchSettings={androidTouchSettings}
             onTouchSettingsChange={handleAndroidTouchSettingsChange}
             onEndSession={onEndSession}
+            onSendText={onSendText}
+            onSendKeyPress={onSendKeyPress}
           />
         </>
       )}

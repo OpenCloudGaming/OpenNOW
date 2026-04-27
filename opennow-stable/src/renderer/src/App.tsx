@@ -3554,6 +3554,10 @@ export function App(): JSX.Element {
             onTouchMouseTap={(input) => {
               clientRef.current?.sendTouchMouseTap(input);
             }}
+            onSendText={(text) => clientRef.current?.sendText(text) ?? 0}
+            onSendKeyPress={(key) => {
+              clientRef.current?.sendKeyPress(key);
+            }}
           />
         )}
         {isSwitchingGame && settings.controllerMode && streamStatus !== "connecting" && (

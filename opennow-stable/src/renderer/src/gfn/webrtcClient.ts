@@ -504,6 +504,7 @@ export class GfnWebRtcClient {
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private connectedGamepads: Set<number> = new Set();
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
+  private previousGamepadTouchpadClicks: Set<number> = new Set();
   private virtualGamepadConnected = false;
   private previousVirtualGamepadState: GamepadInput | null = null;
 
@@ -1641,6 +1642,7 @@ export class GfnWebRtcClient {
     this.resetDiagnostics();
     this.connectedGamepads.clear();
     this.previousGamepadStates.clear();
+    this.previousGamepadTouchpadClicks.clear();
     this.virtualGamepadConnected = false;
     this.previousVirtualGamepadState = null;
     this.gamepadSendCount = 0;
@@ -1869,6 +1871,7 @@ export class GfnWebRtcClient {
 
         // Read and encode gamepad state
         const gamepadInput = this.readGamepadState(gamepad, i);
+        this.handleGamepadTouchpadClick(gamepad, i);
         const stateChanged = this.hasGamepadStateChanged(i, gamepadInput);
 
         // Send if state changed OR as a keepalive to maintain server controller presence
@@ -1903,6 +1906,7 @@ export class GfnWebRtcClient {
         // Gamepad disconnected — clear bit from bitmap
         this.connectedGamepads.delete(i);
         this.previousGamepadStates.delete(i);
+        this.previousGamepadTouchpadClicks.delete(i);
         this.gamepadBitmap &= ~(1 << i);
         this.log(`Gamepad ${i} disconnected, bitmap now: 0x${this.gamepadBitmap.toString(16)}`);
         this.diagnostics.connectedGamepads = this.connectedGamepads.size;
@@ -2050,6 +2054,38 @@ export class GfnWebRtcClient {
       button: toMouseButton(0),
       timestampUs: timestamp + 1000n,
     }));
+  }
+
+  public sendKeyPress(key: "Backspace" | "Enter" | "Tab" | "Escape"): boolean {
+    if (!this.inputReady || this.inputPaused) {
+      return false;
+    }
+
+    const mapped = codeMap[key];
+    if (!mapped) {
+      return false;
+    }
+
+    this.sendKeyPacket(mapped.vk, mapped.scancode, 0, true);
+    this.sendKeyPacket(mapped.vk, mapped.scancode, 0, false);
+    return true;
+  }
+
+  private handleGamepadTouchpadClick(gamepad: Gamepad, controllerId: number): void {
+    const touchpadButton = gamepad.buttons[17];
+    const pressed = Boolean(touchpadButton?.pressed || (touchpadButton?.value ?? 0) > 0);
+    const wasPressed = this.previousGamepadTouchpadClicks.has(controllerId);
+
+    if (pressed && !wasPressed) {
+      this.sendTouchMouseTap();
+      this.previousGamepadTouchpadClicks.add(controllerId);
+      this.log(`Gamepad ${controllerId} touchpad click sent as left mouse click`);
+      return;
+    }
+
+    if (!pressed && wasPressed) {
+      this.previousGamepadTouchpadClicks.delete(controllerId);
+    }
   }
 
   private readGamepadState(gamepad: Gamepad, controllerId: number): GamepadInput {

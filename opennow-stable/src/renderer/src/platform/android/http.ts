@@ -1,5 +1,20 @@
 import { CapacitorHttp, type HttpOptions, type HttpResponse } from "@capacitor/core";
 
+export class NativeHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly body: string,
+    public readonly data: HttpResponse["data"],
+  ) {
+    super(`HTTP ${status}: ${(body || "<empty body>").slice(0, 400)}`);
+    this.name = "NativeHttpError";
+  }
+}
+
+export function isNativeHttpError(error: unknown): error is NativeHttpError {
+  return error instanceof NativeHttpError;
+}
+
 function normalizeHeaders(headers?: Record<string, string>): Record<string, string> {
   return Object.fromEntries(
     Object.entries(headers ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
@@ -23,7 +38,7 @@ function formatResponseBody(data: HttpResponse["data"]): string {
 async function parseResponse<T>(response: HttpResponse, responseType: "json" | "text"): Promise<T> {
   if (response.status < 200 || response.status >= 300) {
     const body = formatResponseBody(response.data);
-    throw new Error(`HTTP ${response.status}: ${(body || "<empty body>").slice(0, 400)}`);
+    throw new NativeHttpError(response.status, body, response.data);
   }
 
   if (responseType === "text") {
