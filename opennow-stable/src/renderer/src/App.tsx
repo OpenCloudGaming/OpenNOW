@@ -888,6 +888,7 @@ export function App(): JSX.Element {
   const [queueModalData, setQueueModalData] = useState<PrintedWasteQueueData | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
   const [remoteStreamWarning, setRemoteStreamWarning] = useState<StreamWarningState | null>(null);
+  const [pointerLockDisengagingNotice, setPointerLockDisengagingNotice] = useState<string | null>(null);
   const [localSessionTimerWarning, setLocalSessionTimerWarning] = useState<LocalSessionTimerWarningState | null>(null);
   const [activeQueueAdId, setActiveQueueAdId] = useState<string | null>(null);
   const previousFreeTierRemainingSecondsRef = useRef<number | null>(null);
@@ -2819,6 +2820,9 @@ export function App(): JSX.Element {
                   secondsLeft: warning.secondsLeft,
                 });
               },
+              onPointerLockDisengagingNoticeChange: (message) => {
+                setPointerLockDisengagingNotice(message);
+              },
               onMicStateChange: (state) => {
                 console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
               },
@@ -3927,6 +3931,7 @@ export function App(): JSX.Element {
             sessionClockShowEveryMinutes={settings.sessionClockShowEveryMinutes}
             sessionClockShowDurationSeconds={settings.sessionClockShowDurationSeconds}
             streamWarning={streamWarning}
+            pointerLockDisengagingNotice={pointerLockDisengagingNotice}
             isConnecting={streamStatus === "connecting"}
             isStreaming={isStreaming}
             gameTitle={streamingGame?.title ?? "Game"}
