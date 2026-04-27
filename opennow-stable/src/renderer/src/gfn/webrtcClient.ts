@@ -2952,6 +2952,10 @@ export class GfnWebRtcClient {
           window.clearTimeout(this.pointerLockEscapeTimer);
           this.pointerLockEscapeTimer = null;
         }
+        if (this.escHoldTimer !== null) {
+          window.clearTimeout(this.escHoldTimer);
+          this.escHoldTimer = null;
+        }
         if (this.escHoldNoticeTimer !== null) {
           window.clearTimeout(this.escHoldNoticeTimer);
           this.escHoldNoticeTimer = null;
