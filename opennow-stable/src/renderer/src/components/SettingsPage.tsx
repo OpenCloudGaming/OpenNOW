@@ -2728,18 +2728,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 {settings.controllerMode && (
                   <div className="settings-controller-subsettings">
                     <div className="settings-row">
-                      <label className="settings-label">Exit Controller Mode</label>
-                      <div>
-                        <button
-                          className="settings-exit-btn"
-                          onClick={() => handleChange("controllerMode", false)}
-                        >
-                          Exit
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="settings-row">
                       <label className="settings-label">
                         Controller UI Sounds
                         <span className="settings-hint">Play subtle move, open, and back sounds inside controller mode only.</span>
@@ -2767,6 +2755,39 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         />
                         <span className="settings-toggle-track" />
                       </label>
+                    </div>
+
+                    <div className="settings-row">
+                      <label className="settings-label">
+                        Controller Background Style
+                        <span className="settings-hint">Choose the visual layout (ribbon, mesh, or grid/noise) for controller-mode backgrounds.</span>
+                      </label>
+                      <select
+                        className="settings-select"
+                        value={settings.controllerBackgroundStyle}
+                        onChange={(e) => handleChange("controllerBackgroundStyle", e.target.value as any)}
+                      >
+                        <option value="ribbon">Ribbon (Default)</option>
+                        <option value="mesh">Soft Mesh</option>
+                        <option value="grid">Grid + Noise</option>
+                      </select>
+                    </div>
+
+                    <div className="settings-row">
+                      <label className="settings-label">
+                        Controller Background Theme
+                        <span className="settings-hint">Choose the color palette used by the selected background style.</span>
+                      </label>
+                      <select
+                        className="settings-select"
+                        value={settings.controllerBackgroundTheme}
+                        onChange={(e) => handleChange("controllerBackgroundTheme", e.target.value as any)}
+                      >
+                        <option value="aurora">Aurora (Default)</option>
+                        <option value="nebula">Nebula</option>
+                        <option value="sunset">Sunset</option>
+                        <option value="midnight">Midnight</option>
+                      </select>
                     </div>
 
                     <div className="settings-row">

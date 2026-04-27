@@ -47,6 +47,7 @@ interface StreamViewProps {
     tone: "warn" | "critical";
     secondsLeft?: number;
   } | null;
+  pointerLockDisengagingNotice?: string | null;
   isConnecting: boolean;
   gameTitle: string;
   platformStore?: string;
@@ -686,6 +687,7 @@ export function StreamView({
   sessionClockShowEveryMinutes,
   sessionClockShowDurationSeconds,
   streamWarning,
+  pointerLockDisengagingNotice,
   isConnecting,
   gameTitle,
   platformStore,
@@ -2358,6 +2360,16 @@ export function StreamView({
             {streamWarning.message}
             {warningSeconds ? ` · ${warningSeconds} left` : ""}
           </span>
+        </div>
+      )}
+
+      {pointerLockDisengagingNotice && !isConnecting && !exitPrompt.open && (
+        <div
+          className="sv-time-warning sv-time-warning--warn"
+          title="Pointer lock hold warning"
+        >
+          <AlertTriangle size={14} />
+          <span>{pointerLockDisengagingNotice}</span>
         </div>
       )}
 

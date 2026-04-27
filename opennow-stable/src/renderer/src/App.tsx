@@ -849,6 +849,8 @@ export function App(): JSX.Element {
     controllerMode: false,
     controllerUiSounds: false,
     controllerBackgroundAnimations: false,
+    controllerBackgroundStyle: "ribbon",
+    controllerBackgroundTheme: "aurora",
     autoLoadControllerLibrary: false,
     autoFullScreen: false,
     favoriteGameIds: [],
@@ -893,6 +895,7 @@ export function App(): JSX.Element {
   const [queueModalData, setQueueModalData] = useState<PrintedWasteQueueData | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
   const [remoteStreamWarning, setRemoteStreamWarning] = useState<StreamWarningState | null>(null);
+  const [pointerLockDisengagingNotice, setPointerLockDisengagingNotice] = useState<string | null>(null);
   const [localSessionTimerWarning, setLocalSessionTimerWarning] = useState<LocalSessionTimerWarningState | null>(null);
   const [activeQueueAdId, setActiveQueueAdId] = useState<string | null>(null);
   const previousFreeTierRemainingSecondsRef = useRef<number | null>(null);
@@ -980,6 +983,11 @@ export function App(): JSX.Element {
     const cancelEvent = new CustomEvent("opennow:controller-cancel", { cancelable: true });
     window.dispatchEvent(cancelEvent);
     if (cancelEvent.defaultPrevented) {
+      return true;
+    }
+
+    // At XMB root in controller mode, Circle/B should not navigate pages.
+    if (settings.controllerMode && currentPage === "library") {
       return true;
     }
 
@@ -2826,6 +2834,9 @@ export function App(): JSX.Element {
                   secondsLeft: warning.secondsLeft,
                 });
               },
+              onPointerLockDisengagingNoticeChange: (message) => {
+                setPointerLockDisengagingNotice(message);
+              },
               onMicStateChange: (state) => {
                 console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
               },
@@ -3935,6 +3946,7 @@ export function App(): JSX.Element {
             sessionClockShowEveryMinutes={settings.sessionClockShowEveryMinutes}
             sessionClockShowDurationSeconds={settings.sessionClockShowDurationSeconds}
             streamWarning={streamWarning}
+            pointerLockDisengagingNotice={pointerLockDisengagingNotice}
             isConnecting={streamStatus === "connecting"}
             isStreaming={isStreaming}
             gameTitle={streamingGame?.title ?? "Game"}
@@ -3999,6 +4011,8 @@ export function App(): JSX.Element {
             playtimeData={playtime}
             gameId={pendingSwitchGameId ?? streamingGame?.id}
             enableBackgroundAnimations={settings.controllerBackgroundAnimations}
+            backgroundStyle={settings.controllerBackgroundStyle}
+            backgroundTheme={settings.controllerBackgroundTheme}
           />
         )}
         {isSwitchingGame && !settings.controllerMode && (
@@ -4057,6 +4071,9 @@ export function App(): JSX.Element {
               pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
+              savedAccounts={savedAccounts}
+              activeUserId={authSession?.user.userId}
+              onSwitchAccount={handleSwitchAccount}
               subscriptionInfo={subscriptionInfo}
               playtimeData={playtime}
               sessionStartedAtMs={sessionStartedAtMs}
@@ -4071,6 +4088,8 @@ export function App(): JSX.Element {
                 microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
+                controllerBackgroundStyle: settings.controllerBackgroundStyle,
+                controllerBackgroundTheme: settings.controllerBackgroundTheme,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
                 autoFullScreen: settings.autoFullScreen,
                 aspectRatio: settings.aspectRatio,
@@ -4109,6 +4128,8 @@ export function App(): JSX.Element {
             playtimeData={playtime}
             gameId={streamingGame?.id}
             enableBackgroundAnimations={settings.controllerBackgroundAnimations}
+            backgroundStyle={settings.controllerBackgroundStyle}
+            backgroundTheme={settings.controllerBackgroundTheme}
           />
         )}
         {showDesktopLaunchLoading && (
@@ -4231,6 +4252,9 @@ export function App(): JSX.Element {
               pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
+              savedAccounts={savedAccounts}
+              activeUserId={authSession?.user.userId}
+              onSwitchAccount={handleSwitchAccount}
               subscriptionInfo={subscriptionInfo}
               playtimeData={playtime}
               sessionStartedAtMs={sessionStartedAtMs}
@@ -4245,6 +4269,8 @@ export function App(): JSX.Element {
                 microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
+                controllerBackgroundStyle: settings.controllerBackgroundStyle,
+                controllerBackgroundTheme: settings.controllerBackgroundTheme,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
                 autoFullScreen: settings.autoFullScreen,
                 aspectRatio: settings.aspectRatio,
