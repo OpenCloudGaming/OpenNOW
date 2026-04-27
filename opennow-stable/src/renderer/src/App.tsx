@@ -844,6 +844,7 @@ export function App(): JSX.Element {
     controllerMode: false,
     controllerUiSounds: false,
     controllerBackgroundAnimations: false,
+    controllerBackgroundStyle: "ribbon",
     controllerBackgroundTheme: "aurora",
     autoLoadControllerLibrary: false,
     autoFullScreen: false,
@@ -3992,6 +3993,8 @@ export function App(): JSX.Element {
             playtimeData={playtime}
             gameId={pendingSwitchGameId ?? streamingGame?.id}
             enableBackgroundAnimations={settings.controllerBackgroundAnimations}
+            backgroundStyle={settings.controllerBackgroundStyle}
+            backgroundTheme={settings.controllerBackgroundTheme}
           />
         )}
         {isSwitchingGame && !settings.controllerMode && (
@@ -4064,6 +4067,7 @@ export function App(): JSX.Element {
                 microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
+                controllerBackgroundStyle: settings.controllerBackgroundStyle,
                 controllerBackgroundTheme: settings.controllerBackgroundTheme,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
                 autoFullScreen: settings.autoFullScreen,
@@ -4103,6 +4107,8 @@ export function App(): JSX.Element {
             playtimeData={playtime}
             gameId={streamingGame?.id}
             enableBackgroundAnimations={settings.controllerBackgroundAnimations}
+            backgroundStyle={settings.controllerBackgroundStyle}
+            backgroundTheme={settings.controllerBackgroundTheme}
           />
         )}
         {showDesktopLaunchLoading && (
@@ -4239,6 +4245,7 @@ export function App(): JSX.Element {
                 microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
+                controllerBackgroundStyle: settings.controllerBackgroundStyle,
                 controllerBackgroundTheme: settings.controllerBackgroundTheme,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
                 autoFullScreen: settings.autoFullScreen,

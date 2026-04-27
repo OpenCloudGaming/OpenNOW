@@ -37,6 +37,7 @@ interface ControllerLibraryPageProps {
     microphoneDeviceId?: string;
     controllerUiSounds?: boolean;
     controllerBackgroundAnimations?: boolean;
+    controllerBackgroundStyle?: "ribbon" | "mesh" | "grid";
     controllerBackgroundTheme?: "aurora" | "nebula" | "sunset" | "midnight";
     autoLoadControllerLibrary?: boolean;
     autoFullScreen?: boolean;
@@ -347,6 +348,13 @@ export function ControllerLibraryPage({
         { id: "autoFullScreen", label: "Auto Full Screen", value: (settings as any).autoFullScreen ? "On" : "Off" },
         { id: "autoLoad", label: "Auto-Load Library", value: (settings as any).autoLoadControllerLibrary ? "On" : "Off" },
         { id: "backgroundAnimations", label: "Background Animations", value: ((settings as any).controllerBackgroundAnimations ? "On" : "Off") },
+        {
+          id: "backgroundStyle",
+          label: "Background Style",
+          value: settings.controllerBackgroundStyle
+            ? settings.controllerBackgroundStyle.charAt(0).toUpperCase() + settings.controllerBackgroundStyle.slice(1)
+            : "Ribbon",
+        },
         {
           id: "backgroundTheme",
           label: "Background Theme",
@@ -769,6 +777,13 @@ export function ControllerLibraryPage({
           } else if (setting.id === "backgroundAnimations") {
             onSettingChange("controllerBackgroundAnimations" as any, !((settings as any).controllerBackgroundAnimations || false));
             playUiSound("move");
+          } else if (setting.id === "backgroundStyle") {
+            const styles = ["ribbon", "mesh", "grid"] as const;
+            const currentStyle = settings.controllerBackgroundStyle ?? "ribbon";
+            const currentIdx = styles.indexOf(currentStyle);
+            const nextStyle = styles[(currentIdx + 1) % styles.length];
+            onSettingChange("controllerBackgroundStyle" as any, nextStyle as any);
+            playUiSound("move");
           } else if (setting.id === "backgroundTheme") {
             const themes = ["aurora", "nebula", "sunset", "midnight"] as const;
             const currentTheme = settings.controllerBackgroundTheme ?? "aurora";
@@ -921,8 +936,9 @@ export function ControllerLibraryPage({
       : <ButtonY className={className} size={size} />;
   };
 
+  const controllerBackgroundStyle = settings.controllerBackgroundStyle ?? "ribbon";
   const controllerBackgroundTheme = settings.controllerBackgroundTheme ?? "aurora";
-  const wrapperClassName = `xmb-wrapper xmb-theme-${controllerBackgroundTheme} ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"}`;
+  const wrapperClassName = `xmb-wrapper xmb-bg-style-${controllerBackgroundStyle} xmb-theme-${controllerBackgroundTheme} ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"}`;
 
   if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") return <div className={wrapperClassName}><div className="xmb-bg-layer"><div className="xmb-bg-gradient" /></div><div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh'}}>Loading...</div></div>;
 

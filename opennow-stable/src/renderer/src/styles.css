@@ -6769,6 +6769,136 @@ button.game-card-store-chip.owned.active:hover {
   opacity: 0.5;
 }
 
+.xmb-wrapper {
+  --xmb-accent-rgb: 124, 241, 177;
+  --xmb-accent-strong-rgb: 133, 247, 187;
+  --xmb-highlight-rgb: 241, 255, 248;
+  --xmb-base-top: #081711;
+  --xmb-base-bottom: #010302;
+}
+
+.xmb-wrapper.xmb-theme-nebula {
+  --xmb-accent-rgb: 153, 122, 255;
+  --xmb-accent-strong-rgb: 170, 143, 255;
+  --xmb-highlight-rgb: 236, 228, 255;
+  --xmb-base-top: #10072c;
+  --xmb-base-bottom: #03030a;
+}
+
+.xmb-wrapper.xmb-theme-sunset {
+  --xmb-accent-rgb: 255, 144, 114;
+  --xmb-accent-strong-rgb: 255, 154, 117;
+  --xmb-highlight-rgb: 255, 232, 203;
+  --xmb-base-top: #3a0d20;
+  --xmb-base-bottom: #08050f;
+}
+
+.xmb-wrapper.xmb-theme-midnight {
+  --xmb-accent-rgb: 119, 176, 255;
+  --xmb-accent-strong-rgb: 126, 176, 255;
+  --xmb-highlight-rgb: 224, 238, 255;
+  --xmb-base-top: #071121;
+  --xmb-base-bottom: #020409;
+}
+
+.xmb-wrapper.xmb-bg-style-mesh .xmb-bg-layer {
+  background:
+    radial-gradient(88% 66% at 18% 22%, rgba(var(--xmb-accent-rgb), 0.28) 0%, rgba(var(--xmb-accent-rgb), 0.08) 40%, rgba(0, 0, 0, 0) 72%),
+    radial-gradient(80% 72% at 84% 24%, rgba(var(--xmb-highlight-rgb), 0.2) 0%, rgba(var(--xmb-highlight-rgb), 0.05) 42%, rgba(0, 0, 0, 0) 76%),
+    radial-gradient(78% 72% at 54% 80%, rgba(var(--xmb-accent-strong-rgb), 0.24) 0%, rgba(var(--xmb-accent-strong-rgb), 0.08) 42%, rgba(0, 0, 0, 0) 78%),
+    linear-gradient(180deg, var(--xmb-base-top) 0%, color-mix(in srgb, var(--xmb-base-top) 55%, var(--xmb-base-bottom)) 54%, var(--xmb-base-bottom) 100%);
+}
+
+.xmb-wrapper.xmb-bg-style-mesh .xmb-bg-gradient {
+  inset: -8%;
+  background:
+    radial-gradient(52% 52% at 30% 30%, rgba(var(--xmb-highlight-rgb), 0.14) 0%, rgba(var(--xmb-highlight-rgb), 0) 68%),
+    radial-gradient(48% 58% at 74% 34%, rgba(var(--xmb-accent-rgb), 0.2) 0%, rgba(var(--xmb-accent-rgb), 0) 70%),
+    radial-gradient(60% 56% at 54% 76%, rgba(var(--xmb-accent-strong-rgb), 0.18) 0%, rgba(var(--xmb-accent-strong-rgb), 0) 70%);
+  background-size: 100% 100%;
+  mix-blend-mode: screen;
+  opacity: 0.95;
+  filter: blur(2px);
+}
+
+.xmb-wrapper.xmb-bg-style-mesh .xmb-bg-gradient::before,
+.xmb-wrapper.xmb-bg-style-mesh .xmb-bg-gradient::after {
+  display: none;
+}
+
+.xmb-wrapper.xmb-bg-style-grid .xmb-bg-layer {
+  background:
+    radial-gradient(120% 78% at 50% -8%, rgba(var(--xmb-accent-rgb), 0.18) 0%, rgba(var(--xmb-accent-rgb), 0.04) 42%, rgba(0, 0, 0, 0) 70%),
+    linear-gradient(180deg, var(--xmb-base-top) 0%, color-mix(in srgb, var(--xmb-base-top) 48%, var(--xmb-base-bottom)) 56%, var(--xmb-base-bottom) 100%);
+}
+
+.xmb-wrapper.xmb-bg-style-grid .xmb-bg-gradient {
+  inset: 0;
+  background:
+    linear-gradient(rgba(var(--xmb-highlight-rgb), 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--xmb-highlight-rgb), 0.05) 1px, transparent 1px),
+    radial-gradient(circle at 52% 46%, rgba(var(--xmb-accent-strong-rgb), 0.16), rgba(var(--xmb-accent-strong-rgb), 0) 62%);
+  background-size: 56px 56px, 56px 56px, 100% 100%;
+  mix-blend-mode: screen;
+  opacity: 0.72;
+}
+
+.xmb-wrapper.xmb-bg-style-grid .xmb-bg-gradient::before {
+  inset: 0;
+  background:
+    radial-gradient(circle at 20% 30%, rgba(var(--xmb-highlight-rgb), 0.14) 0%, rgba(var(--xmb-highlight-rgb), 0) 32%),
+    radial-gradient(circle at 72% 68%, rgba(var(--xmb-accent-strong-rgb), 0.12) 0%, rgba(var(--xmb-accent-strong-rgb), 0) 32%);
+  opacity: 0.42;
+}
+
+.xmb-wrapper.xmb-bg-style-grid .xmb-bg-gradient::after {
+  inset: 0;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.06) 0.6px, transparent 0.6px);
+  background-size: 3px 3px;
+  mix-blend-mode: soft-light;
+  opacity: 0.24;
+}
+
+.xmb-wrapper.xmb-bg-style-mesh.xmb-animate .xmb-bg-gradient {
+  animation: xmb-mesh-drift 24s ease-in-out infinite alternate;
+}
+
+.xmb-wrapper.xmb-bg-style-grid.xmb-animate .xmb-bg-gradient {
+  animation: xmb-grid-pan 18s linear infinite;
+}
+
+.xmb-wrapper.xmb-bg-style-grid.xmb-animate .xmb-bg-gradient::before {
+  animation: xmb-grid-pulse 10s ease-in-out infinite;
+}
+
+@keyframes xmb-mesh-drift {
+  0% {
+    transform: translate3d(-1.2%, -0.8%, 0) scale(1.01);
+  }
+  100% {
+    transform: translate3d(1.2%, 0.8%, 0) scale(1.03);
+  }
+}
+
+@keyframes xmb-grid-pan {
+  0% {
+    background-position: 0 0, 0 0, 0 0;
+  }
+  100% {
+    background-position: 56px 0, 0 56px, 0 0;
+  }
+}
+
+@keyframes xmb-grid-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.56;
+  }
+}
+
 .xmb-categories-container {
   position: absolute;
   top: 25%;
