@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
-import type { GameInfo, MediaListingEntry, Settings } from "@shared/gfn";
+import type { GameInfo, MediaListingEntry, SavedAccount, Settings } from "@shared/gfn";
 import { Star, Clock, Calendar, Repeat2 } from "lucide-react";
 import { ButtonA, ButtonB, ButtonX, ButtonY, ButtonPSCross, ButtonPSCircle, ButtonPSSquare, ButtonPSTriangle } from "./ControllerButtons";
 import { getStoreDisplayName } from "./GameCard";
@@ -14,6 +14,8 @@ interface ControllerLibraryPageProps {
   uiSoundsEnabled: boolean;
   selectedVariantByGameId: Record<string, string>;
   favoriteGameIds: string[];
+  savedAccounts?: SavedAccount[];
+  activeUserId?: string;
   userName?: string;
   userAvatarUrl?: string;
   subscriptionInfo: import("@shared/gfn").SubscriptionInfo | null;
@@ -22,6 +24,7 @@ interface ControllerLibraryPageProps {
   onSelectGameVariant: (gameId: string, variantId: string) => void;
   onToggleFavoriteGame: (gameId: string) => void;
   onPlayGame: (game: GameInfo) => void;
+  onSwitchAccount?: (userId: string) => Promise<void> | void;
   onOpenSettings?: () => void;
   currentStreamingGame?: GameInfo | null;
   onResumeGame?: (game: GameInfo) => void;
@@ -59,7 +62,7 @@ interface ControllerLibraryPageProps {
 type Direction = "up" | "down" | "left" | "right";
 type TopCategory = "current" | "all" | "settings" | "media" | "favorites" | `genre:${string}`;
 type SoundKind = "move" | "confirm";
-type SettingsSubcategory = "root" | "Network" | "Audio" | "Video" | "System";
+type SettingsSubcategory = "root" | "Network" | "Audio" | "Video" | "System" | "Accounts";
 type MediaSubcategory = "root" | "Videos" | "Screenshots";
 const CATEGORY_STEP_PX = 160;
 const CATEGORY_ACTIVE_HALF_WIDTH_PX = 60;
@@ -108,10 +111,13 @@ export function ControllerLibraryPage({
   selectedVariantByGameId,
   uiSoundsEnabled,
   favoriteGameIds,
+  savedAccounts = [],
+  activeUserId,
   onSelectGame,
   onSelectGameVariant,
   onToggleFavoriteGame,
   onPlayGame,
+  onSwitchAccount,
   onOpenSettings,
   currentStreamingGame,
   onResumeGame,
@@ -183,6 +189,7 @@ export function ControllerLibraryPage({
   const [mediaThumbById, setMediaThumbById] = useState<Record<string, string>>({});
   const [controllerType, setControllerType] = useState<"ps" | "xbox" | "nintendo" | "generic">("generic");
   const [editingBandwidth, setEditingBandwidth] = useState(false);
+  const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -240,6 +247,13 @@ export function ControllerLibraryPage({
       window.removeEventListener("gamepaddisconnected", updateFromConnected);
     };
   }, []);
+
+  const getTierDisplayLabel = (tier: string): string => {
+    const normalized = tier.toUpperCase();
+    if (normalized === "ULTIMATE") return "Ultimate";
+    if (normalized === "PRIORITY" || normalized === "PERFORMANCE") return "Priority";
+    return "Free";
+  };
 
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -327,6 +341,7 @@ export function ControllerLibraryPage({
         { id: "audio", label: "Audio", value: "" },
         { id: "video", label: "Video", value: "" },
         { id: "system", label: "System", value: "" },
+        { id: "accounts", label: "Accounts", value: `${savedAccounts.length || 0} saved` },
         { id: "exitApp", label: "Exit", value: "" },
       ],
       Network: [
@@ -364,8 +379,19 @@ export function ControllerLibraryPage({
         },
         { id: "exitControllerMode", label: "Exit Controller Mode", value: "" },
       ],
+      Accounts: savedAccounts.map((account) => {
+        const isActive = account.userId === activeUserId;
+        const tierLabel = getTierDisplayLabel(account.membershipTier);
+        const email = account.email?.trim();
+        const details = [tierLabel, email].filter(Boolean).join(" • ");
+        return {
+          id: `account:${account.userId}`,
+          label: `${account.displayName}${isActive ? " (Active)" : ""}`,
+          value: details,
+        };
+      }),
     } as Record<string, Array<{ id: string; label: string; value: string }>>;
-  }, [settings, microphoneDevices]);
+  }, [settings, microphoneDevices, savedAccounts, activeUserId]);
  
   const currentGameItems = useMemo(() => [
     { id: "resume", label: "Resume Game", value: "" },
@@ -657,12 +683,13 @@ export function ControllerLibraryPage({
       if (topCategory === "settings") {
         const setting = displayItems[selectedSettingIndex];
         // Enter subcategory if at root and selecting network/audio/system
-        if (settingsSubcategory === "root" && setting && (setting.id === "network" || setting.id === "audio" || setting.id === "video" || setting.id === "system")) {
+        if (settingsSubcategory === "root" && setting && (setting.id === "network" || setting.id === "audio" || setting.id === "video" || setting.id === "system" || setting.id === "accounts")) {
           setLastRootSettingIndex(selectedSettingIndex);
           if (setting.id === "network") setSettingsSubcategory("Network");
           if (setting.id === "audio") setSettingsSubcategory("Audio");
           if (setting.id === "video") setSettingsSubcategory("Video");
           if (setting.id === "system") setSettingsSubcategory("System");
+          if (setting.id === "accounts") setSettingsSubcategory("Accounts");
           setSelectedSettingIndex(0);
           playUiSound("confirm");
           return;
@@ -678,6 +705,18 @@ export function ControllerLibraryPage({
         }
         // In subcategory, A toggles values like X does
         if (settingsSubcategory !== "root") {
+          if (settingsSubcategory === "Accounts" && setting?.id.startsWith("account:")) {
+            const selectedUserId = setting.id.slice("account:".length);
+            if (!selectedUserId || selectedUserId === activeUserId || !onSwitchAccount || isSwitchingAccount) {
+              return;
+            }
+            setIsSwitchingAccount(true);
+            playUiSound("confirm");
+            void Promise.resolve(onSwitchAccount(selectedUserId)).finally(() => {
+              setIsSwitchingAccount(false);
+            });
+            return;
+          }
           if (setting?.id === "exitControllerMode") {
             if (onExitControllerMode) {
               onExitControllerMode();
@@ -729,9 +768,10 @@ export function ControllerLibraryPage({
           // X button cycles through setting values (no-op for exit actions or subcategory items at root)
           const setting = displayItems[selectedSettingIndex];
           if (!setting || !onSettingChange) return;
+          if (settingsSubcategory === "Accounts") return;
           if (setting.id === "exitApp" || setting.id === "exitControllerMode") return;
           // Skip X cycling for subcategory items at root
-          if (settingsSubcategory === "root" && (setting.id === "network" || setting.id === "audio" || setting.id === "video" || setting.id === "system")) return;
+          if (settingsSubcategory === "root" && (setting.id === "network" || setting.id === "audio" || setting.id === "video" || setting.id === "system" || setting.id === "accounts")) return;
 
           // Microphone device cycling
           if (setting.id === "microphone") {
@@ -1082,12 +1122,13 @@ export function ControllerLibraryPage({
       >
         {displayItems.map((item, idx) => {
           const isActive = idx === (topCategory === "media" ? selectedMediaIndex : selectedSettingIndex);
-          const isSubcategoryItem = settingsSubcategory === "root" && (item.id === "network" || item.id === "audio" || item.id === "video" || item.id === "system");
+          const isSubcategoryItem = settingsSubcategory === "root" && (item.id === "network" || item.id === "audio" || item.id === "video" || item.id === "system" || item.id === "accounts");
           const isMediaSubcategoryItem = topCategory === "media" && mediaSubcategory === "root" && (item.id === "videos" || item.id === "screenshots");
+          const isActiveAccountItem = settingsSubcategory === "Accounts" && item.id === `account:${activeUserId ?? ""}`;
           return (
             <div 
               key={item.id} 
-              className={`xmb-game-item ${isActive ? 'active' : ''}`}
+              className={`xmb-game-item ${isActive ? 'active' : ''}${isActiveAccountItem ? ' xmb-account-item-active' : ''}`}
               role="option"
               aria-selected={isActive}
               data-subcategory-id={isSubcategoryItem || isMediaSubcategoryItem ? item.id : undefined}
@@ -1113,6 +1154,11 @@ export function ControllerLibraryPage({
                     ) : (
                       <span className="xmb-game-meta-chip">{item.value}</span>
                     )}
+                  </div>
+                )}
+                {settingsSubcategory === "Accounts" && isActiveAccountItem && (
+                  <div className="xmb-game-meta">
+                    <span className="xmb-game-meta-chip">Current account</span>
                   </div>
                 )}
               </div>
@@ -1287,7 +1333,7 @@ export function ControllerLibraryPage({
                   ) : (
                     <ButtonA className="xmb-btn-icon" size={24} />
                   )}
-                  <span>Toggle</span>
+                  <span>{settingsSubcategory === "Accounts" ? "Select" : "Toggle"}</span>
                 </div>
               </>
             )}
