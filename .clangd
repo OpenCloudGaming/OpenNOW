@@ -1,0 +1,6 @@
+If:
+  PathMatch: native/macos/.*
+CompileFlags:
+  Add:
+    - -Inative/core/include
+    - -std=c++20

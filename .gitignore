@@ -6,10 +6,13 @@ yarn.lock
 pnpm-lock.yaml
 
 # Build outputs
+build/
 dist/
 target/
 target2/
 target3/
+.cache/
+native/**/build/
 
 # IDE
 .idea/

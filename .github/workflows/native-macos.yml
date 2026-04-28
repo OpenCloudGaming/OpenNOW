@@ -1,0 +1,56 @@
+name: Native macOS
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "native/**"
+      - ".github/workflows/native-macos.yml"
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - "native/**"
+      - ".github/workflows/native-macos.yml"
+
+concurrency:
+  group: native-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  native-core:
+    name: Native Core Release Preflight
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show native toolchain
+        run: |
+          cmake --version
+          xcodebuild -version
+
+      - name: Validate native macOS release
+        run: native/scripts/validate-macos-release.sh
+
+      - name: Verify signing scaffold
+        env:
+          OPENNOW_DRY_RUN: "1"
+          DEVELOPER_ID_APPLICATION: "Developer ID Application: OpenNOW Dry Run"
+          APPLE_ID: "notarization@example.invalid"
+          APPLE_TEAM_ID: "OPENNOWTEAM"
+          APP_SPECIFIC_PASSWORD: "dry-run-password"
+        run: |
+          mkdir -p "$RUNNER_TEMP/OpenNOWMac.app"
+          native/macos/release/sign-and-notarize.sh "$RUNNER_TEMP/OpenNOWMac.app"
+
+      - name: Upload native core package
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-native-core-macos
+          path: native/core/build/macos-release/packages/*.tar.gz
+          if-no-files-found: error
