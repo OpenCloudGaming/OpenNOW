@@ -66,9 +66,25 @@ interface GamepadHapticActuatorLike {
   playEffect(effectType: "dual-rumble", options: DualRumbleEffectOptions): Promise<unknown>;
 }
 
-type GamepadWithOptionalVibration = Gamepad & {
+interface LegacyGamepadHapticActuatorLike {
+  pulse(value: number, duration: number): Promise<unknown>;
+}
+
+type GamepadWithOptionalHaptics = Gamepad & {
   readonly vibrationActuator?: GamepadHapticActuatorLike | null;
+  readonly hapticActuators?: readonly (LegacyGamepadHapticActuatorLike | null | undefined)[] | null;
 };
+
+interface GamepadRumbleApi {
+  playEffectActuator: GamepadHapticActuatorLike | null;
+  pulseActuator: LegacyGamepadHapticActuatorLike | null;
+}
+
+interface ConnectedRumbleGamepad {
+  index: number;
+  gamepad: Gamepad;
+  api: GamepadRumbleApi | null;
+}
 
 function hevcPreferredProfileId(colorQuality: ColorQuality): 1 | 2 {
   // 10-bit modes should prefer HEVC Main10 profile-id=2.
@@ -220,19 +236,26 @@ function parseRiInputCapabilities(sdp: string): RiInputCapabilities {
   };
 }
 
-function getDualRumbleActuator(gamepad: Gamepad): GamepadHapticActuatorLike | null {
-  const actuator = (gamepad as GamepadWithOptionalVibration).vibrationActuator;
-  if (actuator?.type === "dual-rumble" && typeof actuator.playEffect === "function") {
-    return actuator;
-  }
-  return null;
-}
-
 function clampRumbleMagnitude(value: number): number {
   if (!Number.isFinite(value)) {
     return 0;
   }
   return Math.max(0, Math.min(1, value));
+}
+
+function getGamepadRumbleApi(gamepad: Gamepad): GamepadRumbleApi | null {
+  const hapticGamepad = gamepad as GamepadWithOptionalHaptics;
+  const playEffectActuator = hapticGamepad.vibrationActuator;
+  const pulseActuator = hapticGamepad.hapticActuators?.[0];
+  const api: GamepadRumbleApi = {
+    playEffectActuator: playEffectActuator && typeof playEffectActuator.playEffect === "function"
+      ? playEffectActuator
+      : null,
+    pulseActuator: pulseActuator && typeof pulseActuator.pulse === "function"
+      ? pulseActuator
+      : null,
+  };
+  return api.playEffectActuator || api.pulseActuator ? api : null;
 }
 
 export interface AdaptiveMouseFlushDecisionParams {
@@ -574,6 +597,7 @@ export class GfnWebRtcClient {
   private lastRumbleStrong: number[] = [0, 0, 0, 0];
   private lastRumbleEffectAtMs: number[] = [0, 0, 0, 0];
   private hapticsSupportLogged: boolean[] = [false, false, false, false];
+  private fallbackHapticsSupportLogged: boolean[] = [false, false, false, false];
   private lastHapticsWarningAtMs = 0;
 
   // Track currently pressed keys (VK codes) for synthetic Escape detection
@@ -2004,20 +2028,74 @@ export class GfnWebRtcClient {
     this.log(message);
   }
 
-  private findConnectedGamepad(controllerId: number): { index: number; gamepad: Gamepad } | null {
+  private getConnectedRumbleGamepads(): ConnectedRumbleGamepad[] {
     const gamepads = navigator.getGamepads();
     if (!gamepads) {
+      return [];
+    }
+
+    const connected: ConnectedRumbleGamepad[] = [];
+    for (let i = 0; i < Math.min(gamepads.length, GAMEPAD_MAX_CONTROLLERS); i++) {
+      const gamepad = gamepads[i];
+      if (gamepad?.connected) {
+        connected.push({ index: i, gamepad, api: getGamepadRumbleApi(gamepad) });
+      }
+    }
+    return connected;
+  }
+
+  private findConnectedGamepad(controllerId: number): ConnectedRumbleGamepad | null {
+    const connected = this.getConnectedRumbleGamepads();
+    if (connected.length === 0) {
+      this.logHapticsWarning(`Input haptics: no haptic-capable gamepad for controller ${controllerId} (connected=0)`);
       return null;
     }
 
-    if (controllerId >= 0 && controllerId < GAMEPAD_MAX_CONTROLLERS) {
-      const exact = gamepads[controllerId];
-      if (exact?.connected && this.connectedGamepads.has(controllerId)) {
-        return { index: controllerId, gamepad: exact };
-      }
+    const exact = controllerId >= 0 && controllerId < GAMEPAD_MAX_CONTROLLERS
+      ? connected.find((candidate) => candidate.index === controllerId)
+      : undefined;
+    if (exact?.api) {
+      return exact;
     }
 
+    const hapticConnected = connected.filter((candidate) => candidate.api);
+    const indexedFallback = controllerId >= 0 && controllerId < GAMEPAD_MAX_CONTROLLERS
+      ? hapticConnected[controllerId]
+      : undefined;
+    if (indexedFallback) {
+      return indexedFallback;
+    }
+
+    if (hapticConnected.length === 1) {
+      return hapticConnected[0];
+    }
+
+    this.logHapticsWarning(
+      `Input haptics: no haptic-capable gamepad for controller ${controllerId} (connected=${connected.length})`,
+    );
     return null;
+  }
+
+  private applyRumbleApi(api: GamepadRumbleApi, index: number, weakMagnitude: number, strongMagnitude: number, isStop: boolean): void {
+    const duration = isStop ? 0 : GfnWebRtcClient.RUMBLE_EFFECT_MS;
+    let usedPlayEffect = false;
+    if (api.playEffectActuator) {
+      usedPlayEffect = true;
+      void api.playEffectActuator.playEffect("dual-rumble", {
+        startDelay: 0,
+        duration,
+        weakMagnitude: isStop ? 0 : weakMagnitude,
+        strongMagnitude: isStop ? 0 : strongMagnitude,
+      }).catch(() => {});
+    }
+
+    if (api.pulseActuator && (isStop || !usedPlayEffect)) {
+      if (!isStop && !this.fallbackHapticsSupportLogged[index]) {
+        this.fallbackHapticsSupportLogged[index] = true;
+        this.log(`Gamepad ${index} fallback pulse haptics available`);
+      }
+      void api.pulseActuator.pulse(isStop ? 0 : Math.max(weakMagnitude, strongMagnitude), duration).catch(() => {});
+    }
   }
 
   private applyGamepadRumble(controllerId: number, weakMagnitude16: number, strongMagnitude16: number): void {
@@ -2025,14 +2103,12 @@ export class GfnWebRtcClient {
     if (!target) {
       return;
     }
-
-    const actuator = getDualRumbleActuator(target.gamepad);
-    if (!actuator) {
+    if (!target.api) {
       return;
     }
 
     const index = target.index;
-    if (!this.hapticsSupportLogged[index]) {
+    if (target.api.playEffectActuator && !this.hapticsSupportLogged[index]) {
       this.hapticsSupportLogged[index] = true;
       this.log(`Gamepad ${index} dual-rumble haptics available`);
     }
@@ -2053,12 +2129,7 @@ export class GfnWebRtcClient {
     }
 
     this.lastRumbleEffectAtMs[index] = isStop ? 0 : nowMs;
-    void actuator.playEffect("dual-rumble", {
-      startDelay: 0,
-      duration: isStop ? 0 : GfnWebRtcClient.RUMBLE_EFFECT_MS,
-      weakMagnitude: isStop ? 0 : weakMagnitude,
-      strongMagnitude: isStop ? 0 : strongMagnitude,
-    }).catch(() => {});
+    this.applyRumbleApi(target.api, index, weakMagnitude, strongMagnitude, isStop);
   }
 
   private stopGamepadRumble(controllerId: number, gamepad?: Gamepad): void {
@@ -2066,13 +2137,10 @@ export class GfnWebRtcClient {
       return;
     }
     if (gamepad) {
-      const actuator = getDualRumbleActuator(gamepad);
-      void actuator?.playEffect("dual-rumble", {
-        startDelay: 0,
-        duration: 0,
-        weakMagnitude: 0,
-        strongMagnitude: 0,
-      }).catch(() => {});
+      const api = getGamepadRumbleApi(gamepad);
+      if (api) {
+        this.applyRumbleApi(api, controllerId, 0, 0, true);
+      }
     } else {
       this.applyGamepadRumble(controllerId, 0, 0);
     }
@@ -2080,11 +2148,21 @@ export class GfnWebRtcClient {
     this.lastRumbleStrong[controllerId] = 0;
     this.lastRumbleEffectAtMs[controllerId] = 0;
     this.hapticsSupportLogged[controllerId] = false;
+    this.fallbackHapticsSupportLogged[controllerId] = false;
   }
 
   private stopAllGamepadRumble(): void {
-    for (let i = 0; i < GAMEPAD_MAX_CONTROLLERS; i++) {
-      this.stopGamepadRumble(i);
+    for (const target of this.getConnectedRumbleGamepads()) {
+      if (target.api) {
+        this.applyRumbleApi(target.api, target.index, 0, 0, true);
+      }
+    }
+    for (let i = 0; i < this.lastRumbleWeak.length; i++) {
+      this.lastRumbleWeak[i] = 0;
+      this.lastRumbleStrong[i] = 0;
+      this.lastRumbleEffectAtMs[i] = 0;
+      this.hapticsSupportLogged[i] = false;
+      this.fallbackHapticsSupportLogged[i] = false;
     }
     this.lastHapticsWarningAtMs = 0;
   }
