@@ -7,7 +7,7 @@ import {
   getSessionAdMessage,
   isSessionQueuePaused,
 } from "@shared/gfn";
-import type { SessionAdInfo, SessionAdState } from "@shared/gfn";
+import type { ControllerBackgroundStyle, ControllerBackgroundTheme, SessionAdInfo, SessionAdState } from "@shared/gfn";
 import { formatPlaytime } from "../utils/usePlaytime";
 import type { PlaytimeStore } from "../utils/usePlaytime";
 import { QueueAdPreview, type QueueAdPlaybackEvent, type QueueAdPreviewHandle } from "./QueueAdPreview";
@@ -31,6 +31,8 @@ export interface ControllerStreamLoadingProps {
   playtimeData?: PlaytimeStore;
   gameId?: string;
   enableBackgroundAnimations?: boolean;
+  backgroundStyle?: ControllerBackgroundStyle;
+  backgroundTheme?: ControllerBackgroundTheme;
 }
 
 function getStatusMessage(
@@ -86,6 +88,8 @@ export function ControllerStreamLoading({
   playtimeData = {},
   gameId,
   enableBackgroundAnimations = false,
+  backgroundStyle = "ribbon",
+  backgroundTheme = "aurora",
 }: ControllerStreamLoadingProps): JSX.Element {
   const statusMessage = getStatusMessage(status, queuePosition, adState);
   const statusPhase = getStatusPhase(status);
@@ -101,14 +105,15 @@ export function ControllerStreamLoading({
 
   return (
     <div className="controller-stream-loading">
-      {enableBackgroundAnimations && (
-        <div className={`xmb-wrapper ${enableBackgroundAnimations ? "xmb-animate" : ""}`} aria-hidden>
-          <div className="xmb-bg-layer">
-            <div className="xmb-bg-gradient" />
-            <div className="xmb-bg-overlay" />
-          </div>
+      <div
+        className={`xmb-wrapper xmb-bg-style-${backgroundStyle} xmb-theme-${backgroundTheme} ${enableBackgroundAnimations ? "xmb-animate" : "xmb-static"}`}
+        aria-hidden
+      >
+        <div className="xmb-bg-layer">
+          <div className="xmb-bg-gradient" />
+          <div className="xmb-bg-overlay" />
         </div>
-      )}
+      </div>
       {/* Fade-to-black backdrop */}
       <div className="csl-backdrop" />
 

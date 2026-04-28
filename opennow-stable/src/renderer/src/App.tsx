@@ -222,6 +222,7 @@ const DEFAULT_SHORTCUTS = {
   shortcutToggleMicrophone: "Ctrl+Shift+M",
   shortcutScreenshot: "F11",
   shortcutToggleRecording: "F12",
+  shortcutSaveReplay: "Ctrl+Shift+R",
 } as const;
 
 
@@ -835,15 +836,21 @@ export function App(): JSX.Element {
     shortcutToggleMicrophone: DEFAULT_SHORTCUTS.shortcutToggleMicrophone,
     shortcutScreenshot: DEFAULT_SHORTCUTS.shortcutScreenshot,
     shortcutToggleRecording: DEFAULT_SHORTCUTS.shortcutToggleRecording,
+    shortcutSaveReplay: DEFAULT_SHORTCUTS.shortcutSaveReplay,
     microphoneMode: "disabled",
     microphoneDeviceId: "",
     hideStreamButtons: false,
+    instantReplayEnabled: false,
+    instantReplayDurationSeconds: 30,
+    recordingOutputPath: "",
     showAntiAfkIndicator: true,
     showStatsOnLaunch: false,
     hideServerSelector: false,
     controllerMode: false,
     controllerUiSounds: false,
     controllerBackgroundAnimations: false,
+    controllerBackgroundStyle: "ribbon",
+    controllerBackgroundTheme: "aurora",
     autoLoadControllerLibrary: false,
     autoFullScreen: false,
     favoriteGameIds: [],
@@ -888,6 +895,7 @@ export function App(): JSX.Element {
   const [queueModalData, setQueueModalData] = useState<PrintedWasteQueueData | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
   const [remoteStreamWarning, setRemoteStreamWarning] = useState<StreamWarningState | null>(null);
+  const [pointerLockDisengagingNotice, setPointerLockDisengagingNotice] = useState<string | null>(null);
   const [localSessionTimerWarning, setLocalSessionTimerWarning] = useState<LocalSessionTimerWarningState | null>(null);
   const [activeQueueAdId, setActiveQueueAdId] = useState<string | null>(null);
   const previousFreeTierRemainingSecondsRef = useRef<number | null>(null);
@@ -975,6 +983,11 @@ export function App(): JSX.Element {
     const cancelEvent = new CustomEvent("opennow:controller-cancel", { cancelable: true });
     window.dispatchEvent(cancelEvent);
     if (cancelEvent.defaultPrevented) {
+      return true;
+    }
+
+    // At XMB root in controller mode, Circle/B should not navigate pages.
+    if (settings.controllerMode && currentPage === "library") {
       return true;
     }
 
@@ -1859,7 +1872,8 @@ export function App(): JSX.Element {
     const toggleMicrophone = parseWithFallback(settings.shortcutToggleMicrophone, DEFAULT_SHORTCUTS.shortcutToggleMicrophone);
     const screenshot = parseWithFallback(settings.shortcutScreenshot, DEFAULT_SHORTCUTS.shortcutScreenshot);
     const recording = parseWithFallback(settings.shortcutToggleRecording, DEFAULT_SHORTCUTS.shortcutToggleRecording);
-    return { toggleStats, togglePointerLock, toggleFullscreen, stopStream, toggleAntiAfk, toggleMicrophone, screenshot, recording };
+    const saveReplay = parseWithFallback(settings.shortcutSaveReplay, DEFAULT_SHORTCUTS.shortcutSaveReplay);
+    return { toggleStats, togglePointerLock, toggleFullscreen, stopStream, toggleAntiAfk, toggleMicrophone, screenshot, recording, saveReplay };
   }, [
     settings.shortcutToggleStats,
     settings.shortcutTogglePointerLock,
@@ -1869,6 +1883,7 @@ export function App(): JSX.Element {
     settings.shortcutToggleMicrophone,
     settings.shortcutScreenshot,
     settings.shortcutToggleRecording,
+    settings.shortcutSaveReplay,
   ]);
 
   const setSessionFullscreen = useCallback(async (nextFullscreen: boolean) => {
@@ -2818,6 +2833,9 @@ export function App(): JSX.Element {
                   tone: warningTone(warning.code),
                   secondsLeft: warning.secondsLeft,
                 });
+              },
+              onPointerLockDisengagingNoticeChange: (message) => {
+                setPointerLockDisengagingNotice(message);
               },
               onMicStateChange: (state) => {
                 console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
@@ -3916,6 +3934,7 @@ export function App(): JSX.Element {
               toggleMicrophone: formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac),
               screenshot: shortcuts.screenshot.canonical,
               recording: shortcuts.recording.canonical,
+              saveReplay: shortcuts.saveReplay.canonical,
             }}
             hideStreamButtons={settings.hideStreamButtons}
             serverRegion={session?.serverIp}
@@ -3927,6 +3946,7 @@ export function App(): JSX.Element {
             sessionClockShowEveryMinutes={settings.sessionClockShowEveryMinutes}
             sessionClockShowDurationSeconds={settings.sessionClockShowDurationSeconds}
             streamWarning={streamWarning}
+            pointerLockDisengagingNotice={pointerLockDisengagingNotice}
             isConnecting={streamStatus === "connecting"}
             isStreaming={isStreaming}
             gameTitle={streamingGame?.title ?? "Game"}
@@ -3948,11 +3968,16 @@ export function App(): JSX.Element {
             onMouseAccelerationChange={handleMouseAccelerationChange}
             microphoneMode={settings.microphoneMode}
             onMicrophoneModeChange={handleMicrophoneModeChange}
+            instantReplayEnabled={settings.instantReplayEnabled}
+            instantReplayDurationSeconds={settings.instantReplayDurationSeconds}
             onScreenshotShortcutChange={(value) => {
               void updateSetting("shortcutScreenshot", value);
             }}
             onRecordingShortcutChange={(value) => {
               void updateSetting("shortcutToggleRecording", value);
+            }}
+            onSaveReplayShortcutChange={(value) => {
+              void updateSetting("shortcutSaveReplay", value);
             }}
             subscriptionInfo={subscriptionInfo}
             micTrack={clientRef.current?.getMicTrack() ?? null}
@@ -3986,6 +4011,8 @@ export function App(): JSX.Element {
             playtimeData={playtime}
             gameId={pendingSwitchGameId ?? streamingGame?.id}
             enableBackgroundAnimations={settings.controllerBackgroundAnimations}
+            backgroundStyle={settings.controllerBackgroundStyle}
+            backgroundTheme={settings.controllerBackgroundTheme}
           />
         )}
         {isSwitchingGame && !settings.controllerMode && (
@@ -4044,6 +4071,9 @@ export function App(): JSX.Element {
               pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
+              savedAccounts={savedAccounts}
+              activeUserId={authSession?.user.userId}
+              onSwitchAccount={handleSwitchAccount}
               subscriptionInfo={subscriptionInfo}
               playtimeData={playtime}
               sessionStartedAtMs={sessionStartedAtMs}
@@ -4058,6 +4088,8 @@ export function App(): JSX.Element {
                 microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
+                controllerBackgroundStyle: settings.controllerBackgroundStyle,
+                controllerBackgroundTheme: settings.controllerBackgroundTheme,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
                 autoFullScreen: settings.autoFullScreen,
                 aspectRatio: settings.aspectRatio,
@@ -4096,6 +4128,8 @@ export function App(): JSX.Element {
             playtimeData={playtime}
             gameId={streamingGame?.id}
             enableBackgroundAnimations={settings.controllerBackgroundAnimations}
+            backgroundStyle={settings.controllerBackgroundStyle}
+            backgroundTheme={settings.controllerBackgroundTheme}
           />
         )}
         {showDesktopLaunchLoading && (
@@ -4218,6 +4252,9 @@ export function App(): JSX.Element {
               pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
+              savedAccounts={savedAccounts}
+              activeUserId={authSession?.user.userId}
+              onSwitchAccount={handleSwitchAccount}
               subscriptionInfo={subscriptionInfo}
               playtimeData={playtime}
               sessionStartedAtMs={sessionStartedAtMs}
@@ -4232,6 +4269,8 @@ export function App(): JSX.Element {
                 microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
+                controllerBackgroundStyle: settings.controllerBackgroundStyle,
+                controllerBackgroundTheme: settings.controllerBackgroundTheme,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
                 autoFullScreen: settings.autoFullScreen,
                 aspectRatio: settings.aspectRatio,

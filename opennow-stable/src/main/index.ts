@@ -535,6 +535,10 @@ interface ActiveRecording {
 const activeRecordings = new Map<string, ActiveRecording>();
 
 function getRecordingsDirectory(): string {
+  const customPath = settingsManager.get("recordingOutputPath");
+  if (customPath && customPath.trim()) {
+    return customPath.trim();
+  }
   return join(app.getPath("pictures"), "OpenNOW", "Recordings");
 }
 

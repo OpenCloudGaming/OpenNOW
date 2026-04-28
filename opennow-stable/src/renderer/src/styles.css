@@ -6633,15 +6633,22 @@ button.game-card-store-chip.owned.active:hover {
   animation: none;
 }
 
-/* Enable ribbon animations when wrapper has xmb-animate */
-.xmb-wrapper.xmb-animate .xmb-bg-gradient {
+/* Ribbon animations — scoped to ribbon style only */
+.xmb-wrapper.xmb-bg-style-ribbon.xmb-animate .xmb-bg-gradient {
   animation: xmb-ribbon-pan 30s linear infinite;
 }
-.xmb-wrapper.xmb-animate .xmb-bg-gradient::before {
+.xmb-wrapper.xmb-bg-style-ribbon.xmb-animate .xmb-bg-gradient::before {
   animation: xmb-ribbon-float 26s ease-in-out infinite;
 }
-.xmb-wrapper.xmb-animate .xmb-bg-gradient::after {
+.xmb-wrapper.xmb-bg-style-ribbon.xmb-animate .xmb-bg-gradient::after {
   animation: xmb-ribbon-swell 22s ease-in-out infinite;
+}
+
+/* Promote GPU compositing for all animated backgrounds */
+.xmb-wrapper.xmb-animate .xmb-bg-gradient,
+.xmb-wrapper.xmb-animate .xmb-bg-gradient::before,
+.xmb-wrapper.xmb-animate .xmb-bg-gradient::after {
+  will-change: transform, opacity, background-position;
 }
 
 @keyframes xmb-enter-bg {
@@ -6686,6 +6693,303 @@ button.game-card-store-chip.owned.active:hover {
   background:
     linear-gradient(180deg, rgba(2, 6, 4, 0.42) 0%, rgba(2, 6, 4, 0.08) 22%, rgba(2, 6, 4, 0.05) 74%, rgba(0, 0, 0, 0.46) 100%),
     linear-gradient(90deg, rgba(0, 0, 0, 0.12) 0%, rgba(0, 0, 0, 0) 24%, rgba(0, 0, 0, 0) 76%, rgba(0, 0, 0, 0.16) 100%);
+}
+
+.xmb-wrapper.xmb-theme-nebula .xmb-bg-layer {
+  background:
+    radial-gradient(128% 78% at 50% -8%, rgba(190, 173, 255, 0.25) 0%, rgba(124, 94, 252, 0.1) 30%, rgba(5, 8, 24, 0) 58%),
+    linear-gradient(180deg, #10072c 0%, #0a1127 34%, #07091a 66%, #03030a 100%);
+}
+
+.xmb-wrapper.xmb-theme-nebula .xmb-bg-gradient {
+  background:
+    linear-gradient(118deg, transparent 21%, rgba(231, 225, 255, 0.08) 28%, rgba(219, 206, 255, 0.21) 31%, rgba(165, 139, 255, 0.2) 35%, rgba(231, 225, 255, 0.07) 39%, transparent 44%),
+    linear-gradient(128deg, transparent 30%, rgba(186, 172, 255, 0.08) 37%, rgba(237, 231, 255, 0.2) 41%, rgba(153, 122, 255, 0.2) 44%, rgba(237, 231, 255, 0.06) 48%, transparent 54%),
+    radial-gradient(circle at 52% 48%, rgba(210, 194, 255, 0.08), transparent 34%);
+  background-size: 140% 140%, 155% 155%, 100% 100%;
+  background-repeat: no-repeat;
+}
+
+.xmb-wrapper.xmb-theme-nebula .xmb-bg-gradient::before {
+  background:
+    radial-gradient(76% 12% at 30% 54%, rgba(236, 228, 255, 0.32) 0%, rgba(236, 228, 255, 0.18) 18%, rgba(236, 228, 255, 0) 58%),
+    radial-gradient(84% 14% at 67% 60%, rgba(170, 143, 255, 0.24) 0%, rgba(170, 143, 255, 0.12) 16%, rgba(170, 143, 255, 0) 60%);
+  opacity: 0.8;
+}
+
+.xmb-wrapper.xmb-theme-nebula .xmb-bg-gradient::after {
+  background:
+    radial-gradient(78% 12% at 58% 40%, rgba(194, 172, 255, 0.2) 0%, rgba(194, 172, 255, 0.1) 18%, rgba(194, 172, 255, 0) 58%),
+    radial-gradient(70% 10% at 41% 70%, rgba(249, 244, 255, 0.16) 0%, rgba(249, 244, 255, 0.08) 16%, rgba(249, 244, 255, 0) 52%);
+  opacity: 0.5;
+}
+
+.xmb-wrapper.xmb-theme-sunset .xmb-bg-layer {
+  background:
+    radial-gradient(120% 74% at 46% -12%, rgba(255, 200, 130, 0.28) 0%, rgba(255, 130, 110, 0.12) 32%, rgba(46, 12, 20, 0) 58%),
+    linear-gradient(180deg, #3a0d20 0%, #2a1028 36%, #150a1f 66%, #08050f 100%);
+}
+
+.xmb-wrapper.xmb-theme-sunset .xmb-bg-gradient {
+  background:
+    linear-gradient(118deg, transparent 21%, rgba(255, 227, 198, 0.08) 28%, rgba(255, 206, 157, 0.22) 31%, rgba(255, 144, 114, 0.2) 34%, rgba(255, 224, 202, 0.07) 38%, transparent 44%),
+    linear-gradient(128deg, transparent 30%, rgba(255, 183, 138, 0.08) 37%, rgba(255, 217, 191, 0.2) 40%, rgba(255, 128, 128, 0.2) 44%, rgba(255, 225, 206, 0.06) 48%, transparent 54%),
+    radial-gradient(circle at 52% 48%, rgba(255, 214, 172, 0.08), transparent 34%);
+  background-size: 140% 140%, 155% 155%, 100% 100%;
+  background-repeat: no-repeat;
+}
+
+.xmb-wrapper.xmb-theme-sunset .xmb-bg-gradient::before {
+  background:
+    radial-gradient(76% 12% at 30% 54%, rgba(255, 232, 203, 0.34) 0%, rgba(255, 232, 203, 0.2) 18%, rgba(255, 232, 203, 0) 58%),
+    radial-gradient(84% 14% at 67% 60%, rgba(255, 154, 117, 0.24) 0%, rgba(255, 154, 117, 0.12) 16%, rgba(255, 154, 117, 0) 60%);
+  opacity: 0.82;
+}
+
+.xmb-wrapper.xmb-theme-sunset .xmb-bg-gradient::after {
+  background:
+    radial-gradient(78% 12% at 58% 40%, rgba(255, 193, 149, 0.2) 0%, rgba(255, 193, 149, 0.1) 18%, rgba(255, 193, 149, 0) 58%),
+    radial-gradient(70% 10% at 41% 70%, rgba(255, 246, 236, 0.16) 0%, rgba(255, 246, 236, 0.08) 16%, rgba(255, 246, 236, 0) 52%);
+  opacity: 0.52;
+}
+
+.xmb-wrapper.xmb-theme-midnight .xmb-bg-layer {
+  background:
+    radial-gradient(116% 70% at 50% -10%, rgba(140, 196, 255, 0.16) 0%, rgba(91, 136, 255, 0.08) 30%, rgba(4, 8, 20, 0) 56%),
+    linear-gradient(180deg, #071121 0%, #060d1b 34%, #040916 66%, #020409 100%);
+}
+
+.xmb-wrapper.xmb-theme-midnight .xmb-bg-gradient {
+  background:
+    linear-gradient(118deg, transparent 21%, rgba(215, 236, 255, 0.07) 28%, rgba(188, 222, 255, 0.17) 31%, rgba(119, 176, 255, 0.16) 34%, rgba(215, 236, 255, 0.05) 38%, transparent 44%),
+    linear-gradient(128deg, transparent 30%, rgba(162, 201, 255, 0.06) 37%, rgba(214, 235, 255, 0.17) 40%, rgba(114, 161, 255, 0.14) 44%, rgba(214, 235, 255, 0.05) 48%, transparent 54%),
+    radial-gradient(circle at 52% 48%, rgba(186, 221, 255, 0.06), transparent 34%);
+  background-size: 140% 140%, 155% 155%, 100% 100%;
+  background-repeat: no-repeat;
+}
+
+.xmb-wrapper.xmb-theme-midnight .xmb-bg-gradient::before {
+  background:
+    radial-gradient(76% 12% at 30% 54%, rgba(224, 238, 255, 0.28) 0%, rgba(224, 238, 255, 0.16) 18%, rgba(224, 238, 255, 0) 58%),
+    radial-gradient(84% 14% at 67% 60%, rgba(126, 176, 255, 0.22) 0%, rgba(126, 176, 255, 0.12) 16%, rgba(126, 176, 255, 0) 60%);
+  opacity: 0.78;
+}
+
+.xmb-wrapper.xmb-theme-midnight .xmb-bg-gradient::after {
+  background:
+    radial-gradient(78% 12% at 58% 40%, rgba(166, 203, 255, 0.18) 0%, rgba(166, 203, 255, 0.09) 18%, rgba(166, 203, 255, 0) 58%),
+    radial-gradient(70% 10% at 41% 70%, rgba(239, 247, 255, 0.14) 0%, rgba(239, 247, 255, 0.07) 16%, rgba(239, 247, 255, 0) 52%);
+  opacity: 0.5;
+}
+
+.xmb-wrapper {
+  --xmb-accent-rgb: 124, 241, 177;
+  --xmb-accent-strong-rgb: 133, 247, 187;
+  --xmb-highlight-rgb: 241, 255, 248;
+  --xmb-base-top: #081711;
+  --xmb-base-bottom: #010302;
+}
+
+.xmb-wrapper.xmb-theme-nebula {
+  --xmb-accent-rgb: 153, 122, 255;
+  --xmb-accent-strong-rgb: 170, 143, 255;
+  --xmb-highlight-rgb: 236, 228, 255;
+  --xmb-base-top: #10072c;
+  --xmb-base-bottom: #03030a;
+}
+
+.xmb-wrapper.xmb-theme-sunset {
+  --xmb-accent-rgb: 255, 144, 114;
+  --xmb-accent-strong-rgb: 255, 154, 117;
+  --xmb-highlight-rgb: 255, 232, 203;
+  --xmb-base-top: #3a0d20;
+  --xmb-base-bottom: #08050f;
+}
+
+.xmb-wrapper.xmb-theme-midnight {
+  --xmb-accent-rgb: 119, 176, 255;
+  --xmb-accent-strong-rgb: 126, 176, 255;
+  --xmb-highlight-rgb: 224, 238, 255;
+  --xmb-base-top: #071121;
+  --xmb-base-bottom: #020409;
+}
+
+/* ── MESH background style ─────────────────────────────────────────────────
+   Three large radial orbs sit on .xmb-bg-layer. The animated gradient layers
+   (gradient, ::before, ::after) each carry one or two orbs that drift on
+   independent paths so the aurora-like blobs appear to float past each other.
+   ────────────────────────────────────────────────────────────────────────── */
+.xmb-wrapper.xmb-bg-style-mesh .xmb-bg-layer {
+  background:
+    radial-gradient(88% 66% at 18% 22%, rgba(var(--xmb-accent-rgb), 0.3) 0%, rgba(var(--xmb-accent-rgb), 0.08) 40%, transparent 72%),
+    radial-gradient(80% 72% at 84% 24%, rgba(var(--xmb-highlight-rgb), 0.22) 0%, rgba(var(--xmb-highlight-rgb), 0.05) 42%, transparent 76%),
+    radial-gradient(78% 72% at 54% 82%, rgba(var(--xmb-accent-strong-rgb), 0.26) 0%, rgba(var(--xmb-accent-strong-rgb), 0.07) 42%, transparent 78%),
+    linear-gradient(180deg, var(--xmb-base-top) 0%, color-mix(in srgb, var(--xmb-base-top) 55%, var(--xmb-base-bottom)) 54%, var(--xmb-base-bottom) 100%);
+}
+
+/* Primary orb layer — drifts in a slow figure-of-eight */
+.xmb-wrapper.xmb-bg-style-mesh .xmb-bg-gradient {
+  inset: -16%;
+  background:
+    radial-gradient(55% 55% at 38% 34%, rgba(var(--xmb-highlight-rgb), 0.22) 0%, rgba(var(--xmb-highlight-rgb), 0) 65%),
+    radial-gradient(50% 60% at 70% 62%, rgba(var(--xmb-accent-rgb), 0.26) 0%, rgba(var(--xmb-accent-rgb), 0) 66%),
+    radial-gradient(44% 48% at 22% 74%, rgba(var(--xmb-accent-strong-rgb), 0.2) 0%, rgba(var(--xmb-accent-strong-rgb), 0) 68%);
+  background-size: 100% 100%;
+  mix-blend-mode: screen;
+  opacity: 1;
+  filter: blur(28px);
+  transform-origin: center center;
+}
+
+.xmb-wrapper.xmb-bg-style-mesh .xmb-bg-gradient::before,
+.xmb-wrapper.xmb-bg-style-mesh .xmb-bg-gradient::after {
+  display: block;
+}
+
+/* Secondary orb layer — counter-rotates for cross-dissolve depth */
+.xmb-wrapper.xmb-bg-style-mesh .xmb-bg-gradient::before {
+  inset: -12%;
+  background:
+    radial-gradient(48% 46% at 68% 26%, rgba(var(--xmb-accent-strong-rgb), 0.28) 0%, rgba(var(--xmb-accent-strong-rgb), 0) 64%),
+    radial-gradient(42% 50% at 28% 66%, rgba(var(--xmb-highlight-rgb), 0.2) 0%, rgba(var(--xmb-highlight-rgb), 0) 66%);
+  mix-blend-mode: screen;
+  filter: blur(20px);
+  opacity: 0.9;
+  transform-origin: center center;
+}
+
+/* Shimmer bloom — a subtle large bright centre that breathes */
+.xmb-wrapper.xmb-bg-style-mesh .xmb-bg-gradient::after {
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% 40%, rgba(var(--xmb-highlight-rgb), 0.1) 0%, transparent 68%),
+    radial-gradient(rgba(255, 255, 255, 0.04) 0.6px, transparent 0.6px);
+  background-size: 100% 100%, 4px 4px;
+  mix-blend-mode: screen;
+  opacity: 0.6;
+}
+
+/* ── GRID background style ──────────────────────────────────────────────────
+   Grid lines scroll diagonally. A bright scan-line accent sweeps across once
+   every ~14 s. Two accent glows breathe and slowly orbit the grid.
+   ────────────────────────────────────────────────────────────────────────── */
+.xmb-wrapper.xmb-bg-style-grid .xmb-bg-layer {
+  background:
+    radial-gradient(130% 80% at 50% -10%, rgba(var(--xmb-accent-rgb), 0.22) 0%, rgba(var(--xmb-accent-rgb), 0.04) 44%, transparent 70%),
+    linear-gradient(180deg, var(--xmb-base-top) 0%, color-mix(in srgb, var(--xmb-base-top) 48%, var(--xmb-base-bottom)) 56%, var(--xmb-base-bottom) 100%);
+}
+
+/* Grid lines + centre glow */
+.xmb-wrapper.xmb-bg-style-grid .xmb-bg-gradient {
+  inset: 0;
+  background:
+    linear-gradient(rgba(var(--xmb-highlight-rgb), 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--xmb-highlight-rgb), 0.06) 1px, transparent 1px),
+    radial-gradient(ellipse 70% 60% at 52% 46%, rgba(var(--xmb-accent-strong-rgb), 0.18), transparent 64%);
+  background-size: 56px 56px, 56px 56px, 100% 100%;
+  mix-blend-mode: screen;
+  opacity: 0.8;
+}
+
+/* Two orbiting accent glows */
+.xmb-wrapper.xmb-bg-style-grid .xmb-bg-gradient::before {
+  inset: -4%;
+  background:
+    radial-gradient(circle at 22% 28%, rgba(var(--xmb-highlight-rgb), 0.22) 0%, transparent 30%),
+    radial-gradient(circle at 76% 66%, rgba(var(--xmb-accent-strong-rgb), 0.2) 0%, transparent 28%);
+  filter: blur(6px);
+  opacity: 0.5;
+}
+
+/* Diagonal scan-line accent */
+.xmb-wrapper.xmb-bg-style-grid .xmb-bg-gradient::after {
+  inset: 0;
+  background: linear-gradient(
+    118deg,
+    transparent 30%,
+    rgba(var(--xmb-highlight-rgb), 0.18) 48%,
+    rgba(var(--xmb-accent-rgb), 0.22) 50%,
+    rgba(var(--xmb-highlight-rgb), 0.18) 52%,
+    transparent 70%
+  );
+  background-size: 200% 200%;
+  mix-blend-mode: screen;
+  opacity: 0.34;
+}
+
+/* ── Animation rules ──────────────────────────────────────────────────────── */
+
+/* Mesh: primary orb layer drifts in a slow figure-of-eight */
+.xmb-wrapper.xmb-bg-style-mesh.xmb-animate .xmb-bg-gradient {
+  animation: xmb-mesh-orb-a 28s linear infinite;
+}
+
+/* Mesh: secondary orb layer drifts on a counter path */
+.xmb-wrapper.xmb-bg-style-mesh.xmb-animate .xmb-bg-gradient::before {
+  animation: xmb-mesh-orb-b 22s linear infinite;
+}
+
+/* Mesh: shimmer bloom breathes */
+.xmb-wrapper.xmb-bg-style-mesh.xmb-animate .xmb-bg-gradient::after {
+  animation: xmb-mesh-bloom 9s linear infinite;
+}
+
+/* Grid: grid lines scroll diagonally */
+.xmb-wrapper.xmb-bg-style-grid.xmb-animate .xmb-bg-gradient {
+  animation: xmb-grid-scroll 14s linear infinite;
+}
+
+/* Grid: accent glows orbit */
+.xmb-wrapper.xmb-bg-style-grid.xmb-animate .xmb-bg-gradient::before {
+  animation: xmb-grid-orbit 18s linear infinite;
+}
+
+/* Grid: scan-line sweeps */
+.xmb-wrapper.xmb-bg-style-grid.xmb-animate .xmb-bg-gradient::after {
+  animation: xmb-grid-scan 14s linear infinite;
+}
+
+/* ── Keyframes ────────────────────────────────────────────────────────────── */
+
+@keyframes xmb-mesh-orb-a {
+  0%   { transform: translate3d(-6%, -5%, 0) scale(1.0);  filter: blur(28px) brightness(0.92); }
+  25%  { transform: translate3d(5%, -7%, 0) scale(1.06); filter: blur(24px) brightness(1.04); }
+  50%  { transform: translate3d(7%, 5%, 0) scale(1.08);  filter: blur(30px) brightness(1.0);  }
+  75%  { transform: translate3d(-4%, 7%, 0) scale(1.04); filter: blur(26px) brightness(0.96); }
+  100% { transform: translate3d(-6%, -5%, 0) scale(1.0);  filter: blur(28px) brightness(0.92); }
+}
+
+@keyframes xmb-mesh-orb-b {
+  0%   { transform: translate3d(5%, 4%, 0) scale(1.0);   filter: blur(20px) brightness(0.94); opacity: 0.9; }
+  30%  { transform: translate3d(-6%, 5%, 0) scale(1.05); filter: blur(18px) brightness(1.06); opacity: 1.0; }
+  60%  { transform: translate3d(-7%, -4%, 0) scale(1.07); filter: blur(22px) brightness(1.0); opacity: 0.85; }
+  100% { transform: translate3d(5%, 4%, 0) scale(1.02);  filter: blur(20px) brightness(0.98); opacity: 0.9; }
+}
+
+@keyframes xmb-mesh-bloom {
+  0%,
+  100% { opacity: 0.4; transform: scale(1);    }
+  40%  { opacity: 0.72; transform: scale(1.06); }
+  70%  { opacity: 0.5;  transform: scale(1.02); }
+}
+
+@keyframes xmb-grid-scroll {
+  0%   { background-position: 0 0,   0 0,   0 0; }
+  100% { background-position: 56px 56px, 56px 56px, 0 0; }
+}
+
+@keyframes xmb-grid-orbit {
+  0%   { transform: translate3d(0, 0, 0);      opacity: 0.44; }
+  25%  { transform: translate3d(6%, -5%, 0);  opacity: 0.62; }
+  50%  { transform: translate3d(10%, 4%, 0);  opacity: 0.56; }
+  75%  { transform: translate3d(-4%, 8%, 0);  opacity: 0.68; }
+  100% { transform: translate3d(0, 0, 0);      opacity: 0.44; }
+}
+
+@keyframes xmb-grid-scan {
+  0%   { background-position: 200% 200%; opacity: 0.28; }
+  50%  { background-position: 90% 90%; opacity: 0.48; }
+  100% { background-position: -10% -10%; opacity: 0.28; }
 }
 
 .xmb-categories-container {
@@ -6762,8 +7066,14 @@ button.game-card-store-chip.owned.active:hover {
   opacity: 0.34;
   /* smaller by default so inactive rows are significantly reduced in size; active rows will scale up separately */
   transform: translateX(0) scale(0.75);
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(233, 255, 242, 0.08);
+  background:
+    linear-gradient(
+      120deg,
+      rgba(var(--xmb-highlight-rgb), 0.09) 0%,
+      rgba(var(--xmb-accent-rgb), 0.05) 52%,
+      rgba(var(--xmb-accent-strong-rgb), 0.04) 100%
+    );
+  border: 1px solid rgba(var(--xmb-highlight-rgb), 0.16);
   backdrop-filter: blur(18px);
   transition: all 450ms cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -6772,10 +7082,32 @@ button.game-card-store-chip.owned.active:hover {
   opacity: 1;
   /* counter the default scale so the active row appears larger than its neighbours */
   transform: translateX(50px) scale(1.12);
-  background: linear-gradient(90deg, rgba(103, 236, 159, 0.34), rgba(245, 255, 249, 0.12));
-  border-color: rgba(231, 255, 240, 0.36);
-  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.52), 0 0 28px rgba(116, 255, 177, 0.22);
+  background:
+    linear-gradient(
+      92deg,
+      rgba(var(--xmb-accent-rgb), 0.3) 0%,
+      rgba(var(--xmb-accent-strong-rgb), 0.2) 56%,
+      rgba(var(--xmb-highlight-rgb), 0.14) 100%
+    );
+  border-color: rgba(var(--xmb-highlight-rgb), 0.42);
+  box-shadow:
+    0 24px 48px rgba(0, 0, 0, 0.52),
+    0 0 32px rgba(var(--xmb-accent-rgb), 0.28),
+    inset 0 0 0 1px rgba(var(--xmb-highlight-rgb), 0.12);
   z-index: 10;
+}
+
+.xmb-account-item-active {
+  border-color: rgba(246, 208, 103, 0.42);
+  background: linear-gradient(90deg, rgba(246, 208, 103, 0.16), rgba(255, 255, 255, 0.09));
+}
+
+.xmb-account-item-active .xmb-game-title {
+  color: rgba(255, 246, 214, 0.98);
+}
+
+.xmb-account-item-active .xmb-game-meta-chip {
+  border-color: rgba(255, 228, 164, 0.38);
 }
 
 .xmb-game-poster-container {

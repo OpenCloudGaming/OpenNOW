@@ -61,6 +61,8 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "resolution",
     "bitrate",
     "aspect ratio",
+    "instant replay",
+    "replay",
     "l4s",
     "cloud gsync",
     "video acceleration",
@@ -89,6 +91,7 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "pointer lock",
     "recording",
     "screenshot",
+    "replay",
   ],
   interface: [
     "interface",
@@ -191,6 +194,7 @@ const shortcutDefaults = {
   shortcutToggleMicrophone: "Ctrl+Shift+M",
   shortcutScreenshot: "F11",
   shortcutToggleRecording: "F12",
+  shortcutSaveReplay: "Ctrl+Shift+R",
 } as const;
 
 /** Canonical shortcut for toggling the stream sidebar (must match StreamView key handler). */
@@ -564,6 +568,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [toggleMicrophoneInput, setToggleMicrophoneInput] = useState(settings.shortcutToggleMicrophone);
   const [screenshotInput, setScreenshotInput] = useState(settings.shortcutScreenshot);
   const [recordingInput, setRecordingInput] = useState(settings.shortcutToggleRecording);
+  const [saveReplayInput, setSaveReplayInput] = useState(settings.shortcutSaveReplay);
   const [toggleStatsError, setToggleStatsError] = useState<string | null>(null);
   const [togglePointerLockError, setTogglePointerLockError] = useState<string | null>(null);
   const [toggleFullscreenError, setToggleFullscreenError] = useState<string | null>(null);
@@ -572,6 +577,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [toggleMicrophoneError, setToggleMicrophoneError] = useState<string | null>(null);
   const [screenshotError, setScreenshotError] = useState<string | null>(null);
   const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [saveReplayError, setSaveReplayError] = useState<string | null>(null);
 
   const [keyboardLayoutDropdownOpen, setKeyboardLayoutDropdownOpen] = useState(false);
   const keyboardLayoutDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -629,6 +635,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   useEffect(() => {
     setRecordingInput(settings.shortcutToggleRecording);
   }, [settings.shortcutToggleRecording]);
+
+  useEffect(() => {
+    setSaveReplayInput(settings.shortcutSaveReplay);
+  }, [settings.shortcutSaveReplay]);
 
   useEffect(() => {
     let cancelled = false;
@@ -956,6 +966,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         case "shortcutToggleMicrophone": setToggleMicrophoneError(msg); break;
         case "shortcutScreenshot": setScreenshotError(msg); break;
         case "shortcutToggleRecording": setRecordingError(msg); break;
+        case "shortcutSaveReplay": setSaveReplayError(msg); break;
       }
       return;
     }
@@ -987,6 +998,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         case "shortcutToggleMicrophone": setToggleMicrophoneError(conflict); break;
         case "shortcutScreenshot": setScreenshotError(conflict); break;
         case "shortcutToggleRecording": setRecordingError(conflict); break;
+        case "shortcutSaveReplay": setSaveReplayError(conflict); break;
       }
       return;
     }
@@ -1011,6 +1023,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       case "shortcutToggleMicrophone": setToggleMicrophoneInput(normalized.canonical); break;
       case "shortcutScreenshot": setScreenshotInput(normalized.canonical); break;
       case "shortcutToggleRecording": setRecordingInput(normalized.canonical); break;
+      case "shortcutSaveReplay": setSaveReplayInput(normalized.canonical); break;
     }
 
     if (settings[key] !== normalized.canonical) {
@@ -1030,6 +1043,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         case "shortcutToggleMicrophone": setToggleMicrophoneError(conflict); break;
         case "shortcutScreenshot": setScreenshotError(conflict); break;
         case "shortcutToggleRecording": setRecordingError(conflict); break;
+        case "shortcutSaveReplay": setSaveReplayError(conflict); break;
       }
       return;
     }
@@ -1043,6 +1057,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       case "shortcutToggleMicrophone": setToggleMicrophoneError(null); break;
       case "shortcutScreenshot": setScreenshotError(null); break;
       case "shortcutToggleRecording": setRecordingError(null); break;
+      case "shortcutSaveReplay": setSaveReplayError(null); break;
     }
 
     switch (key) {
@@ -1054,6 +1069,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       case "shortcutToggleMicrophone": setToggleMicrophoneInput(canonical); break;
       case "shortcutScreenshot": setScreenshotInput(canonical); break;
       case "shortcutToggleRecording": setRecordingInput(canonical); break;
+      case "shortcutSaveReplay": setSaveReplayInput(canonical); break;
     }
 
     if (settings[key] !== canonical) {
@@ -1099,6 +1115,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         case "shortcutToggleMicrophone": setToggleMicrophoneError(msg); break;
         case "shortcutScreenshot": setScreenshotError(msg); break;
         case "shortcutToggleRecording": setRecordingError(msg); break;
+        case "shortcutSaveReplay": setSaveReplayError(msg); break;
       }
       return;
     }
@@ -1114,7 +1131,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       && settings.shortcutToggleAntiAfk === shortcutDefaults.shortcutToggleAntiAfk
       && settings.shortcutToggleMicrophone === shortcutDefaults.shortcutToggleMicrophone
       && settings.shortcutScreenshot === shortcutDefaults.shortcutScreenshot
-      && settings.shortcutToggleRecording === shortcutDefaults.shortcutToggleRecording,
+      && settings.shortcutToggleRecording === shortcutDefaults.shortcutToggleRecording
+      && settings.shortcutSaveReplay === shortcutDefaults.shortcutSaveReplay,
     [
       settings.shortcutToggleStats,
       settings.shortcutTogglePointerLock,
@@ -1124,6 +1142,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       settings.shortcutToggleMicrophone,
       settings.shortcutScreenshot,
       settings.shortcutToggleRecording,
+      settings.shortcutSaveReplay,
     ]
   );
 
@@ -1136,6 +1155,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     setToggleMicrophoneInput(shortcutDefaults.shortcutToggleMicrophone);
     setScreenshotInput(shortcutDefaults.shortcutScreenshot);
     setRecordingInput(shortcutDefaults.shortcutToggleRecording);
+    setSaveReplayInput(shortcutDefaults.shortcutSaveReplay);
     setToggleStatsError(null);
     setTogglePointerLockError(null);
     setToggleFullscreenError(null);
@@ -1144,6 +1164,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     setToggleMicrophoneError(null);
     setScreenshotError(null);
     setRecordingError(null);
+    setSaveReplayError(null);
 
     for (const key of SHORTCUT_SETTING_KEYS) {
       const value = shortcutDefaults[key];
@@ -1838,6 +1859,100 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   <div className="settings-row-top settings-row-top--compact">
                     <label className="settings-label settings-label--wrap">
                       <span className="settings-label-title">
+                        Instant Replay
+                        <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
+                      </span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.instantReplayEnabled}
+                        onChange={(e) => handleChange("instantReplayEnabled", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+                  <span className="settings-subtle-hint">
+                    Keep the most recent video from the stream ready to save as a clip. Higher resolution and FPS settings will increase CPU and storage usage.
+                  </span>
+                </div>
+
+                {settings.instantReplayEnabled && (
+                  <div className="settings-row settings-row--column">
+                    <div className="settings-row-top">
+                      <label className="settings-label">Replay Buffer Length</label>
+                      <span className="settings-value-badge">{settings.instantReplayDurationSeconds === 300 ? "5 min" : `${settings.instantReplayDurationSeconds}s`}</span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <input
+                        type="range"
+                        className="settings-slider"
+                        min={30}
+                        max={300}
+                        step={30}
+                        value={settings.instantReplayDurationSeconds}
+                        onChange={(e) => handleChange("instantReplayDurationSeconds", parseInt(e.target.value, 10))}
+                      />
+                      <input
+                        type="number"
+                        className="settings-number-input"
+                        style={{ width: 80 }}
+                        min={30}
+                        max={300}
+                        step={30}
+                        value={settings.instantReplayDurationSeconds}
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value || "30", 10);
+                          if (Number.isFinite(v)) handleChange("instantReplayDurationSeconds", Math.max(30, Math.min(300, v)));
+                        }}
+                      />
+                    </div>
+                    <span className="settings-subtle-hint">
+                      Save up to the last {settings.instantReplayDurationSeconds === 300 ? "5 minutes" : `${settings.instantReplayDurationSeconds} seconds`} of your stream for instant replay.
+                    </span>
+                  </div>
+                )}
+
+                {settings.instantReplayEnabled && (
+                  <div className="settings-row settings-row--column" style={{ backgroundColor: "rgba(255, 193, 7, 0.1)", border: "1px solid rgba(255, 193, 7, 0.3)", borderRadius: "4px", padding: "12px" }}>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: "8px" }}>
+                      <span style={{ color: "#ffc107", fontSize: "18px", marginTop: "2px" }}>⚠</span>
+                      <span style={{ color: "#ffc107", fontSize: "14px", lineHeight: "1.4" }}>
+                        Instant replay uses additional CPU and disk space. Performance may degrade on low-end hardware. Disable if experiencing stuttering.
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                <div className="settings-row settings-row--column">
+                  <label className="settings-label">Recording Output Path</label>
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                    <input
+                      type="text"
+                      value={settings.recordingOutputPath}
+                      onChange={(e) => handleChange("recordingOutputPath", e.target.value)}
+                      placeholder="Default: ~/Pictures/OpenNOW/Recordings"
+                      style={{
+                        flex: 1,
+                        padding: "8px 12px",
+                        backgroundColor: "#1e1e1e",
+                        border: "1px solid #404040",
+                        borderRadius: "4px",
+                        color: "#e0e0e0",
+                        fontSize: "13px",
+                        fontFamily: "inherit"
+                      }}
+                    />
+                  </div>
+                  <span className="settings-subtle-hint">
+                    Leave empty for the default location. Recordings and replays will be saved here.
+                  </span>
+                </div>
+
+                <div className="settings-row settings-row--column">
+                  <div className="settings-row-top settings-row-top--compact">
+                    <label className="settings-label settings-label--wrap">
+                      <span className="settings-label-title">
                         Experimental L4S Request
                         <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
                       </span>
@@ -1879,8 +1994,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
               </div>
             </section>
-
             )}
+
             {showStreamCodecDiagnostics && (
             <div className="settings-advanced-wrap">
               <button
@@ -2432,6 +2547,25 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
 
                 <div className="settings-shortcut-row">
+                  <span className="settings-shortcut-label" id="shortcut-save-replay-label">Save Instant Replay</span>
+                  <input
+                    type="text"
+                    id="shortcut-save-replay"
+                    aria-labelledby="shortcut-save-replay-label"
+                    readOnly
+                    className={`settings-text-input settings-shortcut-input ${saveReplayError ? "error" : ""}`}
+                    value={saveReplayInput}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => handleShortcutBlur("shortcutSaveReplay", saveReplayInput)}
+                    onPaste={(e) => handleShortcutPaste("shortcutSaveReplay", e)}
+                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutSaveReplay", e)}
+                    placeholder="Click here, then press a key"
+                    title="Focus and press the key combination to bind"
+                    spellCheck={false}
+                  />
+                </div>
+
+                <div className="settings-shortcut-row">
                   <span className="settings-shortcut-label" id="shortcut-sidebar-label">Toggle stream sidebar</span>
                   <input
                     type="text"
@@ -2445,7 +2579,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
               </div>
 
-              {(toggleStatsError || togglePointerLockError || toggleFullscreenError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError || screenshotError || recordingError) && (
+              {(toggleStatsError || togglePointerLockError || toggleFullscreenError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError || screenshotError || recordingError || saveReplayError) && (
                 <span className="settings-input-hint">
                   {toggleStatsError
                     || togglePointerLockError
@@ -2454,13 +2588,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     || toggleAntiAfkError
                     || toggleMicrophoneError
                     || screenshotError
-                    || recordingError}
+                    || recordingError
+                    || saveReplayError}
                 </span>
               )}
 
-              {!toggleStatsError && !togglePointerLockError && !toggleFullscreenError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && !screenshotError && !recordingError && (
+              {!toggleStatsError && !togglePointerLockError && !toggleFullscreenError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && !screenshotError && !recordingError && !saveReplayError && (
                 <span className="settings-shortcut-hint">
-                  Click a field and press the keys to bind, or paste a shortcut ({shortcutExamples}). Escape cancels focus. Full screen: {formatShortcutForDisplay(settings.shortcutToggleFullscreen, isMac)}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}. Screenshot: {formatShortcutForDisplay(settings.shortcutScreenshot, isMac)}. Recording: {formatShortcutForDisplay(settings.shortcutToggleRecording, isMac)}.
+                  Click a field and press the keys to bind, or paste a shortcut ({shortcutExamples}). Escape cancels focus. Full screen: {formatShortcutForDisplay(settings.shortcutToggleFullscreen, isMac)}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}. Screenshot: {formatShortcutForDisplay(settings.shortcutScreenshot, isMac)}. Recording: {formatShortcutForDisplay(settings.shortcutToggleRecording, isMac)}. Replay: {formatShortcutForDisplay(settings.shortcutSaveReplay, isMac)}.
                 </span>
               )}
                 </div>
@@ -2593,18 +2728,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 {settings.controllerMode && (
                   <div className="settings-controller-subsettings">
                     <div className="settings-row">
-                      <label className="settings-label">Exit Controller Mode</label>
-                      <div>
-                        <button
-                          className="settings-exit-btn"
-                          onClick={() => handleChange("controllerMode", false)}
-                        >
-                          Exit
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="settings-row">
                       <label className="settings-label">
                         Controller UI Sounds
                         <span className="settings-hint">Play subtle move, open, and back sounds inside controller mode only.</span>
@@ -2632,6 +2755,39 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         />
                         <span className="settings-toggle-track" />
                       </label>
+                    </div>
+
+                    <div className="settings-row">
+                      <label className="settings-label">
+                        Controller Background Style
+                        <span className="settings-hint">Choose the visual layout (ribbon, mesh, or grid/noise) for controller-mode backgrounds.</span>
+                      </label>
+                      <select
+                        className="settings-select"
+                        value={settings.controllerBackgroundStyle}
+                        onChange={(e) => handleChange("controllerBackgroundStyle", e.target.value as any)}
+                      >
+                        <option value="ribbon">Ribbon (Default)</option>
+                        <option value="mesh">Soft Mesh</option>
+                        <option value="grid">Grid + Noise</option>
+                      </select>
+                    </div>
+
+                    <div className="settings-row">
+                      <label className="settings-label">
+                        Controller Background Theme
+                        <span className="settings-hint">Choose the color palette used by the selected background style.</span>
+                      </label>
+                      <select
+                        className="settings-select"
+                        value={settings.controllerBackgroundTheme}
+                        onChange={(e) => handleChange("controllerBackgroundTheme", e.target.value as any)}
+                      >
+                        <option value="aurora">Aurora (Default)</option>
+                        <option value="nebula">Nebula</option>
+                        <option value="sunset">Sunset</option>
+                        <option value="midnight">Midnight</option>
+                      </select>
                     </div>
 
                     <div className="settings-row">
