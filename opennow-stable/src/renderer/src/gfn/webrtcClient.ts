@@ -582,6 +582,7 @@ export class GfnWebRtcClient {
 
   // Gamepad bitmap sent at packet offset 8, matching official client's this.nu field:
   // bit i (0-3) = connected, bit i+8 = Xbox/xinput style device.
+  // Haptics availability is advertised separately with input event type 13.
   private gamepadBitmap = 0;
 
   // Stats tracking
@@ -603,6 +604,7 @@ export class GfnWebRtcClient {
   private hapticsSupportLogged: boolean[] = [false, false, false, false];
   private fallbackHapticsSupportLogged: boolean[] = [false, false, false, false];
   private lastHapticsWarningAtMs = 0;
+  private hapticsAdvertised = false;
 
   // Track currently pressed keys (VK codes) for synthetic Escape detection
   private pressedKeys: Set<number> = new Set();
@@ -997,6 +999,7 @@ export class GfnWebRtcClient {
   private resetInputState(): void {
     this.inputReady = false;
     this.inputProtocolVersion = 2;
+    this.hapticsAdvertised = false;
     this.inputEncoder.setProtocolVersion(2);
     this.diagnostics.inputReady = false;
     this.diagnostics.partiallyReliableInputOpen = false;
@@ -1607,6 +1610,7 @@ export class GfnWebRtcClient {
       cleanup();
     }
     this.stopAllGamepadRumble();
+    this.updateHapticsAdvertisement(false);
   }
 
   private replaceTrackInStream(stream: MediaStream, track: MediaStreamTrack): void {
@@ -1990,6 +1994,7 @@ export class GfnWebRtcClient {
     }
 
     this.diagnostics.connectedGamepads = connectedCount;
+    this.updateHapticsAdvertisement(this.hasConnectedHapticGamepad());
   }
 
   private readGamepadState(gamepad: Gamepad, controllerId: number): GamepadInput {
@@ -2061,6 +2066,31 @@ export class GfnWebRtcClient {
       }
     }
     return connected;
+  }
+
+  private hasConnectedHapticGamepad(): boolean {
+    const gamepads = navigator.getGamepads();
+    if (!gamepads) {
+      return false;
+    }
+
+    for (let i = 0; i < Math.min(gamepads.length, GAMEPAD_MAX_CONTROLLERS); i++) {
+      const gamepad = gamepads[i];
+      if (gamepad?.connected && getGamepadRumbleApi(gamepad)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private updateHapticsAdvertisement(enabled: boolean): void {
+    if (!this.inputReady || this.reliableInputChannel?.readyState !== "open" || this.hapticsAdvertised === enabled) {
+      return;
+    }
+
+    this.sendReliable(this.inputEncoder.encodeHapticsEnabled(enabled));
+    this.hapticsAdvertised = enabled;
+    this.log(`Gamepad haptics advertised: ${enabled ? "enabled" : "disabled"}`);
   }
 
   private findConnectedGamepad(controllerId: number): ConnectedRumbleGamepad | null {
@@ -2372,6 +2402,7 @@ export class GfnWebRtcClient {
       this.diagnostics.inputReady = true;
       this.emitStats();
       this.log(`Input handshake complete (protocol v${version}) — starting heartbeat + gamepad polling`);
+      this.updateHapticsAdvertisement(this.hasConnectedHapticGamepad());
       this.setupInputHeartbeat();
       this.setupGamepadPolling();
       // After input becomes ready, attempt to auto-enable pointer lock.

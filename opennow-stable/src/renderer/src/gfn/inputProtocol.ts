@@ -6,6 +6,7 @@ export const INPUT_MOUSE_BUTTON_DOWN = 8;
 export const INPUT_MOUSE_BUTTON_UP = 9;
 export const INPUT_MOUSE_WHEEL = 10;
 export const INPUT_GAMEPAD = 12;
+export const INPUT_HAPTICS_ENABLED = 13;
 
 // Mouse button constants (1-based for GFN protocol)
 // GFN uses: 1=Left, 2=Middle, 3=Right, 4=Back, 5=Forward
@@ -687,6 +688,14 @@ export class InputEncoder {
     view.setUint16(8, 0, false);                         // reserved: BE
     view.setUint32(10, 0, false);                        // reserved: BE
     view.setBigUint64(14, payload.timestampUs, false);   // timestamp: BE
+    return wrapSingleEvent(bytes, this.protocolVersion);
+  }
+
+  encodeHapticsEnabled(enabled: boolean): Uint8Array {
+    const bytes = new Uint8Array(6);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(0, INPUT_HAPTICS_ENABLED, true);
+    view.setUint16(4, enabled ? 1 : 0, false);
     return wrapSingleEvent(bytes, this.protocolVersion);
   }
 
