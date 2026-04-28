@@ -54,6 +54,22 @@ interface RiInputCapabilities {
   enablePartiallyReliableTransferHid: number;
 }
 
+interface DualRumbleEffectOptions {
+  startDelay: 0;
+  duration: number;
+  weakMagnitude: number;
+  strongMagnitude: number;
+}
+
+interface GamepadHapticActuatorLike {
+  readonly type?: string;
+  playEffect(effectType: "dual-rumble", options: DualRumbleEffectOptions): Promise<unknown>;
+}
+
+type GamepadWithOptionalVibration = Gamepad & {
+  readonly vibrationActuator?: GamepadHapticActuatorLike | null;
+};
+
 function hevcPreferredProfileId(colorQuality: ColorQuality): 1 | 2 {
   // 10-bit modes should prefer HEVC Main10 profile-id=2.
   return colorQuality.startsWith("10bit") ? 2 : 1;
@@ -202,6 +218,21 @@ function parseRiInputCapabilities(sdp: string): RiInputCapabilities {
       PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
     ),
   };
+}
+
+function getDualRumbleActuator(gamepad: Gamepad): GamepadHapticActuatorLike | null {
+  const actuator = (gamepad as GamepadWithOptionalVibration).vibrationActuator;
+  if (actuator?.type === "dual-rumble" && typeof actuator.playEffect === "function") {
+    return actuator;
+  }
+  return null;
+}
+
+function clampRumbleMagnitude(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(1, value));
 }
 
 export interface AdaptiveMouseFlushDecisionParams {
@@ -518,6 +549,9 @@ export class GfnWebRtcClient {
   private static readonly DECODER_KEYFRAME_COOLDOWN_MS = 1200;
   private static readonly DECODER_BITRATE_STEP_FACTOR = 0.85;
   private static readonly DECODER_MIN_RECOVERY_BITRATE_KBPS = 4000;
+  private static readonly RUMBLE_EFFECT_MS = 500;
+  private static readonly RUMBLE_THROTTLE_MS = 500;
+  private static readonly HAPTICS_LOG_INTERVAL_MS = 5000;
 
   // Gamepad bitmap: tracks which gamepads are connected, matching official client's this.nu field.
   // Bit i (0-3) = gamepad i is connected. Sent in every gamepad packet at offset 8.
@@ -536,6 +570,11 @@ export class GfnWebRtcClient {
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private connectedGamepads: Set<number> = new Set();
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
+  private lastRumbleWeak: number[] = [0, 0, 0, 0];
+  private lastRumbleStrong: number[] = [0, 0, 0, 0];
+  private lastRumbleEffectAtMs: number[] = [0, 0, 0, 0];
+  private hapticsSupportLogged: boolean[] = [false, false, false, false];
+  private lastHapticsWarningAtMs = 0;
 
   // Track currently pressed keys (VK codes) for synthetic Escape detection
   private pressedKeys: Set<number> = new Set();
@@ -1539,6 +1578,7 @@ export class GfnWebRtcClient {
     for (const cleanup of this.inputCleanup.splice(0)) {
       cleanup();
     }
+    this.stopAllGamepadRumble();
   }
 
   private replaceTrackInStream(stream: MediaStream, track: MediaStreamTrack): void {
@@ -1875,6 +1915,7 @@ export class GfnWebRtcClient {
         }
       } else if (this.connectedGamepads.has(i)) {
         // Gamepad disconnected — clear bit from bitmap
+        this.stopGamepadRumble(i, gamepad ?? undefined);
         this.connectedGamepads.delete(i);
         this.previousGamepadStates.delete(i);
         this.gamepadBitmap &= ~(1 << i);
@@ -1950,8 +1991,201 @@ export class GfnWebRtcClient {
 
   private onGamepadDisconnected = (event: GamepadEvent): void => {
     this.log(`Gamepad disconnected event: ${event.gamepad.id}`);
+    this.stopGamepadRumble(event.gamepad.index, event.gamepad);
     // The polling loop will detect and handle the disconnection
   };
+
+  private logHapticsWarning(message: string): void {
+    const nowMs = performance.now();
+    if (nowMs - this.lastHapticsWarningAtMs < GfnWebRtcClient.HAPTICS_LOG_INTERVAL_MS) {
+      return;
+    }
+    this.lastHapticsWarningAtMs = nowMs;
+    this.log(message);
+  }
+
+  private findConnectedGamepad(controllerId: number): { index: number; gamepad: Gamepad } | null {
+    const gamepads = navigator.getGamepads();
+    if (!gamepads) {
+      return null;
+    }
+
+    if (controllerId >= 0 && controllerId < GAMEPAD_MAX_CONTROLLERS) {
+      const exact = gamepads[controllerId];
+      if (exact?.connected && this.connectedGamepads.has(controllerId)) {
+        return { index: controllerId, gamepad: exact };
+      }
+    }
+
+    return null;
+  }
+
+  private applyGamepadRumble(controllerId: number, weakMagnitude16: number, strongMagnitude16: number): void {
+    const target = this.findConnectedGamepad(controllerId);
+    if (!target) {
+      return;
+    }
+
+    const actuator = getDualRumbleActuator(target.gamepad);
+    if (!actuator) {
+      return;
+    }
+
+    const index = target.index;
+    if (!this.hapticsSupportLogged[index]) {
+      this.hapticsSupportLogged[index] = true;
+      this.log(`Gamepad ${index} dual-rumble haptics available`);
+    }
+
+    const weakMagnitude = clampRumbleMagnitude(weakMagnitude16 / 65535);
+    const strongMagnitude = clampRumbleMagnitude(strongMagnitude16 / 65535);
+    const isStop = weakMagnitude === 0 && strongMagnitude === 0;
+    const nowMs = performance.now();
+    this.lastRumbleWeak[index] = weakMagnitude;
+    this.lastRumbleStrong[index] = strongMagnitude;
+
+    if (
+      !isStop
+      && this.lastRumbleEffectAtMs[index] !== 0
+      && nowMs - this.lastRumbleEffectAtMs[index] <= GfnWebRtcClient.RUMBLE_THROTTLE_MS
+    ) {
+      return;
+    }
+
+    this.lastRumbleEffectAtMs[index] = isStop ? 0 : nowMs;
+    void actuator.playEffect("dual-rumble", {
+      startDelay: 0,
+      duration: isStop ? 0 : GfnWebRtcClient.RUMBLE_EFFECT_MS,
+      weakMagnitude: isStop ? 0 : weakMagnitude,
+      strongMagnitude: isStop ? 0 : strongMagnitude,
+    }).catch(() => {});
+  }
+
+  private stopGamepadRumble(controllerId: number, gamepad?: Gamepad): void {
+    if (controllerId < 0 || controllerId >= GAMEPAD_MAX_CONTROLLERS) {
+      return;
+    }
+    if (gamepad) {
+      const actuator = getDualRumbleActuator(gamepad);
+      void actuator?.playEffect("dual-rumble", {
+        startDelay: 0,
+        duration: 0,
+        weakMagnitude: 0,
+        strongMagnitude: 0,
+      }).catch(() => {});
+    } else {
+      this.applyGamepadRumble(controllerId, 0, 0);
+    }
+    this.lastRumbleWeak[controllerId] = 0;
+    this.lastRumbleStrong[controllerId] = 0;
+    this.lastRumbleEffectAtMs[controllerId] = 0;
+    this.hapticsSupportLogged[controllerId] = false;
+  }
+
+  private stopAllGamepadRumble(): void {
+    for (let i = 0; i < GAMEPAD_MAX_CONTROLLERS; i++) {
+      this.stopGamepadRumble(i);
+    }
+    this.lastHapticsWarningAtMs = 0;
+  }
+
+  private parseLegacyHapticPacket(view: DataView, offset: number): boolean {
+    if (offset < 0 || offset + 10 > view.byteLength) {
+      this.logHapticsWarning(`Input haptics: malformed legacy packet (${view.byteLength - offset} bytes)`);
+      return false;
+    }
+
+    const kind = view.getUint16(offset, true);
+    if (kind !== 1) {
+      if (kind !== 0) {
+        this.logHapticsWarning(`Input haptics: unknown legacy kind ${kind}`);
+      }
+      return false;
+    }
+
+    const length = view.getUint16(offset + 2, true);
+    if (length < 6) {
+      return false;
+    }
+
+    const controllerId = view.getUint16(offset + 4, true);
+    const weakMagnitude = view.getUint16(offset + 6, true);
+    const strongMagnitude = view.getUint16(offset + 8, true);
+    this.applyGamepadRumble(controllerId, weakMagnitude, strongMagnitude);
+    return true;
+  }
+
+  private parseOcHapticPacket(view: DataView, offset: number): boolean {
+    if (offset < 0 || offset + 9 > view.byteLength) {
+      this.logHapticsWarning(`Input haptics: malformed Oc packet (${view.byteLength - offset} bytes)`);
+      return false;
+    }
+
+    const controllerByte = view.getUint8(offset);
+    if (controllerByte < 6 || controllerByte >= 10) {
+      this.logHapticsWarning(`Input haptics: unknown Oc controller byte ${controllerByte}`);
+      return false;
+    }
+
+    const reportKind = view.getUint8(offset + 3);
+    const flags = view.getUint8(offset + 4);
+    if (reportKind !== 5 || (flags & ~1) !== 0) {
+      this.logHapticsWarning(`Input haptics: unsupported Oc report kind=${reportKind} flags=0x${flags.toString(16)}`);
+      return false;
+    }
+
+    const controllerId = controllerByte - 6;
+    const weakMagnitude = view.getUint8(offset + 7) << 8;
+    const strongMagnitude = view.getUint8(offset + 8) << 8;
+    this.applyGamepadRumble(controllerId, weakMagnitude, strongMagnitude);
+    return true;
+  }
+
+  private parseInputSubMessage(view: DataView, offset: number): boolean {
+    if (offset < 0 || offset + 4 > view.byteLength) {
+      this.logHapticsWarning(`Input haptics: malformed sub-message (${view.byteLength - offset} bytes)`);
+      return false;
+    }
+
+    const type = view.getUint32(offset, true);
+    if (type === 267) {
+      return this.parseLegacyHapticPacket(view, offset + 4);
+    }
+    if (type === 17) {
+      return this.parseOcHapticPacket(view, offset + 4);
+    }
+
+    this.logHapticsWarning(`Input haptics: unknown sub-message type ${type}`);
+    return false;
+  }
+
+  private parseInputHapticsMessage(bytes: Uint8Array): void {
+    if (bytes.length < 2) {
+      return;
+    }
+
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const firstWord = view.getUint16(0, true);
+    if (firstWord === 267) {
+      this.parseLegacyHapticPacket(view, 2);
+      return;
+    }
+
+    const wrapperType = firstWord & 0xff;
+    switch (wrapperType) {
+      case 34:
+        this.parseInputSubMessage(view, 1);
+        return;
+      case 32:
+      case 33:
+      case 35:
+      case 36:
+      case 255:
+        return;
+      default:
+        this.parseLegacyHapticPacket(view, 0);
+    }
+  }
 
   private isPartiallyReliableChannelOpen(): boolean {
     return this.partiallyReliableInputChannel?.readyState === "open";
@@ -2000,7 +2234,18 @@ export class GfnWebRtcClient {
 
   private onInputHandshakeMessage(bytes: Uint8Array): void {
     if (bytes.length < 2) {
-      this.log(`Input handshake: ignoring short message (${bytes.length} bytes)`);
+      if (!this.inputReady) {
+        this.log(`Input handshake: ignoring short message (${bytes.length} bytes)`);
+      }
+      return;
+    }
+
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const firstWord = view.getUint16(0, true);
+    let version = 2;
+
+    if (this.inputReady) {
+      this.parseInputHapticsMessage(bytes);
       return;
     }
 
@@ -2008,10 +2253,6 @@ export class GfnWebRtcClient {
       .map((b) => b.toString(16).padStart(2, "0"))
       .join(" ");
     this.log(`Input channel message: ${bytes.length} bytes [${hex}]`);
-
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const firstWord = view.getUint16(0, true);
-    let version = 2;
 
     if (firstWord === 526) {
       version = bytes.length >= 4 ? view.getUint16(2, true) : 2;
