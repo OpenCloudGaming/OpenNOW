@@ -9,7 +9,8 @@ const DISCORD_CLIENT_ID = "1479944467112001669";
 
 let rpcClient: Client | null = null;
 let connected = false;
-let pendingActivity: { gameName: string; startTimestamp: Date } | null = null;
+let lastActivity: { gameName: string; startTimestamp: Date; appId?: string } | null = null;
+let pendingActivity: { gameName: string; startTimestamp: Date; appId?: string } | null = null;
 
 /**
  * Initialise and connect the Discord RPC client.
@@ -34,8 +35,14 @@ export async function connectDiscordRpc(): Promise<void> {
     console.log("[DiscordRPC] Connected.");
 
     if (pendingActivity) {
-      await setActivity(pendingActivity.gameName, pendingActivity.startTimestamp);
+      await setActivity(pendingActivity.gameName, pendingActivity.startTimestamp, pendingActivity.appId);
+      // Consume reconnect replay so failed attempts are not reprocessed forever.
       pendingActivity = null;
+    } else if (lastActivity) {
+      await setActivity(lastActivity.gameName, lastActivity.startTimestamp, lastActivity.appId);
+    } else {
+      // Upon app start/connection, explicitly clear any stale status from previous runs
+      await client.clearActivity().catch(() => {});
     }
   } catch (err) {
     console.warn("[DiscordRPC] Failed to connect (Discord may not be running):", (err as Error).message);
@@ -45,12 +52,27 @@ export async function connectDiscordRpc(): Promise<void> {
 }
 
 /**
+ * Get the currently active game name and start timestamp.
+ */
+export function getCurrentActivity(): { gameName: string; startTimestamp: Date; appId?: string } | null {
+  return lastActivity;
+}
+
+/**
+ * Check if the Discord RPC client is currently connected.
+ */
+export function isDiscordRpcConnected(): boolean {
+  return connected && rpcClient !== null;
+}
+
+/**
  * Update the Discord "Now Playing" activity to show the given game name and
  * how long the user has been playing.
  */
-export async function setActivity(gameName: string, startTimestamp: Date): Promise<void> {
+export async function setActivity(gameName: string, startTimestamp: Date, appId?: string): Promise<void> {
+  pendingActivity = { gameName, startTimestamp, appId };
+
   if (!connected || !rpcClient) {
-    pendingActivity = { gameName, startTimestamp };
     return;
   }
 
@@ -61,8 +83,10 @@ export async function setActivity(gameName: string, startTimestamp: Date): Promi
       startTimestamp,
       instance: false,
     });
+    lastActivity = pendingActivity;
     pendingActivity = null;
   } catch (err) {
+    pendingActivity = null;
     console.warn("[DiscordRPC] setActivity failed:", (err as Error).message);
   }
 }
@@ -71,6 +95,7 @@ export async function setActivity(gameName: string, startTimestamp: Date): Promi
  * Clear the Discord activity (call when a stream ends or the app quits).
  */
 export async function clearActivity(): Promise<void> {
+  lastActivity = null;
   pendingActivity = null;
 
   if (!connected || !rpcClient) return;
@@ -86,6 +111,7 @@ export async function clearActivity(): Promise<void> {
  * Destroy the RPC connection gracefully (call on app quit).
  */
 export async function destroyDiscordRpc(): Promise<void> {
+  lastActivity = null;
   pendingActivity = null;
 
   if (!rpcClient) return;
