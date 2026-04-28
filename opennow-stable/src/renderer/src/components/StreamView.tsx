@@ -1504,6 +1504,8 @@ export function StreamView({
   }, []);
 
   const handleSaveInstantReplay = useCallback(async () => {
+    if (isSavingReplay) return;
+    setInstantReplayError(null);
     setInstantReplayError(null);
     if (!instantReplayEnabled) {
       setInstantReplayError("Enable Instant Replay in settings to save replay clips.");
