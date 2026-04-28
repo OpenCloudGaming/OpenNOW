@@ -708,9 +708,9 @@ export class InputEncoder {
     // Offset 0x06: Gamepad index (u16 LE)
     view.setUint16(6, payload.controllerId & 0x03, true);
     
-    // Offset 0x08: Bitmap (u16 LE) — NOT a simple connected flag!
-    // Official client uses a bitmask: bit i = gamepad i connected, bit (i+8) = additional state.
-    // Passed as the `ae` parameter in gl() from the gamepad manager's this.nu field.
+    // Offset 0x08: Bitmap (u16 LE) — official this.nu bitmask.
+    // Bit i = gamepad i connected; bit (i+8) = Xbox/xinput style device.
+    // The high bit likely advertises the XInput/haptics-capable variant.
     view.setUint16(8, bitmap, true);
     
     // Offset 0x0A: Inner payload size (u16 LE) = 20

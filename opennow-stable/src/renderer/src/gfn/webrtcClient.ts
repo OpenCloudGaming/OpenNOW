@@ -243,6 +243,10 @@ function clampRumbleMagnitude(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function isXboxLikeGamepad(gamepad: Gamepad): boolean {
+  return /xbox|xinput/i.test(gamepad.id);
+}
+
 function getGamepadRumbleApi(gamepad: Gamepad): GamepadRumbleApi | null {
   const hapticGamepad = gamepad as GamepadWithOptionalHaptics;
   const playEffectActuator = hapticGamepad.vibrationActuator;
@@ -576,8 +580,8 @@ export class GfnWebRtcClient {
   private static readonly RUMBLE_THROTTLE_MS = 500;
   private static readonly HAPTICS_LOG_INTERVAL_MS = 5000;
 
-  // Gamepad bitmap: tracks which gamepads are connected, matching official client's this.nu field.
-  // Bit i (0-3) = gamepad i is connected. Sent in every gamepad packet at offset 8.
+  // Gamepad bitmap sent at packet offset 8, matching official client's this.nu field:
+  // bit i (0-3) = connected, bit i+8 = Xbox/xinput style device.
   private gamepadBitmap = 0;
 
   // Stats tracking
@@ -1877,6 +1881,22 @@ export class GfnWebRtcClient {
 
   private gamepadSendCount = 0;
 
+  private updateGamepadBitmap(controllerId: number, gamepad: Gamepad): void {
+    const connectedBit = 1 << controllerId;
+    const xboxBit = 1 << (controllerId + 8);
+    this.gamepadBitmap |= connectedBit;
+    if (isXboxLikeGamepad(gamepad)) {
+      this.gamepadBitmap |= xboxBit;
+    } else {
+      this.gamepadBitmap &= ~xboxBit;
+    }
+  }
+
+  private clearGamepadBitmap(controllerId: number): void {
+    this.gamepadBitmap &= ~(1 << controllerId);
+    this.gamepadBitmap &= ~(1 << (controllerId + 8));
+  }
+
   private pollGamepads(): void {
     if (this.inputPaused) return;
     const gamepads = navigator.getGamepads();
@@ -1892,12 +1912,11 @@ export class GfnWebRtcClient {
 
       if (gamepad && gamepad.connected) {
         connectedCount++;
+        this.updateGamepadBitmap(i, gamepad);
 
         // Track connected gamepads and update bitmap
         if (!this.connectedGamepads.has(i)) {
           this.connectedGamepads.add(i);
-          // Set bit i in bitmap (matching official client's AA(i) = 1 << i)
-          this.gamepadBitmap |= (1 << i);
           this.log(`Gamepad ${i} connected: ${gamepad.id}`);
           this.log(`  Buttons: ${gamepad.buttons.length}, Axes: ${gamepad.axes.length}, Mapping: ${gamepad.mapping}`);
           this.log(`  Bitmap now: 0x${this.gamepadBitmap.toString(16)}`);
@@ -1942,7 +1961,7 @@ export class GfnWebRtcClient {
         this.stopGamepadRumble(i, gamepad ?? undefined);
         this.connectedGamepads.delete(i);
         this.previousGamepadStates.delete(i);
-        this.gamepadBitmap &= ~(1 << i);
+        this.clearGamepadBitmap(i);
         this.log(`Gamepad ${i} disconnected, bitmap now: 0x${this.gamepadBitmap.toString(16)}`);
         this.diagnostics.connectedGamepads = this.connectedGamepads.size;
         this.emitStats();
