@@ -1366,12 +1366,6 @@ body.controller-mode {
   font-size: 0.87rem;
 }
 
-/* Hide the mouse cursor when controller mode is active and the user is idle */
-body.controller-mode.controller-hide-cursor,
-body.controller-mode.controller-hide-cursor * {
-  cursor: none !important;
-}
-
 .controller-mode .region-dropdown-item {
   padding: 12px 14px;
 }

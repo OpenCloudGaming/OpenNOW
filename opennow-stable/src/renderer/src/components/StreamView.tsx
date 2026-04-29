@@ -58,7 +58,6 @@ interface StreamViewProps {
   onMouseSensitivityChange: (value: number) => void;
   mouseAcceleration: number;
   onMouseAccelerationChange: (value: number) => void;
-  onRequestPointerLock?: () => void;
   onReleasePointerLock?: () => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
@@ -668,7 +667,6 @@ export function StreamView({
   onMouseSensitivityChange,
   mouseAcceleration,
   onMouseAccelerationChange,
-  onRequestPointerLock,
   onReleasePointerLock,
   microphoneMode,
   onMicrophoneModeChange,
@@ -683,7 +681,6 @@ export function StreamView({
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
   const [showSideBar, setShowSideBar] = useState(false);
-  const [isPointerLocked, setIsPointerLocked] = useState(false);
   const [screenshots, setScreenshots] = useState<ScreenshotEntry[]>([]);
   const [isSavingScreenshot, setIsSavingScreenshot] = useState(false);
   const [galleryError, setGalleryError] = useState<string | null>(null);
@@ -731,16 +728,6 @@ export function StreamView({
   const handleFullscreenToggle = useCallback(() => {
     onToggleFullscreen();
   }, [onToggleFullscreen]);
-
-  const handlePointerLockToggle = useCallback(() => {
-    if (isPointerLocked) {
-      document.exitPointerLock();
-      return;
-    }
-    if (onRequestPointerLock) {
-      onRequestPointerLock();
-    }
-  }, [isPointerLocked, onRequestPointerLock]);
 
   useEffect(() => {
     const timer = setTimeout(() => setShowHints(false), 5000);
@@ -1333,14 +1320,6 @@ export function StreamView({
   }, [audioRef]);
 
   useEffect(() => {
-    const handlePointerLockChange = () => {
-      setIsPointerLocked(document.pointerLockElement === localVideoRef.current);
-    };
-    document.addEventListener("pointerlockchange", handlePointerLockChange);
-    return () => document.removeEventListener("pointerlockchange", handlePointerLockChange);
-  }, []);
-
-  useEffect(() => {
     if (showSideBar) {
       // Mark sidebar open so input auto-lock code can avoid re-requesting.
       try {
@@ -1819,7 +1798,7 @@ export function StreamView({
                     <span className="settings-value-badge">{shortcuts.toggleStats}</span>
                   </div>
                   <div className="sidebar-row sidebar-row--aligned">
-                    <span className="sidebar-label">Mouse Lock</span>
+                    <span className="sidebar-label">Mouse Sync</span>
                     <span className="settings-value-badge">{shortcuts.togglePointerLock}</span>
                   </div>
                   <div className="sidebar-row sidebar-row--aligned">
@@ -2034,7 +2013,7 @@ export function StreamView({
       {showHints && !isConnecting && (
         <div className="sv-hints">
           <div className="sv-hint"><kbd>{shortcuts.toggleStats}</kbd><span>Stats</span></div>
-          <div className="sv-hint"><kbd>{shortcuts.togglePointerLock}</kbd><span>Mouse lock</span></div>
+          <div className="sv-hint"><kbd>{shortcuts.togglePointerLock}</kbd><span>Mouse sync</span></div>
           <div className="sv-hint"><kbd>{shortcuts.toggleFullscreen}</kbd><span>Full screen</span></div>
           <div className="sv-hint"><kbd>{shortcuts.stopStream}</kbd><span>Stop</span></div>
           {shortcuts.toggleMicrophone && <div className="sv-hint"><kbd>{shortcuts.toggleMicrophone}</kbd><span>Mic</span></div>}

@@ -309,6 +309,49 @@ export function quantizeMouseDeltaWithResidual(accumulatedDelta: number): { send
   };
 }
 
+export interface ElementRelativeMouseDeltaInput {
+  clientX: number;
+  clientY: number;
+  rect: Pick<DOMRectReadOnly, "left" | "top" | "right" | "bottom">;
+  lastAbsX: number | null;
+  lastAbsY: number | null;
+}
+
+export interface ElementRelativeMouseDelta {
+  absX: number;
+  absY: number;
+  dx: number;
+  dy: number;
+  hasBaseline: boolean;
+}
+
+export function computeElementRelativeMouseDelta(input: ElementRelativeMouseDeltaInput): ElementRelativeMouseDelta | null {
+  if (!Number.isFinite(input.clientX) || !Number.isFinite(input.clientY)) {
+    return null;
+  }
+  if (
+    input.clientX < input.rect.left
+    || input.clientX > input.rect.right
+    || input.clientY < input.rect.top
+    || input.clientY > input.rect.bottom
+  ) {
+    return null;
+  }
+
+  const absX = input.clientX - input.rect.left;
+  const absY = input.clientY - input.rect.top;
+  const lastAbsX = input.lastAbsX;
+  const lastAbsY = input.lastAbsY;
+  const hasBaseline = lastAbsX !== null && lastAbsY !== null;
+  return {
+    absX,
+    absY,
+    dx: hasBaseline ? absX - lastAbsX : 0,
+    dy: hasBaseline ? absY - lastAbsY : 0,
+    hasBaseline,
+  };
+}
+
 class MouseDeltaFilter {
   private x = 0;
   private y = 0;
@@ -608,10 +651,7 @@ export class GfnWebRtcClient {
 
   // Track currently pressed keys (VK codes) for synthetic Escape detection
   private pressedKeys: Set<number> = new Set();
-  // Pointer lock target reference for lock re-acquisition
   private pointerLockTarget: HTMLElement | null = null;
-  // Auto-pointer-lock in progress flag
-  private autoPointerLockInProgress = false;
   // Timer for synthetic Escape on pointer lock loss
   private pointerLockEscapeTimer: number | null = null;
   // Skip one synthetic Escape on pointer loss when lock was released intentionally (e.g. F8).
@@ -2405,8 +2445,6 @@ export class GfnWebRtcClient {
       this.updateHapticsAdvertisement(this.hasConnectedHapticGamepad());
       this.setupInputHeartbeat();
       this.setupGamepadPolling();
-      // After input becomes ready, attempt to auto-enable pointer lock.
-      void this.attemptAutoPointerLock(this.shouldAutoFullscreen()).catch(() => {});
     }
   }
 
@@ -2536,72 +2574,6 @@ export class GfnWebRtcClient {
     }
   }
 
-  private async requestPointerLockCompat(
-    lockTarget: HTMLElement,
-    options?: { unadjustedMovement?: boolean },
-  ): Promise<void> {
-    const maybePromise = lockTarget.requestPointerLock(options as any) as unknown;
-    if (maybePromise && typeof (maybePromise as Promise<void>).then === "function") {
-      await (maybePromise as Promise<void>);
-    }
-  }
-
-  private async requestPointerLockWithOptionalFullscreen(
-    lockTarget: HTMLElement,
-    ensureFullscreen: boolean,
-  ): Promise<void> {
-    if (ensureFullscreen && !document.fullscreenElement) {
-      try {
-        await document.documentElement.requestFullscreen();
-      } catch (error) {
-        this.log(`Fullscreen request failed: ${String(error)}`);
-      }
-    }
-
-    try {
-      await this.requestPointerLockCompat(lockTarget, { unadjustedMovement: true });
-      this.log("Pointer lock acquired with unadjustedMovement=true (raw/unaccelerated)");
-    } catch (err) {
-      const domErr = err as DOMException;
-      if (domErr?.name === "NotSupportedError") {
-        this.log("unadjustedMovement not supported, falling back to standard pointer lock (accelerated)");
-        await this.requestPointerLockCompat(lockTarget);
-      } else {
-        throw err;
-      }
-    }
-  }
-
-  private async attemptAutoPointerLock(ensureFullscreen = true): Promise<void> {
-    if (this.autoPointerLockInProgress) return;
-    this.autoPointerLockInProgress = true;
-    try {
-      const target = this.pointerLockTarget ?? this.options.videoElement;
-      if (!target) return;
-      const lockElement = document.pointerLockElement;
-      if (lockElement === target || lockElement === this.options.videoElement) {
-        return;
-      }
-
-      try {
-        await this.requestPointerLockWithOptionalFullscreen(target, ensureFullscreen);
-        this.log("Auto pointer lock acquired");
-        return;
-      } catch (err) {
-        // Fallback to a simpler request if the guarded method fails
-        try {
-          await this.requestPointerLockCompat(target, { unadjustedMovement: true });
-          this.log("Auto pointer lock acquired (fallback)");
-          return;
-        } catch (err2) {
-          this.log(`Auto pointer lock failed: ${String(err)}`);
-        }
-      }
-    } finally {
-      this.autoPointerLockInProgress = false;
-    }
-  }
-
   private shouldSendSyntheticEscapeOnPointerLockLoss(): boolean {
     if (document.visibilityState !== "visible") {
       return false;
@@ -2718,40 +2690,16 @@ export class GfnWebRtcClient {
       return lockElement === pointerLockTarget || lockElement === videoElement;
     };
 
-    // Mirror mode: tracks whether the HW cursor is over the stream viewport.
-    // Dual-source: coarse window focus/blur sets the initial state and handles
-    // cases where the cursor was already inside when the stream started;
-    // mouseenter/mouseleave on pointerLockTarget refines it for sub-window
-    // boundaries (overlays, toolbars, multi-monitor cursor exit without blur).
-    let mouseInStreamView = document.hasFocus();
     let lastAbsX: number | null = null;
     let lastAbsY: number | null = null;
-    // Prevent repeated auto-lock attempts within the same focus session.
-    let autoLockPending = false;
-
-    // Track an approximate server-side absolute pointer position (in server
-    // pixels — the remote stream's resolution) so we can align the server cursor
-    // to the hardware cursor when transitioning from mirror -> pointer-lock.
-    // `null` means unknown; when unknown we assume server cursor equals HW cursor on first entry.
-    let simulatedAbsX: number | null = null;
-    let simulatedAbsY: number | null = null;
-    // When a document-level entry event triggers tryAutoLock, we store the
-    // entry absolute coordinates here so tryAutoLock can align before locking.
-    let pendingEntryAbsX: number | null = null;
-    let pendingEntryAbsY: number | null = null;
-
     const onPointerLockTargetMouseEnter = (): void => {
-      mouseInStreamView = true;
       lastAbsX = null;
       lastAbsY = null;
-      tryAutoLock();
     };
 
     const onPointerLockTargetMouseLeave = (): void => {
-      mouseInStreamView = false;
       lastAbsX = null;
       lastAbsY = null;
-      autoLockPending = false;
     };
 
     const hasPointerRawUpdate = "onpointerrawupdate" in videoElement;
@@ -2880,11 +2828,6 @@ export class GfnWebRtcClient {
       this.pendingMouseTimestampUs = null;
       this.sendInputPacket(payload, INPUT_MOUSE_REL);
       this.mousePacketsSentInWindow += 1;
-      // Update simulated absolute pointer (stored in server pixels) if we have a baseline.
-      if (simulatedAbsX !== null && simulatedAbsY !== null) {
-        simulatedAbsX += dxServer;
-        simulatedAbsY += dyServer;
-      }
     };
     const scheduleNextFlush = (): void => {
       if (this.mouseFlushTimer !== null) {
@@ -2929,81 +2872,8 @@ export class GfnWebRtcClient {
     };
     scheduleNextFlush();
 
-    const tryAutoLock = (): void => {
-      try {
-        if (document?.body?.dataset?.sidebarOpen === "1") {
-          return;
-        }
-      } catch {}
-
-      if (autoLockPending || isPointerLockActive() || !mouseInStreamView || !this.inputReady) {
-        return;
-      }
-      autoLockPending = true;
-
-      // Align server cursor to current HW cursor (if we have an entry position)
-      // before requesting pointer lock so the transition appears smooth.
-      try {
-        const targetAbsX = pendingEntryAbsX ?? lastAbsX;
-        const targetAbsY = pendingEntryAbsY ?? lastAbsY;
-        // Consume pending entry coords
-        pendingEntryAbsX = null;
-        pendingEntryAbsY = null;
-
-        if (typeof targetAbsX === "number" && typeof targetAbsY === "number") {
-          const { scaleX, scaleY, serverWidth, serverHeight } = getPointerScale();
-
-          // Translate the element-local target into server pixels.
-          const targetServerX = Math.round(targetAbsX * scaleX);
-          const targetServerY = Math.round(targetAbsY * scaleY);
-
-          if (simulatedAbsX === null || simulatedAbsY === null) {
-            // No baseline known: assume server cursor is centered and move from
-            // center -> target in server pixels so remote cursor matches HW cursor.
-            const baselineXServer = Math.round(serverWidth / 2);
-            const baselineYServer = Math.round(serverHeight / 2);
-            const dx = Math.round(targetServerX - baselineXServer);
-            const dy = Math.round(targetServerY - baselineYServer);
-            if (dx !== 0 || dy !== 0) {
-              const movePayload = this.inputEncoder.encodeMouseMove({
-                dx: Math.max(-32768, Math.min(32767, dx)),
-                dy: Math.max(-32768, Math.min(32767, dy)),
-                timestampUs: timestampUs(),
-              });
-              this.sendReliable(movePayload);
-            }
-            // Record simulated baseline in server pixels.
-            simulatedAbsX = targetServerX;
-            simulatedAbsY = targetServerY;
-          } else {
-            // sim values are stored in server pixels now; compute server delta.
-            const dx = Math.round(targetServerX - simulatedAbsX);
-            const dy = Math.round(targetServerY - simulatedAbsY);
-            if (dx !== 0 || dy !== 0) {
-              const movePayload = this.inputEncoder.encodeMouseMove({
-                dx: Math.max(-32768, Math.min(32767, dx)),
-                dy: Math.max(-32768, Math.min(32767, dy)),
-                timestampUs: timestampUs(),
-              });
-              this.sendReliable(movePayload);
-              simulatedAbsX += dx;
-              simulatedAbsY += dy;
-            }
-          }
-        }
-      } catch (err) {
-        this.log(`Pointer lock alignment failed (non-fatal): ${String(err)}`);
-      }
-
-      void this.attemptAutoPointerLock(this.shouldAutoFullscreen())
-        .catch(() => {})
-        .finally(() => {
-          autoLockPending = false;
-        });
-    };
-
     const queueMouseMovement = (dx: number, dy: number, eventTimestampMs: number): void => {
-      if (!this.inputReady || !isPointerLockActive()) {
+      if (!this.inputReady) {
         return;
       }
 
@@ -3029,17 +2899,53 @@ export class GfnWebRtcClient {
       this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
     };
 
+    const queueAbsoluteMouseMovement = (event: MouseEvent | PointerEvent): void => {
+      const rect = pointerLockTarget.getBoundingClientRect();
+      const next = computeElementRelativeMouseDelta({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        rect,
+        lastAbsX,
+        lastAbsY,
+      });
+      if (!next) {
+        lastAbsX = null;
+        lastAbsY = null;
+        return;
+      }
+
+      lastAbsX = next.absX;
+      lastAbsY = next.absY;
+      if (next.hasBaseline && (next.dx !== 0 || next.dy !== 0)) {
+        queueMouseMovement(next.dx, next.dy, event.timeStamp);
+      }
+    };
+
+    const isMouseEventOverStream = (event: MouseEvent): boolean => {
+      if (isPointerLockActive()) {
+        return true;
+      }
+      const rect = pointerLockTarget.getBoundingClientRect();
+      return computeElementRelativeMouseDelta({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        rect,
+        lastAbsX: null,
+        lastAbsY: null,
+      }) !== null;
+    };
+
     const onPointerMove = (event: PointerEvent) => {
       try {
         if (document?.body?.dataset?.sidebarOpen === "1") return;
       } catch {}
       if (this.inputPaused) return;
+      if (!this.inputReady) return;
       if (event.pointerType && event.pointerType !== "mouse") {
         return;
       }
 
       if (isPointerLockActive()) {
-        // Pointer lock active: use raw relative movement (movementX/Y).
         const samples = hasCoalescedEvents ? event.getCoalescedEvents() : [];
         if (samples.length > 0) {
           for (const sample of samples) {
@@ -3048,14 +2954,15 @@ export class GfnWebRtcClient {
           return;
         }
         queueMouseMovement(event.movementX, event.movementY, event.timeStamp);
-      } else if (mouseInStreamView) {
-        // Pointer lock disabled: keep local cursor tracking up to date without
-        // forwarding mouse movement into the stream.
-        const rect = pointerLockTarget.getBoundingClientRect();
-        const absX = event.clientX - rect.left;
-        const absY = event.clientY - rect.top;
-        lastAbsX = absX;
-        lastAbsY = absY;
+      } else {
+        const samples = hasCoalescedEvents ? event.getCoalescedEvents() : [];
+        if (samples.length > 0) {
+          for (const sample of samples) {
+            queueAbsoluteMouseMovement(sample);
+          }
+          return;
+        }
+        queueAbsoluteMouseMovement(event);
       }
     };
 
@@ -3064,16 +2971,11 @@ export class GfnWebRtcClient {
         if (document?.body?.dataset?.sidebarOpen === "1") return;
       } catch {}
       if (this.inputPaused) return;
+      if (!this.inputReady) return;
       if (isPointerLockActive()) {
         queueMouseMovement(event.movementX, event.movementY, event.timeStamp);
-      } else if (mouseInStreamView) {
-        // Pointer lock disabled: keep local cursor tracking up to date without
-        // forwarding mouse movement into the stream.
-        const rect = pointerLockTarget.getBoundingClientRect();
-        const absX = event.clientX - rect.left;
-        const absY = event.clientY - rect.top;
-        lastAbsX = absX;
-        lastAbsY = absY;
+      } else {
+        queueAbsoluteMouseMovement(event);
       }
     };
 
@@ -3153,7 +3055,10 @@ export class GfnWebRtcClient {
       if (!this.inputReady) {
         return;
       }
-      if (!isPointerLockActive()) {
+      try {
+        if (document?.body?.dataset?.sidebarOpen === "1") return;
+      } catch {}
+      if (!isMouseEventOverStream(event)) {
         return;
       }
       event.preventDefault();
@@ -3170,7 +3075,10 @@ export class GfnWebRtcClient {
       if (!this.inputReady) {
         return;
       }
-      if (!isPointerLockActive()) {
+      try {
+        if (document?.body?.dataset?.sidebarOpen === "1") return;
+      } catch {}
+      if (!isMouseEventOverStream(event)) {
         return;
       }
       event.preventDefault();
@@ -3187,7 +3095,10 @@ export class GfnWebRtcClient {
       if (!this.inputReady) {
         return;
       }
-      if (!isPointerLockActive()) {
+      try {
+        if (document?.body?.dataset?.sidebarOpen === "1") return;
+      } catch {}
+      if (!isMouseEventOverStream(event)) {
         return;
       }
       event.preventDefault();
@@ -3202,15 +3113,9 @@ export class GfnWebRtcClient {
     };
 
     const onClick = () => {
-      void this.requestPointerLockWithOptionalFullscreen(pointerLockTarget, this.shouldAutoFullscreen()).catch(
-        (err: DOMException) => {
-          this.log(`Pointer lock request failed: ${err.name}: ${err.message}`);
-        },
-      );
       videoElement.focus();
     };
 
-    // Store lock target for pointer lock re-acquisition
     this.pointerLockTarget = pointerLockTarget;
 
     // Handle pointer lock changes — send synthetic Escape when lock is lost by browser
@@ -3259,7 +3164,6 @@ export class GfnWebRtcClient {
 
       // Escape was NOT tracked as pressed — browser intercepted it before our keydown fired.
       // Send synthetic Escape keydown+keyup after 50ms (matches official GFN client).
-      // Also re-acquire pointer lock so the user stays in the game.
       this.pointerLockEscapeTimer = window.setTimeout(() => {
         this.pointerLockEscapeTimer = null;
 
@@ -3291,11 +3195,6 @@ export class GfnWebRtcClient {
         });
         this.sendReliable(escUp);
 
-        // Re-acquire pointer lock so the user stays in the game
-        if (this.pointerLockTarget) {
-          void this.requestPointerLockWithOptionalFullscreen(this.pointerLockTarget, false)
-            .catch(() => {});
-        }
       }, 50);
     };
 
@@ -3306,7 +3205,6 @@ export class GfnWebRtcClient {
         this.log("Window blur during mic permission - keeping keys pressed");
         return;
       }
-      mouseInStreamView = false;
       lastAbsX = null;
       lastAbsY = null;
       this.releasePressedKeys("window blur");
@@ -3329,11 +3227,8 @@ export class GfnWebRtcClient {
     const onWindowFocus = () => {
       // Resume input when window regains focus
       this.inputPaused = false;
-      mouseInStreamView = true;
       lastAbsX = null;
       lastAbsY = null;
-      // Auto-lock: acquire pointer lock when the user switches back to the app.
-      tryAutoLock();
     };
 
     // Release any prior Keyboard API lock when leaving fullscreen (e.g. other UI may have locked keys).
@@ -3367,86 +3262,7 @@ export class GfnWebRtcClient {
     pointerLockTarget.addEventListener("wheel", onWheel, { passive: false });
     pointerLockTarget.addEventListener("mouseenter", onPointerLockTargetMouseEnter);
     pointerLockTarget.addEventListener("mouseleave", onPointerLockTargetMouseLeave);
-    // Detect when the mouse enters the application window (from outside the
-    // browsing context) and trigger auto pointer lock. We listen to
-    // `pointerover` when PointerEvents are available and fall back to
-    // `mouseover` for older environments. If `relatedTarget` is null or not
-    // part of this document, the pointer came from outside the window. Only
-    // attempt auto-lock when the pointer is actually over the stream viewport
-    // (pointerLockTarget) to avoid accidental locks when the cursor enters
-    // over chrome/UI areas.
-    const onDocumentPointerEnterWindow = (ev: PointerEvent | MouseEvent) => {
-      // Only care about physical mouse pointers
-      if (typeof PointerEvent !== "undefined" && ev instanceof PointerEvent) {
-        if (ev.pointerType && ev.pointerType !== "mouse") return;
-      }
-
-      const related = (ev as any).relatedTarget as Node | null | undefined;
-      if (related && document.contains(related)) {
-        // relatedTarget is still within this document — this is an intra-document
-        // move, not an entry from outside the window.
-        return;
-      }
-
-      // Only trigger auto-lock if the pointer is actually over the stream
-      // viewport (pointerLockTarget). This prevents accidental locks when the
-      // cursor enters the window over chrome/UI areas.
-      const rect = pointerLockTarget.getBoundingClientRect();
-      const clientX = (ev as MouseEvent).clientX;
-      const clientY = (ev as MouseEvent).clientY;
-      if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
-        return;
-      }
-
-      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
-        return;
-      }
-
-      // Treat this as entering the stream/window area for auto-lock purposes
-      mouseInStreamView = true;
-      // Save entry absolute coords so tryAutoLock can align the server cursor
-      // before requesting pointer lock.
-      pendingEntryAbsX = clientX - rect.left;
-      pendingEntryAbsY = clientY - rect.top;
-      lastAbsX = null;
-      lastAbsY = null;
-      tryAutoLock();
-    };
-
-    // Fallback: some environments may not produce pointerover relatedTarget=null
-    // when entering the native window. Listen for the first mousemove while we
-    // believe the pointer is outside the window and treat that as an entry.
-    const onFirstMouseMoveIntoWindow = (ev: MouseEvent | PointerEvent) => {
-      if (mouseInStreamView) return;
-      if (typeof PointerEvent !== "undefined" && ev instanceof PointerEvent) {
-        if (ev.pointerType && ev.pointerType !== "mouse") return;
-      }
-
-      // Only consider it an entry if the cursor is over the stream viewport
-      const rect = pointerLockTarget.getBoundingClientRect();
-      const clientX = (ev as MouseEvent).clientX;
-      const clientY = (ev as MouseEvent).clientY;
-      if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
-      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return;
-
-      mouseInStreamView = true;
-      lastAbsX = null;
-      lastAbsY = null;
-      tryAutoLock();
-      // remove this listener after first use
-      document.removeEventListener("mousemove", onFirstMouseMoveIntoWindow as EventListener, true);
-      if (typeof PointerEvent !== "undefined") {
-        document.removeEventListener("pointermove", onFirstMouseMoveIntoWindow as EventListener, true);
-      }
-    };
     videoElement.addEventListener("click", onClick);
-    if (typeof PointerEvent !== "undefined") {
-      document.addEventListener("pointerover", onDocumentPointerEnterWindow, true);
-      document.addEventListener("pointermove", onFirstMouseMoveIntoWindow as EventListener, true);
-    } else {
-      document.addEventListener("mouseover", onDocumentPointerEnterWindow, true);
-      document.addEventListener("mousemove", onFirstMouseMoveIntoWindow as EventListener, true);
-    }
     document.addEventListener("pointerlockchange", onPointerLockChange);
     document.addEventListener("fullscreenchange", onFullscreenChange);
     window.addEventListener("blur", onWindowBlur);
@@ -3467,13 +3283,6 @@ export class GfnWebRtcClient {
     this.inputCleanup.push(() => pointerLockTarget.removeEventListener("wheel", onWheel));
     this.inputCleanup.push(() => pointerLockTarget.removeEventListener("mouseenter", onPointerLockTargetMouseEnter));
     this.inputCleanup.push(() => pointerLockTarget.removeEventListener("mouseleave", onPointerLockTargetMouseLeave));
-    if (typeof PointerEvent !== "undefined") {
-      this.inputCleanup.push(() => document.removeEventListener("pointerover", onDocumentPointerEnterWindow, true));
-      this.inputCleanup.push(() => document.removeEventListener("pointermove", onFirstMouseMoveIntoWindow as EventListener, true));
-    } else {
-      this.inputCleanup.push(() => document.removeEventListener("mouseover", onDocumentPointerEnterWindow, true));
-      this.inputCleanup.push(() => document.removeEventListener("mousemove", onFirstMouseMoveIntoWindow as EventListener, true));
-    }
     this.inputCleanup.push(() => videoElement.removeEventListener("click", onClick));
     this.inputCleanup.push(() => document.removeEventListener("pointerlockchange", onPointerLockChange));
     this.inputCleanup.push(() => document.removeEventListener("fullscreenchange", onFullscreenChange));

@@ -86,7 +86,7 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "keybind",
     "controls",
     "anti afk",
-    "pointer lock",
+    "mouse sync",
     "recording",
     "screenshot",
   ],
@@ -2299,7 +2299,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
 
                 <div className="settings-shortcut-row">
-                  <span className="settings-shortcut-label" id="shortcut-pointer-lock-label">Mouse Lock</span>
+                  <span className="settings-shortcut-label" id="shortcut-pointer-lock-label">Mouse Sync</span>
                   <input
                     type="text"
                     id="shortcut-pointer-lock"
