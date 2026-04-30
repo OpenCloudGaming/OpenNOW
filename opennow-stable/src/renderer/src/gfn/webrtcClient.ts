@@ -2182,10 +2182,18 @@ export class GfnWebRtcClient {
     ensureFullscreen: boolean,
   ): Promise<void> {
     if (ensureFullscreen && !document.fullscreenElement) {
-      try {
-        await document.documentElement.requestFullscreen();
-      } catch (error) {
-        this.log(`Fullscreen request failed: ${String(error)}`);
+      if (typeof window.openNow?.setFullscreen === "function") {
+        try {
+          await window.openNow.setFullscreen(true);
+        } catch (error) {
+          this.log(`Native fullscreen request failed: ${String(error)}`);
+        }
+      } else {
+        try {
+          await document.documentElement.requestFullscreen();
+        } catch (error) {
+          this.log(`Fullscreen request failed: ${String(error)}`);
+        }
       }
     }
 

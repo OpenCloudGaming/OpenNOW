@@ -223,6 +223,7 @@ app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 app.commandLine.appendSwitch("max-gum-fps", "999");
 
 let mainWindow: BrowserWindow | null = null;
+let rendererControlledFullscreen = false;
 let signalingClient: GfnSignalingClient | null = null;
 let signalingClientKey: string | null = null;
 let authService: AuthService;
@@ -719,6 +720,9 @@ async function createMainWindow(): Promise<void> {
     });
 
     mainWindow.webContents.on("leave-html-full-screen", () => {
+      if (rendererControlledFullscreen) {
+        return;
+      }
       if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()) {
         mainWindow.setFullScreen(false);
       }
@@ -733,6 +737,7 @@ async function createMainWindow(): Promise<void> {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    rendererControlledFullscreen = false;
   });
 }
 
@@ -1420,14 +1425,18 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.TOGGLE_FULLSCREEN, async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       const isFullScreen = mainWindow.isFullScreen();
-      mainWindow.setFullScreen(!isFullScreen);
+      const nextFullscreen = !isFullScreen;
+      mainWindow.setFullScreen(nextFullscreen);
+      rendererControlledFullscreen = nextFullscreen;
     }
   });
 
   ipcMain.handle(IPC_CHANNELS.SET_FULLSCREEN, async (_event, value: boolean) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       try {
-        mainWindow.setFullScreen(Boolean(value));
+        const nextFullscreen = Boolean(value);
+        mainWindow.setFullScreen(nextFullscreen);
+        rendererControlledFullscreen = nextFullscreen;
       } catch (err) {
         console.warn("Failed to set fullscreen:", err);
       }

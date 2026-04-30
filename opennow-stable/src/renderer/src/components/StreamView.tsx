@@ -46,6 +46,7 @@ interface StreamViewProps {
     tone: "warn" | "critical";
     secondsLeft?: number;
   } | null;
+  isFullscreen: boolean;
   isConnecting: boolean;
   gameTitle: string;
   platformStore?: string;
@@ -656,6 +657,7 @@ export function StreamView({
   sessionClockShowEveryMinutes,
   sessionClockShowDurationSeconds,
   streamWarning,
+  isFullscreen,
   isConnecting,
   gameTitle,
   platformStore,
@@ -679,7 +681,6 @@ export function StreamView({
   hideStreamButtons = false,
   className,
 }: StreamViewProps): JSX.Element {
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
   const [showSideBar, setShowSideBar] = useState(false);
@@ -745,14 +746,6 @@ export function StreamView({
   useEffect(() => {
     const timer = setTimeout(() => setShowHints(false), 5000);
     return () => clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
   useEffect(() => {
