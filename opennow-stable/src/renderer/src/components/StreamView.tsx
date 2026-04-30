@@ -735,13 +735,17 @@ export function StreamView({
 
   const handlePointerLockToggle = useCallback(() => {
     if (isPointerLocked) {
+      if (onReleasePointerLock) {
+        onReleasePointerLock();
+        return;
+      }
       document.exitPointerLock();
       return;
     }
     if (onRequestPointerLock) {
       onRequestPointerLock();
     }
-  }, [isPointerLocked, onRequestPointerLock]);
+  }, [isPointerLocked, onReleasePointerLock, onRequestPointerLock]);
 
   useEffect(() => {
     const timer = setTimeout(() => setShowHints(false), 5000);

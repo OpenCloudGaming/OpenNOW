@@ -1877,16 +1877,22 @@ export function App(): JSX.Element {
 
     if (canUseNativeFullscreen) {
       try {
+        if (nextFullscreen) {
+          if (!document.fullscreenElement) {
+            await document.documentElement.requestFullscreen();
+          }
+        } else if (document.fullscreenElement) {
+          await document.exitFullscreen();
+        }
+      } catch (error) {
+        console.warn(`Failed to set DOM fullscreen state (${nextFullscreen ? "enter" : "exit"}):`, error);
+      }
+
+      try {
         await window.openNow.setFullscreen(nextFullscreen);
         setSessionFullscreenState(nextFullscreen);
       } catch (error) {
         console.warn(`Failed to set native fullscreen state (${nextFullscreen ? "enter" : "exit"}):`, error);
-      }
-
-      if (!nextFullscreen && document.fullscreenElement) {
-        try {
-          await document.exitFullscreen();
-        } catch {}
       }
       return;
     }
