@@ -1,5 +1,5 @@
 import { copyFileSync, chmodSync, existsSync, mkdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -17,6 +17,99 @@ const packageBinary = join(packageBinaryDir, exeName);
 const packagePlatformBinaryDir = join(packageBinaryDir, platformKey);
 const packagePlatformBinary = join(packagePlatformBinaryDir, exeName);
 
+function hasFeature(features, feature) {
+  return features
+    .split(/[,\s]+/)
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(feature);
+}
+
+function prependEnvPath(env, directory) {
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
+  env[pathKey] = env[pathKey] ? `${directory}${delimiter}${env[pathKey]}` : directory;
+}
+
+function configureWindowsGstreamerSdk(env) {
+  if (process.platform !== "win32") {
+    return;
+  }
+
+  const candidates = [
+    env.GSTREAMER_1_0_ROOT_MSVC_X86_64,
+    "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64",
+    "C:\\gstreamer\\1.0\\msvc_x86_64",
+  ].filter(Boolean);
+
+  const sdkRoot = candidates.find(
+    (candidate) =>
+      existsSync(join(candidate, "bin", "pkg-config.exe")) &&
+      existsSync(join(candidate, "lib", "pkgconfig", "gstreamer-1.0.pc")),
+  );
+
+  if (!sdkRoot) {
+    console.warn(
+      "GStreamer SDK was not found automatically; relying on the current PKG_CONFIG environment.",
+    );
+    return;
+  }
+
+  const pkgConfigDir = join(sdkRoot, "lib", "pkgconfig");
+  env.PKG_CONFIG = join(sdkRoot, "bin", "pkg-config.exe");
+  env.PKG_CONFIG_PATH = env.PKG_CONFIG_PATH
+    ? `${pkgConfigDir}${delimiter}${env.PKG_CONFIG_PATH}`
+    : pkgConfigDir;
+  prependEnvPath(env, join(sdkRoot, "bin"));
+  console.log(`Configured GStreamer SDK: ${sdkRoot}`);
+}
+
+function verifyGstreamerBinary(binaryPath, env) {
+  const result = spawnSync(binaryPath, {
+    input: `${JSON.stringify({ id: "verify", type: "hello", protocolVersion: 1 })}\n`,
+    encoding: "utf8",
+    env: {
+      ...env,
+      OPENNOW_NATIVE_STREAMER_BACKEND: "gstreamer",
+    },
+  });
+
+  if (result.status !== 0) {
+    console.error(result.stderr || result.stdout);
+    console.error(`Native streamer verification failed for ${binaryPath}`);
+    process.exit(result.status ?? 1);
+  }
+
+  const responseLine = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+
+  let response;
+  try {
+    response = JSON.parse(responseLine ?? "");
+  } catch (error) {
+    console.error(`Native streamer verification returned invalid JSON: ${responseLine}`);
+    process.exit(1);
+  }
+
+  const capabilities = response.capabilities;
+  if (
+    response.type !== "ready" ||
+    capabilities?.backend !== "gstreamer" ||
+    capabilities?.supportsOfferAnswer !== true ||
+    capabilities?.supportsInput !== true
+  ) {
+    console.error(
+      `Native streamer verification expected a GStreamer backend, got: ${JSON.stringify(
+        capabilities,
+      )}`,
+    );
+    process.exit(1);
+  }
+
+  console.log("Verified native streamer GStreamer capabilities.");
+}
+
 const cargoArgs = ["build", "--release", "--manifest-path", manifestPath];
 const nativeFeatures = process.env.OPENNOW_NATIVE_STREAMER_FEATURES?.trim() || "gstreamer";
 if (nativeFeatures && nativeFeatures.toLowerCase() !== "none") {
@@ -28,10 +121,16 @@ console.log(
     : `Building native streamer with features: ${nativeFeatures}`,
 );
 
-const result = spawnSync("cargo", cargoArgs, {
+const buildEnv = { ...process.env };
+if (hasFeature(nativeFeatures, "gstreamer")) {
+  configureWindowsGstreamerSdk(buildEnv);
+}
+
+const cargoCommand = process.platform === "win32" ? "cargo.exe" : "cargo";
+const result = spawnSync(cargoCommand, cargoArgs, {
   cwd: repoRoot,
   stdio: "inherit",
-  shell: process.platform === "win32",
+  env: buildEnv,
 });
 
 if (result.status !== 0) {
@@ -51,6 +150,10 @@ copyFileSync(builtBinary, packagePlatformBinary);
 if (process.platform !== "win32") {
   chmodSync(packageBinary, 0o755);
   chmodSync(packagePlatformBinary, 0o755);
+}
+
+if (hasFeature(nativeFeatures, "gstreamer")) {
+  verifyGstreamerBinary(packageBinary, buildEnv);
 }
 
 console.log(`Copied native streamer to ${packageBinary}`);

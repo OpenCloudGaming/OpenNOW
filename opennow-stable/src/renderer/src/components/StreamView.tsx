@@ -731,7 +731,11 @@ export function StreamView({
     typeof window.openNow?.listScreenshots === "function" &&
     typeof window.openNow?.deleteScreenshot === "function" &&
     typeof window.openNow?.saveScreenshotAs === "function";
-  const showStatsHud = showStats && !isConnecting;
+  const nativeRendererActive = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => stats.nativeRendererActive,
+  );
+  const showStatsHud = showStats && !nativeRendererActive && !isConnecting;
 
   // Recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -1398,6 +1402,7 @@ export function StreamView({
       updateSurface({
         deviceScaleFactor: dpr,
         visible,
+        showStats,
         rect: visible
           ? {
               x: Math.round(rect.left * dpr),
@@ -1429,7 +1434,6 @@ export function StreamView({
     document.addEventListener("visibilitychange", schedule);
     window.visualViewport?.addEventListener("resize", schedule);
     window.visualViewport?.addEventListener("scroll", schedule);
-    const interval = window.setInterval(schedule, 1000);
     schedule();
 
     return () => {
@@ -1442,10 +1446,14 @@ export function StreamView({
       document.removeEventListener("visibilitychange", schedule);
       window.visualViewport?.removeEventListener("resize", schedule);
       window.visualViewport?.removeEventListener("scroll", schedule);
-      window.clearInterval(interval);
-      updateSurface({ rect: null, visible: false, deviceScaleFactor: window.devicePixelRatio || 1 });
+      updateSurface({
+        rect: null,
+        visible: false,
+        deviceScaleFactor: window.devicePixelRatio || 1,
+        showStats: false,
+      });
     };
-  }, []);
+  }, [showStats]);
 
   useEffect(() => {
     const handlePointerLockChange = () => {

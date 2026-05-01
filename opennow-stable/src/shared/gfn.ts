@@ -698,6 +698,7 @@ export interface NativeRenderSurfaceUpdate {
   rect: NativeRenderSurfaceRect | null;
   visible: boolean;
   deviceScaleFactor: number;
+  showStats?: boolean;
 }
 
 export interface NativeRenderSurface extends NativeRenderSurfaceUpdate {

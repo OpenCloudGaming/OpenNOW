@@ -8,9 +8,8 @@ use crate::input::{
 };
 use crate::protocol::{
     missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeRenderRect,
-    NativeRenderSurface, NativeStatsEvent, NativeStreamerCapabilities,
-    NativeStreamerSessionContext, Response, SendAnswerRequest, StreamSettings, VideoStallEvent,
-    PROTOCOL_VERSION,
+    NativeRenderSurface, NativeStreamerCapabilities, NativeStreamerSessionContext, Response,
+    SendAnswerRequest, StreamSettings, VideoStallEvent, PROTOCOL_VERSION,
 };
 use crate::sdp::{
     build_nvst_sdp_for_answer, extract_negotiated_video_codec, munge_answer_sdp, IceCredentials,
@@ -141,6 +140,8 @@ struct VideoLivenessState {
     codec: Mutex<String>,
     resolution: Mutex<String>,
     hardware_acceleration: Mutex<String>,
+    stats_overlay: Mutex<Option<gst::Element>>,
+    stats_overlay_visible: AtomicBool,
     target_bitrate_kbps: AtomicU32,
     encoded_bytes_total: AtomicU64,
     last_decoded_ms: AtomicU64,
@@ -158,6 +159,8 @@ impl VideoLivenessState {
             codec: Mutex::new(String::new()),
             resolution: Mutex::new(String::new()),
             hardware_acceleration: Mutex::new(String::new()),
+            stats_overlay: Mutex::new(None),
+            stats_overlay_visible: AtomicBool::new(false),
             target_bitrate_kbps: AtomicU32::new(0),
             encoded_bytes_total: AtomicU64::new(0),
             last_decoded_ms: AtomicU64::new(0),
@@ -196,6 +199,34 @@ impl VideoLivenessState {
     fn record_encoded_buffer(&self, size: usize) {
         self.encoded_bytes_total
             .fetch_add(size as u64, Ordering::Relaxed);
+    }
+
+    fn set_stats_overlay(&self, overlay: Option<gst::Element>) {
+        if let Ok(mut current) = self.stats_overlay.lock() {
+            *current = overlay;
+        }
+    }
+
+    fn set_stats_overlay_visible(&self, visible: bool) {
+        self.stats_overlay_visible.store(visible, Ordering::Relaxed);
+        if let Ok(current) = self.stats_overlay.lock() {
+            if let Some(overlay) = current.as_ref() {
+                set_property_if_supported(overlay, "visible", visible);
+            }
+        }
+    }
+
+    fn update_stats_overlay_text(&self, text: &str) {
+        if let Ok(current) = self.stats_overlay.lock() {
+            if let Some(overlay) = current.as_ref() {
+                overlay.set_property("text", text);
+                set_property_if_supported(
+                    overlay,
+                    "visible",
+                    self.stats_overlay_visible.load(Ordering::Relaxed) && !text.is_empty(),
+                );
+            }
+        }
     }
 
     fn record_decoded_buffer(&self) {
@@ -254,6 +285,14 @@ impl VideoLivenessMonitor {
 
     fn record_encoded_buffer(&self, size: usize) {
         self.state.record_encoded_buffer(size);
+    }
+
+    fn set_stats_overlay(&self, overlay: Option<gst::Element>) {
+        self.state.set_stats_overlay(overlay);
+    }
+
+    fn set_stats_overlay_visible(&self, visible: bool) {
+        self.state.set_stats_overlay_visible(visible);
     }
 
     fn record_decoded_buffer(&self) {
@@ -330,6 +369,7 @@ enum RtpVideoChainRole {
     Decoder,
     PostDecodeConverter,
     PostDecodeCapsFilter,
+    StatsOverlay,
     PostDecodeQueue,
     Sink,
 }
@@ -370,6 +410,13 @@ impl RtpVideoApi {
             // Non-D3D hardware decoders are not guaranteed to negotiate directly with every
             // platform sink. Keep these paths reliable with an explicit raw-video conversion stage.
             Self::VideoToolbox | Self::Vaapi | Self::V4L2 | Self::Software => Some("videoconvert"),
+        }
+    }
+
+    fn stats_overlay_factory(self) -> Option<&'static str> {
+        match self {
+            Self::D3D11 | Self::D3D12 => Some("dwritetextoverlay"),
+            _ => None,
         }
     }
 
@@ -1486,10 +1533,13 @@ impl GstreamerPipeline {
     }
 
     fn update_render_surface(&self, surface: NativeRenderSurface) {
+        self.video_liveness
+            .set_stats_overlay_visible(surface.visible && surface.show_stats);
         self.render_state.set_surface(surface, &self.event_sender);
     }
 
     fn stop(mut self) -> Result<(), String> {
+        self.video_liveness.set_stats_overlay_visible(false);
         self.render_state.stop_external_renderer_window_guard();
         #[cfg(target_os = "windows")]
         if let Some(mut bridge) = self.native_window_input_bridge.take() {
@@ -1534,8 +1584,17 @@ fn init_gstreamer() -> Result<(), String> {
 }
 
 fn set_property_if_supported<T: Into<glib::Value>>(element: &gst::Element, name: &str, value: T) {
-    if element.find_property(name).is_some() {
-        element.set_property(name, value);
+    if let Some(property) = element.find_property(name) {
+        if !property.flags().contains(glib::ParamFlags::WRITABLE) {
+            return;
+        }
+
+        let value = value.into();
+        let value_type = value.type_();
+        let property_type = property.value_type();
+        if value_type == property_type || value_type.is_a(property_type) {
+            element.set_property_from_value(name, &value);
+        }
     }
 }
 
@@ -1582,6 +1641,22 @@ fn configure_sink_for_low_latency(element: &gst::Element) {
     set_property_if_supported(element, "show-preroll-frame", false);
     set_property_if_supported(element, "redraw-on-update", true);
     set_property_if_supported(element, "force-aspect-ratio", true);
+}
+
+fn configure_stats_overlay_element(element: &gst::Element) {
+    set_property_if_supported(element, "visible", false);
+    set_property_if_supported(element, "text", "");
+    set_property_if_supported(element, "auto-resize", true);
+    set_property_if_supported(element, "layout-x", 0.018f64);
+    set_property_if_supported(element, "layout-y", 0.018f64);
+    set_property_if_supported(element, "layout-width", 0.55f64);
+    set_property_if_supported(element, "layout-height", 0.18f64);
+    set_property_if_supported(element, "font-family", "Cascadia Mono");
+    set_property_if_supported(element, "font-size", 18f32);
+    set_property_from_str_if_supported(element, "text-alignment", "leading");
+    set_property_from_str_if_supported(element, "paragraph-alignment", "near");
+    set_property_if_supported(element, "foreground-color", 0xF2FF_FFFFu32);
+    set_property_if_supported(element, "outline-color", 0xD000_0000u32);
 }
 
 #[cfg(target_os = "windows")]
@@ -3246,8 +3321,7 @@ fn run_video_liveness_watchdog(
                 decoded_fps: decoded_total.saturating_sub(last_decoded_total) as f64 / elapsed_secs,
                 sink_fps: sink_total.saturating_sub(last_sink_total) as f64 / elapsed_secs,
             };
-            emit_native_stats_event(
-                &event_sender,
+            update_native_stats_overlay(
                 &sink,
                 &state,
                 bitrate_kbps.max(0.0).round() as u32,
@@ -3315,19 +3389,14 @@ fn run_video_liveness_watchdog(
     }
 }
 
-fn emit_native_stats_event(
-    event_sender: &Option<Sender<Event>>,
+fn update_native_stats_overlay(
     sink: &gst::Element,
     state: &VideoLivenessState,
     bitrate_kbps: u32,
     rates: VideoRateSnapshot,
-    frames_decoded: u64,
+    _frames_decoded: u64,
     frames_rendered: u64,
 ) {
-    let Some(event_sender) = event_sender else {
-        return;
-    };
-
     let target_bitrate_kbps = state.target_bitrate_kbps.load(Ordering::Relaxed);
     let bitrate_performance_percent = if target_bitrate_kbps > 0 {
         (f64::from(bitrate_kbps) / f64::from(target_bitrate_kbps)) * 100.0
@@ -3350,25 +3419,40 @@ fn emit_native_stats_event(
         .map(|value| value.clone())
         .unwrap_or_default();
     let sink_stats = read_sink_stats(sink);
-
-    let _ = event_sender.send(Event::Stats {
-        stats: NativeStatsEvent {
-            codec,
-            resolution,
-            hardware_acceleration,
-            bitrate_kbps,
-            target_bitrate_kbps,
-            bitrate_performance_percent,
-            decoded_fps: rates.decoded_fps,
-            render_fps: rates.sink_fps,
-            frames_decoded,
-            frames_rendered,
-            sink_rendered: sink_stats.rendered,
-            sink_dropped: sink_stats.dropped,
-            zero_copy_d3d11: state.zero_copy_d3d11(),
-            zero_copy_d3d12: state.zero_copy_d3d12(),
+    let sink_dropped = sink_stats.dropped.unwrap_or(0);
+    let sink_rendered = sink_stats.rendered.unwrap_or(frames_rendered);
+    let sink_total = sink_rendered.saturating_add(sink_dropped);
+    let drop_percent = if sink_total > 0 {
+        (sink_dropped as f64 / sink_total as f64) * 100.0
+    } else {
+        0.0
+    };
+    let target_mbps = f64::from(target_bitrate_kbps) / 1000.0;
+    let bitrate_mbps = f64::from(bitrate_kbps) / 1000.0;
+    let memory_path = if state.zero_copy_d3d12() {
+        "D3D12 zero-copy"
+    } else if state.zero_copy_d3d11() {
+        "D3D11 zero-copy"
+    } else {
+        "native"
+    };
+    let text = format!(
+        "{} {}  {:.1}/{:.1} Mbps  Bit {:.0}%\nDecode {:.0}fps  Render {:.0}fps  Drop {:.2}%  {}",
+        codec,
+        resolution,
+        bitrate_mbps,
+        target_mbps,
+        bitrate_performance_percent,
+        rates.decoded_fps,
+        rates.sink_fps,
+        drop_percent,
+        if hardware_acceleration.is_empty() {
+            memory_path.to_owned()
+        } else {
+            format!("{hardware_acceleration} {memory_path}")
         },
-    });
+    );
+    state.update_stats_overlay_text(&text);
 }
 
 fn emit_video_stall_event(
@@ -3811,6 +3895,12 @@ fn rtp_video_chain_definition(
             RtpVideoChainRole::PostDecodeConverter,
         ));
     }
+    if let Some(overlay) = video_api.stats_overlay_factory() {
+        specs.push(RtpVideoChainSpec::new(
+            overlay,
+            RtpVideoChainRole::StatsOverlay,
+        ));
+    }
     specs.push(RtpVideoChainSpec::new(
         "queue",
         RtpVideoChainRole::PostDecodeQueue,
@@ -3881,6 +3971,10 @@ fn rtp_video_chain_specs(encoding: &str) -> Option<(RtpVideoApi, Vec<RtpVideoCha
                     spec.factory = sink;
                 }
             }
+            specs.retain(|spec| {
+                spec.role != RtpVideoChainRole::StatsOverlay
+                    || gst::ElementFactory::find(spec.factory).is_some()
+            });
             required_video_chain_elements_available(&specs).then_some((video_api, specs))
         })
 }
@@ -3931,6 +4025,9 @@ fn configure_rtp_video_chain_element(element: &gst::Element, spec: RtpVideoChain
         RtpVideoChainRole::PostDecodeConverter => {
             set_property_if_supported(element, "qos", false);
         }
+        RtpVideoChainRole::StatsOverlay => {
+            configure_stats_overlay_element(element);
+        }
         RtpVideoChainRole::PostDecodeQueue => {
             configure_queue_for_low_latency(element, "video");
         }
@@ -3965,6 +4062,7 @@ fn link_rtp_video_pad(
         )
     })?;
     video_liveness.update_hardware_acceleration(format!("GStreamer {}", video_api.label()));
+    video_liveness.set_stats_overlay(None);
     let mut elements = Vec::with_capacity(specs.len());
 
     let result = (|| -> Result<(), String> {
@@ -3976,6 +4074,9 @@ fn link_rtp_video_pad(
         for spec in &specs {
             let element = make_element(spec.factory)?;
             configure_rtp_video_chain_element(&element, *spec);
+            if spec.role == RtpVideoChainRole::StatsOverlay {
+                video_liveness.set_stats_overlay(Some(element.clone()));
+            }
             pipeline.add(&element).map_err(|error| {
                 format!(
                     "Failed to add {} for RTP {encoding} video chain: {error}",
@@ -4152,15 +4253,21 @@ fn video_sink_factories() -> Vec<(&'static str, Option<bool>)> {
     #[cfg(target_os = "windows")]
     {
         if gst::ElementFactory::find("d3d11videosink").is_some() {
-            return vec![("queue", None), ("d3d11videosink", Some(false))];
+            let mut factories = vec![("queue", None)];
+            if gst::ElementFactory::find("dwritetextoverlay").is_some() {
+                factories.push(("dwritetextoverlay", None));
+            }
+            factories.push(("d3d11videosink", Some(false)));
+            return factories;
         }
     }
 
-    vec![
-        ("queue", None),
-        ("videoconvert", None),
-        ("autovideosink", Some(false)),
-    ]
+    let mut factories = vec![("queue", None), ("videoconvert", None)];
+    if gst::ElementFactory::find("dwritetextoverlay").is_some() {
+        factories.push(("dwritetextoverlay", None));
+    }
+    factories.push(("autovideosink", Some(false)));
+    factories
 }
 
 fn link_media_chain(
@@ -4173,12 +4280,26 @@ fn link_media_chain(
     streaming_reported: &Arc<AtomicBool>,
     video_liveness: Option<&VideoLivenessMonitor>,
 ) -> Result<(), String> {
+    if media_label == "video" {
+        if let Some(video_liveness) = video_liveness {
+            video_liveness.set_stats_overlay(None);
+        }
+    }
+
     let mut elements = Vec::with_capacity(factories.len());
     for (factory, sync_property) in factories {
         let factory = *factory;
         let element = make_element(factory)?;
         if factory == "queue" {
             configure_queue_for_low_latency(&element, media_label);
+        }
+        if factory == "dwritetextoverlay" {
+            configure_stats_overlay_element(&element);
+            if media_label == "video" {
+                if let Some(video_liveness) = video_liveness {
+                    video_liveness.set_stats_overlay(Some(element.clone()));
+                }
+            }
         }
         if sync_property.is_some() || factory.ends_with("sink") {
             configure_sink_for_low_latency(&element);
@@ -4931,6 +5052,17 @@ mod tests {
     }
 
     #[test]
+    fn configures_dwrite_stats_overlay_without_type_panics() {
+        gst::init().expect("gstreamer init");
+        let Some(overlay) = gst::ElementFactory::make("dwritetextoverlay").build().ok() else {
+            return;
+        };
+
+        configure_stats_overlay_element(&overlay);
+        overlay.set_property("text", "OpenNOW native stats");
+    }
+
+    #[test]
     fn parses_basic_remote_offer_sdp() {
         let sdp = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 127.0.0.1\r\na=mid:0\r\na=sctp-port:5000\r\n";
         let parsed = GstreamerPipeline::parse_offer_sdp(sdp).expect("valid SDP");
@@ -5051,7 +5183,8 @@ mod tests {
         assert_eq!(h265[3].factory, "d3d11h265dec");
         assert_eq!(h265[4].factory, "capsfilter");
         assert_eq!(h265[4].caps, Some("video/x-raw(memory:D3D11Memory)"));
-        assert_eq!(h265[6].factory, "d3d11videosink");
+        assert_eq!(h265[5].factory, "dwritetextoverlay");
+        assert_eq!(h265[7].factory, "d3d11videosink");
 
         let h264 =
             rtp_video_chain_definition("h264", RtpVideoApi::D3D12).expect("H264 D3D12 chain");
@@ -5059,13 +5192,15 @@ mod tests {
         assert_eq!(h264[3].factory, "d3d12h264dec");
         assert_eq!(h264[4].factory, "capsfilter");
         assert_eq!(h264[4].caps, Some("video/x-raw(memory:D3D12Memory)"));
-        assert_eq!(h264[6].factory, "d3d12videosink");
+        assert_eq!(h264[5].factory, "dwritetextoverlay");
+        assert_eq!(h264[7].factory, "d3d12videosink");
 
         let av1 = rtp_video_chain_definition("AV1", RtpVideoApi::D3D11).expect("AV1 D3D11 chain");
         assert_eq!(av1[0].factory, "rtpav1depay");
         assert_eq!(av1[3].factory, "d3d11av1dec");
         assert_eq!(av1[4].factory, "capsfilter");
-        assert_eq!(av1[6].factory, "d3d11videosink");
+        assert_eq!(av1[5].factory, "dwritetextoverlay");
+        assert_eq!(av1[7].factory, "d3d11videosink");
     }
 
     #[test]

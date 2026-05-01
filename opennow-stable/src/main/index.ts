@@ -794,6 +794,7 @@ function normalizeNativeRenderSurface(
     windowHandle,
     deviceScaleFactor,
     visible,
+    showStats: input.showStats === true,
     rect: visible
       ? {
           x: Math.round(rect.x),

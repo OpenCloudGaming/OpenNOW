@@ -147,6 +147,8 @@ pub struct NativeRenderSurface {
     pub visible: bool,
     #[serde(default)]
     pub device_scale_factor: f64,
+    #[serde(default)]
+    pub show_stats: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

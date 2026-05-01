@@ -564,10 +564,6 @@ export class NativeStreamerManager {
     }
 
     if (message.type === "stats") {
-      this.options.emit({
-        type: "native-stream-stats",
-        stats: message.stats,
-      });
       return;
     }
 
