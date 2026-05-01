@@ -1,6 +1,7 @@
 import type {
   IceCandidatePayload,
   NativeStreamerBackend,
+  NativeStreamStats,
   NativeRenderSurface,
   NativeStreamerSessionContext,
   SendAnswerRequest,
@@ -120,6 +121,10 @@ export type NativeStreamerEvent =
       zeroCopyD3D11: boolean;
       zeroCopyD3D12: boolean;
       recoveryAttempt: number;
+    }
+  | {
+      type: "stats";
+      stats: NativeStreamStats;
     }
   | {
       type: "error";

@@ -226,6 +226,27 @@ pub struct VideoStallEvent {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeStatsEvent {
+    pub codec: String,
+    pub resolution: String,
+    pub hardware_acceleration: String,
+    pub bitrate_kbps: u32,
+    pub target_bitrate_kbps: u32,
+    pub bitrate_performance_percent: f64,
+    pub decoded_fps: f64,
+    pub render_fps: f64,
+    pub frames_decoded: u64,
+    pub frames_rendered: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sink_rendered: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sink_dropped: Option<u64>,
+    pub zero_copy_d3d11: bool,
+    pub zero_copy_d3d12: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
 #[serde(tag = "type")]
 pub enum Event {
@@ -249,6 +270,8 @@ pub enum Event {
     },
     #[serde(rename = "video-stall")]
     VideoStall(VideoStallEvent),
+    #[serde(rename = "stats")]
+    Stats { stats: NativeStatsEvent },
     #[serde(rename = "error")]
     Error { code: String, message: String },
 }

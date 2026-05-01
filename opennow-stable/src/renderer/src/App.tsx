@@ -25,6 +25,7 @@ import type {
   StreamSettings,
   StreamRegion,
   VideoCodec,
+  NativeStreamStats,
   PrintedWasteQueueData,
   PrintedWasteServerMapping,
 } from "@shared/gfn";
@@ -408,6 +409,42 @@ function defaultDiagnostics(): StreamDiagnostics {
     decoderRecoveryAction: "none",
     micState: "uninitialized",
     micEnabled: false,
+  };
+}
+
+function mergeNativeStreamStats(
+  current: StreamDiagnostics,
+  stats: NativeStreamStats,
+): StreamDiagnostics {
+  const sinkDropped = stats.sinkDropped ?? 0;
+  const sinkRendered = stats.sinkRendered ?? stats.framesRendered;
+  const totalSinkFrames = sinkRendered + sinkDropped;
+  const dropPercent = totalSinkFrames > 0 ? (sinkDropped / totalSinkFrames) * 100 : 0;
+  const hardwareAcceleration = [
+    stats.hardwareAcceleration || "GStreamer native decode",
+    stats.zeroCopyD3D12 ? "D3D12 zero-copy" : "",
+    stats.zeroCopyD3D11 ? "D3D11 zero-copy" : "",
+  ].filter(Boolean).join(" · ");
+
+  return {
+    ...current,
+    connectionState: "connected",
+    inputReady: current.inputReady,
+    nativeRendererActive: true,
+    resolution: stats.resolution || current.resolution,
+    codec: stats.codec || current.codec,
+    hardwareAcceleration,
+    bitrateKbps: stats.bitrateKbps,
+    targetBitrateKbps: stats.targetBitrateKbps,
+    decodeFps: Math.round(stats.decodedFps),
+    renderFps: Math.round(stats.renderFps),
+    framesReceived: stats.framesDecoded,
+    framesDecoded: stats.framesDecoded,
+    framesDropped: sinkDropped,
+    packetLossPercent: dropPercent,
+    lagReason: dropPercent > 1 ? "render" : "stable",
+    lagReasonDetail: `Native bitrate ${stats.bitratePerformancePercent.toFixed(0)}% of target`,
+    decoderPressureActive: false,
   };
 }
 
@@ -2310,6 +2347,11 @@ export function App(): JSX.Element {
           nativeInputProtocolVersionRef.current = event.protocolVersion;
           const streamClient = ensureStreamClient();
           streamClient?.setNativeInputProtocolVersion(event.protocolVersion);
+        } else if (event.type === "native-stream-stats") {
+          diagnosticsStore.set(mergeNativeStreamStats(
+            diagnosticsStore.getSnapshot(),
+            event.stats,
+          ));
         } else if (event.type === "native-stream-stopped") {
           console.warn("[App] Native streamer stopped:", event.reason ?? "stopped");
           nativeStreamingRef.current = false;

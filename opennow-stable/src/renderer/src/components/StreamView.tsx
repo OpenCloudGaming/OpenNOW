@@ -99,6 +99,13 @@ function getInputQueueColor(bufferedBytes: number, dropCount: number): string {
   return "var(--success)";
 }
 
+function getBitratePerformanceColor(percent: number): string {
+  if (percent <= 0) return "var(--ink-muted)";
+  if (percent >= 70 && percent <= 110) return "var(--success)";
+  if (percent >= 45 && percent < 130) return "var(--warning)";
+  return "var(--error)";
+}
+
 function getLagReasonLabel(reason: StreamLagReason): string {
   switch (reason) {
     case "network":
@@ -191,6 +198,13 @@ function StreamStatsHud({
     : stats.targetBitrateKbps > 0
       ? `Target ${bitrateMbps} Mbps`
       : "-- Mbps";
+  const bitratePerformancePercent = stats.targetBitrateKbps > 0 && stats.bitrateKbps > 0
+    ? (stats.bitrateKbps / stats.targetBitrateKbps) * 100
+    : 0;
+  const bitratePerformanceText = bitratePerformancePercent > 0
+    ? `${bitratePerformancePercent.toFixed(0)}%`
+    : "--";
+  const bitratePerformanceColor = getBitratePerformanceColor(bitratePerformancePercent);
   const hasResolution = stats.nativeRendererActive || stats.resolution !== "";
   const displayFps = Math.max(stats.decodeFps, stats.renderFps);
   const primaryText = hasResolution
@@ -202,6 +216,8 @@ function StreamStatsHud({
   const renderColor = getTimingColor(stats.renderTimeMs, 12, 22);
   const jitterBufferColor = getTimingColor(stats.jitterBufferDelayMs, 10, 24);
   const lossColor = getPacketLossColor(stats.packetLossPercent);
+  const lossLabel = stats.nativeRendererActive ? "Drop" : "Loss";
+  const lossTitle = stats.nativeRendererActive ? "Native renderer dropped frame percentage" : "Packet loss percentage";
   const dText = stats.decodeTimeMs > 0 ? `${stats.decodeTimeMs.toFixed(1)}ms` : "--";
   const rText = stats.renderTimeMs > 0 ? `${stats.renderTimeMs.toFixed(1)}ms` : "--";
   const jbText = stats.jitterBufferDelayMs > 0 ? `${stats.jitterBufferDelayMs.toFixed(1)}ms` : "--";
@@ -244,8 +260,11 @@ function StreamStatsHud({
         <span className="sv-stats-chip" title="JB = jitter buffer delay">
           JB <span className="sv-stats-chip-val" style={{ color: jitterBufferColor }}>{jbText}</span>
         </span>
-        <span className="sv-stats-chip" title="Packet loss percentage">
-          Loss <span className="sv-stats-chip-val" style={{ color: lossColor }}>{stats.packetLossPercent.toFixed(2)}%</span>
+        <span className="sv-stats-chip" title={lossTitle}>
+          {lossLabel} <span className="sv-stats-chip-val" style={{ color: lossColor }}>{stats.packetLossPercent.toFixed(2)}%</span>
+        </span>
+        <span className="sv-stats-chip" title="Actual receive bitrate compared with the negotiated target">
+          Bit <span className="sv-stats-chip-val" style={{ color: bitratePerformanceColor }}>{bitratePerformanceText}</span>
         </span>
         <span className="sv-stats-chip" title="Input queue pressure (buffered bytes and delayed flush)">
           IQ <span className="sv-stats-chip-val" style={{ color: inputQueueColor }}>{inputQueueText}</span>
@@ -712,11 +731,7 @@ export function StreamView({
     typeof window.openNow?.listScreenshots === "function" &&
     typeof window.openNow?.deleteScreenshot === "function" &&
     typeof window.openNow?.saveScreenshotAs === "function";
-  const nativeRendererActive = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => stats.nativeRendererActive,
-  );
-  const showStatsHud = showStats && !nativeRendererActive && !isConnecting;
+  const showStatsHud = showStats && !isConnecting;
 
   // Recording state
   const [isRecording, setIsRecording] = useState(false);

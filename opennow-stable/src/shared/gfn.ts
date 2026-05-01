@@ -717,9 +717,27 @@ export type MainToRendererSignalingEvent =
   | { type: "remote-ice"; candidate: IceCandidatePayload }
   | { type: "native-stream-started"; message?: string }
   | { type: "native-stream-stopped"; reason?: string }
+  | { type: "native-stream-stats"; stats: NativeStreamStats }
   | { type: "native-input-ready"; protocolVersion: number }
   | { type: "error"; message: string }
   | { type: "log"; message: string };
+
+export interface NativeStreamStats {
+  codec: string;
+  resolution: string;
+  hardwareAcceleration: string;
+  bitrateKbps: number;
+  targetBitrateKbps: number;
+  bitratePerformancePercent: number;
+  decodedFps: number;
+  renderFps: number;
+  framesDecoded: number;
+  framesRendered: number;
+  sinkRendered?: number;
+  sinkDropped?: number;
+  zeroCopyD3D11: boolean;
+  zeroCopyD3D12: boolean;
+}
 
 /** Dialog result for session conflict resolution */
 export type SessionConflictChoice = "resume" | "new" | "cancel";

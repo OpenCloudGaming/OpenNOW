@@ -563,6 +563,14 @@ export class NativeStreamerManager {
       return;
     }
 
+    if (message.type === "stats") {
+      this.options.emit({
+        type: "native-stream-stats",
+        stats: message.stats,
+      });
+      return;
+    }
+
     if (message.type === "status") {
       console.log(`[NativeStreamer] Status: ${message.status}${message.message ? ` (${message.message})` : ""}`);
       if (message.status === "streaming") {

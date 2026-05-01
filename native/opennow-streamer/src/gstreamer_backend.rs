@@ -8,8 +8,9 @@ use crate::input::{
 };
 use crate::protocol::{
     missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeRenderRect,
-    NativeRenderSurface, NativeStreamerCapabilities, NativeStreamerSessionContext, Response,
-    SendAnswerRequest, VideoStallEvent, PROTOCOL_VERSION,
+    NativeRenderSurface, NativeStatsEvent, NativeStreamerCapabilities,
+    NativeStreamerSessionContext, Response, SendAnswerRequest, StreamSettings, VideoStallEvent,
+    PROTOCOL_VERSION,
 };
 use crate::sdp::{
     build_nvst_sdp_for_answer, extract_negotiated_video_codec, munge_answer_sdp, IceCredentials,
@@ -137,6 +138,11 @@ impl VideoStallTracker {
 #[derive(Debug)]
 struct VideoLivenessState {
     started_at: Instant,
+    codec: Mutex<String>,
+    resolution: Mutex<String>,
+    hardware_acceleration: Mutex<String>,
+    target_bitrate_kbps: AtomicU32,
+    encoded_bytes_total: AtomicU64,
     last_decoded_ms: AtomicU64,
     last_sink_ms: AtomicU64,
     decoded_total: AtomicU64,
@@ -149,6 +155,11 @@ impl VideoLivenessState {
     fn new() -> Self {
         Self {
             started_at: Instant::now(),
+            codec: Mutex::new(String::new()),
+            resolution: Mutex::new(String::new()),
+            hardware_acceleration: Mutex::new(String::new()),
+            target_bitrate_kbps: AtomicU32::new(0),
+            encoded_bytes_total: AtomicU64::new(0),
             last_decoded_ms: AtomicU64::new(0),
             last_sink_ms: AtomicU64::new(0),
             decoded_total: AtomicU64::new(0),
@@ -163,6 +174,28 @@ impl VideoLivenessState {
             .elapsed()
             .as_millis()
             .min(u128::from(u64::MAX)) as u64
+    }
+
+    fn configure(&self, settings: &StreamSettings, target_bitrate_kbps: u32) {
+        if let Ok(mut codec) = self.codec.lock() {
+            *codec = settings.codec.as_str().to_owned();
+        }
+        if let Ok(mut resolution) = self.resolution.lock() {
+            *resolution = settings.resolution.clone();
+        }
+        self.target_bitrate_kbps
+            .store(target_bitrate_kbps, Ordering::Relaxed);
+    }
+
+    fn update_hardware_acceleration(&self, value: impl Into<String>) {
+        if let Ok(mut hardware_acceleration) = self.hardware_acceleration.lock() {
+            *hardware_acceleration = value.into();
+        }
+    }
+
+    fn record_encoded_buffer(&self, size: usize) {
+        self.encoded_bytes_total
+            .fetch_add(size as u64, Ordering::Relaxed);
     }
 
     fn record_decoded_buffer(&self) {
@@ -211,6 +244,18 @@ impl Default for VideoLivenessMonitor {
 }
 
 impl VideoLivenessMonitor {
+    fn configure(&self, settings: &StreamSettings, target_bitrate_kbps: u32) {
+        self.state.configure(settings, target_bitrate_kbps);
+    }
+
+    fn update_hardware_acceleration(&self, value: impl Into<String>) {
+        self.state.update_hardware_acceleration(value);
+    }
+
+    fn record_encoded_buffer(&self, size: usize) {
+        self.state.record_encoded_buffer(size);
+    }
+
     fn record_decoded_buffer(&self) {
         self.state.record_decoded_buffer();
     }
@@ -1116,6 +1161,10 @@ impl GstreamerPipeline {
 
     fn set_present_max_fps(&self, fps: u32) {
         self.present_max_fps.store(fps, Ordering::SeqCst);
+    }
+
+    fn configure_stats(&self, settings: &StreamSettings, target_bitrate_kbps: u32) {
+        self.video_liveness.configure(settings, target_bitrate_kbps);
     }
 
     fn ensure_input_data_channels(
@@ -3171,6 +3220,7 @@ fn run_video_liveness_watchdog(
 ) {
     let mut tracker = VideoStallTracker::default();
     let mut last_rate_at = Instant::now();
+    let mut last_encoded_bytes_total = state.encoded_bytes_total.load(Ordering::Relaxed);
     let mut last_decoded_total = state.decoded_total.load(Ordering::Relaxed);
     let mut last_sink_total = state.sink_total.load(Ordering::Relaxed);
     let mut rates = VideoRateSnapshot {
@@ -3183,13 +3233,29 @@ fn run_video_liveness_watchdog(
 
         let elapsed = last_rate_at.elapsed();
         if elapsed >= VIDEO_SINK_RATE_LOG_INTERVAL {
+            let encoded_bytes_total = state.encoded_bytes_total.load(Ordering::Relaxed);
             let decoded_total = state.decoded_total.load(Ordering::Relaxed);
             let sink_total = state.sink_total.load(Ordering::Relaxed);
             let elapsed_secs = elapsed.as_secs_f64().max(0.001);
+            let bitrate_kbps = encoded_bytes_total
+                .saturating_sub(last_encoded_bytes_total)
+                .saturating_mul(8) as f64
+                / elapsed_secs
+                / 1000.0;
             rates = VideoRateSnapshot {
                 decoded_fps: decoded_total.saturating_sub(last_decoded_total) as f64 / elapsed_secs,
                 sink_fps: sink_total.saturating_sub(last_sink_total) as f64 / elapsed_secs,
             };
+            emit_native_stats_event(
+                &event_sender,
+                &sink,
+                &state,
+                bitrate_kbps.max(0.0).round() as u32,
+                rates,
+                decoded_total,
+                sink_total,
+            );
+            last_encoded_bytes_total = encoded_bytes_total;
             last_decoded_total = decoded_total;
             last_sink_total = sink_total;
             last_rate_at = Instant::now();
@@ -3247,6 +3313,62 @@ fn run_video_liveness_watchdog(
             }
         }
     }
+}
+
+fn emit_native_stats_event(
+    event_sender: &Option<Sender<Event>>,
+    sink: &gst::Element,
+    state: &VideoLivenessState,
+    bitrate_kbps: u32,
+    rates: VideoRateSnapshot,
+    frames_decoded: u64,
+    frames_rendered: u64,
+) {
+    let Some(event_sender) = event_sender else {
+        return;
+    };
+
+    let target_bitrate_kbps = state.target_bitrate_kbps.load(Ordering::Relaxed);
+    let bitrate_performance_percent = if target_bitrate_kbps > 0 {
+        (f64::from(bitrate_kbps) / f64::from(target_bitrate_kbps)) * 100.0
+    } else {
+        0.0
+    };
+    let codec = state
+        .codec
+        .lock()
+        .map(|codec| codec.clone())
+        .unwrap_or_default();
+    let resolution = state
+        .resolution
+        .lock()
+        .map(|resolution| resolution.clone())
+        .unwrap_or_default();
+    let hardware_acceleration = state
+        .hardware_acceleration
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_default();
+    let sink_stats = read_sink_stats(sink);
+
+    let _ = event_sender.send(Event::Stats {
+        stats: NativeStatsEvent {
+            codec,
+            resolution,
+            hardware_acceleration,
+            bitrate_kbps,
+            target_bitrate_kbps,
+            bitrate_performance_percent,
+            decoded_fps: rates.decoded_fps,
+            render_fps: rates.sink_fps,
+            frames_decoded,
+            frames_rendered,
+            sink_rendered: sink_stats.rendered,
+            sink_dropped: sink_stats.dropped,
+            zero_copy_d3d11: state.zero_copy_d3d11(),
+            zero_copy_d3d12: state.zero_copy_d3d12(),
+        },
+    });
 }
 
 fn emit_video_stall_event(
@@ -3842,6 +3964,7 @@ fn link_rtp_video_pad(
             "Explicit low-latency decode chain is unavailable for RTP {encoding}; install the platform GStreamer plugin packages or set {NATIVE_VIDEO_API_ENV}=software to force software decode."
         )
     })?;
+    video_liveness.update_hardware_acceleration(format!("GStreamer {}", video_api.label()));
     let mut elements = Vec::with_capacity(specs.len());
 
     let result = (|| -> Result<(), String> {
@@ -3883,6 +4006,7 @@ fn link_rtp_video_pad(
         src_pad
             .link(&first_sink_pad)
             .map_err(|error| format!("Failed to link RTP {encoding} video pad: {error:?}"))?;
+        watch_rtp_video_bitrate(src_pad, video_liveness.clone());
 
         let sink = elements
             .last()
@@ -4159,6 +4283,15 @@ fn watch_first_sink_buffer(
         }
 
         gst::PadProbeReturn::Remove
+    });
+}
+
+fn watch_rtp_video_bitrate(pad: &gst::Pad, video_liveness: VideoLivenessMonitor) {
+    pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, info| {
+        if let Some(buffer) = info.buffer() {
+            video_liveness.record_encoded_buffer(buffer.size());
+        }
+        gst::PadProbeReturn::Ok
     });
 }
 
@@ -4588,6 +4721,7 @@ impl NativeStreamerBackend for GstreamerBackend {
 
         let present_max_fps = resolve_present_max_fps(context.settings.fps);
         pipeline.set_present_max_fps(present_max_fps);
+        pipeline.configure_stats(&context.settings, prepared.nvst_params.max_bitrate_kbps);
         if present_max_fps > 0 {
             events.push(Event::Log {
                 level: "info",
