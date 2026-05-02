@@ -6731,15 +6731,11 @@ button.game-card-store-chip.owned.active:hover {
   animation: none;
 }
 
-/* Enable ribbon animations when wrapper has xmb-animate */
-.xmb-wrapper.xmb-animate .xmb-bg-gradient {
-  animation: xmb-ribbon-pan 30s linear infinite;
-}
-.xmb-wrapper.xmb-animate .xmb-bg-gradient::before {
-  animation: xmb-ribbon-float 26s ease-in-out infinite;
-}
+/* Legacy ribbon animations intentionally disabled; parallax is the active background animation. */
+.xmb-wrapper.xmb-animate .xmb-bg-gradient,
+.xmb-wrapper.xmb-animate .xmb-bg-gradient::before,
 .xmb-wrapper.xmb-animate .xmb-bg-gradient::after {
-  animation: xmb-ribbon-swell 22s ease-in-out infinite;
+  animation: none;
 }
 
 @keyframes xmb-enter-bg {
@@ -6805,6 +6801,66 @@ button.game-card-store-chip.owned.active:hover {
   transform: scale(1.06);
 }
 
+.xmb-ps5-parallax-field {
+  position: absolute;
+  inset: -10%;
+  overflow: hidden;
+  opacity: 0.34;
+  pointer-events: none;
+}
+
+.xmb-ps5-parallax-tile {
+  position: absolute;
+  width: clamp(110px, 11vw, 180px);
+  aspect-ratio: 2 / 3;
+  border-radius: 14px;
+  background-size: cover;
+  background-position: center;
+  filter: saturate(1.05) brightness(0.78);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.42);
+  top: 120%;
+  animation-name: xmb-ps5-parallax-scroll;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  animation-delay: var(--parallax-delay);
+}
+
+.xmb-wrapper.xmb-static .xmb-ps5-parallax-tile {
+  animation-play-state: paused;
+}
+
+.xmb-wrapper.xmb-static .xmb-ps5-parallax-field {
+  opacity: 0.22;
+}
+
+.xmb-wrapper.xmb-animate .xmb-ps5-parallax-tile {
+  animation-play-state: running;
+}
+
+.xmb-ps5-parallax-row-0 {
+  animation-duration: 36s;
+}
+
+.xmb-ps5-parallax-row-1 {
+  animation-duration: 46s;
+}
+
+.xmb-ps5-parallax-row-2 {
+  animation-duration: 58s;
+}
+
+@keyframes xmb-ps5-parallax-scroll {
+  0% {
+    transform: translate3d(var(--parallax-x-from), 0, 0) rotate(var(--parallax-rot-from)) scale(var(--parallax-scale, 1));
+    top: 120%;
+  }
+  100% {
+    transform: translate3d(var(--parallax-x-to), 0, 0) rotate(var(--parallax-rot-to)) scale(var(--parallax-scale, 1));
+    top: -40%;
+  }
+}
+
 .xmb-layout--ps5-home .xmb-bg-overlay {
   background:
     linear-gradient(180deg, rgba(8, 10, 14, 0.52) 0%, rgba(10, 14, 18, 0.28) 38%, rgba(6, 8, 12, 0.06) 62%, rgba(0, 0, 0, 0.72) 100%),
@@ -6817,8 +6873,8 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .xmb-layout--ps5-home .xmb-category-item {
-  width: 96px;
-  height: 88px;
+  width: 102px;
+  height: 92px;
   margin-right: 28px;
   opacity: 0.48;
   transform: scale(0.82);
@@ -6829,8 +6885,26 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .xmb-layout--ps5-home .xmb-category-label {
-  font-size: 0.72rem;
-  letter-spacing: 0.24em;
+  font-size: 0.62rem;
+  letter-spacing: 0.2em;
+  margin-top: 7px;
+}
+
+.xmb-category-icon-wrap {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.34);
+}
+
+.xmb-layout--ps5-home .xmb-category-item.active .xmb-category-icon-wrap {
+  background: rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.28);
+  border-color: rgba(255, 255, 255, 0.8);
 }
 
 .xmb-layout--ps5-home .xmb-items-container {
@@ -6888,6 +6962,7 @@ button.game-card-store-chip.owned.active:hover {
   align-items: flex-start;
   max-width: min(82vw, 1080px);
   z-index: 6;
+  animation: xmb-ps5-focus-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .xmb-ps5-focus-title {
@@ -6910,6 +6985,47 @@ button.game-card-store-chip.owned.active:hover {
   max-width: 100%;
   max-height: 100px;
   overflow: hidden;
+}
+
+.xmb-ps5-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 2px;
+  flex-wrap: wrap;
+}
+
+.xmb-ps5-action {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.xmb-ps5-action--primary {
+  color: #0a1116;
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(255, 255, 255, 0.98);
+}
+
+@keyframes xmb-ps5-focus-in {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+    filter: blur(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
 }
 
 .xmb-ps5-shelf-viewport {
@@ -6938,6 +7054,11 @@ button.game-card-store-chip.owned.active:hover {
 .xmb-ps5-shelf-track--menu {
   align-items: stretch;
   padding-bottom: 28px;
+}
+
+.xmb-ps5-shelf-track--media {
+  align-items: flex-start;
+  padding-bottom: 18px;
 }
 
 .xmb-ps5-tile {
@@ -7030,6 +7151,67 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.xmb-ps5-media-tile {
+  width: clamp(260px, 30vw, 420px);
+  opacity: 0.58;
+  transform: translateY(10px) scale(0.94);
+  transition: all 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.xmb-ps5-media-tile.active {
+  opacity: 1;
+  transform: translateY(0) scale(1.02);
+}
+
+.xmb-ps5-media-frame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  background: rgba(12, 16, 20, 0.6);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.46);
+  transition: all 360ms ease;
+}
+
+.xmb-ps5-media-tile.active .xmb-ps5-media-frame {
+  border-color: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 22px 48px rgba(0, 0, 0, 0.6),
+    0 0 0 3px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.34);
+}
+
+.xmb-ps5-media-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.xmb-ps5-media-image--placeholder,
+.xmb-ps5-media-frame--placeholder {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.05) 0 8px, rgba(255, 255, 255, 0.01) 8px 16px);
+}
+
+.xmb-ps5-media-caption {
+  margin-top: 10px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.94);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.xmb-ps5-media-meta {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .xmb-ps5-menu-thumb-row {
@@ -7131,11 +7313,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .xmb-theme-pulse .xmb-bg-layer {
-  animation: xmb-theme-pulse-layer 11s ease-in-out infinite;
-}
-
-.xmb-theme-pulse.xmb-animate .xmb-bg-gradient {
-  animation: xmb-ribbon-pan 30s linear infinite, xmb-theme-pulse-layer 11s ease-in-out infinite;
+  animation: none;
 }
 
 .xmb-categories-container {
@@ -7642,6 +7820,22 @@ button.game-card-store-chip.owned.active:hover {
 
 .xmb-btn-hint:hover .xmb-btn-icon {
   transform: scale(1.3);
+}
+
+.xmb-btn-keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.95);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
 }
 
 .xmb-top-right {

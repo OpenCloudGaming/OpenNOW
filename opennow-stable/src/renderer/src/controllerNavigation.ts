@@ -329,7 +329,6 @@ export function useControllerNavigation({
       const b = Boolean(pad.buttons[1]?.pressed);
       const lb = Boolean(pad.buttons[4]?.pressed);
       const rb = Boolean(pad.buttons[5]?.pressed);
-      const scopedToDocument = getFocusScopeRoot() === document;
 
       const handleDirection = (direction: Direction, pressed: boolean): void => {
         const state = directionStateRef.current[direction];
@@ -379,10 +378,10 @@ export function useControllerNavigation({
       if (b && !actionStateRef.current.b) {
         triggerBackAction(onBackAction);
       }
-      if (scopedToDocument && lb && !actionStateRef.current.lb) {
+      if (lb && !actionStateRef.current.lb) {
         onNavigatePage?.("prev");
       }
-      if (scopedToDocument && rb && !actionStateRef.current.rb) {
+      if (rb && !actionStateRef.current.rb) {
         onNavigatePage?.("next");
       }
 
