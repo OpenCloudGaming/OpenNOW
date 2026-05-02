@@ -1,0 +1,14 @@
+/** Polling and session-ad timing used by the stream / queue flow in `App`. */
+export const SESSION_READY_POLL_INTERVAL_MS = 2000;
+export const SESSION_AD_POLL_INTERVAL_MS = 30000;
+export const SESSION_AD_PROGRESS_CHECK_INTERVAL_MS = 1000;
+export const SESSION_AD_START_TIMEOUT_MS = 30000;
+export const SESSION_AD_FORCE_PLAY_TIMEOUT_MS = 10000;
+export const SESSION_AD_STUCK_TIMEOUT_MS = 30000;
+export const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
+export const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
+export const FREE_TIER_SESSION_LIMIT_SECONDS = 60 * 60;
+export const FREE_TIER_30_MIN_WARNING_SECONDS = 30 * 60;
+export const FREE_TIER_15_MIN_WARNING_SECONDS = 15 * 60;
+export const FREE_TIER_FINAL_MINUTE_WARNING_SECONDS = 60;
+export const STREAM_WARNING_VISIBILITY_MS = 15 * 1000;

@@ -141,13 +141,6 @@ const api: OpenNowApi = {
   listScreenshots: () => ipcRenderer.invoke(IPC_CHANNELS.SCREENSHOT_LIST),
   deleteScreenshot: (input: ScreenshotDeleteRequest) => ipcRenderer.invoke(IPC_CHANNELS.SCREENSHOT_DELETE, input),
   saveScreenshotAs: (input: ScreenshotSaveAsRequest) => ipcRenderer.invoke(IPC_CHANNELS.SCREENSHOT_SAVE_AS, input),
-  onTriggerScreenshot: (listener: () => void) => {
-    const wrapped = () => listener();
-    ipcRenderer.on("app:trigger-screenshot", wrapped);
-    return () => {
-      ipcRenderer.off("app:trigger-screenshot", wrapped);
-    };
-  },
   beginRecording: (input: RecordingBeginRequest): Promise<RecordingBeginResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.RECORDING_BEGIN, input),
   sendRecordingChunk: (input: RecordingChunkRequest): Promise<void> =>
@@ -169,6 +162,8 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.MEDIA_SHOW_IN_FOLDER, input),
   deleteCache: (): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.CACHE_DELETE_ALL),
+  refreshCache: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.CACHE_REFRESH_MANUAL),
   fetchPrintedWasteQueue: (): Promise<PrintedWasteQueueData> =>
     ipcRenderer.invoke(IPC_CHANNELS.PRINTEDWASTE_QUEUE_FETCH),
   fetchPrintedWasteServerMapping: (): Promise<PrintedWasteServerMapping> =>
