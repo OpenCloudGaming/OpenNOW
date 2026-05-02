@@ -179,6 +179,8 @@ export interface Settings {
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
   autoCheckForUpdates: boolean;
+  /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
+  allowEscapeToExitFullscreen?: boolean;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({

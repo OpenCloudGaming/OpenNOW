@@ -2557,6 +2557,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                   <div className="settings-row">
                     <label className="settings-label">
+                      Escape Exits Fullscreen
+                      <span className="settings-hint">When enabled, pressing Escape will exit fullscreen. When disabled (default), Escape is forwarded to the game while the mouse is pointer-locked.</span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(settings.allowEscapeToExitFullscreen)}
+                        onChange={(e) => handleChange("allowEscapeToExitFullscreen", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
+                  <div className="settings-row">
+                    <label className="settings-label">
                       Discord Rich Presence
                       <span className="settings-hint">Show the game you are streaming as your Discord activity, including elapsed time.</span>
                     </label>

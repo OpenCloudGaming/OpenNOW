@@ -68,6 +68,7 @@ interface StreamViewProps {
   subscriptionInfo: SubscriptionInfo | null;
   micTrack?: MediaStreamTrack | null;
   className?: string;
+  allowEscapeToExitFullscreen?: boolean;
 }
 
 function getRttColor(rttMs: number): string {
@@ -679,12 +680,15 @@ export function StreamView({
   subscriptionInfo,
   micTrack,
   hideStreamButtons = false,
+  allowEscapeToExitFullscreen,
   className,
 }: StreamViewProps): JSX.Element {
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
   const [showSideBar, setShowSideBar] = useState(false);
   const [isPointerLocked, setIsPointerLocked] = useState(false);
+  const [pointerLockHintVisible, setPointerLockHintVisible] = useState(false);
+  const pointerLockHintTimerRef = useRef<number | null>(null);
   const [screenshots, setScreenshots] = useState<ScreenshotEntry[]>([]);
   const [isSavingScreenshot, setIsSavingScreenshot] = useState(false);
   const [galleryError, setGalleryError] = useState<string | null>(null);
@@ -1338,6 +1342,32 @@ export function StreamView({
   }, []);
 
   useEffect(() => {
+    // Show a transient HUD hint when pointer lock is acquired
+    if (isPointerLocked) {
+      setPointerLockHintVisible(true);
+      if (pointerLockHintTimerRef.current) {
+        window.clearTimeout(pointerLockHintTimerRef.current);
+      }
+      pointerLockHintTimerRef.current = window.setTimeout(() => {
+        pointerLockHintTimerRef.current = null;
+        setPointerLockHintVisible(false);
+      }, 3000);
+    } else {
+      if (pointerLockHintTimerRef.current) {
+        window.clearTimeout(pointerLockHintTimerRef.current);
+        pointerLockHintTimerRef.current = null;
+      }
+      setPointerLockHintVisible(false);
+    }
+    return () => {
+      if (pointerLockHintTimerRef.current) {
+        window.clearTimeout(pointerLockHintTimerRef.current);
+        pointerLockHintTimerRef.current = null;
+      }
+    };
+  }, [isPointerLocked]);
+
+  useEffect(() => {
     if (showSideBar) {
       // Mark sidebar open so input auto-lock code can avoid re-requesting.
       try {
@@ -1452,6 +1482,17 @@ export function StreamView({
         isConnecting={isConnecting}
         videoRef={localVideoRef}
       />
+
+      {pointerLockHintVisible && (
+        <div className="sv-pointerlock-hint" role="status" aria-live="polite">
+          <div>Press {shortcuts.toggleFullscreen} to exit fullscreen & release mouse</div>
+          <div className="sv-pointerlock-hint-sub">
+            {allowEscapeToExitFullscreen
+              ? "Press Escape will also exit fullscreen per your settings."
+              : "Escape is forwarded to the game while pointer-locked (see Settings)."}
+          </div>
+        </div>
+      )}
 
       {showSideBar && (
         <>

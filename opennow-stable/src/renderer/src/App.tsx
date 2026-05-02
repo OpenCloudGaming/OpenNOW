@@ -3994,6 +3994,7 @@ export function App(): JSX.Element {
             onReleasePointerLock={() => {
               void releasePointerLockIfNeeded();
             }}
+            allowEscapeToExitFullscreen={settings.allowEscapeToExitFullscreen}
           />
         )}
         {isSwitchingGame && settings.controllerMode && streamStatus !== "connecting" && (
