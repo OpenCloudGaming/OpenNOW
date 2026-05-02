@@ -223,6 +223,7 @@ app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 app.commandLine.appendSwitch("max-gum-fps", "999");
 
 let mainWindow: BrowserWindow | null = null;
+let rendererControlledFullscreen = false;
 let signalingClient: GfnSignalingClient | null = null;
 let signalingClientKey: string | null = null;
 let authService: AuthService;
@@ -234,6 +235,9 @@ let isShutdownRequested = false;
 let isShutdownCleanupComplete = false;
 let isUpdaterInstallQuitInProgress = false;
 let explicitShutdownFallbackTimer: NodeJS.Timeout | null = null;
+
+// Runtime pointer-lock state (updated by renderer)
+let isPointerLockActiveRuntime = false;
 
 function clearExplicitShutdownFallback(): void {
   if (explicitShutdownFallbackTimer) {
@@ -719,11 +723,42 @@ async function createMainWindow(): Promise<void> {
     });
 
     mainWindow.webContents.on("leave-html-full-screen", () => {
+      if (rendererControlledFullscreen) {
+        return;
+      }
       if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()) {
         mainWindow.setFullScreen(false);
       }
     });
   }
+
+  // Track pointer-lock state from renderer; used to decide whether to swallow
+  // Escape at the native level (before Chromium handles it).
+  ipcMain.on(IPC_CHANNELS.POINTER_LOCK_CHANGE, (_ev, active: boolean) => {
+    isPointerLockActiveRuntime = Boolean(active);
+  });
+
+  // Intercept Escape early to avoid Chromium exiting fullscreen before the
+  // renderer can forward the key to the remote session. This is a best-effort
+  // interception and is gated by the user's `allowEscapeToExitFullscreen` setting.
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    try {
+      if (
+        input.type === "keyDown" &&
+        input.key === "Escape" &&
+        isPointerLockActiveRuntime &&
+        settingsManager &&
+        !settingsManager.get("allowEscapeToExitFullscreen")
+      ) {
+        event.preventDefault();
+        if (mainWindow && mainWindow.webContents) {
+          mainWindow.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
+        }
+      }
+    } catch (err) {
+      // ignore errors - interception is best-effort
+    }
+  });
 
   if (process.env.ELECTRON_RENDERER_URL) {
     await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -733,6 +768,7 @@ async function createMainWindow(): Promise<void> {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    rendererControlledFullscreen = false;
   });
 }
 
@@ -1420,14 +1456,18 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.TOGGLE_FULLSCREEN, async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       const isFullScreen = mainWindow.isFullScreen();
-      mainWindow.setFullScreen(!isFullScreen);
+      const nextFullscreen = !isFullScreen;
+      mainWindow.setFullScreen(nextFullscreen);
+      rendererControlledFullscreen = nextFullscreen;
     }
   });
 
   ipcMain.handle(IPC_CHANNELS.SET_FULLSCREEN, async (_event, value: boolean) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       try {
-        mainWindow.setFullScreen(Boolean(value));
+        const nextFullscreen = Boolean(value);
+        mainWindow.setFullScreen(nextFullscreen);
+        rendererControlledFullscreen = nextFullscreen;
       } catch (err) {
         console.warn("Failed to set fullscreen:", err);
       }

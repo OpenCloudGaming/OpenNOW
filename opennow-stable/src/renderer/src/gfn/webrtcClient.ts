@@ -614,8 +614,11 @@ export class GfnWebRtcClient {
   private autoPointerLockInProgress = false;
   // Timer for synthetic Escape on pointer lock loss
   private pointerLockEscapeTimer: number | null = null;
+  // Timer for restoring pointer lock after Escape releases it.
+  private pointerLockRelockTimer: number | null = null;
   // Skip one synthetic Escape on pointer loss when lock was released intentionally (e.g. F8).
   private suppressNextSyntheticEscape = false;
+  private keyboardLockState: "unknown" | "unsupported" | "locked" | "failed" = "unknown";
   private mouseBackpressureLoggedAtMs = 0;
   private mouseFlushBaseIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
   private mouseAdaptiveFlushActive = false;
@@ -2546,6 +2549,36 @@ export class GfnWebRtcClient {
     }
   }
 
+  private requestEscapeKeyboardLock(): void {
+    if (!document.fullscreenElement) {
+      if (this.keyboardLockState === "locked") {
+        this.keyboardLockState = "unknown";
+      }
+      return;
+    }
+
+    const nav = navigator as any;
+    if (!nav.keyboard?.lock) {
+      if (this.keyboardLockState !== "unsupported") {
+        this.keyboardLockState = "unsupported";
+        this.log("Keyboard Lock API unavailable; Escape may release pointer lock");
+      }
+      return;
+    }
+
+    void Promise.resolve(nav.keyboard.lock())
+      .then(() => {
+        if (this.keyboardLockState !== "locked") {
+          this.keyboardLockState = "locked";
+          this.log("Keyboard lock active for fullscreen stream");
+        }
+      })
+      .catch((error: unknown) => {
+        this.keyboardLockState = "failed";
+        this.log(`Keyboard Escape lock failed: ${String(error)}`);
+      });
+  }
+
   private async requestPointerLockWithOptionalFullscreen(
     lockTarget: HTMLElement,
     ensureFullscreen: boolean,
@@ -2554,9 +2587,19 @@ export class GfnWebRtcClient {
       try {
         await document.documentElement.requestFullscreen();
       } catch (error) {
-        this.log(`Fullscreen request failed: ${String(error)}`);
+        this.log(`DOM fullscreen request failed: ${String(error)}`);
+      }
+
+      if (typeof window.openNow?.setFullscreen === "function") {
+        try {
+          await window.openNow.setFullscreen(true);
+        } catch (error) {
+          this.log(`Native fullscreen request failed: ${String(error)}`);
+        }
       }
     }
+
+    this.requestEscapeKeyboardLock();
 
     try {
       await this.requestPointerLockCompat(lockTarget, { unadjustedMovement: true });
@@ -3210,6 +3253,33 @@ export class GfnWebRtcClient {
       videoElement.focus();
     };
 
+    const schedulePointerLockRetention = (reason: string): void => {
+      if (this.pointerLockRelockTimer !== null) {
+        return;
+      }
+
+      this.pointerLockRelockTimer = window.setTimeout(() => {
+        this.pointerLockRelockTimer = null;
+
+        if (!this.inputReady || !this.shouldSendSyntheticEscapeOnPointerLockLoss() || isPointerLockActive()) {
+          return;
+        }
+
+        const target = this.pointerLockTarget;
+        if (!target) {
+          return;
+        }
+
+        void this.requestPointerLockWithOptionalFullscreen(target, false)
+          .then(() => {
+            this.log(`Pointer lock restored after ${reason}`);
+          })
+          .catch((error: unknown) => {
+            this.log(`Pointer lock restore failed after ${reason}: ${String(error)}`);
+          });
+      }, 75);
+    };
+
     // Store lock target for pointer lock re-acquisition
     this.pointerLockTarget = pointerLockTarget;
 
@@ -3225,7 +3295,21 @@ export class GfnWebRtcClient {
           window.clearTimeout(this.pointerLockEscapeTimer);
           this.pointerLockEscapeTimer = null;
         }
+        if (this.pointerLockRelockTimer !== null) {
+          window.clearTimeout(this.pointerLockRelockTimer);
+          this.pointerLockRelockTimer = null;
+        }
         this.suppressNextSyntheticEscape = false;
+        // Try to acquire keyboard lock for low-level key capture (best-effort).
+        try {
+          this.requestEscapeKeyboardLock();
+        } catch {}
+
+        // Notify main process that pointer lock is active so native-level
+        // interception (before-input-event) can act accordingly.
+        try {
+          (window as any).openNow?.notifyPointerLockChange?.(true);
+        } catch {}
         return;
       }
 
@@ -3233,6 +3317,10 @@ export class GfnWebRtcClient {
       // current cursor position rather than from a stale last-known position.
       lastAbsX = null;
       lastAbsY = null;
+
+      try {
+        (window as any).openNow?.notifyPointerLockChange?.(false);
+      } catch {}
 
       // Pointer lock was lost
       if (!this.inputReady) return;
@@ -3253,7 +3341,9 @@ export class GfnWebRtcClient {
 
       if (escapeWasPressed) {
         // Escape was already tracked as pressed — the normal keyup handler will fire
-        // and send Escape keyup to the server. No synthetic needed.
+        // and send Escape keyup to the server. No synthetic needed, but Chromium
+        // still released pointer lock, so restore it after keyup has a chance to run.
+        schedulePointerLockRetention("tracked Escape");
         return;
       }
 
@@ -3291,11 +3381,7 @@ export class GfnWebRtcClient {
         });
         this.sendReliable(escUp);
 
-        // Re-acquire pointer lock so the user stays in the game
-        if (this.pointerLockTarget) {
-          void this.requestPointerLockWithOptionalFullscreen(this.pointerLockTarget, false)
-            .catch(() => {});
-        }
+        schedulePointerLockRetention("synthetic Escape");
       }, 50);
     };
 
@@ -3339,12 +3425,14 @@ export class GfnWebRtcClient {
     // Release any prior Keyboard API lock when leaving fullscreen (e.g. other UI may have locked keys).
     const onFullscreenChange = () => {
       if (document.fullscreenElement) {
+        this.requestEscapeKeyboardLock();
         return;
       }
       const nav = navigator as any;
       if (nav.keyboard?.unlock) {
         try {
           nav.keyboard.unlock();
+          this.keyboardLockState = "unknown";
         } catch {
           /* no-op */
         }
@@ -3453,6 +3541,31 @@ export class GfnWebRtcClient {
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onWindowFocus);
 
+    // Listen for external Escape events forwarded from main process and
+    // forward them to the remote session as synthetic Escape keypresses.
+    try {
+      (window as any).openNow?.onExternalEscape?.(() => {
+        if (!this.inputReady) return;
+        this.releasePressedKeys("external Escape forwarded from main");
+
+        const escDown = this.inputEncoder.encodeKeyDown({
+          keycode: 0x1B,
+          scancode: codeMap.Escape.scancode,
+          modifiers: 0,
+          timestampUs: timestampUs(),
+        });
+        this.sendReliable(escDown);
+
+        const escUp = this.inputEncoder.encodeKeyUp({
+          keycode: 0x1B,
+          scancode: codeMap.Escape.scancode,
+          modifiers: 0,
+          timestampUs: timestampUs(),
+        });
+        this.sendReliable(escUp);
+      });
+    } catch {}
+
     this.inputCleanup.push(() => window.removeEventListener("gamepadconnected", this.onGamepadConnected));
     this.inputCleanup.push(() => window.removeEventListener("gamepaddisconnected", this.onGamepadDisconnected));
     this.inputCleanup.push(() => document.removeEventListener("keydown", onKeyDown, true));
@@ -3480,11 +3593,15 @@ export class GfnWebRtcClient {
     this.inputCleanup.push(() => window.removeEventListener("blur", onWindowBlur));
     this.inputCleanup.push(() => document.removeEventListener("visibilitychange", onVisibilityChange));
     this.inputCleanup.push(() => window.removeEventListener("focus", onWindowFocus));
-      this.inputCleanup.push(() => {
-        if (this.pointerLockEscapeTimer !== null) {
-          window.clearTimeout(this.pointerLockEscapeTimer);
-          this.pointerLockEscapeTimer = null;
-        }
+    this.inputCleanup.push(() => {
+      if (this.pointerLockEscapeTimer !== null) {
+        window.clearTimeout(this.pointerLockEscapeTimer);
+        this.pointerLockEscapeTimer = null;
+      }
+      if (this.pointerLockRelockTimer !== null) {
+        window.clearTimeout(this.pointerLockRelockTimer);
+        this.pointerLockRelockTimer = null;
+      }
       this.releasePressedKeys("input cleanup");
       this.pendingMouseDxFloat = 0;
       this.pendingMouseDyFloat = 0;

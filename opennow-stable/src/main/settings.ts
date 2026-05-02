@@ -92,6 +92,8 @@ export interface Settings {
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
   autoCheckForUpdates: boolean;
+  /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
+  allowEscapeToExitFullscreen?: boolean;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -146,6 +148,7 @@ const DEFAULT_SETTINGS: Settings = {
   enableCloudGsync: false,
   discordRichPresence: false,
   autoCheckForUpdates: true,
+  allowEscapeToExitFullscreen: false,
 };
 
 export class SettingsManager {
