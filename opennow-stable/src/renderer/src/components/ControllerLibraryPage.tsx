@@ -1163,8 +1163,6 @@ export function ControllerLibraryPage({
         </div>
       </div>
 
-      <div className="xmb-selection-focus" />
-
       <div
         className="xmb-categories-container"
         style={{ transform: `translate(${-categoryIndex * CATEGORY_STEP_PX - CATEGORY_ACTIVE_HALF_WIDTH_PX}px, -50%)` }}

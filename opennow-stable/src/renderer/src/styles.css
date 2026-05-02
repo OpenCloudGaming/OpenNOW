@@ -6611,8 +6611,7 @@ button.game-card-store-chip.owned.active:hover {
 .xmb-wrapper.xmb-entering .xmb-categories-container,
 .xmb-wrapper.xmb-entering .xmb-items-container,
 .xmb-wrapper.xmb-entering .xmb-detail-layer,
-.xmb-wrapper.xmb-entering .xmb-footer,
-.xmb-wrapper.xmb-entering .xmb-selection-focus {
+.xmb-wrapper.xmb-entering .xmb-footer {
   animation: xmb-enter-content 680ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
@@ -6621,8 +6620,7 @@ button.game-card-store-chip.owned.active:hover {
   animation-delay: 50ms;
 }
 
-.xmb-wrapper.xmb-entering .xmb-categories-container,
-.xmb-wrapper.xmb-entering .xmb-selection-focus {
+.xmb-wrapper.xmb-entering .xmb-categories-container {
   animation-delay: 100ms;
 }
 
@@ -6890,7 +6888,7 @@ button.game-card-store-chip.owned.active:hover {
   opacity: 0.42;
   transform: scale(0.65);
   transition: all 500ms cubic-bezier(0.22, 1, 0.36, 1);
-  color: rgba(242, 255, 247, 0.9);
+  color: rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.52);
   flex-shrink: 0;
 }
 
@@ -6898,10 +6896,11 @@ button.game-card-store-chip.owned.active:hover {
   opacity: 1;
   transform: scale(1.2);
   color: #ffffff;
+  filter: drop-shadow(0 0 18px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.55));
 }
 
 .xmb-category-item.active .xmb-category-icon {
-  filter: drop-shadow(0 0 15px rgba(255, 255, 255, 0.5));
+  filter: drop-shadow(0 0 15px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.65));
 }
 
 
@@ -6941,7 +6940,7 @@ button.game-card-store-chip.owned.active:hover {
   /* smaller by default so inactive rows are significantly reduced in size; active rows will scale up separately */
   transform: translateX(0) scale(0.75);
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(233, 255, 242, 0.08);
+  border: 1px solid rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.1);
   backdrop-filter: blur(18px);
   transition: all 450ms cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -6950,9 +6949,15 @@ button.game-card-store-chip.owned.active:hover {
   opacity: 1;
   /* counter the default scale so the active row appears larger than its neighbours */
   transform: translateX(50px) scale(1.12);
-  background: linear-gradient(90deg, rgba(103, 236, 159, 0.34), rgba(245, 255, 249, 0.12));
-  border-color: rgba(231, 255, 240, 0.36);
-  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.52), 0 0 28px rgba(116, 255, 177, 0.22);
+  background: linear-gradient(
+    90deg,
+    rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.38),
+    rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.06)
+  );
+  border-color: rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.42);
+  box-shadow:
+    0 24px 48px rgba(0, 0, 0, 0.52),
+    0 0 28px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.28);
   z-index: 10;
 }
 
@@ -7048,12 +7053,12 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .xmb-game-meta-chip--playtime {
-  background: rgba(110, 255, 179, 0.09);
-  border-color: rgba(110, 255, 179, 0.24);
+  background: rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.11);
+  border-color: rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.28);
 }
 .xmb-game-item.active .xmb-game-meta-chip--playtime {
-  color: #b9ffd0;
-  border-color: rgba(110, 255, 179, 0.42);
+  color: rgba(255, 255, 255, 0.94);
+  border-color: rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.48);
 }
 
 .xmb-game-meta-chip--last-played {
@@ -7066,12 +7071,12 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .xmb-game-meta-chip--sessions {
-  background: rgba(88, 217, 138, 0.08);
-  border-color: rgba(88, 217, 138, 0.2);
+  background: rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.09);
+  border-color: rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.22);
 }
 .xmb-game-item.active .xmb-game-meta-chip--sessions {
-  color: #6ee7b7;
-  border-color: rgba(88, 217, 138, 0.4);
+  color: rgba(255, 255, 255, 0.94);
+  border-color: rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.42);
 }
 
 .xmb-game-meta-chip--genre {
