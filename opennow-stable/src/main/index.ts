@@ -1370,7 +1370,10 @@ function registerIpcHandlers(): void {
     async (_event, payload: SignalingConnectRequest): Promise<void> => {
       const nextKey = `${payload.sessionId}|${payload.signalingServer}|${payload.signalingUrl ?? ""}`;
       if (signalingClient && signalingClientKey === nextKey) {
-        console.log("[Signaling] Reuse existing signaling connection (duplicate connect request ignored)");
+        // WebSocket may have closed while the session key is unchanged; always
+        // run connect() so a dead socket is reopened (connect() no-ops if OPEN).
+        console.log("[Signaling] Same session key — ensuring signaling WebSocket is connected");
+        await signalingClient.connect();
         return;
       }
 

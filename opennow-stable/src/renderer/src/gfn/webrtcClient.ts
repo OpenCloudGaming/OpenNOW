@@ -166,6 +166,12 @@ export interface StreamTimeWarning {
   secondsLeft?: number;
 }
 
+export interface TransportDegradedDetail {
+  reason: string;
+  iceConnectionState: string;
+  connectionState: string;
+}
+
 interface ClientOptions {
   videoElement: HTMLVideoElement;
   audioElement: HTMLAudioElement;
@@ -183,6 +189,8 @@ interface ClientOptions {
   onStats?: (stats: StreamDiagnostics) => void;
   onTimeWarning?: (warning: StreamTimeWarning) => void;
   onMicStateChange?: (state: MicStateChange) => void;
+  /** Fired once per episode after ICE/PC stays in a bad state (debounced). */
+  onTransportDegraded?: (detail: TransportDegradedDetail) => void;
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
@@ -551,6 +559,8 @@ export class GfnWebRtcClient {
   private pendingMouseDyFloat = 0;
   private inputCleanup: Array<() => void> = [];
   private queuedCandidates: RTCIceCandidateInit[] = [];
+  private transportDegradeTimer: number | null = null;
+  private transportDegradeNotified = false;
 
   // Input mode: all input types (mouse, keyboard, gamepad) work simultaneously
   // Removed exclusive mode switching to allow concurrent input
@@ -579,6 +589,7 @@ export class GfnWebRtcClient {
   private static readonly RUMBLE_EFFECT_MS = 500;
   private static readonly RUMBLE_THROTTLE_MS = 500;
   private static readonly HAPTICS_LOG_INTERVAL_MS = 5000;
+  private static readonly TRANSPORT_DEGRADE_DEBOUNCE_MS = 2500;
 
   // Gamepad bitmap sent at packet offset 8, matching official client's this.nu field:
   // bit i (0-3) = connected, bit i+8 = Xbox/xinput style device.
@@ -1657,8 +1668,51 @@ export class GfnWebRtcClient {
       });
   }
 
+  private resetTransportDegradeEpisode(): void {
+    if (this.transportDegradeTimer !== null) {
+      window.clearTimeout(this.transportDegradeTimer);
+      this.transportDegradeTimer = null;
+    }
+    this.transportDegradeNotified = false;
+  }
+
+  private scheduleTransportDegradeCheck(pc: RTCPeerConnection): void {
+    if (!this.options.onTransportDegraded) {
+      return;
+    }
+    const ice = pc.iceConnectionState;
+    const cs = pc.connectionState;
+    const suspicious =
+      ice === "disconnected" || ice === "failed" || cs === "disconnected" || cs === "failed";
+    if (!suspicious) {
+      return;
+    }
+    if (this.transportDegradeTimer !== null) {
+      window.clearTimeout(this.transportDegradeTimer);
+    }
+    this.transportDegradeTimer = window.setTimeout(() => {
+      this.transportDegradeTimer = null;
+      if (!this.pc || this.pc !== pc) {
+        return;
+      }
+      const ice2 = pc.iceConnectionState;
+      const cs2 = pc.connectionState;
+      const stillBad =
+        ice2 === "disconnected" || ice2 === "failed" || cs2 === "disconnected" || cs2 === "failed";
+      if (stillBad && !this.transportDegradeNotified) {
+        this.transportDegradeNotified = true;
+        this.options.onTransportDegraded?.({
+          reason: "peer-connection-degraded-sustained",
+          iceConnectionState: ice2,
+          connectionState: cs2,
+        });
+      }
+    }, GfnWebRtcClient.TRANSPORT_DEGRADE_DEBOUNCE_MS);
+  }
+
   private cleanupPeerConnection(): void {
     this.clearTimers();
+    this.resetTransportDegradeEpisode();
     this.detachInputCapture();
     this.closeDataChannels();
     this.cleanupAudioRouting();
@@ -1666,6 +1720,7 @@ export class GfnWebRtcClient {
       this.pc.onicecandidate = null;
       this.pc.ontrack = null;
       this.pc.onconnectionstatechange = null;
+      this.pc.oniceconnectionstatechange = null;
       this.pc.ondatachannel = null;
       this.pc.close();
       this.pc = null;
@@ -3783,6 +3838,10 @@ export class GfnWebRtcClient {
       this.diagnostics.connectionState = pc.connectionState;
       this.emitStats();
       this.log(`Peer connection state: ${pc.connectionState}`);
+      if (pc.iceConnectionState === "connected" && pc.connectionState === "connected") {
+        this.resetTransportDegradeEpisode();
+      }
+      this.scheduleTransportDegradeCheck(pc);
     };
 
     pc.ondatachannel = (event) => {
@@ -3818,6 +3877,10 @@ export class GfnWebRtcClient {
 
     pc.oniceconnectionstatechange = () => {
       this.log(`ICE connection state: ${pc.iceConnectionState}`);
+      if (pc.iceConnectionState === "connected" && pc.connectionState === "connected") {
+        this.resetTransportDegradeEpisode();
+      }
+      this.scheduleTransportDegradeCheck(pc);
     };
 
     pc.onicegatheringstatechange = () => {
@@ -4058,6 +4121,10 @@ export class GfnWebRtcClient {
     }
 
     await this.pc.addIceCandidate(init);
+  }
+
+  getConnectionState(): RTCPeerConnectionState | null {
+    return this.pc?.connectionState ?? null;
   }
 
   dispose(): void {

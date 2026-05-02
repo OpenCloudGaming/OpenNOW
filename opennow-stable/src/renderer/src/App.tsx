@@ -51,6 +51,10 @@ import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
 import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
 import { chooseAccountLinked, getEpicOwnershipLaunchError } from "./lib/launchOwnership";
+import {
+  SIGNALING_RECOVERY_BASE_DELAYS_MS,
+  signalingRecoveryDelayMs,
+} from "./lib/signalingRecovery";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
@@ -186,7 +190,6 @@ type SignalingRecoveryState = {
 
 const APP_PAGE_ORDER: AppPage[] = ["home", "library", "settings"];
 const RECOVERABLE_STREAM_STATUSES: readonly StreamStatus[] = ["queue", "setup", "starting", "connecting", "streaming"];
-const SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS = [0, 3000] as const;
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
 
@@ -1151,6 +1154,9 @@ export function App(): JSX.Element {
     appId: null,
     generation: 0,
   });
+  /** Incremented on each signaling `connected` event (generation wait for Stage A). */
+  const signalingConnectedGenerationRef = useRef(0);
+  const attemptSessionRecoveryRef = useRef<(reason: string) => Promise<boolean>>(async () => false);
   const exitPromptResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const adReportQueueRef = useRef<Promise<void>>(Promise.resolve());
   const adReportStateRef = useRef<Record<string, SessionAdAction>>({});
@@ -2621,6 +2627,68 @@ export function App(): JSX.Element {
     await applyClaimedSessionAndConnect(claimed);
   }, [applyClaimedSessionAndConnect, authSession, effectiveStreamingBaseUrl, findGameContextForSession, resolveSessionClaimAppId, settings]);
 
+  const waitForNextSignalingGeneration = useCallback(async (startGen: number, timeoutMs: number): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (signalingConnectedGenerationRef.current > startGen) {
+        return true;
+      }
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(50);
+    }
+    return signalingConnectedGenerationRef.current > startGen;
+  }, []);
+
+  const attemptSignalingOnlyRecovery = useCallback(async (recoveryGeneration: number, reason: string): Promise<boolean> => {
+    if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
+      return false;
+    }
+    const session = sessionRef.current;
+    const client = clientRef.current;
+    if (!session || !client) {
+      console.log("[Recovery] Stage A skipped: no session or WebRTC client");
+      return false;
+    }
+    const cs = client.getConnectionState();
+    if (cs !== "connected" && cs !== "connecting") {
+      console.log("[Recovery] Stage A skipped: peer connection not healthy:", cs);
+      return false;
+    }
+
+    console.log(`[Recovery] Stage A: signaling-only reconnect (${reason})`);
+    try {
+      const startGen = signalingConnectedGenerationRef.current;
+      await window.openNow.connectSignaling({
+        sessionId: session.sessionId,
+        signalingServer: session.signalingServer,
+        signalingUrl: session.signalingUrl,
+      });
+      if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
+        return false;
+      }
+      const signalingOk = await waitForNextSignalingGeneration(startGen, 8000);
+      if (!signalingOk) {
+        console.warn("[Recovery] Stage A: timed out waiting for signaling connected");
+        return false;
+      }
+      if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
+        return false;
+      }
+      const cs2 = client.getConnectionState();
+      if (cs2 !== "connected" && cs2 !== "connecting") {
+        console.warn("[Recovery] Stage A: peer connection unhealthy after signaling reconnect:", cs2);
+        return false;
+      }
+      resetSignalingRecoveryState({ keepExplicitShutdown: true });
+      setStreamStatus("streaming");
+      console.log("[Recovery] Stage A succeeded");
+      return true;
+    } catch (error) {
+      console.warn("[Recovery] Stage A failed:", error);
+      return false;
+    }
+  }, [isRecoveryGenerationCurrent, resetSignalingRecoveryState, waitForNextSignalingGeneration]);
+
   const attemptSessionRecovery = useCallback(async (reason: string): Promise<boolean> => {
     const recoveryState = signalingRecoveryRef.current;
     const recoveryGeneration = recoveryState.generation;
@@ -2644,31 +2712,33 @@ export function App(): JSX.Element {
       return recoveryState.inFlight;
     }
 
-    const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
-    if (!token) {
-      throw new Error("Connection to the running session was lost and your login token is no longer available for resume.");
-    }
-
-    if (recoveryState.attemptCount >= SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS.length) {
+    if (recoveryState.attemptCount >= SIGNALING_RECOVERY_BASE_DELAYS_MS.length) {
       console.warn("[Recovery] Recovery budget exhausted");
       return false;
     }
 
     const attemptPromise = (async (): Promise<boolean> => {
+      const stageA = await attemptSignalingOnlyRecovery(recoveryGeneration, reason);
+      if (stageA) {
+        recoveryState.attemptCount = 0;
+        return true;
+      }
+
       clientRef.current?.dispose();
       clientRef.current = null;
       setStreamStatus("connecting");
       await window.openNow.disconnectSignaling().catch(() => {});
 
       let lastError: Error | null = null;
-      while (recoveryState.attemptCount < SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS.length) {
+      while (recoveryState.attemptCount < SIGNALING_RECOVERY_BASE_DELAYS_MS.length) {
         const attemptIndex = recoveryState.attemptCount;
         recoveryState.attemptCount += 1;
         const attemptNumber = recoveryState.attemptCount;
-        const attemptDelayMs = SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS[attemptIndex] ?? 0;
+        const baseDelayMs = SIGNALING_RECOVERY_BASE_DELAYS_MS[attemptIndex] ?? 0;
+        const attemptDelayMs = signalingRecoveryDelayMs(baseDelayMs);
 
         console.warn(
-          `[Recovery] Attempt ${attemptNumber}/${SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS.length} after signaling disconnect: ${reason}`,
+          `[Recovery] Stage B attempt ${attemptNumber}/${SIGNALING_RECOVERY_BASE_DELAYS_MS.length} (full reclaim): ${reason}`,
         );
 
         if (attemptDelayMs > 0) {
@@ -2680,6 +2750,12 @@ export function App(): JSX.Element {
         }
 
         try {
+          const authResult = await window.openNow.getAuthSession({ forceRefresh: true });
+          const token = authResult.session?.tokens.idToken ?? authResult.session?.tokens.accessToken;
+          if (!token) {
+            throw new Error("Connection to the running session was lost and your login token is no longer available for resume.");
+          }
+
           const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
           if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
             console.log("[Recovery] Aborting attempt after active session lookup due to stale generation");
@@ -2780,7 +2856,7 @@ export function App(): JSX.Element {
     }
   }, [
     applyClaimedSessionAndConnect,
-    authSession,
+    attemptSignalingOnlyRecovery,
     effectiveStreamingBaseUrl,
     findGameContextForSession,
     isRecoveryGenerationCurrent,
@@ -2788,12 +2864,18 @@ export function App(): JSX.Element {
     settings,
   ]);
 
+  useEffect(() => {
+    attemptSessionRecoveryRef.current = attemptSessionRecovery;
+  }, [attemptSessionRecovery]);
+
   // Signaling events
   useEffect(() => {
     const unsubscribe = window.openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {
       console.log(`[App] Signaling event: ${event.type}`, event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "", event.type === "remote-ice" ? event.candidate : "");
       try {
-        if (event.type === "offer") {
+        if (event.type === "connected") {
+          signalingConnectedGenerationRef.current += 1;
+        } else if (event.type === "offer") {
           const activeSession = sessionRef.current;
           if (!activeSession) {
             console.warn("[App] Received offer but no active session in sessionRef!");
@@ -2828,6 +2910,10 @@ export function App(): JSX.Element {
               },
               onMicStateChange: (state) => {
                 console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
+              },
+              onTransportDegraded: (detail) => {
+                console.warn("[App] Transport degraded:", detail);
+                void attemptSessionRecoveryRef.current("peer-connection-degraded");
               },
             });
             if (settings.microphoneMode !== "disabled") {

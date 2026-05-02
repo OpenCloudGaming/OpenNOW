@@ -115,6 +115,9 @@ export class GfnSignalingClient {
 
   async connect(): Promise<void> {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      // Renderer recovery waits for this event after connectSignaling; emit even when
+      // the socket was already open so Stage A can complete without a timeout.
+      this.emit({ type: "connected" });
       return;
     }
 

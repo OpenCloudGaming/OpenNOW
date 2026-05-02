@@ -703,10 +703,10 @@ export class InputEncoder {
     const bytes = new Uint8Array(GAMEPAD_PACKET_SIZE);
     const view = new DataView(bytes.buffer);
 
-    // Match official GFN client's gl() function exactly (vendor_beautified.js line 13469-13470):
-    // gl(i, u, m, w, P, L, $=0, ae=0) where:
-    //   i=DataView, u=base offset (0), m=gamepad index, w=buttons,
-    //   P=triggers, L=axes[4], $=timestamp, ae=bitmap
+    // Match official GFN web client gamepad encoder: webpackChunkgfn_mall
+    // vendor.48caacc87d5222af.js minifies it as bl(i,d,m,C,x,F,K=0,ae=0) with the same layout
+    // (type 12 LE, outer 26, index, bitmap, inner 20, buttons, packed LT/RT, four i16 axes, 0, 85, 0, u64 ts LE).
+    // Older decompiles call this gl() (vendor_beautified.js ~13469): same field order/endianness.
     
     // Offset 0x00: Type (u32 LE) - event type 12
     view.setUint32(0, INPUT_GAMEPAD, true);
