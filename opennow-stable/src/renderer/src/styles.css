@@ -6567,20 +6567,28 @@ button.game-card-store-chip.owned.active:hover {
 .xmb-wrapper {
   position: fixed;
   inset: 0;
-  background: #000;
+  background: #07090c;
   color: #fff;
   font-family: inherit;
   overflow: hidden;
   z-index: 2000;
   display: flex;
   flex-direction: column;
+  /* Controller theme tint (overridden inline from settings) */
+  --xmb-theme-r: 124;
+  --xmb-theme-g: 241;
+  --xmb-theme-b: 177;
 }
 
 .xmb-wrapper::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(90% 90% at 50% 50%, rgba(179, 255, 215, 0.08), rgba(0, 0, 0, 0.48) 72%);
+  background: radial-gradient(
+    90% 90% at 50% 50%,
+    rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.12),
+    rgba(0, 0, 0, 0.34) 72%
+  );
   opacity: 0;
   pointer-events: none;
   z-index: 0;
@@ -6632,8 +6640,19 @@ button.game-card-store-chip.owned.active:hover {
   inset: 0;
   z-index: -1;
   background:
-    radial-gradient(118% 72% at 50% -10%, rgba(188, 255, 223, 0.22) 0%, rgba(124, 241, 177, 0.08) 28%, rgba(7, 17, 30, 0) 56%),
-    linear-gradient(180deg, #081711 0%, #06110d 32%, #030906 68%, #010302 100%);
+    radial-gradient(
+      118% 72% at 50% -10%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.32) 0%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.14) 28%,
+      rgba(20, 28, 34, 0) 56%
+    ),
+    linear-gradient(
+      180deg,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.16) 0%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.09) 30%,
+      #121c18 62%,
+      #0a1210 100%
+    );
 }
 
 
@@ -6641,13 +6660,29 @@ button.game-card-store-chip.owned.active:hover {
   position: absolute;
   inset: -16%;
   background:
-    linear-gradient(118deg, transparent 21%, rgba(215, 255, 232, 0.08) 28%, rgba(215, 255, 232, 0.22) 31%, rgba(112, 231, 167, 0.18) 34%, rgba(215, 255, 232, 0.06) 38%, transparent 44%),
-    linear-gradient(128deg, transparent 30%, rgba(162, 255, 206, 0.06) 37%, rgba(242, 255, 248, 0.2) 40%, rgba(112, 231, 167, 0.16) 44%, rgba(242, 255, 248, 0.05) 48%, transparent 54%),
-    radial-gradient(circle at 52% 48%, rgba(199, 255, 225, 0.06), transparent 34%);
+    linear-gradient(
+      118deg,
+      transparent 21%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.12) 28%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.3) 31%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.22) 34%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.1) 38%,
+      transparent 44%
+    ),
+    linear-gradient(
+      128deg,
+      transparent 30%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.1) 37%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.26) 40%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.18) 44%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.08) 48%,
+      transparent 54%
+    ),
+    radial-gradient(circle at 52% 48%, rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.1), transparent 34%);
   background-size: 140% 140%, 155% 155%, 100% 100%;
   background-repeat: no-repeat;
   mix-blend-mode: screen;
-  opacity: 0.88;
+  opacity: 0.96;
   transform-origin: center center;
   /* default: animations disabled; enabled via xmb-animate wrapper */
   animation: none;
@@ -6664,19 +6699,34 @@ button.game-card-store-chip.owned.active:hover {
 
 .xmb-bg-gradient::before {
   background:
-    radial-gradient(76% 12% at 30% 54%, rgba(241, 255, 248, 0.34) 0%, rgba(241, 255, 248, 0.2) 18%, rgba(241, 255, 248, 0) 58%),
-    radial-gradient(84% 14% at 67% 60%, rgba(133, 247, 187, 0.22) 0%, rgba(133, 247, 187, 0.12) 16%, rgba(133, 247, 187, 0) 60%);
+    radial-gradient(
+      76% 12% at 30% 54%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.42) 0%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.26) 18%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0) 58%
+    ),
+    radial-gradient(
+      84% 14% at 67% 60%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.28) 0%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.16) 16%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0) 60%
+    );
   mix-blend-mode: screen;
-  opacity: 0.82;
+  opacity: 0.88;
   transform: rotate(-8deg) scale(1.06);
   animation: none;
 }
 
 .xmb-bg-gradient::after {
   background:
-    radial-gradient(78% 12% at 58% 40%, rgba(169, 255, 212, 0.2) 0%, rgba(169, 255, 212, 0.11) 18%, rgba(169, 255, 212, 0) 58%),
-    radial-gradient(70% 10% at 41% 70%, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0.08) 16%, rgba(255, 255, 255, 0) 52%);
-  opacity: 0.52;
+    radial-gradient(
+      78% 12% at 58% 40%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.26) 0%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.14) 18%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0) 58%
+    ),
+    radial-gradient(70% 10% at 41% 70%, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.1) 16%, rgba(255, 255, 255, 0) 52%);
+  opacity: 0.62;
   transform: rotate(6deg) scale(1.12);
   animation: none;
 }
@@ -6732,8 +6782,88 @@ button.game-card-store-chip.owned.active:hover {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(180deg, rgba(2, 6, 4, 0.42) 0%, rgba(2, 6, 4, 0.08) 22%, rgba(2, 6, 4, 0.05) 74%, rgba(0, 0, 0, 0.46) 100%),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.12) 0%, rgba(0, 0, 0, 0) 24%, rgba(0, 0, 0, 0) 76%, rgba(0, 0, 0, 0.16) 100%);
+    linear-gradient(
+      180deg,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.1) 0%,
+      rgba(12, 18, 22, 0.06) 28%,
+      rgba(8, 12, 14, 0.04) 72%,
+      rgba(0, 0, 0, 0.28) 100%
+    ),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.08) 0%, rgba(0, 0, 0, 0) 24%, rgba(0, 0, 0, 0) 76%, rgba(0, 0, 0, 0.1) 100%);
+}
+
+/* --- Controller theme style presets (see Settings → System → Theme → Style) --- */
+
+.xmb-theme-nebula .xmb-bg-layer {
+  background:
+    radial-gradient(
+      92% 85% at 18% 18%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.38) 0%,
+      transparent 58%
+    ),
+    radial-gradient(
+      78% 75% at 88% 72%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.24) 0%,
+      transparent 52%
+    ),
+    radial-gradient(
+      circle at 48% 42%,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.12) 0%,
+      transparent 42%
+    ),
+    linear-gradient(215deg, #161228 0%, #101018 52%, #0a0a12 100%);
+}
+
+.xmb-theme-nebula .xmb-bg-gradient {
+  opacity: 0.84;
+}
+
+.xmb-theme-grid .xmb-bg-overlay {
+  background:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 56px),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 56px),
+    linear-gradient(
+      180deg,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.1) 0%,
+      rgba(0, 0, 0, 0.22) 45%,
+      rgba(0, 0, 0, 0.38) 100%
+    ),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.1) 0%, rgba(0, 0, 0, 0) 28%, rgba(0, 0, 0, 0) 72%, rgba(0, 0, 0, 0.12) 100%);
+}
+
+.xmb-theme-minimal .xmb-bg-layer {
+  background: linear-gradient(
+    185deg,
+    rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.22) 0%,
+    #161a1e 52%,
+    #0c0e12 100%
+  );
+}
+
+.xmb-theme-minimal .xmb-bg-gradient,
+.xmb-theme-minimal .xmb-bg-gradient::before,
+.xmb-theme-minimal .xmb-bg-gradient::after {
+  opacity: 0.46;
+}
+
+@keyframes xmb-theme-pulse-layer {
+  0%,
+  100% {
+    opacity: 1;
+    filter: saturate(1) brightness(1);
+  }
+  50% {
+    opacity: 0.93;
+    filter: saturate(1.12) brightness(1.06);
+  }
+}
+
+.xmb-theme-pulse .xmb-bg-layer {
+  animation: xmb-theme-pulse-layer 11s ease-in-out infinite;
+}
+
+.xmb-theme-pulse.xmb-animate .xmb-bg-gradient {
+  animation: xmb-ribbon-pan 30s linear infinite, xmb-theme-pulse-layer 11s ease-in-out infinite;
 }
 
 .xmb-categories-container {

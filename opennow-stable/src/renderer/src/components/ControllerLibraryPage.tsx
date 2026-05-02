@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
-import type { GameInfo, MediaListingEntry, Settings } from "@shared/gfn";
+import type { GameInfo, MediaListingEntry, Settings, ControllerThemeStyle } from "@shared/gfn";
 import { Star, Clock, Calendar, Repeat2 } from "lucide-react";
 import { ButtonA, ButtonB, ButtonX, ButtonY, ButtonPSCross, ButtonPSCircle, ButtonPSSquare, ButtonPSTriangle } from "./ControllerButtons";
 import { getStoreDisplayName } from "./GameCard";
@@ -42,6 +42,8 @@ interface ControllerLibraryPageProps {
     aspectRatio?: string;
     posterSizeScale?: number;
     maxBitrateMbps?: number;
+    controllerThemeStyle?: ControllerThemeStyle;
+    controllerThemeColor?: { r: number; g: number; b: number };
   };
   resolutionOptions?: string[];
   fpsOptions?: number[];
@@ -55,13 +57,32 @@ interface ControllerLibraryPageProps {
 }
 
 type Direction = "up" | "down" | "left" | "right";
-type TopCategory = "current" | "all" | "settings" | "media" | "favorites" | `genre:${string}`;
+type TopCategory = "current" | "all" | "settings" | "media";
 type SoundKind = "move" | "confirm";
-type SettingsSubcategory = "root" | "Network" | "Audio" | "Video" | "System";
+type SettingsSubcategory = "root" | "Network" | "Audio" | "Video" | "System" | "Theme" | "ThemeColor" | "ThemeStyle";
 type MediaSubcategory = "root" | "Videos" | "Screenshots";
+type GameSubcategory = "root" | "all" | "favorites" | `genre:${string}`;
 const CATEGORY_STEP_PX = 160;
 const CATEGORY_ACTIVE_HALF_WIDTH_PX = 60;
 const GAME_ACTIVE_CENTER_OFFSET_X_PX = 320;
+
+const CONTROLLER_THEME_STYLE_ORDER: readonly ControllerThemeStyle[] = ["aurora", "nebula", "grid", "minimal", "pulse"];
+
+const CONTROLLER_THEME_STYLE_LABEL: Record<ControllerThemeStyle, string> = {
+  aurora: "Aurora",
+  nebula: "Nebula",
+  grid: "Grid",
+  minimal: "Minimal",
+  pulse: "Pulse",
+};
+
+function sanitizeControllerThemeStyle(raw: string | undefined): ControllerThemeStyle {
+  return CONTROLLER_THEME_STYLE_ORDER.includes(raw as ControllerThemeStyle) ? (raw as ControllerThemeStyle) : "aurora";
+}
+
+function clampRgbByte(n: number): number {
+  return Math.max(0, Math.min(255, Math.round(Number.isFinite(n) ? n : 0)));
+}
 
 function sanitizeGenreName(raw: string): string {
   return raw
@@ -77,25 +98,10 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 function getCategoryLabel(categoryId: string, currentGameTitle?: string): { label: string } {
   if (categoryId === "current") return { label: currentGameTitle || "Current" };
-  if (categoryId === "all") return { label: "All" };
+  if (categoryId === "all") return { label: "Games" };
   if (categoryId === "settings") return { label: "Settings" };
   if (categoryId === "media") return { label: "Media" };
-  if (categoryId === "favorites") return { label: "Favorites" };
-  const genreName = sanitizeGenreName(categoryId.slice(6));
-  const shorthand: Record<string, string> = {
-    "massively multiplayer online battle arena": "MOBA",
-    "massively multiplayer online": "MMO",
-    "multiplayer online battle arena": "MOBA",
-    "first person shooter": "FPS",
-    "role playing game": "RPG",
-    "real time strategy": "RTS",
-    "simulation": "Sim",
-    "virtual reality": "VR",
-    "third person shooter": "TPS",
-  };
-  const normalized = genreName.toLowerCase();
-  const display = shorthand[normalized] ?? genreName;
-  return { label: display };
+  return { label: "Games" };
 }
 
 
@@ -133,13 +139,12 @@ export function ControllerLibraryPage({
 }: ControllerLibraryPageProps): JSX.Element {
   const [isEntering, setIsEntering] = useState(true);
   const initialCategoryIndex = (() => {
-    const hasFavorites = Array.isArray(favoriteGameIds) && favoriteGameIds.length > 0;
     if (currentStreamingGame) {
-      // TOP_CATEGORIES: current (game title), settings, all, favorites, ...genres
+      // TOP_CATEGORIES: current (game title), settings, all, media
       return 0;
     }
-    // TOP_CATEGORIES without `current`: settings, all, favorites, ...genres
-    return hasFavorites ? 2 : 1;
+    // TOP_CATEGORIES without `current`: settings, all, media
+    return 1;
   })();
   const [categoryIndex, setCategoryIndex] = useState(initialCategoryIndex);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -167,6 +172,10 @@ export function ControllerLibraryPage({
   };
   const [listTranslateY, setListTranslateY] = useState(0);
   const favoriteGameIdSet = useMemo(() => new Set(favoriteGameIds), [favoriteGameIds]);
+  const favoriteGames = useMemo(
+    () => games.filter((game) => favoriteGameIdSet.has(game.id)),
+    [games, favoriteGameIdSet],
+  );
   const [selectedSettingIndex, setSelectedSettingIndex] = useState(0);
   const [microphoneDevices, setMicrophoneDevices] = useState<{ deviceId: string; label: string }[]>([]);
   const [settingsSubcategory, setSettingsSubcategory] = useState<SettingsSubcategory>("root");
@@ -174,6 +183,9 @@ export function ControllerLibraryPage({
   const [mediaSubcategory, setMediaSubcategory] = useState<MediaSubcategory>("root");
   const [lastRootMediaIndex, setLastRootMediaIndex] = useState(0);
   const [selectedMediaIndex, setSelectedMediaIndex] = useState(0);
+  const [gameSubcategory, setGameSubcategory] = useState<GameSubcategory>("root");
+  const [lastRootGameIndex, setLastRootGameIndex] = useState(0);
+  const [selectedGameSubcategoryIndex, setSelectedGameSubcategoryIndex] = useState(0);
   const [mediaLoading, setMediaLoading] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [mediaVideos, setMediaVideos] = useState<MediaListingEntry[]>([]);
@@ -181,6 +193,9 @@ export function ControllerLibraryPage({
   const [mediaThumbById, setMediaThumbById] = useState<Record<string, string>>({});
   const [controllerType, setControllerType] = useState<"ps" | "xbox" | "nintendo" | "generic">("generic");
   const [editingBandwidth, setEditingBandwidth] = useState(false);
+  const [lastSystemMenuIndex, setLastSystemMenuIndex] = useState(0);
+  const [lastThemeRootIndex, setLastThemeRootIndex] = useState(0);
+  const [editingThemeChannel, setEditingThemeChannel] = useState<null | "r" | "g" | "b">(null);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -297,12 +312,10 @@ export function ControllerLibraryPage({
       categories.push({ id: "current", label: currentStreamingGame.title || "Current Game" });
     }
     categories.push({ id: "settings", label: "Settings" });
-    categories.push({ id: "all", label: "All" });
-    categories.push({ id: "favorites", label: "Favorites" });
+    categories.push({ id: "all", label: "Games" });
     categories.push({ id: "media", label: "Media" });
-    for (const genre of allGenres) categories.push({ id: `genre:${genre}`, label: sanitizeGenreName(genre) });
     return categories;
-  }, [allGenres, currentStreamingGame]);
+  }, [currentStreamingGame]);
 
   const topCategory = (TOP_CATEGORIES[categoryIndex]?.id ?? "all") as unknown as string;
 
@@ -318,6 +331,9 @@ export function ControllerLibraryPage({
       const found = microphoneDevices.find(d => d.deviceId === id);
       return found?.label ?? id;
     })();
+
+    const themeRgb = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
+    const themeStyleResolved = sanitizeControllerThemeStyle(settings.controllerThemeStyle);
 
     return {
       root: [
@@ -346,8 +362,23 @@ export function ControllerLibraryPage({
         { id: "autoFullScreen", label: "Auto Full Screen", value: (settings as any).autoFullScreen ? "On" : "Off" },
         { id: "autoLoad", label: "Auto-Load Library", value: (settings as any).autoLoadControllerLibrary ? "On" : "Off" },
         { id: "backgroundAnimations", label: "Background Animations", value: ((settings as any).controllerBackgroundAnimations ? "On" : "Off") },
+        { id: "theme", label: "Theme", value: "" },
         { id: "exitControllerMode", label: "Exit Controller Mode", value: "" },
       ],
+      Theme: [
+        { id: "themeColor", label: "Color", value: `RGB ${themeRgb.r}, ${themeRgb.g}, ${themeRgb.b}` },
+        { id: "themeStyle", label: "Style", value: CONTROLLER_THEME_STYLE_LABEL[themeStyleResolved] },
+      ],
+      ThemeColor: [
+        { id: "themeR", label: "Red", value: `${themeRgb.r}` },
+        { id: "themeG", label: "Green", value: `${themeRgb.g}` },
+        { id: "themeB", label: "Blue", value: `${themeRgb.b}` },
+      ],
+      ThemeStyle: CONTROLLER_THEME_STYLE_ORDER.map((id) => ({
+        id,
+        label: CONTROLLER_THEME_STYLE_LABEL[id],
+        value: id === themeStyleResolved ? "Active" : "",
+      })),
     } as Record<string, Array<{ id: string; label: string; value: string }>>;
   }, [settings, microphoneDevices]);
  
@@ -367,12 +398,25 @@ export function ControllerLibraryPage({
     return [];
   }, [mediaSubcategory, mediaVideos, mediaScreenshots]);
 
+  const gameRootItems = useMemo(() => {
+    const items: Array<{ id: GameSubcategory; label: string; value: string }> = [
+      { id: "all", label: "All Games", value: `${games.length}` },
+      { id: "favorites", label: "Favorites", value: `${favoriteGames.length}` },
+    ];
+    for (const genre of allGenres) {
+      const count = games.filter((game) => game.genres?.includes(genre)).length;
+      items.push({ id: `genre:${genre}`, label: sanitizeGenreName(genre), value: `${count}` });
+    }
+    return items;
+  }, [allGenres, favoriteGames.length, games]);
+
   const displayItems = useMemo(() => {
     if (topCategory === "current") return currentGameItems;
     if (topCategory === "settings") return settingsBySubcategory[settingsSubcategory] ?? [];
+    if (topCategory === "all" && gameSubcategory === "root") return gameRootItems;
     if (topCategory === "media" && mediaSubcategory === "root") return mediaRootItems;
     return [];
-  }, [topCategory, currentGameItems, settingsBySubcategory, settingsSubcategory, mediaSubcategory, mediaRootItems]);
+  }, [topCategory, currentGameItems, settingsBySubcategory, settingsSubcategory, gameSubcategory, gameRootItems, mediaSubcategory, mediaRootItems]);
 
   useEffect(() => {
     let mounted = true;
@@ -451,14 +495,26 @@ export function ControllerLibraryPage({
   }, [topCategory, mediaSubcategory]);
 
   const categorizedGames = useMemo(() => {
-    if (topCategory === "settings") return [];
-    if (topCategory === "favorites") return games.filter((game) => favoriteGameIdSet.has(game.id));
-    if (topCategory.startsWith("genre:")) {
-      const genreName = topCategory.slice(6);
+    if (topCategory === "settings" || topCategory === "current" || topCategory === "media") return [];
+    if (gameSubcategory === "root") return [];
+    if (gameSubcategory === "favorites") return favoriteGames;
+    if (gameSubcategory.startsWith("genre:")) {
+      const genreName = gameSubcategory.slice(6);
       return games.filter((game) => game.genres?.includes(genreName));
     }
-    return games;
-  }, [games, favoriteGameIdSet, topCategory]);
+    return [...games].sort((a, b) => {
+      const lastPlayedMs = (gameId: string) => {
+        const raw = playtimeData[gameId]?.lastPlayedAt;
+        if (!raw) return 0;
+        const ms = Date.parse(raw);
+        return Number.isFinite(ms) ? ms : 0;
+      };
+      const aLastPlayed = lastPlayedMs(a.id);
+      const bLastPlayed = lastPlayedMs(b.id);
+      if (aLastPlayed !== bLastPlayed) return bLastPlayed - aLastPlayed;
+      return a.title.localeCompare(b.title);
+    });
+  }, [games, favoriteGames, gameSubcategory, topCategory, playtimeData]);
 
   const selectedIndex = useMemo(() => {
     const index = categorizedGames.findIndex((game) => game.id === selectedGameId);
@@ -516,6 +572,25 @@ export function ControllerLibraryPage({
 
   useEffect(() => {
     const applyDirection = (direction: Direction): void => {
+      // When editing Theme RGB channels, use left/right to adjust value
+      if (topCategory === "settings" && settingsSubcategory === "ThemeColor" && editingThemeChannel && onSettingChange) {
+        const step = 8;
+        const tc = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
+        const channel = editingThemeChannel;
+        const cur = tc[channel];
+        if (direction === "left") {
+          const next = clampRgbByte(cur - step);
+          onSettingChange("controllerThemeColor", { ...tc, [channel]: next });
+          playUiSound("move");
+          return;
+        }
+        if (direction === "right") {
+          const next = clampRgbByte(cur + step);
+          onSettingChange("controllerThemeColor", { ...tc, [channel]: next });
+          playUiSound("move");
+          return;
+        }
+      }
       // When editing the bandwidth slider, use left/right to adjust value
       if (topCategory === "settings" && settingsSubcategory !== "root" && editingBandwidth) {
         const step = 5; // Mbps per left/right press
@@ -542,6 +617,10 @@ export function ControllerLibraryPage({
         setSettingsSubcategory("root");
         setSelectedMediaIndex(0);
         setMediaSubcategory("root");
+        setSelectedGameSubcategoryIndex(0);
+        setGameSubcategory("root");
+        setEditingBandwidth(false);
+        setEditingThemeChannel(null);
         return;
       }
       if (direction === "right") {
@@ -552,6 +631,10 @@ export function ControllerLibraryPage({
         setSettingsSubcategory("root");
         setSelectedMediaIndex(0);
         setMediaSubcategory("root");
+        setSelectedGameSubcategoryIndex(0);
+        setGameSubcategory("root");
+        setEditingBandwidth(false);
+        setEditingThemeChannel(null);
         return;
       }
       if (topCategory === "current" || topCategory === "settings") {
@@ -594,6 +677,27 @@ export function ControllerLibraryPage({
         }
         return;
       }
+      if (topCategory === "all" && gameSubcategory === "root") {
+        const itemCount = displayItems.length;
+        if (itemCount === 0) return;
+        if (direction === "up") {
+          const nextIndex = Math.max(0, selectedGameSubcategoryIndex - 1);
+          if (nextIndex !== selectedGameSubcategoryIndex) {
+            playUiSound("move");
+            setSelectedGameSubcategoryIndex(nextIndex);
+          }
+          return;
+        }
+        if (direction === "down") {
+          const nextIndex = Math.min(itemCount - 1, selectedGameSubcategoryIndex + 1);
+          if (nextIndex !== selectedGameSubcategoryIndex) {
+            playUiSound("move");
+            setSelectedGameSubcategoryIndex(nextIndex);
+          }
+          return;
+        }
+        return;
+      }
       if (categorizedGames.length === 0) return;
       if (direction === "up") {
         const nextIndex = Math.max(0, selectedIndex - 1);
@@ -621,6 +725,11 @@ export function ControllerLibraryPage({
       // If currently editing bandwidth, A confirms and exits edit mode
       if (topCategory === "settings" && settingsSubcategory !== "root" && editingBandwidth) {
         setEditingBandwidth(false);
+        playUiSound("confirm");
+        return;
+      }
+      if (topCategory === "settings" && settingsSubcategory === "ThemeColor" && editingThemeChannel) {
+        setEditingThemeChannel(null);
         playUiSound("confirm");
         return;
       }
@@ -658,6 +767,43 @@ export function ControllerLibraryPage({
             void window.openNow.quitApp();
           }
           playUiSound("confirm");
+          return;
+        }
+        if (settingsSubcategory === "System" && setting?.id === "theme") {
+          setLastSystemMenuIndex(selectedSettingIndex);
+          setSettingsSubcategory("Theme");
+          setSelectedSettingIndex(0);
+          setEditingThemeChannel(null);
+          playUiSound("confirm");
+          return;
+        }
+        if (settingsSubcategory === "Theme") {
+          const item = displayItems[selectedSettingIndex];
+          if (item?.id === "themeColor") {
+            setLastThemeRootIndex(selectedSettingIndex);
+            setSettingsSubcategory("ThemeColor");
+            setSelectedSettingIndex(0);
+            setEditingThemeChannel(null);
+            playUiSound("confirm");
+            return;
+          }
+          if (item?.id === "themeStyle") {
+            setLastThemeRootIndex(selectedSettingIndex);
+            setSettingsSubcategory("ThemeStyle");
+            const resolvedStyle = sanitizeControllerThemeStyle(settings.controllerThemeStyle);
+            const idx = CONTROLLER_THEME_STYLE_ORDER.indexOf(resolvedStyle);
+            setSelectedSettingIndex(idx >= 0 ? idx : 0);
+            playUiSound("confirm");
+            return;
+          }
+          return;
+        }
+        if (settingsSubcategory === "ThemeStyle") {
+          const row = displayItems[selectedSettingIndex];
+          if (row?.id && onSettingChange) {
+            onSettingChange("controllerThemeStyle", row.id as ControllerThemeStyle);
+            playUiSound("confirm");
+          }
           return;
         }
         // In subcategory, A toggles values like X does
@@ -698,6 +844,21 @@ export function ControllerLibraryPage({
         }
 
         playUiSound("confirm");
+      } else if (topCategory === "all") {
+        if (gameSubcategory === "root") {
+          const item = displayItems[selectedGameSubcategoryIndex];
+          if (item) {
+            setLastRootGameIndex(selectedGameSubcategoryIndex);
+            setGameSubcategory(item.id as GameSubcategory);
+            setSelectedGameSubcategoryIndex(0);
+            playUiSound("confirm");
+          }
+          return;
+        }
+        if (selectedGame) {
+          onPlayGame(selectedGame);
+          playUiSound("confirm");
+        }
       } else if (selectedGame) {
         onPlayGame(selectedGame);
         playUiSound("confirm");
@@ -710,12 +871,23 @@ export function ControllerLibraryPage({
           return;
         }
         if (topCategory === "settings") {
+          if (settingsSubcategory === "ThemeStyle" || settingsSubcategory === "Theme") return;
           // X button cycles through setting values (no-op for exit actions or subcategory items at root)
           const setting = displayItems[selectedSettingIndex];
           if (!setting || !onSettingChange) return;
           if (setting.id === "exitApp" || setting.id === "exitControllerMode") return;
           // Skip X cycling for subcategory items at root
           if (settingsSubcategory === "root" && (setting.id === "network" || setting.id === "audio" || setting.id === "video" || setting.id === "system")) return;
+
+          if (
+            settingsSubcategory === "ThemeColor" &&
+            (setting.id === "themeR" || setting.id === "themeG" || setting.id === "themeB")
+          ) {
+            const ch = setting.id === "themeR" ? "r" : setting.id === "themeG" ? "g" : "b";
+            setEditingThemeChannel(ch);
+            playUiSound("move");
+            return;
+          }
 
           // Microphone device cycling
           if (setting.id === "microphone") {
@@ -784,7 +956,7 @@ export function ControllerLibraryPage({
     };
 
     const tertiaryActivateHandler = () => {
-      if (topCategory !== "settings" && topCategory !== "current") {
+      if (topCategory !== "settings" && topCategory !== "current" && !(topCategory === "all" && gameSubcategory === "root")) {
         toggleFavoriteForSelected();
       }
     };
@@ -799,6 +971,33 @@ export function ControllerLibraryPage({
           e.preventDefault();
           return;
         }
+        if (editingThemeChannel) {
+          setEditingThemeChannel(null);
+          playUiSound("move");
+          e.preventDefault();
+          return;
+        }
+        if (settingsSubcategory === "ThemeColor") {
+          setSettingsSubcategory("Theme");
+          setSelectedSettingIndex(lastThemeRootIndex);
+          playUiSound("move");
+          e.preventDefault();
+          return;
+        }
+        if (settingsSubcategory === "ThemeStyle") {
+          setSettingsSubcategory("Theme");
+          setSelectedSettingIndex(lastThemeRootIndex);
+          playUiSound("move");
+          e.preventDefault();
+          return;
+        }
+        if (settingsSubcategory === "Theme") {
+          setSettingsSubcategory("System");
+          setSelectedSettingIndex(lastSystemMenuIndex);
+          playUiSound("move");
+          e.preventDefault();
+          return;
+        }
         setSettingsSubcategory("root");
         setSelectedSettingIndex(lastRootSettingIndex);
         playUiSound("move");
@@ -808,6 +1007,13 @@ export function ControllerLibraryPage({
       if (topCategory === "media" && mediaSubcategory !== "root") {
         setMediaSubcategory("root");
         setSelectedMediaIndex(lastRootMediaIndex);
+        playUiSound("move");
+        e.preventDefault();
+        return;
+      }
+      if (topCategory === "all" && gameSubcategory !== "root") {
+        setGameSubcategory("root");
+        setSelectedGameSubcategoryIndex(lastRootGameIndex);
         playUiSound("move");
         e.preventDefault();
       }
@@ -859,6 +1065,10 @@ export function ControllerLibraryPage({
           cancelHandler(e);
           return;
         }
+        if (topCategory === "all" && gameSubcategory !== "root") {
+          cancelHandler(e);
+          return;
+        }
         e.preventDefault();
         if (topCategory === "current" || topCategory === "settings") {
           setCategoryIndex((prev) => (prev - 1 + TOP_CATEGORIES.length) % TOP_CATEGORIES.length);
@@ -866,6 +1076,8 @@ export function ControllerLibraryPage({
           setSettingsSubcategory("root");
           setSelectedMediaIndex(0);
           setMediaSubcategory("root");
+          setSelectedGameSubcategoryIndex(0);
+          setGameSubcategory("root");
         } else {
           onOpenSettings?.();
         }
@@ -886,7 +1098,7 @@ export function ControllerLibraryPage({
       window.removeEventListener("opennow:controller-cancel", cancelHandler);
       window.removeEventListener("keydown", kbdHandler);
     };
-  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, displayItems, mediaAssetItems.length, mediaSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth]);
+  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, selectedGameSubcategoryIndex, displayItems, mediaAssetItems.length, mediaSubcategory, gameSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, lastRootGameIndex, lastSystemMenuIndex, lastThemeRootIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth, editingThemeChannel]);
 
   const renderFaceButton = (kind: "primary" | "secondary" | "tertiary", className: string, size: number): JSX.Element => {
     if (kind === "primary") {
@@ -906,12 +1118,20 @@ export function ControllerLibraryPage({
       : <ButtonY className={className} size={size} />;
   };
 
-  const wrapperClassName = `xmb-wrapper ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"}`;
+  const themeStyleSafe = sanitizeControllerThemeStyle(settings.controllerThemeStyle);
+  const themeRgbResolved = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
+  const wrapperThemeVars = {
+    "--xmb-theme-r": String(themeRgbResolved.r),
+    "--xmb-theme-g": String(themeRgbResolved.g),
+    "--xmb-theme-b": String(themeRgbResolved.b),
+  } as React.CSSProperties;
 
-  if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") return <div className={wrapperClassName}><div className="xmb-bg-layer"><div className="xmb-bg-gradient" /></div><div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh'}}>Loading...</div></div>;
+  const wrapperClassName = `xmb-wrapper xmb-theme-${themeStyleSafe} ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"}`;
+
+  if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") return <div className={wrapperClassName} style={wrapperThemeVars}><div className="xmb-bg-layer"><div className="xmb-bg-gradient" /></div><div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh'}}>Loading...</div></div>;
 
   return (
-    <div className={wrapperClassName}>
+    <div className={wrapperClassName} style={wrapperThemeVars}>
       <div className="xmb-bg-layer">
         <div className="xmb-bg-gradient" />
         <div className="xmb-bg-overlay" />
@@ -962,7 +1182,7 @@ export function ControllerLibraryPage({
             })}
       </div>
 
-      {topCategory !== "settings" && topCategory !== "current" && topCategory !== "media" && (
+      {topCategory === "all" && gameSubcategory !== "root" && (
       <div
         ref={itemsContainerRef}
         className="xmb-items-container"
@@ -1038,27 +1258,35 @@ export function ControllerLibraryPage({
       </div>
       )}
 
-      {(topCategory === "settings" || topCategory === "current" || (topCategory === "media" && mediaSubcategory === "root")) && (
+      {(topCategory === "settings" || topCategory === "current" || (topCategory === "media" && mediaSubcategory === "root") || (topCategory === "all" && gameSubcategory === "root")) && (
       <div
         ref={itemsContainerRef}
         className="xmb-items-container"
         role="listbox"
-        aria-label={topCategory === "current" ? "Current game actions" : topCategory === "settings" ? "Controller settings" : "Media categories"}
+        aria-label={topCategory === "current" ? "Current game actions" : topCategory === "settings" ? "Controller settings" : topCategory === "all" ? "Game categories" : "Media categories"}
         style={{
-          transform: `translate(${-GAME_ACTIVE_CENTER_OFFSET_X_PX}px, ${-(topCategory === "media" ? selectedMediaIndex : selectedSettingIndex) * 120}px)`,
+          transform: `translate(${-GAME_ACTIVE_CENTER_OFFSET_X_PX}px, ${-(topCategory === "media" ? selectedMediaIndex : topCategory === "all" ? selectedGameSubcategoryIndex : selectedSettingIndex) * 120}px)`,
         }}
       >
         {displayItems.map((item, idx) => {
-          const isActive = idx === (topCategory === "media" ? selectedMediaIndex : selectedSettingIndex);
+          const isActive = idx === (topCategory === "media" ? selectedMediaIndex : topCategory === "all" ? selectedGameSubcategoryIndex : selectedSettingIndex);
           const isSubcategoryItem = settingsSubcategory === "root" && (item.id === "network" || item.id === "audio" || item.id === "video" || item.id === "system");
           const isMediaSubcategoryItem = topCategory === "media" && mediaSubcategory === "root" && (item.id === "videos" || item.id === "screenshots");
+          const isGameSubcategoryItem = topCategory === "all" && gameSubcategory === "root";
+          const isThemeNavItem =
+            topCategory === "settings" &&
+            ((settingsSubcategory === "Theme" && (item.id === "themeColor" || item.id === "themeStyle")) ||
+              (settingsSubcategory === "System" && item.id === "theme"));
+          const themeChannelForRow =
+            item.id === "themeR" ? "r" : item.id === "themeG" ? "g" : item.id === "themeB" ? "b" : null;
+          const themeRgbLive = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
           return (
             <div 
               key={item.id} 
               className={`xmb-game-item ${isActive ? 'active' : ''}`}
               role="option"
               aria-selected={isActive}
-              data-subcategory-id={isSubcategoryItem || isMediaSubcategoryItem ? item.id : undefined}
+              data-subcategory-id={isSubcategoryItem || isMediaSubcategoryItem || isGameSubcategoryItem || isThemeNavItem ? item.id : undefined}
             >
               <div className="xmb-game-info">
                 <div className="xmb-game-title">{item.label}</div>
@@ -1077,6 +1305,29 @@ export function ControllerLibraryPage({
                           style={editingBandwidth ? {outline: '2px solid rgba(255,255,255,0.2)'} : undefined}
                         />
                         <span className="xmb-game-meta-chip">{`${settings.maxBitrateMbps ?? 75} Mbps`}{editingBandwidth ? ' • Editing' : ''}</span>
+                      </div>
+                    ) : themeChannelForRow && settingsSubcategory === "ThemeColor" ? (
+                      <div style={{display:'flex',alignItems:'center',gap:12}}>
+                        <input
+                          type="range"
+                          min={0}
+                          max={255}
+                          step={1}
+                          value={themeRgbLive[themeChannelForRow]}
+                          onChange={(e) =>
+                            onSettingChange &&
+                            onSettingChange("controllerThemeColor", {
+                              ...themeRgbLive,
+                              [themeChannelForRow]: clampRgbByte(Number(e.target.value)),
+                            })
+                          }
+                          aria-label={`Theme ${item.label}`}
+                          style={editingThemeChannel === themeChannelForRow ? { outline: "2px solid rgba(255,255,255,0.2)" } : undefined}
+                        />
+                        <span className="xmb-game-meta-chip">
+                          {item.value}
+                          {editingThemeChannel === themeChannelForRow ? " • Editing" : ""}
+                        </span>
                       </div>
                     ) : (
                       <span className="xmb-game-meta-chip">{item.value}</span>
@@ -1239,6 +1490,53 @@ export function ControllerLibraryPage({
                   <span>Enter</span>
                 </div>
               </>
+            ) : settingsSubcategory === "Theme" ? (
+              <div className="xmb-btn-hint">
+                {controllerType === "ps" ? (
+                  <ButtonPSCross className="xmb-btn-icon" size={24} />
+                ) : (
+                  <ButtonA className="xmb-btn-icon" size={24} />
+                )}
+                <span>Enter</span>
+              </div>
+            ) : settingsSubcategory === "ThemeStyle" ? (
+              <>
+                <div className="xmb-btn-hint">
+                  {controllerType === "ps" ? (
+                    <ButtonPSCircle className="xmb-btn-icon" size={24} />
+                  ) : (
+                    <ButtonB className="xmb-btn-icon" size={24} />
+                  )}
+                  <span>Back</span>
+                </div>
+                <div className="xmb-btn-hint">
+                  {controllerType === "ps" ? (
+                    <ButtonPSCross className="xmb-btn-icon" size={24} />
+                  ) : (
+                    <ButtonA className="xmb-btn-icon" size={24} />
+                  )}
+                  <span>Select</span>
+                </div>
+              </>
+            ) : settingsSubcategory === "ThemeColor" ? (
+              <>
+                <div className="xmb-btn-hint">
+                  {controllerType === "ps" ? (
+                    <ButtonPSCircle className="xmb-btn-icon" size={24} />
+                  ) : (
+                    <ButtonB className="xmb-btn-icon" size={24} />
+                  )}
+                  <span>Back</span>
+                </div>
+                <div className="xmb-btn-hint">
+                  {controllerType === "ps" ? (
+                    <ButtonPSCross className="xmb-btn-icon" size={24} />
+                  ) : (
+                    <ButtonA className="xmb-btn-icon" size={24} />
+                  )}
+                  <span>{editingThemeChannel ? "Confirm" : "Adjust"}</span>
+                </div>
+              </>
             ) : (
               <>
                 <div className="xmb-btn-hint">
@@ -1292,6 +1590,15 @@ export function ControllerLibraryPage({
               </>
             )}
           </>
+        ) : topCategory === "all" && gameSubcategory === "root" ? (
+          <div className="xmb-btn-hint">
+            {controllerType === "ps" ? (
+              <ButtonPSCross className="xmb-btn-icon" size={24} />
+            ) : (
+              <ButtonA className="xmb-btn-icon" size={24} />
+            )}
+            <span>Enter</span>
+          </div>
         ) : (
           <>
             <div className="xmb-btn-hint">{renderFaceButton("primary", "xmb-btn-icon", 24)} <span>{currentStreamingGame && selectedGame && currentStreamingGame.id !== selectedGame.id ? "Switch" : "Play"}</span></div>
