@@ -179,6 +179,8 @@ export interface Settings {
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
   autoCheckForUpdates: boolean;
+  /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
+  allowEscapeToExitFullscreen?: boolean;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
@@ -774,6 +776,8 @@ export interface OpenNowApi {
   setFullscreen(v: boolean): Promise<void>;
   toggleFullscreen(): Promise<void>;
   togglePointerLock(): Promise<void>;
+  /** Notify main process that pointer lock state changed (active = true/false) */
+  notifyPointerLockChange(active: boolean): void;
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
   resetSettings(): Promise<Settings>;
@@ -797,6 +801,9 @@ export interface OpenNowApi {
 
   /** Listen for screenshot hotkey events from the main process (F11) */
   onTriggerScreenshot(listener: () => void): () => void;
+
+  /** Listen for external Escape events forwarded by the main process */
+  onExternalEscape(listener: () => void): () => void;
 
   /** Begin a new recording session; returns a recordingId to use for subsequent calls */
   beginRecording(input: RecordingBeginRequest): Promise<RecordingBeginResult>;

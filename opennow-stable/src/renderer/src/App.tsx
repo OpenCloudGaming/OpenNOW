@@ -799,6 +799,7 @@ export function App(): JSX.Element {
 
   // Navigation
   const [currentPage, setCurrentPage] = useState<AppPage>("home");
+  const [sessionFullscreen, setSessionFullscreenState] = useState(false);
 
   // Games State
   const [games, setGames] = useState<GameInfo[]>([]);
@@ -1879,6 +1880,30 @@ export function App(): JSX.Element {
   ]);
 
   const setSessionFullscreen = useCallback(async (nextFullscreen: boolean) => {
+    const canUseNativeFullscreen = typeof window.openNow?.setFullscreen === "function";
+
+    if (canUseNativeFullscreen) {
+      try {
+        if (nextFullscreen) {
+          if (!document.fullscreenElement) {
+            await document.documentElement.requestFullscreen();
+          }
+        } else if (document.fullscreenElement) {
+          await document.exitFullscreen();
+        }
+      } catch (error) {
+        console.warn(`Failed to set DOM fullscreen state (${nextFullscreen ? "enter" : "exit"}):`, error);
+      }
+
+      try {
+        await window.openNow.setFullscreen(nextFullscreen);
+        setSessionFullscreenState(nextFullscreen);
+      } catch (error) {
+        console.warn(`Failed to set native fullscreen state (${nextFullscreen ? "enter" : "exit"}):`, error);
+      }
+      return;
+    }
+
     try {
       if (nextFullscreen) {
         if (!document.fullscreenElement) {
@@ -1889,16 +1914,24 @@ export function App(): JSX.Element {
       }
     } catch {}
 
-    try {
-      await window.openNow.setFullscreen(nextFullscreen);
-    } catch (error) {
-      console.warn(`Failed to sync native fullscreen state (${nextFullscreen ? "enter" : "exit"}):`, error);
-    }
+    setSessionFullscreenState(!!document.fullscreenElement);
   }, []);
 
   const toggleSessionFullscreen = useCallback(async () => {
-    await setSessionFullscreen(!document.fullscreenElement);
-  }, [setSessionFullscreen]);
+    await setSessionFullscreen(!(sessionFullscreen || document.fullscreenElement));
+  }, [sessionFullscreen, setSessionFullscreen]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      if (typeof window.openNow?.setFullscreen === "function") {
+        return;
+      }
+      setSessionFullscreenState(!!document.fullscreenElement);
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
 
   const requestPointerLockCapture = useCallback(async (target: HTMLVideoElement) => {
     const lockTarget = (target.parentElement as HTMLElement | null) ?? target;
@@ -1911,7 +1944,7 @@ export function App(): JSX.Element {
       }
     };
 
-    if (settings.autoFullScreen && !document.fullscreenElement) {
+    if (settings.autoFullScreen && !(sessionFullscreen || document.fullscreenElement)) {
       await setSessionFullscreen(true);
     }
 
@@ -1923,7 +1956,7 @@ export function App(): JSX.Element {
         throw err;
       })
       .catch(() => {});
-  }, [setSessionFullscreen, settings.autoFullScreen]);
+  }, [sessionFullscreen, setSessionFullscreen, settings.autoFullScreen]);
 
   const handleRequestPointerLock = useCallback(() => {
     if (videoRef.current) {
@@ -1969,7 +2002,7 @@ export function App(): JSX.Element {
     };
   }, []);
 
-  // Listen for F11 fullscreen toggle from main process (uses W3C Fullscreen API)
+  // Listen for fullscreen toggle from main process.
   useEffect(() => {
     const unsubscribe = window.openNow.onToggleFullscreen(() => {
       void toggleSessionFullscreen();
@@ -1986,13 +2019,13 @@ export function App(): JSX.Element {
       return;
     }
 
-    if (autoFullscreenRequestedRef.current || document.fullscreenElement) {
+    if (autoFullscreenRequestedRef.current || sessionFullscreen || document.fullscreenElement) {
       return;
     }
 
     autoFullscreenRequestedRef.current = true;
     void setSessionFullscreen(true);
-  }, [setSessionFullscreen, settings.autoFullScreen, streamStatus]);
+  }, [sessionFullscreen, setSessionFullscreen, settings.autoFullScreen, streamStatus]);
 
   // Anti-AFK interval
   useEffect(() => {
@@ -4035,6 +4068,7 @@ export function App(): JSX.Element {
             sessionClockShowEveryMinutes={settings.sessionClockShowEveryMinutes}
             sessionClockShowDurationSeconds={settings.sessionClockShowDurationSeconds}
             streamWarning={streamWarning}
+            isFullscreen={sessionFullscreen || !!document.fullscreenElement}
             isConnecting={streamStatus === "connecting"}
             isStreaming={isStreaming}
             gameTitle={streamingGame?.title ?? "Game"}
@@ -4068,6 +4102,7 @@ export function App(): JSX.Element {
             onReleasePointerLock={() => {
               void releasePointerLockIfNeeded();
             }}
+            allowEscapeToExitFullscreen={settings.allowEscapeToExitFullscreen}
           />
         )}
         {isSwitchingGame && settings.controllerMode && streamStatus !== "connecting" && (
