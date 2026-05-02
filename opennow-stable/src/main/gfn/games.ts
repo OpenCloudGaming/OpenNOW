@@ -8,20 +8,20 @@ import type {
 } from "@shared/gfn";
 import { isOwnedLibraryStatus } from "@shared/gfn";
 import { cacheManager } from "../services/cacheManager";
+import {
+  buildDesktopGfnHeaders,
+  GFN_CLIENT_IDENTIFICATION,
+  GFN_USER_AGENT,
+} from "./clientIdentity";
 
 const GRAPHQL_URL = "https://games.geforce.com/graphql";
 const PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
 const APP_METADATA_QUERY_HASH = "39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7";
 const LIBRARY_WITH_TIME_QUERY_HASH = "039e8c0d553972975485fee56e59f2549d2fdb518e247a42ab5022056a74406f";
 const DEFAULT_LOCALE = "en_US";
-const LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
-const GFN_CLIENT_VERSION = "2.0.80.173";
 const DEFAULT_CATALOG_FETCH_COUNT = 120;
 const MAX_CATALOG_PAGES = 3;
 const DEFAULT_SORT_ID = "relevance";
-
-const GFN_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
 
 interface GraphQlResponse {
   data?: {
@@ -175,23 +175,14 @@ function randomHuId(): string {
 }
 
 function buildHeaders(token?: string): HeadersInit {
-  return {
-    Accept: "application/json, text/plain, */*",
-    "Content-Type": "application/json",
-    Origin: "https://play.geforcenow.com",
-    Referer: "https://play.geforcenow.com/",
-    ...(token ? { Authorization: `GFNJWT ${token}` } : {}),
-    "nv-client-id": LCARS_CLIENT_ID,
-    "nv-client-type": "NATIVE",
-    "nv-client-version": GFN_CLIENT_VERSION,
-    "nv-client-streamer": "NVIDIA-CLASSIC",
-    "nv-device-os": "WINDOWS",
-    "nv-device-type": "DESKTOP",
-    "nv-device-make": "UNKNOWN",
-    "nv-device-model": "UNKNOWN",
-    "nv-browser-type": "CHROME",
-    "User-Agent": GFN_USER_AGENT,
-  };
+  return buildDesktopGfnHeaders({
+    accept: "application/json, text/plain, */*",
+    contentType: "application/json",
+    includeOrigin: true,
+    includeBrowserType: true,
+    includeDeviceDetails: true,
+    token,
+  });
 }
 
 async function postGraphQl<T>(query: string, variables: Record<string, unknown>, token?: string): Promise<T> {
@@ -214,25 +205,18 @@ async function getVpcId(token: string, providerStreamingBaseUrl?: string): Promi
   const normalizedBase = base.endsWith("/") ? base : `${base}/`;
 
   const response = await fetch(`${normalizedBase}v2/serverInfo`, {
-    headers: {
-      Accept: "application/json",
-      Authorization: `GFNJWT ${token}`,
-      "nv-client-id": LCARS_CLIENT_ID,
-      "nv-client-type": "NATIVE",
-      "nv-client-version": GFN_CLIENT_VERSION,
-      "nv-client-streamer": "NVIDIA-CLASSIC",
-      "nv-device-os": "WINDOWS",
-      "nv-device-type": "DESKTOP",
-      "User-Agent": GFN_USER_AGENT,
-    },
+    headers: buildDesktopGfnHeaders({
+      accept: "application/json",
+      token,
+    }),
   });
 
   if (!response.ok) {
-    return "GFN-PC";
+    return GFN_CLIENT_IDENTIFICATION;
   }
 
   const payload = (await response.json()) as ServerInfoResponse;
-  return payload.requestStatus?.serverId ?? "GFN-PC";
+  return payload.requestStatus?.serverId ?? GFN_CLIENT_IDENTIFICATION;
 }
 
 function parseFeatureLabel(value: unknown): string | null {
