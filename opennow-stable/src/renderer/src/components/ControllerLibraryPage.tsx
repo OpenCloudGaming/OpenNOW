@@ -208,6 +208,8 @@ export function ControllerLibraryPage({
   const [lastSystemMenuIndex, setLastSystemMenuIndex] = useState(0);
   const [lastThemeRootIndex, setLastThemeRootIndex] = useState(0);
   const [editingThemeChannel, setEditingThemeChannel] = useState<null | "r" | "g" | "b">(null);
+  const [ps5Row, setPs5Row] = useState<"top" | "main" | "detail">("main");
+  const [detailRailIndex, setDetailRailIndex] = useState(0);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -651,6 +653,30 @@ export function ControllerLibraryPage({
     if (topCategory === "all" && gameSubcategory === "root" && active?.label) return active.label;
     return selectedCategoryLabel;
   }, [topLevelShelfActive, selectedCategoryLabel, displayItems, topLevelShelfIndex, topCategory, gameSubcategory]);
+  const detailRailItems = useMemo<Array<{ id: string; title: string; subtitle: string; imageUrl?: string }>>(() => {
+    if (topCategory === "all" && gameSubcategory !== "root" && selectedGame) {
+      const genre = selectedGame.genres?.[0] ? sanitizeGenreName(selectedGame.genres[0]) : "Cloud Action";
+      return [
+        { id: "d1", title: "Activities", subtitle: `${genre} challenges`, imageUrl: selectedGame.imageUrl },
+        { id: "d2", title: "Community", subtitle: "Friends playing now", imageUrl: selectedGame.imageUrl },
+        { id: "d3", title: "Store", subtitle: "DLC and add-ons", imageUrl: selectedGame.imageUrl },
+      ];
+    }
+    if (topCategory === "media" && mediaSubcategory !== "root") {
+      const current = mediaAssetItems[selectedMediaIndex];
+      const imageUrl = current?.thumbnailDataUrl || current?.dataUrl || (current ? mediaThumbById[current.id] : undefined);
+      return [
+        { id: "m1", title: "Recent", subtitle: `Latest ${mediaSubcategory.toLowerCase()}`, imageUrl },
+        { id: "m2", title: "By Game", subtitle: "Grouped captures", imageUrl },
+        { id: "m3", title: "Storage", subtitle: "Manage media files", imageUrl },
+      ];
+    }
+    return [
+      { id: "p1", title: "Explore", subtitle: "Discover recommendations" },
+      { id: "p2", title: "Continue", subtitle: "Jump back in quickly" },
+      { id: "p3", title: "Tips", subtitle: "Controller shortcuts" },
+    ];
+  }, [topCategory, gameSubcategory, selectedGame, mediaSubcategory, mediaAssetItems, selectedMediaIndex, mediaThumbById]);
   const focusMotionKey = useMemo(() => {
     if (topCategory === "all" && gameSubcategory !== "root") return `game-${selectedGame?.id ?? "none"}`;
     if (topCategory === "media" && mediaSubcategory !== "root") return `media-${selectedMediaIndex}-${mediaAssetItems[selectedMediaIndex]?.id ?? "none"}`;
@@ -673,6 +699,11 @@ export function ControllerLibraryPage({
   useEffect(() => {
     if (!gamesShelfBrowseActive && !mediaShelfBrowseActive && !topLevelShelfActive) setListTranslateX(0);
   }, [gamesShelfBrowseActive, mediaShelfBrowseActive, topLevelShelfActive]);
+
+  useEffect(() => {
+    setPs5Row("main");
+    setDetailRailIndex(0);
+  }, [topCategory, gameSubcategory, mediaSubcategory, settingsSubcategory]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -765,10 +796,57 @@ export function ControllerLibraryPage({
       }
       if (isLoading && topCategory !== "settings" && topCategory !== "current") return;
 
+      if (ps5Row === "top") {
+        if (direction === "left") {
+          cycleTopCategory(-1);
+          return;
+        }
+        if (direction === "right") {
+          cycleTopCategory(1);
+          return;
+        }
+        if (direction === "down") {
+          playUiSound("move");
+          setPs5Row("main");
+          return;
+        }
+        return;
+      }
+
+      if (ps5Row === "detail") {
+        if (direction === "up") {
+          playUiSound("move");
+          setPs5Row("main");
+          return;
+        }
+        if (direction === "left") {
+          const next = Math.max(0, detailRailIndex - 1);
+          if (next !== detailRailIndex) {
+            playUiSound("move");
+            setDetailRailIndex(next);
+          }
+          return;
+        }
+        if (direction === "right") {
+          const next = Math.min(detailRailItems.length - 1, detailRailIndex + 1);
+          if (next !== detailRailIndex) {
+            playUiSound("move");
+            setDetailRailIndex(next);
+          }
+          return;
+        }
+        return;
+      }
+
       const shelfHasGames = categorizedGames.length > 0;
 
       if (gamesShelfBrowseActive) {
         if (shelfHasGames) {
+          if (direction === "down") {
+            playUiSound("move");
+            setPs5Row("detail");
+            return;
+          }
           if (direction === "left") {
             const ni = Math.max(0, selectedIndex - 1);
             if (ni !== selectedIndex) {
@@ -787,22 +865,22 @@ export function ControllerLibraryPage({
           }
           if (direction === "up") {
             playUiSound("move");
-            setGameSubcategory("root");
-            setSelectedGameSubcategoryIndex(lastRootGameIndex);
-            return;
-          }
-          if (direction === "down") {
+            setPs5Row("top");
             return;
           }
         } else if (direction === "up") {
           playUiSound("move");
-          setGameSubcategory("root");
-          setSelectedGameSubcategoryIndex(lastRootGameIndex);
+          setPs5Row("top");
           return;
         }
       }
 
       if (mediaShelfBrowseActive) {
+        if (direction === "down") {
+          playUiSound("move");
+          setPs5Row("detail");
+          return;
+        }
         const itemCount = mediaAssetItems.length;
         if (itemCount > 0 && direction === "left") {
           const nextIndex = Math.max(0, selectedMediaIndex - 1);
@@ -822,11 +900,9 @@ export function ControllerLibraryPage({
         }
         if (direction === "up") {
           playUiSound("move");
-          setMediaSubcategory("root");
-          setSelectedMediaIndex(lastRootMediaIndex);
+          setPs5Row("top");
           return;
         }
-        if (direction === "down") return;
       }
 
       if (topLevelShelfActive) {
@@ -845,16 +921,7 @@ export function ControllerLibraryPage({
 
         if (direction === "up" || direction === "down") {
           playUiSound("move");
-          const delta = direction === "up" ? -1 : 1;
-          setCategoryIndex((prev) => (prev + delta + TOP_CATEGORIES.length) % TOP_CATEGORIES.length);
-          setSelectedSettingIndex(0);
-          setSettingsSubcategory("root");
-          setSelectedMediaIndex(0);
-          setMediaSubcategory("root");
-          setSelectedGameSubcategoryIndex(0);
-          setGameSubcategory("root");
-          setEditingBandwidth(false);
-          setEditingThemeChannel(null);
+          if (direction === "up") setPs5Row("top");
           return;
         }
       }
@@ -975,6 +1042,63 @@ export function ControllerLibraryPage({
     };
 
     const activateHandler = () => {
+      if (ps5Row === "top") {
+        setPs5Row("main");
+        playUiSound("confirm");
+        return;
+      }
+
+      if (ps5Row === "detail") {
+        const selectedDetail = detailRailItems[detailRailIndex];
+        if (!selectedDetail) return;
+
+        if (topCategory === "all" && gameSubcategory !== "root" && selectedGame) {
+          if (selectedDetail.id === "d1") {
+            onPlayGame(selectedGame);
+            playUiSound("confirm");
+            return;
+          }
+          if (selectedDetail.id === "d2") {
+            toggleFavoriteForSelected();
+            return;
+          }
+          if (selectedDetail.id === "d3" && selectedGame.variants.length > 1) {
+            const idx = selectedGame.variants.findIndex((v) => v.id === selectedVariantId);
+            const next = selectedGame.variants[(idx + 1) % selectedGame.variants.length];
+            onSelectGameVariant(selectedGame.id, next.id);
+            playUiSound("confirm");
+            return;
+          }
+          playUiSound("confirm");
+          return;
+        }
+
+        if (topCategory === "media" && mediaSubcategory !== "root") {
+          if (selectedDetail.id === "m3" || selectedDetail.id === "m1") {
+            const current = mediaAssetItems[selectedMediaIndex];
+            if (current && typeof window.openNow?.showMediaInFolder === "function") {
+              void window.openNow.showMediaInFolder({ filePath: current.filePath });
+            }
+            playUiSound("confirm");
+            return;
+          }
+          if (selectedDetail.id === "m2") {
+            setMediaSubcategory("root");
+            setSelectedMediaIndex(lastRootMediaIndex);
+            setPs5Row("main");
+            playUiSound("confirm");
+            return;
+          }
+          playUiSound("confirm");
+          return;
+        }
+
+        // Placeholder detail cards: confirm and return to the main row.
+        setPs5Row("main");
+        playUiSound("confirm");
+        return;
+      }
+
       // If currently editing bandwidth, A confirms and exits edit mode
       if (topCategory === "settings" && settingsSubcategory !== "root" && editingBandwidth) {
         setEditingBandwidth(false);
@@ -1367,7 +1491,7 @@ export function ControllerLibraryPage({
       window.removeEventListener("opennow:controller-cancel", cancelHandler);
       window.removeEventListener("keydown", kbdHandler);
     };
-  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, selectedGameSubcategoryIndex, displayItems, mediaAssetItems.length, mediaSubcategory, gameSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, lastRootGameIndex, lastSystemMenuIndex, lastThemeRootIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth, editingThemeChannel, gamesShelfBrowseActive, mediaShelfBrowseActive, topLevelShelfActive, topLevelShelfIndex]);
+  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, selectedGameSubcategoryIndex, displayItems, mediaAssetItems.length, mediaSubcategory, gameSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, lastRootGameIndex, lastSystemMenuIndex, lastThemeRootIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth, editingThemeChannel, gamesShelfBrowseActive, mediaShelfBrowseActive, topLevelShelfActive, topLevelShelfIndex, ps5Row, detailRailIndex, detailRailItems.length]);
 
   const renderFaceButton = (kind: "primary" | "secondary" | "tertiary", className: string, size: number): JSX.Element => {
     if (kind === "primary") {
@@ -1410,11 +1534,12 @@ export function ControllerLibraryPage({
   } as React.CSSProperties;
 
   const wrapperClassName = `xmb-wrapper xmb-theme-${themeStyleSafe} ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"} xmb-layout--ps5-home`;
+  const wrapperClassNameWithRow = `${wrapperClassName} xmb-row-${ps5Row}`;
 
-  if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") return <div className={wrapperClassName} style={wrapperThemeVars}><div className="xmb-bg-layer"><div className="xmb-bg-gradient" /></div><div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh'}}>Loading...</div></div>;
+  if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") return <div className={wrapperClassNameWithRow} style={wrapperThemeVars}><div className="xmb-bg-layer"><div className="xmb-bg-gradient" /></div><div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh'}}>Loading...</div></div>;
 
   return (
-    <div className={wrapperClassName} style={wrapperThemeVars}>
+    <div className={wrapperClassNameWithRow} style={wrapperThemeVars}>
       <div className="xmb-bg-layer">
         {parallaxBackdropTiles.length > 0 ? (
           <div className="xmb-ps5-parallax-field" aria-hidden>
@@ -1801,6 +1926,24 @@ export function ControllerLibraryPage({
             </div>
           )}
           </div>
+
+      {ps5Row === "detail" && (gamesShelfBrowseActive || mediaShelfBrowseActive) && (
+        <div className="xmb-ps5-detail-rail" role="listbox" aria-label="Detail row">
+          {detailRailItems.map((item, idx) => (
+            <div key={item.id} className={`xmb-ps5-detail-card ${idx === detailRailIndex ? "active" : ""}`} role="option" aria-selected={idx === detailRailIndex}>
+              <div className="xmb-ps5-detail-card-image-wrap">
+                {item.imageUrl ? (
+                  <img src={item.imageUrl} alt="" className="xmb-ps5-detail-card-image" />
+                ) : (
+                  <div className="xmb-ps5-detail-card-image xmb-ps5-detail-card-image--placeholder" />
+                )}
+              </div>
+              <div className="xmb-ps5-detail-card-title">{item.title}</div>
+              <div className="xmb-ps5-detail-card-subtitle">{item.subtitle}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="xmb-footer">
         {topLevelShelfActive ? (
