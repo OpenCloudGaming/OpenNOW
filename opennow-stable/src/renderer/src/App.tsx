@@ -2913,7 +2913,20 @@ export function App(): JSX.Element {
               },
               onTransportDegraded: (detail) => {
                 console.warn("[App] Transport degraded:", detail);
-                void attemptSessionRecoveryRef.current("peer-connection-degraded");
+                void attemptSessionRecoveryRef.current("peer-connection-degraded").catch((error) => {
+                  console.error("[Recovery] Transport recovery failed:", error);
+                  const message = error instanceof Error
+                    ? error.message
+                    : "The connection to the running session was lost and resume failed.";
+                  setLaunchError({
+                    stage: streamStatusToLoadingStage(streamStatusRef.current),
+                    title: "Session Connection Lost",
+                    description: message,
+                  });
+                  resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
+                  void refreshNavbarActiveSession();
+                  launchInFlightRef.current = false;
+                });
               },
             });
             if (settings.microphoneMode !== "disabled") {
