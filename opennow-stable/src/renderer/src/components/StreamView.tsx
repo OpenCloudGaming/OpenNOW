@@ -12,6 +12,8 @@ import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSe
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 
+const ANTI_AFK_TOGGLE_ACK_MS = 5000;
+
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
   audioRef: React.Ref<HTMLAudioElement>;
@@ -30,6 +32,7 @@ interface StreamViewProps {
   hideStreamButtons?: boolean;
   serverRegion?: string;
   antiAfkEnabled: boolean;
+  antiAfkAckNonce: number;
   showAntiAfkIndicator: boolean;
   exitPrompt: {
     open: boolean;
@@ -648,6 +651,7 @@ export function StreamView({
   shortcuts,
   serverRegion,
   antiAfkEnabled,
+  antiAfkAckNonce,
   showAntiAfkIndicator,
   exitPrompt,
   sessionStartedAtMs,
@@ -682,6 +686,7 @@ export function StreamView({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
+  const [antiAfkToggleAck, setAntiAfkToggleAck] = useState<"on" | "off" | null>(null);
   const [showSideBar, setShowSideBar] = useState(false);
   const [isPointerLocked, setIsPointerLocked] = useState(false);
   const [screenshots, setScreenshots] = useState<ScreenshotEntry[]>([]);
@@ -802,6 +807,29 @@ export function StreamView({
       }
     };
   }, [isConnecting, sessionClockShowDurationSeconds, sessionClockShowEveryMinutes, sessionCounterEnabled]);
+
+  useEffect(() => {
+    if (antiAfkAckNonce === 0 || isConnecting) {
+      setAntiAfkToggleAck(null);
+      return;
+    }
+
+    // Omit transient "on" message when persistent ANTI-AFK badge already shows it
+    if (antiAfkEnabled && showAntiAfkIndicator) {
+      setAntiAfkToggleAck(null);
+      return;
+    }
+
+    setAntiAfkToggleAck(antiAfkEnabled ? "on" : "off");
+
+    const hideTimer = window.setTimeout(() => {
+      setAntiAfkToggleAck(null);
+    }, ANTI_AFK_TOGGLE_ACK_MS);
+
+    return (): void => {
+      window.clearTimeout(hideTimer);
+    };
+  }, [antiAfkAckNonce, antiAfkEnabled, showAntiAfkIndicator, isConnecting]);
 
   const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
@@ -1936,6 +1964,13 @@ export function StreamView({
             {streamWarning.message}
             {warningSeconds ? ` · ${warningSeconds} left` : ""}
           </span>
+        </div>
+      )}
+
+      {antiAfkToggleAck && !isConnecting && (
+        <div className={`sv-afk-ack sv-afk-ack--${antiAfkToggleAck}`} role="status" aria-live="polite">
+          <span className="sv-afk-ack-dot" aria-hidden />
+          <span>{antiAfkToggleAck === "on" ? "Anti-AFK on" : "Anti-AFK off"}</span>
         </div>
       )}
 

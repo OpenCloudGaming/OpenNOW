@@ -873,6 +873,7 @@ export function App(): JSX.Element {
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("idle");
   const [showStatsOverlay, setShowStatsOverlay] = useState(false);
   const [antiAfkEnabled, setAntiAfkEnabled] = useState(false);
+  const [antiAfkAckNonce, setAntiAfkAckNonce] = useState(0);
   const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: "Game" });
   const [streamingGame, setStreamingGame] = useState<GameInfo | null>(null);
   const [streamingStore, setStreamingStore] = useState<string | null>(null);
@@ -1988,6 +1989,12 @@ export function App(): JSX.Element {
   }, [setSessionFullscreen, settings.autoFullScreen, streamStatus]);
 
   // Anti-AFK interval
+  useEffect(() => {
+    if (!isStreaming) {
+      setAntiAfkAckNonce(0);
+    }
+  }, [isStreaming]);
+
   useEffect(() => {
     if (!antiAfkEnabled || streamStatus !== "streaming") return;
 
@@ -3767,6 +3774,7 @@ export function App(): JSX.Element {
         e.stopImmediatePropagation();
         if (streamStatus === "streaming") {
           setAntiAfkEnabled((prev) => !prev);
+          setAntiAfkAckNonce((n) => n + 1);
         }
         return;
       }
@@ -3920,6 +3928,7 @@ export function App(): JSX.Element {
             hideStreamButtons={settings.hideStreamButtons}
             serverRegion={session?.serverIp}
             antiAfkEnabled={antiAfkEnabled}
+            antiAfkAckNonce={antiAfkAckNonce}
             showAntiAfkIndicator={settings.showAntiAfkIndicator}
             exitPrompt={exitPrompt}
             sessionStartedAtMs={sessionStartedAtMs}

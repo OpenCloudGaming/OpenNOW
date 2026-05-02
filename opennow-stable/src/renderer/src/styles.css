@@ -4550,6 +4550,54 @@ button.game-card-store-chip.owned.active:hover {
   color: var(--error);
 }
 
+.sv-afk-ack {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1002;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(86vw, 540px);
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--panel-border);
+  background: rgba(10, 10, 12, 0.93);
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  animation: fade-in 140ms var(--ease);
+  backdrop-filter: blur(5px);
+}
+
+.sv-afk-ack-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.sv-afk-ack--on {
+  border-color: color-mix(in srgb, var(--success) 45%, var(--panel-border));
+}
+
+.sv-afk-ack--on .sv-afk-ack-dot {
+  background: var(--success);
+  box-shadow: 0 0 8px rgba(88, 217, 138, 0.8);
+}
+
+.sv-afk-ack--off {
+  border-color: var(--panel-border);
+  color: var(--ink-muted);
+}
+
+.sv-afk-ack--off .sv-afk-ack-dot {
+  background: var(--ink-muted);
+  box-shadow: none;
+}
+
 /* Stats HUD (StreamView inline stats) */
 .sv-stats {
   position: fixed;
