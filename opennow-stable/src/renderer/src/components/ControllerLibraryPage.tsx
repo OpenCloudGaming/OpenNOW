@@ -639,8 +639,9 @@ export function ControllerLibraryPage({
       topCategory === "current" ||
       (topCategory === "media" && mediaSubcategory === "root") ||
       (topCategory === "all" && gameSubcategory === "root"));
+  const topLevelRowBehaviorActive = topLevelShelfActive && !(topCategory === "settings" && settingsSubcategory !== "root");
   const canEnterDetailRow = gamesShelfBrowseActive || mediaShelfBrowseActive;
-  const canEnterTopRow = topLevelShelfActive || gamesShelfBrowseActive || mediaShelfBrowseActive;
+  const canEnterTopRow = topLevelRowBehaviorActive || gamesShelfBrowseActive || mediaShelfBrowseActive;
   const topLevelShelfIndex =
     topCategory === "media"
       ? selectedMediaIndex
@@ -927,7 +928,7 @@ export function ControllerLibraryPage({
         }
       }
 
-      if (topLevelShelfActive) {
+      if (topLevelRowBehaviorActive) {
         const itemCount = displayItems.length;
         if (itemCount > 0 && (direction === "left" || direction === "right")) {
           const delta = direction === "left" ? -1 : 1;
@@ -951,6 +952,19 @@ export function ControllerLibraryPage({
           }
           return;
         }
+      }
+
+      if (topCategory === "settings" && settingsSubcategory !== "root" && (direction === "left" || direction === "right")) {
+        const itemCount = displayItems.length;
+        if (itemCount === 0) return;
+        // In settings submenus, left/right move along the submenu list (same as horizontal shelves).
+        const delta = direction === "left" ? -1 : 1;
+        const nextIndex = Math.max(0, Math.min(itemCount - 1, selectedSettingIndex + delta));
+        if (nextIndex !== selectedSettingIndex) {
+          playUiSound("move");
+          setSelectedSettingIndex(nextIndex);
+        }
+        return;
       }
 
       if (direction === "left") {
@@ -1274,7 +1288,7 @@ export function ControllerLibraryPage({
     };
 
     const secondaryActivateHandler = () => {
-        if (topLevelShelfActive) {
+        if (topLevelRowBehaviorActive) {
           cycleTopCategory(-1);
           return;
         }
@@ -1368,7 +1382,7 @@ export function ControllerLibraryPage({
     };
 
     const tertiaryActivateHandler = () => {
-      if (topLevelShelfActive) {
+      if (topLevelRowBehaviorActive) {
         cycleTopCategory(1);
         return;
       }
@@ -1476,12 +1490,12 @@ export function ControllerLibraryPage({
         tertiaryActivateHandler();
         return;
       }
-      if (e.key.toLowerCase() === "q" && topLevelShelfActive) {
+      if (e.key.toLowerCase() === "q" && topLevelRowBehaviorActive) {
         e.preventDefault();
         cycleTopCategory(-1);
         return;
       }
-      if (e.key.toLowerCase() === "e" && topLevelShelfActive) {
+      if (e.key.toLowerCase() === "e" && topLevelRowBehaviorActive) {
         e.preventDefault();
         cycleTopCategory(1);
         return;
@@ -1522,7 +1536,7 @@ export function ControllerLibraryPage({
       window.removeEventListener("opennow:controller-cancel", cancelHandler);
       window.removeEventListener("keydown", kbdHandler);
     };
-  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, selectedGameSubcategoryIndex, displayItems, mediaAssetItems.length, mediaSubcategory, gameSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, lastRootGameIndex, lastSystemMenuIndex, lastThemeRootIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth, editingThemeChannel, gamesShelfBrowseActive, mediaShelfBrowseActive, topLevelShelfActive, topLevelShelfIndex, canEnterDetailRow, canEnterTopRow, ps5Row, detailRailIndex, detailRailItems.length]);
+  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, selectedGameSubcategoryIndex, displayItems, mediaAssetItems.length, mediaSubcategory, gameSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, lastRootGameIndex, lastSystemMenuIndex, lastThemeRootIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth, editingThemeChannel, gamesShelfBrowseActive, mediaShelfBrowseActive, topLevelShelfActive, topLevelRowBehaviorActive, topLevelShelfIndex, canEnterDetailRow, canEnterTopRow, ps5Row, detailRailIndex, detailRailItems.length]);
 
   const renderFaceButton = (kind: "primary" | "secondary" | "tertiary", className: string, size: number): JSX.Element => {
     if (kind === "primary") {
@@ -1758,9 +1772,22 @@ export function ControllerLibraryPage({
                   item.id === "themeR" ? "r" : item.id === "themeG" ? "g" : item.id === "themeB" ? "b" : null;
                 const themeRgbLive = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
                 const isGameRootTile = topCategory === "all" && gameSubcategory === "root";
+                const isCurrentResumeTile = topCategory === "current" && item.id === "resume";
                 const previewThumbs = isGameRootTile ? (gameCategoryPreviewById[item.id] ?? []) : [];
                 return (
-                  <div key={item.id} className={`xmb-ps5-menu-tile ${isActive ? "active" : ""}`} role="option" aria-selected={isActive}>
+                  <div key={item.id} className={`xmb-ps5-menu-tile ${isActive ? "active" : ""} ${isCurrentResumeTile ? "xmb-ps5-menu-tile--resume" : ""}`} role="option" aria-selected={isActive}>
+                    {isCurrentResumeTile ? (
+                      <div className="xmb-ps5-menu-resume-preview" aria-hidden>
+                        {currentStreamingGame?.imageUrl ? (
+                          <img src={currentStreamingGame.imageUrl} alt="" className="xmb-ps5-menu-resume-image" />
+                        ) : (
+                          <div className="xmb-ps5-menu-resume-image xmb-ps5-menu-resume-image--placeholder" />
+                        )}
+                        <div className="xmb-ps5-menu-resume-overlay">
+                          <span className="xmb-ps5-menu-resume-badge">Live Snapshot</span>
+                        </div>
+                      </div>
+                    ) : null}
                     {isGameRootTile ? (
                       <div className="xmb-ps5-menu-thumb-row" aria-hidden>
                         {previewThumbs.map((src, i) => (
@@ -1977,7 +2004,7 @@ export function ControllerLibraryPage({
       )}
 
       <div className="xmb-footer">
-        {topLevelShelfActive ? (
+        {topLevelRowBehaviorActive ? (
           <>
             <div className="xmb-btn-hint">
               {controllerType === "ps" ? (
