@@ -42,7 +42,6 @@ export const IPC_CHANNELS = {
   SETTINGS_RESET: "settings:reset",
   MICROPHONE_PERMISSION_GET: "microphone:permission:get",
   LOGS_EXPORT: "logs:export",
-  LOGS_GET_RENDERER: "logs:get-renderer",
   SCREENSHOT_SAVE: "screenshot:save",
   SCREENSHOT_LIST: "screenshot:list",
   SCREENSHOT_DELETE: "screenshot:delete",

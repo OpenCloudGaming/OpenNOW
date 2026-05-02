@@ -2889,6 +2889,28 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
               <div className="settings-row">
                 <label className="settings-label">
+                  Refresh cache
+                  <span className="settings-hint">Re-fetch cached game data and images in the background (does not wipe the cache)</span>
+                </label>
+                <button
+                  type="button"
+                  className="settings-export-logs-btn"
+                  onClick={async () => {
+                    try {
+                      await window.openNow.refreshCache();
+                    } catch (err) {
+                      console.error("[Settings] Failed to refresh cache:", err);
+                      alert("Failed to refresh cache. Please try again.");
+                    }
+                  }}
+                >
+                  <RefreshCcw size={16} />
+                  Refresh cache
+                </button>
+              </div>
+
+              <div className="settings-row">
+                <label className="settings-label">
                   Delete Cache
                   <span className="settings-hint">Clear all cached game data, images, and metadata</span>
                 </label>

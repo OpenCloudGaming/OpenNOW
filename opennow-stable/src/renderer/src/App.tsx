@@ -51,6 +51,32 @@ import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
 import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
 import { chooseAccountLinked, getEpicOwnershipLaunchError } from "./lib/launchOwnership";
+import {
+  loadCatalogPreferences,
+  saveCatalogPreferences,
+  sortLibraryGames,
+  type CatalogPreferences,
+} from "./app/catalogPreferencesStorage";
+import {
+  FREE_TIER_15_MIN_WARNING_SECONDS,
+  FREE_TIER_30_MIN_WARNING_SECONDS,
+  FREE_TIER_FINAL_MINUTE_WARNING_SECONDS,
+  FREE_TIER_SESSION_LIMIT_SECONDS,
+  PLAYTIME_RESYNC_INTERVAL_MS,
+  SESSION_AD_FORCE_PLAY_TIMEOUT_MS,
+  SESSION_AD_POLL_INTERVAL_MS,
+  SESSION_AD_PROGRESS_CHECK_INTERVAL_MS,
+  SESSION_AD_START_TIMEOUT_MS,
+  SESSION_AD_STUCK_TIMEOUT_MS,
+  SESSION_READY_POLL_INTERVAL_MS,
+  STREAM_WARNING_VISIBILITY_MS,
+  VARIANT_SELECTION_LOCALSTORAGE_KEY,
+} from "./app/sessionTimingConstants";
+import {
+  hasAnyEligiblePrintedWasteZone,
+  isAllianceStreamingBaseUrl,
+  isStandardPrintedWasteZone,
+} from "./app/printedWasteHelpers";
 
 // UI Components
 import { LoginScreen } from "./components/LoginScreen";
@@ -101,50 +127,6 @@ function getAppStyle(posterSizeScale: number): AppStyle {
     "--game-poster-scale": String(posterSizeScale),
   };
 }
-const SESSION_READY_POLL_INTERVAL_MS = 2000;
-const SESSION_AD_POLL_INTERVAL_MS = 30000;
-const SESSION_AD_PROGRESS_CHECK_INTERVAL_MS = 1000;
-const SESSION_AD_START_TIMEOUT_MS = 30000;
-const SESSION_AD_FORCE_PLAY_TIMEOUT_MS = 10000;
-const SESSION_AD_STUCK_TIMEOUT_MS = 30000;
-const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
-const CATALOG_PREFERENCES_LOCALSTORAGE_KEY = "opennow.catalogPreferences.v1";
-const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
-const FREE_TIER_SESSION_LIMIT_SECONDS = 60 * 60;
-const FREE_TIER_30_MIN_WARNING_SECONDS = 30 * 60;
-const FREE_TIER_15_MIN_WARNING_SECONDS = 15 * 60;
-const FREE_TIER_FINAL_MINUTE_WARNING_SECONDS = 60;
-const STREAM_WARNING_VISIBILITY_MS = 15 * 1000;
-
-interface CatalogPreferences {
-  sortId: string;
-  filterIds: string[];
-}
-
-function loadCatalogPreferences(): CatalogPreferences {
-  try {
-    const raw = localStorage.getItem(CATALOG_PREFERENCES_LOCALSTORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<CatalogPreferences>;
-      return {
-        sortId: typeof parsed.sortId === "string" ? parsed.sortId : "relevance",
-        filterIds: Array.isArray(parsed.filterIds) ? parsed.filterIds.filter((id): id is string => typeof id === "string") : [],
-      };
-    }
-  } catch {
-    // ignore
-  }
-  return { sortId: "relevance", filterIds: [] };
-}
-
-function saveCatalogPreferences(prefs: CatalogPreferences): void {
-  try {
-    localStorage.setItem(CATALOG_PREFERENCES_LOCALSTORAGE_KEY, JSON.stringify(prefs));
-  } catch {
-    // ignore
-  }
-}
-
 type AppPage = "home" | "library" | "settings";
 type StreamStatus = "idle" | "queue" | "setup" | "starting" | "connecting" | "streaming";
 type StreamLoadingStatus = "queue" | "setup" | "starting" | "connecting";
@@ -189,29 +171,6 @@ const RECOVERABLE_STREAM_STATUSES: readonly StreamStatus[] = ["queue", "setup", 
 const SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS = [0, 3000] as const;
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
-
-function isStandardPrintedWasteZone(zoneId: string): boolean {
-  return zoneId.startsWith("NP-") && !zoneId.startsWith("NPA-");
-}
-
-function isAllianceStreamingBaseUrl(streamingBaseUrl: string): boolean {
-  if (!streamingBaseUrl.trim()) return false;
-  try {
-    const { hostname } = new URL(streamingBaseUrl);
-    return !hostname.endsWith(".nvidiagrid.net");
-  } catch {
-    return false;
-  }
-}
-
-function hasAnyEligiblePrintedWasteZone(
-  queueData: PrintedWasteQueueData,
-  mapping: PrintedWasteServerMapping,
-): boolean {
-  return Object.keys(queueData).some((zoneId) => (
-    isStandardPrintedWasteZone(zoneId) && mapping[zoneId]?.nuked !== true
-  ));
-}
 
 const DEFAULT_SHORTCUTS = {
   shortcutToggleStats: "F3",
@@ -322,37 +281,6 @@ function areStringArraysEqual(left: string[], right: string[]): boolean {
     return false;
   }
   return left.every((value, index) => value === right[index]);
-}
-
-function sortLibraryGames(games: GameInfo[], sortId: string): GameInfo[] {
-  const copy = [...games];
-  const compareTitle = (left: GameInfo, right: GameInfo) => left.title.localeCompare(right.title);
-  if (sortId === "z_to_a") {
-    return copy.sort((left, right) => right.title.localeCompare(left.title));
-  }
-  if (sortId === "a_to_z") {
-    return copy.sort(compareTitle);
-  }
-  if (sortId === "last_played") {
-    return copy.sort((left, right) => {
-      const leftTime = left.lastPlayed ? new Date(left.lastPlayed).getTime() : 0;
-      const rightTime = right.lastPlayed ? new Date(right.lastPlayed).getTime() : 0;
-      if (leftTime === rightTime) return compareTitle(left, right);
-      return rightTime - leftTime;
-    });
-  }
-  if (sortId === "last_added") {
-    return copy.sort((left, right) => {
-      const leftTime = left.isInLibrary ? new Date(left.lastPlayed ?? 0).getTime() : 0;
-      const rightTime = right.isInLibrary ? new Date(right.lastPlayed ?? 0).getTime() : 0;
-      if (leftTime === rightTime) return compareTitle(left, right);
-      return rightTime - leftTime;
-    });
-  }
-  if (sortId === "most_popular") {
-    return copy.sort((left, right) => (right.membershipTierLabel ? 1 : 0) - (left.membershipTierLabel ? 1 : 0) || compareTitle(left, right));
-  }
-  return copy.sort(compareTitle);
 }
 
 function mergeVariantSelections(

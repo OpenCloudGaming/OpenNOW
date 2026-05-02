@@ -1,9 +1,9 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, systemPreferences, session } from "electron";
+import * as net from "node:net";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, relative } from "node:path";
 import { existsSync, readFileSync, createWriteStream } from "node:fs";
 import { copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile, realpath } from "node:fs/promises";
-import * as net from "node:net";
 import { randomUUID, createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 
@@ -85,6 +85,16 @@ import { GfnSignalingClient } from "./gfn/signaling";
 import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
 import { connectDiscordRpc, setActivity, clearActivity, destroyDiscordRpc, getCurrentActivity, isDiscordRpcConnected } from "./discordRpc";
 import { createAppUpdaterController, type AppUpdaterController } from "./updater";
+import type { MainIpcDeps, SignalingState, ActiveRecording } from "./ipc/types";
+import { registerMainIpcHandlers } from "./ipc/registerAll";
+import { fetchWithTimeout, withTimeout } from "./lib/httpFetch";
+import {
+  buildScreenshotDataUrl,
+  dataUrlToBuffer,
+  sanitizeTitleForFileName,
+  assertSafeScreenshotId,
+  assertSafeRecordingId,
+} from "./lib/imageDataUrl";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -223,8 +233,7 @@ app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 app.commandLine.appendSwitch("max-gum-fps", "999");
 
 let mainWindow: BrowserWindow | null = null;
-let signalingClient: GfnSignalingClient | null = null;
-let signalingClientKey: string | null = null;
+const signalingState: SignalingState = { client: null, key: null };
 let authService: AuthService;
 let settingsManager: SettingsManager;
 let appUpdater: AppUpdaterController | null = null;
@@ -251,9 +260,9 @@ function runShutdownCleanup(reason = "app-quit"): void {
   console.log(`[Main] Running shutdown cleanup (${reason})`);
 
   refreshScheduler.stop();
-  signalingClient?.disconnect();
-  signalingClient = null;
-  signalingClientKey = null;
+  signalingState.client?.disconnect();
+  signalingState.client = null;
+  signalingState.key = null;
   void destroyDiscordRpc();
   appUpdater?.dispose();
   appUpdater = null;
@@ -394,40 +403,6 @@ async function ensureScreenshotDirectory(): Promise<string> {
   return dir;
 }
 
-function sanitizeTitleForFileName(value: string | undefined): string {
-  const source = (value ?? "").trim().toLowerCase();
-  const compact = source.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  if (!compact) return "stream";
-  return compact.slice(0, 48);
-}
-
-function dataUrlToBuffer(dataUrl: string): { ext: "png" | "jpg" | "webp"; buffer: Buffer } {
-  const match = /^data:image\/(png|jpeg|jpg|webp);base64,([a-z0-9+/=\s]+)$/i.exec(dataUrl);
-  if (!match || !match[1] || !match[2]) {
-    throw new Error("Invalid screenshot payload");
-  }
-
-  const rawExt = match[1].toLowerCase();
-  const ext: "png" | "jpg" | "webp" = rawExt === "jpeg" ? "jpg" : (rawExt as "png" | "jpg" | "webp");
-  const buffer = Buffer.from(match[2].replace(/\s+/g, ""), "base64");
-  if (!buffer.length) {
-    throw new Error("Empty screenshot payload");
-  }
-
-  return { ext, buffer };
-}
-
-function buildScreenshotDataUrl(ext: string, buffer: Buffer): string {
-  const mime = ext === "jpg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
-  return `data:${mime};base64,${buffer.toString("base64")}`;
-}
-
-function assertSafeScreenshotId(id: string): void {
-  if (!id || id.includes("/") || id.includes("\\") || id.includes("..")) {
-    throw new Error("Invalid screenshot id");
-  }
-}
-
 async function listScreenshots(): Promise<ScreenshotEntry[]> {
   const dir = await ensureScreenshotDirectory();
   const entries = await readdir(dir, { withFileTypes: true });
@@ -526,12 +501,6 @@ async function saveScreenshotAs(input: ScreenshotSaveAsRequest): Promise<Screens
 
 const RECORDING_LIMIT = 20;
 
-interface ActiveRecording {
-  writeStream: ReturnType<typeof createWriteStream>;
-  tempPath: string;
-  mimeType: string;
-}
-
 const activeRecordings = new Map<string, ActiveRecording>();
 
 function getRecordingsDirectory(): string {
@@ -608,12 +577,6 @@ async function ensureRecordingsDirectory(): Promise<string> {
   const dir = getRecordingsDirectory();
   await mkdir(dir, { recursive: true });
   return dir;
-}
-
-function assertSafeRecordingId(id: string): void {
-  if (!id || id.includes("/") || id.includes("\\") || id.includes("..")) {
-    throw new Error("Invalid recording id");
-  }
 }
 
 function extFromMimeType(mimeType: string): ".mp4" | ".webm" {
@@ -730,6 +693,14 @@ async function createMainWindow(): Promise<void> {
   } else {
     await mainWindow.loadFile(join(__dirname, "../../dist/index.html"));
   }
+
+  mainWindow.on("resize", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const [width, height] = mainWindow.getSize();
+      settingsManager.set("windowWidth", width);
+      settingsManager.set("windowHeight", height);
+    }
+  });
 
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -872,43 +843,6 @@ interface GitHubContributorResponse {
   contributions?: number;
   type?: string;
   name?: string | null;
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timeout);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timeout);
-        reject(error);
-      },
-    );
-  });
-}
-
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, label: string): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
-
-  try {
-    return await fetch(url, {
-      ...init,
-      signal: controller.signal,
-    });
-  } catch (error) {
-    if ((error instanceof Error && error.name === "AbortError") || controller.signal.aborted) {
-      const reason = controller.signal.reason;
-      const message = reason instanceof Error ? reason.message : `${label} timed out after ${timeoutMs}ms`;
-      throw new Error(message);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 function decodeHtmlEntities(value: string): string {
@@ -1087,980 +1021,6 @@ async function fetchThanksData(): Promise<ThankYouDataResult> {
   return result;
 }
 
-function registerIpcHandlers(): void {
-  ipcMain.handle(IPC_CHANNELS.AUTH_GET_SESSION, async (_event, payload: AuthSessionRequest = {}) => {
-    return authService.ensureValidSessionWithStatus(Boolean(payload.forceRefresh));
-  });
-
-  ipcMain.handle(IPC_CHANNELS.AUTH_GET_PROVIDERS, async () => {
-    return authService.getProviders();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.AUTH_GET_REGIONS, async (_event, payload: RegionsFetchRequest) => {
-    return authService.getRegions(payload?.token);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.AUTH_LOGIN, async (_event, payload: AuthLoginRequest) => {
-    return authService.login(payload);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.AUTH_LOGOUT, async () => {
-    await authService.logout();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.AUTH_LOGOUT_ALL, async () => {
-    await authService.logoutAll();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.AUTH_GET_SAVED_ACCOUNTS, async () => {
-    return authService.getSavedAccounts();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.AUTH_SWITCH_ACCOUNT, async (_event, userId: string) => {
-    return authService.switchAccount(userId);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.AUTH_REMOVE_ACCOUNT, async (_event, userId: string) => {
-    await authService.removeAccount(userId);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.SUBSCRIPTION_FETCH, async (_event, payload: SubscriptionFetchRequest) => {
-    const token = await resolveJwt(payload?.token);
-    const streamingBaseUrl =
-      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    const userId = payload.userId;
-
-    // Fetch dynamic regions to get the VPC ID (handles Alliance partners correctly)
-    const { vpcId } = await fetchDynamicRegions(token, streamingBaseUrl);
-
-    return fetchSubscription(token, userId, vpcId ?? undefined);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.GAMES_FETCH_MAIN, async (_event, payload: GamesFetchRequest) => {
-    const token = await resolveJwt(payload?.token);
-    const streamingBaseUrl =
-      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    refreshScheduler.updateAuthContext(token, streamingBaseUrl);
-    return fetchMainGames(token, streamingBaseUrl);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.GAMES_FETCH_LIBRARY, async (_event, payload: GamesFetchRequest) => {
-    const token = await resolveJwt(payload?.token);
-    const streamingBaseUrl =
-      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    refreshScheduler.updateAuthContext(token, streamingBaseUrl);
-    return fetchLibraryGames(token, streamingBaseUrl);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.GAMES_BROWSE_CATALOG, async (_event, payload: CatalogBrowseRequest) => {
-    const token = await resolveJwt(payload?.token);
-    const streamingBaseUrl =
-      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    refreshScheduler.updateAuthContext(token, streamingBaseUrl);
-    return browseCatalog({ ...payload, token, providerStreamingBaseUrl: streamingBaseUrl });
-  });
-
-  ipcMain.handle(IPC_CHANNELS.GAMES_FETCH_PUBLIC, async () => {
-    return fetchPublicGames();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, async (_event, payload: ResolveLaunchIdRequest) => {
-    const token = await resolveJwt(payload?.token);
-    const streamingBaseUrl =
-      payload?.providerStreamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    return resolveLaunchAppId(token, payload.appIdOrUuid, streamingBaseUrl);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.CREATE_SESSION, async (_event, payload: SessionCreateRequest) => {
-    const token = await resolveJwt(payload.token);
-    const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    const forceNewSession = shouldForceNewSession(payload.existingSessionStrategy);
-
-    /**
-     * Attempt to find and claim an existing active session.
-     * Prefers a session whose appId matches the requested game; falls back to
-     * any claimable session (serverIp present) if no exact match is found.
-     * Returns null when no claimable session exists or the lookup fails.
-     *
-     * IMPORTANT: Only status=2/3 (ready/streaming) sessions are sent a RESUME claim PUT.
-     * Status=1 sessions (still in queue/setup) must NOT receive a RESUME — the server
-     * rejects it with SESSION_NOT_PAUSED, and even if we polled past it internally we
-     * would bypass the renderer's queue/ad polling loop entirely. Instead, status=1
-     * sessions are returned as a minimal SessionInfo so the renderer enters its own
-     * polling loop which shows queue position and ads correctly.
-     */
-    const tryClaimExisting = async (): Promise<SessionInfo | null> => {
-      if (!token) return null;
-      try {
-        const activeSessions = await getActiveSessions(token, streamingBaseUrl);
-        if (activeSessions.length === 0) return null;
-        const numericAppId = parseInt(payload.appId, 10);
-
-        // First prefer a paused/ready session (status 2 or 3) that can be RESUME'd.
-        const readyCandidate = selectReadySessionToClaim(activeSessions, numericAppId);
-        if (readyCandidate) {
-          console.log(
-            `[CreateSession] Resuming existing session (id=${readyCandidate.sessionId}, appId=${readyCandidate.appId}, status=${readyCandidate.status}) instead of creating new.`,
-          );
-          return claimSession({
-            token,
-            streamingBaseUrl,
-            sessionId: readyCandidate.sessionId,
-            serverIp: readyCandidate.serverIp!,
-            appId: payload.appId,
-            settings: payload.settings,
-          });
-        }
-
-        // A status=1 session is still in queue/setup. Return it so the renderer's
-        // polling loop handles queue position and ads — do NOT send a RESUME claim.
-        const launchingCandidate = selectLaunchingSession(activeSessions, numericAppId);
-        if (launchingCandidate) {
-          console.log(
-            `[CreateSession] Found launching session (id=${launchingCandidate.sessionId}, appId=${launchingCandidate.appId}, status=1); returning for renderer queue/ad polling.`,
-          );
-          try {
-            return await pollSession({
-              token,
-              streamingBaseUrl,
-              serverIp: launchingCandidate.serverIp!,
-              zone: payload.zone,
-              sessionId: launchingCandidate.sessionId,
-            });
-          } catch (hydrateError) {
-            console.warn(
-              `[CreateSession] Failed to hydrate launching session ${launchingCandidate.sessionId}; falling back to minimal handoff:`,
-              hydrateError,
-            );
-            return {
-              sessionId: launchingCandidate.sessionId,
-              status: 1,
-              zone: payload.zone,
-              streamingBaseUrl,
-              serverIp: launchingCandidate.serverIp!,
-              signalingServer: launchingCandidate.serverIp!,
-              signalingUrl: launchingCandidate.signalingUrl ?? `wss://${launchingCandidate.serverIp}:443/nvst/`,
-              iceServers: [],
-            } satisfies SessionInfo;
-          }
-        }
-
-        return null;
-      } catch (claimError) {
-        console.warn("[CreateSession] Failed to claim existing session:", claimError);
-        return null;
-      }
-    };
-
-    // Pre-flight check: resume an active session before trying to create a new one.
-    if (!forceNewSession) {
-      const preChecked = await tryClaimExisting();
-      if (preChecked) {
-        if (settingsManager.get("discordRichPresence")) {
-          void setActivity(payload.internalTitle || payload.appId, new Date(), payload.appId);
-        }
-        return preChecked;
-      }
-    }
-
-    try {
-      if (forceNewSession && token) {
-        await stopActiveSessionsForCreate({
-          token,
-          streamingBaseUrl,
-          zone: payload.zone,
-          appId: payload.appId,
-        });
-      }
-      const sessionResult = await createSession({ ...payload, token, streamingBaseUrl });
-      if (settingsManager.get("discordRichPresence")) {
-        void setActivity(payload.internalTitle || payload.appId, new Date(), payload.appId);
-      }
-      return sessionResult;
-    } catch (error) {
-      // If the backend rejected the create because a session is already running,
-      // attempt a claim now (the pre-flight may have missed a session whose appId
-      // was not populated in the list response, or that had no serverIp at the
-      // time of the pre-flight but is ready now).
-      if (!forceNewSession && error instanceof SessionError && error.statusCode === 11) {
-        console.warn("[CreateSession] SESSION_LIMIT_EXCEEDED — retrying as session claim.");
-        const fallback = await tryClaimExisting();
-        if (fallback) {
-          if (settingsManager.get("discordRichPresence")) {
-            void setActivity(payload.internalTitle || payload.appId, new Date(), payload.appId);
-          }
-          return fallback;
-        }
-      }
-      rethrowSerializedSessionError(error);
-    }
-  });
-
-  ipcMain.handle(IPC_CHANNELS.POLL_SESSION, async (_event, payload: SessionPollRequest) => {
-    try {
-      const token = await resolveJwt(payload.token);
-      return pollSession({
-        ...payload,
-        token,
-        streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
-      });
-    } catch (error) {
-      rethrowSerializedSessionError(error);
-    }
-  });
-
-  ipcMain.handle(IPC_CHANNELS.REPORT_SESSION_AD, async (_event, payload: SessionAdReportRequest) => {
-    try {
-      const token = await resolveJwt(payload.token);
-      return reportSessionAd({
-        ...payload,
-        token,
-        streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
-      });
-    } catch (error) {
-      rethrowSerializedSessionError(error);
-    }
-  });
-
-  ipcMain.handle(IPC_CHANNELS.STOP_SESSION, async (_event, payload: SessionStopRequest) => {
-    try {
-      const token = await resolveJwt(payload.token);
-      const result = await stopSession({
-        ...payload,
-        token,
-        streamingBaseUrl: payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl,
-      });
-      void clearActivity();
-      return result;
-    } catch (error) {
-      rethrowSerializedSessionError(error);
-    }
-  });
-
-  ipcMain.handle(IPC_CHANNELS.GET_ACTIVE_SESSIONS, async (_event, token?: string, streamingBaseUrl?: string) => {
-    const jwt = await resolveJwt(token);
-    const baseUrl = streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-    return getActiveSessions(jwt, baseUrl);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.DISCORD_CLEAR_ACTIVITY, async () => {
-    void clearActivity();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.CLAIM_SESSION, async (_event, payload: SessionClaimRequest) => {
-    try {
-      const token = await resolveJwt(payload.token);
-      const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
-      return claimSession({
-        ...payload,
-        token,
-        streamingBaseUrl,
-      });
-    } catch (error) {
-      rethrowSerializedSessionError(error);
-    }
-  });
-
-  ipcMain.handle(IPC_CHANNELS.SESSION_CONFLICT_DIALOG, async (): Promise<SessionConflictChoice> => {
-    return showSessionConflictDialog();
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.CONNECT_SIGNALING,
-    async (_event, payload: SignalingConnectRequest): Promise<void> => {
-      const nextKey = `${payload.sessionId}|${payload.signalingServer}|${payload.signalingUrl ?? ""}`;
-      if (signalingClient && signalingClientKey === nextKey) {
-        console.log("[Signaling] Reuse existing signaling connection (duplicate connect request ignored)");
-        return;
-      }
-
-      if (signalingClient) {
-        signalingClient.disconnect();
-      }
-
-      signalingClient = new GfnSignalingClient(
-        payload.signalingServer,
-        payload.sessionId,
-        payload.signalingUrl,
-      );
-      signalingClientKey = nextKey;
-      signalingClient.onEvent(emitToRenderer);
-      await signalingClient.connect();
-    },
-  );
-
-  ipcMain.handle(IPC_CHANNELS.DISCONNECT_SIGNALING, async (): Promise<void> => {
-    signalingClient?.disconnect();
-    signalingClient = null;
-    signalingClientKey = null;
-  });
-
-  ipcMain.handle(IPC_CHANNELS.SEND_ANSWER, async (_event, payload: SendAnswerRequest) => {
-    if (!signalingClient) {
-      throw new Error("Signaling is not connected");
-    }
-    return signalingClient.sendAnswer(payload);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.SEND_ICE_CANDIDATE, async (_event, payload: IceCandidatePayload) => {
-    if (!signalingClient) {
-      throw new Error("Signaling is not connected");
-    }
-    return signalingClient.sendIceCandidate(payload);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.REQUEST_KEYFRAME, async (_event, payload: KeyframeRequest) => {
-    if (!signalingClient) {
-      throw new Error("Signaling is not connected");
-    }
-    return signalingClient.requestKeyframe(payload);
-  });
-
-  // Toggle fullscreen via IPC (for completeness)
-  ipcMain.handle(IPC_CHANNELS.TOGGLE_FULLSCREEN, async () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      const isFullScreen = mainWindow.isFullScreen();
-      mainWindow.setFullScreen(!isFullScreen);
-    }
-  });
-
-  ipcMain.handle(IPC_CHANNELS.SET_FULLSCREEN, async (_event, value: boolean) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      try {
-        mainWindow.setFullScreen(Boolean(value));
-      } catch (err) {
-        console.warn("Failed to set fullscreen:", err);
-      }
-    }
-  });
-
-  // Toggle pointer lock via IPC (F8 shortcut)
-  ipcMain.handle(IPC_CHANNELS.TOGGLE_POINTER_LOCK, async () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("app:toggle-pointer-lock");
-    }
-  });
-
-  ipcMain.handle(IPC_CHANNELS.QUIT_APP, async () => {
-    requestAppShutdown({
-      reason: "renderer-explicit-exit",
-      forceExitFallback: true,
-    });
-  });
-
-  ipcMain.handle(IPC_CHANNELS.APP_UPDATER_GET_STATE, async (): Promise<AppUpdaterState> => {
-    return appUpdater?.getState() ?? {
-      status: "disabled",
-      currentVersion: app.getVersion(),
-      updateSource: "github-releases",
-      canCheck: false,
-      canDownload: false,
-      canInstall: false,
-      isPackaged: app.isPackaged,
-      message: "Updater is unavailable.",
-    };
-  });
-
-  ipcMain.handle(IPC_CHANNELS.APP_UPDATER_CHECK, async (): Promise<AppUpdaterState> => {
-    return appUpdater?.checkForUpdates("manual") ?? {
-      status: "disabled",
-      currentVersion: app.getVersion(),
-      updateSource: "github-releases",
-      canCheck: false,
-      canDownload: false,
-      canInstall: false,
-      isPackaged: app.isPackaged,
-      message: "Updater is unavailable.",
-    };
-  });
-
-  ipcMain.handle(IPC_CHANNELS.APP_UPDATER_DOWNLOAD, async (): Promise<AppUpdaterState> => {
-    return appUpdater?.downloadUpdate() ?? {
-      status: "disabled",
-      currentVersion: app.getVersion(),
-      updateSource: "github-releases",
-      canCheck: false,
-      canDownload: false,
-      canInstall: false,
-      isPackaged: app.isPackaged,
-      message: "Updater is unavailable.",
-    };
-  });
-
-  ipcMain.handle(IPC_CHANNELS.APP_UPDATER_INSTALL, async (): Promise<AppUpdaterState> => {
-    return appUpdater?.quitAndInstall() ?? {
-      status: "disabled",
-      currentVersion: app.getVersion(),
-      updateSource: "github-releases",
-      canCheck: false,
-      canDownload: false,
-      canInstall: false,
-      isPackaged: app.isPackaged,
-      message: "Updater is unavailable.",
-    };
-  });
-
-  // Settings IPC handlers
-  ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async (): Promise<Settings> => {
-    return settingsManager.getAll();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.SETTINGS_SET, async <K extends keyof Settings>(_event: Electron.IpcMainInvokeEvent, key: K, value: Settings[K]) => {
-    settingsManager.set(key, value);
-    // React to certain setting changes immediately in main process
-    try {
-      if (key === "autoCheckForUpdates") {
-        appUpdater?.setAutomaticChecksEnabled(value as boolean);
-      }
-      if (key === "discordRichPresence") {
-        if (value) {
-          void connectDiscordRpc().then(() => discordMonitor.start());
-        } else {
-          discordMonitor.stop();
-          void destroyDiscordRpc();
-        }
-      }
-    } catch (err) {
-      console.warn("Failed to apply setting change in main process:", err);
-    }
-  });
-
-  ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
-    const resetSettings = settingsManager.reset();
-    appUpdater?.setAutomaticChecksEnabled(resetSettings.autoCheckForUpdates);
-    return resetSettings;
-  });
-
-  ipcMain.handle(IPC_CHANNELS.MICROPHONE_PERMISSION_GET, async (): Promise<MicrophonePermissionResult> => {
-    if (process.platform !== "darwin") {
-      return {
-        platform: process.platform,
-        isMacOs: false,
-        status: "not-applicable",
-        granted: false,
-        canRequest: false,
-        shouldUseBrowserApi: true,
-      };
-    }
-
-    const currentStatus = systemPreferences.getMediaAccessStatus("microphone");
-    console.log("[Main] macOS microphone permission status:", currentStatus);
-
-    if (currentStatus === "granted") {
-      return {
-        platform: process.platform,
-        isMacOs: true,
-        status: "granted",
-        granted: true,
-        canRequest: false,
-        shouldUseBrowserApi: true,
-      };
-    }
-
-    if (currentStatus === "not-determined") {
-      const granted = await systemPreferences.askForMediaAccess("microphone");
-      const nextStatus = systemPreferences.getMediaAccessStatus("microphone");
-      console.log("[Main] Requested macOS microphone permission:", granted, nextStatus);
-      return {
-        platform: process.platform,
-        isMacOs: true,
-        status: nextStatus,
-        granted,
-        canRequest: nextStatus === "not-determined",
-        shouldUseBrowserApi: granted,
-      };
-    }
-
-    return {
-      platform: process.platform,
-      isMacOs: true,
-      status: currentStatus,
-      granted: false,
-      canRequest: false,
-      shouldUseBrowserApi: false,
-    };
-  });
-
-  // Logs export IPC handler
-  ipcMain.handle(IPC_CHANNELS.LOGS_EXPORT, async (_event, format: "text" | "json" = "text"): Promise<string> => {
-    return exportLogs(format);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.SCREENSHOT_SAVE, async (_event, input: ScreenshotSaveRequest): Promise<ScreenshotEntry> => {
-    return saveScreenshot(input);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.SCREENSHOT_LIST, async (): Promise<ScreenshotEntry[]> => {
-    return listScreenshots();
-  });
-
-  // Media: per-game listing (screenshots + recordings). Best-effort title matching.
-  ipcMain.handle(IPC_CHANNELS.MEDIA_LIST_BY_GAME, async (_event, payload: { gameTitle?: string } = {}) => {
-    const title = (payload?.gameTitle || "").trim().toLowerCase();
-    const screenshots = await listScreenshots();
-    const recordings = await listRecordings();
-
-    const normalize = (s?: string) => (s || "").replace(/[^a-z0-9]+/gi, "").toLowerCase();
-    const needle = normalize(title);
-
-    const matchedScreens = screenshots.filter((s) => {
-      if (!needle) return true;
-      const candidate = normalize(s.fileName) + normalize(s.filePath || "");
-      return candidate.includes(needle);
-    });
-
-    const matchedRecordings = recordings.filter((r) => {
-      if (!needle) return true;
-      const candidate = normalize(r.gameTitle ?? r.fileName ?? "");
-      return candidate.includes(needle);
-    });
-
-    return {
-      screenshots: matchedScreens,
-      videos: matchedRecordings,
-    };
-  });
-
-  ipcMain.handle(IPC_CHANNELS.SCREENSHOT_DELETE, async (_event, input: ScreenshotDeleteRequest): Promise<void> => {
-    return deleteScreenshot(input);
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.SCREENSHOT_SAVE_AS,
-    async (_event, input: ScreenshotSaveAsRequest): Promise<ScreenshotSaveAsResult> => {
-      return saveScreenshotAs(input);
-    },
-  );
-
-  ipcMain.handle(IPC_CHANNELS.RECORDING_BEGIN, async (_event, input: RecordingBeginRequest): Promise<RecordingBeginResult> => {
-    const dir = await ensureRecordingsDirectory();
-    const recordingId = randomUUID();
-    const ext = extFromMimeType(input.mimeType);
-    const tempPath = join(dir, `${recordingId}${ext}.tmp`);
-    const writeStream = createWriteStream(tempPath);
-    activeRecordings.set(recordingId, { writeStream, tempPath, mimeType: input.mimeType });
-    return { recordingId };
-  });
-
-  ipcMain.handle(IPC_CHANNELS.RECORDING_CHUNK, async (_event, input: RecordingChunkRequest): Promise<void> => {
-    const rec = activeRecordings.get(input.recordingId);
-    if (!rec) {
-      throw new Error("Unknown recording id");
-    }
-    await new Promise<void>((resolve, reject) => {
-      rec.writeStream.write(Buffer.from(input.chunk), (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  });
-
-  ipcMain.handle(IPC_CHANNELS.RECORDING_FINISH, async (_event, input: RecordingFinishRequest): Promise<RecordingEntry> => {
-    const rec = activeRecordings.get(input.recordingId);
-    if (!rec) {
-      throw new Error("Unknown recording id");
-    }
-    activeRecordings.delete(input.recordingId);
-
-    await new Promise<void>((resolve, reject) => {
-      rec.writeStream.end((err?: Error | null) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-
-    const dir = getRecordingsDirectory();
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const title = sanitizeTitleForFileName(input.gameTitle);
-    const rand = Math.random().toString(16).slice(2, 8);
-    const durSuffix = input.durationMs > 0 ? `-dur${Math.round(input.durationMs)}` : "";
-    const ext = extFromMimeType(rec.mimeType);
-    const fileName = `${stamp}-${title}-${rand}${durSuffix}${ext}`;
-    const finalPath = join(dir, fileName);
-
-    await rename(rec.tempPath, finalPath);
-
-    // Save thumbnail if provided
-    let thumbnailDataUrl: string | undefined;
-    if (input.thumbnailDataUrl) {
-      try {
-        const { buffer } = dataUrlToBuffer(input.thumbnailDataUrl);
-        const stem = fileName.replace(/\.(mp4|webm)$/i, "");
-        const thumbPath = join(dir, `${stem}-thumb.jpg`);
-        await writeFile(thumbPath, buffer);
-        thumbnailDataUrl = input.thumbnailDataUrl;
-      } catch {
-        // Thumbnail save is best-effort — don't fail the recording
-      }
-    }
-
-    // Enforce recording limit: delete oldest entries beyond RECORDING_LIMIT
-    const all = await listRecordings();
-    if (all.length > RECORDING_LIMIT) {
-      const toDelete = all.slice(RECORDING_LIMIT);
-      await Promise.all(
-        toDelete.map(async (entry) => {
-          await unlink(entry.filePath).catch(() => undefined);
-          const stem = entry.fileName.replace(/\.(mp4|webm)$/i, "");
-          await unlink(join(dir, `${stem}-thumb.jpg`)).catch(() => undefined);
-        }),
-      );
-    }
-
-    const fileStats = await stat(finalPath);
-    return {
-      id: fileName,
-      fileName,
-      filePath: finalPath,
-      createdAtMs: Date.now(),
-      sizeBytes: fileStats.size,
-      durationMs: input.durationMs,
-      gameTitle: input.gameTitle,
-      thumbnailDataUrl,
-    };
-  });
-
-  ipcMain.handle(IPC_CHANNELS.RECORDING_ABORT, async (_event, input: RecordingAbortRequest): Promise<void> => {
-    const rec = activeRecordings.get(input.recordingId);
-    if (!rec) {
-      return;
-    }
-    activeRecordings.delete(input.recordingId);
-    rec.writeStream.destroy();
-    await unlink(rec.tempPath).catch(() => undefined);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.RECORDING_LIST, async (): Promise<RecordingEntry[]> => {
-    return listRecordings();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.RECORDING_DELETE, async (_event, input: RecordingDeleteRequest): Promise<void> => {
-    assertSafeRecordingId(input.id);
-    const dir = await ensureRecordingsDirectory();
-    const filePath = join(dir, input.id);
-    await unlink(filePath);
-    const stem = input.id.replace(/\.(mp4|webm)$/i, "");
-    await unlink(join(dir, `${stem}-thumb.jpg`)).catch(() => undefined);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.RECORDING_SHOW_IN_FOLDER, async (_event, id: string): Promise<void> => {
-    assertSafeRecordingId(id);
-    const dir = await ensureRecordingsDirectory();
-    shell.showItemInFolder(join(dir, id));
-  });
-
-  // Return a thumbnail data URL for a given media file path (images or companion thumbs for videos).
-  ipcMain.handle(IPC_CHANNELS.MEDIA_THUMBNAIL, async (_event, payload: { filePath: string }): Promise<string | null> => {
-    const rawFp = payload?.filePath;
-    if (typeof rawFp !== "string") return null;
-    if (rawFp.length > 4096) return null;
-    try {
-      const allowedRoot = resolve(join(app.getPath("pictures"), "OpenNOW"));
-      const fpResolved = resolve(rawFp);
-      const allowedRootReal = await realpath(allowedRoot).catch(() => allowedRoot);
-      const fpReal = await realpath(fpResolved).catch(() => fpResolved);
-      const rel = relative(allowedRootReal, fpReal);
-      if (rel.startsWith("..")) return null;
-
-      const lower = fpReal.toLowerCase();
-      if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
-        const buf = await readFile(fpReal);
-        const extMatch = /\.([^.]+)$/.exec(fpReal);
-        const ext = (extMatch?.[1] || "png").toLowerCase();
-        const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
-        return `data:${mime};base64,${buf.toString("base64")}`;
-      }
-
-      if (lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mkv") || lower.endsWith(".mov")) {
-        // Prefer an existing companion thumb next to the video
-        const stem = fpReal.replace(/\.(mp4|webm|mkv|mov)$/i, "");
-        const thumbPath = `${stem}-thumb.jpg`;
-        try {
-          const b = await readFile(thumbPath);
-          return `data:image/jpeg;base64,${b.toString("base64")}`;
-        } catch {
-          // Try generating a cached thumbnail via ffmpeg
-        }
-
-        const gen = await ensureThumbnailForMedia(fpReal);
-        if (gen) {
-          try {
-            const b2 = await readFile(gen);
-            return `data:image/jpeg;base64,${b2.toString("base64")}`;
-          } catch {
-            return null;
-          }
-        }
-        return null;
-      }
-
-      return null;
-    } catch (err) {
-      console.warn("MEDIA_THUMBNAIL error:", err);
-      return null;
-    }
-  });
-
-  ipcMain.handle(IPC_CHANNELS.MEDIA_SHOW_IN_FOLDER, async (_event, payload: { filePath: string }): Promise<void> => {
-    const rawFp = payload?.filePath;
-    if (typeof rawFp !== "string") return;
-    try {
-      const allowedRoot = resolve(join(app.getPath("pictures"), "OpenNOW"));
-      const fpResolved = resolve(rawFp);
-      const allowedRootReal = await realpath(allowedRoot).catch(() => allowedRoot);
-      const fpReal = await realpath(fpResolved).catch(() => fpResolved);
-      const rel = relative(allowedRootReal, fpReal);
-      if (rel.startsWith("..")) return;
-      shell.showItemInFolder(fpReal);
-    } catch {
-      return;
-    }
-  });
-
-  ipcMain.handle(IPC_CHANNELS.CACHE_REFRESH_MANUAL, async (): Promise<void> => {
-    await refreshScheduler.manualRefresh();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.CACHE_DELETE_ALL, async (): Promise<void> => {
-    await cacheManager.deleteAll();
-    console.log("[IPC] Cache deletion completed successfully");
-  });
-
-  ipcMain.handle(IPC_CHANNELS.COMMUNITY_GET_THANKS, async (): Promise<ThankYouDataResult> => {
-    return fetchThanksData();
-  });
-
-  // TCP-based ping function - more accurate than HTTP as it only measures connection time
-  async function tcpPing(hostname: string, port: number, timeoutMs: number = 3000): Promise<number | null> {
-    return new Promise((resolve) => {
-      const startTime = Date.now();
-      const socket = new net.Socket();
-      
-      socket.setTimeout(timeoutMs);
-      
-      socket.once('connect', () => {
-        const pingMs = Date.now() - startTime;
-        socket.destroy();
-        resolve(pingMs);
-      });
-      
-      socket.once('timeout', () => {
-        socket.destroy();
-        resolve(null);
-      });
-      
-      socket.once('error', () => {
-        socket.destroy();
-        resolve(null);
-      });
-      
-      socket.connect(port, hostname);
-    });
-  }
-
-  // Ping regions IPC handler - uses TCP connection timing for accurate latency measurement
-  // Runs 3 tests and averages the results
-  ipcMain.handle(IPC_CHANNELS.PING_REGIONS, async (_event, regions: StreamRegion[]): Promise<PingResult[]> => {
-    const pingPromises = regions.map(async (region) => {
-      try {
-        const url = new URL(region.url);
-        const hostname = url.hostname;
-        const port = url.protocol === 'https:' ? 443 : 80;
-        
-        const validPings: number[] = [];
-
-        // Warm-up ping (result discarded) to prime the TCP path before measuring.
-        // The first cold-start connect includes DNS resolution and TCP SYN overhead
-        // which inflates subsequent measurements if not accounted for.
-        await tcpPing(hostname, port, 3000);
-
-        // Run 3 measured ping tests with a brief delay between each to allow
-        // the previous socket to fully close before opening the next connection.
-        for (let i = 0; i < 3; i++) {
-          if (i > 0) {
-            await new Promise<void>((resolve) => setTimeout(resolve, 100));
-          }
-          const pingMs = await tcpPing(hostname, port, 3000);
-          if (pingMs !== null) {
-            validPings.push(pingMs);
-          }
-        }
-        
-        // Calculate average of successful pings
-        if (validPings.length > 0) {
-          const avgPing = Math.round(validPings.reduce((a, b) => a + b, 0) / validPings.length);
-          return { url: region.url, pingMs: avgPing };
-        } else {
-          return { 
-            url: region.url, 
-            pingMs: null, 
-            error: 'All ping tests failed'
-          };
-        }
-      } catch {
-        return { 
-          url: region.url, 
-          pingMs: null, 
-          error: 'Invalid URL'
-        };
-      }
-    });
-    
-    return Promise.all(pingPromises);
-  });
-
-  // PrintedWaste queue API — fetched from main process so User-Agent can be set
-  ipcMain.handle(IPC_CHANNELS.PRINTEDWASTE_QUEUE_FETCH, async () => {
-    const PRINTEDWASTE_QUEUE_TIMEOUT_MS = 7000;
-    const version = app.getVersion();
-    const response = await fetchWithTimeout(
-      "https://api.printedwaste.com/gfn/queue/",
-      {
-        headers: {
-          "User-Agent": `opennow/${version}`,
-          Accept: "application/json",
-        },
-      },
-      PRINTEDWASTE_QUEUE_TIMEOUT_MS,
-      "PrintedWaste queue request",
-    );
-    if (!response.ok) {
-      throw new Error(`PrintedWaste API returned HTTP ${response.status}`);
-    }
-
-    const body = await withTimeout(
-      response.json() as Promise<unknown>,
-      PRINTEDWASTE_QUEUE_TIMEOUT_MS,
-      "PrintedWaste queue response parse",
-    );
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new Error("PrintedWaste API response was not an object");
-    }
-
-    const apiBody = body as { status?: unknown; data?: unknown };
-    if (typeof apiBody.status !== "boolean") {
-      throw new Error("PrintedWaste API response missing boolean status");
-    }
-    if (!apiBody.status) {
-      throw new Error("PrintedWaste API returned status:false");
-    }
-    if (!apiBody.data || typeof apiBody.data !== "object" || Array.isArray(apiBody.data)) {
-      throw new Error("PrintedWaste API response missing data object");
-    }
-
-    const normalizedData: Record<string, { QueuePosition: number; "Last Updated": number; Region: string; eta?: number }> = {};
-    for (const [zoneId, rawZone] of Object.entries(apiBody.data as Record<string, unknown>)) {
-      if (!rawZone || typeof rawZone !== "object" || Array.isArray(rawZone)) {
-        continue;
-      }
-      const zone = rawZone as Record<string, unknown>;
-      const queuePosition = zone.QueuePosition;
-      const lastUpdated = zone["Last Updated"];
-      const region = zone.Region;
-      const eta = zone.eta;
-
-      if (typeof queuePosition !== "number" || !Number.isFinite(queuePosition)) {
-        continue;
-      }
-      if (typeof lastUpdated !== "number" || !Number.isFinite(lastUpdated)) {
-        continue;
-      }
-      if (typeof region !== "string" || region.length === 0) {
-        continue;
-      }
-      if (eta !== undefined && (typeof eta !== "number" || !Number.isFinite(eta))) {
-        continue;
-      }
-
-      normalizedData[zoneId] = {
-        QueuePosition: queuePosition,
-        "Last Updated": lastUpdated,
-        Region: region,
-        ...(typeof eta === "number" ? { eta } : {}),
-      };
-    }
-
-    if (Object.keys(normalizedData).length === 0) {
-      throw new Error("PrintedWaste API returned no valid zones");
-    }
-    return normalizedData;
-  });
-
-  ipcMain.handle(IPC_CHANNELS.PRINTEDWASTE_SERVER_MAPPING_FETCH, async () => {
-    const PRINTEDWASTE_MAPPING_TIMEOUT_MS = 7000;
-    const version = app.getVersion();
-    const response = await fetchWithTimeout(
-      "https://remote.printedwaste.com/config/GFN_SERVERID_TO_REGION_MAPPING",
-      {
-        headers: {
-          "User-Agent": `opennow/${version}`,
-          Accept: "application/json",
-        },
-      },
-      PRINTEDWASTE_MAPPING_TIMEOUT_MS,
-      "PrintedWaste server mapping request",
-    );
-    if (!response.ok) {
-      throw new Error(`PrintedWaste server mapping returned HTTP ${response.status}`);
-    }
-
-    const body = await withTimeout(
-      response.json() as Promise<unknown>,
-      PRINTEDWASTE_MAPPING_TIMEOUT_MS,
-      "PrintedWaste server mapping response parse",
-    );
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new Error("PrintedWaste server mapping response was not an object");
-    }
-
-    const apiBody = body as { status?: unknown; data?: unknown };
-    if (typeof apiBody.status !== "boolean") {
-      throw new Error("PrintedWaste server mapping response missing boolean status");
-    }
-    if (!apiBody.status) {
-      throw new Error("PrintedWaste server mapping returned status:false");
-    }
-    if (!apiBody.data || typeof apiBody.data !== "object" || Array.isArray(apiBody.data)) {
-      throw new Error("PrintedWaste server mapping response missing data object");
-    }
-
-    const normalizedData: Record<
-      string,
-      { title?: string; region?: string; is4080Server?: boolean; is5080Server?: boolean; nuked?: boolean }
-    > = {};
-
-    for (const [zoneId, rawZone] of Object.entries(apiBody.data as Record<string, unknown>)) {
-      if (!rawZone || typeof rawZone !== "object" || Array.isArray(rawZone)) {
-        continue;
-      }
-      const zone = rawZone as Record<string, unknown>;
-      const title = zone.title;
-      const region = zone.region;
-      const is4080Server = zone.is4080Server;
-      const is5080Server = zone.is5080Server;
-      const nuked = zone.nuked;
-
-      normalizedData[zoneId] = {
-        ...(typeof title === "string" ? { title } : {}),
-        ...(typeof region === "string" ? { region } : {}),
-        ...(typeof is4080Server === "boolean" ? { is4080Server } : {}),
-        ...(typeof is5080Server === "boolean" ? { is5080Server } : {}),
-        ...(typeof nuked === "boolean" ? { nuked } : {}),
-      };
-    }
-
-    return normalizedData;
-  });
-
-  // Save window size when it changes
-  mainWindow?.on("resize", () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      const [width, height] = mainWindow.getSize();
-      settingsManager.set("windowWidth", width);
-      settingsManager.set("windowHeight", height);
-    }
-  });
-}
 
 app.whenReady().then(async () => {
   // Initialize log capture first to capture all console output
@@ -2123,7 +1083,50 @@ app.whenReady().then(async () => {
     return allowedPermissions.has(permission);
   });
 
-  registerIpcHandlers();
+  const mainIpcDeps: MainIpcDeps = {
+    ipcMain,
+    app,
+    dialog,
+    shell,
+    systemPreferences,
+    getMainWindow: () => mainWindow,
+    authService,
+    settingsManager,
+    appUpdater,
+    signaling: signalingState,
+    GfnSignalingClient,
+    emitToRenderer,
+    emitUpdaterStateToRenderer,
+    requestAppShutdown,
+    discordMonitor,
+    refreshScheduler,
+    cacheManager,
+    resolveJwt,
+    rethrowSerializedSessionError,
+    showSessionConflictDialog,
+    shouldForceNewSession,
+    selectReadySessionToClaim,
+    selectLaunchingSession,
+    stopActiveSessionsForCreate,
+    SCREENSHOT_LIMIT,
+    RECORDING_LIMIT,
+    activeRecordings,
+    saveScreenshot,
+    listScreenshots,
+    deleteScreenshot,
+    saveScreenshotAs,
+    dataUrlToBuffer,
+    sanitizeTitleForFileName,
+    ensureRecordingsDirectory,
+    getRecordingsDirectory,
+    listRecordings,
+    ensureThumbnailForMedia,
+    extFromMimeType,
+    fetchThanksData,
+    net,
+    exportLogs: (format?: "text" | "json") => Promise.resolve(exportLogs(format)),
+  };
+  registerMainIpcHandlers(mainIpcDeps);
 
   refreshScheduler.initialize(
     fetchMainGamesUncached,
