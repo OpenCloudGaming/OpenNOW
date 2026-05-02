@@ -6610,6 +6610,7 @@ button.game-card-store-chip.owned.active:hover {
 .xmb-wrapper.xmb-entering .xmb-top-right,
 .xmb-wrapper.xmb-entering .xmb-categories-container,
 .xmb-wrapper.xmb-entering .xmb-items-container,
+.xmb-wrapper.xmb-entering .xmb-ps5-stack,
 .xmb-wrapper.xmb-entering .xmb-detail-layer,
 .xmb-wrapper.xmb-entering .xmb-footer {
   animation: xmb-enter-content 680ms cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -6625,6 +6626,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .xmb-wrapper.xmb-entering .xmb-items-container,
+.xmb-wrapper.xmb-entering .xmb-ps5-stack,
 .xmb-wrapper.xmb-entering .xmb-detail-layer {
   animation-delay: 150ms;
 }
@@ -6788,6 +6790,278 @@ button.game-card-store-chip.owned.active:hover {
       rgba(0, 0, 0, 0.28) 100%
     ),
     linear-gradient(90deg, rgba(0, 0, 0, 0.08) 0%, rgba(0, 0, 0, 0) 24%, rgba(0, 0, 0, 0) 76%, rgba(0, 0, 0, 0.1) 100%);
+}
+
+/* PS5-style Games hub: blurred hero art + horizontal shelf */
+.xmb-ps5-hero-art {
+  position: absolute;
+  inset: -14%;
+  background-size: cover;
+  background-position: center center;
+  background-repeat: no-repeat;
+  filter: blur(18px) saturate(1.12) brightness(0.92);
+  opacity: 0.62;
+  pointer-events: none;
+  transform: scale(1.06);
+}
+
+.xmb-layout--ps5-home .xmb-bg-overlay {
+  background:
+    linear-gradient(180deg, rgba(8, 10, 14, 0.52) 0%, rgba(10, 14, 18, 0.28) 38%, rgba(6, 8, 12, 0.06) 62%, rgba(0, 0, 0, 0.72) 100%),
+    radial-gradient(120% 90% at 50% 22%, rgba(0, 0, 0, 0.08), transparent 52%),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.26) 0%, rgba(0, 0, 0, 0) 22%, rgba(0, 0, 0, 0) 78%, rgba(0, 0, 0, 0.26) 100%);
+}
+
+.xmb-layout--ps5-home .xmb-categories-container {
+  top: 12%;
+}
+
+.xmb-layout--ps5-home .xmb-category-item {
+  width: 96px;
+  height: 88px;
+  margin-right: 28px;
+  opacity: 0.48;
+  transform: scale(0.82);
+}
+
+.xmb-layout--ps5-home .xmb-category-item.active {
+  transform: scale(1.08);
+}
+
+.xmb-layout--ps5-home .xmb-category-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.24em;
+}
+
+.xmb-layout--ps5-home .xmb-items-container {
+  top: 54%;
+}
+
+.xmb-layout--ps5-home .xmb-game-item {
+  width: 620px;
+  padding: 14px 24px;
+  border-radius: 18px;
+  opacity: 0.5;
+  transform: translateX(0) scale(0.9);
+  background: rgba(12, 16, 22, 0.44);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.34);
+}
+
+.xmb-layout--ps5-home .xmb-game-item.active {
+  transform: translateX(22px) scale(1.04);
+  background: linear-gradient(
+    90deg,
+    rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.3),
+    rgba(255, 255, 255, 0.06)
+  );
+  border-color: rgba(255, 255, 255, 0.56);
+  box-shadow:
+    0 20px 42px rgba(0, 0, 0, 0.45),
+    0 0 0 2px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.3);
+}
+
+.xmb-layout--ps5-home .xmb-detail-layer {
+  bottom: 170px;
+}
+
+.xmb-layout--ps5-home .xmb-footer {
+  background: linear-gradient(transparent, rgba(3, 8, 12, 0.52) 46%, rgba(0, 0, 0, 0.5) 100%);
+  border-top: 1px solid rgba(221, 255, 233, 0.12);
+}
+
+.xmb-wrapper .xmb-ps5-stack {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.xmb-ps5-focus-meta {
+  position: absolute;
+  left: clamp(24px, 4vw, 56px);
+  right: clamp(24px, 4vw, 56px);
+  bottom: clamp(300px, 40vh, 440px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: flex-start;
+  max-width: min(82vw, 1080px);
+  z-index: 6;
+}
+
+.xmb-ps5-focus-title {
+  margin: 0;
+  font-size: clamp(1.65rem, 3.6vw, 2.75rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: rgba(255, 255, 255, 0.97);
+  text-shadow:
+    0 2px 24px rgba(0, 0, 0, 0.55),
+    0 1px 3px rgba(0, 0, 0, 0.45);
+  max-width: min(720px, 88vw);
+}
+
+.xmb-ps5-focus-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  max-width: 100%;
+  max-height: 100px;
+  overflow: hidden;
+}
+
+.xmb-ps5-shelf-viewport {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 92px;
+  height: clamp(210px, 26vh, 280px);
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, transparent 0%, #000 7%, #000 93%, transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 7%, #000 93%, transparent 100%);
+}
+
+.xmb-ps5-shelf-track {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 16px;
+  width: max-content;
+  min-height: 100%;
+  padding: 12px 24px 16px;
+  box-sizing: border-box;
+  transition: transform 600ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.xmb-ps5-shelf-track--menu {
+  align-items: stretch;
+  padding-bottom: 28px;
+}
+
+.xmb-ps5-tile {
+  position: relative;
+  flex-shrink: 0;
+  width: 118px;
+  opacity: 0.52;
+  transform: translateY(10px) scale(0.92);
+  transition:
+    opacity 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.xmb-ps5-tile.active {
+  opacity: 1;
+  transform: translateY(0) scale(1.06);
+  z-index: 2;
+}
+
+.xmb-ps5-tile-frame {
+  border-radius: 14px;
+  overflow: hidden;
+  aspect-ratio: 2 / 3;
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 18px 42px rgba(0, 0, 0, 0.55),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.35);
+  transition:
+    border-color 360ms ease,
+    box-shadow 360ms ease;
+}
+
+.xmb-ps5-tile.active .xmb-ps5-tile-frame {
+  border-color: rgba(255, 255, 255, 0.96);
+  box-shadow:
+    0 22px 52px rgba(0, 0, 0, 0.62),
+    0 0 0 3px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.42),
+    0 0 28px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.35);
+}
+
+.xmb-ps5-tile-cover {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.xmb-ps5-tile-fav {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 18px;
+  height: 18px;
+  color: #ffd700;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.65));
+  z-index: 3;
+}
+
+.xmb-ps5-menu-tile {
+  width: clamp(260px, 24vw, 380px);
+  min-height: 140px;
+  border-radius: 18px;
+  padding: 16px 18px;
+  box-sizing: border-box;
+  background: rgba(10, 14, 20, 0.44);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  opacity: 0.58;
+  transform: translateY(10px) scale(0.92);
+  transition: all 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.xmb-ps5-menu-tile.active {
+  opacity: 1;
+  transform: translateY(0) scale(1.03);
+  border-color: rgba(255, 255, 255, 0.65);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.48),
+    0 0 0 2px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.28);
+}
+
+.xmb-ps5-menu-title {
+  font-size: 1.08rem;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.95);
+  margin-bottom: 8px;
+}
+
+.xmb-ps5-menu-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.xmb-ps5-menu-thumb-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+  min-height: 128px;
+}
+
+.xmb-ps5-menu-thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1.18;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.35);
+}
+
+.xmb-ps5-menu-thumb-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.xmb-ps5-menu-thumb--empty {
+  width: 48px;
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(0, 0, 0, 0.22);
 }
 
 /* --- Controller theme style presets (see Settings → System → Theme → Style) --- */

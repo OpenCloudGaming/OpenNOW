@@ -65,6 +65,7 @@ type GameSubcategory = "root" | "all" | "favorites" | `genre:${string}`;
 const CATEGORY_STEP_PX = 160;
 const CATEGORY_ACTIVE_HALF_WIDTH_PX = 60;
 const GAME_ACTIVE_CENTER_OFFSET_X_PX = 320;
+const PREVIEW_TILE_COUNT = 12;
 
 const CONTROLLER_THEME_STYLE_ORDER: readonly ControllerThemeStyle[] = ["aurora", "nebula", "grid", "minimal", "pulse"];
 
@@ -171,6 +172,10 @@ export function ControllerLibraryPage({
     }
   };
   const [listTranslateY, setListTranslateY] = useState(0);
+  const [listTranslateX, setListTranslateX] = useState(0);
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === "undefined" ? 1200 : window.innerWidth,
+  );
   const favoriteGameIdSet = useMemo(() => new Set(favoriteGameIds), [favoriteGameIds]);
   const favoriteGames = useMemo(
     () => games.filter((game) => favoriteGameIdSet.has(game.id)),
@@ -516,6 +521,52 @@ export function ControllerLibraryPage({
     });
   }, [games, favoriteGames, gameSubcategory, topCategory, playtimeData]);
 
+  const gamesSortedByRecent = useMemo(() => {
+    return [...games].sort((a, b) => {
+      const lastPlayedMs = (gameId: string) => {
+        const raw = playtimeData[gameId]?.lastPlayedAt;
+        if (!raw) return 0;
+        const ms = Date.parse(raw);
+        return Number.isFinite(ms) ? ms : 0;
+      };
+      const aLastPlayed = lastPlayedMs(a.id);
+      const bLastPlayed = lastPlayedMs(b.id);
+      if (aLastPlayed !== bLastPlayed) return bLastPlayed - aLastPlayed;
+      return a.title.localeCompare(b.title);
+    });
+  }, [games, playtimeData]);
+
+  const gameCategoryPreviewById = useMemo(() => {
+    const isNonEmptyString = (value: string | undefined): value is string => typeof value === "string" && value.length > 0;
+    const randomize = (arr: string[]): string[] => {
+      const copy = [...arr];
+      for (let i = copy.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [copy[i], copy[j]] = [copy[j], copy[i]];
+      }
+      return copy;
+    };
+    const toFilledPreview = (covers: string[]): string[] => {
+      const unique = Array.from(new Set(covers.filter(isNonEmptyString)));
+      if (unique.length === 0) return [];
+      const randomized = randomize(unique);
+      return randomized.slice(0, PREVIEW_TILE_COUNT);
+    };
+
+    const previews: Record<string, string[]> = {};
+    previews.all = toFilledPreview(gamesSortedByRecent.map((g) => g.imageUrl).filter(isNonEmptyString));
+    previews.favorites = toFilledPreview(favoriteGames.map((g) => g.imageUrl).filter(isNonEmptyString));
+    for (const genre of allGenres) {
+      const key = `genre:${genre}`;
+      previews[key] = gamesSortedByRecent
+        .filter((g) => g.genres?.includes(genre))
+        .map((g) => g.imageUrl)
+        .filter(isNonEmptyString);
+      previews[key] = toFilledPreview(previews[key]);
+    }
+    return previews;
+  }, [allGenres, favoriteGames, gamesSortedByRecent]);
+
   const selectedIndex = useMemo(() => {
     const index = categorizedGames.findIndex((game) => game.id === selectedGameId);
     return index >= 0 ? index : 0;
@@ -532,6 +583,20 @@ export function ControllerLibraryPage({
   const showCurrentDetail = topCategory === "current" && Boolean(currentStreamingGame);
   const detailVisible = showCurrentDetail;
 
+  const gamesShelfBrowseActive = topCategory === "all" && gameSubcategory !== "root";
+  const topLevelShelfActive =
+    !gamesShelfBrowseActive &&
+    (topCategory === "settings" ||
+      topCategory === "current" ||
+      (topCategory === "media" && mediaSubcategory === "root") ||
+      (topCategory === "all" && gameSubcategory === "root"));
+  const topLevelShelfIndex =
+    topCategory === "media"
+      ? selectedMediaIndex
+      : topCategory === "all"
+        ? selectedGameSubcategoryIndex
+        : selectedSettingIndex;
+
   const selectedCategoryLabel = useMemo(() => getCategoryLabel(topCategory, currentStreamingGame?.title).label, [topCategory, currentStreamingGame?.title]);
   const selectedGameDescription = useMemo(() => {
     if (!selectedGame) return "";
@@ -547,11 +612,42 @@ export function ControllerLibraryPage({
 
 
 
+  useEffect(() => {
+    if (!gamesShelfBrowseActive && !topLevelShelfActive) setListTranslateX(0);
+  }, [gamesShelfBrowseActive, topLevelShelfActive]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   useLayoutEffect(() => {
     const container = itemsContainerRef.current;
     if (!container) return;
     const children = Array.from(container.children) as HTMLElement[];
-    if (children.length === 0 || selectedIndex >= children.length) return;
+    const activeIndex = gamesShelfBrowseActive ? selectedIndex : topLevelShelfIndex;
+    if (children.length === 0 || activeIndex >= children.length) {
+      if (gamesShelfBrowseActive || topLevelShelfActive) setListTranslateX(0);
+      return;
+    }
+
+    if (gamesShelfBrowseActive || topLevelShelfActive) {
+      let gap = 14;
+      if (children.length >= 2) {
+        gap = Math.max(8, children[1].offsetLeft - children[0].offsetLeft - children[0].offsetWidth);
+      }
+      let offsetCenter = 0;
+      for (let i = 0; i < activeIndex; i++) {
+        offsetCenter += children[i].offsetWidth + gap;
+      }
+      offsetCenter += children[activeIndex].offsetWidth / 2;
+      setListTranslateX(viewportWidth / 2 - offsetCenter);
+      setListTranslateY(0);
+      return;
+    }
+
     let offset = 0;
     for (let i = 0; i < selectedIndex; i++) {
       const childStyle = window.getComputedStyle(children[i]);
@@ -559,7 +655,8 @@ export function ControllerLibraryPage({
     }
     offset += children[selectedIndex].offsetHeight / 2;
     setListTranslateY(-offset);
-  }, [selectedIndex, categorizedGames]);
+    setListTranslateX(0);
+  }, [selectedIndex, categorizedGames, gamesShelfBrowseActive, topLevelShelfActive, topLevelShelfIndex, viewportWidth]);
 
   const throttledOnSelectGame = useCallback((id: string) => onSelectGame(id), [onSelectGame]);
 
@@ -609,6 +706,74 @@ export function ControllerLibraryPage({
         }
       }
       if (isLoading && topCategory !== "settings" && topCategory !== "current") return;
+
+      const shelfHasGames = categorizedGames.length > 0;
+
+      if (gamesShelfBrowseActive) {
+        if (shelfHasGames) {
+          if (direction === "left") {
+            const ni = Math.max(0, selectedIndex - 1);
+            if (ni !== selectedIndex) {
+              playUiSound("move");
+              throttledOnSelectGame(categorizedGames[ni].id);
+            }
+            return;
+          }
+          if (direction === "right") {
+            const ni = Math.min(categorizedGames.length - 1, selectedIndex + 1);
+            if (ni !== selectedIndex) {
+              playUiSound("move");
+              throttledOnSelectGame(categorizedGames[ni].id);
+            }
+            return;
+          }
+          if (direction === "up") {
+            playUiSound("move");
+            setGameSubcategory("root");
+            setSelectedGameSubcategoryIndex(lastRootGameIndex);
+            return;
+          }
+          if (direction === "down") {
+            return;
+          }
+        } else if (direction === "up") {
+          playUiSound("move");
+          setGameSubcategory("root");
+          setSelectedGameSubcategoryIndex(lastRootGameIndex);
+          return;
+        }
+      }
+
+      if (topLevelShelfActive) {
+        const itemCount = displayItems.length;
+        if (itemCount > 0 && (direction === "left" || direction === "right")) {
+          const delta = direction === "left" ? -1 : 1;
+          const next = Math.max(0, Math.min(itemCount - 1, topLevelShelfIndex + delta));
+          if (next !== topLevelShelfIndex) {
+            playUiSound("move");
+            if (topCategory === "media") setSelectedMediaIndex(next);
+            else if (topCategory === "all") setSelectedGameSubcategoryIndex(next);
+            else setSelectedSettingIndex(next);
+          }
+          return;
+        }
+
+        if (direction === "up" || direction === "down") {
+          playUiSound("move");
+          const delta = direction === "up" ? -1 : 1;
+          setCategoryIndex((prev) => (prev + delta + TOP_CATEGORIES.length) % TOP_CATEGORIES.length);
+          setSelectedSettingIndex(0);
+          setSettingsSubcategory("root");
+          setSelectedMediaIndex(0);
+          setMediaSubcategory("root");
+          setSelectedGameSubcategoryIndex(0);
+          setGameSubcategory("root");
+          setEditingBandwidth(false);
+          setEditingThemeChannel(null);
+          return;
+        }
+      }
+
       if (direction === "left") {
         playUiSound("move");
         // Cycle main categories (settings always resets to root)
@@ -695,23 +860,6 @@ export function ControllerLibraryPage({
             setSelectedGameSubcategoryIndex(nextIndex);
           }
           return;
-        }
-        return;
-      }
-      if (categorizedGames.length === 0) return;
-      if (direction === "up") {
-        const nextIndex = Math.max(0, selectedIndex - 1);
-        if (nextIndex !== selectedIndex) {
-          playUiSound("move");
-          throttledOnSelectGame(categorizedGames[nextIndex].id);
-        }
-        return;
-      }
-      if (direction === "down") {
-        const nextIndex = Math.min(categorizedGames.length - 1, selectedIndex + 1);
-        if (nextIndex !== selectedIndex) {
-          playUiSound("move");
-          throttledOnSelectGame(categorizedGames[nextIndex].id);
         }
         return;
       }
@@ -1098,7 +1246,7 @@ export function ControllerLibraryPage({
       window.removeEventListener("opennow:controller-cancel", cancelHandler);
       window.removeEventListener("keydown", kbdHandler);
     };
-  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, selectedGameSubcategoryIndex, displayItems, mediaAssetItems.length, mediaSubcategory, gameSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, lastRootGameIndex, lastSystemMenuIndex, lastThemeRootIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth, editingThemeChannel]);
+  }, [isLoading, TOP_CATEGORIES.length, categorizedGames, selectedIndex, selectedGame, selectedVariantId, onPlayGame, onSelectGameVariant, onOpenSettings, playUiSound, throttledOnSelectGame, toggleFavoriteForSelected, topCategory, selectedSettingIndex, selectedMediaIndex, selectedGameSubcategoryIndex, displayItems, mediaAssetItems.length, mediaSubcategory, gameSubcategory, settings, settingsBySubcategory, settingsSubcategory, lastRootSettingIndex, lastRootMediaIndex, lastRootGameIndex, lastSystemMenuIndex, lastThemeRootIndex, onSettingChange, resolutionOptions, fpsOptions, codecOptions, aspectRatioOptions, currentStreamingGame, onResumeGame, onCloseGame, onExitControllerMode, onExitApp, editingBandwidth, editingThemeChannel, gamesShelfBrowseActive, topLevelShelfActive, topLevelShelfIndex]);
 
   const renderFaceButton = (kind: "primary" | "secondary" | "tertiary", className: string, size: number): JSX.Element => {
     if (kind === "primary") {
@@ -1119,6 +1267,20 @@ export function ControllerLibraryPage({
   };
 
   const themeStyleSafe = sanitizeControllerThemeStyle(settings.controllerThemeStyle);
+  const selectedMediaItem = topCategory === "media" && mediaSubcategory !== "root"
+    ? mediaAssetItems[selectedMediaIndex] ?? null
+    : null;
+  const heroBackdropUrl = useMemo(() => {
+    if (topCategory === "all") return selectedGame?.imageUrl ?? null;
+    if (topCategory === "current") return currentStreamingGame?.imageUrl ?? null;
+    if (topCategory === "media") {
+      if (selectedMediaItem?.thumbnailDataUrl) return selectedMediaItem.thumbnailDataUrl;
+      if (selectedMediaItem?.dataUrl) return selectedMediaItem.dataUrl;
+      return selectedMediaItem ? mediaThumbById[selectedMediaItem.id] ?? null : null;
+    }
+    if (currentStreamingGame?.imageUrl) return currentStreamingGame.imageUrl;
+    return selectedGame?.imageUrl ?? null;
+  }, [topCategory, selectedGame, currentStreamingGame, selectedMediaItem, mediaThumbById]);
   const themeRgbResolved = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
   const wrapperThemeVars = {
     "--xmb-theme-r": String(themeRgbResolved.r),
@@ -1126,13 +1288,16 @@ export function ControllerLibraryPage({
     "--xmb-theme-b": String(themeRgbResolved.b),
   } as React.CSSProperties;
 
-  const wrapperClassName = `xmb-wrapper xmb-theme-${themeStyleSafe} ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"}`;
+  const wrapperClassName = `xmb-wrapper xmb-theme-${themeStyleSafe} ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"} xmb-layout--ps5-home`;
 
   if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") return <div className={wrapperClassName} style={wrapperThemeVars}><div className="xmb-bg-layer"><div className="xmb-bg-gradient" /></div><div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh'}}>Loading...</div></div>;
 
   return (
     <div className={wrapperClassName} style={wrapperThemeVars}>
       <div className="xmb-bg-layer">
+        {heroBackdropUrl ? (
+          <div className="xmb-ps5-hero-art" style={{ backgroundImage: `url(${heroBackdropUrl})` }} aria-hidden />
+        ) : null}
         <div className="xmb-bg-gradient" />
         <div className="xmb-bg-overlay" />
       </div>
@@ -1181,162 +1346,169 @@ export function ControllerLibraryPage({
       </div>
 
       {topCategory === "all" && gameSubcategory !== "root" && (
-      <div
-        ref={itemsContainerRef}
-        className="xmb-items-container"
-        role="listbox"
-        aria-label="Game library"
-        style={{
-          transform: `translate(${-GAME_ACTIVE_CENTER_OFFSET_X_PX}px, ${listTranslateY}px)`,
-        }}
-      >
-        {categorizedGames.map((game, idx) => {
-          const isActive = idx === selectedIndex;
-          const record = playtimeData[game.id];
-          const totalSecs = record?.totalSeconds ?? 0;
-          const lastPlayedAt = record?.lastPlayedAt ?? null;
-          const sessionCount = record?.sessionCount ?? 0;
-          const playtimeLabel = formatPlaytime(totalSecs);
-          const lastPlayedLabel = formatLastPlayed(lastPlayedAt);
-          const genres = game.genres?.slice(0, 2) ?? [];
-          const tierLabel = game.membershipTierLabel;
-
-          return (
-            <div key={game.id} className={`xmb-game-item ${isActive ? 'active' : ''}`} role="option" aria-selected={isActive}>
-              {favoriteGameIdSet.has(game.id) && (
-              <Star className="xmb-game-favorite-icon" />
-            )}
-            <div className="xmb-game-poster-container">
-                <img src={game.imageUrl} alt={game.title} className="xmb-game-poster" />
-            </div>
-              <div className="xmb-game-info">
-                <div className="xmb-game-title">{game.title}</div>
-
-                <div className="xmb-game-meta">
-                  {(() => {
-                    const vId = selectedVariantByGameId[game.id] || game.variants[0]?.id;
-                    const variant = game.variants.find(v => v.id === vId) || game.variants[0];
-                    const storeName = getStoreDisplayName(variant?.store || "");
-                    return storeName ? (
-                      <span className="xmb-game-meta-chip xmb-game-meta-chip--store">{storeName}</span>
-                    ) : null;
-                  })()}
-
-                  <span className="xmb-game-meta-chip xmb-game-meta-chip--playtime">
-                    <Clock size={10} className="xmb-meta-icon" />
-                    {playtimeLabel}
-                  </span>
-
-                  <span className="xmb-game-meta-chip xmb-game-meta-chip--last-played">
-                    <Calendar size={10} className="xmb-meta-icon" />
-                    {lastPlayedLabel}
-                  </span>
-                </div>
-
-                {isActive && (
-                  <div className="xmb-game-meta xmb-game-meta--expanded">
-                    {sessionCount > 0 && (
-                      <span className="xmb-game-meta-chip xmb-game-meta-chip--sessions">
-                        <Repeat2 size={10} className="xmb-meta-icon" />
-                        {sessionCount === 1 ? "1 session" : `${sessionCount} sessions`}
+        <div className="xmb-ps5-stack">
+          {selectedGame ? (
+            <div className="xmb-ps5-focus-meta" aria-live="polite">
+              <h2 className="xmb-ps5-focus-title">{selectedGame.title}</h2>
+              <div className="xmb-ps5-focus-chips">
+                {(() => {
+                  const record = playtimeData[selectedGame.id];
+                  const totalSecs = record?.totalSeconds ?? 0;
+                  const lastPlayedAt = record?.lastPlayedAt ?? null;
+                  const sessionCount = record?.sessionCount ?? 0;
+                  const playtimeLabel = formatPlaytime(totalSecs);
+                  const lastPlayedLabel = formatLastPlayed(lastPlayedAt);
+                  const vId = selectedVariantByGameId[selectedGame.id] || selectedGame.variants[0]?.id;
+                  const variant = selectedGame.variants.find((v) => v.id === vId) || selectedGame.variants[0];
+                  const storeName = getStoreDisplayName(variant?.store || "");
+                  const genres = selectedGame.genres?.slice(0, 3) ?? [];
+                  const tierLabel = selectedGame.membershipTierLabel;
+                  return (
+                    <>
+                      {storeName ? <span className="xmb-game-meta-chip xmb-game-meta-chip--store">{storeName}</span> : null}
+                      <span className="xmb-game-meta-chip xmb-game-meta-chip--playtime">
+                        <Clock size={10} className="xmb-meta-icon" />
+                        {playtimeLabel}
                       </span>
-                    )}
-                    {genres.map((g) => (
-                      <span key={g} className="xmb-game-meta-chip xmb-game-meta-chip--genre">{sanitizeGenreName(g)}</span>
-                    ))}
-                    {tierLabel && (
-                      <span className="xmb-game-meta-chip xmb-game-meta-chip--tier">{tierLabel}</span>
-                    )}
-                  </div>
-                )}
+                      <span className="xmb-game-meta-chip xmb-game-meta-chip--last-played">
+                        <Calendar size={10} className="xmb-meta-icon" />
+                        {lastPlayedLabel}
+                      </span>
+                      {sessionCount > 0 ? (
+                        <span className="xmb-game-meta-chip xmb-game-meta-chip--sessions">
+                          <Repeat2 size={10} className="xmb-meta-icon" />
+                          {sessionCount === 1 ? "1 session" : `${sessionCount} sessions`}
+                        </span>
+                      ) : null}
+                      {genres.map((g) => (
+                        <span key={g} className="xmb-game-meta-chip xmb-game-meta-chip--genre">
+                          {sanitizeGenreName(g)}
+                        </span>
+                      ))}
+                      {tierLabel ? <span className="xmb-game-meta-chip xmb-game-meta-chip--tier">{tierLabel}</span> : null}
+                    </>
+                  );
+                })()}
               </div>
             </div>
-          );
-        })}
-      </div>
+          ) : null}
+          <div className="xmb-ps5-shelf-viewport">
+            <div
+              ref={itemsContainerRef}
+              className="xmb-ps5-shelf-track"
+              role="listbox"
+              aria-label="Game library"
+              style={{
+                transform: `translateX(${listTranslateX}px)`,
+              }}
+            >
+              {categorizedGames.map((game, idx) => {
+                const isActive = idx === selectedIndex;
+                return (
+                  <div
+                    key={game.id}
+                    className={`xmb-ps5-tile ${isActive ? "active" : ""}`}
+                    role="option"
+                    aria-selected={isActive}
+                    aria-label={game.title}
+                  >
+                    {favoriteGameIdSet.has(game.id) ? <Star className="xmb-ps5-tile-fav" aria-hidden /> : null}
+                    <div className="xmb-ps5-tile-frame">
+                      <img src={game.imageUrl} alt="" className="xmb-ps5-tile-cover" />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       )}
 
-      {(topCategory === "settings" || topCategory === "current" || (topCategory === "media" && mediaSubcategory === "root") || (topCategory === "all" && gameSubcategory === "root")) && (
-      <div
-        ref={itemsContainerRef}
-        className="xmb-items-container"
-        role="listbox"
-        aria-label={topCategory === "current" ? "Current game actions" : topCategory === "settings" ? "Controller settings" : topCategory === "all" ? "Game categories" : "Media categories"}
-        style={{
-          transform: `translate(${-GAME_ACTIVE_CENTER_OFFSET_X_PX}px, ${-(topCategory === "media" ? selectedMediaIndex : topCategory === "all" ? selectedGameSubcategoryIndex : selectedSettingIndex) * 120}px)`,
-        }}
-      >
-        {displayItems.map((item, idx) => {
-          const isActive = idx === (topCategory === "media" ? selectedMediaIndex : topCategory === "all" ? selectedGameSubcategoryIndex : selectedSettingIndex);
-          const isSubcategoryItem = settingsSubcategory === "root" && (item.id === "network" || item.id === "audio" || item.id === "video" || item.id === "system");
-          const isMediaSubcategoryItem = topCategory === "media" && mediaSubcategory === "root" && (item.id === "videos" || item.id === "screenshots");
-          const isGameSubcategoryItem = topCategory === "all" && gameSubcategory === "root";
-          const isThemeNavItem =
-            topCategory === "settings" &&
-            ((settingsSubcategory === "Theme" && (item.id === "themeColor" || item.id === "themeStyle")) ||
-              (settingsSubcategory === "System" && item.id === "theme"));
-          const themeChannelForRow =
-            item.id === "themeR" ? "r" : item.id === "themeG" ? "g" : item.id === "themeB" ? "b" : null;
-          const themeRgbLive = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
-          return (
-            <div 
-              key={item.id} 
-              className={`xmb-game-item ${isActive ? 'active' : ''}`}
-              role="option"
-              aria-selected={isActive}
-              data-subcategory-id={isSubcategoryItem || isMediaSubcategoryItem || isGameSubcategoryItem || isThemeNavItem ? item.id : undefined}
+      {topLevelShelfActive && (
+        <div className="xmb-ps5-stack">
+          <div className="xmb-ps5-focus-meta" aria-live="polite">
+            <h2 className="xmb-ps5-focus-title">{selectedCategoryLabel}</h2>
+          </div>
+          <div className="xmb-ps5-shelf-viewport">
+            <div
+              ref={itemsContainerRef}
+              className="xmb-ps5-shelf-track xmb-ps5-shelf-track--menu"
+              role="listbox"
+              aria-label={topCategory === "current" ? "Current game actions" : topCategory === "settings" ? "Controller settings" : topCategory === "all" ? "Game categories" : "Media categories"}
+              style={{ transform: `translateX(${listTranslateX}px)` }}
             >
-              <div className="xmb-game-info">
-                <div className="xmb-game-title">{item.label}</div>
-                {item.value && (
-                  <div className="xmb-game-meta">
-                    {item.id === 'bandwidth' && settingsSubcategory !== 'root' ? (
-                      <div style={{display:'flex',alignItems:'center',gap:12}}>
-                        <input
-                          type="range"
-                          min={1}
-                          max={150}
-                          step={1}
-                          value={(settings.maxBitrateMbps ?? 75)}
-                          onChange={(e) => onSettingChange && onSettingChange("maxBitrateMbps" as any, Number(e.target.value) as any)}
-                          aria-label="Bandwidth Limit (Mbps)"
-                          style={editingBandwidth ? {outline: '2px solid rgba(255,255,255,0.2)'} : undefined}
-                        />
-                        <span className="xmb-game-meta-chip">{`${settings.maxBitrateMbps ?? 75} Mbps`}{editingBandwidth ? ' • Editing' : ''}</span>
+              {displayItems.map((item, idx) => {
+                const isActive = idx === topLevelShelfIndex;
+                const themeChannelForRow =
+                  item.id === "themeR" ? "r" : item.id === "themeG" ? "g" : item.id === "themeB" ? "b" : null;
+                const themeRgbLive = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
+                const isGameRootTile = topCategory === "all" && gameSubcategory === "root";
+                const previewThumbs = isGameRootTile ? (gameCategoryPreviewById[item.id] ?? []) : [];
+                return (
+                  <div key={item.id} className={`xmb-ps5-menu-tile ${isActive ? "active" : ""}`} role="option" aria-selected={isActive}>
+                    {isGameRootTile ? (
+                      <div className="xmb-ps5-menu-thumb-row" aria-hidden>
+                        {previewThumbs.map((src, i) => (
+                          <div key={`${item.id}-${i}`} className="xmb-ps5-menu-thumb">
+                            <img src={src} alt="" className="xmb-ps5-menu-thumb-img" />
+                          </div>
+                        ))}
+                        {Array.from({ length: Math.max(0, PREVIEW_TILE_COUNT - previewThumbs.length) }).map((_, i) => (
+                          <div key={`${item.id}-empty-${i}`} className="xmb-ps5-menu-thumb xmb-ps5-menu-thumb--empty" />
+                        ))}
                       </div>
-                    ) : themeChannelForRow && settingsSubcategory === "ThemeColor" ? (
-                      <div style={{display:'flex',alignItems:'center',gap:12}}>
-                        <input
-                          type="range"
-                          min={0}
-                          max={255}
-                          step={1}
-                          value={themeRgbLive[themeChannelForRow]}
-                          onChange={(e) =>
-                            onSettingChange &&
-                            onSettingChange("controllerThemeColor", {
-                              ...themeRgbLive,
-                              [themeChannelForRow]: clampRgbByte(Number(e.target.value)),
-                            })
-                          }
-                          aria-label={`Theme ${item.label}`}
-                          style={editingThemeChannel === themeChannelForRow ? { outline: "2px solid rgba(255,255,255,0.2)" } : undefined}
-                        />
-                        <span className="xmb-game-meta-chip">
-                          {item.value}
-                          {editingThemeChannel === themeChannelForRow ? " • Editing" : ""}
-                        </span>
+                    ) : null}
+                    <div className="xmb-ps5-menu-title">{item.label}</div>
+                    {item.value ? (
+                      <div className="xmb-ps5-menu-meta">
+                        {item.id === "bandwidth" && settingsSubcategory !== "root" ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                            <input
+                              type="range"
+                              min={1}
+                              max={150}
+                              step={1}
+                              value={settings.maxBitrateMbps ?? 75}
+                              onChange={(e) => onSettingChange && onSettingChange("maxBitrateMbps" as any, Number(e.target.value) as any)}
+                              aria-label="Bandwidth Limit (Mbps)"
+                              style={editingBandwidth ? { outline: "2px solid rgba(255,255,255,0.2)" } : undefined}
+                            />
+                            <span className="xmb-game-meta-chip">{`${settings.maxBitrateMbps ?? 75} Mbps`}{editingBandwidth ? " • Editing" : ""}</span>
+                          </div>
+                        ) : themeChannelForRow && settingsSubcategory === "ThemeColor" ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                            <input
+                              type="range"
+                              min={0}
+                              max={255}
+                              step={1}
+                              value={themeRgbLive[themeChannelForRow]}
+                              onChange={(e) =>
+                                onSettingChange &&
+                                onSettingChange("controllerThemeColor", {
+                                  ...themeRgbLive,
+                                  [themeChannelForRow]: clampRgbByte(Number(e.target.value)),
+                                })
+                              }
+                              aria-label={`Theme ${item.label}`}
+                              style={editingThemeChannel === themeChannelForRow ? { outline: "2px solid rgba(255,255,255,0.2)" } : undefined}
+                            />
+                            <span className="xmb-game-meta-chip">
+                              {item.value}
+                              {editingThemeChannel === themeChannelForRow ? " • Editing" : ""}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="xmb-game-meta-chip">{item.value}</span>
+                        )}
                       </div>
-                    ) : (
-                      <span className="xmb-game-meta-chip">{item.value}</span>
-                    )}
+                    ) : null}
                   </div>
-                )}
-              </div>
+                );
+              })}
             </div>
-          );
-        })}
-      </div>
+          </div>
+        </div>
       )}
 
       {topCategory === "media" && mediaSubcategory !== "root" && (
@@ -1588,6 +1760,22 @@ export function ControllerLibraryPage({
               </>
             )}
           </>
+        ) : topCategory === "all" && gameSubcategory !== "root" ? (
+          <>
+            <div className="xmb-btn-hint">
+              <span>Browse · Left / Right</span>
+            </div>
+            <div className="xmb-btn-hint">
+              <span>Library filters · Up</span>
+            </div>
+            <div className="xmb-btn-hint">{renderFaceButton("primary", "xmb-btn-icon", 24)} <span>{currentStreamingGame && selectedGame && currentStreamingGame.id !== selectedGame.id ? "Switch" : "Play"}</span></div>
+            {selectedGame && selectedGame.variants.length > 1 ? (
+              <div className="xmb-btn-hint">{renderFaceButton("secondary", "xmb-btn-icon", 24)} <span>Variant</span></div>
+            ) : null}
+            {selectedGame ? (
+              <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>{favoriteGameIdSet.has(selectedGame.id) ? "Unfavorite" : "Favorite"}</span></div>
+            ) : null}
+          </>
         ) : topCategory === "all" && gameSubcategory === "root" ? (
           <div className="xmb-btn-hint">
             {controllerType === "ps" ? (
@@ -1600,12 +1788,12 @@ export function ControllerLibraryPage({
         ) : (
           <>
             <div className="xmb-btn-hint">{renderFaceButton("primary", "xmb-btn-icon", 24)} <span>{currentStreamingGame && selectedGame && currentStreamingGame.id !== selectedGame.id ? "Switch" : "Play"}</span></div>
-            {selectedGame?.variants.length && selectedGame.variants.length > 1 && (
+            {selectedGame && selectedGame.variants.length > 1 ? (
               <div className="xmb-btn-hint">{renderFaceButton("secondary", "xmb-btn-icon", 24)} <span>Variant</span></div>
-            )}
-            {selectedGame && (
+            ) : null}
+            {selectedGame ? (
               <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>{favoriteGameIdSet.has(selectedGame.id) ? "Unfavorite" : "Favorite"}</span></div>
-            )}
+            ) : null}
           </>
         )}
       </div>
