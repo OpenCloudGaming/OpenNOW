@@ -6602,6 +6602,8 @@ button.game-card-store-chip.owned.active:hover {
   max-height: none;
   transform: scale(0.75);
   transform-origin: top left;
+  /* Tuning: horizontal shelf pan (transform) — keep in sync with tile focus motion for a cohesive feel */
+  --xmb-shelf-pan-ms: 520ms;
 }
 
 .xmb-wrapper::after {
@@ -7716,7 +7718,7 @@ button.game-card-store-chip.owned.active:hover {
   min-height: 100%;
   padding: 12px 24px 28px;
   box-sizing: border-box;
-  transition: transform 600ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform var(--xmb-shelf-pan-ms, 600ms) cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .xmb-ps5-shelf-track--menu {

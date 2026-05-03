@@ -88,6 +88,22 @@ const GAME_ACTIVE_CENTER_OFFSET_X_PX = 320;
 const PREVIEW_TILE_COUNT = 6;
 const SPOTLIGHT_RECENT_COUNT = 5;
 
+/** Decode off main thread; lazy-load shelf art so clock/timer rerenders don’t contend with image work */
+const SHELF_IMAGE_PROPS = { decoding: "async" as const, loading: "lazy" as const };
+
+/** XMB-style horizontal shelf: align active tile center with the shelf viewport center (track’s parent). */
+function computeShelfTranslateXToCenter(track: HTMLElement | null, activeIndex: number): number {
+  if (!track) return 0;
+  const viewport = track.parentElement;
+  if (!(viewport instanceof HTMLElement)) return 0;
+  const children = Array.from(track.children) as HTMLElement[];
+  if (children.length === 0 || activeIndex < 0 || activeIndex >= children.length) return 0;
+  const activeEl = children[activeIndex];
+  const centerInTrack = activeEl.offsetLeft + activeEl.offsetWidth / 2;
+  const halfVp = viewport.clientWidth / 2;
+  return halfVp - track.offsetLeft - centerInTrack;
+}
+
 const CONTROLLER_THEME_STYLE_ORDER: readonly ControllerThemeStyle[] = ["aurora", "nebula", "grid", "minimal", "pulse"];
 
 const CONTROLLER_THEME_STYLE_LABEL: Record<ControllerThemeStyle, string> = {
@@ -201,6 +217,9 @@ export function ControllerLibraryPage({
   };
   const [listTranslateY, setListTranslateY] = useState(0);
   const [listTranslateX, setListTranslateX] = useState(0);
+  /** Dual-shelf games root: separate pans so “Recently played” and “Library” rows both stay screen-centered */
+  const [spotlightShelfTranslateX, setSpotlightShelfTranslateX] = useState(0);
+  const [gamesRootMenuTranslateX, setGamesRootMenuTranslateX] = useState(0);
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window === "undefined" ? 1200 : window.innerWidth,
   );
@@ -815,7 +834,11 @@ export function ControllerLibraryPage({
   }, [gamesShelfBrowseActive, selectedIndex, categorizedGames]);
 
   useEffect(() => {
-    if (!gamesShelfBrowseActive && !mediaShelfBrowseActive && !topLevelShelfActive) setListTranslateX(0);
+    if (!gamesShelfBrowseActive && !mediaShelfBrowseActive && !topLevelShelfActive) {
+      setListTranslateX(0);
+      setSpotlightShelfTranslateX(0);
+      setGamesRootMenuTranslateX(0);
+    }
   }, [gamesShelfBrowseActive, mediaShelfBrowseActive, topLevelShelfActive]);
 
   useEffect(() => {
@@ -835,32 +858,29 @@ export function ControllerLibraryPage({
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const onResize = () => setViewportWidth(window.innerWidth);
+    let raf = 0;
+    const onResize = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => setViewportWidth(window.innerWidth));
+    };
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+    };
   }, []);
 
   useLayoutEffect(() => {
     const gamesRoot = topCategory === "all" && gameSubcategory === "root";
-    if (gamesRoot && gamesRootPlane === "spotlight" && gamesDualShelf) {
-      const container = spotlightTrackRef.current;
-      if (!container) return;
-      const children = Array.from(container.children) as HTMLElement[];
-      const activeIndex = spotlightIndex;
-      if (children.length === 0 || activeIndex >= children.length) {
-        setListTranslateX(0);
-        return;
-      }
-      let gap = 14;
-      if (children.length >= 2) {
-        gap = Math.max(8, children[1].offsetLeft - children[0].offsetLeft - children[0].offsetWidth);
-      }
-      let offsetCenter = 0;
-      for (let i = 0; i < activeIndex; i++) {
-        offsetCenter += children[i].offsetWidth + gap;
-      }
-      offsetCenter += children[activeIndex].offsetWidth / 2;
-      setListTranslateX(viewportWidth / 2 - offsetCenter);
+
+    if (!gamesRoot || !gamesDualShelf) {
+      setSpotlightShelfTranslateX(0);
+      setGamesRootMenuTranslateX(0);
+    }
+
+    if (gamesRoot && gamesDualShelf) {
+      setSpotlightShelfTranslateX(computeShelfTranslateXToCenter(spotlightTrackRef.current, spotlightIndex));
+      setGamesRootMenuTranslateX(computeShelfTranslateXToCenter(itemsContainerRef.current, topLevelShelfIndex));
       setListTranslateY(0);
       return;
     }
@@ -875,16 +895,7 @@ export function ControllerLibraryPage({
     }
 
     if (gamesShelfBrowseActive || mediaShelfBrowseActive || topLevelShelfActive) {
-      let gap = 14;
-      if (children.length >= 2) {
-        gap = Math.max(8, children[1].offsetLeft - children[0].offsetLeft - children[0].offsetWidth);
-      }
-      let offsetCenter = 0;
-      for (let i = 0; i < activeIndex; i++) {
-        offsetCenter += children[i].offsetWidth + gap;
-      }
-      offsetCenter += children[activeIndex].offsetWidth / 2;
-      setListTranslateX(viewportWidth / 2 - offsetCenter);
+      setListTranslateX(computeShelfTranslateXToCenter(container, activeIndex));
       setListTranslateY(0);
       return;
     }
@@ -908,7 +919,7 @@ export function ControllerLibraryPage({
     viewportWidth,
     topCategory,
     gameSubcategory,
-    gamesRootPlane,
+    gamesDualShelf,
     spotlightIndex,
     spotlightSlots,
   ]);
@@ -1967,7 +1978,11 @@ export function ControllerLibraryPage({
   const wrapperClassName = `xmb-wrapper xmb-theme-${themeStyleSafe} ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"} xmb-layout--ps5-home`;
   const wrapperClassNameWithRow = `${wrapperClassName} xmb-row-${ps5Row}`;
 
-  const topLevelMenuTrack = (
+  const themeRgbForTrack = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
+  const maxBitrateMbpsForTrack = settings.maxBitrateMbps ?? 75;
+  const menuShelfTranslateX = gamesDualShelf ? gamesRootMenuTranslateX : listTranslateX;
+
+  const topLevelMenuTrack = useMemo(() => (
     <div
       ref={itemsContainerRef}
       className={`xmb-ps5-shelf-track xmb-ps5-shelf-track--menu ${topCategory === "all" && gameSubcategory === "root" ? "xmb-ps5-shelf-track--games-root" : ""}`}
@@ -1975,13 +1990,13 @@ export function ControllerLibraryPage({
       aria-label={
         topCategory === "current" ? "Current game actions" : topCategory === "settings" ? "Controller settings" : topCategory === "all" ? "Game categories" : "Media categories"
       }
-      style={{ transform: `translateX(${listTranslateX}px)` }}
+      style={{ transform: `translateX(${menuShelfTranslateX}px)` }}
     >
       {displayItems.map((item, idx) => {
         const isActive = idx === topLevelShelfIndex;
         const themeChannelForRow =
           item.id === "themeR" ? "r" : item.id === "themeG" ? "g" : item.id === "themeB" ? "b" : null;
-        const themeRgbLive = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
+        const themeRgbLive = themeRgbForTrack;
         const isGameRootTile = topCategory === "all" && gameSubcategory === "root";
         const isCurrentResumeTile = topCategory === "current" && item.id === "resume";
         const previewThumbs = isGameRootTile ? (gameCategoryPreviewById[item.id] ?? []) : [];
@@ -1990,7 +2005,7 @@ export function ControllerLibraryPage({
             {isCurrentResumeTile ? (
               <div className="xmb-ps5-menu-resume-preview" aria-hidden>
                 {currentStreamingGame?.imageUrl ? (
-                  <img src={currentStreamingGame.imageUrl} alt="" className="xmb-ps5-menu-resume-image" />
+                  <img src={currentStreamingGame.imageUrl} alt="" className="xmb-ps5-menu-resume-image" decoding="async" />
                 ) : (
                   <div className="xmb-ps5-menu-resume-image xmb-ps5-menu-resume-image--placeholder" />
                 )}
@@ -2003,7 +2018,7 @@ export function ControllerLibraryPage({
               <div className="xmb-ps5-menu-thumb-row" aria-hidden>
                 {previewThumbs.map((src, i) => (
                   <div key={`${item.id}-${i}`} className="xmb-ps5-menu-thumb">
-                    <img src={src} alt="" className="xmb-ps5-menu-thumb-img" />
+                    <img src={src} alt="" className="xmb-ps5-menu-thumb-img" {...SHELF_IMAGE_PROPS} />
                   </div>
                 ))}
                 {Array.from({ length: Math.max(0, PREVIEW_TILE_COUNT - previewThumbs.length) }).map((_, i) => (
@@ -2021,12 +2036,12 @@ export function ControllerLibraryPage({
                       min={1}
                       max={150}
                       step={1}
-                      value={settings.maxBitrateMbps ?? 75}
+                      value={maxBitrateMbpsForTrack}
                       onChange={(e) => onSettingChange && onSettingChange("maxBitrateMbps" as any, Number(e.target.value) as any)}
                       aria-label="Bandwidth Limit (Mbps)"
                       style={editingBandwidth ? { outline: "2px solid rgba(255,255,255,0.2)" } : undefined}
                     />
-                    <span className="xmb-game-meta-chip">{`${settings.maxBitrateMbps ?? 75} Mbps`}{editingBandwidth ? " • Editing" : ""}</span>
+                    <span className="xmb-game-meta-chip">{`${maxBitrateMbpsForTrack} Mbps`}{editingBandwidth ? " • Editing" : ""}</span>
                   </div>
                 ) : themeChannelForRow && settingsSubcategory === "ThemeColor" ? (
                   <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -2060,7 +2075,23 @@ export function ControllerLibraryPage({
         );
       })}
     </div>
-  );
+  ), [
+    topCategory,
+    gameSubcategory,
+    menuShelfTranslateX,
+    displayItems,
+    topLevelShelfIndex,
+    gameCategoryPreviewById,
+    currentStreamingGame?.imageUrl,
+    editingBandwidth,
+    editingThemeChannel,
+    settingsSubcategory,
+    onSettingChange,
+    themeRgbForTrack.r,
+    themeRgbForTrack.g,
+    themeRgbForTrack.b,
+    maxBitrateMbpsForTrack,
+  ]);
 
   if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") return <div className={wrapperClassNameWithRow} style={wrapperThemeVars}><div className="xmb-bg-layer"><div className="xmb-bg-gradient" /></div><div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh'}}>Loading...</div></div>;
 
@@ -2238,7 +2269,7 @@ export function ControllerLibraryPage({
                       >
                         {favoriteGameIdSet.has(game.id) ? <Star className="xmb-ps5-tile-fav" aria-hidden /> : null}
                         <div className="xmb-ps5-tile-frame">
-                          {game.imageUrl ? <img src={game.imageUrl} alt="" className="xmb-ps5-tile-cover" /> : <div className="xmb-ps5-tile-cover xmb-ps5-tile-cover--placeholder" />}
+                          {game.imageUrl ? <img src={game.imageUrl} alt="" className="xmb-ps5-tile-cover" {...SHELF_IMAGE_PROPS} /> : <div className="xmb-ps5-tile-cover xmb-ps5-tile-cover--placeholder" />}
                         </div>
                       </div>
                     );
@@ -2306,7 +2337,7 @@ export function ControllerLibraryPage({
                     className="xmb-ps5-shelf-track xmb-ps5-shelf-track--spotlight"
                     role="listbox"
                     aria-label="Recently played games"
-                    style={{ transform: `translateX(${listTranslateX}px)` }}
+                    style={{ transform: `translateX(${spotlightShelfTranslateX}px)` }}
                   >
                     {spotlightSlots.map((game, idx) => {
                       const isActive = gamesRootPlane === "spotlight" && idx === spotlightIndex;
@@ -2320,7 +2351,7 @@ export function ControllerLibraryPage({
                           aria-label={game ? game.title : "Empty recent slot"}
                         >
                           <div className="xmb-ps5-tile-frame">
-                            {game?.imageUrl ? <img src={game.imageUrl} alt="" className="xmb-ps5-tile-cover" /> : <div className="xmb-ps5-tile-cover xmb-ps5-tile-cover--placeholder" />}
+                            {game?.imageUrl ? <img src={game.imageUrl} alt="" className="xmb-ps5-tile-cover" {...SHELF_IMAGE_PROPS} /> : <div className="xmb-ps5-tile-cover xmb-ps5-tile-cover--placeholder" />}
                           </div>
                         </div>
                       );
@@ -2408,7 +2439,7 @@ export function ControllerLibraryPage({
                 return (
                   <div key={item.id} className={`xmb-ps5-media-tile ${isActive ? "active" : ""}`} role="option" aria-selected={isActive}>
                     <div className="xmb-ps5-media-frame">
-                      {thumb ? <img src={thumb} alt="" className="xmb-ps5-media-image" /> : <div className="xmb-ps5-media-image xmb-ps5-media-image--placeholder" />}
+                      {thumb ? <img src={thumb} alt="" className="xmb-ps5-media-image" {...SHELF_IMAGE_PROPS} /> : <div className="xmb-ps5-media-image xmb-ps5-media-image--placeholder" />}
                     </div>
                     <div className="xmb-ps5-media-caption">{item.gameTitle || item.fileName}</div>
                     <div className="xmb-ps5-media-meta">
@@ -2493,7 +2524,7 @@ export function ControllerLibraryPage({
             <div key={item.id} className={`xmb-ps5-detail-card ${idx === detailRailIndex ? "active" : ""}`} role="option" aria-selected={idx === detailRailIndex}>
               <div className="xmb-ps5-detail-card-image-wrap">
                 {item.imageUrl ? (
-                  <img src={item.imageUrl} alt="" className="xmb-ps5-detail-card-image" />
+                  <img src={item.imageUrl} alt="" className="xmb-ps5-detail-card-image" {...SHELF_IMAGE_PROPS} />
                 ) : (
                   <div className="xmb-ps5-detail-card-image xmb-ps5-detail-card-image--placeholder" />
                 )}
