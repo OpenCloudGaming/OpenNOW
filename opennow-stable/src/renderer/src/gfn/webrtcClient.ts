@@ -540,7 +540,10 @@ export class GfnWebRtcClient {
   private audioSourceNode: MediaStreamAudioSourceNode | null = null;
 
   private inputReady = false;
+  /** When true, the host (e.g. in-stream controller menu) blocks forwarding; not cleared by focus/visibility. */
   public inputPaused = false;
+  /** When true, window blur or document hidden blocks forwarding until focus/visible again. */
+  private windowStateInputPaused = false;
   private inputProtocolVersion = 2;
   private heartbeatTimer: number | null = null;
   private mouseFlushTimer: number | null = null;
@@ -1874,8 +1877,12 @@ export class GfnWebRtcClient {
     }, nextDelay);
   }
 
+  private isStreamInputBlocked(): boolean {
+    return this.inputPaused || this.windowStateInputPaused;
+  }
+
   private getGamepadPollIntervalMs(): number {
-    if (!this.inputReady || this.inputPaused || document.visibilityState !== "visible") {
+    if (!this.inputReady || this.isStreamInputBlocked() || document.visibilityState !== "visible") {
       return 100;
     }
 
@@ -1905,7 +1912,7 @@ export class GfnWebRtcClient {
   }
 
   private pollGamepads(): void {
-    if (this.inputPaused) return;
+    if (this.isStreamInputBlocked()) return;
     const gamepads = navigator.getGamepads();
     if (!gamepads) {
       return;
@@ -3076,7 +3083,7 @@ export class GfnWebRtcClient {
       try {
         if (document?.body?.dataset?.sidebarOpen === "1") return;
       } catch {}
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (event.pointerType && event.pointerType !== "mouse") {
         return;
       }
@@ -3106,7 +3113,7 @@ export class GfnWebRtcClient {
       try {
         if (document?.body?.dataset?.sidebarOpen === "1") return;
       } catch {}
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (isPointerLockActive()) {
         queueMouseMovement(event.movementX, event.movementY, event.timeStamp);
       } else if (mouseInStreamView) {
@@ -3121,7 +3128,7 @@ export class GfnWebRtcClient {
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (!this.inputReady) {
         return;
       }
@@ -3165,7 +3172,7 @@ export class GfnWebRtcClient {
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (!this.inputReady) {
         return;
       }
@@ -3192,7 +3199,7 @@ export class GfnWebRtcClient {
     };
 
     const onMouseDown = (event: MouseEvent) => {
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (!this.inputReady) {
         return;
       }
@@ -3209,7 +3216,7 @@ export class GfnWebRtcClient {
     };
 
     const onMouseUp = (event: MouseEvent) => {
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (!this.inputReady) {
         return;
       }
@@ -3226,7 +3233,7 @@ export class GfnWebRtcClient {
     };
 
     const onWheel = (event: WheelEvent) => {
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (!this.inputReady) {
         return;
       }
@@ -3396,25 +3403,22 @@ export class GfnWebRtcClient {
       lastAbsX = null;
       lastAbsY = null;
       this.releasePressedKeys("window blur");
-      // Pause all input while window is not focused so no new events
-      // (keyboard/gamepad/mouse) are registered or forwarded to the stream.
-      this.inputPaused = true;
+      // Pause forwarding while window is not focused (host overlay pause is separate).
+      this.windowStateInputPaused = true;
     };
 
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") {
         this.releasePressedKeys(`visibility ${document.visibilityState}`);
-        this.inputPaused = true;
+        this.windowStateInputPaused = true;
         return;
       }
 
-      // Document is visible again — resume input
-      this.inputPaused = false;
+      this.windowStateInputPaused = false;
     };
 
     const onWindowFocus = () => {
-      // Resume input when window regains focus
-      this.inputPaused = false;
+      this.windowStateInputPaused = false;
       mouseInStreamView = true;
       lastAbsX = null;
       lastAbsY = null;
