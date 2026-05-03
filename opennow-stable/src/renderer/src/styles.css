@@ -8123,6 +8123,14 @@ button.game-card-store-chip.owned.active:hover {
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.35));
 }
 
+.xmb-ps5-tile-frame--virtualized {
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
+  opacity: 0.35;
+  box-shadow: none;
+}
+
 .xmb-ps5-tile-cover--placeholder {
   width: 100%;
   height: 100%;
@@ -8283,6 +8291,11 @@ button.game-card-store-chip.owned.active:hover {
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
     repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.05) 0 8px, rgba(255, 255, 255, 0.01) 8px 16px);
+}
+
+.xmb-ps5-media-frame--virtualized {
+  opacity: 0.42;
+  box-shadow: none;
 }
 
 .xmb-ps5-media-caption {
