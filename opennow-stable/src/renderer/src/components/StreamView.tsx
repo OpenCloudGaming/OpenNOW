@@ -72,6 +72,8 @@ interface StreamViewProps {
   micTrack?: MediaStreamTrack | null;
   className?: string;
   allowEscapeToExitFullscreen?: boolean;
+  /** When true, omit the in-player connecting overlay (controller mode uses ControllerStreamLoading instead). */
+  hideConnectingOverlay?: boolean;
 }
 
 function getRttColor(rttMs: number): string {
@@ -685,6 +687,7 @@ export function StreamView({
   micTrack,
   hideStreamButtons = false,
   allowEscapeToExitFullscreen,
+  hideConnectingOverlay = false,
   className,
 }: StreamViewProps): JSX.Element {
   const [showHints, setShowHints] = useState(true);
@@ -1963,8 +1966,8 @@ export function StreamView({
       {/* Gradient background when no video */}
       <StreamEmptyState diagnosticsStore={diagnosticsStore} />
 
-      {/* Connecting overlay */}
-      {isConnecting && (
+      {/* Connecting overlay (desktop / non-controller; controller uses ControllerStreamLoading) */}
+      {isConnecting && !hideConnectingOverlay && (
         <div className="sv-connect">
           <div className="sv-connect-inner">
             <Loader2 className="sv-connect-spin" size={44} />

@@ -48,7 +48,8 @@ import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./
 import { useControllerNavigation } from "./controllerNavigation";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";
 import { usePlaytime } from "./utils/usePlaytime";
-import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
+import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
+import { playControllerUiSound } from "./utils/controllerUiSound";
 import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
 import { chooseAccountLinked, getEpicOwnershipLaunchError } from "./lib/launchOwnership";
 
@@ -58,6 +59,7 @@ import { Navbar } from "./components/Navbar";
 import { HomePage } from "./components/HomePage";
 import { LibraryPage } from "./components/LibraryPage";
 import { ControllerLibraryPage } from "./components/ControllerLibraryPage";
+import { ControllerInStreamShell } from "./components/controllerInStream/ControllerInStreamShell";
 import { SettingsPage } from "./components/SettingsPage";
 import { StreamLoading } from "./components/StreamLoading";
 import { ControllerStreamLoading } from "./components/ControllerStreamLoading";
@@ -447,29 +449,6 @@ function warningMessage(code: StreamTimeWarning["code"]): string {
   return "Maximum session time approaching";
 }
 
-function formatRemainingPlaytimeFromSubscription(
-  subscription: SubscriptionInfo | null,
-  consumedHours = 0,
-): string {
-  if (!subscription) {
-    return "--";
-  }
-  if (subscription.isUnlimited) {
-    return "Unlimited";
-  }
-
-  const baseHours = Number.isFinite(subscription.remainingHours) ? subscription.remainingHours : 0;
-  const safeHours = Math.max(0, baseHours - Math.max(0, consumedHours));
-  const totalMinutes = Math.round(safeHours * 60);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-
-  if (hours > 0) {
-    return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
-  }
-  return `${minutes}m`;
-}
-
 function normalizeMembershipTier(tier: string | null | undefined): string | null {
   if (!tier) {
     return null;
@@ -845,6 +824,8 @@ export function App(): JSX.Element {
     controllerMode: false,
     controllerUiSounds: false,
     controllerBackgroundAnimations: false,
+    controllerThemeStyle: "aurora",
+    controllerThemeColor: { r: 124, g: 241, b: 177 },
     autoLoadControllerLibrary: false,
     autoFullScreen: false,
     favoriteGameIds: [],
@@ -868,6 +849,7 @@ export function App(): JSX.Element {
   const diagnosticsStoreRef = useRef<ReturnType<typeof createStreamDiagnosticsStore> | null>(null);
   const diagnosticsStore =
     diagnosticsStoreRef.current ?? (diagnosticsStoreRef.current = createStreamDiagnosticsStore(defaultDiagnostics()));
+  const streamMenuMicOn = useStreamDiagnosticsSelector(diagnosticsStore, (d) => d.micEnabled);
 
   // Stream State
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -1078,6 +1060,7 @@ export function App(): JSX.Element {
   }, [authSession, currentPage, settings.controllerMode, streamStatus]);
 
   const [controllerOverlayOpen, setControllerOverlayOpen] = useState(false);
+  const [streamVolume, setStreamVolume] = useState(1);
   const [isSwitchingGame, setIsSwitchingGame] = useState(false);
   const [switchingPhase, setSwitchingPhase] = useState<null | "cleaning" | "creating">(null);
   const [pendingSwitchGameTitle, setPendingSwitchGameTitle] = useState<string | null>(null);
@@ -1123,7 +1106,21 @@ export function App(): JSX.Element {
         // Meta/Home button only: button 16 (standard)
         const metaPressed = Boolean(pad.buttons[16]?.pressed);
         if (metaPressed && !prev.pressed) {
-          setControllerOverlayOpen((v) => !v);
+          setControllerOverlayOpen((v) => {
+            const opening = !v;
+            if (settings.controllerUiSounds) {
+              playControllerUiSound(opening ? "confirm" : "move", true);
+            }
+            try {
+              const act = pad.vibrationActuator;
+              if (act && typeof act.playEffect === "function") {
+                void act.playEffect("dual-rumble", { duration: 42, strongMagnitude: 0.35, weakMagnitude: 0.45 });
+              }
+            } catch {
+              // ignore
+            }
+            return !v;
+          });
         }
         prev.pressed = metaPressed;
       } catch {
@@ -1133,16 +1130,24 @@ export function App(): JSX.Element {
     };
     raf = window.requestAnimationFrame(tick);
     return () => { if (raf) window.cancelAnimationFrame(raf); };
-  }, [streamStatus]);
+  }, [streamStatus, settings.controllerUiSounds]);
 
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clientRef = useRef<GfnWebRtcClient | null>(null);
+
+  useEffect(() => {
+    if (streamStatus === "streaming" && audioRef.current) {
+      setStreamVolume(audioRef.current.volume);
+    }
+  }, [streamStatus]);
   const sessionRef = useRef<SessionInfo | null>(null);
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
+  /** Joins concurrent claim/resume calls for the same Cloud session id (single CloudMatch RESUME + signaling). */
+  const claimResumePromisesRef = useRef<Map<string, Promise<void>>>(new Map());
   const launchAbortRef = useRef(false);
   const streamStatusRef = useRef<StreamStatus>(streamStatus);
   const signalingRecoveryRef = useRef<SignalingRecoveryState>({
@@ -1172,6 +1177,7 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     controllerOverlayOpenRef.current = controllerOverlayOpen;
+    // Host-only pause: WebRTC client merges this with window blur/hidden (must not be cleared on focus).
     if (clientRef.current) {
       clientRef.current.inputPaused = controllerOverlayOpen;
     }
@@ -2179,6 +2185,16 @@ export function App(): JSX.Element {
     }
   }, [settingsLoaded]);
 
+  const handleStreamVolumeChange = useCallback((v: number) => {
+    const n = Math.max(0, Math.min(1, v));
+    setStreamVolume(n);
+    if (audioRef.current) audioRef.current.volume = n;
+  }, []);
+
+  const handleToggleStreamMicrophone = useCallback(() => {
+    clientRef.current?.toggleMicrophone();
+  }, []);
+
   const handleMouseSensitivityChange = useCallback((value: number) => {
     void updateSetting("mouseSensitivity", value);
   }, [updateSetting]);
@@ -2603,6 +2619,19 @@ export function App(): JSX.Element {
       return;
     }
 
+    // Mirror attemptSessionRecovery: tear down WebRTC + signaling before connecting to a new edge.
+    // Avoids stale PeerConnection/video vs migrated CloudMatch connectionInfo (intermittent black screen on resume).
+    const reconnectSource = expectedRecoveryGeneration !== undefined ? "recovery" : "resume";
+    console.log(`[Stream] ${reconnectSource}: teardown WebRTC + signaling before reconnect`, {
+      sessionId: claimed.sessionId,
+      signalingServer: claimed.signalingServer,
+      signalingUrl: claimed.signalingUrl,
+      mediaConnectionInfo: claimed.mediaConnectionInfo,
+    });
+    clientRef.current?.dispose();
+    clientRef.current = null;
+    await window.openNow.disconnectSignaling().catch(() => {});
+
     setSession(claimed);
     sessionRef.current = claimed;
     setQueuePosition(undefined);
@@ -2616,42 +2645,71 @@ export function App(): JSX.Element {
   }, [isRecoveryGenerationCurrent]);
 
   const claimAndConnectSession = useCallback(async (existingSession: ActiveSessionInfo): Promise<void> => {
-    const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
-    if (!token) {
-      throw new Error("Missing token for session resume");
-    }
-    if (!existingSession.serverIp) {
-      throw new Error("Active session is missing server address. Start the game again to create a new session.");
-    }
-
-    const matchedContext = findGameContextForSession(existingSession);
-    if (matchedContext) {
-      setStreamingGame(matchedContext.game);
-      setStreamingStore(matchedContext.variant?.store ?? null);
-    } else {
-      setStreamingStore(null);
+    const sid = existingSession.sessionId;
+    const inflight = claimResumePromisesRef.current.get(sid);
+    if (inflight) {
+      console.log("[Resume] claimAndConnectSession: deduped — joining in-flight claim for session", sid);
+      await inflight;
+      return;
     }
 
-    const claimed = await window.openNow.claimSession({
-      token,
-      streamingBaseUrl: effectiveStreamingBaseUrl,
-      serverIp: existingSession.serverIp,
-      sessionId: existingSession.sessionId,
-      appId: resolveSessionClaimAppId(existingSession),
-      settings: {
-        resolution: settings.resolution,
-        fps: settings.fps,
-        maxBitrateMbps: settings.maxBitrateMbps,
-        codec: settings.codec,
-        colorQuality: settings.colorQuality,
-        keyboardLayout: settings.keyboardLayout,
-        gameLanguage: settings.gameLanguage,
-        enableL4S: settings.enableL4S,
-        enableCloudGsync: settings.enableCloudGsync,
-      },
-    });
+    const resumePromiseHolder: { promise?: Promise<void> } = {};
+    resumePromiseHolder.promise = (async (): Promise<void> => {
+      try {
+        const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
+        if (!token) {
+          throw new Error("Missing token for session resume");
+        }
+        if (!existingSession.serverIp) {
+          throw new Error("Active session is missing server address. Start the game again to create a new session.");
+        }
 
-    await applyClaimedSessionAndConnect(claimed);
+        console.log("[Resume] claimAndConnectSession: invoking claimSession", {
+          sessionId: existingSession.sessionId,
+          serverIp: existingSession.serverIp,
+          status: existingSession.status,
+          appId: existingSession.appId,
+        });
+
+        const matchedContext = findGameContextForSession(existingSession);
+        if (matchedContext) {
+          setStreamingGame(matchedContext.game);
+          setStreamingStore(matchedContext.variant?.store ?? null);
+        } else {
+          setStreamingStore(null);
+        }
+
+        const claimed = await window.openNow.claimSession({
+          token,
+          streamingBaseUrl: effectiveStreamingBaseUrl,
+          serverIp: existingSession.serverIp,
+          sessionId: existingSession.sessionId,
+          appId: resolveSessionClaimAppId(existingSession),
+          settings: {
+            resolution: settings.resolution,
+            fps: settings.fps,
+            maxBitrateMbps: settings.maxBitrateMbps,
+            codec: settings.codec,
+            colorQuality: settings.colorQuality,
+            keyboardLayout: settings.keyboardLayout,
+            gameLanguage: settings.gameLanguage,
+            enableL4S: settings.enableL4S,
+            enableCloudGsync: settings.enableCloudGsync,
+          },
+        });
+
+        await applyClaimedSessionAndConnect(claimed);
+      } finally {
+        const map = claimResumePromisesRef.current;
+        const p = resumePromiseHolder.promise;
+        if (p && map.get(sid) === p) {
+          map.delete(sid);
+        }
+      }
+    })();
+
+    claimResumePromisesRef.current.set(sid, resumePromiseHolder.promise);
+    await resumePromiseHolder.promise;
   }, [applyClaimedSessionAndConnect, authSession, effectiveStreamingBaseUrl, findGameContextForSession, resolveSessionClaimAppId, settings]);
 
   const attemptSessionRecovery = useCallback(async (reason: string): Promise<boolean> => {
@@ -2863,6 +2921,7 @@ export function App(): JSX.Element {
                 console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
               },
             });
+            clientRef.current.inputPaused = controllerOverlayOpenRef.current;
             if (settings.microphoneMode !== "disabled") {
               void clientRef.current.startMicrophone();
             }
@@ -2879,6 +2938,13 @@ export function App(): JSX.Element {
             setLaunchError(null);
             setStreamStatus("streaming");
             resetSignalingRecoveryState({ keepExplicitShutdown: true });
+            console.log(
+              "[Stream] Offer applied; use [WebRTC] logs for ICE/video dimensions. signalingServer=%s media=%s",
+              activeSession.signalingServer,
+              activeSession.mediaConnectionInfo
+                ? `${activeSession.mediaConnectionInfo.ip}:${activeSession.mediaConnectionInfo.port}`
+                : "n/a",
+            );
           }
         } else if (event.type === "remote-ice") {
           await clientRef.current?.addRemoteCandidate(event.candidate);
@@ -3857,6 +3923,24 @@ export function App(): JSX.Element {
     return null;
   }, [gameTitleByAppId, navbarActiveSession, session?.sessionId, streamingGame?.title]);
 
+  const controllerCloudResumeCoverUrl = useMemo(() => {
+    if (!navbarActiveSession) return null;
+    const ctx = findGameContextForSession(navbarActiveSession);
+    return ctx?.game?.imageUrl ?? null;
+  }, [findGameContextForSession, navbarActiveSession]);
+
+  const controllerCloudSessionResumable = useMemo(
+    () =>
+      Boolean(
+        streamStatus === "idle"
+        && selectedProvider
+        && navbarActiveSession?.serverIp
+        && !isResumingNavbarSession
+        && !isTerminatingNavbarSession
+      ),
+    [isResumingNavbarSession, isTerminatingNavbarSession, navbarActiveSession, selectedProvider, streamStatus],
+  );
+
   const effectiveAdState = getEffectiveAdState(session, subscriptionInfo, authSession);
   const activeQueueAd = useMemo(
     () => getActiveQueueAd(effectiveAdState, activeQueueAdId),
@@ -3925,17 +4009,11 @@ export function App(): JSX.Element {
   const showControllerLaunchLoading =
     !isSwitchingGame
     && settings.controllerMode
-    && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming" && streamStatus !== "connecting"));
+    && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming"));
   const showDesktopLaunchLoading =
     !isSwitchingGame
     && !settings.controllerMode
     && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming"));
-  const consumedHours =
-    streamStatus === "streaming"
-      ? Math.floor(sessionElapsedSeconds / 60) / 60
-      : 0;
-  const remainingPlaytimeText = formatRemainingPlaytimeFromSubscription(subscriptionInfo, consumedHours);
-
   // Show stream lifecycle (waiting/connecting/streaming/failure)
   if (showLaunchOverlay) {
     const loadingStatus = launchError ? launchError.stage : toLoadingStatus(streamStatus);
@@ -4004,14 +4082,13 @@ export function App(): JSX.Element {
               void releasePointerLockIfNeeded();
             }}
             allowEscapeToExitFullscreen={settings.allowEscapeToExitFullscreen}
+            hideConnectingOverlay={settings.controllerMode}
           />
         )}
-        {isSwitchingGame && settings.controllerMode && streamStatus !== "connecting" && (
+        {isSwitchingGame && settings.controllerMode && (
           <ControllerStreamLoading
             gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? "Game"}
-            gamePoster={pendingSwitchGameCover ?? streamingGame?.imageUrl}
-            gameDescription={pendingSwitchGameDescription ?? streamingGame?.description}
-            status={switchingPhase === "cleaning" ? "setup" : "starting"}
+            status={loadingStatus}
             queuePosition={queuePosition}
             adState={effectiveAdState}
             activeAd={activeQueueAd}
@@ -4027,9 +4104,6 @@ export function App(): JSX.Element {
             }
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             adPreviewRef={queueAdPreviewRef}
-            playtimeData={playtime}
-            gameId={pendingSwitchGameId ?? streamingGame?.id}
-            enableBackgroundAnimations={settings.controllerBackgroundAnimations}
           />
         )}
         {isSwitchingGame && !settings.controllerMode && (
@@ -4063,7 +4137,14 @@ export function App(): JSX.Element {
           />
         )}
         {streamStatus === "streaming" && controllerOverlayOpen && (
-          <div className="controller-overlay">
+          <ControllerInStreamShell
+            diagnosticsStore={diagnosticsStore}
+            sessionStartedAtMs={sessionStartedAtMs}
+            sessionCounterEnabled={settings.sessionCounterEnabled}
+            isStreaming={isStreaming}
+            streamWarning={streamWarning ?? undefined}
+            queuePosition={queuePosition}
+          >
             <ControllerLibraryPage
               games={filteredLibraryGames}
               onPlayGame={handleSwitchGame}
@@ -4078,9 +4159,24 @@ export function App(): JSX.Element {
               onOpenSettings={() => setCurrentPage("settings")}
               currentStreamingGame={streamingGame}
               onResumeGame={() => setControllerOverlayOpen(false)}
+              inStreamMenu
+              streamMenuVolume={streamVolume}
+              onStreamMenuVolumeChange={handleStreamVolumeChange}
+              onStreamMenuToggleMicrophone={handleToggleStreamMicrophone}
+              onStreamMenuToggleFullscreen={() => {
+                void toggleSessionFullscreen();
+              }}
+              streamMenuMicOn={streamMenuMicOn}
+              streamMenuIsFullscreen={sessionFullscreen || !!document.fullscreenElement}
+              cloudSessionResumable={controllerCloudSessionResumable}
+              cloudResumeTitle={activeSessionGameTitle}
+              cloudResumeCoverUrl={controllerCloudResumeCoverUrl}
+              onResumeCloudSession={() => {
+                void handleResumeFromNavbar();
+              }}
+              cloudResumeBusy={isResumingNavbarSession}
               onCloseGame={async () => {
                 setControllerOverlayOpen(false);
-                // allow overlay close animation to play
                 await sleep(300);
                 await releasePointerLockIfNeeded();
                 await handleStopStream();
@@ -4102,6 +4198,8 @@ export function App(): JSX.Element {
                 microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
+                controllerThemeStyle: settings.controllerThemeStyle,
+                controllerThemeColor: settings.controllerThemeColor,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
                 autoFullScreen: settings.autoFullScreen,
                 aspectRatio: settings.aspectRatio,
@@ -4114,13 +4212,11 @@ export function App(): JSX.Element {
               aspectRatioOptions={aspectRatioOptions as unknown as string[]}
               onSettingChange={updateSetting}
             />
-          </div>
+          </ControllerInStreamShell>
         )}
         {showControllerLaunchLoading && (
           <ControllerStreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
-            gamePoster={streamingGame?.imageUrl}
-            gameDescription={streamingGame?.description}
             status={loadingStatus}
             queuePosition={queuePosition}
             adState={effectiveAdState}
@@ -4137,9 +4233,6 @@ export function App(): JSX.Element {
             }
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             adPreviewRef={queueAdPreviewRef}
-            playtimeData={playtime}
-            gameId={streamingGame?.id}
-            enableBackgroundAnimations={settings.controllerBackgroundAnimations}
           />
         )}
         {showDesktopLaunchLoading && (
@@ -4258,6 +4351,13 @@ export function App(): JSX.Element {
               onOpenSettings={() => setCurrentPage("settings")}
               currentStreamingGame={streamingGame}
               onResumeGame={handlePlayGame}
+              cloudSessionResumable={controllerCloudSessionResumable}
+              cloudResumeTitle={activeSessionGameTitle}
+              cloudResumeCoverUrl={controllerCloudResumeCoverUrl}
+              onResumeCloudSession={() => {
+                void handleResumeFromNavbar();
+              }}
+              cloudResumeBusy={isResumingNavbarSession}
               onCloseGame={handlePromptedStopStream}
               pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
@@ -4276,6 +4376,8 @@ export function App(): JSX.Element {
                 microphoneDeviceId: settings.microphoneDeviceId,
                 controllerUiSounds: settings.controllerUiSounds,
                 controllerBackgroundAnimations: settings.controllerBackgroundAnimations,
+                controllerThemeStyle: settings.controllerThemeStyle,
+                controllerThemeColor: settings.controllerThemeColor,
                 autoLoadControllerLibrary: settings.autoLoadControllerLibrary,
                 autoFullScreen: settings.autoFullScreen,
                 aspectRatio: settings.aspectRatio,
