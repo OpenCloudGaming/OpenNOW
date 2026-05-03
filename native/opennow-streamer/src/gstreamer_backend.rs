@@ -1633,7 +1633,7 @@ fn configure_sink_for_low_latency(element: &gst::Element) {
     set_property_if_supported(element, "sync", false);
     set_property_if_supported(element, "async", false);
     set_property_if_supported(element, "qos", false);
-    set_property_if_supported(element, "max-lateness", 0i64);
+    set_property_if_supported(element, "max-lateness", -1i64);
     set_property_if_supported(element, "processing-deadline", 0u64);
     set_property_if_supported(element, "render-delay", 0u64);
     set_property_if_supported(element, "throttle-time", 0u64);

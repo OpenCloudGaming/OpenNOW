@@ -1423,7 +1423,7 @@ export function App(): JSX.Element {
     keyboardLayout: settings.keyboardLayout,
     gameLanguage: settings.gameLanguage,
     enableL4S: settings.enableL4S,
-    enableCloudGsync: settings.enableCloudGsync,
+    enableCloudGsync: settings.streamClientMode === "native" ? false : settings.enableCloudGsync,
   }), [
     settings.codec,
     settings.colorQuality,
@@ -1434,6 +1434,7 @@ export function App(): JSX.Element {
     settings.keyboardLayout,
     settings.maxBitrateMbps,
     settings.resolution,
+    settings.streamClientMode,
   ]);
 
   const buildSignalingConnectRequest = useCallback((activeSession: SessionInfo): SignalingConnectRequest => ({
@@ -2626,17 +2627,7 @@ export function App(): JSX.Element {
       serverIp: existingSession.serverIp,
       sessionId: existingSession.sessionId,
       appId: String(existingSession.appId),
-      settings: {
-        resolution: settings.resolution,
-        fps: settings.fps,
-        maxBitrateMbps: settings.maxBitrateMbps,
-        codec: settings.codec,
-        colorQuality: settings.colorQuality,
-        keyboardLayout: settings.keyboardLayout,
-        gameLanguage: settings.gameLanguage,
-        enableL4S: settings.enableL4S,
-        enableCloudGsync: settings.enableCloudGsync,
-      },
+      settings: buildCurrentStreamSettings(),
     });
 
     console.log("Claimed session:", {
@@ -2654,7 +2645,13 @@ export function App(): JSX.Element {
     setQueuePosition(undefined);
     setStreamStatus("connecting");
     await window.openNow.connectSignaling(buildSignalingConnectRequest(claimed));
-  }, [authSession, buildSignalingConnectRequest, effectiveStreamingBaseUrl, findGameContextForSession, settings]);
+  }, [
+    authSession,
+    buildCurrentStreamSettings,
+    buildSignalingConnectRequest,
+    effectiveStreamingBaseUrl,
+    findGameContextForSession,
+  ]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
@@ -2796,17 +2793,7 @@ export function App(): JSX.Element {
         accountLinked: chooseAccountLinked(game, selectedVariant),
         existingSessionStrategy,
         zone: "prod",
-        settings: {
-          resolution: settings.resolution,
-          fps: settings.fps,
-          maxBitrateMbps: settings.maxBitrateMbps,
-          codec: settings.codec,
-          colorQuality: settings.colorQuality,
-          keyboardLayout: settings.keyboardLayout,
-          gameLanguage: settings.gameLanguage,
-          enableL4S: settings.enableL4S,
-          enableCloudGsync: settings.enableCloudGsync,
-        },
+        settings: buildCurrentStreamSettings(),
       });
 
       setSession(newSession);
