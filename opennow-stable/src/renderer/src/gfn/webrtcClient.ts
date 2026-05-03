@@ -603,6 +603,7 @@ export class GfnWebRtcClient {
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private connectedGamepads: Set<number> = new Set();
   private gamepadMetaPressed: Map<number, boolean> = new Map();
+  private lastEmittedDiagnostics: StreamDiagnostics | null = null;
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
   private lastRumbleWeak: number[] = [0, 0, 0, 0];
   private lastRumbleStrong: number[] = [0, 0, 0, 0];
@@ -929,10 +930,25 @@ export class GfnWebRtcClient {
     this.options.onLog(message);
   }
 
-  private emitStats(): void {
-    if (this.options.onStats) {
-      this.options.onStats({ ...this.diagnostics });
+  private diagnosticsChangedSinceLastEmit(): boolean {
+    if (!this.lastEmittedDiagnostics) return true;
+    const current = this.diagnostics as unknown as Record<string, unknown>;
+    const previous = this.lastEmittedDiagnostics as unknown as Record<string, unknown>;
+    const keys = Object.keys(current);
+    for (const key of keys) {
+      if (!Object.is(current[key], previous[key])) {
+        return true;
+      }
     }
+    return false;
+  }
+
+  private emitStats(force = false): void {
+    if (!this.options.onStats) return;
+    if (!force && !this.diagnosticsChangedSinceLastEmit()) return;
+    const snapshot = { ...this.diagnostics };
+    this.lastEmittedDiagnostics = snapshot;
+    this.options.onStats(snapshot);
   }
 
   private resetDecoderRecoveryState(): void {
@@ -954,6 +970,7 @@ export class GfnWebRtcClient {
 
   private resetDiagnostics(): void {
     this.lastStatsSample = null;
+    this.lastEmittedDiagnostics = null;
     this.currentCodec = "";
     this.currentResolution = "";
     this.isHdr = false;

@@ -131,6 +131,11 @@ const SPOTLIGHT_RECENT_COUNT = 5;
 
 /** Decode off main thread; lazy-load shelf art so clock/timer rerenders don’t contend with image work */
 const SHELF_IMAGE_PROPS = { decoding: "async" as const, loading: "lazy" as const };
+const SHELF_IMAGE_WINDOW_RADIUS = 8;
+
+function isWithinImageWindow(index: number, activeIndex: number, radius: number = SHELF_IMAGE_WINDOW_RADIUS): boolean {
+  return Math.abs(index - activeIndex) <= radius;
+}
 
 /** XMB-style horizontal shelf: align active tile center with the shelf viewport center (track’s parent). */
 function computeShelfTranslateXToCenter(track: HTMLElement | null, activeIndex: number): number {
@@ -2839,6 +2844,8 @@ export function ControllerLibraryPage({
                   ))
                 : categorizedGames.map((game, idx) => {
                     const isActive = idx === selectedIndex;
+                    const shouldRenderImage = isWithinImageWindow(idx, selectedIndex);
+                    const eagerLoadImage = Math.abs(idx - selectedIndex) <= 2;
                     return (
                       <div
                         key={game.id}
@@ -2849,7 +2856,15 @@ export function ControllerLibraryPage({
                       >
                         {favoriteGameIdSet.has(game.id) ? <Star className="xmb-ps5-tile-fav" aria-hidden /> : null}
                         <div className="xmb-ps5-tile-frame">
-                          {game.imageUrl ? <img src={game.imageUrl} alt="" className="xmb-ps5-tile-cover" {...SHELF_IMAGE_PROPS} /> : <div className="xmb-ps5-tile-cover xmb-ps5-tile-cover--placeholder" />}
+                          {game.imageUrl && shouldRenderImage ? (
+                            <img
+                              src={game.imageUrl}
+                              alt=""
+                              className="xmb-ps5-tile-cover"
+                              {...SHELF_IMAGE_PROPS}
+                              loading={eagerLoadImage ? "eager" : "lazy"}
+                            />
+                          ) : <div className="xmb-ps5-tile-cover xmb-ps5-tile-cover--placeholder" />}
                         </div>
                       </div>
                     );
@@ -3040,6 +3055,8 @@ export function ControllerLibraryPage({
 
               {!mediaLoading && !mediaError && mediaAssetItems.map((item, idx) => {
                 const isActive = idx === selectedMediaIndex;
+                const shouldRenderImage = isWithinImageWindow(idx, selectedMediaIndex);
+                const eagerLoadImage = Math.abs(idx - selectedMediaIndex) <= 1;
                 const thumb = mediaThumbById[item.id];
                 const dateLabel = new Date(item.createdAtMs).toLocaleDateString();
                 const durationMs = item.durationMs ?? 0;
@@ -3049,7 +3066,15 @@ export function ControllerLibraryPage({
                 return (
                   <div key={item.id} className={`xmb-ps5-media-tile ${isActive ? "active" : ""}`} role="option" aria-selected={isActive}>
                     <div className="xmb-ps5-media-frame">
-                      {thumb ? <img src={thumb} alt="" className="xmb-ps5-media-image" {...SHELF_IMAGE_PROPS} /> : <div className="xmb-ps5-media-image xmb-ps5-media-image--placeholder" />}
+                      {thumb && shouldRenderImage ? (
+                        <img
+                          src={thumb}
+                          alt=""
+                          className="xmb-ps5-media-image"
+                          {...SHELF_IMAGE_PROPS}
+                          loading={eagerLoadImage ? "eager" : "lazy"}
+                        />
+                      ) : <div className="xmb-ps5-media-image xmb-ps5-media-image--placeholder" />}
                     </div>
                     <div className="xmb-ps5-media-caption">{item.gameTitle || item.fileName}</div>
                     <div className="xmb-ps5-media-meta">
