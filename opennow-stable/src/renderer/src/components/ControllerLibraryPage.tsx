@@ -130,6 +130,19 @@ const CATEGORY_ACTIVE_HALF_WIDTH_PX = 60;
 const GAME_ACTIVE_CENTER_OFFSET_X_PX = 320;
 const PREVIEW_TILE_COUNT = 6;
 const SPOTLIGHT_RECENT_COUNT = 5;
+const MEDIA_HUB_MIN_TILES = 8;
+const MEDIA_VIDEO_PLACEHOLDER_TEMPLATES: ReadonlyArray<{ title: string; subtitle: string }> = [
+  { title: "Recent Clip slot", subtitle: "Record gameplay moments" },
+  { title: "Highlight Reel slot", subtitle: "Mark your best plays" },
+  { title: "Shared Clip slot", subtitle: "Publish to your social feed" },
+  { title: "Squad Clip slot", subtitle: "Capture co-op highlights" },
+];
+const MEDIA_SCREENSHOT_PLACEHOLDER_TEMPLATES: ReadonlyArray<{ title: string; subtitle: string }> = [
+  { title: "Recent Screenshot slot", subtitle: "Capture gameplay stills" },
+  { title: "Wallpaper slot", subtitle: "Save scenic moments" },
+  { title: "Trophy Moment slot", subtitle: "Archive major unlocks" },
+  { title: "Shared Screenshot slot", subtitle: "Publish to your social feed" },
+];
 
 /** Decode off main thread; lazy-load shelf art so clock/timer rerenders don’t contend with image work */
 const SHELF_IMAGE_PROPS = { decoding: "async" as const, loading: "lazy" as const };
@@ -2555,6 +2568,22 @@ export function ControllerLibraryPage({
   const selectedMediaItem = topCategory === "media" && mediaSubcategory !== "root"
     ? mediaAssetItems[selectedMediaIndex] ?? null
     : null;
+  const mediaHubSlots = useMemo(() => {
+    if (mediaLoading || mediaError || mediaSubcategory === "root") return [];
+    const placeholdersNeeded = Math.max(0, MEDIA_HUB_MIN_TILES - mediaAssetItems.length);
+    const filled = mediaAssetItems.map((item) => ({ kind: "asset" as const, item }));
+    const templates = mediaSubcategory === "Videos"
+      ? MEDIA_VIDEO_PLACEHOLDER_TEMPLATES
+      : MEDIA_SCREENSHOT_PLACEHOLDER_TEMPLATES;
+    const placeholders = Array.from({ length: placeholdersNeeded }, (_, idx) => ({
+      kind: "placeholder" as const,
+      id: `placeholder-${mediaSubcategory}-${idx}`,
+      title: templates[idx % templates.length]?.title ?? "Capture slot available",
+      subtitle: templates[idx % templates.length]?.subtitle ?? "Capture gameplay to populate",
+    }));
+    return [...filled, ...placeholders];
+  }, [mediaAssetItems, mediaError, mediaLoading, mediaSubcategory]);
+  const mediaHubPlaceholderCount = Math.max(0, mediaHubSlots.length - mediaAssetItems.length);
   const heroBackdropUrl = useMemo(() => {
     if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight" && spotlightEntries.length > 0) {
       const cur = spotlightEntries[spotlightIndex];
@@ -2879,7 +2908,7 @@ export function ControllerLibraryPage({
       ) : null}
 
       {topCategory === "all" && gameSubcategory !== "root" && !gamesHubOpen && (
-        <div className="xmb-ps5-stack">
+        <div className="xmb-ps5-stack xmb-ps5-media-hub">
           {!isLoading && categorizedGames.length === 0 ? (
             <div className="xmb-ps5-focus-meta" aria-live="polite" key="games-empty">
               <h2 className="xmb-ps5-focus-title">No games here</h2>
@@ -3133,6 +3162,9 @@ export function ControllerLibraryPage({
             <h2 className="xmb-ps5-focus-title">
               {selectedMediaItem?.gameTitle || selectedMediaItem?.fileName || mediaSubcategory}
             </h2>
+            <p className="xmb-ps5-media-hub-subtitle">
+              {mediaAssetItems.length} ready · {mediaHubPlaceholderCount} reserved slots
+            </p>
             <div className="xmb-ps5-actions">
               <span className="xmb-ps5-action xmb-ps5-action--primary">Open Folder</span>
               <span className="xmb-ps5-action">Options</span>
@@ -3172,8 +3204,26 @@ export function ControllerLibraryPage({
                 </div>
               ))}
 
-              {!mediaLoading && !mediaError && mediaAssetItems.map((item, idx) => {
-                const isActive = idx === selectedMediaIndex;
+              {!mediaLoading && !mediaError && mediaHubSlots.map((slot, idx) => {
+                const isAsset = slot.kind === "asset";
+                const isActive = isAsset && idx === selectedMediaIndex;
+                if (!isAsset) {
+                  return (
+                    <div key={slot.id} className="xmb-ps5-media-tile xmb-ps5-media-tile--placeholder-slot" role="option" aria-selected={false}>
+                      <div className="xmb-ps5-media-frame xmb-ps5-media-frame--placeholder">
+                        <div className="xmb-ps5-media-slot-overlay">
+                          <span className="xmb-ps5-media-slot-badge">Empty Slot</span>
+                        </div>
+                      </div>
+                      <div className="xmb-ps5-media-caption">{slot.title}</div>
+                      <div className="xmb-ps5-media-meta">
+                        <span className="xmb-game-meta-chip">{slot.subtitle}</span>
+                      </div>
+                    </div>
+                  );
+                }
+
+                const item = slot.item;
                 const shouldRenderContent = isWithinContentWindow(idx, selectedMediaIndex);
                 const shouldRenderImage = isWithinImageWindow(idx, selectedMediaIndex);
                 const eagerLoadImage = Math.abs(idx - selectedMediaIndex) <= 1;
