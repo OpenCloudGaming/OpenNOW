@@ -1157,6 +1157,7 @@ export function App(): JSX.Element {
 
   const [controllerOverlayOpen, setControllerOverlayOpen] = useState(false);
   const [streamVolume, setStreamVolume] = useState(1);
+  const [streamMicLevel, setStreamMicLevel] = useState(1);
   const [isSwitchingGame, setIsSwitchingGame] = useState(false);
   const [switchingPhase, setSwitchingPhase] = useState<null | "cleaning" | "creating">(null);
   const [pendingSwitchGameTitle, setPendingSwitchGameTitle] = useState<string | null>(null);
@@ -2480,6 +2481,12 @@ export function App(): JSX.Element {
     clientRef.current?.toggleMicrophone();
   }, []);
 
+  const handleStreamMicLevelChange = useCallback((level: number) => {
+    const next = Math.max(0, Math.min(1, Number.isFinite(level) ? level : 1));
+    setStreamMicLevel(next);
+    clientRef.current?.setMicrophoneLevel(next);
+  }, []);
+
   const handleMouseSensitivityChange = useCallback((value: number) => {
     void updateSetting("mouseSensitivity", value);
   }, [updateSetting]);
@@ -3341,6 +3348,7 @@ export function App(): JSX.Element {
               },
             });
             clientRef.current.inputPaused = controllerOverlayOpenRef.current;
+            clientRef.current.setMicrophoneLevel(streamMicLevel);
             if (settings.microphoneMode !== "disabled") {
               void clientRef.current.startMicrophone();
             }
@@ -4632,6 +4640,8 @@ export function App(): JSX.Element {
               inStreamMenu
               streamMenuVolume={streamVolume}
               onStreamMenuVolumeChange={handleStreamVolumeChange}
+              streamMenuMicLevel={streamMicLevel}
+              onStreamMenuMicLevelChange={handleStreamMicLevelChange}
               onStreamMenuToggleMicrophone={handleToggleStreamMicrophone}
               onStreamMenuToggleFullscreen={() => {
                 void toggleSessionFullscreen();

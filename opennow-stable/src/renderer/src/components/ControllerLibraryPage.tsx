@@ -67,6 +67,8 @@ interface ControllerLibraryPageProps {
   /** In-stream: gamepad-friendly stream actions (see Current row). */
   streamMenuVolume?: number;
   onStreamMenuVolumeChange?: (volume01: number) => void;
+  streamMenuMicLevel?: number;
+  onStreamMenuMicLevelChange?: (level01: number) => void;
   onStreamMenuToggleMicrophone?: () => void;
   onStreamMenuToggleFullscreen?: () => void;
   streamMenuMicOn?: boolean;
@@ -235,6 +237,8 @@ export function ControllerLibraryPage({
   inStreamMenu = false,
   streamMenuVolume = 1,
   onStreamMenuVolumeChange,
+  streamMenuMicLevel = 1,
+  onStreamMenuMicLevelChange,
   onStreamMenuToggleMicrophone,
   onStreamMenuToggleFullscreen,
   streamMenuMicOn = false,
@@ -257,6 +261,7 @@ export function ControllerLibraryPage({
   const [categoryIndex, setCategoryIndex] = useState(initialCategoryIndex);
   const [endSessionConfirm, setEndSessionConfirm] = useState(false);
   const [editingStreamVolume, setEditingStreamVolume] = useState(false);
+  const [editingStreamMicLevel, setEditingStreamMicLevel] = useState(false);
   const itemsContainerRef = useRef<HTMLDivElement>(null);
   const overlayNavWriteRef = useRef<ControllerOverlayNavSnapshot | null>(null);
   const overlayNavRestoredRef = useRef(false);
@@ -581,6 +586,11 @@ export function ControllerLibraryPage({
       ? [
           { id: "toggleMic", label: "Microphone", value: streamMenuMicOn ? "On" : "Off" },
           {
+            id: "streamMicLevel",
+            label: "Mic level",
+            value: `${Math.round((streamMenuMicLevel ?? 1) * 100)}%`,
+          },
+          {
             id: "streamVolume",
             label: "Stream volume",
             value: `${Math.round((streamMenuVolume ?? 1) * 100)}%`,
@@ -607,6 +617,7 @@ export function ControllerLibraryPage({
     inStreamMenu,
     endSessionConfirm,
     streamMenuMicOn,
+    streamMenuMicLevel,
     streamMenuVolume,
     streamMenuIsFullscreen,
   ]);
@@ -1305,6 +1316,21 @@ export function ControllerLibraryPage({
         }
         return;
       }
+      if (topCategory === "current" && inStreamMenu && editingStreamMicLevel && onStreamMenuMicLevelChange) {
+        const step = 0.05;
+        const cur = streamMenuMicLevel ?? 1;
+        if (direction === "left") {
+          onStreamMenuMicLevelChange(Math.max(0, cur - step));
+          playUiSound("move");
+          return;
+        }
+        if (direction === "right") {
+          onStreamMenuMicLevelChange(Math.min(1, cur + step));
+          playUiSound("move");
+          return;
+        }
+        return;
+      }
       if (isLoading && topCategory !== "settings" && topCategory !== "current") return;
 
       if (optionsOpen && optionsEntries.length > 0) {
@@ -1590,6 +1616,7 @@ export function ControllerLibraryPage({
             playUiSound("move");
             setSelectedSettingIndex(nextIndex);
             if (topCategory === "current" && inStreamMenu) setEditingStreamVolume(false);
+            if (topCategory === "current" && inStreamMenu) setEditingStreamMicLevel(false);
           }
           return;
         }
@@ -1599,6 +1626,7 @@ export function ControllerLibraryPage({
             playUiSound("move");
             setSelectedSettingIndex(nextIndex);
             if (topCategory === "current" && inStreamMenu) setEditingStreamVolume(false);
+            if (topCategory === "current" && inStreamMenu) setEditingStreamMicLevel(false);
           }
           return;
         }
@@ -1659,6 +1687,7 @@ export function ControllerLibraryPage({
       setEditingBandwidth(false);
       setEditingThemeChannel(null);
       setEditingStreamVolume(false);
+      setEditingStreamMicLevel(false);
       playUiSound("move");
     };
 
@@ -1670,7 +1699,7 @@ export function ControllerLibraryPage({
       if (!direction) return;
       if (gamesHubOpen) return;
       if (topCategory === "settings" && settingsSubcategory !== "root") return;
-      if (editingBandwidth || editingThemeChannel || editingStreamVolume) return;
+      if (editingBandwidth || editingThemeChannel || editingStreamVolume || editingStreamMicLevel) return;
       cycleTopCategory(direction === "prev" ? -1 : 1);
     };
 
@@ -1854,6 +1883,11 @@ export function ControllerLibraryPage({
       }
       if (topCategory === "current" && inStreamMenu && editingStreamVolume) {
         setEditingStreamVolume(false);
+        playUiSound("confirm");
+        return;
+      }
+      if (topCategory === "current" && inStreamMenu && editingStreamMicLevel) {
+        setEditingStreamMicLevel(false);
         playUiSound("confirm");
         return;
       }
@@ -2066,14 +2100,19 @@ export function ControllerLibraryPage({
         playUiSound("move");
         return;
       }
-        if (topCategory === "current" && inStreamMenu) {
-          const item = displayItems[selectedSettingIndex];
-          if (item?.id === "streamVolume" && onStreamMenuVolumeChange) {
-            setEditingStreamVolume(true);
-            playUiSound("move");
-          }
-          return;
+      if (topCategory === "current" && inStreamMenu) {
+        const item = displayItems[selectedSettingIndex];
+        if (item?.id === "streamVolume" && onStreamMenuVolumeChange) {
+          setEditingStreamVolume(true);
+          setEditingStreamMicLevel(false);
+          playUiSound("move");
+        } else if (item?.id === "streamMicLevel" && onStreamMenuMicLevelChange) {
+          setEditingStreamMicLevel(true);
+          setEditingStreamVolume(false);
+          playUiSound("move");
         }
+        return;
+      }
         if (topCategory === "current") {
           return;
         }
@@ -2176,6 +2215,12 @@ export function ControllerLibraryPage({
       }
       if (inStreamMenu && editingStreamVolume) {
         setEditingStreamVolume(false);
+        playUiSound("move");
+        e.preventDefault();
+        return;
+      }
+      if (inStreamMenu && editingStreamMicLevel) {
+        setEditingStreamMicLevel(false);
         playUiSound("move");
         e.preventDefault();
         return;
@@ -2348,6 +2393,12 @@ export function ControllerLibraryPage({
           playUiSound("move");
           return;
         }
+        if (inStreamMenu && editingStreamMicLevel) {
+          e.preventDefault();
+          setEditingStreamMicLevel(false);
+          playUiSound("move");
+          return;
+        }
 
         // Top-level back is intentionally a no-op.
         e.preventDefault();
@@ -2434,6 +2485,9 @@ export function ControllerLibraryPage({
     inStreamMenu,
     endSessionConfirm,
     editingStreamVolume,
+    editingStreamMicLevel,
+    streamMenuMicLevel,
+    onStreamMenuMicLevelChange,
     streamMenuVolume,
     onStreamMenuVolumeChange,
     onStreamMenuToggleMicrophone,
@@ -2610,18 +2664,52 @@ export function ControllerLibraryPage({
                       {editingThemeChannel === themeChannelForRow ? " • Editing" : ""}
                     </span>
                   </div>
+                ) : item.id === "streamMicLevel" && inStreamMenu ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={Math.round((streamMenuMicLevel ?? 1) * 100)}
+                      onChange={(e) =>
+                        onStreamMenuMicLevelChange?.(Math.max(0, Math.min(1, Number(e.target.value) / 100)))
+                      }
+                      aria-label="Microphone level"
+                      style={editingStreamMicLevel ? { outline: "2px solid rgba(255,255,255,0.2)" } : undefined}
+                    />
+                    <span className="xmb-game-meta-chip">
+                      {`${Math.round((streamMenuMicLevel ?? 1) * 100)}%`}
+                      {editingStreamMicLevel
+                        ? " • Editing ←/→"
+                        : controllerType === "ps"
+                          ? " • □ to adjust"
+                          : " • X to adjust"}
+                    </span>
+                  </div>
                 ) : item.id === "streamVolume" && inStreamMenu ? (
-                  <span
-                    className="xmb-game-meta-chip"
-                    style={editingStreamVolume ? { outline: "2px solid rgba(255,255,255,0.2)", borderRadius: 6, padding: "2px 8px" } : undefined}
-                  >
-                    {`${Math.round((streamMenuVolume ?? 1) * 100)}%`}
-                    {editingStreamVolume
-                      ? " • Editing ←/→"
-                      : controllerType === "ps"
-                        ? " • □ to adjust"
-                        : " • X to adjust"}
-                  </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={Math.round((streamMenuVolume ?? 1) * 100)}
+                      onChange={(e) =>
+                        onStreamMenuVolumeChange?.(Math.max(0, Math.min(1, Number(e.target.value) / 100)))
+                      }
+                      aria-label="Stream volume"
+                      style={editingStreamVolume ? { outline: "2px solid rgba(255,255,255,0.2)" } : undefined}
+                    />
+                    <span className="xmb-game-meta-chip">
+                      {`${Math.round((streamMenuVolume ?? 1) * 100)}%`}
+                      {editingStreamVolume
+                        ? " • Editing ←/→"
+                        : controllerType === "ps"
+                          ? " • □ to adjust"
+                          : " • X to adjust"}
+                    </span>
+                  </div>
                 ) : (
                   <span className="xmb-game-meta-chip">{item.value}</span>
                 )}
@@ -2648,8 +2736,12 @@ export function ControllerLibraryPage({
     themeRgbForTrack.b,
     maxBitrateMbpsForTrack,
     inStreamMenu,
+    streamMenuMicLevel,
+    onStreamMenuMicLevelChange,
     streamMenuVolume,
+    onStreamMenuVolumeChange,
     editingStreamVolume,
+    editingStreamMicLevel,
     controllerType,
   ]);
 

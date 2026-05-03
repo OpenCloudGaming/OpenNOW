@@ -4290,6 +4290,15 @@ export class GfnWebRtcClient {
     this.log(`Microphone ${enabled ? "enabled" : "disabled"}`);
   }
 
+  setMicrophoneLevel(level01: number): void {
+    if (!this.micManager) return;
+    this.micManager.setMicLevel(level01);
+  }
+
+  getMicrophoneLevel(): number {
+    return this.micManager?.getMicLevel() ?? 1;
+  }
+
   /**
    * Check if microphone is currently enabled (unmuted)
    */
