@@ -8,6 +8,13 @@ import { SessionElapsedIndicator, RemainingPlaytimeIndicator, CurrentClock } fro
 import { ControllerGameHub } from "./ControllerGameHub";
 import { Ps5LoadingScreen } from "./Ps5LoadingScreen";
 import { type PlaytimeStore, formatPlaytime, formatLastPlayed } from "../utils/usePlaytime";
+import { playControllerUiSound } from "../utils/controllerUiSound";
+import {
+  type ControllerOverlayNavSnapshot,
+  readControllerOverlayNav,
+  writeControllerOverlayNav,
+} from "../utils/controllerOverlayNavStorage";
+import type { StreamQualityPresetId } from "../utils/streamQualityPresets";
 
 interface ControllerLibraryPageProps {
   games: GameInfo[];
@@ -56,6 +63,18 @@ interface ControllerLibraryPageProps {
   sessionStartedAtMs?: number | null;
   isStreaming?: boolean;
   sessionCounterEnabled?: boolean;
+  /** In-stream Meta/Home overlay: extra confirm for end session, nav restore, etc. */
+  inStreamMenu?: boolean;
+  /** In-stream: gamepad-friendly stream actions (see Current row). */
+  streamMenuVolume?: number;
+  onStreamMenuVolumeChange?: (volume01: number) => void;
+  onStreamMenuToggleMicrophone?: () => void;
+  onStreamMenuApplyPreset?: (preset: StreamQualityPresetId) => void;
+  onStreamMenuToggleFullscreen?: () => void;
+  onStreamMenuCycleAspect?: () => void;
+  streamMenuMicOn?: boolean;
+  streamMenuIsFullscreen?: boolean;
+  streamMenuAspectLabel?: string;
   /** When a cloud session can be continued (server ready, app idle), show a PS5-style resume tile in the Games spotlight row. */
   cloudSessionResumable?: boolean;
   cloudResumeTitle?: string | null;
@@ -207,6 +226,16 @@ export function ControllerLibraryPage({
   sessionStartedAtMs = null,
   isStreaming = false,
   sessionCounterEnabled = false,
+  inStreamMenu = false,
+  streamMenuVolume = 1,
+  onStreamMenuVolumeChange,
+  onStreamMenuToggleMicrophone,
+  onStreamMenuApplyPreset,
+  onStreamMenuToggleFullscreen,
+  onStreamMenuCycleAspect,
+  streamMenuMicOn = false,
+  streamMenuIsFullscreen = false,
+  streamMenuAspectLabel,
   cloudSessionResumable = false,
   cloudResumeTitle = null,
   cloudResumeCoverUrl = null,
@@ -223,8 +252,11 @@ export function ControllerLibraryPage({
     return 1;
   })();
   const [categoryIndex, setCategoryIndex] = useState(initialCategoryIndex);
-  const audioContextRef = useRef<AudioContext | null>(null);
+  const [endSessionConfirm, setEndSessionConfirm] = useState(false);
+  const [editingStreamVolume, setEditingStreamVolume] = useState(false);
   const itemsContainerRef = useRef<HTMLDivElement>(null);
+  const overlayNavWriteRef = useRef<ControllerOverlayNavSnapshot | null>(null);
+  const overlayNavRestoredRef = useRef(false);
   const currentPosterImgRef = useRef<HTMLImageElement | null>(null);
   const [metaMaxWidth, setMetaMaxWidth] = useState<number | null>(null);
   const posterObserverRef = useRef<ResizeObserver | null>(null);
@@ -373,32 +405,7 @@ export function ControllerLibraryPage({
   };
 
   const playUiSound = useCallback((kind: SoundKind): void => {
-    if (!uiSoundsEnabled) return;
-    const audioContext = audioContextRef.current ?? new AudioContext();
-    audioContextRef.current = audioContext;
-    if (audioContext.state === "suspended") void audioContext.resume();
-
-    const now = audioContext.currentTime;
-    const oscillator = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-
-    const profile: Record<SoundKind, { start: number; end: number; duration: number; volume: number; type: OscillatorType }> = {
-      move: { start: 720, end: 680, duration: 0.032, volume: 0.009, type: "triangle" },
-      confirm: { start: 640, end: 860, duration: 0.07, volume: 0.016, type: "sine" },
-    };
-
-    const active = profile[kind];
-    oscillator.type = active.type;
-    oscillator.frequency.setValueAtTime(active.start, now);
-    oscillator.frequency.exponentialRampToValueAtTime(active.end, now + active.duration);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(active.volume, now + 0.012);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + active.duration);
-
-    oscillator.connect(gain);
-    gain.connect(audioContext.destination);
-    oscillator.start(now);
-    oscillator.stop(now + active.duration + 0.01);
+    playControllerUiSound(kind, uiSoundsEnabled);
   }, [uiSoundsEnabled]);
 
   const allGenres = useMemo(() => {
@@ -428,6 +435,85 @@ export function ControllerLibraryPage({
     if (TOP_CATEGORIES.length === 0) return;
     setCategoryIndex((prev) => Math.max(0, Math.min(prev, TOP_CATEGORIES.length - 1)));
   }, [TOP_CATEGORIES.length]);
+
+  useLayoutEffect(() => {
+    if (!inStreamMenu) {
+      overlayNavRestoredRef.current = false;
+      return;
+    }
+    if (overlayNavRestoredRef.current) return;
+    overlayNavRestoredRef.current = true;
+    const snap = readControllerOverlayNav();
+    if (!snap) return;
+    const maxCat = Math.max(0, TOP_CATEGORIES.length - 1);
+    setCategoryIndex(Math.max(0, Math.min(snap.categoryIndex, maxCat)));
+    setGameSubcategory(snap.gameSubcategory as GameSubcategory);
+    setMediaSubcategory(snap.mediaSubcategory as MediaSubcategory);
+    setSettingsSubcategory(snap.settingsSubcategory as SettingsSubcategory);
+    setGamesRootPlane(snap.gamesRootPlane);
+    setSpotlightIndex(snap.spotlightIndex);
+    setSelectedGameSubcategoryIndex(snap.selectedGameSubcategoryIndex);
+    setSelectedSettingIndex(snap.selectedSettingIndex);
+    setSelectedMediaIndex(snap.selectedMediaIndex);
+    setPs5Row(snap.ps5Row);
+  }, [inStreamMenu, TOP_CATEGORIES.length]);
+
+  useEffect(() => {
+    if (!inStreamMenu) {
+      overlayNavWriteRef.current = null;
+      return;
+    }
+    overlayNavWriteRef.current = {
+      categoryIndex,
+      gameSubcategory: gameSubcategory as string,
+      mediaSubcategory: mediaSubcategory as string,
+      settingsSubcategory: settingsSubcategory as string,
+      gamesRootPlane,
+      spotlightIndex,
+      selectedGameSubcategoryIndex,
+      selectedSettingIndex,
+      selectedMediaIndex,
+      ps5Row,
+    };
+  }, [
+    inStreamMenu,
+    categoryIndex,
+    gameSubcategory,
+    mediaSubcategory,
+    settingsSubcategory,
+    gamesRootPlane,
+    spotlightIndex,
+    selectedGameSubcategoryIndex,
+    selectedSettingIndex,
+    selectedMediaIndex,
+    ps5Row,
+  ]);
+
+  useEffect(() => {
+    if (!inStreamMenu) return;
+    return () => {
+      const snap = overlayNavWriteRef.current;
+      if (snap) writeControllerOverlayNav(snap);
+    };
+  }, [inStreamMenu]);
+
+  useEffect(() => {
+    const onNav = (ev: Event): void => {
+      const ce = ev as CustomEvent<{ target?: string }>;
+      if (ce.detail?.target !== "media") return;
+      const mediaIdx = TOP_CATEGORIES.findIndex((c) => c.id === "media");
+      if (mediaIdx >= 0) setCategoryIndex(mediaIdx);
+      setMediaSubcategory("root");
+      setSelectedMediaIndex(0);
+      setPs5Row("main");
+      setGamesHubOpen(false);
+      setGameSubcategory("root");
+      setEndSessionConfirm(false);
+      playUiSound("move");
+    };
+    window.addEventListener("opennow:controller-navigate", onNav as EventListener);
+    return () => window.removeEventListener("opennow:controller-navigate", onNav as EventListener);
+  }, [TOP_CATEGORIES, playUiSound]);
 
   const settingsBySubcategory = useMemo(() => {
     const micLabel = (() => {
@@ -487,10 +573,51 @@ export function ControllerLibraryPage({
     } as Record<string, Array<{ id: string; label: string; value: string }>>;
   }, [settings, microphoneDevices]);
  
-  const currentGameItems = useMemo(() => [
-    { id: "resume", label: "Resume Game", value: "" },
-    { id: "closeGame", label: "Close Game", value: "" },
-  ], []);
+  const currentGameItems = useMemo(() => {
+    const streamExtras =
+      inStreamMenu && onStreamMenuApplyPreset
+        ? [
+            { id: "toggleMic", label: "Microphone", value: streamMenuMicOn ? "On" : "Off" },
+            {
+              id: "streamVolume",
+              label: "Stream volume",
+              value: `${Math.round((streamMenuVolume ?? 1) * 100)}%`,
+            },
+            { id: "presetPerf", label: "Apply · Performance", value: "" },
+            { id: "presetBal", label: "Apply · Balanced", value: "" },
+            { id: "presetQual", label: "Apply · Quality", value: "" },
+            { id: "openMedia", label: "Media & captures", value: "Open" },
+            {
+              id: "toggleFullscreen",
+              label: "Fullscreen",
+              value: streamMenuIsFullscreen ? "On" : "Off",
+            },
+            {
+              id: "cycleAspect",
+              label: "Aspect ratio",
+              value: streamMenuAspectLabel ?? "—",
+            },
+          ]
+        : [];
+    return [
+      { id: "resume", label: "Resume Game", value: "" },
+      ...streamExtras,
+      {
+        id: "closeGame",
+        label:
+          inStreamMenu && endSessionConfirm ? "End session (confirm)" : "Close Game",
+        value: "",
+      },
+    ];
+  }, [
+    inStreamMenu,
+    endSessionConfirm,
+    onStreamMenuApplyPreset,
+    streamMenuMicOn,
+    streamMenuVolume,
+    streamMenuIsFullscreen,
+    streamMenuAspectLabel,
+  ]);
 
   const mediaRootItems = useMemo(() => [
     { id: "videos", label: "Videos", value: "" },
@@ -874,6 +1001,16 @@ export function ControllerLibraryPage({
         ? selectedGameSubcategoryIndex
         : selectedSettingIndex;
 
+  useEffect(() => {
+    if (!inStreamMenu || !endSessionConfirm) return;
+    if (topCategory !== "current") {
+      setEndSessionConfirm(false);
+      return;
+    }
+    const item = displayItems[topLevelShelfIndex];
+    if (item?.id !== "closeGame") setEndSessionConfirm(false);
+  }, [inStreamMenu, endSessionConfirm, topCategory, displayItems, topLevelShelfIndex]);
+
   const selectedCategoryLabel = useMemo(() => getCategoryLabel(topCategory, currentStreamingGame?.title).label, [topCategory, currentStreamingGame?.title]);
   const selectedTopLevelItemLabel = useMemo(() => {
     if (!topLevelShelfActive) return selectedCategoryLabel;
@@ -907,7 +1044,11 @@ export function ControllerLibraryPage({
         id: "play",
         title: currentStreamingGame && currentStreamingGame.id !== selectedGame.id ? "Switch" : "Play",
         subtitle:
-          currentStreamingGame && currentStreamingGame.id !== selectedGame.id ? "Switch to this title" : "Launch now",
+          inStreamMenu && currentStreamingGame && currentStreamingGame.id !== selectedGame.id
+            ? `Switch from ${currentStreamingGame.title}`
+            : currentStreamingGame && currentStreamingGame.id !== selectedGame.id
+              ? "Switch to this title"
+              : "Launch now",
       },
       {
         id: "favorite",
@@ -921,7 +1062,7 @@ export function ControllerLibraryPage({
     tiles.push({ id: "activities", title: "Activities", subtitle: "Coming soon", disabled: true });
     tiles.push({ id: "progress", title: "Progress", subtitle: "Coming soon", disabled: true });
     return tiles;
-  }, [topCategory, gameSubcategory, selectedGame, favoriteGameIdSet, currentStreamingGame]);
+  }, [topCategory, gameSubcategory, selectedGame, favoriteGameIdSet, currentStreamingGame, inStreamMenu]);
 
   useEffect(() => {
     const n = gamesHubTiles.length;
@@ -1141,6 +1282,21 @@ export function ControllerLibraryPage({
           playUiSound("move");
           return;
         }
+      }
+      if (topCategory === "current" && inStreamMenu && editingStreamVolume && onStreamMenuVolumeChange) {
+        const step = 0.05;
+        const cur = streamMenuVolume ?? 1;
+        if (direction === "left") {
+          onStreamMenuVolumeChange(Math.max(0, cur - step));
+          playUiSound("move");
+          return;
+        }
+        if (direction === "right") {
+          onStreamMenuVolumeChange(Math.min(1, cur + step));
+          playUiSound("move");
+          return;
+        }
+        return;
       }
       if (isLoading && topCategory !== "settings" && topCategory !== "current") return;
 
@@ -1426,6 +1582,7 @@ export function ControllerLibraryPage({
           if (nextIndex !== selectedSettingIndex) {
             playUiSound("move");
             setSelectedSettingIndex(nextIndex);
+            if (topCategory === "current" && inStreamMenu) setEditingStreamVolume(false);
           }
           return;
         }
@@ -1434,6 +1591,7 @@ export function ControllerLibraryPage({
           if (nextIndex !== selectedSettingIndex) {
             playUiSound("move");
             setSelectedSettingIndex(nextIndex);
+            if (topCategory === "current" && inStreamMenu) setEditingStreamVolume(false);
           }
           return;
         }
@@ -1493,6 +1651,7 @@ export function ControllerLibraryPage({
       setGameSubcategory("root");
       setEditingBandwidth(false);
       setEditingThemeChannel(null);
+      setEditingStreamVolume(false);
       playUiSound("move");
     };
 
@@ -1504,7 +1663,7 @@ export function ControllerLibraryPage({
       if (!direction) return;
       if (gamesHubOpen) return;
       if (topCategory === "settings" && settingsSubcategory !== "root") return;
-      if (editingBandwidth || editingThemeChannel) return;
+      if (editingBandwidth || editingThemeChannel || editingStreamVolume) return;
       cycleTopCategory(direction === "prev" ? -1 : 1);
     };
 
@@ -1686,6 +1845,11 @@ export function ControllerLibraryPage({
         playUiSound("confirm");
         return;
       }
+      if (topCategory === "current" && inStreamMenu && editingStreamVolume) {
+        setEditingStreamVolume(false);
+        playUiSound("confirm");
+        return;
+      }
       if (topCategory === "current") {
         const item = displayItems[selectedSettingIndex];
         if (item?.id === "resume" && currentStreamingGame && onResumeGame) {
@@ -1693,7 +1857,53 @@ export function ControllerLibraryPage({
           playUiSound("confirm");
           return;
         }
+        if (item?.id === "toggleMic" && onStreamMenuToggleMicrophone) {
+          onStreamMenuToggleMicrophone();
+          playUiSound("confirm");
+          return;
+        }
+        if (item?.id === "presetPerf" && onStreamMenuApplyPreset) {
+          onStreamMenuApplyPreset("performance");
+          playUiSound("confirm");
+          return;
+        }
+        if (item?.id === "presetBal" && onStreamMenuApplyPreset) {
+          onStreamMenuApplyPreset("balanced");
+          playUiSound("confirm");
+          return;
+        }
+        if (item?.id === "presetQual" && onStreamMenuApplyPreset) {
+          onStreamMenuApplyPreset("quality");
+          playUiSound("confirm");
+          return;
+        }
+        if (item?.id === "openMedia") {
+          window.dispatchEvent(new CustomEvent("opennow:controller-navigate", { detail: { target: "media" } }));
+          playUiSound("confirm");
+          return;
+        }
+        if (item?.id === "toggleFullscreen" && onStreamMenuToggleFullscreen) {
+          onStreamMenuToggleFullscreen();
+          playUiSound("confirm");
+          return;
+        }
+        if (item?.id === "cycleAspect" && onStreamMenuCycleAspect) {
+          onStreamMenuCycleAspect();
+          playUiSound("confirm");
+          return;
+        }
         if (item?.id === "closeGame" && onCloseGame) {
+          if (inStreamMenu) {
+            if (endSessionConfirm) {
+              setEndSessionConfirm(false);
+              onCloseGame();
+              playUiSound("confirm");
+            } else {
+              setEndSessionConfirm(true);
+              playUiSound("move");
+            }
+            return;
+          }
           onCloseGame();
           playUiSound("confirm");
           return;
@@ -1869,8 +2079,15 @@ export function ControllerLibraryPage({
         playUiSound("move");
         return;
       }
+        if (topCategory === "current" && inStreamMenu) {
+          const item = displayItems[selectedSettingIndex];
+          if (item?.id === "streamVolume" && onStreamMenuVolumeChange) {
+            setEditingStreamVolume(true);
+            playUiSound("move");
+          }
+          return;
+        }
         if (topCategory === "current") {
-          // X button does nothing on current game menu items
           return;
         }
         if (topCategory === "settings") {
@@ -1960,6 +2177,18 @@ export function ControllerLibraryPage({
     const cancelHandler = (e: Event) => {
       if (optionsOpen) {
         setOptionsOpen(false);
+        playUiSound("move");
+        e.preventDefault();
+        return;
+      }
+      if (inStreamMenu && endSessionConfirm) {
+        setEndSessionConfirm(false);
+        playUiSound("move");
+        e.preventDefault();
+        return;
+      }
+      if (inStreamMenu && editingStreamVolume) {
+        setEditingStreamVolume(false);
         playUiSound("move");
         e.preventDefault();
         return;
@@ -2120,6 +2349,19 @@ export function ControllerLibraryPage({
           return;
         }
 
+        if (inStreamMenu && endSessionConfirm) {
+          e.preventDefault();
+          setEndSessionConfirm(false);
+          playUiSound("move");
+          return;
+        }
+        if (inStreamMenu && editingStreamVolume) {
+          e.preventDefault();
+          setEditingStreamVolume(false);
+          playUiSound("move");
+          return;
+        }
+
         // Top-level back is intentionally a no-op.
         e.preventDefault();
         return;
@@ -2209,6 +2451,16 @@ export function ControllerLibraryPage({
     gamesHubOpen,
     gamesHubFocusIndex,
     gamesHubTiles,
+    inStreamMenu,
+    endSessionConfirm,
+    editingStreamVolume,
+    streamMenuVolume,
+    onStreamMenuVolumeChange,
+    onStreamMenuToggleMicrophone,
+    onStreamMenuApplyPreset,
+    onStreamMenuToggleFullscreen,
+    onStreamMenuCycleAspect,
+    controllerType,
   ]);
 
   const renderFaceButton = (kind: "primary" | "secondary" | "tertiary", className: string, size: number): JSX.Element => {
@@ -2353,6 +2605,18 @@ export function ControllerLibraryPage({
                       {editingThemeChannel === themeChannelForRow ? " • Editing" : ""}
                     </span>
                   </div>
+                ) : item.id === "streamVolume" && inStreamMenu ? (
+                  <span
+                    className="xmb-game-meta-chip"
+                    style={editingStreamVolume ? { outline: "2px solid rgba(255,255,255,0.2)", borderRadius: 6, padding: "2px 8px" } : undefined}
+                  >
+                    {`${Math.round((streamMenuVolume ?? 1) * 100)}%`}
+                    {editingStreamVolume
+                      ? " • Editing ←/→"
+                      : controllerType === "ps"
+                        ? " • □ to adjust"
+                        : " • X to adjust"}
+                  </span>
                 ) : (
                   <span className="xmb-game-meta-chip">{item.value}</span>
                 )}
@@ -2378,6 +2642,10 @@ export function ControllerLibraryPage({
     themeRgbForTrack.g,
     themeRgbForTrack.b,
     maxBitrateMbpsForTrack,
+    inStreamMenu,
+    streamMenuVolume,
+    editingStreamVolume,
+    controllerType,
   ]);
 
   if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") {
@@ -2397,6 +2665,11 @@ export function ControllerLibraryPage({
 
   return (
     <div className={wrapperClassNameWithRow} style={wrapperThemeVars}>
+      {inStreamMenu && endSessionConfirm ? (
+        <div className="xmb-end-session-banner" role="status">
+          End session? Press Enter again to confirm, or Back to cancel.
+        </div>
+      ) : null}
       <div className="xmb-bg-layer">
         {parallaxBackdropTiles.length > 0 ? (
           <div className="xmb-ps5-parallax-field" aria-hidden>
@@ -2487,6 +2760,7 @@ export function ControllerLibraryPage({
           librarySortLabel={gameSubcategory === "all" ? LIBRARY_SORT_LABEL[librarySortId] : null}
           tiles={gamesHubTiles}
           focusIndex={gamesHubFocusIndex}
+          inStreamMenu={inStreamMenu}
         />
       ) : null}
 

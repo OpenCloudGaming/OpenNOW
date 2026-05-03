@@ -27,6 +27,8 @@ export interface ControllerGameHubProps {
   librarySortLabel?: string | null;
   tiles: GameHubTile[];
   focusIndex: number;
+  /** In-stream overlay: copy emphasizes switching away from the active title */
+  inStreamMenu?: boolean;
 }
 
 export function ControllerGameHub({
@@ -38,6 +40,7 @@ export function ControllerGameHub({
   librarySortLabel,
   tiles,
   focusIndex,
+  inStreamMenu = false,
 }: ControllerGameHubProps): JSX.Element {
   const record = playtimeData[game.id];
   const totalSecs = record?.totalSeconds ?? 0;
@@ -150,7 +153,11 @@ export function ControllerGameHub({
 
         <div className="xmb-ps5-game-hub-stream-hint" aria-hidden>
           {currentStreamingGame && currentStreamingGame.id !== game.id ? (
-            <span>Streaming another title — Play switches to {game.title}</span>
+            <span>
+              {inStreamMenu
+                ? `In-stream: leaving ${currentStreamingGame.title} switches to ${game.title}`
+                : `Streaming another title — Play switches to ${game.title}`}
+            </span>
           ) : (
             <span>Select an action above</span>
           )}

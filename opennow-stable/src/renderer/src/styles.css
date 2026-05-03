@@ -1458,7 +1458,275 @@ body.controller-mode.controller-hide-cursor * {
   transform-origin: top left !important;
 }
 
+/* In-stream menu: softer scrim so the game stays readable behind the overlay */
+.controller-overlay--in-stream {
+  align-items: stretch !important;
+  justify-content: stretch !important;
+  background: rgba(5, 10, 14, 0.38) !important;
+  -webkit-backdrop-filter: blur(4px) saturate(1.08);
+  backdrop-filter: blur(4px) saturate(1.08);
+}
+
+.controller-overlay--in-stream .cis-root {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  width: 100%;
+}
+
+.controller-overlay--in-stream .cis-xmb-host {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.controller-overlay--in-stream .cis-xmb-host > .xmb-wrapper {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 2401 !important;
+  width: 100% !important;
+  height: 100% !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.controller-overlay--in-stream .cis-xmb-host > .xmb-wrapper.xmb-layout--ps5-home {
+  inset: unset !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: auto !important;
+  bottom: auto !important;
+  width: calc(100% / 0.75) !important;
+  height: calc(100% / 0.75) !important;
+  max-width: none !important;
+  max-height: none !important;
+  transform: scale(0.75) !important;
+  transform-origin: top left !important;
+}
+
+.cis-warning {
+  flex-shrink: 0;
+  padding: 8px 14px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.cis-warning--warn {
+  background: rgba(234, 179, 8, 0.18);
+  color: #fef3c7;
+  border-bottom: 1px solid rgba(234, 179, 8, 0.35);
+}
+
+.cis-warning--critical {
+  background: rgba(220, 38, 38, 0.22);
+  color: #fee2e2;
+  border-bottom: 1px solid rgba(248, 113, 113, 0.45);
+}
+
+.cis-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.cis-toolbar-left,
+.cis-toolbar-right {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.cis-toolbar-center {
+  flex: 0 0 auto;
+}
+
+.cis-elapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.cis-remaining {
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.65);
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cis-health {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: var(--r-full);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.cis-health--good {
+  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.18);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.cis-health--fair {
+  color: #fef08a;
+  background: rgba(234, 179, 8, 0.2);
+  border-color: rgba(234, 179, 8, 0.35);
+}
+
+.cis-health--poor {
+  color: #fecaca;
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
+.cis-health--connecting {
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.cis-pads {
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.cis-btn {
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 8px 18px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.cis-btn--primary {
+  background: linear-gradient(145deg, rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.55), rgba(0, 0, 0, 0.35));
+  border-color: rgba(255, 255, 255, 0.35);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.cis-btn--primary:hover {
+  filter: brightness(1.06);
+}
+
+.cis-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.35);
+  color: rgba(255, 255, 255, 0.75);
+  cursor: pointer;
+}
+
+.cis-icon-btn--on {
+  color: #bbf7d0;
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.15);
+}
+
+.cis-volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(255, 255, 255, 0.75);
+  min-width: 120px;
+}
+
+.cis-volume input[type="range"] {
+  width: 100px;
+  accent-color: rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b));
+}
+
+.cis-quick-row {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 8px;
+  background: rgba(0, 0, 0, 0.28);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.cis-quick-label {
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+  margin-right: 4px;
+}
+
+.cis-quick-sep {
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.12);
+  margin: 0 4px;
+}
+
+.cis-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cis-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.cis-warning-queue {
+  font-weight: 500;
+  opacity: 0.9;
+}
+
 /* Keep the same XMB background stack in-stream for visual parity. */
+
+.xmb-end-session-banner {
+  position: relative;
+  z-index: 50;
+  flex-shrink: 0;
+  padding: 8px 14px;
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-align: center;
+  color: #fef3c7;
+  background: rgba(234, 179, 8, 0.2);
+  border-bottom: 1px solid rgba(234, 179, 8, 0.35);
+}
 
 @media (max-width: 760px) {
   .controller-hint {

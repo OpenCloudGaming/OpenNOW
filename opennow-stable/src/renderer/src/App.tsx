@@ -48,7 +48,9 @@ import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./
 import { useControllerNavigation } from "./controllerNavigation";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";
 import { usePlaytime } from "./utils/usePlaytime";
-import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
+import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
+import { pickStreamPreset, type StreamQualityPresetId } from "./utils/streamQualityPresets";
+import { playControllerUiSound } from "./utils/controllerUiSound";
 import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
 import { chooseAccountLinked, getEpicOwnershipLaunchError } from "./lib/launchOwnership";
 
@@ -58,6 +60,7 @@ import { Navbar } from "./components/Navbar";
 import { HomePage } from "./components/HomePage";
 import { LibraryPage } from "./components/LibraryPage";
 import { ControllerLibraryPage } from "./components/ControllerLibraryPage";
+import { ControllerInStreamShell } from "./components/controllerInStream/ControllerInStreamShell";
 import { SettingsPage } from "./components/SettingsPage";
 import { StreamLoading } from "./components/StreamLoading";
 import { ControllerStreamLoading } from "./components/ControllerStreamLoading";
@@ -870,6 +873,7 @@ export function App(): JSX.Element {
   const diagnosticsStoreRef = useRef<ReturnType<typeof createStreamDiagnosticsStore> | null>(null);
   const diagnosticsStore =
     diagnosticsStoreRef.current ?? (diagnosticsStoreRef.current = createStreamDiagnosticsStore(defaultDiagnostics()));
+  const streamMenuMicOn = useStreamDiagnosticsSelector(diagnosticsStore, (d) => d.micEnabled);
 
   // Stream State
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -1080,6 +1084,7 @@ export function App(): JSX.Element {
   }, [authSession, currentPage, settings.controllerMode, streamStatus]);
 
   const [controllerOverlayOpen, setControllerOverlayOpen] = useState(false);
+  const [streamVolume, setStreamVolume] = useState(1);
   const [isSwitchingGame, setIsSwitchingGame] = useState(false);
   const [switchingPhase, setSwitchingPhase] = useState<null | "cleaning" | "creating">(null);
   const [pendingSwitchGameTitle, setPendingSwitchGameTitle] = useState<string | null>(null);
@@ -1125,7 +1130,21 @@ export function App(): JSX.Element {
         // Meta/Home button only: button 16 (standard)
         const metaPressed = Boolean(pad.buttons[16]?.pressed);
         if (metaPressed && !prev.pressed) {
-          setControllerOverlayOpen((v) => !v);
+          setControllerOverlayOpen((v) => {
+            const opening = !v;
+            if (settings.controllerUiSounds) {
+              playControllerUiSound(opening ? "confirm" : "move", true);
+            }
+            try {
+              const act = pad.vibrationActuator;
+              if (act && typeof act.playEffect === "function") {
+                void act.playEffect("dual-rumble", { duration: 42, strongMagnitude: 0.35, weakMagnitude: 0.45 });
+              }
+            } catch {
+              // ignore
+            }
+            return !v;
+          });
         }
         prev.pressed = metaPressed;
       } catch {
@@ -1135,12 +1154,18 @@ export function App(): JSX.Element {
     };
     raf = window.requestAnimationFrame(tick);
     return () => { if (raf) window.cancelAnimationFrame(raf); };
-  }, [streamStatus]);
+  }, [streamStatus, settings.controllerUiSounds]);
 
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clientRef = useRef<GfnWebRtcClient | null>(null);
+
+  useEffect(() => {
+    if (streamStatus === "streaming" && audioRef.current) {
+      setStreamVolume(audioRef.current.volume);
+    }
+  }, [streamStatus]);
   const sessionRef = useRef<SessionInfo | null>(null);
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
@@ -1176,6 +1201,7 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     controllerOverlayOpenRef.current = controllerOverlayOpen;
+    // Host-only pause: WebRTC client merges this with window blur/hidden (must not be cleared on focus).
     if (clientRef.current) {
       clientRef.current.inputPaused = controllerOverlayOpen;
     }
@@ -2183,6 +2209,36 @@ export function App(): JSX.Element {
     }
   }, [settingsLoaded]);
 
+  const handleStreamVolumeChange = useCallback((v: number) => {
+    const n = Math.max(0, Math.min(1, v));
+    setStreamVolume(n);
+    if (audioRef.current) audioRef.current.volume = n;
+  }, []);
+
+  const handleApplyStreamPreset = useCallback(
+    (preset: StreamQualityPresetId) => {
+      const resolutions = getResolutionsByAspectRatio(settings.aspectRatio);
+      const pick = pickStreamPreset(preset, resolutions, fpsOptions);
+      if (!pick) return;
+      void updateSetting("resolution", pick.resolution as Settings["resolution"]);
+      void updateSetting("fps", pick.fps as Settings["fps"]);
+      void updateSetting("maxBitrateMbps", pick.maxBitrateMbps as Settings["maxBitrateMbps"]);
+    },
+    [settings.aspectRatio, updateSetting],
+  );
+
+  const handleCycleAspectRatio = useCallback(() => {
+    const list = [...aspectRatioOptions] as string[];
+    const cur = settings.aspectRatio ?? "16:9";
+    const i = list.indexOf(cur);
+    const next = list[(i + 1) % list.length] ?? list[0]!;
+    void updateSetting("aspectRatio", next as Settings["aspectRatio"]);
+  }, [settings.aspectRatio, updateSetting]);
+
+  const handleToggleStreamMicrophone = useCallback(() => {
+    clientRef.current?.toggleMicrophone();
+  }, []);
+
   const handleMouseSensitivityChange = useCallback((value: number) => {
     void updateSetting("mouseSensitivity", value);
   }, [updateSetting]);
@@ -2641,7 +2697,8 @@ export function App(): JSX.Element {
       return;
     }
 
-    const run = (async (): Promise<void> => {
+    const resumePromiseHolder: { promise?: Promise<void> } = {};
+    resumePromiseHolder.promise = (async (): Promise<void> => {
       try {
         const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
         if (!token) {
@@ -2688,14 +2745,15 @@ export function App(): JSX.Element {
         await applyClaimedSessionAndConnect(claimed);
       } finally {
         const map = claimResumePromisesRef.current;
-        if (map.get(sid) === run) {
+        const p = resumePromiseHolder.promise;
+        if (p && map.get(sid) === p) {
           map.delete(sid);
         }
       }
     })();
 
-    claimResumePromisesRef.current.set(sid, run);
-    await run;
+    claimResumePromisesRef.current.set(sid, resumePromiseHolder.promise);
+    await resumePromiseHolder.promise;
   }, [applyClaimedSessionAndConnect, authSession, effectiveStreamingBaseUrl, findGameContextForSession, resolveSessionClaimAppId, settings]);
 
   const attemptSessionRecovery = useCallback(async (reason: string): Promise<boolean> => {
@@ -2907,6 +2965,7 @@ export function App(): JSX.Element {
                 console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
               },
             });
+            clientRef.current.inputPaused = controllerOverlayOpenRef.current;
             if (settings.microphoneMode !== "disabled") {
               void clientRef.current.startMicrophone();
             }
@@ -4128,7 +4187,15 @@ export function App(): JSX.Element {
           />
         )}
         {streamStatus === "streaming" && controllerOverlayOpen && (
-          <div className="controller-overlay">
+          <ControllerInStreamShell
+            diagnosticsStore={diagnosticsStore}
+            sessionStartedAtMs={sessionStartedAtMs}
+            sessionCounterEnabled={settings.sessionCounterEnabled}
+            isStreaming={isStreaming}
+            remainingPlaytimeText={remainingPlaytimeText || null}
+            streamWarning={streamWarning ?? undefined}
+            queuePosition={queuePosition}
+          >
             <ControllerLibraryPage
               games={filteredLibraryGames}
               onPlayGame={handleSwitchGame}
@@ -4143,6 +4210,18 @@ export function App(): JSX.Element {
               onOpenSettings={() => setCurrentPage("settings")}
               currentStreamingGame={streamingGame}
               onResumeGame={() => setControllerOverlayOpen(false)}
+              inStreamMenu
+              streamMenuVolume={streamVolume}
+              onStreamMenuVolumeChange={handleStreamVolumeChange}
+              onStreamMenuToggleMicrophone={handleToggleStreamMicrophone}
+              onStreamMenuApplyPreset={handleApplyStreamPreset}
+              onStreamMenuToggleFullscreen={() => {
+                void toggleSessionFullscreen();
+              }}
+              onStreamMenuCycleAspect={handleCycleAspectRatio}
+              streamMenuMicOn={streamMenuMicOn}
+              streamMenuIsFullscreen={sessionFullscreen || !!document.fullscreenElement}
+              streamMenuAspectLabel={settings.aspectRatio ?? "16:9"}
               cloudSessionResumable={controllerCloudSessionResumable}
               cloudResumeTitle={activeSessionGameTitle}
               cloudResumeCoverUrl={controllerCloudResumeCoverUrl}
@@ -4152,7 +4231,6 @@ export function App(): JSX.Element {
               cloudResumeBusy={isResumingNavbarSession}
               onCloseGame={async () => {
                 setControllerOverlayOpen(false);
-                // allow overlay close animation to play
                 await sleep(300);
                 await releasePointerLockIfNeeded();
                 await handleStopStream();
@@ -4188,7 +4266,7 @@ export function App(): JSX.Element {
               aspectRatioOptions={aspectRatioOptions as unknown as string[]}
               onSettingChange={updateSetting}
             />
-          </div>
+          </ControllerInStreamShell>
         )}
         {showControllerLaunchLoading && (
           <ControllerStreamLoading
