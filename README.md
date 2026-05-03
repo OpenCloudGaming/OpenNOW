@@ -154,6 +154,8 @@ npm run dev
 npm run build
 npm run typecheck
 npm run dist
+npm run crowdin:upload
+npm run crowdin:download
 ```
 
 For a fuller setup guide, see [docs/development.md](docs/development.md).
@@ -164,6 +166,7 @@ For a fuller setup guide, see [docs/development.md](docs/development.md).
 .
 ├── opennow-stable/   Electron app workspace
 ├── ios/OpenNOWiOS/   Native iOS SwiftUI app prototype
+├── locales/          Crowdin-managed localization files
 ├── docs/             Local project documentation
 ├── .github/          Workflows, templates, contributing docs
 ├── logo.png          Project logo
@@ -194,7 +197,8 @@ Contributions are welcome. If you want to help:
 
 1. Read the [contributing guide](.github/CONTRIBUTING.md).
 2. Run `npm run typecheck` and `npm run build` before opening a PR.
-3. Keep changes focused and explain user-facing impact clearly.
+3. Edit localized copy only in `locales/en.json`; Crowdin owns the other locale files.
+4. Keep changes focused and explain user-facing impact clearly.
 
 ## FAQ
 
