@@ -157,6 +157,17 @@ function computeShelfTranslateXToCenter(track: HTMLElement | null, activeIndex: 
   return halfVp - track.offsetLeft - centerInTrack;
 }
 
+function computeShelfTranslateXClamped(track: HTMLElement | null, activeIndex: number): number {
+  if (!track) return 0;
+  const viewport = track.parentElement;
+  if (!(viewport instanceof HTMLElement)) return 0;
+  const desired = computeShelfTranslateXToCenter(track, activeIndex);
+  const maxTranslate = -track.offsetLeft;
+  const minTranslate = viewport.clientWidth - (track.offsetLeft + track.scrollWidth);
+  if (minTranslate > maxTranslate) return maxTranslate;
+  return Math.max(minTranslate, Math.min(maxTranslate, desired));
+}
+
 const CONTROLLER_THEME_STYLE_ORDER: readonly ControllerThemeStyle[] = ["aurora", "nebula", "grid", "minimal", "pulse"];
 
 const CONTROLLER_THEME_STYLE_LABEL: Record<ControllerThemeStyle, string> = {
@@ -1194,8 +1205,8 @@ export function ControllerLibraryPage({
     }
 
     if (gamesRoot && gamesDualShelf) {
-      setSpotlightShelfTranslateX(computeShelfTranslateXToCenter(spotlightTrackRef.current, spotlightIndex));
-      setGamesRootMenuTranslateX(computeShelfTranslateXToCenter(itemsContainerRef.current, topLevelShelfIndex));
+      setSpotlightShelfTranslateX(computeShelfTranslateXClamped(spotlightTrackRef.current, spotlightIndex));
+      setGamesRootMenuTranslateX(computeShelfTranslateXClamped(itemsContainerRef.current, topLevelShelfIndex));
       setListTranslateY(0);
       return;
     }
@@ -1210,7 +1221,7 @@ export function ControllerLibraryPage({
     }
 
     if (gamesShelfBrowseActive || mediaShelfBrowseActive || topLevelShelfActive) {
-      setListTranslateX(computeShelfTranslateXToCenter(container, activeIndex));
+      setListTranslateX(computeShelfTranslateXClamped(container, activeIndex));
       setListTranslateY(0);
       return;
     }
@@ -2574,7 +2585,7 @@ export function ControllerLibraryPage({
   } as React.CSSProperties;
 
   const wrapperClassName = `xmb-wrapper xmb-theme-${themeStyleSafe} ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"} xmb-layout--ps5-home`;
-  const wrapperClassNameWithRow = `${wrapperClassName} xmb-row-${ps5Row}`;
+  const wrapperClassNameWithRow = `${wrapperClassName} xmb-row-${ps5Row} ${topCategory === "settings" ? "xmb-ps5-section-settings" : ""} ${topCategory === "settings" && settingsSubcategory === "root" ? "xmb-ps5-settings-root" : ""} ${topCategory === "settings" && settingsSubcategory !== "root" ? "xmb-ps5-settings-sub" : ""}`;
 
   const themeRgbForTrack = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
   const maxBitrateMbpsForTrack = settings.maxBitrateMbps ?? 75;
@@ -2583,7 +2594,7 @@ export function ControllerLibraryPage({
   const topLevelMenuTrack = useMemo(() => (
     <div
       ref={itemsContainerRef}
-      className={`xmb-ps5-shelf-track xmb-ps5-shelf-track--menu ${topCategory === "all" && gameSubcategory === "root" ? "xmb-ps5-shelf-track--games-root" : ""}`}
+      className={`xmb-ps5-shelf-track xmb-ps5-shelf-track--menu ${topCategory === "all" && gameSubcategory === "root" ? "xmb-ps5-shelf-track--games-root" : ""} ${topCategory === "settings" ? "xmb-ps5-shelf-track--settings" : ""}`}
       role="listbox"
       aria-label={
         topCategory === "current" ? "Current game actions" : topCategory === "settings" ? "Controller settings" : topCategory === "all" ? "Game categories" : "Media categories"
@@ -2597,9 +2608,15 @@ export function ControllerLibraryPage({
         const themeRgbLive = themeRgbForTrack;
         const isGameRootTile = topCategory === "all" && gameSubcategory === "root";
         const isCurrentResumeTile = topCategory === "current" && item.id === "resume";
+        const isSettingsTile = topCategory === "settings";
         const previewThumbs = isGameRootTile ? (gameCategoryPreviewById[item.id] ?? []) : [];
         return (
-          <div key={item.id} className={`xmb-ps5-menu-tile ${isActive ? "active" : ""} ${isCurrentResumeTile ? "xmb-ps5-menu-tile--resume" : ""}`} role="option" aria-selected={isActive}>
+          <div
+            key={item.id}
+            className={`xmb-ps5-menu-tile ${isActive ? "active" : ""} ${isCurrentResumeTile ? "xmb-ps5-menu-tile--resume" : ""} ${isSettingsTile ? "xmb-ps5-menu-tile--settings" : ""} ${isSettingsTile && settingsSubcategory === "root" ? "xmb-ps5-menu-tile--settings-root" : ""}`}
+            role="option"
+            aria-selected={isActive}
+          >
             {isCurrentResumeTile ? (
               <div className="xmb-ps5-menu-resume-preview" aria-hidden>
                 {currentStreamingGame?.imageUrl ? (
