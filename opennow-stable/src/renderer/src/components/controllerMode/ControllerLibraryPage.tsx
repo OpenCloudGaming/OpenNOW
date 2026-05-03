@@ -549,8 +549,10 @@ export function ControllerLibraryPage({
     }
     const active = displayItems[topLevelShelfIndex];
     if (topCategory === "all" && gameSubcategory === "root" && active?.label) return active.label;
+    if (topCategory === "media" && mediaSubcategory === "root" && active?.label) return active.label;
+    if (topCategory === "settings" && active?.label) return active.label;
     return selectedCategoryLabel;
-  }, [topLevelShelfActive, selectedCategoryLabel, displayItems, topLevelShelfIndex, topCategory, gameSubcategory, gamesRootPlane, spotlightEntries, spotlightIndex]);
+  }, [topLevelShelfActive, selectedCategoryLabel, displayItems, topLevelShelfIndex, topCategory, gameSubcategory, mediaSubcategory, gamesRootPlane, spotlightEntries, spotlightIndex]);
   const detailRailItems = useMemo<Array<{ id: string; title: string; subtitle: string; imageUrl?: string }>>(() => {
     if (topCategory === "media" && mediaSubcategory !== "root") {
       const current = mediaAssetItems[selectedMediaIndex];

@@ -158,19 +158,16 @@ export function TopLevelShelfSection({
             </div>
           </div>
           <div className="xmb-ps5-shelf-band xmb-ps5-shelf-band--library">
-            <div className={`xmb-ps5-shelf-label-row xmb-ps5-shelf-label-row--library ${gamesRootPlane === "categories" ? "xmb-ps5-shelf-label-row--active" : ""}`}>
-              <span className="xmb-ps5-shelf-label">Library</span>
-            </div>
             <div className="xmb-ps5-shelf-viewport xmb-ps5-shelf-viewport--games-root">{topLevelMenuTrack}</div>
           </div>
         </div>
       ) : (
         <>
-          <div className={`xmb-ps5-shelf-label-row xmb-ps5-shelf-label-row--library ${!(topCategory === "all" && gameSubcategory === "root") || gamesRootPlane === "categories" ? "xmb-ps5-shelf-label-row--active" : ""}`}>
-            <span className="xmb-ps5-shelf-label">
-              {topCategory === "current" ? "Current" : topCategory === "settings" ? "Settings" : topCategory === "all" ? "Library" : "Media"}
-            </span>
-          </div>
+          {topCategory === "current" ? (
+            <div className={`xmb-ps5-shelf-label-row xmb-ps5-shelf-label-row--library ${!(topCategory === "all" && gameSubcategory === "root") || gamesRootPlane === "categories" ? "xmb-ps5-shelf-label-row--active" : ""}`}>
+              <span className="xmb-ps5-shelf-label">Current</span>
+            </div>
+          ) : null}
           <div className={`xmb-ps5-shelf-viewport ${topCategory === "all" && gameSubcategory === "root" ? "xmb-ps5-shelf-viewport--games-root" : ""}`}>{topLevelMenuTrack}</div>
         </>
       )}

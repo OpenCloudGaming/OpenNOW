@@ -146,7 +146,7 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
       </div>
 
       <LibraryChrome
-        logoUrl={new URL("../../assets/opennow-logo.png", import.meta.url).toString()}
+        logoUrl={new URL("../../../assets/opennow-logo.png", import.meta.url).toString()}
         clockElement={(
           <div className="xmb-clock-wrap">
             <CurrentClock className="xmb-clock" />
