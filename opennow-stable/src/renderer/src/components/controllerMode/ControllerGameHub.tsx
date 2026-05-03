@@ -1,8 +1,8 @@
 import type { JSX } from "react";
 import type { GameInfo } from "@shared/gfn";
 import { Clock, Calendar, Repeat2 } from "lucide-react";
-import { getStoreDisplayName } from "./GameCard";
-import { formatPlaytime, formatLastPlayed, type PlaytimeStore } from "../utils/usePlaytime";
+import { getStoreDisplayName } from "../GameCard";
+import { formatPlaytime, formatLastPlayed, type PlaytimeStore } from "../../utils/usePlaytime";
 
 export type GameHubTile = {
   id: string;

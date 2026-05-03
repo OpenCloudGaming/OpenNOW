@@ -1,0 +1,234 @@
+import type { JSX } from "react";
+import { ButtonA, ButtonB, ButtonPSCircle, ButtonPSCross } from "../ControllerButtons";
+import { spotlightEntryHasGame } from "./helpers";
+import type { GameInfo } from "@shared/gfn";
+import type { GameSubcategory, SettingsSubcategory, SpotlightEntry } from "./types";
+
+interface FooterHintsProps {
+  topLevelRowBehaviorActive: boolean;
+  topCategory: string;
+  settingsSubcategory: SettingsSubcategory;
+  editingThemeChannel: "r" | "g" | "b" | null;
+  mediaSubcategory: "root" | "Videos" | "Screenshots";
+  gameSubcategory: GameSubcategory;
+  gamesHubOpen: boolean;
+  gamesRootPlane: "spotlight" | "categories";
+  spotlightEntries: SpotlightEntry[];
+  spotlightIndex: number;
+  currentStreamingGame: GameInfo | null | undefined;
+  selectedGame: GameInfo | undefined;
+  controllerType: "ps" | "xbox" | "nintendo" | "generic";
+  renderFaceButton: (kind: "primary" | "secondary" | "tertiary", className: string, size: number) => JSX.Element;
+}
+
+export function FooterHints({
+  topLevelRowBehaviorActive,
+  topCategory,
+  settingsSubcategory,
+  editingThemeChannel,
+  mediaSubcategory,
+  gameSubcategory,
+  gamesHubOpen,
+  gamesRootPlane,
+  spotlightEntries,
+  spotlightIndex,
+  currentStreamingGame,
+  selectedGame,
+  controllerType,
+  renderFaceButton,
+}: FooterHintsProps): JSX.Element {
+  return (
+    <div className="xmb-footer">
+      {topLevelRowBehaviorActive ? (
+        <>
+          <div className="xmb-btn-hint">
+            {controllerType === "ps" ? (
+              <ButtonPSCross className="xmb-btn-icon" size={24} />
+            ) : (
+              <ButtonA className="xmb-btn-icon" size={24} />
+            )}
+            <span>Select</span>
+          </div>
+          <div className="xmb-btn-hint"><span className="xmb-btn-keycap">L1</span> <span>Prev Section</span></div>
+          <div className="xmb-btn-hint"><span className="xmb-btn-keycap">R1</span> <span>Next Section</span></div>
+        </>
+      ) : topCategory === "current" ? (
+        <div className="xmb-btn-hint" style={{ margin: "0 auto" }}>
+          {controllerType === "ps" ? (
+            <ButtonPSCross className="xmb-btn-icon" size={24} />
+          ) : (
+            <ButtonA className="xmb-btn-icon" size={24} />
+          )}
+          <span>Select</span>
+        </div>
+      ) : topCategory === "settings" ? (
+        <>
+          {settingsSubcategory === "root" || settingsSubcategory === "Theme" ? (
+            <div className="xmb-btn-hint">
+              {controllerType === "ps" ? (
+                <ButtonPSCross className="xmb-btn-icon" size={24} />
+              ) : (
+                <ButtonA className="xmb-btn-icon" size={24} />
+              )}
+              <span>Enter</span>
+            </div>
+          ) : settingsSubcategory === "ThemeStyle" ? (
+            <>
+              <div className="xmb-btn-hint">
+                {controllerType === "ps" ? (
+                  <ButtonPSCircle className="xmb-btn-icon" size={24} />
+                ) : (
+                  <ButtonB className="xmb-btn-icon" size={24} />
+                )}
+                <span>Back</span>
+              </div>
+              <div className="xmb-btn-hint">
+                {controllerType === "ps" ? (
+                  <ButtonPSCross className="xmb-btn-icon" size={24} />
+                ) : (
+                  <ButtonA className="xmb-btn-icon" size={24} />
+                )}
+                <span>Select</span>
+              </div>
+            </>
+          ) : settingsSubcategory === "ThemeColor" ? (
+            <>
+              <div className="xmb-btn-hint">
+                {controllerType === "ps" ? (
+                  <ButtonPSCircle className="xmb-btn-icon" size={24} />
+                ) : (
+                  <ButtonB className="xmb-btn-icon" size={24} />
+                )}
+                <span>Back</span>
+              </div>
+              <div className="xmb-btn-hint">
+                {controllerType === "ps" ? (
+                  <ButtonPSCross className="xmb-btn-icon" size={24} />
+                ) : (
+                  <ButtonA className="xmb-btn-icon" size={24} />
+                )}
+                <span>{editingThemeChannel ? "Confirm" : "Adjust"}</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="xmb-btn-hint">
+                {controllerType === "ps" ? (
+                  <ButtonPSCircle className="xmb-btn-icon" size={24} />
+                ) : (
+                  <ButtonB className="xmb-btn-icon" size={24} />
+                )}
+                <span>Back</span>
+              </div>
+              <div className="xmb-btn-hint">
+                {controllerType === "ps" ? (
+                  <ButtonPSCross className="xmb-btn-icon" size={24} />
+                ) : (
+                  <ButtonA className="xmb-btn-icon" size={24} />
+                )}
+                <span>Toggle</span>
+              </div>
+            </>
+          )}
+        </>
+      ) : topCategory === "media" ? (
+        <>
+          {mediaSubcategory === "root" ? (
+            <div className="xmb-btn-hint">
+              {controllerType === "ps" ? (
+                <ButtonPSCross className="xmb-btn-icon" size={24} />
+              ) : (
+                <ButtonA className="xmb-btn-icon" size={24} />
+              )}
+              <span>Enter</span>
+            </div>
+          ) : (
+            <>
+              <div className="xmb-btn-hint"><span>Browse · Left / Right</span></div>
+              <div className="xmb-btn-hint">
+                {controllerType === "ps" ? (
+                  <ButtonPSCross className="xmb-btn-icon" size={24} />
+                ) : (
+                  <ButtonA className="xmb-btn-icon" size={24} />
+                )}
+                <span>Open Folder</span>
+              </div>
+              <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>Options</span></div>
+              <div className="xmb-btn-hint">
+                {controllerType === "ps" ? (
+                  <ButtonPSCircle className="xmb-btn-icon" size={24} />
+                ) : (
+                  <ButtonB className="xmb-btn-icon" size={24} />
+                )}
+                <span>Back To Media</span>
+              </div>
+            </>
+          )}
+        </>
+      ) : topCategory === "all" && gameSubcategory !== "root" ? (
+        gamesHubOpen ? (
+          <>
+            <div className="xmb-btn-hint"><span>Actions · Left / Right</span></div>
+            <div className="xmb-btn-hint">
+              {controllerType === "ps" ? (
+                <ButtonPSCross className="xmb-btn-icon" size={24} />
+              ) : (
+                <ButtonA className="xmb-btn-icon" size={24} />
+              )}
+              <span>Confirm</span>
+            </div>
+            <div className="xmb-btn-hint">
+              {controllerType === "ps" ? (
+                <ButtonPSCircle className="xmb-btn-icon" size={24} />
+              ) : (
+                <ButtonB className="xmb-btn-icon" size={24} />
+              )}
+              <span>Back</span>
+            </div>
+            <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>Options</span></div>
+          </>
+        ) : (
+          <>
+            <div className="xmb-btn-hint"><span>Browse · Left / Right</span></div>
+            <div className="xmb-btn-hint"><span>Library filters · Up</span></div>
+            <div className="xmb-btn-hint">{renderFaceButton("primary", "xmb-btn-icon", 24)} <span>Game hub</span></div>
+            <div className="xmb-btn-hint"><span>Hub · Down</span></div>
+            {gameSubcategory === "all" ? (
+              <div className="xmb-btn-hint">{renderFaceButton("secondary", "xmb-btn-icon", 24)} <span>Sort</span></div>
+            ) : null}
+            <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>Options</span></div>
+          </>
+        )
+      ) : topCategory === "all" && gameSubcategory === "root" ? (
+        <>
+          <div className="xmb-btn-hint">
+            {controllerType === "ps" ? (
+              <ButtonPSCross className="xmb-btn-icon" size={24} />
+            ) : (
+              <ButtonA className="xmb-btn-icon" size={24} />
+            )}
+            <span>
+              {gamesRootPlane === "spotlight" && spotlightEntries[spotlightIndex]?.kind === "cloudResume"
+                ? spotlightEntries[spotlightIndex].busy
+                  ? "Please wait"
+                  : "Resume session"
+                : gamesRootPlane === "spotlight" && spotlightEntryHasGame(spotlightEntries[spotlightIndex])
+                  ? "View in library"
+                  : "Enter"}
+            </span>
+          </div>
+          {gamesRootPlane === "spotlight" && spotlightEntryHasGame(spotlightEntries[spotlightIndex]) ? (
+            <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>Options</span></div>
+          ) : null}
+          <div className="xmb-btn-hint"><span className="xmb-btn-keycap">L1</span> <span>Prev Section</span></div>
+          <div className="xmb-btn-hint"><span className="xmb-btn-keycap">R1</span> <span>Next Section</span></div>
+        </>
+      ) : (
+        <>
+          <div className="xmb-btn-hint">{renderFaceButton("primary", "xmb-btn-icon", 24)} <span>{currentStreamingGame && selectedGame && currentStreamingGame.id !== selectedGame.id ? "Switch" : "Play"}</span></div>
+          <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>Options</span></div>
+        </>
+      )}
+    </div>
+  );
+}
