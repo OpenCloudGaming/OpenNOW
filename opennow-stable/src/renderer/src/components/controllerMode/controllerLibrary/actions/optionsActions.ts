@@ -15,6 +15,7 @@ export function openOptionsMenuAction(context: OptionsActionContext): boolean {
     topCategory,
     gameSubcategory,
     gamesRootPlane,
+    gamesDualShelf = true,
     spotlightEntries,
     spotlightIndex,
     spotlightEntryHasGame,
@@ -56,7 +57,13 @@ export function openOptionsMenuAction(context: OptionsActionContext): boolean {
       entries.push({ id: "mediaDelete", label: "Delete File" });
       entries.push({ id: "mediaRegenThumb", label: "Regen Thumbnail" });
     }
-  } else if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight" && spotlightEntryHasGame(spotlightEntries[spotlightIndex])) {
+  } else if (
+    topCategory === "all" &&
+    gameSubcategory === "root" &&
+    gamesDualShelf &&
+    gamesRootPlane === "spotlight" &&
+    spotlightEntryHasGame(spotlightEntries[spotlightIndex])
+  ) {
     entries.push({ id: "openLibrary", label: "View in library" });
   }
   if (entries.length === 0) return false;

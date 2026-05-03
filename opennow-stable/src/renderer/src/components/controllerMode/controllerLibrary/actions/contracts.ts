@@ -20,6 +20,8 @@ export interface OptionsActionContext {
   topCategory: TopCategory;
   gameSubcategory: GameSubcategory;
   gamesRootPlane: "spotlight" | "categories";
+  /** When false, Games root has no spotlight row. */
+  gamesDualShelf?: boolean;
   spotlightEntries: SpotlightEntry[];
   spotlightIndex: number;
   selectedMediaIndex: number;
@@ -174,4 +176,5 @@ export type ControllerLibrarySettings = {
   maxBitrateMbps?: number;
   controllerThemeStyle?: ControllerThemeStyle;
   controllerThemeColor?: { r: number; g: number; b: number };
+  controllerLibraryGameBackdrop?: boolean;
 };

@@ -14,6 +14,8 @@ interface FooterHintsProps {
   gameSubcategory: GameSubcategory;
   gamesHubOpen: boolean;
   gamesRootPlane: "spotlight" | "categories";
+  /** Games tab spotlight row; when false, root Games uses categories row only. */
+  gamesDualShelf?: boolean;
   homeRootPlane?: HomeRootPlane;
   homeDualShelf?: boolean;
   spotlightEntries: SpotlightEntry[];
@@ -34,6 +36,7 @@ export function FooterHints({
   gameSubcategory,
   gamesHubOpen,
   gamesRootPlane,
+  gamesDualShelf = true,
   homeRootPlane = "spotlight",
   homeDualShelf = false,
   spotlightEntries,
@@ -256,16 +259,16 @@ export function FooterHints({
               <ButtonA className="xmb-btn-icon" size={24} />
             )}
             <span>
-              {gamesRootPlane === "spotlight" && spotlightEntries[spotlightIndex]?.kind === "cloudResume"
+              {gamesDualShelf && gamesRootPlane === "spotlight" && spotlightEntries[spotlightIndex]?.kind === "cloudResume"
                 ? spotlightEntries[spotlightIndex].busy
                   ? "Please wait"
                   : "Resume session"
-                : gamesRootPlane === "spotlight" && spotlightEntryHasGame(spotlightEntries[spotlightIndex])
+                : gamesDualShelf && gamesRootPlane === "spotlight" && spotlightEntryHasGame(spotlightEntries[spotlightIndex])
                   ? "View in library"
                   : "Enter"}
             </span>
           </div>
-          {gamesRootPlane === "spotlight" && spotlightEntryHasGame(spotlightEntries[spotlightIndex]) ? (
+          {gamesDualShelf && gamesRootPlane === "spotlight" && spotlightEntryHasGame(spotlightEntries[spotlightIndex]) ? (
             <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>Options</span></div>
           ) : null}
           <div className="xmb-btn-hint"><span className="xmb-btn-keycap">L1</span> <span>Prev Section</span></div>

@@ -57,6 +57,14 @@ export function handleSettingsActivateAction(context: SettingsActivateContext): 
   }
   if (settingsSubcategory === "Theme") {
     const item = displayItems[selectedSettingIndex];
+    if (item?.id === "libraryGameBackdrop" && onSettingChange) {
+      onSettingChange(
+        "controllerLibraryGameBackdrop" as never,
+        !(settings.controllerLibraryGameBackdrop !== false) as never,
+      );
+      playUiSound("confirm");
+      return true;
+    }
     if (item?.id === "themeColor") {
       setLastThemeRootIndex(selectedSettingIndex);
       setSettingsSubcategory("ThemeColor");

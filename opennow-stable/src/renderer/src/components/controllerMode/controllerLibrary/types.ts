@@ -37,6 +37,7 @@ export interface ControllerLibraryPageProps {
     maxBitrateMbps?: number;
     controllerThemeStyle?: ControllerThemeStyle;
     controllerThemeColor?: { r: number; g: number; b: number };
+    controllerLibraryGameBackdrop?: boolean;
   };
   resolutionOptions?: string[];
   fpsOptions?: number[];

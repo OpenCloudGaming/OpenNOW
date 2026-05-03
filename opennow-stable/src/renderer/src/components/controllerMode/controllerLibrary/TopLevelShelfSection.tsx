@@ -75,7 +75,7 @@ export function TopLevelShelfSection({
     <div className="xmb-ps5-stack">
       <div className="xmb-ps5-focus-meta" aria-live="polite" key={focusMotionKey}>
         <h2 className="xmb-ps5-focus-title">{selectedTopLevelItemLabel}</h2>
-        {topCategory === "all" && gameSubcategory === "root" && gamesSpotlightPlane ? (
+        {topCategory === "all" && gameSubcategory === "root" && gamesDualShelf && gamesSpotlightPlane ? (
           <p className="xmb-ps5-focus-subtitle">
             {(() => {
               const se = spotlightEntries[spotlightIndex];

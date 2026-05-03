@@ -173,6 +173,11 @@ export interface Settings {
   controllerThemeStyle: ControllerThemeStyle;
   /** Controller-mode library background tint (applied per style preset) */
   controllerThemeColor: ControllerThemeRgb;
+  /**
+   * When true, controller library/hub/loading layers may show art from the focused game or shelf.
+   * Theme color/style presets still apply when false.
+   */
+  controllerLibraryGameBackdrop: boolean;
   /** When true, the app will automatically enter fullscreen when controller mode triggers it */
   autoFullScreen: boolean;
   favoriteGameIds: string[];

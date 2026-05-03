@@ -131,7 +131,7 @@ export function ControllerLibraryPage({
   const [ps5Row, setPs5Row] = useState<"top" | "main" | "detail">("main");
   const [detailRailIndex, setDetailRailIndex] = useState(0);
   const [librarySortId, setLibrarySortId] = useState<LibrarySortId>(() => readLibrarySortId());
-  const [gamesRootPlane, setGamesRootPlane] = useState<"spotlight" | "categories">("spotlight");
+  const [gamesRootPlane, setGamesRootPlane] = useState<"spotlight" | "categories">("categories");
   const [homeRootPlane, setHomeRootPlane] = useState<HomeRootPlane>("spotlight");
   const [spotlightIndex, setSpotlightIndex] = useState(0);
   const [optionsOpen, setOptionsOpen] = useState(false);
@@ -437,6 +437,11 @@ export function ControllerLibraryPage({
       Theme: [
         { id: "themeColor", label: "Color", value: `RGB ${themeRgb.r}, ${themeRgb.g}, ${themeRgb.b}` },
         { id: "themeStyle", label: "Style", value: CONTROLLER_THEME_STYLE_LABEL[themeStyleResolved] },
+        {
+          id: "libraryGameBackdrop",
+          label: "Match background to game",
+          value: (settings.controllerLibraryGameBackdrop !== false) ? "On" : "Off",
+        },
       ],
       ThemeColor: [
         { id: "themeR", label: "Red", value: `${themeRgb.r}` },
@@ -486,17 +491,6 @@ export function ControllerLibraryPage({
     }
     setSpotlightIndex((i) => Math.min(i, spotlightEntries.length - 1));
   }, [spotlightEntries.length]);
-
-  const hadCloudResumeSpotlightRef = useRef(false);
-  useEffect(() => {
-    const hasResume = spotlightEntries.some((e) => e.kind === "cloudResume");
-    if (hasResume && !hadCloudResumeSpotlightRef.current && topCategory === "all" && gameSubcategory === "root") {
-      setGamesRootPlane("spotlight");
-      setSpotlightIndex(0);
-    }
-    hadCloudResumeSpotlightRef.current = hasResume;
-  }, [spotlightEntries, topCategory, gameSubcategory]);
-
 
   const gamesHubDisplayGame = useMemo((): GameInfo | null => {
     if (!gamesHubOpen) return null;
@@ -559,10 +553,8 @@ export function ControllerLibraryPage({
       topCategory === "current" ||
       (topCategory === "media" && mediaSubcategory === "root") ||
       (topCategory === "all" && gameSubcategory === "root"));
-  const gamesDualShelf =
-    topCategory === "all" &&
-    gameSubcategory === "root" &&
-    (games.length > 0 || Boolean(cloudSessionResumable && onResumeCloudSession));
+  /** Games root: category row only (no Recently played / spotlight strip; that lives on Home). */
+  const gamesDualShelf = false;
   const homeDualShelf =
     topCategory === "current" && !inStreamMenu && spotlightEntries.length > 0;
 
@@ -602,7 +594,7 @@ export function ControllerLibraryPage({
       if (spotlightEntryHasGame(entry)) return entry.game.title;
       return "Recently played";
     }
-    if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight") {
+    if (topCategory === "all" && gameSubcategory === "root" && gamesDualShelf && gamesRootPlane === "spotlight") {
       const entry = spotlightEntries[spotlightIndex];
       if (entry?.kind === "cloudResume") return entry.title;
       if (spotlightEntryHasGame(entry)) return entry.game.title;
@@ -623,6 +615,7 @@ export function ControllerLibraryPage({
     gameSubcategory,
     mediaSubcategory,
     gamesRootPlane,
+    gamesDualShelf,
     homeDualShelf,
     homeRootPlane,
     spotlightEntries,
@@ -683,7 +676,7 @@ export function ControllerLibraryPage({
       if (spotlightEntryHasGame(entry)) return `home-spotlight-${entry.game.id}`;
       return `home-spotlight-empty-${spotlightIndex}`;
     }
-    if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight") {
+    if (topCategory === "all" && gameSubcategory === "root" && gamesDualShelf && gamesRootPlane === "spotlight") {
       const entry = spotlightEntries[spotlightIndex];
       if (entry?.kind === "cloudResume") return `spotlight-resume-${entry.busy ? "busy" : "idle"}`;
       if (spotlightEntryHasGame(entry)) return `spotlight-${entry.game.id}`;
@@ -702,6 +695,7 @@ export function ControllerLibraryPage({
     gamesHubDisplayGame?.id,
     spotlightEntries,
     spotlightIndex,
+    gamesDualShelf,
     selectedGame?.id,
     topLevelShelfIndex,
     mediaSubcategory,
@@ -739,7 +733,7 @@ export function ControllerLibraryPage({
   });
   useEffect(() => {
     if (topCategory !== "all") {
-      setGamesRootPlane("spotlight");
+      setGamesRootPlane("categories");
       setSpotlightIndex(0);
     }
   }, [topCategory]);
@@ -949,11 +943,19 @@ export function ControllerLibraryPage({
       : <ButtonY className={className} size={size} />;
   };
 
-  const heroBackdropUrl = useMemo(() => {
+  const libraryGameBackdropOn = settings.controllerLibraryGameBackdrop !== false;
+
+  const heroBackdropUrlRaw = useMemo(() => {
     if (topCategory === "current" && gamesHubOpen && gamesHubDisplayGame?.imageUrl) {
       return gamesHubDisplayGame.imageUrl;
     }
-    if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight" && spotlightEntries.length > 0) {
+    if (
+      topCategory === "all" &&
+      gameSubcategory === "root" &&
+      gamesDualShelf &&
+      gamesRootPlane === "spotlight" &&
+      spotlightEntries.length > 0
+    ) {
       const cur = spotlightEntries[spotlightIndex];
       if (cur?.kind === "cloudResume" && cur.coverUrl) return cur.coverUrl;
       if (spotlightEntryHasGame(cur) && cur.game.imageUrl) return cur.game.imageUrl;
@@ -990,6 +992,7 @@ export function ControllerLibraryPage({
     homeRootPlane,
     gamesHubOpen,
     gamesHubDisplayGame,
+    gamesDualShelf,
     spotlightEntries,
     spotlightIndex,
     selectedGame,
@@ -997,6 +1000,12 @@ export function ControllerLibraryPage({
     selectedMediaItem,
     mediaThumbById,
   ]);
+
+  const heroBackdropUrl = useMemo(() => {
+    if (libraryGameBackdropOn) return heroBackdropUrlRaw;
+    if (topCategory === "media") return heroBackdropUrlRaw;
+    return null;
+  }, [libraryGameBackdropOn, topCategory, heroBackdropUrlRaw]);
 
   const themeRgbForTrack = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
   const maxBitrateMbpsForTrack = settings.maxBitrateMbps ?? 75;
@@ -1069,8 +1078,10 @@ export function ControllerLibraryPage({
       currentTabGame={currentTabGame}
       inStreamMenu={inStreamMenu}
       endSessionConfirm={endSessionConfirm}
-      parallaxBackdropTiles={parallaxBackdropTiles}
+      parallaxBackdropTiles={libraryGameBackdropOn ? parallaxBackdropTiles : []}
       heroBackdropUrl={heroBackdropUrl}
+      loadingBackdropImageUrl={libraryGameBackdropOn ? currentTabGame?.imageUrl ?? null : null}
+      gameHubShowHeroBackdrop={libraryGameBackdropOn}
       settings={settings}
       subscriptionInfo={subscriptionInfo}
       sessionStartedAtMs={sessionStartedAtMs}

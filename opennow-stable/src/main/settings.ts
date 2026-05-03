@@ -83,6 +83,8 @@ export interface Settings {
   controllerThemeStyle: ControllerThemeStyle;
   /** Controller-mode library background tint */
   controllerThemeColor: ControllerThemeRgb;
+  /** When true, library/hub/loading may show game- or shelf-driven backdrop art */
+  controllerLibraryGameBackdrop: boolean;
   /** Auto-load controller library at startup when controller mode is enabled */
   autoLoadControllerLibrary: boolean;
   /** Automatically enter fullscreen when controller-mode triggers it */
@@ -172,6 +174,7 @@ const DEFAULT_SETTINGS: Settings = {
   controllerBackgroundAnimations: false,
   controllerThemeStyle: "aurora",
   controllerThemeColor: { r: 124, g: 241, b: 177 },
+  controllerLibraryGameBackdrop: true,
   autoLoadControllerLibrary: false,
   autoFullScreen: false,
   favoriteGameIds: [],

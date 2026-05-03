@@ -23,6 +23,8 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
     endSessionConfirm,
     parallaxBackdropTiles,
     heroBackdropUrl,
+    loadingBackdropImageUrl,
+    gameHubShowHeroBackdrop = true,
     settings,
     subscriptionInfo,
     sessionStartedAtMs,
@@ -98,7 +100,7 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
         <Ps5LoadingScreen
           title="Loading your library"
           subtitle="Please wait"
-          backdropImageUrl={currentTabGame?.imageUrl}
+          backdropImageUrl={loadingBackdropImageUrl ?? undefined}
         />
       </div>
     );
@@ -178,6 +180,7 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
           tiles={gamesHubTiles}
           focusIndex={gamesHubFocusIndex}
           inStreamMenu={inStreamMenu}
+          showHeroBackdrop={gameHubShowHeroBackdrop}
         />
       ) : null}
 
@@ -265,6 +268,7 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
         gameSubcategory={gameSubcategory}
         gamesHubOpen={gamesHubOpen}
         gamesRootPlane={gamesRootPlane}
+        gamesDualShelf={Boolean(gamesDualShelf)}
         homeRootPlane={homeRootPlane ?? "spotlight"}
         homeDualShelf={Boolean(homeDualShelf)}
         spotlightEntries={spotlightEntries}
