@@ -6,6 +6,7 @@ import { ButtonA, ButtonB, ButtonX, ButtonY, ButtonPSCross, ButtonPSCircle, Butt
 import { getStoreDisplayName } from "./GameCard";
 import { SessionElapsedIndicator, RemainingPlaytimeIndicator, CurrentClock } from "./ElapsedSessionIndicators";
 import { ControllerGameHub } from "./ControllerGameHub";
+import { Ps5LoadingScreen } from "./Ps5LoadingScreen";
 import { type PlaytimeStore, formatPlaytime, formatLastPlayed } from "../utils/usePlaytime";
 
 interface ControllerLibraryPageProps {
@@ -55,6 +56,12 @@ interface ControllerLibraryPageProps {
   sessionStartedAtMs?: number | null;
   isStreaming?: boolean;
   sessionCounterEnabled?: boolean;
+  /** When a cloud session can be continued (server ready, app idle), show a PS5-style resume tile in the Games spotlight row. */
+  cloudSessionResumable?: boolean;
+  cloudResumeTitle?: string | null;
+  cloudResumeCoverUrl?: string | null;
+  onResumeCloudSession?: () => void;
+  cloudResumeBusy?: boolean;
 }
 
 type Direction = "up" | "down" | "left" | "right";
@@ -71,8 +78,17 @@ type GamesHubReturnSnapshot = {
   selectedGameSubcategoryIndex: number;
   gamesRootPlane: "spotlight" | "categories";
   spotlightIndex: number;
-  restoreSelectedGameId: string;
+  /** Omitted when the hub was not opened from a game selection (e.g. cloud resume tile). */
+  restoreSelectedGameId?: string;
 };
+
+type SpotlightEntry =
+  | { kind: "cloudResume"; title: string; coverUrl: string | null; busy: boolean }
+  | { kind: "recent"; game: GameInfo | null };
+
+function spotlightEntryHasGame(entry: SpotlightEntry | undefined): entry is { kind: "recent"; game: GameInfo } {
+  return entry?.kind === "recent" && entry.game != null;
+}
 
 const LIBRARY_SORT_STORAGE_KEY = "opennow:controllerLibrarySort.v1";
 
@@ -191,6 +207,11 @@ export function ControllerLibraryPage({
   sessionStartedAtMs = null,
   isStreaming = false,
   sessionCounterEnabled = false,
+  cloudSessionResumable = false,
+  cloudResumeTitle = null,
+  cloudResumeCoverUrl = null,
+  onResumeCloudSession,
+  cloudResumeBusy = false,
 }: ControllerLibraryPageProps): JSX.Element {
   const [isEntering, setIsEntering] = useState(true);
   const initialCategoryIndex = (() => {
@@ -631,26 +652,75 @@ export function ControllerLibraryPage({
     });
   }, [games, playtimeData]);
 
-  const spotlightSlots = useMemo((): (GameInfo | null)[] => {
-    if (games.length === 0) return [];
+  const spotlightEntries = useMemo((): SpotlightEntry[] => {
+    const showResume = Boolean(cloudSessionResumable && onResumeCloudSession);
+    const recentCap = showResume ? Math.max(0, SPOTLIGHT_RECENT_COUNT - 1) : SPOTLIGHT_RECENT_COUNT;
+
     const lastPlayedMs = (gameId: string) => {
       const raw = playtimeData[gameId]?.lastPlayedAt;
       if (!raw) return 0;
       const ms = Date.parse(raw);
       return Number.isFinite(ms) ? ms : 0;
     };
-    const played = games
-      .filter((g) => lastPlayedMs(g.id) > 0)
-      .sort((a, b) => {
-        const d = lastPlayedMs(b.id) - lastPlayedMs(a.id);
-        if (d !== 0) return d;
-        return a.title.localeCompare(b.title);
-      })
-      .slice(0, SPOTLIGHT_RECENT_COUNT);
-    const slots: (GameInfo | null)[] = [...played];
-    while (slots.length < SPOTLIGHT_RECENT_COUNT) slots.push(null);
-    return slots;
-  }, [games, playtimeData]);
+
+    const played =
+      games.length === 0
+        ? []
+        : games
+            .filter((g) => lastPlayedMs(g.id) > 0)
+            .sort((a, b) => {
+              const d = lastPlayedMs(b.id) - lastPlayedMs(a.id);
+              if (d !== 0) return d;
+              return a.title.localeCompare(b.title);
+            })
+            .slice(0, recentCap);
+
+    const recentSlots: SpotlightEntry[] = played.map((g) => ({ kind: "recent" as const, game: g }));
+    while (recentSlots.length < recentCap) {
+      recentSlots.push({ kind: "recent", game: null });
+    }
+
+    if (!showResume) {
+      return recentSlots;
+    }
+
+    const resumeTitle = cloudResumeTitle?.trim() || "Cloud session";
+    return [
+      {
+        kind: "cloudResume" as const,
+        title: resumeTitle,
+        coverUrl: cloudResumeCoverUrl ?? null,
+        busy: Boolean(cloudResumeBusy),
+      },
+      ...recentSlots,
+    ];
+  }, [
+    games,
+    playtimeData,
+    cloudSessionResumable,
+    onResumeCloudSession,
+    cloudResumeTitle,
+    cloudResumeCoverUrl,
+    cloudResumeBusy,
+  ]);
+
+  useEffect(() => {
+    if (spotlightEntries.length === 0) {
+      setSpotlightIndex(0);
+      return;
+    }
+    setSpotlightIndex((i) => Math.min(i, spotlightEntries.length - 1));
+  }, [spotlightEntries.length]);
+
+  const hadCloudResumeSpotlightRef = useRef(false);
+  useEffect(() => {
+    const hasResume = spotlightEntries.some((e) => e.kind === "cloudResume");
+    if (hasResume && !hadCloudResumeSpotlightRef.current && topCategory === "all" && gameSubcategory === "root") {
+      setGamesRootPlane("spotlight");
+      setSpotlightIndex(0);
+    }
+    hadCloudResumeSpotlightRef.current = hasResume;
+  }, [spotlightEntries, topCategory, gameSubcategory]);
 
   const gameCategoryPreviewById = useMemo(() => {
     const isNonEmptyString = (value: string | undefined): value is string => typeof value === "string" && value.length > 0;
@@ -790,7 +860,10 @@ export function ControllerLibraryPage({
       topCategory === "current" ||
       (topCategory === "media" && mediaSubcategory === "root") ||
       (topCategory === "all" && gameSubcategory === "root"));
-  const gamesDualShelf = topCategory === "all" && gameSubcategory === "root" && games.length > 0;
+  const gamesDualShelf =
+    topCategory === "all" &&
+    gameSubcategory === "root" &&
+    (games.length > 0 || Boolean(cloudSessionResumable && onResumeCloudSession));
   const topLevelRowBehaviorActive = topLevelShelfActive && !(topCategory === "settings" && settingsSubcategory !== "root");
   const canEnterDetailRow = mediaShelfBrowseActive;
   const canEnterTopRow = topLevelRowBehaviorActive || gamesShelfBrowseActive || mediaShelfBrowseActive;
@@ -805,14 +878,15 @@ export function ControllerLibraryPage({
   const selectedTopLevelItemLabel = useMemo(() => {
     if (!topLevelShelfActive) return selectedCategoryLabel;
     if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight") {
-      const slot = spotlightSlots[spotlightIndex];
-      if (slot) return slot.title;
+      const entry = spotlightEntries[spotlightIndex];
+      if (entry?.kind === "cloudResume") return entry.title;
+      if (spotlightEntryHasGame(entry)) return entry.game.title;
       return "Recently played";
     }
     const active = displayItems[topLevelShelfIndex];
     if (topCategory === "all" && gameSubcategory === "root" && active?.label) return active.label;
     return selectedCategoryLabel;
-  }, [topLevelShelfActive, selectedCategoryLabel, displayItems, topLevelShelfIndex, topCategory, gameSubcategory, gamesRootPlane, spotlightSlots, spotlightIndex]);
+  }, [topLevelShelfActive, selectedCategoryLabel, displayItems, topLevelShelfIndex, topCategory, gameSubcategory, gamesRootPlane, spotlightEntries, spotlightIndex]);
   const detailRailItems = useMemo<Array<{ id: string; title: string; subtitle: string; imageUrl?: string }>>(() => {
     if (topCategory === "media" && mediaSubcategory !== "root") {
       const current = mediaAssetItems[selectedMediaIndex];
@@ -856,13 +930,15 @@ export function ControllerLibraryPage({
   }, [gamesHubTiles.length, selectedGame?.id]);
   const focusMotionKey = useMemo(() => {
     if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight") {
-      const slot = spotlightSlots[spotlightIndex];
-      return slot ? `spotlight-${slot.id}` : `spotlight-empty-${spotlightIndex}`;
+      const entry = spotlightEntries[spotlightIndex];
+      if (entry?.kind === "cloudResume") return `spotlight-resume-${entry.busy ? "busy" : "idle"}`;
+      if (spotlightEntryHasGame(entry)) return `spotlight-${entry.game.id}`;
+      return `spotlight-empty-${spotlightIndex}`;
     }
     if (topCategory === "all" && gameSubcategory !== "root") return `game-${selectedGame?.id ?? "none"}`;
     if (topCategory === "media" && mediaSubcategory !== "root") return `media-${selectedMediaIndex}-${mediaAssetItems[selectedMediaIndex]?.id ?? "none"}`;
     return `menu-${topCategory}-${topLevelShelfIndex}`;
-  }, [topCategory, gameSubcategory, gamesRootPlane, spotlightSlots, spotlightIndex, selectedGame?.id, topLevelShelfIndex, mediaSubcategory, selectedMediaIndex, mediaAssetItems]);
+  }, [topCategory, gameSubcategory, gamesRootPlane, spotlightEntries, spotlightIndex, selectedGame?.id, topLevelShelfIndex, mediaSubcategory, selectedMediaIndex, mediaAssetItems]);
   const selectedGameDescription = useMemo(() => {
     if (!selectedGame) return "";
     const description = selectedGame.longDescription?.trim() || selectedGame.description?.trim();
@@ -1016,7 +1092,7 @@ export function ControllerLibraryPage({
     gameSubcategory,
     gamesDualShelf,
     spotlightIndex,
-    spotlightSlots,
+    spotlightEntries,
   ]);
 
   const throttledOnSelectGame = useCallback((id: string) => onSelectGame(id), [onSelectGame]);
@@ -1249,7 +1325,7 @@ export function ControllerLibraryPage({
 
         if (isGamesRoot && gamesDualShelf && gamesRootPlane === "spotlight" && (direction === "left" || direction === "right")) {
           const delta = direction === "left" ? -1 : 1;
-          const next = Math.max(0, Math.min(spotlightSlots.length - 1, spotlightIndex + delta));
+          const next = Math.max(0, Math.min(spotlightEntries.length - 1, spotlightIndex + delta));
           if (next !== spotlightIndex) {
             playUiSound("move");
             setSpotlightIndex(next);
@@ -1448,7 +1524,7 @@ export function ControllerLibraryPage({
         }
       } else if (mediaShelfBrowseActive && mediaAssetItems[selectedMediaIndex]) {
         entries.push({ id: "openFolder", label: "Open folder" });
-      } else if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight" && spotlightSlots[spotlightIndex]) {
+      } else if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight" && spotlightEntryHasGame(spotlightEntries[spotlightIndex])) {
         entries.push({ id: "openLibrary", label: "View in library" });
       }
       if (entries.length === 0) return;
@@ -1500,7 +1576,8 @@ export function ControllerLibraryPage({
           return;
         }
         if (opt.id === "openLibrary") {
-          const g = spotlightSlots[spotlightIndex];
+          const entry = spotlightEntries[spotlightIndex];
+          const g = spotlightEntryHasGame(entry) ? entry.game : null;
           if (g) {
             gamesHubReturnSnapshotRef.current = {
               gameSubcategory: "root",
@@ -1722,23 +1799,35 @@ export function ControllerLibraryPage({
         playUiSound("confirm");
       } else if (topCategory === "all") {
         if (gameSubcategory === "root") {
-          if (gamesRootPlane === "spotlight" && spotlightSlots[spotlightIndex]) {
-            const g = spotlightSlots[spotlightIndex];
-            gamesHubReturnSnapshotRef.current = {
-              gameSubcategory: "root",
-              selectedGameSubcategoryIndex,
-              gamesRootPlane,
-              spotlightIndex,
-              restoreSelectedGameId: g.id,
-            };
-            setLastRootGameIndex(selectedGameSubcategoryIndex);
-            setGameSubcategory("all");
-            throttledOnSelectGame(g.id);
-            setGamesHubOpen(true);
-            setGamesHubFocusIndex(0);
-            setPs5Row("main");
-            playUiSound("confirm");
-            return;
+          if (gamesRootPlane === "spotlight") {
+            const entry = spotlightEntries[spotlightIndex];
+            if (entry?.kind === "cloudResume") {
+              if (!entry.busy && onResumeCloudSession) {
+                onResumeCloudSession();
+                playUiSound("confirm");
+              } else {
+                playUiSound("move");
+              }
+              return;
+            }
+            if (spotlightEntryHasGame(entry)) {
+              const g = entry.game;
+              gamesHubReturnSnapshotRef.current = {
+                gameSubcategory: "root",
+                selectedGameSubcategoryIndex,
+                gamesRootPlane,
+                spotlightIndex,
+                restoreSelectedGameId: g.id,
+              };
+              setLastRootGameIndex(selectedGameSubcategoryIndex);
+              setGameSubcategory("all");
+              throttledOnSelectGame(g.id);
+              setGamesHubOpen(true);
+              setGamesHubFocusIndex(0);
+              setPs5Row("main");
+              playUiSound("confirm");
+              return;
+            }
           }
           const item = displayItems[selectedGameSubcategoryIndex];
           if (item) {
@@ -1937,7 +2026,9 @@ export function ControllerLibraryPage({
             setSelectedGameSubcategoryIndex(snap.selectedGameSubcategoryIndex);
             setGamesRootPlane(snap.gamesRootPlane);
             setSpotlightIndex(snap.spotlightIndex);
-            throttledOnSelectGame(snap.restoreSelectedGameId);
+            if (snap.restoreSelectedGameId) {
+              throttledOnSelectGame(snap.restoreSelectedGameId);
+            }
           }
           return;
         }
@@ -2089,6 +2180,7 @@ export function ControllerLibraryPage({
     aspectRatioOptions,
     currentStreamingGame,
     onResumeGame,
+    onResumeCloudSession,
     onCloseGame,
     onExitControllerMode,
     onExitApp,
@@ -2110,7 +2202,7 @@ export function ControllerLibraryPage({
     optionsEntries.length,
     gamesRootPlane,
     spotlightIndex,
-    spotlightSlots,
+    spotlightEntries,
     gamesDualShelf,
     favoriteGameIdSet,
     microphoneDevices,
@@ -2142,11 +2234,15 @@ export function ControllerLibraryPage({
     ? mediaAssetItems[selectedMediaIndex] ?? null
     : null;
   const heroBackdropUrl = useMemo(() => {
-    if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight" && spotlightSlots.length > 0) {
-      const cur = spotlightSlots[spotlightIndex];
-      if (cur?.imageUrl) return cur.imageUrl;
-      const fallback = spotlightSlots.find((g) => g?.imageUrl);
-      return fallback?.imageUrl ?? null;
+    if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight" && spotlightEntries.length > 0) {
+      const cur = spotlightEntries[spotlightIndex];
+      if (cur?.kind === "cloudResume" && cur.coverUrl) return cur.coverUrl;
+      if (spotlightEntryHasGame(cur) && cur.game.imageUrl) return cur.game.imageUrl;
+      for (const e of spotlightEntries) {
+        if (e.kind === "cloudResume" && e.coverUrl) return e.coverUrl;
+        if (e.kind === "recent" && e.game?.imageUrl) return e.game.imageUrl;
+      }
+      return null;
     }
     if (topCategory === "all") return selectedGame?.imageUrl ?? null;
     if (topCategory === "current") return currentStreamingGame?.imageUrl ?? null;
@@ -2157,7 +2253,7 @@ export function ControllerLibraryPage({
     }
     if (currentStreamingGame?.imageUrl) return currentStreamingGame.imageUrl;
     return selectedGame?.imageUrl ?? null;
-  }, [topCategory, gameSubcategory, gamesRootPlane, spotlightSlots, spotlightIndex, selectedGame, currentStreamingGame, selectedMediaItem, mediaThumbById]);
+  }, [topCategory, gameSubcategory, gamesRootPlane, spotlightEntries, spotlightIndex, selectedGame, currentStreamingGame, selectedMediaItem, mediaThumbById]);
   const themeRgbResolved = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
   const wrapperThemeVars = {
     "--xmb-theme-r": String(themeRgbResolved.r),
@@ -2284,7 +2380,20 @@ export function ControllerLibraryPage({
     maxBitrateMbpsForTrack,
   ]);
 
-  if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") return <div className={wrapperClassNameWithRow} style={wrapperThemeVars}><div className="xmb-bg-layer"><div className="xmb-bg-gradient" /></div><div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh'}}>Loading...</div></div>;
+  if (isLoading && topCategory !== "settings" && topCategory !== "current" && topCategory !== "media") {
+    return (
+      <div className={wrapperClassNameWithRow} style={wrapperThemeVars}>
+        <div className="xmb-bg-layer">
+          <div className="xmb-bg-gradient" />
+        </div>
+        <Ps5LoadingScreen
+          title="Loading your library"
+          subtitle="Please wait"
+          backdropImageUrl={currentStreamingGame?.imageUrl}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className={wrapperClassNameWithRow} style={wrapperThemeVars}>
@@ -2487,9 +2596,18 @@ export function ControllerLibraryPage({
             <h2 className="xmb-ps5-focus-title">{selectedTopLevelItemLabel}</h2>
             {topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight" ? (
               <p className="xmb-ps5-focus-subtitle">
-                {spotlightSlots[spotlightIndex]
-                  ? "Recently played · Enter opens this title in your library"
-                  : "Recently played · Empty slot — play games to fill your shelf"}
+                {(() => {
+                  const se = spotlightEntries[spotlightIndex];
+                  if (se?.kind === "cloudResume") {
+                    return se.busy
+                      ? "Resuming your cloud session…"
+                      : "Active cloud session · Enter continues from where you left off";
+                  }
+                  if (spotlightEntryHasGame(se)) {
+                    return "Recently played · Enter opens this title in your library";
+                  }
+                  return "Recently played · Empty slot — play games to fill your shelf";
+                })()}
               </p>
             ) : null}
             {topCategory === "current" && displayItems[topLevelShelfIndex]?.id === "resume" && currentStreamingGame ? (
@@ -2531,7 +2649,9 @@ export function ControllerLibraryPage({
                 <div
                   className={`xmb-ps5-shelf-label-row xmb-ps5-shelf-label-row--spotlight ${gamesRootPlane === "spotlight" ? "xmb-ps5-shelf-label-row--active" : ""}`}
                 >
-                  <span className="xmb-ps5-shelf-label">Recently played</span>
+                  <span className="xmb-ps5-shelf-label">
+                    {cloudSessionResumable && onResumeCloudSession ? "Resume & recently played" : "Recently played"}
+                  </span>
                 </div>
                 <div className="xmb-ps5-shelf-viewport xmb-ps5-shelf-viewport--spotlight">
                   <div
@@ -2541,8 +2661,31 @@ export function ControllerLibraryPage({
                     aria-label="Recently played games"
                     style={{ transform: `translateX(${spotlightShelfTranslateX}px)` }}
                   >
-                    {spotlightSlots.map((game, idx) => {
+                    {spotlightEntries.map((entry, idx) => {
                       const isActive = gamesRootPlane === "spotlight" && idx === spotlightIndex;
+                      if (entry.kind === "cloudResume") {
+                        return (
+                          <div
+                            key="spotlight-cloud-resume"
+                            className={`xmb-ps5-tile xmb-ps5-tile--spotlight xmb-ps5-tile--spotlight-resume ${isActive ? "active" : ""} ${entry.busy ? "xmb-ps5-tile--spotlight-resume-busy" : ""}`.trim()}
+                            role="option"
+                            aria-selected={isActive}
+                            aria-label={`Resume ${entry.title}`}
+                          >
+                            <div className="xmb-ps5-tile-frame">
+                              {entry.coverUrl ? (
+                                <img src={entry.coverUrl} alt="" className="xmb-ps5-tile-cover" {...SHELF_IMAGE_PROPS} />
+                              ) : (
+                                <div className="xmb-ps5-tile-cover xmb-ps5-tile-cover--placeholder" />
+                              )}
+                              <div className="xmb-ps5-spotlight-resume-badge" aria-hidden>
+                                <span className="xmb-ps5-spotlight-resume-label">{entry.busy ? "Connecting…" : "Resume"}</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+                      const game = entry.game;
                       const key = game ? game.id : `recent-empty-${idx}`;
                       return (
                         <div
@@ -2946,9 +3089,17 @@ export function ControllerLibraryPage({
               ) : (
                 <ButtonA className="xmb-btn-icon" size={24} />
               )}
-              <span>{gamesRootPlane === "spotlight" && spotlightSlots[spotlightIndex] ? "View in library" : "Enter"}</span>
+              <span>
+                {gamesRootPlane === "spotlight" && spotlightEntries[spotlightIndex]?.kind === "cloudResume"
+                  ? spotlightEntries[spotlightIndex].busy
+                    ? "Please wait"
+                    : "Resume session"
+                  : gamesRootPlane === "spotlight" && spotlightEntryHasGame(spotlightEntries[spotlightIndex])
+                    ? "View in library"
+                    : "Enter"}
+              </span>
             </div>
-            {gamesRootPlane === "spotlight" && spotlightSlots[spotlightIndex] ? (
+            {gamesRootPlane === "spotlight" && spotlightEntryHasGame(spotlightEntries[spotlightIndex]) ? (
               <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>Options</span></div>
             ) : null}
             <div className="xmb-btn-hint">

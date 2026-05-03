@@ -7782,6 +7782,41 @@ button.game-card-store-chip.owned.active:hover {
   );
 }
 
+/* Cloud “Resume” tile (PS5-style ribbon over poster) */
+.xmb-ps5-tile--spotlight-resume .xmb-ps5-tile-frame {
+  position: relative;
+}
+
+.xmb-ps5-spotlight-resume-badge {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 10px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 2px;
+  background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.62) 42%, rgba(0, 0, 0, 0.88) 100%);
+  border-radius: 0 0 12px 12px;
+  pointer-events: none;
+}
+
+.xmb-ps5-spotlight-resume-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.96);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+}
+
+.xmb-ps5-tile--spotlight-resume-busy {
+  opacity: 0.65;
+  filter: saturate(0.85);
+}
+
 /* Spotlight covers use same 2:3 poster box; placeholders must not force a taller min than the frame */
 .xmb-ps5-tile--spotlight .xmb-ps5-tile-frame--placeholder,
 .xmb-ps5-tile--spotlight .xmb-ps5-tile-cover--placeholder {
@@ -9012,22 +9047,148 @@ button.game-card-store-chip.owned.active:hover {
   color: var(--accent);
 }
 
-/* ---------- Controller Stream Loading (PS3-Style) ---------- */
+/* ---------- PS5 system loading (three-dot loader, black field) ---------- */
+@keyframes ps5-dot-pulse {
+  0%,
+  100%,
+  80% {
+    opacity: 0.32;
+    transform: scale(0.88);
+  }
+
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.ps5-load-screen {
+  position: relative;
+  z-index: 2;
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #000000;
+}
+
+.ps5-load-screen-hero {
+  position: absolute;
+  inset: -14%;
+  z-index: 0;
+  background-size: cover;
+  background-position: center center;
+  filter: blur(64px) saturate(1.05) brightness(0.38);
+  transform: scale(1.08);
+  pointer-events: none;
+}
+
+/* Solid blackout like PS5 activity / game handoff loading */
+.ps5-load-screen-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: #000000;
+  pointer-events: none;
+}
+
+.ps5-load-screen--art .ps5-load-screen-scrim {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0.88) 55%, #000000 100%);
+}
+
+.ps5-load-screen-center {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(16px, 2.5vh, 24px);
+  padding: 40px 32px;
+}
+
+.ps5-load-screen-text-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: min(28rem, 92vw);
+  text-align: center;
+}
+
+.ps5-load-screen-heading {
+  margin: 0;
+  font-size: clamp(1.35rem, 3.8vw, 1.85rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: #fff;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.55);
+}
+
+.ps5-load-screen-status {
+  margin: 0;
+  font-size: clamp(0.9rem, 2.1vw, 1.05rem);
+  font-weight: 400;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.55);
+  letter-spacing: 0.02em;
+}
+
+.ps5-load-dots {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+.ps5-load-dots--lg {
+  gap: 18px;
+}
+
+.ps5-load-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ffffff;
+  animation: ps5-dot-pulse 1.2s cubic-bezier(0.45, 0.05, 0.25, 1) infinite;
+}
+
+.ps5-load-dots--lg .ps5-load-dot {
+  width: 9px;
+  height: 9px;
+}
+
+.ps5-load-dot:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.ps5-load-dot:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.ps5-load-dot:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ps5-load-dot {
+    animation-duration: 2s;
+    opacity: 0.85;
+    transform: none;
+  }
+}
+
+/* ---------- Controller stream loading (launch / queue / switch) ---------- */
 @keyframes csl-fade-in {
   from {
     opacity: 0;
   }
   to {
     opacity: 1;
-  }
-}
-
-@keyframes csl-fade-out {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
   }
 }
 
@@ -9042,24 +9203,6 @@ button.game-card-store-chip.owned.active:hover {
   }
 }
 
-@keyframes csl-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes csl-pulse {
-  0%, 100% {
-    opacity: 0.6;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
 .controller-stream-loading {
   position: fixed;
   top: 0;
@@ -9070,7 +9213,12 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* PS5 system UI: neutral / white, not OpenNOW accent green */
+  --accent: rgba(255, 255, 255, 0.92);
+  --ink: #f2f3f5;
+  --ink-soft: rgba(255, 255, 255, 0.62);
+  --ink-muted: rgba(255, 255, 255, 0.42);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
 .csl-backdrop {
@@ -9079,154 +9227,75 @@ button.game-card-store-chip.owned.active:hover {
   left: 0;
   right: 0;
   bottom: 0;
-  background: transparent;
+  background: rgba(0, 0, 0, 0.94);
   animation: csl-fade-in 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
-/* Ensure XMB ribbon background sits behind the loading UI */
-.controller-stream-loading .xmb-wrapper {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-}
-.controller-stream-loading .xmb-bg-layer {
-  z-index: 0;
-}
 .controller-stream-loading .csl-backdrop {
   z-index: 1;
 }
 
 .csl-content-wrapper {
   position: relative;
-  z-index: 2;
+  z-index: 4;
   width: 100%;
   height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 60px;
+  padding: clamp(32px, 6vh, 72px) clamp(24px, 5vw, 56px);
   animation: csl-fade-in 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both;
 }
 
 .csl-content {
-  display: grid;
-  grid-template-columns: 500px 1fr;
-  gap: 80px;
-  max-width: 1400px;
   width: 100%;
-  height: auto;
-  align-items: center;
+  max-width: min(560px, 100%);
+  margin: 0 auto;
 }
 
-/* Poster Section (Left) */
-.csl-poster-section {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  perspective: 1200px;
-}
-
-.csl-poster {
-  width: 100%;
-  aspect-ratio: 9 / 16;
-  object-fit: cover;
-  border-radius: 16px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7), 0 0 60px rgba(88, 217, 138, 0.15);
-  animation: csl-content-slide-up 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.4s both;
-  border: 1px solid rgba(88, 217, 138, 0.2);
-}
-
-.csl-poster-placeholder {
-  width: 100%;
-  aspect-ratio: 9 / 16;
-  background: linear-gradient(135deg, rgba(88, 217, 138, 0.1) 0%, rgba(88, 217, 138, 0.05) 100%);
-  border-radius: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(88, 217, 138, 0.3);
-  border: 2px solid rgba(88, 217, 138, 0.1);
-}
-
-/* Info Section (Right) */
 .csl-info-section {
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  align-items: center;
+  gap: clamp(20px, 3vh, 28px);
+  width: 100%;
+  text-align: center;
   color: var(--ink);
   animation: csl-content-slide-up 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.3s both;
 }
 
-.csl-title-container {
+.csl-load-dots-wrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: clamp(8px, 1.5vh, 16px);
+}
+
+.csl-title-stack {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
 }
 
 .csl-title {
-  font-size: 3.5rem;
-  font-weight: 700;
+  font-size: clamp(1.75rem, 5vw, 2.75rem);
+  font-weight: 600;
   letter-spacing: -0.02em;
-  line-height: 1.1;
+  line-height: 1.12;
   margin: 0;
   color: #fff;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
 }
 
-.csl-description-container {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 120px;
-  overflow: hidden;
-}
-
-.csl-description {
-  font-size: 1rem;
-  font-weight: 400;
-  line-height: 1.5;
-  color: var(--ink-soft);
+.csl-status-line {
   margin: 0;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-}
-
-.csl-playtime-container {
-  display: flex;
-  gap: 12px;
-  align-items: baseline;
-  font-size: 1rem;
-}
-
-.csl-playtime-label {
-  color: var(--ink-soft);
-  font-weight: 500;
-}
-
-.csl-playtime-value {
-  color: var(--accent);
-  font-weight: 700;
-  font-size: 1.2rem;
-}
-
-/* Status Section */
-.csl-status-container {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 24px;
-  margin-top: 16px;
-  padding-top: 24px;
-  border-top: 1px solid rgba(88, 217, 138, 0.1);
-}
-
-.csl-status-message {
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: var(--accent);
-  animation: csl-pulse 2s ease-in-out infinite;
+  max-width: 28rem;
+  font-size: clamp(0.9rem, 2.1vw, 1.05rem);
+  font-weight: 400;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.55);
+  letter-spacing: 0.02em;
 }
 
 .csl-ad-panel {
@@ -9234,11 +9303,11 @@ button.game-card-store-chip.owned.active:hover {
   grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   width: min(100%, 420px);
-  align-self: flex-start;
+  align-self: center;
   padding: 16px 18px;
   border-radius: 18px;
-  border: 1px solid rgba(88, 217, 138, 0.18);
-  background: rgba(6, 15, 10, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(16, 16, 20, 0.72);
 }
 
 .csl-ad-panel--paused {
@@ -9249,7 +9318,9 @@ button.game-card-store-chip.owned.active:hover {
 .csl-ad-copy {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 8px;
+  text-align: center;
 }
 
 .csl-ad-chip {
@@ -9257,8 +9328,8 @@ button.game-card-store-chip.owned.active:hover {
   width: fit-content;
   padding: 5px 10px;
   border-radius: 999px;
-  background: rgba(88, 217, 138, 0.16);
-  color: var(--accent);
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.82);
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -9335,6 +9406,7 @@ button.game-card-store-chip.owned.active:hover {
   flex-direction: column;
   gap: 8px;
   width: min(100%, 420px);
+  margin: 0 auto;
   padding: 16px 18px;
   border-radius: 18px;
   border: 1px solid rgba(255, 119, 119, 0.24);
@@ -9361,116 +9433,6 @@ button.game-card-store-chip.owned.active:hover {
   text-transform: uppercase;
 }
 
-/* Progress Indicator */
-.csl-progress-indicator {
-  display: grid;
-  grid-template-columns: auto 1fr auto 1fr auto;
-  gap: 12px;
-  align-items: center;
-  width: 100%;
-}
-
-.csl-progress-step {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  transition: all 300ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.csl-progress-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: rgba(88, 217, 138, 0.2);
-  border: 2px solid rgba(88, 217, 138, 0.3);
-  transition: all 300ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.csl-progress-step.active .csl-progress-dot {
-  background: var(--accent);
-  border-color: var(--accent);
-  box-shadow: 0 0 12px rgba(88, 217, 138, 0.5);
-}
-
-.csl-progress-step.completed .csl-progress-dot {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.csl-progress-step.inactive .csl-progress-dot {
-  background: rgba(88, 217, 138, 0.1);
-  border-color: rgba(88, 217, 138, 0.15);
-}
-
-.csl-progress-label {
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--ink-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  white-space: nowrap;
-  transition: all 300ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.csl-progress-step.active .csl-progress-label {
-  color: var(--accent);
-}
-
-.csl-progress-step.completed .csl-progress-label {
-  color: var(--accent);
-  opacity: 0.7;
-}
-
-.csl-progress-step.inactive .csl-progress-label {
-  color: var(--ink-muted);
-}
-
-.csl-progress-connector {
-  height: 2px;
-  background: linear-gradient(90deg, rgba(88, 217, 138, 0.3) 0%, rgba(88, 217, 138, 0.2) 100%);
-  transition: all 300ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.csl-progress-connector.inactive {
-  background: rgba(88, 217, 138, 0.1);
-}
-
-/* Spinner */
-.csl-spinner-container {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 60px;
-}
-
-.csl-spinner {
-  animation: csl-spin 2s linear infinite;
-  color: var(--accent);
-  filter: drop-shadow(0 0 8px rgba(88, 217, 138, 0.4));
-}
-
-/* Responsive Design */
-@media (max-width: 1200px) {
-  .csl-content {
-    grid-template-columns: 1fr;
-    gap: 48px;
-  }
-
-  .csl-poster-section {
-    max-width: 350px;
-    margin: 0 auto;
-  }
-
-  .csl-poster {
-    max-width: 100%;
-  }
-
-  .csl-title {
-    font-size: 2.5rem;
-  }
-}
-
 @media (max-width: 900px) {
   .settings-thanks-grid {
     grid-template-columns: 1fr;
@@ -9490,23 +9452,15 @@ button.game-card-store-chip.owned.active:hover {
     padding: 40px 24px;
   }
 
-  .csl-content {
-    gap: 32px;
-  }
-
   .csl-info-section {
     gap: 24px;
   }
 
   .csl-title {
-    font-size: 2rem;
+    font-size: 1.65rem;
   }
 
-  .csl-description {
-    font-size: 0.95rem;
-  }
-
-  .csl-status-message {
-    font-size: 1.1rem;
+  .csl-status-line {
+    font-size: 0.88rem;
   }
 }

@@ -2605,6 +2605,19 @@ export function App(): JSX.Element {
       return;
     }
 
+    // Mirror attemptSessionRecovery: tear down WebRTC + signaling before connecting to a new edge.
+    // Avoids stale PeerConnection/video vs migrated CloudMatch connectionInfo (intermittent black screen on resume).
+    const reconnectSource = expectedRecoveryGeneration !== undefined ? "recovery" : "resume";
+    console.log(`[Stream] ${reconnectSource}: teardown WebRTC + signaling before reconnect`, {
+      sessionId: claimed.sessionId,
+      signalingServer: claimed.signalingServer,
+      signalingUrl: claimed.signalingUrl,
+      mediaConnectionInfo: claimed.mediaConnectionInfo,
+    });
+    clientRef.current?.dispose();
+    clientRef.current = null;
+    await window.openNow.disconnectSignaling().catch(() => {});
+
     setSession(claimed);
     sessionRef.current = claimed;
     setQueuePosition(undefined);
@@ -2625,6 +2638,13 @@ export function App(): JSX.Element {
     if (!existingSession.serverIp) {
       throw new Error("Active session is missing server address. Start the game again to create a new session.");
     }
+
+    console.log("[Resume] claimAndConnectSession: invoking claimSession", {
+      sessionId: existingSession.sessionId,
+      serverIp: existingSession.serverIp,
+      status: existingSession.status,
+      appId: existingSession.appId,
+    });
 
     const matchedContext = findGameContextForSession(existingSession);
     if (matchedContext) {
@@ -2881,6 +2901,13 @@ export function App(): JSX.Element {
             setLaunchError(null);
             setStreamStatus("streaming");
             resetSignalingRecoveryState({ keepExplicitShutdown: true });
+            console.log(
+              "[Stream] Offer applied; use [WebRTC] logs for ICE/video dimensions. signalingServer=%s media=%s",
+              activeSession.signalingServer,
+              activeSession.mediaConnectionInfo
+                ? `${activeSession.mediaConnectionInfo.ip}:${activeSession.mediaConnectionInfo.port}`
+                : "n/a",
+            );
           }
         } else if (event.type === "remote-ice") {
           await clientRef.current?.addRemoteCandidate(event.candidate);
@@ -3859,6 +3886,24 @@ export function App(): JSX.Element {
     return null;
   }, [gameTitleByAppId, navbarActiveSession, session?.sessionId, streamingGame?.title]);
 
+  const controllerCloudResumeCoverUrl = useMemo(() => {
+    if (!navbarActiveSession) return null;
+    const ctx = findGameContextForSession(navbarActiveSession);
+    return ctx?.game?.imageUrl ?? null;
+  }, [findGameContextForSession, navbarActiveSession]);
+
+  const controllerCloudSessionResumable = useMemo(
+    () =>
+      Boolean(
+        streamStatus === "idle"
+        && selectedProvider
+        && navbarActiveSession?.serverIp
+        && !isResumingNavbarSession
+        && !isTerminatingNavbarSession
+      ),
+    [isResumingNavbarSession, isTerminatingNavbarSession, navbarActiveSession, selectedProvider, streamStatus],
+  );
+
   const effectiveAdState = getEffectiveAdState(session, subscriptionInfo, authSession);
   const activeQueueAd = useMemo(
     () => getActiveQueueAd(effectiveAdState, activeQueueAdId),
@@ -3927,7 +3972,7 @@ export function App(): JSX.Element {
   const showControllerLaunchLoading =
     !isSwitchingGame
     && settings.controllerMode
-    && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming" && streamStatus !== "connecting"));
+    && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming"));
   const showDesktopLaunchLoading =
     !isSwitchingGame
     && !settings.controllerMode
@@ -4006,14 +4051,13 @@ export function App(): JSX.Element {
               void releasePointerLockIfNeeded();
             }}
             allowEscapeToExitFullscreen={settings.allowEscapeToExitFullscreen}
+            hideConnectingOverlay={settings.controllerMode}
           />
         )}
-        {isSwitchingGame && settings.controllerMode && streamStatus !== "connecting" && (
+        {isSwitchingGame && settings.controllerMode && (
           <ControllerStreamLoading
             gameTitle={pendingSwitchGameTitle ?? streamingGame?.title ?? "Game"}
-            gamePoster={pendingSwitchGameCover ?? streamingGame?.imageUrl}
-            gameDescription={pendingSwitchGameDescription ?? streamingGame?.description}
-            status={switchingPhase === "cleaning" ? "setup" : "starting"}
+            status={loadingStatus}
             queuePosition={queuePosition}
             adState={effectiveAdState}
             activeAd={activeQueueAd}
@@ -4029,9 +4073,6 @@ export function App(): JSX.Element {
             }
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             adPreviewRef={queueAdPreviewRef}
-            playtimeData={playtime}
-            gameId={pendingSwitchGameId ?? streamingGame?.id}
-            enableBackgroundAnimations={settings.controllerBackgroundAnimations}
           />
         )}
         {isSwitchingGame && !settings.controllerMode && (
@@ -4080,6 +4121,13 @@ export function App(): JSX.Element {
               onOpenSettings={() => setCurrentPage("settings")}
               currentStreamingGame={streamingGame}
               onResumeGame={() => setControllerOverlayOpen(false)}
+              cloudSessionResumable={controllerCloudSessionResumable}
+              cloudResumeTitle={activeSessionGameTitle}
+              cloudResumeCoverUrl={controllerCloudResumeCoverUrl}
+              onResumeCloudSession={() => {
+                void handleResumeFromNavbar();
+              }}
+              cloudResumeBusy={isResumingNavbarSession}
               onCloseGame={async () => {
                 setControllerOverlayOpen(false);
                 // allow overlay close animation to play
@@ -4123,8 +4171,6 @@ export function App(): JSX.Element {
         {showControllerLaunchLoading && (
           <ControllerStreamLoading
             gameTitle={streamingGame?.title ?? "Game"}
-            gamePoster={streamingGame?.imageUrl}
-            gameDescription={streamingGame?.description}
             status={loadingStatus}
             queuePosition={queuePosition}
             adState={effectiveAdState}
@@ -4141,9 +4187,6 @@ export function App(): JSX.Element {
             }
             onAdPlaybackEvent={handleQueueAdPlaybackEvent}
             adPreviewRef={queueAdPreviewRef}
-            playtimeData={playtime}
-            gameId={streamingGame?.id}
-            enableBackgroundAnimations={settings.controllerBackgroundAnimations}
           />
         )}
         {showDesktopLaunchLoading && (
@@ -4262,6 +4305,13 @@ export function App(): JSX.Element {
               onOpenSettings={() => setCurrentPage("settings")}
               currentStreamingGame={streamingGame}
               onResumeGame={handlePlayGame}
+              cloudSessionResumable={controllerCloudSessionResumable}
+              cloudResumeTitle={activeSessionGameTitle}
+              cloudResumeCoverUrl={controllerCloudResumeCoverUrl}
+              onResumeCloudSession={() => {
+                void handleResumeFromNavbar();
+              }}
+              cloudResumeBusy={isResumingNavbarSession}
               onCloseGame={handlePromptedStopStream}
               pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
