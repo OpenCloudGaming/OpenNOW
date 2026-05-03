@@ -74,6 +74,7 @@ export function TopLevelMenuTrack({
             className={`xmb-ps5-menu-tile ${isActive ? "active" : ""} ${isCurrentResumeTile ? "xmb-ps5-menu-tile--resume" : ""} ${isSettingsTile ? "xmb-ps5-menu-tile--settings" : ""} ${isSettingsTile && settingsSubcategory === "root" ? "xmb-ps5-menu-tile--settings-root" : ""}`}
             role="option"
             aria-selected={isActive}
+            {...(isCurrentResumeTile ? { "aria-label": item.label } : {})}
           >
             {isCurrentResumeTile ? (
               <div className="xmb-ps5-menu-resume-preview" aria-hidden>
@@ -83,7 +84,7 @@ export function TopLevelMenuTrack({
                   <div className="xmb-ps5-menu-resume-image xmb-ps5-menu-resume-image--placeholder" />
                 )}
                 <div className="xmb-ps5-menu-resume-overlay">
-                  <span className="xmb-ps5-menu-resume-badge">Live Snapshot</span>
+                  <span className="xmb-ps5-menu-resume-badge">Snapshot</span>
                 </div>
               </div>
             ) : null}
@@ -99,7 +100,7 @@ export function TopLevelMenuTrack({
                 ))}
               </div>
             ) : null}
-            <div className="xmb-ps5-menu-title">{item.label}</div>
+            {isCurrentResumeTile ? null : <div className="xmb-ps5-menu-title">{item.label}</div>}
             {item.value ? (
               <div className="xmb-ps5-menu-meta">
                 {item.id === "bandwidth" && settingsSubcategory !== "root" ? (

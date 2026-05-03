@@ -137,7 +137,7 @@ export function ControllerLibraryPage({
   const [gamesHubFocusIndex, setGamesHubFocusIndex] = useState(0);
   /** Local captures for the focused game; loaded when hub opens so Media tab need not be visited first */
   const [gameHubScreenshotUrls, setGameHubScreenshotUrls] = useState<string[]>([]);
-  /** Random capture for Home "Live Snapshot" resume tile; falls back to poster in TopLevelMenuTrack */
+  /** Random capture for Home Snapshot resume tile; falls back to poster in TopLevelMenuTrack */
   const [homeResumeSnapshotUrl, setHomeResumeSnapshotUrl] = useState<string | null>(null);
   const gamesHubReturnSnapshotRef = useRef<GamesHubReturnSnapshot | null>(null);
   const spotlightTrackRef = useRef<HTMLDivElement>(null);
