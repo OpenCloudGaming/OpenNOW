@@ -21,7 +21,6 @@ export interface ControllerLibraryPageProps {
   onResumeGame?: (game: GameInfo) => void;
   onCloseGame?: () => void;
   onExitApp?: () => void;
-  pendingSwitchGameCover?: string | null;
   settings?: {
     resolution?: string;
     fps?: number;
@@ -47,7 +46,6 @@ export interface ControllerLibraryPageProps {
   onExitControllerMode?: () => void;
   sessionStartedAtMs?: number | null;
   isStreaming?: boolean;
-  sessionCounterEnabled?: boolean;
   inStreamMenu?: boolean;
   streamMenuVolume?: number;
   onStreamMenuVolumeChange?: (volume01: number) => void;

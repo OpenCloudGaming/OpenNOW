@@ -60,6 +60,7 @@ export function createActionHandlers(
     codecOptions,
     aspectRatioOptions,
     currentStreamingGame,
+    currentTabGame,
     onResumeGame,
     onResumeCloudSession,
     onCloseGame,
@@ -309,8 +310,8 @@ export function createActionHandlers(
 
     if (topCategory === "current") {
       const item = displayItems[selectedSettingIndex];
-      if (item?.id === "resume" && currentStreamingGame && onResumeGame) {
-        onResumeGame(currentStreamingGame);
+      if (item?.id === "resume" && currentTabGame && onResumeGame) {
+        onResumeGame(currentTabGame);
         playUiSound("confirm");
         return;
       }

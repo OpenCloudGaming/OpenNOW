@@ -57,7 +57,7 @@ export function TopLevelMenuTrack({
       className={`xmb-ps5-shelf-track xmb-ps5-shelf-track--menu ${topCategory === "all" && gameSubcategory === "root" ? "xmb-ps5-shelf-track--games-root" : ""} ${topCategory === "settings" ? "xmb-ps5-shelf-track--settings" : ""}`}
       role="listbox"
       aria-label={
-        topCategory === "current" ? "Current game actions" : topCategory === "settings" ? "Controller settings" : topCategory === "all" ? "Game categories" : "Media categories"
+        topCategory === "current" ? "Home actions" : topCategory === "settings" ? "Controller settings" : topCategory === "all" ? "Game categories" : "Media categories"
       }
       style={{ transform: `translateX(${menuShelfTranslateX}px)` }}
     >

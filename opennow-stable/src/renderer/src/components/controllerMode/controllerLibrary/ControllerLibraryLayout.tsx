@@ -6,7 +6,6 @@ import { LIBRARY_SORT_LABEL } from "./constants";
 import { AllGamesBrowseSection } from "./AllGamesBrowseSection";
 import { TopLevelShelfSection } from "./TopLevelShelfSection";
 import { MediaHubSection } from "./MediaHubSection";
-import { CurrentDetailPanel } from "./CurrentDetailPanel";
 import { DetailRail } from "./DetailRail";
 import { OptionsSheet } from "./OptionsSheet";
 import { FooterHints } from "./FooterHints";
@@ -19,6 +18,7 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
     wrapperClassNameWithRow,
     wrapperThemeVars,
     currentStreamingGame,
+    currentTabGame,
     inStreamMenu,
     endSessionConfirm,
     parallaxBackdropTiles,
@@ -70,11 +70,6 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
     mediaHubSlots,
     selectedMediaIndex,
     mediaThumbById,
-    detailVisible,
-    pendingSwitchGameCover,
-    attachPosterRef,
-    metaMaxWidth,
-    sessionCounterEnabled,
     ps5Row,
     canEnterDetailRow,
     detailRailItems,
@@ -98,7 +93,7 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
         <Ps5LoadingScreen
           title="Loading your library"
           subtitle="Please wait"
-          backdropImageUrl={currentStreamingGame?.imageUrl}
+          backdropImageUrl={currentTabGame?.imageUrl}
         />
       </div>
     );
@@ -209,7 +204,7 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
         spotlightIndex={spotlightIndex}
         displayItems={displayItems}
         topLevelShelfIndex={topLevelShelfIndex}
-        currentStreamingGame={currentStreamingGame}
+        currentTabGame={currentTabGame}
         playtimeData={playtimeData}
         gamesDualShelf={gamesDualShelf}
         cloudSessionResumable={cloudSessionResumable}
@@ -235,21 +230,6 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
           mediaThumbById={mediaThumbById}
         />
       )}
-
-      <div className={`xmb-detail-layer ${detailVisible ? "visible" : ""}`}>
-        <CurrentDetailPanel
-          topCategory={topCategory}
-          pendingSwitchGameCover={pendingSwitchGameCover}
-          currentStreamingGame={currentStreamingGame}
-          attachPosterRef={attachPosterRef}
-          metaMaxWidth={metaMaxWidth}
-          selectedVariantByGameId={selectedVariantByGameId}
-          playtimeData={playtimeData}
-          sessionCounterEnabled={sessionCounterEnabled}
-          sessionStartedAtMs={sessionStartedAtMs}
-          isStreaming={isStreaming}
-        />
-      </div>
 
       <DetailRail
         ps5Row={ps5Row}

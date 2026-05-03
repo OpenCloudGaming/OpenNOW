@@ -16,6 +16,8 @@ type UseControllerLibraryGameDerivationsArgs = {
   playtimeData: PlaytimeStore;
   topCategory: TopCategory;
   currentStreamingGame?: GameInfo | null;
+  /** Shown as the first row label on the Home shelf (stream or last-played title). */
+  homeShelfGameTitle?: string | null;
   gameSubcategory: GameSubcategory;
   selectedGameId: string;
   selectedVariantByGameId: Record<string, string>;
@@ -70,6 +72,7 @@ export function useControllerLibraryGameDerivations({
   playtimeData,
   topCategory,
   currentStreamingGame,
+  homeShelfGameTitle,
   gameSubcategory,
   selectedGameId,
   selectedVariantByGameId,
@@ -109,12 +112,15 @@ export function useControllerLibraryGameDerivations({
           { id: "toggleFullscreen", label: "Fullscreen", value: streamMenuIsFullscreen ? "On" : "Off" },
         ]
       : [];
+    const resumeLabel = homeShelfGameTitle?.trim() || "Last played";
     return [
-      { id: "resume", label: "Resume Game", value: "" },
+      { id: "resume", label: resumeLabel, value: "" },
       ...streamExtras,
-      { id: "closeGame", label: inStreamMenu && endSessionConfirm ? "End session (confirm)" : "Close Game", value: "" },
+      ...(inStreamMenu
+        ? [{ id: "closeGame", label: endSessionConfirm ? "End session (confirm)" : "Close Game", value: "" }]
+        : []),
     ];
-  }, [inStreamMenu, endSessionConfirm, streamMenuMicOn, streamMenuMicLevel, streamMenuVolume, streamMenuIsFullscreen]);
+  }, [inStreamMenu, endSessionConfirm, streamMenuMicOn, streamMenuMicLevel, streamMenuVolume, streamMenuIsFullscreen, homeShelfGameTitle]);
 
   const mediaRootItems = useMemo(
     () => [

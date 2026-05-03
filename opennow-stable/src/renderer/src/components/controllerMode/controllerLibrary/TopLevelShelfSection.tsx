@@ -17,7 +17,7 @@ interface TopLevelShelfSectionProps {
   spotlightIndex: number;
   displayItems: Array<{ id?: string }>;
   topLevelShelfIndex: number;
-  currentStreamingGame?: GameInfo | null;
+  currentTabGame?: GameInfo | null;
   playtimeData: PlaytimeStore;
   gamesDualShelf: boolean;
   cloudSessionResumable?: boolean;
@@ -38,7 +38,7 @@ export function TopLevelShelfSection({
   spotlightIndex,
   displayItems,
   topLevelShelfIndex,
-  currentStreamingGame,
+  currentTabGame,
   playtimeData,
   gamesDualShelf,
   cloudSessionResumable,
@@ -69,10 +69,10 @@ export function TopLevelShelfSection({
             })()}
           </p>
         ) : null}
-        {topCategory === "current" && displayItems[topLevelShelfIndex]?.id === "resume" && currentStreamingGame ? (
+        {topCategory === "current" && displayItems[topLevelShelfIndex]?.id === "resume" && currentTabGame ? (
           <div className="xmb-ps5-focus-chips">
             {(() => {
-              const record = playtimeData[currentStreamingGame.id];
+              const record = playtimeData[currentTabGame.id];
               const totalSecs = record?.totalSeconds ?? 0;
               const lastPlayedAt = record?.lastPlayedAt ?? null;
               const sessionCount = record?.sessionCount ?? 0;
@@ -162,14 +162,7 @@ export function TopLevelShelfSection({
           </div>
         </div>
       ) : (
-        <>
-          {topCategory === "current" ? (
-            <div className={`xmb-ps5-shelf-label-row xmb-ps5-shelf-label-row--library ${!(topCategory === "all" && gameSubcategory === "root") || gamesRootPlane === "categories" ? "xmb-ps5-shelf-label-row--active" : ""}`}>
-              <span className="xmb-ps5-shelf-label">Current</span>
-            </div>
-          ) : null}
-          <div className={`xmb-ps5-shelf-viewport ${topCategory === "all" && gameSubcategory === "root" ? "xmb-ps5-shelf-viewport--games-root" : ""}`}>{topLevelMenuTrack}</div>
-        </>
+        <div className={`xmb-ps5-shelf-viewport ${topCategory === "all" && gameSubcategory === "root" ? "xmb-ps5-shelf-viewport--games-root" : ""}`}>{topLevelMenuTrack}</div>
       )}
     </div>
   );

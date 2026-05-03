@@ -29,6 +29,7 @@ import {
   spotlightEntryHasGame,
 } from "./controllerLibrary/helpers";
 import { ControllerLibraryLayout } from "./controllerLibrary/ControllerLibraryLayout";
+import { loadScreenshotUrlsForGameTitle } from "./controllerLibrary/loadGameScreenshotUrls";
 import { TopLevelMenuTrack } from "./controllerLibrary/TopLevelMenuTrack";
 import { useControllerLibraryGameDerivations } from "./controllerLibrary/useControllerLibraryGameDerivations";
 import { useControllerLibraryEvents } from "./controllerLibrary/useControllerLibraryEvents";
@@ -72,7 +73,6 @@ export function ControllerLibraryPage({
   onResumeGame,
   onCloseGame,
   onExitApp,
-  pendingSwitchGameCover,
   userName = "Player One",
   userAvatarUrl,
   subscriptionInfo,
@@ -86,7 +86,6 @@ export function ControllerLibraryPage({
   onExitControllerMode,
   sessionStartedAtMs = null,
   isStreaming = false,
-  sessionCounterEnabled = false,
   inStreamMenu = false,
   streamMenuVolume = 1,
   onStreamMenuVolumeChange,
@@ -102,14 +101,8 @@ export function ControllerLibraryPage({
   onResumeCloudSession,
   cloudResumeBusy = false,
 }: ControllerLibraryPageProps): JSX.Element {
-  const initialCategoryIndex = (() => {
-    if (currentStreamingGame) {
-      // TOP_CATEGORIES: current (game title), settings, all, media
-      return 0;
-    }
-    // TOP_CATEGORIES without `current`: settings, all, media
-    return 1;
-  })();
+  /** Top strip: Home (current / last played) is always the default landing tab. */
+  const initialCategoryIndex = 0;
   const [categoryIndex, setCategoryIndex] = useState(initialCategoryIndex);
   const [endSessionConfirm, setEndSessionConfirm] = useState(false);
   const [editingStreamVolume, setEditingStreamVolume] = useState(false);
@@ -144,6 +137,8 @@ export function ControllerLibraryPage({
   const [gamesHubFocusIndex, setGamesHubFocusIndex] = useState(0);
   /** Local captures for the focused game; loaded when hub opens so Media tab need not be visited first */
   const [gameHubScreenshotUrls, setGameHubScreenshotUrls] = useState<string[]>([]);
+  /** Random capture for Home "Live Snapshot" resume tile; falls back to poster in TopLevelMenuTrack */
+  const [homeResumeSnapshotUrl, setHomeResumeSnapshotUrl] = useState<string | null>(null);
   const gamesHubReturnSnapshotRef = useRef<GamesHubReturnSnapshot | null>(null);
   const spotlightTrackRef = useRef<HTMLDivElement>(null);
 
@@ -153,8 +148,6 @@ export function ControllerLibraryPage({
     } catch {
     }
   }, [librarySortId]);
-
-  // poster measurement handled by `attachPosterRef` callback ref
 
   useEffect(() => {
     const detectTypeFromGamepad = (g: Gamepad | null): "ps" | "xbox" | "nintendo" | "generic" => {
@@ -207,16 +200,33 @@ export function ControllerLibraryPage({
     playControllerUiSound(kind, uiSoundsEnabled);
   }, [uiSoundsEnabled]);
 
-  const TOP_CATEGORIES = useMemo(() => {
-    const categories: Array<{ id: TopCategory; label: string }> = [];
-    if (currentStreamingGame) {
-      categories.push({ id: "current", label: currentStreamingGame.title || "Current Game" });
-    }
-    categories.push({ id: "settings", label: "Settings" });
-    categories.push({ id: "all", label: "Games" });
-    categories.push({ id: "media", label: "Media" });
-    return categories;
-  }, [currentStreamingGame]);
+  const lastPlayedGame = useMemo((): GameInfo | null => {
+    const lastPlayedMs = (gameId: string) => {
+      const raw = playtimeData[gameId]?.lastPlayedAt;
+      if (!raw) return 0;
+      const ms = Date.parse(raw);
+      return Number.isFinite(ms) ? ms : 0;
+    };
+    const played = games.filter((g) => lastPlayedMs(g.id) > 0);
+    if (played.length === 0) return null;
+    played.sort((a, b) => {
+      const d = lastPlayedMs(b.id) - lastPlayedMs(a.id);
+      if (d !== 0) return d;
+      return a.title.localeCompare(b.title);
+    });
+    return played[0] ?? null;
+  }, [games, playtimeData]);
+
+  const currentTabGame = currentStreamingGame ?? lastPlayedGame;
+
+  const TOP_CATEGORIES = useMemo((): Array<{ id: TopCategory; label: string }> => {
+    return [
+      { id: "current", label: "Home" },
+      { id: "all", label: "Games" },
+      { id: "media", label: "Media" },
+      { id: "settings", label: "Settings" },
+    ];
+  }, []);
 
   const topCategory = (TOP_CATEGORIES[categoryIndex]?.id ?? "all") as TopCategory;
   const {
@@ -251,6 +261,7 @@ export function ControllerLibraryPage({
     playtimeData,
     topCategory,
     currentStreamingGame,
+    homeShelfGameTitle: currentTabGame?.title ?? null,
     gameSubcategory,
     selectedGameId,
     selectedVariantByGameId,
@@ -462,48 +473,40 @@ export function ControllerLibraryPage({
       setGameHubScreenshotUrls([]);
       return;
     }
-    if (typeof window.openNow?.listMediaByGame !== "function") {
-      setGameHubScreenshotUrls([]);
-      return;
-    }
 
     let cancelled = false;
-    const titleArg = selectedGame.title.trim();
-
-    void (async () => {
-      try {
-        const listing = await window.openNow.listMediaByGame({ gameTitle: titleArg });
-        if (cancelled) return;
-
-        const rows = [...(listing.screenshots ?? [])].sort((a, b) => b.createdAtMs - a.createdAtMs);
-        const urls: string[] = [];
-
-        for (const s of rows) {
-          let u = s.thumbnailDataUrl || s.dataUrl;
-          if (!u && typeof window.openNow?.getMediaThumbnail === "function") {
-            try {
-              u = (await window.openNow.getMediaThumbnail({ filePath: s.filePath })) ?? undefined;
-            } catch {
-              u = undefined;
-            }
-          }
-          if (u) urls.push(u);
-        }
-
-        if (!cancelled) setGameHubScreenshotUrls(urls);
-      } catch {
-        if (!cancelled) setGameHubScreenshotUrls([]);
-      }
-    })();
+    void loadScreenshotUrlsForGameTitle(selectedGame.title).then((urls) => {
+      if (!cancelled) setGameHubScreenshotUrls(urls);
+    });
 
     return () => {
       cancelled = true;
     };
   }, [gamesHubOpen, selectedGame?.id, selectedGame?.title]);
 
+  useEffect(() => {
+    const game = currentTabGame;
+    if (!game?.title?.trim()) {
+      setHomeResumeSnapshotUrl(null);
+      return;
+    }
 
-  const showCurrentDetail = topCategory === "current" && Boolean(currentStreamingGame);
-  const detailVisible = showCurrentDetail;
+    let cancelled = false;
+    void loadScreenshotUrlsForGameTitle(game.title).then((urls) => {
+      if (cancelled) return;
+      if (urls.length === 0) {
+        setHomeResumeSnapshotUrl(null);
+        return;
+      }
+      const pick = urls[Math.floor(Math.random() * urls.length)] ?? null;
+      setHomeResumeSnapshotUrl(pick);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTabGame?.id, currentTabGame?.title]);
+
 
   const gamesShelfBrowseActive = topCategory === "all" && gameSubcategory !== "root";
   const mediaShelfBrowseActive = topCategory === "media" && mediaSubcategory !== "root";
@@ -538,7 +541,7 @@ export function ControllerLibraryPage({
     if (item?.id !== "closeGame") setEndSessionConfirm(false);
   }, [inStreamMenu, endSessionConfirm, topCategory, displayItems, topLevelShelfIndex]);
 
-  const selectedCategoryLabel = useMemo(() => getCategoryLabel(topCategory, currentStreamingGame?.title).label, [topCategory, currentStreamingGame?.title]);
+  const selectedCategoryLabel = useMemo(() => getCategoryLabel(topCategory).label, [topCategory]);
   const selectedTopLevelItemLabel = useMemo(() => {
     if (!topLevelShelfActive) return selectedCategoryLabel;
     if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight") {
@@ -551,6 +554,7 @@ export function ControllerLibraryPage({
     if (topCategory === "all" && gameSubcategory === "root" && active?.label) return active.label;
     if (topCategory === "media" && mediaSubcategory === "root" && active?.label) return active.label;
     if (topCategory === "settings" && active?.label) return active.label;
+    if (topCategory === "current" && active?.label) return active.label;
     return selectedCategoryLabel;
   }, [topLevelShelfActive, selectedCategoryLabel, displayItems, topLevelShelfIndex, topCategory, gameSubcategory, mediaSubcategory, gamesRootPlane, spotlightEntries, spotlightIndex]);
   const detailRailItems = useMemo<Array<{ id: string; title: string; subtitle: string; imageUrl?: string }>>(() => {
@@ -614,8 +618,6 @@ export function ControllerLibraryPage({
     spotlightShelfTranslateX,
     gamesRootMenuTranslateX,
     heroTransitionMs,
-    metaMaxWidth,
-    attachPosterRef,
     wrapperThemeVars,
     wrapperClassNameWithRow,
     menuShelfTranslateX,
@@ -745,6 +747,7 @@ export function ControllerLibraryPage({
     codecOptions,
     aspectRatioOptions,
     currentStreamingGame,
+    currentTabGame,
     onResumeGame,
     onResumeCloudSession,
     onCloseGame,
@@ -849,15 +852,15 @@ export function ControllerLibraryPage({
       return null;
     }
     if (topCategory === "all") return selectedGame?.imageUrl ?? null;
-    if (topCategory === "current") return currentStreamingGame?.imageUrl ?? null;
+    if (topCategory === "current") return currentTabGame?.imageUrl ?? null;
     if (topCategory === "media") {
       if (selectedMediaItem?.thumbnailDataUrl) return selectedMediaItem.thumbnailDataUrl;
       if (selectedMediaItem?.dataUrl) return selectedMediaItem.dataUrl;
       return selectedMediaItem ? mediaThumbById[selectedMediaItem.id] ?? null : null;
     }
-    if (currentStreamingGame?.imageUrl) return currentStreamingGame.imageUrl;
+    if (currentTabGame?.imageUrl) return currentTabGame.imageUrl;
     return selectedGame?.imageUrl ?? null;
-  }, [topCategory, gameSubcategory, gamesRootPlane, spotlightEntries, spotlightIndex, selectedGame, currentStreamingGame, selectedMediaItem, mediaThumbById]);
+  }, [topCategory, gameSubcategory, gamesRootPlane, spotlightEntries, spotlightIndex, selectedGame, currentTabGame, selectedMediaItem, mediaThumbById]);
 
   const themeRgbForTrack = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
   const maxBitrateMbpsForTrack = settings.maxBitrateMbps ?? 75;
@@ -871,7 +874,7 @@ export function ControllerLibraryPage({
       displayItems={displayItems}
       topLevelShelfIndex={topLevelShelfIndex}
       gameCategoryPreviewById={gameCategoryPreviewById}
-      currentStreamingImageUrl={currentStreamingGame?.imageUrl}
+      currentStreamingImageUrl={homeResumeSnapshotUrl ?? currentTabGame?.imageUrl}
       settingsSubcategory={settingsSubcategory}
       editingBandwidth={editingBandwidth}
       maxBitrateMbpsForTrack={maxBitrateMbpsForTrack}
@@ -894,7 +897,8 @@ export function ControllerLibraryPage({
     displayItems,
     topLevelShelfIndex,
     gameCategoryPreviewById,
-    currentStreamingGame?.imageUrl,
+    homeResumeSnapshotUrl,
+    currentTabGame?.imageUrl,
     editingBandwidth,
     editingThemeChannel,
     settingsSubcategory,
@@ -920,6 +924,7 @@ export function ControllerLibraryPage({
       wrapperClassNameWithRow={wrapperClassNameWithRow}
       wrapperThemeVars={wrapperThemeVars}
       currentStreamingGame={currentStreamingGame}
+      currentTabGame={currentTabGame}
       inStreamMenu={inStreamMenu}
       endSessionConfirm={endSessionConfirm}
       parallaxBackdropTiles={parallaxBackdropTiles}
@@ -971,11 +976,6 @@ export function ControllerLibraryPage({
       mediaHubSlots={mediaHubSlots}
       selectedMediaIndex={selectedMediaIndex}
       mediaThumbById={mediaThumbById}
-      detailVisible={detailVisible}
-      pendingSwitchGameCover={pendingSwitchGameCover}
-      attachPosterRef={attachPosterRef}
-      metaMaxWidth={metaMaxWidth}
-      sessionCounterEnabled={sessionCounterEnabled}
       ps5Row={ps5Row}
       canEnterDetailRow={canEnterDetailRow}
       detailRailItems={detailRailItems}

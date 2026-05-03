@@ -1213,6 +1213,12 @@ export function App(): JSX.Element {
       setStreamVolume(audioRef.current.volume);
     }
   }, [streamStatus]);
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = streamVolume;
+    }
+    clientRef.current?.setOutputVolume(streamVolume);
+  }, [streamVolume]);
   const sessionRef = useRef<SessionInfo | null>(null);
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
@@ -2474,7 +2480,6 @@ export function App(): JSX.Element {
   const handleStreamVolumeChange = useCallback((v: number) => {
     const n = Math.max(0, Math.min(1, v));
     setStreamVolume(n);
-    if (audioRef.current) audioRef.current.volume = n;
   }, []);
 
   const handleToggleStreamMicrophone = useCallback(() => {
@@ -3348,6 +3353,7 @@ export function App(): JSX.Element {
               },
             });
             clientRef.current.inputPaused = controllerOverlayOpenRef.current;
+            clientRef.current.setOutputVolume(streamVolume);
             clientRef.current.setMicrophoneLevel(streamMicLevel);
             if (settings.microphoneMode !== "disabled") {
               void clientRef.current.startMicrophone();
@@ -4661,14 +4667,12 @@ export function App(): JSX.Element {
                 await releasePointerLockIfNeeded();
                 await handleStopStream();
               }}
-              pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
               subscriptionInfo={subscriptionInfo}
               playtimeData={playtime}
               sessionStartedAtMs={sessionStartedAtMs}
               isStreaming={isStreaming}
-              sessionCounterEnabled={settings.sessionCounterEnabled}
               settings={{
                 resolution: settings.resolution,
                 fps: settings.fps,
@@ -4839,14 +4843,12 @@ export function App(): JSX.Element {
               }}
               cloudResumeBusy={isResumingNavbarSession}
               onCloseGame={handlePromptedStopStream}
-              pendingSwitchGameCover={pendingSwitchGameCover}
               userName={authSession?.user.displayName}
               userAvatarUrl={authSession?.user.avatarUrl}
               subscriptionInfo={subscriptionInfo}
               playtimeData={playtime}
               sessionStartedAtMs={sessionStartedAtMs}
               isStreaming={isStreaming}
-              sessionCounterEnabled={settings.sessionCounterEnabled}
               settings={{
                 resolution: settings.resolution,
                 fps: settings.fps,
