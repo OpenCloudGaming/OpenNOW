@@ -31,6 +31,8 @@ export const IPC_CHANNELS = {
   TOGGLE_FULLSCREEN: "window:toggle-fullscreen",
   SET_FULLSCREEN: "window:set-fullscreen",
   TOGGLE_POINTER_LOCK: "window:toggle-pointer-lock",
+  POINTER_LOCK_CHANGE: "window:pointer-lock-change",
+  EXTERNAL_ESCAPE: "app:external-escape",
   QUIT_APP: "app:quit",
   APP_UPDATER_GET_STATE: "app-updater:get-state",
   APP_UPDATER_CHECK: "app-updater:check",

@@ -98,6 +98,16 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
   return cq.startsWith("10bit");
 }
 
+/** Controller-mode XMB background visual preset */
+export type ControllerThemeStyle = "aurora" | "nebula" | "grid" | "minimal" | "pulse";
+
+/** RGB tint for controller-mode background (0–255 each) */
+export interface ControllerThemeRgb {
+  r: number;
+  g: number;
+  b: number;
+}
+
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
 export type RuntimePlatform =
@@ -159,6 +169,10 @@ export interface Settings {
   autoLoadControllerLibrary: boolean;
   /** When true, controller-mode overlays will show animated background orbs */
   controllerBackgroundAnimations: boolean;
+  /** Controller-mode library background visual preset */
+  controllerThemeStyle: ControllerThemeStyle;
+  /** Controller-mode library background tint (applied per style preset) */
+  controllerThemeColor: ControllerThemeRgb;
   /** When true, the app will automatically enter fullscreen when controller mode triggers it */
   autoFullScreen: boolean;
   favoriteGameIds: string[];
@@ -179,6 +193,8 @@ export interface Settings {
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
   autoCheckForUpdates: boolean;
+  /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
+  allowEscapeToExitFullscreen?: boolean;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
@@ -774,6 +790,8 @@ export interface OpenNowApi {
   setFullscreen(v: boolean): Promise<void>;
   toggleFullscreen(): Promise<void>;
   togglePointerLock(): Promise<void>;
+  /** Notify main process that pointer lock state changed (active = true/false) */
+  notifyPointerLockChange(active: boolean): void;
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
   resetSettings(): Promise<Settings>;
@@ -797,6 +815,9 @@ export interface OpenNowApi {
 
   /** Listen for screenshot hotkey events from the main process (F11) */
   onTriggerScreenshot(listener: () => void): () => void;
+
+  /** Listen for external Escape events forwarded by the main process */
+  onExternalEscape(listener: () => void): () => void;
 
   /** Begin a new recording session; returns a recordingId to use for subsequent calls */
   beginRecording(input: RecordingBeginRequest): Promise<RecordingBeginResult>;

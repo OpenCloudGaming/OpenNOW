@@ -1,7 +1,17 @@
 import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import type { VideoCodec, ColorQuality, VideoAccelerationPreference, MicrophoneMode, GameLanguage, AspectRatio, KeyboardLayout } from "@shared/gfn";
+import type {
+  VideoCodec,
+  ColorQuality,
+  VideoAccelerationPreference,
+  MicrophoneMode,
+  GameLanguage,
+  AspectRatio,
+  KeyboardLayout,
+  ControllerThemeRgb,
+  ControllerThemeStyle,
+} from "@shared/gfn";
 import { DEFAULT_KEYBOARD_LAYOUT, getDefaultStreamPreferences, normalizeStreamPreferences } from "@shared/gfn";
 
 export interface Settings {
@@ -69,6 +79,10 @@ export interface Settings {
   controllerUiSounds: boolean;
   /** Enable animated background visuals for controller-mode loading screens */
   controllerBackgroundAnimations: boolean;
+  /** Controller-mode library background visual preset */
+  controllerThemeStyle: ControllerThemeStyle;
+  /** Controller-mode library background tint */
+  controllerThemeColor: ControllerThemeRgb;
   /** Auto-load controller library at startup when controller mode is enabled */
   autoLoadControllerLibrary: boolean;
   /** Automatically enter fullscreen when controller-mode triggers it */
@@ -92,6 +106,8 @@ export interface Settings {
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
   autoCheckForUpdates: boolean;
+  /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
+  allowEscapeToExitFullscreen?: boolean;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -100,6 +116,28 @@ const defaultMicShortcut = "Ctrl+Shift+M";
 const LEGACY_STOP_SHORTCUTS = new Set(["META+SHIFT+Q", "CMD+SHIFT+Q"]);
 const LEGACY_ANTI_AFK_SHORTCUTS = new Set(["META+SHIFT+F10", "CMD+SHIFT+F10", "CTRL+SHIFT+F10"]);
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
+
+const CONTROLLER_THEME_STYLES_SET = new Set<ControllerThemeStyle>(["aurora", "nebula", "grid", "minimal", "pulse"]);
+
+function clampThemeByte(value: unknown): number {
+  const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : NaN;
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(255, n));
+}
+
+function normalizeControllerThemeColor(raw: unknown, fallback: ControllerThemeRgb): ControllerThemeRgb {
+  if (!raw || typeof raw !== "object") return { ...fallback };
+  const o = raw as Record<string, unknown>;
+  return {
+    r: clampThemeByte(o.r),
+    g: clampThemeByte(o.g),
+    b: clampThemeByte(o.b),
+  };
+}
+
+function normalizeControllerThemeStyle(raw: unknown): ControllerThemeStyle {
+  return CONTROLLER_THEME_STYLES_SET.has(raw as ControllerThemeStyle) ? (raw as ControllerThemeStyle) : "aurora";
+}
 
 const DEFAULT_SETTINGS: Settings = {
   resolution: "1920x1080",
@@ -132,6 +170,8 @@ const DEFAULT_SETTINGS: Settings = {
   controllerMode: false,
   controllerUiSounds: false,
   controllerBackgroundAnimations: false,
+  controllerThemeStyle: "aurora",
+  controllerThemeColor: { r: 124, g: 241, b: 177 },
   autoLoadControllerLibrary: false,
   autoFullScreen: false,
   favoriteGameIds: [],
@@ -146,6 +186,7 @@ const DEFAULT_SETTINGS: Settings = {
   enableCloudGsync: false,
   discordRichPresence: false,
   autoCheckForUpdates: true,
+  allowEscapeToExitFullscreen: false,
 };
 
 export class SettingsManager {
@@ -179,6 +220,19 @@ export class SettingsManager {
 
       let migrated = this.migrateLegacyShortcutDefaults(merged);
       migrated = this.enforceCompatibility(merged) || migrated;
+
+      const themeStyleBefore = merged.controllerThemeStyle;
+      const themeColorBefore = { ...merged.controllerThemeColor };
+      merged.controllerThemeStyle = normalizeControllerThemeStyle(merged.controllerThemeStyle);
+      merged.controllerThemeColor = normalizeControllerThemeColor(merged.controllerThemeColor, DEFAULT_SETTINGS.controllerThemeColor);
+      if (
+        merged.controllerThemeStyle !== themeStyleBefore ||
+        merged.controllerThemeColor.r !== themeColorBefore.r ||
+        merged.controllerThemeColor.g !== themeColorBefore.g ||
+        merged.controllerThemeColor.b !== themeColorBefore.b
+      ) {
+        migrated = true;
+      }
 
       // Migrate legacy boolean accelerator setting to percentage slider.
       if (typeof (parsed as { mouseAcceleration?: unknown }).mouseAcceleration === "boolean") {

@@ -54,6 +54,38 @@ interface RiInputCapabilities {
   enablePartiallyReliableTransferHid: number;
 }
 
+interface DualRumbleEffectOptions {
+  startDelay: 0;
+  duration: number;
+  weakMagnitude: number;
+  strongMagnitude: number;
+}
+
+interface GamepadHapticActuatorLike {
+  readonly type?: string;
+  playEffect(effectType: "dual-rumble", options: DualRumbleEffectOptions): Promise<unknown>;
+}
+
+interface LegacyGamepadHapticActuatorLike {
+  pulse(value: number, duration: number): Promise<unknown>;
+}
+
+type GamepadWithOptionalHaptics = Gamepad & {
+  readonly vibrationActuator?: GamepadHapticActuatorLike | null;
+  readonly hapticActuators?: readonly (LegacyGamepadHapticActuatorLike | null | undefined)[] | null;
+};
+
+interface GamepadRumbleApi {
+  playEffectActuator: GamepadHapticActuatorLike | null;
+  pulseActuator: LegacyGamepadHapticActuatorLike | null;
+}
+
+interface ConnectedRumbleGamepad {
+  index: number;
+  gamepad: Gamepad;
+  api: GamepadRumbleApi | null;
+}
+
 function hevcPreferredProfileId(colorQuality: ColorQuality): 1 | 2 {
   // 10-bit modes should prefer HEVC Main10 profile-id=2.
   return colorQuality.startsWith("10bit") ? 2 : 1;
@@ -202,6 +234,32 @@ function parseRiInputCapabilities(sdp: string): RiInputCapabilities {
       PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
     ),
   };
+}
+
+function clampRumbleMagnitude(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(1, value));
+}
+
+function isXboxLikeGamepad(gamepad: Gamepad): boolean {
+  return /xbox|xinput/i.test(gamepad.id);
+}
+
+function getGamepadRumbleApi(gamepad: Gamepad): GamepadRumbleApi | null {
+  const hapticGamepad = gamepad as GamepadWithOptionalHaptics;
+  const playEffectActuator = hapticGamepad.vibrationActuator;
+  const pulseActuator = hapticGamepad.hapticActuators?.[0];
+  const api: GamepadRumbleApi = {
+    playEffectActuator: playEffectActuator && typeof playEffectActuator.playEffect === "function"
+      ? playEffectActuator
+      : null,
+    pulseActuator: pulseActuator && typeof pulseActuator.pulse === "function"
+      ? pulseActuator
+      : null,
+  };
+  return api.playEffectActuator || api.pulseActuator ? api : null;
 }
 
 export interface AdaptiveMouseFlushDecisionParams {
@@ -482,7 +540,10 @@ export class GfnWebRtcClient {
   private audioSourceNode: MediaStreamAudioSourceNode | null = null;
 
   private inputReady = false;
+  /** When true, the host (e.g. in-stream controller menu) blocks forwarding; not cleared by focus/visibility. */
   public inputPaused = false;
+  /** When true, window blur or document hidden blocks forwarding until focus/visible again. */
+  private windowStateInputPaused = false;
   private inputProtocolVersion = 2;
   private heartbeatTimer: number | null = null;
   private mouseFlushTimer: number | null = null;
@@ -518,9 +579,13 @@ export class GfnWebRtcClient {
   private static readonly DECODER_KEYFRAME_COOLDOWN_MS = 1200;
   private static readonly DECODER_BITRATE_STEP_FACTOR = 0.85;
   private static readonly DECODER_MIN_RECOVERY_BITRATE_KBPS = 4000;
+  private static readonly RUMBLE_EFFECT_MS = 500;
+  private static readonly RUMBLE_THROTTLE_MS = 500;
+  private static readonly HAPTICS_LOG_INTERVAL_MS = 5000;
 
-  // Gamepad bitmap: tracks which gamepads are connected, matching official client's this.nu field.
-  // Bit i (0-3) = gamepad i is connected. Sent in every gamepad packet at offset 8.
+  // Gamepad bitmap sent at packet offset 8, matching official client's this.nu field:
+  // bit i (0-3) = connected, bit i+8 = Xbox/xinput style device.
+  // Haptics availability is advertised separately with input event type 13.
   private gamepadBitmap = 0;
 
   // Stats tracking
@@ -536,6 +601,13 @@ export class GfnWebRtcClient {
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private connectedGamepads: Set<number> = new Set();
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
+  private lastRumbleWeak: number[] = [0, 0, 0, 0];
+  private lastRumbleStrong: number[] = [0, 0, 0, 0];
+  private lastRumbleEffectAtMs: number[] = [0, 0, 0, 0];
+  private hapticsSupportLogged: boolean[] = [false, false, false, false];
+  private fallbackHapticsSupportLogged: boolean[] = [false, false, false, false];
+  private lastHapticsWarningAtMs = 0;
+  private hapticsAdvertised = false;
 
   // Track currently pressed keys (VK codes) for synthetic Escape detection
   private pressedKeys: Set<number> = new Set();
@@ -545,8 +617,11 @@ export class GfnWebRtcClient {
   private autoPointerLockInProgress = false;
   // Timer for synthetic Escape on pointer lock loss
   private pointerLockEscapeTimer: number | null = null;
+  // Timer for restoring pointer lock after Escape releases it.
+  private pointerLockRelockTimer: number | null = null;
   // Skip one synthetic Escape on pointer loss when lock was released intentionally (e.g. F8).
   private suppressNextSyntheticEscape = false;
+  private keyboardLockState: "unknown" | "unsupported" | "locked" | "failed" = "unknown";
   private mouseBackpressureLoggedAtMs = 0;
   private mouseFlushBaseIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
   private mouseAdaptiveFlushActive = false;
@@ -930,6 +1005,7 @@ export class GfnWebRtcClient {
   private resetInputState(): void {
     this.inputReady = false;
     this.inputProtocolVersion = 2;
+    this.hapticsAdvertised = false;
     this.inputEncoder.setProtocolVersion(2);
     this.diagnostics.inputReady = false;
     this.diagnostics.partiallyReliableInputOpen = false;
@@ -1539,6 +1615,8 @@ export class GfnWebRtcClient {
     for (const cleanup of this.inputCleanup.splice(0)) {
       cleanup();
     }
+    this.stopAllGamepadRumble();
+    this.updateHapticsAdvertisement(false);
   }
 
   private replaceTrackInStream(stream: MediaStream, track: MediaStreamTrack): void {
@@ -1799,8 +1877,12 @@ export class GfnWebRtcClient {
     }, nextDelay);
   }
 
+  private isStreamInputBlocked(): boolean {
+    return this.inputPaused || this.windowStateInputPaused;
+  }
+
   private getGamepadPollIntervalMs(): number {
-    if (!this.inputReady || this.inputPaused || document.visibilityState !== "visible") {
+    if (!this.inputReady || this.isStreamInputBlocked() || document.visibilityState !== "visible") {
       return 100;
     }
 
@@ -1813,8 +1895,24 @@ export class GfnWebRtcClient {
 
   private gamepadSendCount = 0;
 
+  private updateGamepadBitmap(controllerId: number, gamepad: Gamepad): void {
+    const connectedBit = 1 << controllerId;
+    const xboxBit = 1 << (controllerId + 8);
+    this.gamepadBitmap |= connectedBit;
+    if (isXboxLikeGamepad(gamepad)) {
+      this.gamepadBitmap |= xboxBit;
+    } else {
+      this.gamepadBitmap &= ~xboxBit;
+    }
+  }
+
+  private clearGamepadBitmap(controllerId: number): void {
+    this.gamepadBitmap &= ~(1 << controllerId);
+    this.gamepadBitmap &= ~(1 << (controllerId + 8));
+  }
+
   private pollGamepads(): void {
-    if (this.inputPaused) return;
+    if (this.isStreamInputBlocked()) return;
     const gamepads = navigator.getGamepads();
     if (!gamepads) {
       return;
@@ -1828,12 +1926,11 @@ export class GfnWebRtcClient {
 
       if (gamepad && gamepad.connected) {
         connectedCount++;
+        this.updateGamepadBitmap(i, gamepad);
 
         // Track connected gamepads and update bitmap
         if (!this.connectedGamepads.has(i)) {
           this.connectedGamepads.add(i);
-          // Set bit i in bitmap (matching official client's AA(i) = 1 << i)
-          this.gamepadBitmap |= (1 << i);
           this.log(`Gamepad ${i} connected: ${gamepad.id}`);
           this.log(`  Buttons: ${gamepad.buttons.length}, Axes: ${gamepad.axes.length}, Mapping: ${gamepad.mapping}`);
           this.log(`  Bitmap now: 0x${this.gamepadBitmap.toString(16)}`);
@@ -1875,9 +1972,10 @@ export class GfnWebRtcClient {
         }
       } else if (this.connectedGamepads.has(i)) {
         // Gamepad disconnected — clear bit from bitmap
+        this.stopGamepadRumble(i, gamepad ?? undefined);
         this.connectedGamepads.delete(i);
         this.previousGamepadStates.delete(i);
-        this.gamepadBitmap &= ~(1 << i);
+        this.clearGamepadBitmap(i);
         this.log(`Gamepad ${i} disconnected, bitmap now: 0x${this.gamepadBitmap.toString(16)}`);
         this.diagnostics.connectedGamepads = this.connectedGamepads.size;
         this.emitStats();
@@ -1906,6 +2004,7 @@ export class GfnWebRtcClient {
     }
 
     this.diagnostics.connectedGamepads = connectedCount;
+    this.updateHapticsAdvertisement(this.hasConnectedHapticGamepad());
   }
 
   private readGamepadState(gamepad: Gamepad, controllerId: number): GamepadInput {
@@ -1950,8 +2049,280 @@ export class GfnWebRtcClient {
 
   private onGamepadDisconnected = (event: GamepadEvent): void => {
     this.log(`Gamepad disconnected event: ${event.gamepad.id}`);
+    this.stopGamepadRumble(event.gamepad.index, event.gamepad);
     // The polling loop will detect and handle the disconnection
   };
+
+  private logHapticsWarning(message: string): void {
+    const nowMs = performance.now();
+    if (nowMs - this.lastHapticsWarningAtMs < GfnWebRtcClient.HAPTICS_LOG_INTERVAL_MS) {
+      return;
+    }
+    this.lastHapticsWarningAtMs = nowMs;
+    this.log(message);
+  }
+
+  private getConnectedRumbleGamepads(): ConnectedRumbleGamepad[] {
+    const gamepads = navigator.getGamepads();
+    if (!gamepads) {
+      return [];
+    }
+
+    const connected: ConnectedRumbleGamepad[] = [];
+    for (let i = 0; i < Math.min(gamepads.length, GAMEPAD_MAX_CONTROLLERS); i++) {
+      const gamepad = gamepads[i];
+      if (gamepad?.connected) {
+        connected.push({ index: i, gamepad, api: getGamepadRumbleApi(gamepad) });
+      }
+    }
+    return connected;
+  }
+
+  private hasConnectedHapticGamepad(): boolean {
+    const gamepads = navigator.getGamepads();
+    if (!gamepads) {
+      return false;
+    }
+
+    for (let i = 0; i < Math.min(gamepads.length, GAMEPAD_MAX_CONTROLLERS); i++) {
+      const gamepad = gamepads[i];
+      if (gamepad?.connected && getGamepadRumbleApi(gamepad)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private updateHapticsAdvertisement(enabled: boolean): void {
+    if (!this.inputReady || this.reliableInputChannel?.readyState !== "open" || this.hapticsAdvertised === enabled) {
+      return;
+    }
+
+    this.sendReliable(this.inputEncoder.encodeHapticsEnabled(enabled));
+    this.hapticsAdvertised = enabled;
+    this.log(`Gamepad haptics advertised: ${enabled ? "enabled" : "disabled"}`);
+  }
+
+  private findConnectedGamepad(controllerId: number): ConnectedRumbleGamepad | null {
+    const connected = this.getConnectedRumbleGamepads();
+    if (connected.length === 0) {
+      this.logHapticsWarning(`Input haptics: no haptic-capable gamepad for controller ${controllerId} (connected=0)`);
+      return null;
+    }
+
+    const exact = controllerId >= 0 && controllerId < GAMEPAD_MAX_CONTROLLERS
+      ? connected.find((candidate) => candidate.index === controllerId)
+      : undefined;
+    if (exact?.api) {
+      return exact;
+    }
+
+    const hapticConnected = connected.filter((candidate) => candidate.api);
+    const indexedFallback = controllerId >= 0 && controllerId < GAMEPAD_MAX_CONTROLLERS
+      ? hapticConnected[controllerId]
+      : undefined;
+    if (indexedFallback) {
+      return indexedFallback;
+    }
+
+    if (hapticConnected.length === 1) {
+      return hapticConnected[0];
+    }
+
+    this.logHapticsWarning(
+      `Input haptics: no haptic-capable gamepad for controller ${controllerId} (connected=${connected.length})`,
+    );
+    return null;
+  }
+
+  private applyRumbleApi(api: GamepadRumbleApi, index: number, weakMagnitude: number, strongMagnitude: number, isStop: boolean): void {
+    const duration = isStop ? 0 : GfnWebRtcClient.RUMBLE_EFFECT_MS;
+    let usedPlayEffect = false;
+    if (api.playEffectActuator) {
+      usedPlayEffect = true;
+      void api.playEffectActuator.playEffect("dual-rumble", {
+        startDelay: 0,
+        duration,
+        weakMagnitude: isStop ? 0 : weakMagnitude,
+        strongMagnitude: isStop ? 0 : strongMagnitude,
+      }).catch(() => {});
+    }
+
+    if (api.pulseActuator && (isStop || !usedPlayEffect)) {
+      if (!isStop && !this.fallbackHapticsSupportLogged[index]) {
+        this.fallbackHapticsSupportLogged[index] = true;
+        this.log(`Gamepad ${index} fallback pulse haptics available`);
+      }
+      void api.pulseActuator.pulse(isStop ? 0 : Math.max(weakMagnitude, strongMagnitude), duration).catch(() => {});
+    }
+  }
+
+  private applyGamepadRumble(controllerId: number, weakMagnitude16: number, strongMagnitude16: number): void {
+    const target = this.findConnectedGamepad(controllerId);
+    if (!target) {
+      return;
+    }
+    if (!target.api) {
+      return;
+    }
+
+    const index = target.index;
+    if (target.api.playEffectActuator && !this.hapticsSupportLogged[index]) {
+      this.hapticsSupportLogged[index] = true;
+      this.log(`Gamepad ${index} dual-rumble haptics available`);
+    }
+
+    const weakMagnitude = clampRumbleMagnitude(weakMagnitude16 / 65535);
+    const strongMagnitude = clampRumbleMagnitude(strongMagnitude16 / 65535);
+    const isStop = weakMagnitude === 0 && strongMagnitude === 0;
+    const nowMs = performance.now();
+    this.lastRumbleWeak[index] = weakMagnitude;
+    this.lastRumbleStrong[index] = strongMagnitude;
+
+    if (
+      !isStop
+      && this.lastRumbleEffectAtMs[index] !== 0
+      && nowMs - this.lastRumbleEffectAtMs[index] <= GfnWebRtcClient.RUMBLE_THROTTLE_MS
+    ) {
+      return;
+    }
+
+    this.lastRumbleEffectAtMs[index] = isStop ? 0 : nowMs;
+    this.applyRumbleApi(target.api, index, weakMagnitude, strongMagnitude, isStop);
+  }
+
+  private stopGamepadRumble(controllerId: number, gamepad?: Gamepad): void {
+    if (controllerId < 0 || controllerId >= GAMEPAD_MAX_CONTROLLERS) {
+      return;
+    }
+    if (gamepad) {
+      const api = getGamepadRumbleApi(gamepad);
+      if (api) {
+        this.applyRumbleApi(api, controllerId, 0, 0, true);
+      }
+    } else {
+      this.applyGamepadRumble(controllerId, 0, 0);
+    }
+    this.lastRumbleWeak[controllerId] = 0;
+    this.lastRumbleStrong[controllerId] = 0;
+    this.lastRumbleEffectAtMs[controllerId] = 0;
+    this.hapticsSupportLogged[controllerId] = false;
+    this.fallbackHapticsSupportLogged[controllerId] = false;
+  }
+
+  private stopAllGamepadRumble(): void {
+    for (const target of this.getConnectedRumbleGamepads()) {
+      if (target.api) {
+        this.applyRumbleApi(target.api, target.index, 0, 0, true);
+      }
+    }
+    for (let i = 0; i < this.lastRumbleWeak.length; i++) {
+      this.lastRumbleWeak[i] = 0;
+      this.lastRumbleStrong[i] = 0;
+      this.lastRumbleEffectAtMs[i] = 0;
+      this.hapticsSupportLogged[i] = false;
+      this.fallbackHapticsSupportLogged[i] = false;
+    }
+    this.lastHapticsWarningAtMs = 0;
+  }
+
+  private parseLegacyHapticPacket(view: DataView, offset: number): boolean {
+    if (offset < 0 || offset + 10 > view.byteLength) {
+      this.logHapticsWarning(`Input haptics: malformed legacy packet (${view.byteLength - offset} bytes)`);
+      return false;
+    }
+
+    const kind = view.getUint16(offset, true);
+    if (kind !== 1) {
+      if (kind !== 0) {
+        this.logHapticsWarning(`Input haptics: unknown legacy kind ${kind}`);
+      }
+      return false;
+    }
+
+    const length = view.getUint16(offset + 2, true);
+    if (length < 6) {
+      return false;
+    }
+
+    const controllerId = view.getUint16(offset + 4, true);
+    const weakMagnitude = view.getUint16(offset + 6, true);
+    const strongMagnitude = view.getUint16(offset + 8, true);
+    this.applyGamepadRumble(controllerId, weakMagnitude, strongMagnitude);
+    return true;
+  }
+
+  private parseOcHapticPacket(view: DataView, offset: number): boolean {
+    if (offset < 0 || offset + 9 > view.byteLength) {
+      this.logHapticsWarning(`Input haptics: malformed Oc packet (${view.byteLength - offset} bytes)`);
+      return false;
+    }
+
+    const controllerByte = view.getUint8(offset);
+    if (controllerByte < 6 || controllerByte >= 10) {
+      this.logHapticsWarning(`Input haptics: unknown Oc controller byte ${controllerByte}`);
+      return false;
+    }
+
+    const reportKind = view.getUint8(offset + 3);
+    const flags = view.getUint8(offset + 4);
+    if (reportKind !== 5 || (flags & ~1) !== 0) {
+      this.logHapticsWarning(`Input haptics: unsupported Oc report kind=${reportKind} flags=0x${flags.toString(16)}`);
+      return false;
+    }
+
+    const controllerId = controllerByte - 6;
+    const weakMagnitude = view.getUint8(offset + 7) << 8;
+    const strongMagnitude = view.getUint8(offset + 8) << 8;
+    this.applyGamepadRumble(controllerId, weakMagnitude, strongMagnitude);
+    return true;
+  }
+
+  private parseInputSubMessage(view: DataView, offset: number): boolean {
+    if (offset < 0 || offset + 4 > view.byteLength) {
+      this.logHapticsWarning(`Input haptics: malformed sub-message (${view.byteLength - offset} bytes)`);
+      return false;
+    }
+
+    const type = view.getUint32(offset, true);
+    if (type === 267) {
+      return this.parseLegacyHapticPacket(view, offset + 4);
+    }
+    if (type === 17) {
+      return this.parseOcHapticPacket(view, offset + 4);
+    }
+
+    this.logHapticsWarning(`Input haptics: unknown sub-message type ${type}`);
+    return false;
+  }
+
+  private parseInputHapticsMessage(bytes: Uint8Array): void {
+    if (bytes.length < 2) {
+      return;
+    }
+
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const firstWord = view.getUint16(0, true);
+    if (firstWord === 267) {
+      this.parseLegacyHapticPacket(view, 2);
+      return;
+    }
+
+    const wrapperType = firstWord & 0xff;
+    switch (wrapperType) {
+      case 34:
+        this.parseInputSubMessage(view, 1);
+        return;
+      case 32:
+      case 33:
+      case 35:
+      case 36:
+      case 255:
+        return;
+      default:
+        this.parseLegacyHapticPacket(view, 0);
+    }
+  }
 
   private isPartiallyReliableChannelOpen(): boolean {
     return this.partiallyReliableInputChannel?.readyState === "open";
@@ -2000,7 +2371,18 @@ export class GfnWebRtcClient {
 
   private onInputHandshakeMessage(bytes: Uint8Array): void {
     if (bytes.length < 2) {
-      this.log(`Input handshake: ignoring short message (${bytes.length} bytes)`);
+      if (!this.inputReady) {
+        this.log(`Input handshake: ignoring short message (${bytes.length} bytes)`);
+      }
+      return;
+    }
+
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const firstWord = view.getUint16(0, true);
+    let version = 2;
+
+    if (this.inputReady) {
+      this.parseInputHapticsMessage(bytes);
       return;
     }
 
@@ -2008,10 +2390,6 @@ export class GfnWebRtcClient {
       .map((b) => b.toString(16).padStart(2, "0"))
       .join(" ");
     this.log(`Input channel message: ${bytes.length} bytes [${hex}]`);
-
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const firstWord = view.getUint16(0, true);
-    let version = 2;
 
     if (firstWord === 526) {
       version = bytes.length >= 4 ? view.getUint16(2, true) : 2;
@@ -2034,6 +2412,7 @@ export class GfnWebRtcClient {
       this.diagnostics.inputReady = true;
       this.emitStats();
       this.log(`Input handshake complete (protocol v${version}) — starting heartbeat + gamepad polling`);
+      this.updateHapticsAdvertisement(this.hasConnectedHapticGamepad());
       this.setupInputHeartbeat();
       this.setupGamepadPolling();
       // After input becomes ready, attempt to auto-enable pointer lock.
@@ -2177,6 +2556,36 @@ export class GfnWebRtcClient {
     }
   }
 
+  private requestEscapeKeyboardLock(): void {
+    if (!document.fullscreenElement) {
+      if (this.keyboardLockState === "locked") {
+        this.keyboardLockState = "unknown";
+      }
+      return;
+    }
+
+    const nav = navigator as any;
+    if (!nav.keyboard?.lock) {
+      if (this.keyboardLockState !== "unsupported") {
+        this.keyboardLockState = "unsupported";
+        this.log("Keyboard Lock API unavailable; Escape may release pointer lock");
+      }
+      return;
+    }
+
+    void Promise.resolve(nav.keyboard.lock())
+      .then(() => {
+        if (this.keyboardLockState !== "locked") {
+          this.keyboardLockState = "locked";
+          this.log("Keyboard lock active for fullscreen stream");
+        }
+      })
+      .catch((error: unknown) => {
+        this.keyboardLockState = "failed";
+        this.log(`Keyboard Escape lock failed: ${String(error)}`);
+      });
+  }
+
   private async requestPointerLockWithOptionalFullscreen(
     lockTarget: HTMLElement,
     ensureFullscreen: boolean,
@@ -2185,9 +2594,19 @@ export class GfnWebRtcClient {
       try {
         await document.documentElement.requestFullscreen();
       } catch (error) {
-        this.log(`Fullscreen request failed: ${String(error)}`);
+        this.log(`DOM fullscreen request failed: ${String(error)}`);
+      }
+
+      if (typeof window.openNow?.setFullscreen === "function") {
+        try {
+          await window.openNow.setFullscreen(true);
+        } catch (error) {
+          this.log(`Native fullscreen request failed: ${String(error)}`);
+        }
       }
     }
+
+    this.requestEscapeKeyboardLock();
 
     try {
       await this.requestPointerLockCompat(lockTarget, { unadjustedMovement: true });
@@ -2664,7 +3083,7 @@ export class GfnWebRtcClient {
       try {
         if (document?.body?.dataset?.sidebarOpen === "1") return;
       } catch {}
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (event.pointerType && event.pointerType !== "mouse") {
         return;
       }
@@ -2694,7 +3113,7 @@ export class GfnWebRtcClient {
       try {
         if (document?.body?.dataset?.sidebarOpen === "1") return;
       } catch {}
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (isPointerLockActive()) {
         queueMouseMovement(event.movementX, event.movementY, event.timeStamp);
       } else if (mouseInStreamView) {
@@ -2709,7 +3128,7 @@ export class GfnWebRtcClient {
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (!this.inputReady) {
         return;
       }
@@ -2753,7 +3172,7 @@ export class GfnWebRtcClient {
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (!this.inputReady) {
         return;
       }
@@ -2780,7 +3199,7 @@ export class GfnWebRtcClient {
     };
 
     const onMouseDown = (event: MouseEvent) => {
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (!this.inputReady) {
         return;
       }
@@ -2797,7 +3216,7 @@ export class GfnWebRtcClient {
     };
 
     const onMouseUp = (event: MouseEvent) => {
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (!this.inputReady) {
         return;
       }
@@ -2814,7 +3233,7 @@ export class GfnWebRtcClient {
     };
 
     const onWheel = (event: WheelEvent) => {
-      if (this.inputPaused) return;
+      if (this.isStreamInputBlocked()) return;
       if (!this.inputReady) {
         return;
       }
@@ -2841,6 +3260,33 @@ export class GfnWebRtcClient {
       videoElement.focus();
     };
 
+    const schedulePointerLockRetention = (reason: string): void => {
+      if (this.pointerLockRelockTimer !== null) {
+        return;
+      }
+
+      this.pointerLockRelockTimer = window.setTimeout(() => {
+        this.pointerLockRelockTimer = null;
+
+        if (!this.inputReady || !this.shouldSendSyntheticEscapeOnPointerLockLoss() || isPointerLockActive()) {
+          return;
+        }
+
+        const target = this.pointerLockTarget;
+        if (!target) {
+          return;
+        }
+
+        void this.requestPointerLockWithOptionalFullscreen(target, false)
+          .then(() => {
+            this.log(`Pointer lock restored after ${reason}`);
+          })
+          .catch((error: unknown) => {
+            this.log(`Pointer lock restore failed after ${reason}: ${String(error)}`);
+          });
+      }, 75);
+    };
+
     // Store lock target for pointer lock re-acquisition
     this.pointerLockTarget = pointerLockTarget;
 
@@ -2856,7 +3302,21 @@ export class GfnWebRtcClient {
           window.clearTimeout(this.pointerLockEscapeTimer);
           this.pointerLockEscapeTimer = null;
         }
+        if (this.pointerLockRelockTimer !== null) {
+          window.clearTimeout(this.pointerLockRelockTimer);
+          this.pointerLockRelockTimer = null;
+        }
         this.suppressNextSyntheticEscape = false;
+        // Try to acquire keyboard lock for low-level key capture (best-effort).
+        try {
+          this.requestEscapeKeyboardLock();
+        } catch {}
+
+        // Notify main process that pointer lock is active so native-level
+        // interception (before-input-event) can act accordingly.
+        try {
+          (window as any).openNow?.notifyPointerLockChange?.(true);
+        } catch {}
         return;
       }
 
@@ -2864,6 +3324,10 @@ export class GfnWebRtcClient {
       // current cursor position rather than from a stale last-known position.
       lastAbsX = null;
       lastAbsY = null;
+
+      try {
+        (window as any).openNow?.notifyPointerLockChange?.(false);
+      } catch {}
 
       // Pointer lock was lost
       if (!this.inputReady) return;
@@ -2884,7 +3348,9 @@ export class GfnWebRtcClient {
 
       if (escapeWasPressed) {
         // Escape was already tracked as pressed — the normal keyup handler will fire
-        // and send Escape keyup to the server. No synthetic needed.
+        // and send Escape keyup to the server. No synthetic needed, but Chromium
+        // still released pointer lock, so restore it after keyup has a chance to run.
+        schedulePointerLockRetention("tracked Escape");
         return;
       }
 
@@ -2922,11 +3388,7 @@ export class GfnWebRtcClient {
         });
         this.sendReliable(escUp);
 
-        // Re-acquire pointer lock so the user stays in the game
-        if (this.pointerLockTarget) {
-          void this.requestPointerLockWithOptionalFullscreen(this.pointerLockTarget, false)
-            .catch(() => {});
-        }
+        schedulePointerLockRetention("synthetic Escape");
       }, 50);
     };
 
@@ -2941,25 +3403,22 @@ export class GfnWebRtcClient {
       lastAbsX = null;
       lastAbsY = null;
       this.releasePressedKeys("window blur");
-      // Pause all input while window is not focused so no new events
-      // (keyboard/gamepad/mouse) are registered or forwarded to the stream.
-      this.inputPaused = true;
+      // Pause forwarding while window is not focused (host overlay pause is separate).
+      this.windowStateInputPaused = true;
     };
 
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") {
         this.releasePressedKeys(`visibility ${document.visibilityState}`);
-        this.inputPaused = true;
+        this.windowStateInputPaused = true;
         return;
       }
 
-      // Document is visible again — resume input
-      this.inputPaused = false;
+      this.windowStateInputPaused = false;
     };
 
     const onWindowFocus = () => {
-      // Resume input when window regains focus
-      this.inputPaused = false;
+      this.windowStateInputPaused = false;
       mouseInStreamView = true;
       lastAbsX = null;
       lastAbsY = null;
@@ -2970,12 +3429,14 @@ export class GfnWebRtcClient {
     // Release any prior Keyboard API lock when leaving fullscreen (e.g. other UI may have locked keys).
     const onFullscreenChange = () => {
       if (document.fullscreenElement) {
+        this.requestEscapeKeyboardLock();
         return;
       }
       const nav = navigator as any;
       if (nav.keyboard?.unlock) {
         try {
           nav.keyboard.unlock();
+          this.keyboardLockState = "unknown";
         } catch {
           /* no-op */
         }
@@ -3084,6 +3545,31 @@ export class GfnWebRtcClient {
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onWindowFocus);
 
+    // Listen for external Escape events forwarded from main process and
+    // forward them to the remote session as synthetic Escape keypresses.
+    try {
+      (window as any).openNow?.onExternalEscape?.(() => {
+        if (!this.inputReady) return;
+        this.releasePressedKeys("external Escape forwarded from main");
+
+        const escDown = this.inputEncoder.encodeKeyDown({
+          keycode: 0x1B,
+          scancode: codeMap.Escape.scancode,
+          modifiers: 0,
+          timestampUs: timestampUs(),
+        });
+        this.sendReliable(escDown);
+
+        const escUp = this.inputEncoder.encodeKeyUp({
+          keycode: 0x1B,
+          scancode: codeMap.Escape.scancode,
+          modifiers: 0,
+          timestampUs: timestampUs(),
+        });
+        this.sendReliable(escUp);
+      });
+    } catch {}
+
     this.inputCleanup.push(() => window.removeEventListener("gamepadconnected", this.onGamepadConnected));
     this.inputCleanup.push(() => window.removeEventListener("gamepaddisconnected", this.onGamepadDisconnected));
     this.inputCleanup.push(() => document.removeEventListener("keydown", onKeyDown, true));
@@ -3111,11 +3597,15 @@ export class GfnWebRtcClient {
     this.inputCleanup.push(() => window.removeEventListener("blur", onWindowBlur));
     this.inputCleanup.push(() => document.removeEventListener("visibilitychange", onVisibilityChange));
     this.inputCleanup.push(() => window.removeEventListener("focus", onWindowFocus));
-      this.inputCleanup.push(() => {
-        if (this.pointerLockEscapeTimer !== null) {
-          window.clearTimeout(this.pointerLockEscapeTimer);
-          this.pointerLockEscapeTimer = null;
-        }
+    this.inputCleanup.push(() => {
+      if (this.pointerLockEscapeTimer !== null) {
+        window.clearTimeout(this.pointerLockEscapeTimer);
+        this.pointerLockEscapeTimer = null;
+      }
+      if (this.pointerLockRelockTimer !== null) {
+        window.clearTimeout(this.pointerLockRelockTimer);
+        this.pointerLockRelockTimer = null;
+      }
       this.releasePressedKeys("input cleanup");
       this.pendingMouseDxFloat = 0;
       this.pendingMouseDyFloat = 0;
