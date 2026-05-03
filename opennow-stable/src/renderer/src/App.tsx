@@ -449,29 +449,6 @@ function warningMessage(code: StreamTimeWarning["code"]): string {
   return "Maximum session time approaching";
 }
 
-function formatRemainingPlaytimeFromSubscription(
-  subscription: SubscriptionInfo | null,
-  consumedHours = 0,
-): string {
-  if (!subscription) {
-    return "--";
-  }
-  if (subscription.isUnlimited) {
-    return "Unlimited";
-  }
-
-  const baseHours = Number.isFinite(subscription.remainingHours) ? subscription.remainingHours : 0;
-  const safeHours = Math.max(0, baseHours - Math.max(0, consumedHours));
-  const totalMinutes = Math.round(safeHours * 60);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-
-  if (hours > 0) {
-    return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
-  }
-  return `${minutes}m`;
-}
-
 function normalizeMembershipTier(tier: string | null | undefined): string | null {
   if (!tier) {
     return null;
@@ -4037,12 +4014,6 @@ export function App(): JSX.Element {
     !isSwitchingGame
     && !settings.controllerMode
     && (showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming"));
-  const consumedHours =
-    streamStatus === "streaming"
-      ? Math.floor(sessionElapsedSeconds / 60) / 60
-      : 0;
-  const remainingPlaytimeText = formatRemainingPlaytimeFromSubscription(subscriptionInfo, consumedHours);
-
   // Show stream lifecycle (waiting/connecting/streaming/failure)
   if (showLaunchOverlay) {
     const loadingStatus = launchError ? launchError.stage : toLoadingStatus(streamStatus);
@@ -4171,7 +4142,6 @@ export function App(): JSX.Element {
             sessionStartedAtMs={sessionStartedAtMs}
             sessionCounterEnabled={settings.sessionCounterEnabled}
             isStreaming={isStreaming}
-            remainingPlaytimeText={remainingPlaytimeText || null}
             streamWarning={streamWarning ?? undefined}
             queuePosition={queuePosition}
           >

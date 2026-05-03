@@ -16,7 +16,6 @@ export interface ControllerInStreamShellProps {
   sessionStartedAtMs: number | null;
   sessionCounterEnabled: boolean;
   isStreaming: boolean;
-  remainingPlaytimeText?: string | null;
   streamWarning?: StreamWarningLine | null;
   queuePosition?: number;
 }
@@ -40,7 +39,6 @@ export function ControllerInStreamShell({
   sessionStartedAtMs,
   sessionCounterEnabled,
   isStreaming,
-  remainingPlaytimeText,
   streamWarning,
   queuePosition,
 }: ControllerInStreamShellProps): JSX.Element {
@@ -74,7 +72,6 @@ export function ControllerInStreamShell({
                 <SessionElapsedIndicator startedAtMs={sessionStartedAtMs} active={isStreaming} className="cis-elapsed" />
               </div>
             ) : null}
-            {remainingPlaytimeText ? <span className="cis-remaining">{remainingPlaytimeText}</span> : null}
             <div className={`cis-health ${healthTierClass(health.tier)}`} title="Stream quality">
               <Activity size={14} aria-hidden />
               <span>{health.label}</span>
