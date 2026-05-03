@@ -132,7 +132,9 @@ struct StreamLoadingView: View {
     return HStack(alignment: .center, spacing: hasAd ? 18 : 26) {
       VStack(alignment: .leading, spacing: hasAd ? 10 : 12) {
         gameHeader(isWide: true, compact: hasAd)
-        compactQueueStatus
+        if hasAd {
+          compactQueueStatus
+        }
       }
       .frame(maxWidth: hasAd ? 330 : 360, alignment: .leading)
 

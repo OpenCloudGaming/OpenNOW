@@ -693,10 +693,10 @@ enum StreamSettingsResolver {
 enum OpenNOWPlatform {
     #if os(tvOS)
     static let supportsNativeOAuth = true
-    static let supportsEmbeddedStreamer = false
+    static let supportsEmbeddedStreamer = true
     static let displayName = "tvOS"
     static let authUnavailableReason = ""
-    static let streamingUnavailableReason = "Apple TV streaming still needs a native tvOS player."
+    static let streamingUnavailableReason = ""
     #else
     static let supportsNativeOAuth = true
     static let supportsEmbeddedStreamer = true
@@ -878,7 +878,7 @@ private final class OAuthWebAuthenticator: NSObject {
             #if os(tvOS)
             authSession = ASWebAuthenticationSession(
                 url: url,
-                callback: .customScheme(callbackScheme)
+                callbackURLScheme: nil
             ) { callbackURL, error in
                 if let callbackURL {
                     TVAuthDiagnostics.record("Auth session completed with \(summarizeOAuthCallback(callbackURL))")
@@ -913,7 +913,7 @@ private final class OAuthWebAuthenticator: NSObject {
             authSession.prefersEphemeralWebBrowserSession = false
             #endif
             self.session = authSession
-            TVAuthDiagnostics.record("Starting ASWebAuthenticationSession.")
+            TVAuthDiagnostics.record("Starting ASWebAuthenticationSession canStart=\(authSession.canStart).")
             if !authSession.start() {
                 TVAuthDiagnostics.record("ASWebAuthenticationSession failed to start.")
                 continuation.resume(throwing: NSError(

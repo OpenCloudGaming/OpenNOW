@@ -338,6 +338,7 @@ private struct StreamerWebView: UIViewRepresentable {
             let touchLayout: TouchControlLayout
             let streamerPreferences: StreamerPreferences
             let prefersTouchControllerOverlay: Bool
+            let isTVOS: Bool
         }
 
         let signalingServer = session.signalingServer ?? session.serverIp ?? URL(string: session.streamingBaseUrl)?.host ?? ""
@@ -345,6 +346,19 @@ private struct StreamerWebView: UIViewRepresentable {
         let serverIp = session.serverIp ?? signalingServer
         let profile = Self.streamProfile(for: settings)
         let touchProfile = Self.touchProfile(for: session.game.title)
+        #if os(tvOS)
+        let isTVOS = true
+        let streamerPreferences = StreamerPreferences(
+            audioMuted: false,
+            showStatsClock: settings.streamerPreferences.showStatsClock,
+            showStatsBattery: false,
+            touchControllerVisible: false,
+            physicalControllerPassthrough: true
+        )
+        #else
+        let isTVOS = false
+        let streamerPreferences = settings.streamerPreferences
+        #endif
         let bridge = Bridge(
             sessionId: session.id,
             signalingServer: signalingServer,
@@ -362,8 +376,9 @@ private struct StreamerWebView: UIViewRepresentable {
             gameTitle: session.game.title,
             touchProfile: touchProfile,
             touchLayout: settings.touchLayout(for: touchProfile),
-            streamerPreferences: settings.streamerPreferences,
-            prefersTouchControllerOverlay: touchProfile == "fortnite-mobile" && settings.fortnitePrefersNativeTouch
+            streamerPreferences: streamerPreferences,
+            prefersTouchControllerOverlay: !isTVOS && touchProfile == "fortnite-mobile" && settings.fortnitePrefersNativeTouch,
+            isTVOS: isTVOS
         )
         let data = (try? JSONEncoder().encode(bridge)) ?? Data("{}".utf8)
         let payload = String(data: data, encoding: .utf8) ?? "{}"
@@ -421,6 +436,11 @@ private struct StreamerWebView: UIViewRepresentable {
     .layoutPanel label{display:block;margin-top:6px;color:rgba(255,255,255,0.82);font-size:11px;}
     .layoutPanel input[type=range]{width:100%;max-width:100%;box-sizing:border-box;margin-top:3px;}
     .layoutHint{display:none;}
+    body.tvos #touchpad,body.tvos #touchHint,body.tvos #gpPad,body.tvos #kbBar,body.tvos .layoutPanel{display:none!important;}
+    body.tvos #hudPanel{width:min(360px,calc(100vw - 40px));font-size:13px;}
+    body.tvos .toggleRow{font-size:13px;padding:12px 13px;}
+    body.tvos .toggleRow strong{font-size:13px;}
+    body.tvos .hudBadge{font-size:11px;padding:5px 9px;}
     #gpPad.layoutEditing .layoutGroup{outline:1px dashed rgba(120,210,255,0.9);background:rgba(120,210,255,0.1);border-radius:18px;}
     #gpPad.layoutEditing .layoutGroup::after{content:'Drag';position:absolute;left:50%;top:-18px;transform:translateX(-50%);
       padding:2px 7px;border-radius:999px;background:rgba(10,10,12,0.84);border:1px solid rgba(120,210,255,0.55);
@@ -594,14 +614,16 @@ private struct StreamerWebView: UIViewRepresentable {
   </div>
   <script>
   const cfg = \#(payload);
+  const IS_TVOS = !!cfg.isTVOS;
+  document.body.classList.toggle('tvos', IS_TVOS);
   const FORTNITE_TOUCH_PROFILE = cfg.touchProfile === 'fortnite-mobile';
-  const PREFERS_TOUCH_CONTROLLER_OVERLAY = !!cfg.prefersTouchControllerOverlay;
+  const PREFERS_TOUCH_CONTROLLER_OVERLAY = !IS_TVOS && !!cfg.prefersTouchControllerOverlay;
   function sanitizeStreamerPreferences(raw) {
     return {
-      audioMuted: raw?.audioMuted !== false,
+      audioMuted: IS_TVOS ? false : raw?.audioMuted !== false,
       showStatsClock: raw?.showStatsClock === true,
-      showStatsBattery: raw?.showStatsBattery === true,
-      touchControllerVisible: raw?.touchControllerVisible === true,
+      showStatsBattery: IS_TVOS ? false : raw?.showStatsBattery === true,
+      touchControllerVisible: IS_TVOS ? false : raw?.touchControllerVisible === true,
       physicalControllerPassthrough: true
     };
   }
@@ -812,6 +834,20 @@ private struct StreamerWebView: UIViewRepresentable {
       hudToggleGlyph.innerHTML = hudPanelOpen ? '&times;' : '&#9881;';
     }
   }
+  function configurePlatformControls() {
+    if (!IS_TVOS) return;
+    [kbBtn, gpBtn, batteryBtn].forEach((element) => {
+      if (!element) return;
+      element.style.display = 'none';
+    });
+    const layoutPanel = document.querySelector('.layoutPanel');
+    if (layoutPanel) {
+      layoutPanel.style.display = 'none';
+    }
+    if (hudToggle) {
+      hudToggle.title = 'Stream controls';
+    }
+  }
   function setToggleRowState(element, isActive, isDisabled = false) {
     if (!element) return;
     element.classList.toggle('is-active', !!isActive);
@@ -827,7 +863,9 @@ private struct StreamerWebView: UIViewRepresentable {
       hudStatsBadge.textContent = statsVisible ? 'Stats On' : 'Stats Off';
     }
     if (hudInputBadge) {
-      hudInputBadge.textContent = gpPad && gpPad.style.display !== 'none' ? 'Touch Controls' : 'Touchpad';
+      hudInputBadge.textContent = IS_TVOS
+        ? 'Controller'
+        : (gpPad && gpPad.style.display !== 'none' ? 'Touch Controls' : 'Touchpad');
     }
     if (hudAudioBadge) {
       hudAudioBadge.textContent = userMuted || video.muted ? 'Audio Muted' : 'Audio On';
@@ -857,6 +895,14 @@ private struct StreamerWebView: UIViewRepresentable {
     updateHudSummary();
   }
   function updateTouchControllerButton() {
+    if (IS_TVOS) {
+      if (gpValue) {
+        gpValue.textContent = 'Off';
+      }
+      setToggleRowState(gpBtn, false, true);
+      updateHudSummary();
+      return;
+    }
     const visible = gpPad && gpPad.style.display !== 'none';
     const profileLabel = cfg.touchProfile === 'fortnite-mobile' ? 'Touch Controller Overlay' : 'Touch Controller';
     if (gpValue) {
@@ -873,6 +919,13 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   function updateTouchModeCopy() {
     if (!touchModeDescription) return;
+    if (IS_TVOS) {
+      touchModeDescription.textContent = 'Apple TV uses connected controllers on the native gamepad path.';
+      if (touchHint) {
+        touchHint.textContent = 'Connect a controller to play.';
+      }
+      return;
+    }
     if (PREFERS_TOUCH_CONTROLLER_OVERLAY) {
       touchModeDescription.textContent = 'Fortnite uses the touch-controller overlay because GFN does not expose raw iOS touch.';
       if (touchHint) {
@@ -888,6 +941,14 @@ private struct StreamerWebView: UIViewRepresentable {
   function applyTouchpadMode() {
     updateTouchModeCopy();
     if (!touchpad) return;
+    if (IS_TVOS) {
+      touchpad.style.pointerEvents = 'none';
+      touchpad.style.display = 'none';
+      if (touchHint) {
+        touchHint.style.display = 'none';
+      }
+      return;
+    }
     const touchControllerActive = gpPad && gpPad.style.display !== 'none';
     if (touchControllerActive) {
       touchpad.style.pointerEvents = 'auto';
@@ -2214,6 +2275,13 @@ private struct StreamerWebView: UIViewRepresentable {
   let lastSentGamepadState = null;
   function setGamepadVisible(visible, persist = true) {
     if (!gpPad) return;
+    if (IS_TVOS) {
+      gpPad.style.display = 'none';
+      releaseAllPadKeys();
+      updateTouchControllerButton();
+      applyTouchpadMode();
+      return;
+    }
     const wasVisible = gpPad.style.display !== 'none';
     gpPad.style.display = visible ? 'block' : 'none';
     if (!visible && wasVisible) {
@@ -2227,6 +2295,7 @@ private struct StreamerWebView: UIViewRepresentable {
   }
 
   function toggleKeyboard() {
+    if (IS_TVOS) return;
     if (kbBar.style.display === 'none') showKeyboard();
     else hideKeyboard();
   }
@@ -2252,6 +2321,7 @@ private struct StreamerWebView: UIViewRepresentable {
   }
   function toggleGamepad() {
     if (!gpPad) return;
+    if (IS_TVOS) return;
     unlockAudio();
     setGamepadVisible(gpPad.style.display === 'none');
   }
@@ -3149,13 +3219,16 @@ private struct StreamerWebView: UIViewRepresentable {
   if (hudPanel) {
     hudPanel.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
   }
-  document.addEventListener('touchstart', (e) => {
-    if (!hudPanelOpen) return;
-    const target = e.target;
-    if (hudPanel && !hudPanel.contains(target) && hudToggle && !hudToggle.contains(target)) {
-      toggleHudPanel(false);
-    }
-  }, { passive: true });
+  if (!IS_TVOS) {
+    document.addEventListener('touchstart', (e) => {
+      if (!hudPanelOpen) return;
+      const target = e.target;
+      if (hudPanel && !hudPanel.contains(target) && hudToggle && !hudToggle.contains(target)) {
+        toggleHudPanel(false);
+      }
+    }, { passive: true });
+  }
+  configurePlatformControls();
   setGamepadVisible(streamerPreferences.touchControllerVisible || PREFERS_TOUCH_CONTROLLER_OVERLAY, false);
   applyTouchpadMode();
   applyTouchLayout();
@@ -3342,6 +3415,10 @@ private final class NativeDeviceStatusBridge {
 
     func attach(webView: WKWebView) {
         self.webView = webView
+        #if os(tvOS)
+        publishState()
+        return
+        #endif
         if observers.isEmpty {
             startMonitoring()
         }
@@ -3356,12 +3433,19 @@ private final class NativeDeviceStatusBridge {
         refreshTimer = nil
         webView = nil
         lastJSON = ""
+        #if os(tvOS)
+        return
+        #else
         if !wasBatteryMonitoringEnabled {
             UIDevice.current.isBatteryMonitoringEnabled = false
         }
+        #endif
     }
 
     private func startMonitoring() {
+        #if os(tvOS)
+        return
+        #else
         let device = UIDevice.current
         wasBatteryMonitoringEnabled = device.isBatteryMonitoringEnabled
         device.isBatteryMonitoringEnabled = true
@@ -3388,6 +3472,7 @@ private final class NativeDeviceStatusBridge {
         ) { [weak self] _ in
             self?.publishState()
         })
+        #endif
     }
 
     private func startRefreshTimer() {
@@ -3399,6 +3484,12 @@ private final class NativeDeviceStatusBridge {
 
     private func publishState() {
         guard let webView else { return }
+        #if os(tvOS)
+        let payload: [String: Any] = [
+            "batteryPercent": NSNull(),
+            "charging": false
+        ]
+        #else
         let level = UIDevice.current.batteryLevel
         let percent = level >= 0 ? Int((level * 100).rounded()) : nil
         let charging = {
@@ -3413,6 +3504,7 @@ private final class NativeDeviceStatusBridge {
             "batteryPercent": percent ?? NSNull(),
             "charging": charging
         ]
+        #endif
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8)
         else { return }

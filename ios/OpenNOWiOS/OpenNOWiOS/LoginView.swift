@@ -3,9 +3,6 @@ import SwiftUI
 
 struct LoginView: View {
     @EnvironmentObject private var store: OpenNOWStore
-    #if os(tvOS)
-    @Environment(\.webAuthenticationSession) private var webAuthenticationSession
-    #endif
 
     var body: some View {
         ZStack {
@@ -91,7 +88,7 @@ struct LoginView: View {
 
             #if os(tvOS)
             VStack(alignment: .leading, spacing: 12) {
-                Text("Apple TV sign-in is still being debugged here. Recent auth logs appear below.")
+                Text("Use your NVIDIA account to sync your library and start cloud sessions on Apple TV.")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.7))
                     .multilineTextAlignment(.center)
@@ -231,15 +228,7 @@ struct LoginView: View {
     private func handleSignIn() {
         Haptics.medium()
         #if os(tvOS)
-        Task {
-            await store.signInOnTVOS { url, callbackScheme in
-                try await webAuthenticationSession.authenticate(
-                    using: url,
-                    callbackURLScheme: callbackScheme,
-                    preferredBrowserSession: .shared
-                )
-            }
-        }
+        Task { await store.signIn() }
         #else
         Task { await store.signIn() }
         #endif

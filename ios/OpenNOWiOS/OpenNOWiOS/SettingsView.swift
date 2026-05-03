@@ -127,6 +127,7 @@ struct SettingsView: View {
 
     private var inputSection: some View {
         Section {
+            #if !os(tvOS)
             Toggle(isOn: $store.settings.fortnitePrefersNativeTouch) {
                 Label("Fortnite Mobile Touch", systemImage: "hand.tap")
             }
@@ -134,6 +135,7 @@ struct SettingsView: View {
             Toggle(isOn: $store.settings.streamerPreferences.touchControllerVisible) {
                 Label("Show Touch Controller", systemImage: "circle.grid.cross")
             }
+            #endif
 
             HStack {
                 Label("Controller Passthrough", systemImage: "gamecontroller")
@@ -144,7 +146,11 @@ struct SettingsView: View {
         } header: {
             Text("Input")
         } footer: {
+            #if os(tvOS)
+            Text("Connected controllers are passed through using the native gamepad path. Touch overlays are disabled on Apple TV.")
+            #else
             Text("Bluetooth controllers are detected automatically and passed through using the native gamepad path.")
+            #endif
         }
     }
 
@@ -158,9 +164,11 @@ struct SettingsView: View {
                 Label("Stats Overlay", systemImage: "chart.bar")
             }
 
+            #if !os(tvOS)
             Toggle(isOn: $store.settings.queueLiveActivitiesEnabled) {
                 Label("Queue Live Activities", systemImage: "livephoto")
             }
+            #endif
 
             Toggle(isOn: $store.settings.hideServerSelector) {
                 Label("Skip Server Selector", systemImage: "server.rack")
