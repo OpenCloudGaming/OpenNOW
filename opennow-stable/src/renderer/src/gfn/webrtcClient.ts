@@ -183,6 +183,8 @@ interface ClientOptions {
   onStats?: (stats: StreamDiagnostics) => void;
   onTimeWarning?: (warning: StreamTimeWarning) => void;
   onMicStateChange?: (state: MicStateChange) => void;
+  onIceConnectionStateChange?: (state: RTCIceConnectionState) => void;
+  onPeerConnectionStateChange?: (state: RTCPeerConnectionState) => void;
   /** Optional host callback for Meta/Home button edge presses (button 16). */
   onControllerMetaPress?: (event: { controllerId: number; gamepad: Gamepad }) => void;
 }
@@ -3938,6 +3940,7 @@ export class GfnWebRtcClient {
       this.diagnostics.connectionState = pc.connectionState;
       this.emitStats();
       this.log(`Peer connection state: ${pc.connectionState}`);
+      this.options.onPeerConnectionStateChange?.(pc.connectionState);
     };
 
     pc.ondatachannel = (event) => {
@@ -3973,6 +3976,7 @@ export class GfnWebRtcClient {
 
     pc.oniceconnectionstatechange = () => {
       this.log(`ICE connection state: ${pc.iceConnectionState}`);
+      this.options.onIceConnectionStateChange?.(pc.iceConnectionState);
     };
 
     pc.onicegatheringstatechange = () => {

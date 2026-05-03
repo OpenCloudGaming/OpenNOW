@@ -673,8 +673,12 @@ export interface SessionClaimRequest {
   streamingBaseUrl?: string;
   sessionId: string;
   serverIp: string;
+  clientId?: string;
+  deviceId?: string;
   appId?: string;
   settings?: StreamSettings;
+  /** True when claim is triggered by automatic reconnect recovery logic */
+  recoveryMode?: boolean;
 }
 
 export interface SignalingConnectRequest {
