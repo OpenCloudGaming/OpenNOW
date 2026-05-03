@@ -609,9 +609,35 @@ function shouldUseServerIp(baseUrl: string): boolean { return baseUrl.includes("
 function resolvePollStopBase(zone: string, provided?: string, serverIp?: string): string { const base = resolveStreamingBaseUrl(zone, provided); if (serverIp && shouldUseServerIp(base) && !isZoneHostname(serverIp)) return `https://${serverIp}`; return base; }
 function parseResolution(input: string): { width: number; height: number } { const [rawWidth, rawHeight] = input.split("x"); const width = Number.parseInt(rawWidth ?? "", 10); const height = Number.parseInt(rawHeight ?? "", 10); if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return { width: 1920, height: 1080 }; return { width, height }; }
 function timezoneOffsetMs(): number { return -new Date().getTimezoneOffset() * 60 * 1000; }
-function extractHostFromUrl(url: string): string | null { for (const prefix of ["rtsps://", "rtsp://", "wss://", "https://"]) { if (url.startsWith(prefix)) { const host = url.slice(prefix.length).split(":")[0]?.split("/")[0]; return host || null; } } return null; }
+function isUsableSessionHost(host: string | null | undefined): host is string {
+  if (typeof host !== "string") return false;
+  const trimmed = host.trim();
+  return trimmed.length > 0 && trimmed !== "." && trimmed !== "0.0.0.0";
+}
+function extractHostFromUrl(url: string): string | null { for (const prefix of ["rtsps://", "rtsp://", "wss://", "https://"]) { if (url.startsWith(prefix)) { const host = url.slice(prefix.length).split(":")[0]?.split("/")[0]; return isUsableSessionHost(host) ? host : null; } } return null; }
 function isZoneHostname(ip: string): boolean { return ip.includes("cloudmatchbeta.nvidiagrid.net") || ip.includes("cloudmatch.nvidiagrid.net"); }
 function isReadySessionStatus(status: number): boolean { return READY_SESSION_STATUSES.has(status); }
+function isTransientSessionRouteStatus(status: number): boolean { return status === 403 || status === 404 || status === 409; }
+function uniqueBases(bases: Array<string | null | undefined>): string[] {
+  return [...new Set(bases.filter((base): base is string => typeof base === "string" && base.trim().length > 0))];
+}
+function fallbackPollBases(zone: string, provided: string | undefined, currentBase: string): string[] {
+  return uniqueBases([resolveStreamingBaseUrl(zone, provided), cloudmatchUrl(zone)]).filter((base) => base !== currentBase);
+}
+function hostFromBaseUrl(base: string): string | null {
+  try {
+    const host = new URL(base).hostname;
+    return isUsableSessionHost(host) ? host : null;
+  } catch {
+    return null;
+  }
+}
+function fallbackSessionHost(zone: string, streamingBaseUrl: string): string {
+  return hostFromBaseUrl(streamingBaseUrl) ?? hostFromBaseUrl(cloudmatchUrl(zone)) ?? `${zone}.cloudmatchbeta.nvidiagrid.net`;
+}
+function isPollableSessionPayload(payload: CloudMatchResponse): boolean {
+  return isUsableSessionHost(payload.session?.sessionId) && payload.session.status === 1;
+}
 function buildSignalingUrl(resourcePath: string, serverIp: string): { signalingUrl: string; signalingHost: string | null } {
   if (resourcePath.startsWith("rtsps://") || resourcePath.startsWith("rtsp://")) {
     const host = extractHostFromUrl(resourcePath);
@@ -635,7 +661,8 @@ function buildSignalingUrl(resourcePath: string, serverIp: string): { signalingU
 
 function firstConnectionIp(connection: { ip?: string | string[] } | undefined): string | undefined {
   const rawIp = connection?.ip;
-  return Array.isArray(rawIp) ? rawIp[0] : rawIp;
+  const ip = Array.isArray(rawIp) ? rawIp[0] : rawIp;
+  return isUsableSessionHost(ip) ? ip : undefined;
 }
 
 function resolveActiveSessionServerIp(connection: { ip?: string | string[]; resourcePath?: string } | undefined, controlIp?: string): string | undefined {
@@ -680,7 +707,7 @@ async function stopActiveSessionsForCreate(token: string, streamingBaseUrl: stri
     });
   }
 }
-function streamingServerIp(response: CloudMatchResponse): string | null { const connection = response.session.connectionInfo?.find((conn) => conn.usage === 14); const directIp = Array.isArray(connection?.ip) ? connection?.ip[0] : connection?.ip; if (directIp) return directIp; if (connection?.resourcePath) { const host = extractHostFromUrl(connection.resourcePath); if (host) return host; } const controlIp = response.session.sessionControlInfo?.ip; return Array.isArray(controlIp) ? controlIp[0] ?? null : controlIp ?? null; }
+function streamingServerIp(response: CloudMatchResponse): string | null { const connection = response.session.connectionInfo?.find((conn) => conn.usage === 14); const directIp = firstConnectionIp(connection); if (directIp) return directIp; if (connection?.resourcePath) { const host = extractHostFromUrl(connection.resourcePath); if (host) return host; } const controlIp = response.session.sessionControlInfo?.ip; const normalizedControlIp = Array.isArray(controlIp) ? controlIp[0] : controlIp; return isUsableSessionHost(normalizedControlIp) ? normalizedControlIp : null; }
 function resolveSignaling(response: CloudMatchResponse): { serverIp: string; signalingServer: string; signalingUrl: string; mediaConnectionInfo?: { ip: string; port: number } } {
   const connection =
     response.session.connectionInfo?.find((conn) => conn.usage === 14 && (conn.ip || conn.resourcePath))
@@ -700,6 +727,26 @@ function resolveSignaling(response: CloudMatchResponse): { serverIp: string; sig
 function extractQueuePosition(payload: CloudMatchResponse): number | undefined { return toPositiveInt(payload.session.queuePosition) ?? toPositiveInt(payload.session.seatSetupInfo?.queuePosition) ?? toPositiveInt(payload.session.sessionProgress?.queuePosition) ?? toPositiveInt(payload.session.progressInfo?.queuePosition); }
 function toColorQuality(bitDepth?: number, chromaFormat?: number): import("@shared/gfn").ColorQuality | undefined { if (bitDepth !== 0 && bitDepth !== 10) return undefined; if (chromaFormat !== 0 && chromaFormat !== 2) return undefined; if (bitDepth === 10) return chromaFormat === 2 ? "10bit_444" : "10bit_420"; return chromaFormat === 2 ? "8bit_444" : "8bit_420"; }
 function normalizeIceServers(response: CloudMatchResponse): IceServer[] { const raw = response.session.iceServerConfiguration?.iceServers ?? []; const servers = raw.map((entry) => ({ urls: Array.isArray(entry.urls) ? entry.urls : [entry.urls], username: entry.username, credential: entry.credential })).filter((entry) => entry.urls.length > 0); if (servers.length > 0) return servers; return [{ urls: ["stun:s1.stun.gamestream.nvidia.com:19308"] }, { urls: ["stun:stun.l.google.com:19302"] }]; }
+function parseCloudMatchPayload(value: unknown): CloudMatchResponse | null {
+  const parsed = typeof value === "string" ? (() => {
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return null;
+    }
+  })() : value;
+  if (!parsed || typeof parsed !== "object") return null;
+  const candidate = parsed as Partial<CloudMatchResponse>;
+  if (!candidate.session || typeof candidate.session !== "object") return null;
+  if (!candidate.requestStatus || typeof candidate.requestStatus !== "object") return null;
+  if (typeof candidate.session.sessionId !== "string" || typeof candidate.session.status !== "number") return null;
+  if (typeof candidate.requestStatus.statusCode !== "number") return null;
+  return candidate as CloudMatchResponse;
+}
+function cloudMatchPayloadFromError(error: unknown): CloudMatchResponse | null {
+  if (!isNativeHttpError(error)) return null;
+  return parseCloudMatchPayload(error.data) ?? parseCloudMatchPayload(error.body);
+}
 function normalizeSessionAdInfo(ad: CloudMatchSessionAd, index: number): import("@shared/gfn").SessionAdInfo | null { const adId = toOptionalString(ad.adId); const adMediaFiles = (ad.adMediaFiles ?? []).map((file) => ({ mediaFileUrl: toOptionalString(file.mediaFileUrl), encodingProfile: toOptionalString(file.encodingProfile) })).filter((file) => file.mediaFileUrl || file.encodingProfile).sort((left, right) => { const leftRank = left.encodingProfile ? GFN_AD_MEDIA_PROFILE_ORDER.get(left.encodingProfile) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER; const rightRank = right.encodingProfile ? GFN_AD_MEDIA_PROFILE_ORDER.get(right.encodingProfile) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER; return leftRank - rightRank; }); const preferredMediaFile = adMediaFiles.find((file) => file.mediaFileUrl); const mediaUrl = preferredMediaFile?.mediaFileUrl ?? toOptionalString(ad.adUrl) ?? toOptionalString(ad.mediaUrl) ?? toOptionalString(ad.videoUrl) ?? toOptionalString(ad.url); const adUrl = toOptionalString(ad.adUrl); const clickThroughUrl = toOptionalString(ad.clickThroughUrl); const title = toOptionalString(ad.title); const description = toOptionalString(ad.description); const adLengthInSeconds = typeof ad.adLengthInSeconds === "number" && Number.isFinite(ad.adLengthInSeconds) && ad.adLengthInSeconds > 0 ? ad.adLengthInSeconds : undefined; const durationMs = (adLengthInSeconds !== undefined ? Math.round(adLengthInSeconds * 1000) : undefined) ?? toPositiveInt(ad.durationMs) ?? toPositiveInt(ad.durationInMs); const adState = typeof ad.adState === "number" && Number.isFinite(ad.adState) ? Math.trunc(ad.adState) : undefined; if (!adId && !mediaUrl && !adUrl && adMediaFiles.length === 0 && !title && !description) return null; return { adId: adId ?? `ad-${index + 1}`, state: adState, adState, adUrl, mediaUrl, adMediaFiles, clickThroughUrl, adLengthInSeconds, durationMs, title, description }; }
 function extractAdState(payload: CloudMatchResponse): SessionInfo["adState"] {
   const sessionAdsRequired =
@@ -726,10 +773,50 @@ function extractAdState(payload: CloudMatchResponse): SessionInfo["adState"] {
   return { isAdsRequired: effectiveIsAdsRequired, sessionAdsRequired, isQueuePaused: queuePaused, gracePeriodSeconds, message, sessionAds: ads, ads, opportunity: normalizedOpportunity, serverSentEmptyAds: payload.session.sessionAds == null };
 }
 function extractNegotiatedStreamProfile(payload: CloudMatchResponse): SessionInfo["negotiatedStreamProfile"] { const monitor = payload.session.sessionRequestData?.clientRequestMonitorSettings?.[0]; const finalized = payload.session.finalizedStreamingFeatures; const requested = payload.session.sessionRequestData?.requestedStreamingFeatures; const resolution = monitor?.widthInPixels && monitor?.heightInPixels ? `${Math.trunc(monitor.widthInPixels)}x${Math.trunc(monitor.heightInPixels)}` : undefined; const colorQuality = toColorQuality(finalized?.bitDepth ?? requested?.bitDepth, finalized?.chromaFormat ?? requested?.chromaFormat); const enableL4S = finalized?.enabledL4S ?? requested?.enabledL4S; if (!resolution && !monitor?.framesPerSecond && !colorQuality && enableL4S === undefined) return undefined; return { resolution, fps: monitor?.framesPerSecond, colorQuality, enableL4S: enableL4S === undefined ? undefined : Boolean(enableL4S) }; }
-async function toSessionInfo(zone: string, streamingBaseUrl: string, payload: CloudMatchResponse, clientId?: string, deviceId?: string): Promise<SessionInfo> { if (payload.requestStatus.statusCode !== 1) throw new Error(payload.requestStatus.statusDescription ?? payload.requestStatus.statusName ?? "Session request failed"); const signaling = resolveSignaling(payload); return { sessionId: payload.session.sessionId, status: payload.session.status, queuePosition: extractQueuePosition(payload), seatSetupStep: payload.session.seatSetupInfo?.seatSetupStep, adState: extractAdState(payload), zone, streamingBaseUrl, serverIp: signaling.serverIp, signalingServer: signaling.signalingServer, signalingUrl: signaling.signalingUrl, gpuType: payload.session.gpuType, iceServers: normalizeIceServers(payload), mediaConnectionInfo: signaling.mediaConnectionInfo, negotiatedStreamProfile: extractNegotiatedStreamProfile(payload), clientId, deviceId }; }
+async function toSessionInfo(zone: string, streamingBaseUrl: string, payload: CloudMatchResponse, clientId?: string, deviceId?: string): Promise<SessionInfo> {
+  if (payload.requestStatus.statusCode !== 1 && !isPollableSessionPayload(payload)) {
+    throw new Error(payload.requestStatus.statusDescription ?? payload.requestStatus.statusName ?? "Session request failed");
+  }
+
+  try {
+    const signaling = resolveSignaling(payload);
+    return { sessionId: payload.session.sessionId, status: payload.session.status, queuePosition: extractQueuePosition(payload), seatSetupStep: payload.session.seatSetupInfo?.seatSetupStep, adState: extractAdState(payload), zone, streamingBaseUrl, serverIp: signaling.serverIp, signalingServer: signaling.signalingServer, signalingUrl: signaling.signalingUrl, gpuType: payload.session.gpuType, iceServers: normalizeIceServers(payload), mediaConnectionInfo: signaling.mediaConnectionInfo, negotiatedStreamProfile: extractNegotiatedStreamProfile(payload), clientId, deviceId };
+  } catch (error) {
+    if (!isPollableSessionPayload(payload)) {
+      throw error;
+    }
+    const host = fallbackSessionHost(zone, streamingBaseUrl);
+    const signalingServer = host.includes(":") ? host : `${host}:443`;
+    return { sessionId: payload.session.sessionId, status: payload.session.status, queuePosition: extractQueuePosition(payload), seatSetupStep: payload.session.seatSetupInfo?.seatSetupStep, adState: extractAdState(payload), zone, streamingBaseUrl, serverIp: host, signalingServer, signalingUrl: `wss://${signalingServer}/nvst/`, gpuType: payload.session.gpuType, iceServers: normalizeIceServers(payload), negotiatedStreamProfile: extractNegotiatedStreamProfile(payload), clientId, deviceId };
+  }
+}
 async function buildDeviceIdentifiers(): Promise<{ clientId: string; deviceId: string; deviceMake: string; deviceModel: string }> { const [{ identifier }, info] = await Promise.all([Device.getId(), Device.getInfo()]); return { clientId: crypto.randomUUID(), deviceId: identifier || crypto.randomUUID(), deviceMake: info.manufacturer || "UNKNOWN", deviceModel: info.model || "UNKNOWN" }; }
 function buildSessionRequestBody(input: SessionCreateRequest) { const { width, height } = parseResolution(input.settings.resolution); const hdrEnabled = false; const accountLinked = input.accountLinked ?? true; return { sessionRequestData: { appId: input.appId, internalTitle: input.internalTitle || null, availableSupportedControllers: [], networkTestSessionId: null, parentSessionId: null, clientIdentification: "GFN-PC", deviceHashId: crypto.randomUUID(), clientVersion: "30.0", sdkVersion: "1.0", streamerVersion: 1, clientPlatformName: "windows", clientRequestMonitorSettings: [{ widthInPixels: width, heightInPixels: height, framesPerSecond: input.settings.fps, sdrHdrMode: hdrEnabled ? 1 : 0, displayData: { desiredContentMaxLuminance: hdrEnabled ? 1000 : 0, desiredContentMinLuminance: 0, desiredContentMaxFrameAverageLuminance: hdrEnabled ? 500 : 0 }, dpi: 100 }], useOps: true, audioMode: 2, metaData: [{ key: "SubSessionId", value: crypto.randomUUID() }, { key: "wssignaling", value: "1" }, { key: "GSStreamerType", value: "WebRTC" }, { key: "networkType", value: "Unknown" }, { key: "ClientImeSupport", value: "0" }, { key: "clientPhysicalResolution", value: JSON.stringify({ horizontalPixels: width, verticalPixels: height }) }, { key: "surroundAudioInfo", value: "2" }], sdrHdrMode: hdrEnabled ? 1 : 0, clientDisplayHdrCapabilities: hdrEnabled ? { version: 1, hdrEdrSupportedFlagsInUint32: 1, staticMetadataDescriptorId: 0 } : null, surroundAudioInfo: 0, remoteControllersBitmap: 0, clientTimezoneOffset: timezoneOffsetMs(), enhancedStreamMode: 1, appLaunchMode: 1, secureRTSPSupported: false, partnerCustomData: "", accountLinked, enablePersistingInGameSettings: true, userAge: 26, requestedStreamingFeatures: { reflex: input.settings.fps >= 120, bitDepth: colorQualityBitDepth(input.settings.colorQuality), cloudGsync: false, enabledL4S: input.settings.enableL4S, mouseMovementFlags: 0, trueHdr: hdrEnabled, supportedHidDevices: 0, profile: 0, fallbackToLogicalResolution: false, hidDevices: null, chromaFormat: colorQualityChromaFormat(input.settings.colorQuality), prefilterMode: 0, prefilterSharpness: 0, prefilterNoiseReduction: 0, hudStreamingMode: 0, sdrColorSpace: 2, hdrColorSpace: hdrEnabled ? 4 : 0 } } }; }
 function buildClaimRequestBody(sessionId: string, appId: string, _settings: StreamSettings): unknown { const deviceId = crypto.randomUUID(); const subSessionId = crypto.randomUUID(); return { action: 2, data: "RESUME", sessionRequestData: { audioMode: 2, remoteControllersBitmap: 0, sdrHdrMode: 0, networkTestSessionId: null, availableSupportedControllers: [], clientVersion: "30.0", deviceHashId: deviceId, internalTitle: null, clientPlatformName: "windows", metaData: [{ key: "SubSessionId", value: subSessionId }, { key: "wssignaling", value: "1" }, { key: "GSStreamerType", value: "WebRTC" }, { key: "networkType", value: "Unknown" }, { key: "ClientImeSupport", value: "0" }], surroundAudioInfo: 0, clientTimezoneOffset: timezoneOffsetMs(), clientIdentification: "GFN-PC", parentSessionId: null, appId: Number.parseInt(appId, 10), streamerVersion: 1, appLaunchMode: 1, sdkVersion: "1.0", enhancedStreamMode: 1, useOps: true, clientDisplayHdrCapabilities: null, accountLinked: true, partnerCustomData: "", enablePersistingInGameSettings: true, secureRTSPSupported: false, userAge: 26, requestedStreamingFeatures: { reflex: false, bitDepth: 0, cloudGsync: false, profile: 0, fallbackToLogicalResolution: false, chromaFormat: 0, prefilterMode: 0, hudStreamingMode: 0 } }, metaData: [] }; }
+
+async function recoverPollableCreatedSession(input: SessionCreateRequest, payload: CloudMatchResponse, token: string, clientId: string, deviceId: string, failedBase: string): Promise<SessionInfo | null> {
+  if (!isPollableSessionPayload(payload)) {
+    return null;
+  }
+
+  const headers = requestHeaders({ token, clientId, deviceId, includeOrigin: false });
+  const readSession = (targetBase: string) => httpRequest<CloudMatchResponse>(`${targetBase}/v2/session/${payload.session.sessionId}`, { headers });
+  const candidateBases = uniqueBases([cloudmatchUrl(input.zone), failedBase]);
+
+  for (const candidateBase of candidateBases) {
+    try {
+      const polled = await readSession(candidateBase);
+      return await toSessionInfo(input.zone, candidateBase, polled, clientId, deviceId);
+    } catch (error) {
+      const errorPayload = cloudMatchPayloadFromError(error);
+      if (errorPayload && isPollableSessionPayload(errorPayload)) {
+        return await toSessionInfo(input.zone, candidateBase, errorPayload, clientId, deviceId);
+      }
+    }
+  }
+
+  return toSessionInfo(input.zone, cloudmatchUrl(input.zone), payload, clientId, deviceId);
+}
 
 async function createSessionRequest(input: SessionCreateRequest): Promise<SessionInfo> {
   const token = await authStore.resolveJwtToken(input.token);
@@ -776,14 +863,26 @@ async function createSessionRequest(input: SessionCreateRequest): Promise<Sessio
   const { clientId, deviceId, deviceMake, deviceModel } = await buildDeviceIdentifiers();
   const keyboardLayout = resolveGfnKeyboardLayout(input.settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, "linux");
   const languageCode = input.settings.gameLanguage ?? "en_US";
-  const response = await httpRequest<CloudMatchResponse>(`${streamingBaseUrl}/v2/session?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`, { method: "POST", headers: requestHeaders({ token, clientId, deviceId, deviceMake, deviceModel }), data: buildSessionRequestBody(input) });
+  let response: CloudMatchResponse;
+  try {
+    response = await httpRequest<CloudMatchResponse>(`${streamingBaseUrl}/v2/session?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`, { method: "POST", headers: requestHeaders({ token, clientId, deviceId, deviceMake, deviceModel }), data: buildSessionRequestBody(input) });
+  } catch (error) {
+    const payload = cloudMatchPayloadFromError(error);
+    const recovered = payload ? await recoverPollableCreatedSession(input, payload, token, clientId, deviceId, streamingBaseUrl) : null;
+    if (recovered) {
+      console.warn(
+        `[Android CloudMatch] createSession returned HTTP ${isNativeHttpError(error) ? error.status : "error"} with pollable status=${payload?.session.status}; continuing via ${recovered.streamingBaseUrl ?? streamingBaseUrl}.`,
+      );
+      return recovered;
+    }
+    throw error;
+  }
   return toSessionInfo(input.zone, streamingBaseUrl, response, clientId, deviceId);
 }
 async function pollSessionRequest(input: SessionPollRequest): Promise<SessionInfo> {
   const token = await authStore.resolveJwtToken(input.token);
   const clientId = input.clientId ?? crypto.randomUUID();
   const deviceId = input.deviceId ?? (await Device.getId()).identifier ?? crypto.randomUUID();
-  const zoneBase = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
   let base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
   const headers = requestHeaders({ token, clientId, deviceId, includeOrigin: false });
   const readSession = (targetBase: string) => httpRequest<CloudMatchResponse>(`${targetBase}/v2/session/${input.sessionId}`, { headers });
@@ -792,18 +891,41 @@ async function pollSessionRequest(input: SessionPollRequest): Promise<SessionInf
   try {
     response = await readSession(base);
   } catch (error) {
-    const shouldRetryViaZone =
-      base !== zoneBase &&
-      isNativeHttpError(error) &&
-      (error.status === 403 || error.status === 404 || error.status === 409);
+    const shouldRetryViaZone = isNativeHttpError(error) && isTransientSessionRouteStatus(error.status);
 
     if (!shouldRetryViaZone) {
       throw error;
     }
 
-    console.warn(`[Android] Direct session poll failed with HTTP ${error.status}; retrying via zone endpoint.`);
-    base = zoneBase;
-    response = await readSession(zoneBase);
+    let recovered: CloudMatchResponse | null = null;
+    for (const fallbackBase of fallbackPollBases(input.zone, input.streamingBaseUrl, base)) {
+      try {
+        console.warn(`[Android] Session poll via ${base} failed with HTTP ${error.status}; retrying via ${fallbackBase}.`);
+        recovered = await readSession(fallbackBase);
+        base = fallbackBase;
+        break;
+      } catch (fallbackError) {
+        const fallbackPayload = cloudMatchPayloadFromError(fallbackError);
+        if (fallbackPayload && isPollableSessionPayload(fallbackPayload)) {
+          recovered = fallbackPayload;
+          base = fallbackBase;
+          break;
+        }
+        if (!isNativeHttpError(fallbackError) || !isTransientSessionRouteStatus(fallbackError.status)) {
+          throw fallbackError;
+        }
+      }
+    }
+    if (!recovered) {
+      const errorPayload = cloudMatchPayloadFromError(error);
+      if (errorPayload && isPollableSessionPayload(errorPayload)) {
+        response = errorPayload;
+      } else {
+        throw error;
+      }
+    } else {
+      response = recovered;
+    }
   }
 
   const baseHost = new URL(base).hostname;
@@ -825,7 +947,6 @@ async function reportSessionAdRequest(input: SessionAdReportRequest): Promise<Se
   const clientId = input.clientId ?? crypto.randomUUID();
   const deviceId = input.deviceId ?? (await Device.getId()).identifier ?? crypto.randomUUID();
   let base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
-  const zoneBase = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
   const clientTimestamp = input.clientTimestamp ?? Math.floor(Date.now() / 1000);
   const requestBody = {
     action: SESSION_MODIFY_ACTION_AD_UPDATE,
@@ -855,10 +976,7 @@ async function reportSessionAdRequest(input: SessionAdReportRequest): Promise<Se
   try {
     response = await send(base);
   } catch (error) {
-    const shouldRetryViaZone =
-      base !== zoneBase &&
-      isNativeHttpError(error) &&
-      (error.status === 403 || error.status === 404 || error.status === 409);
+    const shouldRetryViaZone = isNativeHttpError(error) && isTransientSessionRouteStatus(error.status);
 
     if (!shouldRetryViaZone) {
       console.warn(
@@ -868,9 +986,35 @@ async function reportSessionAdRequest(input: SessionAdReportRequest): Promise<Se
       throw error;
     }
 
-    console.warn(`[Android CloudMatch] reportSessionAd: ${base} returned HTTP ${error.status}; retrying via ${zoneBase}.`);
-    base = zoneBase;
-    response = await send(zoneBase);
+    let recovered: CloudMatchResponse | null = null;
+    for (const fallbackBase of fallbackPollBases(input.zone, input.streamingBaseUrl, base)) {
+      try {
+        console.warn(`[Android CloudMatch] reportSessionAd: ${base} returned HTTP ${error.status}; retrying via ${fallbackBase}.`);
+        recovered = await send(fallbackBase);
+        base = fallbackBase;
+        break;
+      } catch (fallbackError) {
+        const fallbackPayload = cloudMatchPayloadFromError(fallbackError);
+        if (fallbackPayload && isPollableSessionPayload(fallbackPayload)) {
+          recovered = fallbackPayload;
+          base = fallbackBase;
+          break;
+        }
+        if (!isNativeHttpError(fallbackError) || !isTransientSessionRouteStatus(fallbackError.status)) {
+          throw fallbackError;
+        }
+      }
+    }
+    if (!recovered) {
+      const errorPayload = cloudMatchPayloadFromError(error);
+      if (errorPayload && isPollableSessionPayload(errorPayload)) {
+        response = errorPayload;
+      } else {
+        throw error;
+      }
+    } else {
+      response = recovered;
+    }
   }
 
   if (response.requestStatus.statusCode !== 1) {
