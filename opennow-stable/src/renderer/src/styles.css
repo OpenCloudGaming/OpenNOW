@@ -4708,6 +4708,13 @@ button.game-card-store-chip.active:hover {
   position: relative;
   z-index: 1;
   outline: none;
+  opacity: 0;
+  background: #000;
+  transition: opacity 120ms linear;
+}
+
+.sv-video--ready {
+  opacity: 1;
 }
 
 .sv-video:focus,

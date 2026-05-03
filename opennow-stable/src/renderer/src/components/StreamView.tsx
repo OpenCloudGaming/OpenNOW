@@ -2226,7 +2226,10 @@ export function StreamView({
         playsInline
         muted
         tabIndex={0}
-        className="sv-video"
+        className={`sv-video${hasVideoFrame ? " sv-video--ready" : ""}`}
+        onLoadedData={markVideoFrameReady}
+        onCanPlay={markVideoFrameReady}
+        onResize={markVideoFrameReady}
         onClick={() => {
           if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
             localVideoRef.current.focus();
