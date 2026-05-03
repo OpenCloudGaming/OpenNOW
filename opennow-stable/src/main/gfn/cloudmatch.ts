@@ -485,7 +485,7 @@ function timezoneOffsetMs(): number {
   return -new Date().getTimezoneOffset() * 60 * 1000;
 }
 
-function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest {
+function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: string): CloudMatchRequest {
   const { width, height } = parseResolution(input.settings.resolution);
   const cq = input.settings.colorQuality;
   // IMPORTANT: hdrEnabled is a SEPARATE toggle from color quality.
@@ -506,7 +506,9 @@ function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest
       networkTestSessionId: null,
       parentSessionId: null,
       clientIdentification: "GFN-PC",
-      deviceHashId: crypto.randomUUID(),
+      // Keep device identity stable across create -> reconnect/resume flows.
+      // The official client preserves this identity, and resume reliability depends on it.
+      deviceHashId,
       clientVersion: "30.0",
       sdkVersion: "1.0",
       streamerVersion: 1,
@@ -946,9 +948,9 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
 
   // Generate client/device IDs once for the entire session lifecycle
   const clientId = crypto.randomUUID();
-  const deviceId = crypto.randomUUID();
+  const deviceId = getStableDeviceId();
 
-  const body = buildSessionRequestBody(input);
+  const body = buildSessionRequestBody(input, deviceId);
 
   const base = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
   const keyboardLayout = resolveGfnKeyboardLayout(input.settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);
@@ -1296,8 +1298,8 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     throw new Error("Missing token for session claim");
   }
 
-  const deviceId = getStableDeviceId();
-  const clientId = crypto.randomUUID();
+  const deviceId = input.deviceId ?? getStableDeviceId();
+  const clientId = input.clientId ?? crypto.randomUUID();
 
   // Provide default values for optional parameters
   const appId = input.appId ?? "0";
@@ -1356,6 +1358,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   // with SESSION_NOT_PAUSED. For these sessions we skip the claim PUT and poll directly.
   // Status 2/3 (ready/streaming) sessions are paused and can be RESUME'd normally.
   let preClaimStatus: number | null = null;
+  let shouldSendResumeClaim = true;
   try {
     const validationUrl = `https://${effectiveServerIp}/v2/session/${input.sessionId}`;
     const validationHeaders = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
@@ -1369,6 +1372,17 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       console.log(`[CloudMatch] claimSession: validation response (first 1000 chars): ${validationText.slice(0, 1000)}`);
       if (preClaimStatus === 1) {
         console.log(`[CloudMatch] claimSession: session is still launching (status=1), skipping RESUME claim — polling directly to ready state`);
+      } else if (
+        input.recoveryMode === true &&
+        (preClaimStatus === 2 || preClaimStatus === 3)
+      ) {
+        // Recovery parity: if the session is already ready/streaming, avoid sending
+        // another RESUME mutation. Repeated RESUME PUTs can rotate signaling hosts
+        // and push the session back into transient setup/cleanup states.
+        shouldSendResumeClaim = false;
+        console.log(
+          `[CloudMatch] claimSession: recoveryMode and session already ready (status=${preClaimStatus}); skipping redundant RESUME claim`,
+        );
       } else if (preClaimStatus !== 2 && preClaimStatus !== 3) {
         console.warn(`[CloudMatch] claimSession: session not in ready state (status=${preClaimStatus}), claim may fail`);
       }
@@ -1381,7 +1395,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
 
   // Only send the RESUME claim PUT if the session is in a paused state (status 2 or 3).
   // For status=1 (still launching) we bypass the claim and fall through to the polling loop.
-  if (preClaimStatus !== 1) {
+  if (preClaimStatus !== 1 && shouldSendResumeClaim) {
     const payload = buildClaimRequestBody(input.sessionId, appId, settings);
 
     const headers: Record<string, string> = {
@@ -1472,6 +1486,8 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
         iceServers: await normalizeIceServers(pollApiResponse),
         mediaConnectionInfo: signaling.mediaConnectionInfo,
         negotiatedStreamProfile: extractNegotiatedStreamProfile(pollApiResponse),
+        clientId,
+        deviceId,
       };
     }
 

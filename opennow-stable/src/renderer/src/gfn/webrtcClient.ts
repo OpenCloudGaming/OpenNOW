@@ -183,6 +183,10 @@ interface ClientOptions {
   onStats?: (stats: StreamDiagnostics) => void;
   onTimeWarning?: (warning: StreamTimeWarning) => void;
   onMicStateChange?: (state: MicStateChange) => void;
+  onIceConnectionStateChange?: (state: RTCIceConnectionState) => void;
+  onPeerConnectionStateChange?: (state: RTCPeerConnectionState) => void;
+  /** Optional host callback for Meta/Home button edge presses (button 16). */
+  onControllerMetaPress?: (event: { controllerId: number; gamepad: Gamepad }) => void;
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
@@ -600,6 +604,8 @@ export class GfnWebRtcClient {
   } | null = null;
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private connectedGamepads: Set<number> = new Set();
+  private gamepadMetaPressed: Map<number, boolean> = new Map();
+  private lastEmittedDiagnostics: StreamDiagnostics | null = null;
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
   private lastRumbleWeak: number[] = [0, 0, 0, 0];
   private lastRumbleStrong: number[] = [0, 0, 0, 0];
@@ -926,10 +932,25 @@ export class GfnWebRtcClient {
     this.options.onLog(message);
   }
 
-  private emitStats(): void {
-    if (this.options.onStats) {
-      this.options.onStats({ ...this.diagnostics });
+  private diagnosticsChangedSinceLastEmit(): boolean {
+    if (!this.lastEmittedDiagnostics) return true;
+    const current = this.diagnostics as unknown as Record<string, unknown>;
+    const previous = this.lastEmittedDiagnostics as unknown as Record<string, unknown>;
+    const keys = Object.keys(current);
+    for (const key of keys) {
+      if (!Object.is(current[key], previous[key])) {
+        return true;
+      }
     }
+    return false;
+  }
+
+  private emitStats(force = false): void {
+    if (!this.options.onStats) return;
+    if (!force && !this.diagnosticsChangedSinceLastEmit()) return;
+    const snapshot = { ...this.diagnostics };
+    this.lastEmittedDiagnostics = snapshot;
+    this.options.onStats(snapshot);
   }
 
   private resetDecoderRecoveryState(): void {
@@ -951,6 +972,7 @@ export class GfnWebRtcClient {
 
   private resetDiagnostics(): void {
     this.lastStatsSample = null;
+    this.lastEmittedDiagnostics = null;
     this.currentCodec = "";
     this.currentResolution = "";
     this.isHdr = false;
@@ -1912,7 +1934,7 @@ export class GfnWebRtcClient {
   }
 
   private pollGamepads(): void {
-    if (this.isStreamInputBlocked()) return;
+    const streamInputBlocked = this.isStreamInputBlocked();
     const gamepads = navigator.getGamepads();
     if (!gamepads) {
       return;
@@ -1927,6 +1949,16 @@ export class GfnWebRtcClient {
       if (gamepad && gamepad.connected) {
         connectedCount++;
         this.updateGamepadBitmap(i, gamepad);
+        const metaPressed = Boolean(gamepad.buttons[16]?.pressed);
+        const prevMetaPressed = this.gamepadMetaPressed.get(i) ?? false;
+        if (metaPressed && !prevMetaPressed) {
+          try {
+            this.options.onControllerMetaPress?.({ controllerId: i, gamepad });
+          } catch {
+            // Host callbacks must never break stream input polling.
+          }
+        }
+        this.gamepadMetaPressed.set(i, metaPressed);
 
         // Track connected gamepads and update bitmap
         if (!this.connectedGamepads.has(i)) {
@@ -1939,6 +1971,9 @@ export class GfnWebRtcClient {
         }
 
         // Read and encode gamepad state
+        if (streamInputBlocked) {
+          continue;
+        }
         const gamepadInput = this.readGamepadState(gamepad, i);
         const stateChanged = this.hasGamepadStateChanged(i, gamepadInput);
 
@@ -1974,6 +2009,7 @@ export class GfnWebRtcClient {
         // Gamepad disconnected — clear bit from bitmap
         this.stopGamepadRumble(i, gamepad ?? undefined);
         this.connectedGamepads.delete(i);
+        this.gamepadMetaPressed.delete(i);
         this.previousGamepadStates.delete(i);
         this.clearGamepadBitmap(i);
         this.log(`Gamepad ${i} disconnected, bitmap now: 0x${this.gamepadBitmap.toString(16)}`);
@@ -3904,6 +3940,7 @@ export class GfnWebRtcClient {
       this.diagnostics.connectionState = pc.connectionState;
       this.emitStats();
       this.log(`Peer connection state: ${pc.connectionState}`);
+      this.options.onPeerConnectionStateChange?.(pc.connectionState);
     };
 
     pc.ondatachannel = (event) => {
@@ -3939,6 +3976,7 @@ export class GfnWebRtcClient {
 
     pc.oniceconnectionstatechange = () => {
       this.log(`ICE connection state: ${pc.iceConnectionState}`);
+      this.options.onIceConnectionStateChange?.(pc.iceConnectionState);
     };
 
     pc.onicegatheringstatechange = () => {
@@ -4250,6 +4288,15 @@ export class GfnWebRtcClient {
 
     this.micManager.setEnabled(enabled);
     this.log(`Microphone ${enabled ? "enabled" : "disabled"}`);
+  }
+
+  setMicrophoneLevel(level01: number): void {
+    if (!this.micManager) return;
+    this.micManager.setMicLevel(level01);
+  }
+
+  getMicrophoneLevel(): number {
+    return this.micManager?.getMicLevel() ?? 1;
   }
 
   /**

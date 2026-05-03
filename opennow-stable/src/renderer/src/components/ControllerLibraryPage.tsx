@@ -67,6 +67,8 @@ interface ControllerLibraryPageProps {
   /** In-stream: gamepad-friendly stream actions (see Current row). */
   streamMenuVolume?: number;
   onStreamMenuVolumeChange?: (volume01: number) => void;
+  streamMenuMicLevel?: number;
+  onStreamMenuMicLevelChange?: (level01: number) => void;
   onStreamMenuToggleMicrophone?: () => void;
   onStreamMenuToggleFullscreen?: () => void;
   streamMenuMicOn?: boolean;
@@ -131,6 +133,16 @@ const SPOTLIGHT_RECENT_COUNT = 5;
 
 /** Decode off main thread; lazy-load shelf art so clock/timer rerenders don’t contend with image work */
 const SHELF_IMAGE_PROPS = { decoding: "async" as const, loading: "lazy" as const };
+const SHELF_IMAGE_WINDOW_RADIUS = 8;
+const SHELF_CONTENT_WINDOW_RADIUS = 14;
+
+function isWithinImageWindow(index: number, activeIndex: number, radius: number = SHELF_IMAGE_WINDOW_RADIUS): boolean {
+  return Math.abs(index - activeIndex) <= radius;
+}
+
+function isWithinContentWindow(index: number, activeIndex: number, radius: number = SHELF_CONTENT_WINDOW_RADIUS): boolean {
+  return Math.abs(index - activeIndex) <= radius;
+}
 
 /** XMB-style horizontal shelf: align active tile center with the shelf viewport center (track’s parent). */
 function computeShelfTranslateXToCenter(track: HTMLElement | null, activeIndex: number): number {
@@ -225,6 +237,8 @@ export function ControllerLibraryPage({
   inStreamMenu = false,
   streamMenuVolume = 1,
   onStreamMenuVolumeChange,
+  streamMenuMicLevel = 1,
+  onStreamMenuMicLevelChange,
   onStreamMenuToggleMicrophone,
   onStreamMenuToggleFullscreen,
   streamMenuMicOn = false,
@@ -247,6 +261,7 @@ export function ControllerLibraryPage({
   const [categoryIndex, setCategoryIndex] = useState(initialCategoryIndex);
   const [endSessionConfirm, setEndSessionConfirm] = useState(false);
   const [editingStreamVolume, setEditingStreamVolume] = useState(false);
+  const [editingStreamMicLevel, setEditingStreamMicLevel] = useState(false);
   const itemsContainerRef = useRef<HTMLDivElement>(null);
   const overlayNavWriteRef = useRef<ControllerOverlayNavSnapshot | null>(null);
   const overlayNavRestoredRef = useRef(false);
@@ -571,6 +586,11 @@ export function ControllerLibraryPage({
       ? [
           { id: "toggleMic", label: "Microphone", value: streamMenuMicOn ? "On" : "Off" },
           {
+            id: "streamMicLevel",
+            label: "Mic level",
+            value: `${Math.round((streamMenuMicLevel ?? 1) * 100)}%`,
+          },
+          {
             id: "streamVolume",
             label: "Stream volume",
             value: `${Math.round((streamMenuVolume ?? 1) * 100)}%`,
@@ -597,6 +617,7 @@ export function ControllerLibraryPage({
     inStreamMenu,
     endSessionConfirm,
     streamMenuMicOn,
+    streamMenuMicLevel,
     streamMenuVolume,
     streamMenuIsFullscreen,
   ]);
@@ -1194,12 +1215,9 @@ export function ControllerLibraryPage({
       return;
     }
 
-    let offset = 0;
-    for (let i = 0; i < selectedIndex; i++) {
-      const childStyle = window.getComputedStyle(children[i]);
-      offset += children[i].offsetHeight + parseFloat(childStyle.marginBottom);
-    }
-    offset += children[selectedIndex].offsetHeight / 2;
+    // Use offsetTop/offsetHeight to avoid per-item style reads on every navigation move.
+    const activeChild = children[selectedIndex];
+    const offset = activeChild.offsetTop + (activeChild.offsetHeight / 2);
     setListTranslateY(-offset);
     setListTranslateX(0);
   }, [
@@ -1226,6 +1244,24 @@ export function ControllerLibraryPage({
       playUiSound("confirm");
     }
   }, [onToggleFavoriteGame, playUiSound, selectedGame]);
+
+  const controllerEventHandlersRef = useRef<{
+    onDirection: (event: Event) => void;
+    onShoulder: (event: Event) => void;
+    onActivate: () => void;
+    onSecondaryActivate: () => void;
+    onTertiaryActivate: () => void;
+    onCancel: (event: Event) => void;
+    onKeyboard: (event: KeyboardEvent) => void;
+  }>({
+    onDirection: () => {},
+    onShoulder: () => {},
+    onActivate: () => {},
+    onSecondaryActivate: () => {},
+    onTertiaryActivate: () => {},
+    onCancel: () => {},
+    onKeyboard: () => {},
+  });
 
   useEffect(() => {
     const applyDirection = (direction: Direction): void => {
@@ -1275,6 +1311,21 @@ export function ControllerLibraryPage({
         }
         if (direction === "right") {
           onStreamMenuVolumeChange(Math.min(1, cur + step));
+          playUiSound("move");
+          return;
+        }
+        return;
+      }
+      if (topCategory === "current" && inStreamMenu && editingStreamMicLevel && onStreamMenuMicLevelChange) {
+        const step = 0.05;
+        const cur = streamMenuMicLevel ?? 1;
+        if (direction === "left") {
+          onStreamMenuMicLevelChange(Math.max(0, cur - step));
+          playUiSound("move");
+          return;
+        }
+        if (direction === "right") {
+          onStreamMenuMicLevelChange(Math.min(1, cur + step));
           playUiSound("move");
           return;
         }
@@ -1565,6 +1616,7 @@ export function ControllerLibraryPage({
             playUiSound("move");
             setSelectedSettingIndex(nextIndex);
             if (topCategory === "current" && inStreamMenu) setEditingStreamVolume(false);
+            if (topCategory === "current" && inStreamMenu) setEditingStreamMicLevel(false);
           }
           return;
         }
@@ -1574,6 +1626,7 @@ export function ControllerLibraryPage({
             playUiSound("move");
             setSelectedSettingIndex(nextIndex);
             if (topCategory === "current" && inStreamMenu) setEditingStreamVolume(false);
+            if (topCategory === "current" && inStreamMenu) setEditingStreamMicLevel(false);
           }
           return;
         }
@@ -1634,6 +1687,7 @@ export function ControllerLibraryPage({
       setEditingBandwidth(false);
       setEditingThemeChannel(null);
       setEditingStreamVolume(false);
+      setEditingStreamMicLevel(false);
       playUiSound("move");
     };
 
@@ -1645,7 +1699,7 @@ export function ControllerLibraryPage({
       if (!direction) return;
       if (gamesHubOpen) return;
       if (topCategory === "settings" && settingsSubcategory !== "root") return;
-      if (editingBandwidth || editingThemeChannel || editingStreamVolume) return;
+      if (editingBandwidth || editingThemeChannel || editingStreamVolume || editingStreamMicLevel) return;
       cycleTopCategory(direction === "prev" ? -1 : 1);
     };
 
@@ -1829,6 +1883,11 @@ export function ControllerLibraryPage({
       }
       if (topCategory === "current" && inStreamMenu && editingStreamVolume) {
         setEditingStreamVolume(false);
+        playUiSound("confirm");
+        return;
+      }
+      if (topCategory === "current" && inStreamMenu && editingStreamMicLevel) {
+        setEditingStreamMicLevel(false);
         playUiSound("confirm");
         return;
       }
@@ -2041,14 +2100,19 @@ export function ControllerLibraryPage({
         playUiSound("move");
         return;
       }
-        if (topCategory === "current" && inStreamMenu) {
-          const item = displayItems[selectedSettingIndex];
-          if (item?.id === "streamVolume" && onStreamMenuVolumeChange) {
-            setEditingStreamVolume(true);
-            playUiSound("move");
-          }
-          return;
+      if (topCategory === "current" && inStreamMenu) {
+        const item = displayItems[selectedSettingIndex];
+        if (item?.id === "streamVolume" && onStreamMenuVolumeChange) {
+          setEditingStreamVolume(true);
+          setEditingStreamMicLevel(false);
+          playUiSound("move");
+        } else if (item?.id === "streamMicLevel" && onStreamMenuMicLevelChange) {
+          setEditingStreamMicLevel(true);
+          setEditingStreamVolume(false);
+          playUiSound("move");
         }
+        return;
+      }
         if (topCategory === "current") {
           return;
         }
@@ -2151,6 +2215,12 @@ export function ControllerLibraryPage({
       }
       if (inStreamMenu && editingStreamVolume) {
         setEditingStreamVolume(false);
+        playUiSound("move");
+        e.preventDefault();
+        return;
+      }
+      if (inStreamMenu && editingStreamMicLevel) {
+        setEditingStreamMicLevel(false);
         playUiSound("move");
         e.preventDefault();
         return;
@@ -2323,6 +2393,12 @@ export function ControllerLibraryPage({
           playUiSound("move");
           return;
         }
+        if (inStreamMenu && editingStreamMicLevel) {
+          e.preventDefault();
+          setEditingStreamMicLevel(false);
+          playUiSound("move");
+          return;
+        }
 
         // Top-level back is intentionally a no-op.
         e.preventDefault();
@@ -2330,21 +2406,14 @@ export function ControllerLibraryPage({
       }
     };
 
-    window.addEventListener("opennow:controller-direction", handler);
-    window.addEventListener("opennow:controller-shoulder", shoulderHandler);
-    window.addEventListener("opennow:controller-activate", activateHandler);
-    window.addEventListener("opennow:controller-secondary-activate", secondaryActivateHandler);
-    window.addEventListener("opennow:controller-tertiary-activate", tertiaryActivateHandler);
-    window.addEventListener("opennow:controller-cancel", cancelHandler);
-    window.addEventListener("keydown", kbdHandler);
-    return () => {
-      window.removeEventListener("opennow:controller-direction", handler);
-      window.removeEventListener("opennow:controller-shoulder", shoulderHandler);
-      window.removeEventListener("opennow:controller-activate", activateHandler);
-      window.removeEventListener("opennow:controller-secondary-activate", secondaryActivateHandler);
-      window.removeEventListener("opennow:controller-tertiary-activate", tertiaryActivateHandler);
-      window.removeEventListener("opennow:controller-cancel", cancelHandler);
-      window.removeEventListener("keydown", kbdHandler);
+    controllerEventHandlersRef.current = {
+      onDirection: handler as (event: Event) => void,
+      onShoulder: shoulderHandler as (event: Event) => void,
+      onActivate: activateHandler,
+      onSecondaryActivate: secondaryActivateHandler,
+      onTertiaryActivate: tertiaryActivateHandler,
+      onCancel: cancelHandler,
+      onKeyboard: kbdHandler,
     };
   }, [
     isLoading,
@@ -2416,12 +2485,42 @@ export function ControllerLibraryPage({
     inStreamMenu,
     endSessionConfirm,
     editingStreamVolume,
+    editingStreamMicLevel,
+    streamMenuMicLevel,
+    onStreamMenuMicLevelChange,
     streamMenuVolume,
     onStreamMenuVolumeChange,
     onStreamMenuToggleMicrophone,
     onStreamMenuToggleFullscreen,
     controllerType,
   ]);
+
+  useEffect(() => {
+    const directionListener = (event: Event) => controllerEventHandlersRef.current.onDirection(event);
+    const shoulderListener = (event: Event) => controllerEventHandlersRef.current.onShoulder(event);
+    const activateListener = () => controllerEventHandlersRef.current.onActivate();
+    const secondaryActivateListener = () => controllerEventHandlersRef.current.onSecondaryActivate();
+    const tertiaryActivateListener = () => controllerEventHandlersRef.current.onTertiaryActivate();
+    const cancelListener = (event: Event) => controllerEventHandlersRef.current.onCancel(event);
+    const keyboardListener = (event: KeyboardEvent) => controllerEventHandlersRef.current.onKeyboard(event);
+
+    window.addEventListener("opennow:controller-direction", directionListener);
+    window.addEventListener("opennow:controller-shoulder", shoulderListener);
+    window.addEventListener("opennow:controller-activate", activateListener);
+    window.addEventListener("opennow:controller-secondary-activate", secondaryActivateListener);
+    window.addEventListener("opennow:controller-tertiary-activate", tertiaryActivateListener);
+    window.addEventListener("opennow:controller-cancel", cancelListener);
+    window.addEventListener("keydown", keyboardListener);
+    return () => {
+      window.removeEventListener("opennow:controller-direction", directionListener);
+      window.removeEventListener("opennow:controller-shoulder", shoulderListener);
+      window.removeEventListener("opennow:controller-activate", activateListener);
+      window.removeEventListener("opennow:controller-secondary-activate", secondaryActivateListener);
+      window.removeEventListener("opennow:controller-tertiary-activate", tertiaryActivateListener);
+      window.removeEventListener("opennow:controller-cancel", cancelListener);
+      window.removeEventListener("keydown", keyboardListener);
+    };
+  }, []);
 
   const renderFaceButton = (kind: "primary" | "secondary" | "tertiary", className: string, size: number): JSX.Element => {
     if (kind === "primary") {
@@ -2565,18 +2664,52 @@ export function ControllerLibraryPage({
                       {editingThemeChannel === themeChannelForRow ? " • Editing" : ""}
                     </span>
                   </div>
+                ) : item.id === "streamMicLevel" && inStreamMenu ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={Math.round((streamMenuMicLevel ?? 1) * 100)}
+                      onChange={(e) =>
+                        onStreamMenuMicLevelChange?.(Math.max(0, Math.min(1, Number(e.target.value) / 100)))
+                      }
+                      aria-label="Microphone level"
+                      style={editingStreamMicLevel ? { outline: "2px solid rgba(255,255,255,0.2)" } : undefined}
+                    />
+                    <span className="xmb-game-meta-chip">
+                      {`${Math.round((streamMenuMicLevel ?? 1) * 100)}%`}
+                      {editingStreamMicLevel
+                        ? " • Editing ←/→"
+                        : controllerType === "ps"
+                          ? " • □ to adjust"
+                          : " • X to adjust"}
+                    </span>
+                  </div>
                 ) : item.id === "streamVolume" && inStreamMenu ? (
-                  <span
-                    className="xmb-game-meta-chip"
-                    style={editingStreamVolume ? { outline: "2px solid rgba(255,255,255,0.2)", borderRadius: 6, padding: "2px 8px" } : undefined}
-                  >
-                    {`${Math.round((streamMenuVolume ?? 1) * 100)}%`}
-                    {editingStreamVolume
-                      ? " • Editing ←/→"
-                      : controllerType === "ps"
-                        ? " • □ to adjust"
-                        : " • X to adjust"}
-                  </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={Math.round((streamMenuVolume ?? 1) * 100)}
+                      onChange={(e) =>
+                        onStreamMenuVolumeChange?.(Math.max(0, Math.min(1, Number(e.target.value) / 100)))
+                      }
+                      aria-label="Stream volume"
+                      style={editingStreamVolume ? { outline: "2px solid rgba(255,255,255,0.2)" } : undefined}
+                    />
+                    <span className="xmb-game-meta-chip">
+                      {`${Math.round((streamMenuVolume ?? 1) * 100)}%`}
+                      {editingStreamVolume
+                        ? " • Editing ←/→"
+                        : controllerType === "ps"
+                          ? " • □ to adjust"
+                          : " • X to adjust"}
+                    </span>
+                  </div>
                 ) : (
                   <span className="xmb-game-meta-chip">{item.value}</span>
                 )}
@@ -2603,8 +2736,12 @@ export function ControllerLibraryPage({
     themeRgbForTrack.b,
     maxBitrateMbpsForTrack,
     inStreamMenu,
+    streamMenuMicLevel,
+    onStreamMenuMicLevelChange,
     streamMenuVolume,
+    onStreamMenuVolumeChange,
     editingStreamVolume,
+    editingStreamMicLevel,
     controllerType,
   ]);
 
@@ -2804,6 +2941,9 @@ export function ControllerLibraryPage({
                   ))
                 : categorizedGames.map((game, idx) => {
                     const isActive = idx === selectedIndex;
+                    const shouldRenderContent = isWithinContentWindow(idx, selectedIndex);
+                    const shouldRenderImage = isWithinImageWindow(idx, selectedIndex);
+                    const eagerLoadImage = Math.abs(idx - selectedIndex) <= 2;
                     return (
                       <div
                         key={game.id}
@@ -2812,10 +2952,22 @@ export function ControllerLibraryPage({
                         aria-selected={isActive}
                         aria-label={game.title}
                       >
-                        {favoriteGameIdSet.has(game.id) ? <Star className="xmb-ps5-tile-fav" aria-hidden /> : null}
-                        <div className="xmb-ps5-tile-frame">
-                          {game.imageUrl ? <img src={game.imageUrl} alt="" className="xmb-ps5-tile-cover" {...SHELF_IMAGE_PROPS} /> : <div className="xmb-ps5-tile-cover xmb-ps5-tile-cover--placeholder" />}
-                        </div>
+                        {shouldRenderContent ? (
+                          <>
+                            {favoriteGameIdSet.has(game.id) ? <Star className="xmb-ps5-tile-fav" aria-hidden /> : null}
+                            <div className="xmb-ps5-tile-frame">
+                              {game.imageUrl && shouldRenderImage ? (
+                                <img
+                                  src={game.imageUrl}
+                                  alt=""
+                                  className="xmb-ps5-tile-cover"
+                                  {...SHELF_IMAGE_PROPS}
+                                  loading={eagerLoadImage ? "eager" : "lazy"}
+                                />
+                              ) : <div className="xmb-ps5-tile-cover xmb-ps5-tile-cover--placeholder" />}
+                            </div>
+                          </>
+                        ) : <div className="xmb-ps5-tile-frame xmb-ps5-tile-frame--virtualized" aria-hidden />}
                       </div>
                     );
                   })}
@@ -3005,6 +3157,9 @@ export function ControllerLibraryPage({
 
               {!mediaLoading && !mediaError && mediaAssetItems.map((item, idx) => {
                 const isActive = idx === selectedMediaIndex;
+                const shouldRenderContent = isWithinContentWindow(idx, selectedMediaIndex);
+                const shouldRenderImage = isWithinImageWindow(idx, selectedMediaIndex);
+                const eagerLoadImage = Math.abs(idx - selectedMediaIndex) <= 1;
                 const thumb = mediaThumbById[item.id];
                 const dateLabel = new Date(item.createdAtMs).toLocaleDateString();
                 const durationMs = item.durationMs ?? 0;
@@ -3013,14 +3168,28 @@ export function ControllerLibraryPage({
 
                 return (
                   <div key={item.id} className={`xmb-ps5-media-tile ${isActive ? "active" : ""}`} role="option" aria-selected={isActive}>
-                    <div className="xmb-ps5-media-frame">
-                      {thumb ? <img src={thumb} alt="" className="xmb-ps5-media-image" {...SHELF_IMAGE_PROPS} /> : <div className="xmb-ps5-media-image xmb-ps5-media-image--placeholder" />}
-                    </div>
-                    <div className="xmb-ps5-media-caption">{item.gameTitle || item.fileName}</div>
-                    <div className="xmb-ps5-media-meta">
-                      <span className="xmb-game-meta-chip">{durationLabel}</span>
-                      <span className="xmb-game-meta-chip">{dateLabel}</span>
-                    </div>
+                    {shouldRenderContent ? (
+                      <>
+                        <div className="xmb-ps5-media-frame">
+                          {thumb && shouldRenderImage ? (
+                            <img
+                              src={thumb}
+                              alt=""
+                              className="xmb-ps5-media-image"
+                              {...SHELF_IMAGE_PROPS}
+                              loading={eagerLoadImage ? "eager" : "lazy"}
+                            />
+                          ) : <div className="xmb-ps5-media-image xmb-ps5-media-image--placeholder" />}
+                        </div>
+                        <div className="xmb-ps5-media-caption">{item.gameTitle || item.fileName}</div>
+                        <div className="xmb-ps5-media-meta">
+                          <span className="xmb-game-meta-chip">{durationLabel}</span>
+                          <span className="xmb-game-meta-chip">{dateLabel}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="xmb-ps5-media-frame xmb-ps5-media-frame--virtualized" aria-hidden />
+                    )}
                   </div>
                 );
               })}

@@ -1507,6 +1507,26 @@ body.controller-mode.controller-hide-cursor * {
   transform-origin: top left !important;
 }
 
+/* Lower-cost compositor path while in-stream overlay is open. */
+body.controller-overlay-lowfx .controller-overlay--in-stream {
+  background: rgba(5, 10, 14, 0.5) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+body.controller-overlay-lowfx .controller-overlay--in-stream .xmb-bg-orb,
+body.controller-overlay-lowfx .controller-overlay--in-stream .xmb-hero::before,
+body.controller-overlay-lowfx .controller-overlay--in-stream .xmb-hero::after {
+  animation: none !important;
+  filter: none !important;
+}
+
+body.controller-overlay-lowfx .controller-overlay--in-stream .xmb-frost,
+body.controller-overlay-lowfx .controller-overlay--in-stream .xmb-top-bar {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
 .cis-warning {
   flex-shrink: 0;
   padding: 8px 14px;
@@ -8103,6 +8123,14 @@ button.game-card-store-chip.owned.active:hover {
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.35));
 }
 
+.xmb-ps5-tile-frame--virtualized {
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
+  opacity: 0.35;
+  box-shadow: none;
+}
+
 .xmb-ps5-tile-cover--placeholder {
   width: 100%;
   height: 100%;
@@ -8263,6 +8291,11 @@ button.game-card-store-chip.owned.active:hover {
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
     repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.05) 0 8px, rgba(255, 255, 255, 0.01) 8px 16px);
+}
+
+.xmb-ps5-media-frame--virtualized {
+  opacity: 0.42;
+  box-shadow: none;
 }
 
 .xmb-ps5-media-caption {

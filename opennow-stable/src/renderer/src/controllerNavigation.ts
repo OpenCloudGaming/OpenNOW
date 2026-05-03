@@ -11,6 +11,7 @@ interface UseControllerNavigationOptions {
   onActivateInput?: () => boolean;
   onSecondaryActivateInput?: () => boolean;
   onTertiaryActivateInput?: () => boolean;
+  onMetaToggleInput?: () => boolean;
 }
 
 const INTERACTIVE_SELECTOR = [
@@ -55,34 +56,81 @@ function isElementDisabled(el: HTMLElement): boolean {
   return false;
 }
 
+let focusScopeCache: { version: number; root: ParentNode } | null = null;
+let interactiveElementsCache: { version: number; root: ParentNode; items: HTMLElement[] } | null = null;
+let controllerDomVersion = 0;
+let activeControllerFocusEl: HTMLElement | null = null;
+let activeRangeEditingEl: HTMLInputElement | null = null;
+
+function invalidateControllerDomCaches(): void {
+  controllerDomVersion += 1;
+  focusScopeCache = null;
+  interactiveElementsCache = null;
+}
+
 function getFocusScopeRoot(): ParentNode {
+  if (focusScopeCache && focusScopeCache.version === controllerDomVersion) {
+    return focusScopeCache.root;
+  }
   const overlay = document.querySelector(".controller-overlay");
-  if (overlay) return overlay as ParentNode;
+  if (overlay) {
+    const root = overlay as ParentNode;
+    focusScopeCache = { version: controllerDomVersion, root };
+    return root;
+  }
 
   const exitDialog = document.querySelector(".sv-exit");
-  if (exitDialog) return exitDialog;
+  if (exitDialog) {
+    focusScopeCache = { version: controllerDomVersion, root: exitDialog };
+    return exitDialog;
+  }
 
   const navbarModal = document.querySelector(".navbar-modal");
-  if (navbarModal) return navbarModal;
+  if (navbarModal) {
+    focusScopeCache = { version: controllerDomVersion, root: navbarModal };
+    return navbarModal;
+  }
 
   const loginDropdown = document.querySelector(".login-dropdown");
-  if (loginDropdown?.parentElement) return loginDropdown.parentElement;
+  if (loginDropdown?.parentElement) {
+    focusScopeCache = { version: controllerDomVersion, root: loginDropdown.parentElement };
+    return loginDropdown.parentElement;
+  }
 
   const regionDropdown = document.querySelector(".region-dropdown");
-  if (regionDropdown?.parentElement) return regionDropdown.parentElement;
+  if (regionDropdown?.parentElement) {
+    focusScopeCache = { version: controllerDomVersion, root: regionDropdown.parentElement };
+    return regionDropdown.parentElement;
+  }
 
   const streamLoading = document.querySelector(".sload");
-  if (streamLoading) return streamLoading;
+  if (streamLoading) {
+    focusScopeCache = { version: controllerDomVersion, root: streamLoading };
+    return streamLoading;
+  }
 
+  focusScopeCache = { version: controllerDomVersion, root: document };
   return document;
 }
 
 function listInteractiveElements(): HTMLElement[] {
   const scopeRoot = getFocusScopeRoot();
+  if (
+    interactiveElementsCache
+    && interactiveElementsCache.version === controllerDomVersion
+    && interactiveElementsCache.root === scopeRoot
+  ) {
+    return interactiveElementsCache.items;
+  }
   const candidates = Array.from(scopeRoot.querySelectorAll(INTERACTIVE_SELECTOR))
     .filter(isElementInteractive)
     .filter((el) => el.tabIndex >= 0)
     .filter((el) => !isElementDisabled(el) && isElementVisible(el));
+  interactiveElementsCache = {
+    version: controllerDomVersion,
+    root: scopeRoot,
+    items: candidates,
+  };
   return candidates;
 }
 
@@ -95,10 +143,19 @@ function getElementCenter(el: HTMLElement): { x: number; y: number } {
 }
 
 function setControllerFocus(el: HTMLElement): void {
+  if (activeControllerFocusEl && activeControllerFocusEl !== el) {
+    activeControllerFocusEl.classList.remove("controller-focus");
+  }
+  if (activeControllerFocusEl === el && el.classList.contains("controller-focus")) {
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ block: "nearest", inline: "nearest" });
+    return;
+  }
   document.querySelectorAll<HTMLElement>(".controller-focus").forEach((node) => {
-    node.classList.remove("controller-focus");
+    if (node !== el) node.classList.remove("controller-focus");
   });
   el.classList.add("controller-focus");
+  activeControllerFocusEl = el;
   el.focus({ preventScroll: true });
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
@@ -127,12 +184,24 @@ function adjustRangeInput(input: HTMLInputElement, direction: Direction): boolea
 }
 
 function setRangeEditMode(input: HTMLInputElement | null): void {
-  document.querySelectorAll<HTMLInputElement>(".controller-range-editing").forEach((node) => {
-    node.classList.remove("controller-range-editing");
-  });
-  if (input) {
-    input.classList.add("controller-range-editing");
+  if (activeRangeEditingEl && activeRangeEditingEl !== input) {
+    activeRangeEditingEl.classList.remove("controller-range-editing");
   }
+  if (input) {
+    if (!input.classList.contains("controller-range-editing")) {
+      input.classList.add("controller-range-editing");
+    }
+    activeRangeEditingEl = input;
+    return;
+  }
+  if (activeRangeEditingEl) {
+    activeRangeEditingEl.classList.remove("controller-range-editing");
+  } else {
+    document.querySelectorAll<HTMLInputElement>(".controller-range-editing").forEach((node) => {
+      node.classList.remove("controller-range-editing");
+    });
+  }
+  activeRangeEditingEl = null;
 }
 
 function moveFocus(direction: Direction): void {
@@ -273,6 +342,7 @@ export function useControllerNavigation({
   onActivateInput,
   onSecondaryActivateInput,
   onTertiaryActivateInput,
+  onMetaToggleInput,
 }: UseControllerNavigationOptions): boolean {
   const [controllerConnected, setControllerConnected] = useState(false);
   const connectedRef = useRef(false);
@@ -292,6 +362,7 @@ export function useControllerNavigation({
     b: false,
     lb: false,
     rb: false,
+    meta: false,
   });
 
   useEffect(() => {
@@ -323,7 +394,7 @@ export function useControllerNavigation({
           state.pressed = false;
           state.repeatCount = 0;
         }
-        actionStateRef.current = { a: false, x: false, y: false, b: false, lb: false, rb: false };
+        actionStateRef.current = { a: false, x: false, y: false, b: false, lb: false, rb: false, meta: false };
         frameRef.current = window.requestAnimationFrame(tick);
         return;
       }
@@ -340,6 +411,7 @@ export function useControllerNavigation({
       const b = Boolean(pad.buttons[1]?.pressed);
       const lb = Boolean(pad.buttons[4]?.pressed);
       const rb = Boolean(pad.buttons[5]?.pressed);
+      const meta = Boolean(pad.buttons[16]?.pressed);
 
       const handleDirection = (direction: Direction, pressed: boolean): void => {
         const state = directionStateRef.current[direction];
@@ -379,7 +451,7 @@ export function useControllerNavigation({
 
       if (a && !actionStateRef.current.a) {
         if (onActivateInput?.()) {
-          actionStateRef.current = { a, x, y, b, lb, rb };
+          actionStateRef.current = { a, x, y, b, lb, rb, meta };
           frameRef.current = window.requestAnimationFrame(tick);
           return;
         }
@@ -400,8 +472,11 @@ export function useControllerNavigation({
       if (rb && !actionStateRef.current.rb) {
         onNavigatePage?.("next");
       }
+      if (meta && !actionStateRef.current.meta) {
+        onMetaToggleInput?.();
+      }
 
-      actionStateRef.current = { a, x, y, b, lb, rb };
+      actionStateRef.current = { a, x, y, b, lb, rb, meta };
       frameRef.current = window.requestAnimationFrame(tick);
     };
 
@@ -410,12 +485,30 @@ export function useControllerNavigation({
       if (frameRef.current !== null) {
         window.cancelAnimationFrame(frameRef.current);
       }
+      activeControllerFocusEl = null;
+      activeRangeEditingEl = null;
       setRangeEditMode(null);
       document.querySelectorAll<HTMLElement>(".controller-focus").forEach((node) => {
         node.classList.remove("controller-focus");
       });
     };
-  }, [enabled, onActivateInput, onBackAction, onDirectionInput, onNavigatePage, onSecondaryActivateInput, onTertiaryActivateInput]);
+  }, [enabled, onActivateInput, onBackAction, onDirectionInput, onMetaToggleInput, onNavigatePage, onSecondaryActivateInput, onTertiaryActivateInput]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const observer = new MutationObserver(() => {
+      invalidateControllerDomCaches();
+    });
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true });
+    const invalidate = () => invalidateControllerDomCaches();
+    window.addEventListener("resize", invalidate);
+    window.addEventListener("scroll", invalidate, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", invalidate);
+      window.removeEventListener("scroll", invalidate, true);
+    };
+  }, [enabled]);
 
   return controllerConnected;
 }

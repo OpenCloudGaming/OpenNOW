@@ -256,7 +256,17 @@ function runShutdownCleanup(reason = "app-quit"): void {
   console.log(`[Main] Running shutdown cleanup (${reason})`);
 
   refreshScheduler.stop();
-  signalingClient?.disconnect();
+  // Parity with soft-reset behavior: on full app quit, let process teardown close
+  // signaling sockets naturally instead of emitting an explicit disconnect event
+  // into the renderer during shutdown.
+  const shouldSkipExplicitSignalingDisconnect =
+    reason === "renderer-explicit-exit" ||
+    reason === "app-quit" ||
+    reason === "before-quit" ||
+    reason === "window-all-closed";
+  if (!shouldSkipExplicitSignalingDisconnect) {
+    signalingClient?.disconnect();
+  }
   signalingClient = null;
   signalingClientKey = null;
   void destroyDiscordRpc();
