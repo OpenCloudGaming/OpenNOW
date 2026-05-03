@@ -12,6 +12,8 @@ import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSe
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 
+const ANTI_AFK_TOGGLE_ACK_MS = 5000;
+
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
   audioRef: React.Ref<HTMLAudioElement>;
@@ -30,6 +32,7 @@ interface StreamViewProps {
   hideStreamButtons?: boolean;
   serverRegion?: string;
   antiAfkEnabled: boolean;
+  antiAfkAckNonce: number;
   showAntiAfkIndicator: boolean;
   exitPrompt: {
     open: boolean;
@@ -46,6 +49,7 @@ interface StreamViewProps {
     tone: "warn" | "critical";
     secondsLeft?: number;
   } | null;
+  isFullscreen: boolean;
   isConnecting: boolean;
   gameTitle: string;
   platformStore?: string;
@@ -67,6 +71,9 @@ interface StreamViewProps {
   subscriptionInfo: SubscriptionInfo | null;
   micTrack?: MediaStreamTrack | null;
   className?: string;
+  allowEscapeToExitFullscreen?: boolean;
+  /** When true, omit the in-player connecting overlay (controller mode uses ControllerStreamLoading instead). */
+  hideConnectingOverlay?: boolean;
 }
 
 function getRttColor(rttMs: number): string {
@@ -648,6 +655,7 @@ export function StreamView({
   shortcuts,
   serverRegion,
   antiAfkEnabled,
+  antiAfkAckNonce,
   showAntiAfkIndicator,
   exitPrompt,
   sessionStartedAtMs,
@@ -656,6 +664,7 @@ export function StreamView({
   sessionClockShowEveryMinutes,
   sessionClockShowDurationSeconds,
   streamWarning,
+  isFullscreen,
   isConnecting,
   gameTitle,
   platformStore,
@@ -677,13 +686,17 @@ export function StreamView({
   subscriptionInfo,
   micTrack,
   hideStreamButtons = false,
+  allowEscapeToExitFullscreen,
+  hideConnectingOverlay = false,
   className,
 }: StreamViewProps): JSX.Element {
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
+  const [antiAfkToggleAck, setAntiAfkToggleAck] = useState<"on" | "off" | null>(null);
   const [showSideBar, setShowSideBar] = useState(false);
   const [isPointerLocked, setIsPointerLocked] = useState(false);
+  const [pointerLockHintVisible, setPointerLockHintVisible] = useState(false);
+  const pointerLockHintTimerRef = useRef<number | null>(null);
   const [screenshots, setScreenshots] = useState<ScreenshotEntry[]>([]);
   const [isSavingScreenshot, setIsSavingScreenshot] = useState(false);
   const [galleryError, setGalleryError] = useState<string | null>(null);
@@ -734,25 +747,21 @@ export function StreamView({
 
   const handlePointerLockToggle = useCallback(() => {
     if (isPointerLocked) {
+      if (onReleasePointerLock) {
+        onReleasePointerLock();
+        return;
+      }
       document.exitPointerLock();
       return;
     }
     if (onRequestPointerLock) {
       onRequestPointerLock();
     }
-  }, [isPointerLocked, onRequestPointerLock]);
+  }, [isPointerLocked, onReleasePointerLock, onRequestPointerLock]);
 
   useEffect(() => {
     const timer = setTimeout(() => setShowHints(false), 5000);
     return () => clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
   useEffect(() => {
@@ -802,6 +811,29 @@ export function StreamView({
       }
     };
   }, [isConnecting, sessionClockShowDurationSeconds, sessionClockShowEveryMinutes, sessionCounterEnabled]);
+
+  useEffect(() => {
+    if (antiAfkAckNonce === 0 || isConnecting) {
+      setAntiAfkToggleAck(null);
+      return;
+    }
+
+    // Omit transient "on" message when persistent ANTI-AFK badge already shows it
+    if (antiAfkEnabled && showAntiAfkIndicator) {
+      setAntiAfkToggleAck(null);
+      return;
+    }
+
+    setAntiAfkToggleAck(antiAfkEnabled ? "on" : "off");
+
+    const hideTimer = window.setTimeout(() => {
+      setAntiAfkToggleAck(null);
+    }, ANTI_AFK_TOGGLE_ACK_MS);
+
+    return (): void => {
+      window.clearTimeout(hideTimer);
+    };
+  }, [antiAfkAckNonce, antiAfkEnabled, showAntiAfkIndicator, isConnecting]);
 
   const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
@@ -1341,6 +1373,32 @@ export function StreamView({
   }, []);
 
   useEffect(() => {
+    // Show a transient HUD hint when pointer lock is acquired
+    if (isPointerLocked) {
+      setPointerLockHintVisible(true);
+      if (pointerLockHintTimerRef.current) {
+        window.clearTimeout(pointerLockHintTimerRef.current);
+      }
+      pointerLockHintTimerRef.current = window.setTimeout(() => {
+        pointerLockHintTimerRef.current = null;
+        setPointerLockHintVisible(false);
+      }, 3000);
+    } else {
+      if (pointerLockHintTimerRef.current) {
+        window.clearTimeout(pointerLockHintTimerRef.current);
+        pointerLockHintTimerRef.current = null;
+      }
+      setPointerLockHintVisible(false);
+    }
+    return () => {
+      if (pointerLockHintTimerRef.current) {
+        window.clearTimeout(pointerLockHintTimerRef.current);
+        pointerLockHintTimerRef.current = null;
+      }
+    };
+  }, [isPointerLocked]);
+
+  useEffect(() => {
     if (showSideBar) {
       // Mark sidebar open so input auto-lock code can avoid re-requesting.
       try {
@@ -1455,6 +1513,17 @@ export function StreamView({
         isConnecting={isConnecting}
         videoRef={localVideoRef}
       />
+
+      {pointerLockHintVisible && (
+        <div className="sv-pointerlock-hint" role="status" aria-live="polite">
+          <div>Press {shortcuts.toggleFullscreen} to exit fullscreen & release mouse</div>
+          <div className="sv-pointerlock-hint-sub">
+            {allowEscapeToExitFullscreen
+              ? "Press Escape will also exit fullscreen per your settings."
+              : "Escape is forwarded to the game while pointer-locked (see Settings)."}
+          </div>
+        </div>
+      )}
 
       {showSideBar && (
         <>
@@ -1897,8 +1966,8 @@ export function StreamView({
       {/* Gradient background when no video */}
       <StreamEmptyState diagnosticsStore={diagnosticsStore} />
 
-      {/* Connecting overlay */}
-      {isConnecting && (
+      {/* Connecting overlay (desktop / non-controller; controller uses ControllerStreamLoading) */}
+      {isConnecting && !hideConnectingOverlay && (
         <div className="sv-connect">
           <div className="sv-connect-inner">
             <Loader2 className="sv-connect-spin" size={44} />
@@ -1936,6 +2005,13 @@ export function StreamView({
             {streamWarning.message}
             {warningSeconds ? ` · ${warningSeconds} left` : ""}
           </span>
+        </div>
+      )}
+
+      {antiAfkToggleAck && !isConnecting && (
+        <div className={`sv-afk-ack sv-afk-ack--${antiAfkToggleAck}`} role="status" aria-live="polite">
+          <span className="sv-afk-ack-dot" aria-hidden />
+          <span>{antiAfkToggleAck === "on" ? "Anti-AFK on" : "Anti-AFK off"}</span>
         </div>
       )}
 
