@@ -297,13 +297,41 @@ function ControllerIndicator({
     diagnosticsStore,
     (stats) => stats.connectedGamepads,
   );
+  const [badgeVisible, setBadgeVisible] = useState(true);
+  const hideTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+    if (connectedGamepads > 0) {
+      setBadgeVisible(true);
+      hideTimerRef.current = window.setTimeout(() => {
+        setBadgeVisible(false);
+        hideTimerRef.current = null;
+      }, 5000);
+    } else {
+      setBadgeVisible(true);
+    }
+    return () => {
+      if (hideTimerRef.current !== null) {
+        window.clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+    };
+  }, [connectedGamepads]);
 
   if (isConnecting || connectedGamepads <= 0) {
     return null;
   }
 
   return (
-    <div className="sv-ctrl" title={`${connectedGamepads} controller(s) connected`}>
+    <div
+      className={`sv-ctrl${badgeVisible ? "" : " sv-ctrl--hidden"}`}
+      title={`${connectedGamepads} controller(s) connected`}
+      aria-hidden={!badgeVisible}
+    >
       <Gamepad2 size={18} />
       {connectedGamepads > 1 && <span className="sv-ctrl-n">{connectedGamepads}</span>}
     </div>

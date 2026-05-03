@@ -5028,6 +5028,12 @@ button.game-card-store-chip.owned.active:hover {
   border-radius: var(--r-md);
   z-index: 1001;
   color: var(--accent);
+  transition: opacity 0.4s var(--ease);
+}
+
+.sv-ctrl--hidden {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .sv-ctrl-n {
