@@ -1,13 +1,19 @@
 import { CapacitorHttp, type HttpOptions, type HttpResponse } from "@capacitor/core";
 
 export class NativeHttpError extends Error {
+  public readonly method?: string;
+  public readonly url?: string;
+
   constructor(
     public readonly status: number,
     public readonly body: string,
     public readonly data: HttpResponse["data"],
+    request?: { method?: string; url?: string },
   ) {
     super(`HTTP ${status}: ${(body || "<empty body>").slice(0, 400)}`);
     this.name = "NativeHttpError";
+    this.method = request?.method;
+    this.url = request?.url;
   }
 }
 
@@ -35,10 +41,14 @@ function formatResponseBody(data: HttpResponse["data"]): string {
   }
 }
 
-async function parseResponse<T>(response: HttpResponse, responseType: "json" | "text"): Promise<T> {
+async function parseResponse<T>(
+  response: HttpResponse,
+  responseType: "json" | "text",
+  request?: { method?: string; url?: string },
+): Promise<T> {
   if (response.status < 200 || response.status >= 300) {
     const body = formatResponseBody(response.data);
-    throw new NativeHttpError(response.status, body, response.data);
+    throw new NativeHttpError(response.status, body, response.data, request);
   }
 
   if (responseType === "text") {
@@ -61,5 +71,8 @@ export async function nativeRequest<T>(options: HttpOptions, responseType: "json
     headers: normalizeHeaders(options.headers),
     responseType,
   });
-  return parseResponse<T>(response, responseType);
+  return parseResponse<T>(response, responseType, {
+    method: options.method ?? "GET",
+    url: options.url,
+  });
 }

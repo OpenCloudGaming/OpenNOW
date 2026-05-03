@@ -1,6 +1,7 @@
 import { Check, Copy } from "lucide-react";
 import { useState } from "react";
 import type { JSX } from "react";
+import { copyTextToClipboard } from "../utils/clipboard";
 
 export function CopyErrorButton({
   text,
@@ -13,7 +14,7 @@ export function CopyErrorButton({
 
   const handleCopy = async (): Promise<void> => {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyTextToClipboard(text);
       setCopyState("copied");
       window.setTimeout(() => setCopyState("idle"), 1600);
     } catch {
@@ -32,7 +33,7 @@ export function CopyErrorButton({
       aria-label="Copy launch error"
     >
       {copyState === "copied" ? <Check size={14} /> : <Copy size={14} />}
-      <span>{copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy Failed" : "Copy Error"}</span>
+      <span>{copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy Failed" : "Copy Logs"}</span>
     </button>
   );
 }

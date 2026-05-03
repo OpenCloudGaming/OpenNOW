@@ -164,6 +164,7 @@ type LaunchErrorState = {
   description: string;
   codeLabel?: string;
   debugDetails?: string[];
+  occurredAtIso: string;
 };
 type QueueAdCancelReason = "error" | "other";
 type QueueAdErrorInfo = "Ad play timeout" | "Ad video is stuck" | "Error loading url";
@@ -732,7 +733,7 @@ function extractLaunchErrorCode(error: unknown): number | undefined {
   return undefined;
 }
 
-function compactDebugValue(value: unknown, limit = 1600): string | null {
+function compactDebugValue(value: unknown, limit = 12000): string | null {
   if (value == null) return null;
   let text: string;
   if (typeof value === "string") {
@@ -752,6 +753,12 @@ function compactDebugValue(value: unknown, limit = 1600): string | null {
 function extractLaunchErrorDebugDetails(error: unknown): string[] {
   if (!error || typeof error !== "object") return [];
   const details: string[] = [];
+  if ("method" in error && typeof error.method === "string") {
+    details.push(`Request method: ${error.method}`);
+  }
+  if ("url" in error && typeof error.url === "string") {
+    details.push(`Request URL: ${error.url}`);
+  }
   if ("status" in error && typeof error.status === "number") {
     details.push(`HTTP status: ${error.status}`);
   }
@@ -768,6 +775,7 @@ function extractLaunchErrorDebugDetails(error: unknown): string[] {
 
 function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchErrorState {
   const unknownMessage = "The game could not start. Please try again.";
+  const occurredAtIso = new Date().toISOString();
 
   const titleFromError =
     error && typeof error === "object" && "title" in error && typeof error.title === "string"
@@ -797,6 +805,7 @@ function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchE
       description: "Another session is already running on your account. Close it first or wait for it to timeout, then launch again.",
       codeLabel: toCodeLabel(code),
       debugDetails: extractLaunchErrorDebugDetails(error),
+      occurredAtIso,
     };
   }
 
@@ -806,7 +815,15 @@ function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchE
     description: descriptionFromError || messageFromError || statusDescription || unknownMessage,
     codeLabel: toCodeLabel(code),
     debugDetails: extractLaunchErrorDebugDetails(error),
+    occurredAtIso,
   };
+}
+
+function appendBoundedLaunchLog(logLines: string[], message: string): void {
+  logLines.push(`[${new Date().toISOString()}] ${message}`);
+  if (logLines.length > 80) {
+    logLines.splice(0, logLines.length - 80);
+  }
 }
 
 function formatLaunchErrorForCopy(error: LaunchErrorState, gameTitle: string): string {
@@ -818,7 +835,7 @@ function formatLaunchErrorForCopy(error: LaunchErrorState, gameTitle: string): s
     `Description: ${error.description}`,
     error.codeLabel ? `Code: ${error.codeLabel}` : null,
     ...(error.debugDetails ?? []),
-    `Time: ${new Date().toISOString()}`,
+    `Time: ${error.occurredAtIso}`,
   ].filter((line): line is string => Boolean(line)).join("\n");
 }
 
@@ -2638,6 +2655,10 @@ export function App(): JSX.Element {
     updateLoadingStep("queue");
     setQueuePosition(undefined);
 
+    const launchLogLines: string[] = [];
+    const logLaunch = (message: string): void => appendBoundedLaunchLog(launchLogLines, message);
+    logLaunch(`Launch requested for "${game.title}" (${game.id})`);
+
     try {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
 
@@ -2668,6 +2689,7 @@ export function App(): JSX.Element {
       }
 
       const numericAppId = Number(appId);
+      logLaunch(`Resolved appId=${numericAppId}, selectedVariantId=${selectedVariantId}, store=${selectedVariant?.store ?? "n/a"}`);
       const matchedGameContext = findSessionContextForAppId(allKnownGames, variantByGameId, numericAppId) ?? {
         game,
         variant: selectedVariant,
@@ -2718,6 +2740,9 @@ export function App(): JSX.Element {
       }
 
       // Create new session
+      logLaunch(
+        `Creating session via ${options?.streamingBaseUrl || effectiveStreamingBaseUrl}, zone=prod, existingSessionStrategy=${existingSessionStrategy ?? "default"}`,
+      );
       const newSession = await openNow.createSession({
         token: token || undefined,
         streamingBaseUrl: options?.streamingBaseUrl || effectiveStreamingBaseUrl,
@@ -2741,6 +2766,9 @@ export function App(): JSX.Element {
 
       setSession(newSession);
       setQueuePosition(newSession.queuePosition);
+      logLaunch(
+        `Session created: sessionId=${newSession.sessionId}, status=${newSession.status}, queuePosition=${newSession.queuePosition ?? "n/a"}, serverIp=${newSession.serverIp ?? "n/a"}, zone=${newSession.zone ?? "n/a"}`,
+      );
 
       // Poll for readiness.
       // Queue and setup/starting modes wait indefinitely until the session becomes ready
@@ -2827,6 +2855,9 @@ export function App(): JSX.Element {
         console.log(
           `Poll attempt ${attempt}: status=${mergedSession.status}, seatSetupStep=${mergedSession.seatSetupStep ?? "n/a"}, queuePosition=${mergedSession.queuePosition ?? "n/a"}, serverIp=${mergedSession.serverIp}, queueMode=${isInQueueMode}, adsRequired=${isSessionAdsRequired(mergedSession.adState)}`,
         );
+        logLaunch(
+          `Poll ${attempt}: status=${mergedSession.status}, seatSetupStep=${mergedSession.seatSetupStep ?? "n/a"}, queuePosition=${mergedSession.queuePosition ?? "n/a"}, serverIp=${mergedSession.serverIp ?? "n/a"}, queueMode=${isInQueueMode}, adsRequired=${isSessionAdsRequired(mergedSession.adState)}`,
+        );
 
         if (isSessionReadyForConnect(mergedSession.status)) {
           finalSession = mergedSession;
@@ -2879,6 +2910,7 @@ export function App(): JSX.Element {
         `Game launchAppId: ${game.launchAppId ?? "n/a"}`,
         `Resolved appId: ${appId ?? "n/a"}`,
         `Streaming base: ${options?.streamingBaseUrl || effectiveStreamingBaseUrl}`,
+        ...launchLogLines.map((line) => `Launch log: ${line}`),
       ];
       setLaunchError(launchErrorState);
       await openNow.disconnectSignaling().catch(() => {});
