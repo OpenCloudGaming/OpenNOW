@@ -163,6 +163,7 @@ type LaunchErrorState = {
   title: string;
   description: string;
   codeLabel?: string;
+  debugDetails?: string[];
 };
 type QueueAdCancelReason = "error" | "other";
 type QueueAdErrorInfo = "Ad play timeout" | "Ad video is stuck" | "Error loading url";
@@ -250,7 +251,7 @@ function isSessionInQueue(session: SessionInfo): boolean {
 
 function isNumericId(value: string | undefined): value is string {
   if (!value) return false;
-  return /^\d+$/.test(value);
+  return /^\d+$/.test(value) && Number.parseInt(value, 10) > 0;
 }
 
 function parseNumericId(value: string | undefined): number | null {
@@ -731,6 +732,40 @@ function extractLaunchErrorCode(error: unknown): number | undefined {
   return undefined;
 }
 
+function compactDebugValue(value: unknown, limit = 1600): string | null {
+  if (value == null) return null;
+  let text: string;
+  if (typeof value === "string") {
+    text = value;
+  } else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = String(value);
+    }
+  }
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  return trimmed.length > limit ? `${trimmed.slice(0, limit)}...` : trimmed;
+}
+
+function extractLaunchErrorDebugDetails(error: unknown): string[] {
+  if (!error || typeof error !== "object") return [];
+  const details: string[] = [];
+  if ("status" in error && typeof error.status === "number") {
+    details.push(`HTTP status: ${error.status}`);
+  }
+  if ("body" in error) {
+    const body = compactDebugValue(error.body);
+    if (body) details.push(`Response body: ${body}`);
+  }
+  if ("data" in error) {
+    const data = compactDebugValue(error.data);
+    if (data && !details.some((line) => line.endsWith(data))) details.push(`Response data: ${data}`);
+  }
+  return details;
+}
+
 function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchErrorState {
   const unknownMessage = "The game could not start. Please try again.";
 
@@ -761,6 +796,7 @@ function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchE
       title: "Duplicate Session Detected",
       description: "Another session is already running on your account. Close it first or wait for it to timeout, then launch again.",
       codeLabel: toCodeLabel(code),
+      debugDetails: extractLaunchErrorDebugDetails(error),
     };
   }
 
@@ -769,6 +805,7 @@ function toLaunchErrorState(error: unknown, stage: StreamLoadingStatus): LaunchE
     title: titleFromError || "Launch Failed",
     description: descriptionFromError || messageFromError || statusDescription || unknownMessage,
     codeLabel: toCodeLabel(code),
+    debugDetails: extractLaunchErrorDebugDetails(error),
   };
 }
 
@@ -780,6 +817,7 @@ function formatLaunchErrorForCopy(error: LaunchErrorState, gameTitle: string): s
     `Title: ${error.title}`,
     `Description: ${error.description}`,
     error.codeLabel ? `Code: ${error.codeLabel}` : null,
+    ...(error.debugDetails ?? []),
     `Time: ${new Date().toISOString()}`,
   ].filter((line): line is string => Boolean(line)).join("\n");
 }
@@ -2595,6 +2633,7 @@ export function App(): JSX.Element {
     resetStatsOverlayToPreference();
     const selectedVariantId = variantByGameId[game.id] ?? defaultVariantId(game);
     const selectedVariant = getSelectedVariant(game, selectedVariantId);
+    let appId: string | null = null;
     startPlaytimeSession(game.id);
     updateLoadingStep("queue");
     setQueuePosition(undefined);
@@ -2603,7 +2642,6 @@ export function App(): JSX.Element {
       const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
 
       // Resolve appId
-      let appId: string | null = null;
       if (isNumericId(selectedVariantId)) {
         appId = selectedVariantId;
       } else if (isNumericId(game.launchAppId)) {
@@ -2626,7 +2664,7 @@ export function App(): JSX.Element {
       }
 
       if (!appId) {
-        throw new Error("Could not resolve numeric appId for this game");
+        throw new Error("Could not resolve a positive numeric appId for this game");
       }
 
       const numericAppId = Number(appId);
@@ -2831,7 +2869,18 @@ export function App(): JSX.Element {
         return;
       }
       console.error("Launch failed:", error);
-      setLaunchError(toLaunchErrorState(error, loadingStep));
+      const launchErrorState = toLaunchErrorState(error, loadingStep);
+      launchErrorState.debugDetails = [
+        ...(launchErrorState.debugDetails ?? []),
+        `Game id: ${game.id}`,
+        `Game uuid: ${game.uuid ?? "n/a"}`,
+        `Selected variant id: ${selectedVariantId}`,
+        `Selected store: ${selectedVariant?.store ?? "n/a"}`,
+        `Game launchAppId: ${game.launchAppId ?? "n/a"}`,
+        `Resolved appId: ${appId ?? "n/a"}`,
+        `Streaming base: ${options?.streamingBaseUrl || effectiveStreamingBaseUrl}`,
+      ];
+      setLaunchError(launchErrorState);
       await openNow.disconnectSignaling().catch(() => {});
       clientRef.current?.dispose();
       clientRef.current = null;

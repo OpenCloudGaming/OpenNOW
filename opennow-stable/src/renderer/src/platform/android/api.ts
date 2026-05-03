@@ -147,7 +147,7 @@ interface CloudMatchResponse { requestStatus: { statusCode: number; statusName?:
 
 function ensureTrailingSlash(value: string): string { return value.endsWith("/") ? value : `${value}/`; }
 function normalizeBaseUrl(value: string): string { return ensureTrailingSlash(value.trim()); }
-function isNumericId(value: string | undefined): value is string { return typeof value === "string" && /^\d+$/.test(value); }
+function isNumericId(value: string | undefined): value is string { return typeof value === "string" && /^\d+$/.test(value) && Number.parseInt(value, 10) > 0; }
 function randomHuId(): string { return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`; }
 function toOptionalString(value: unknown): string | undefined { if (typeof value !== "string") return undefined; const trimmed = value.trim(); return trimmed || undefined; }
 function toPositiveInt(value: unknown): number | undefined { if (typeof value === "number" && Number.isFinite(value)) { const normalized = Math.trunc(value); return normalized > 0 ? normalized : undefined; } if (typeof value === "string" && value.trim()) { const parsed = Number.parseInt(value, 10); return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined; } return undefined; }
@@ -156,7 +156,7 @@ function parseFeatureLabel(value: unknown): string | null { if (typeof value ===
 function extractFeatureLabels(app: AppData): string[] { const out: string[] = []; for (const bucket of [app.features, app.gameFeatures, app.appFeatures, app.genres, app.tags, app.gfn?.catalogSkuStrings?.SKU_BASED_TAG]) { if (!Array.isArray(bucket)) continue; for (const entry of bucket) { const label = parseFeatureLabel(entry); if (label) out.push(label); } } return [...new Set(out)]; }
 function extractGenres(app: AppData): string[] { if (!Array.isArray(app.genres)) return []; return [...new Set(app.genres.map(parseFeatureLabel).filter((value): value is string => Boolean(value)))]; }
 function extractContentRatings(app: AppData): string[] { if (!Array.isArray(app.contentRatings)) return []; return [...new Set(app.contentRatings.map(parseFeatureLabel).filter((value): value is string => Boolean(value)))]; }
-function optimizeImage(url: string): string { return url.includes("img.nvidiagrid.net") ? `${url};f=webp;w=272` : url; }
+function optimizeImage(url: string): string { return url.includes("img.nvidiagrid.net") ? `${url};f=webp;w=544` : url; }
 function buildSearchText(title: string, stores: string[], genres: string[], featureLabels: string[], publisherName?: string): string { return [title, publisherName, ...stores, ...genres, ...featureLabels].filter((value): value is string => typeof value === "string" && value.trim().length > 0).join(" ").toLowerCase(); }
 function appToGame(app: AppData): GameInfo { const variants = app.variants?.map((variant) => ({ id: variant.id, store: variant.appStore, supportedControls: variant.supportedControls ?? [], librarySelected: variant.gfn?.library?.selected, libraryStatus: variant.gfn?.library?.status, lastPlayedDate: variant.gfn?.library?.lastPlayedDate, gfnStatus: variant.gfn?.status })) ?? []; const selectedVariantIndex = app.variants?.findIndex((variant) => variant.gfn?.library?.selected === true) ?? -1; const safeIndex = selectedVariantIndex >= 0 ? selectedVariantIndex : 0; const selectedVariantId = variants[safeIndex]?.id; const fallbackNumericVariantId = variants.find((variant) => isNumericId(variant.id))?.id; const launchAppId = isNumericId(selectedVariantId) ? selectedVariantId : fallbackNumericVariantId ?? (isNumericId(app.id) ? app.id : undefined); const imageUrl = app.images?.KEY_ART ?? app.images?.GAME_BOX_ART ?? app.images?.TV_BANNER ?? app.images?.HERO_IMAGE ?? undefined; const genres = extractGenres(app); const featureLabels = extractFeatureLabels(app); const availableStores = [...new Set(variants.map((variant) => variant.store).filter((store) => typeof store === "string" && store.trim().length > 0))]; const lastPlayed = variants.map((variant) => variant.lastPlayedDate).find((value): value is string => typeof value === "string" && value.length > 0); return { id: app.id, uuid: app.id, launchAppId, title: app.title, description: app.description, longDescription: app.longDescription, featureLabels, genres, imageUrl: imageUrl ? optimizeImage(imageUrl) : undefined, playType: app.gfn?.playType, membershipTierLabel: app.gfn?.minimumMembershipTierLabel, publisherName: app.publisherName, contentRatings: extractContentRatings(app), playabilityState: app.gfn?.playabilityState, selectedVariantIndex: Math.max(0, selectedVariantIndex), variants, availableStores, searchText: buildSearchText(app.title, availableStores, genres, featureLabels, app.publisherName), isInLibrary: variants.some((variant) => variant.librarySelected || variant.libraryStatus === "IN_LIBRARY"), lastPlayed }; }
 function mergeAppMetaIntoGame(game: GameInfo, app: AppData): GameInfo { const merged = appToGame(app); const selectedVariantId = game.variants[game.selectedVariantIndex]?.id; const selectedVariantIndex = selectedVariantId ? merged.variants.findIndex((variant) => variant.id === selectedVariantId) : -1; return { ...game, ...merged, id: game.id, selectedVariantIndex: selectedVariantIndex >= 0 ? selectedVariantIndex : merged.selectedVariantIndex }; }
@@ -707,6 +707,14 @@ function extractAdState(payload: CloudMatchResponse): SessionInfo["adState"] {
     toBoolean(payload.session.isAdsRequired) ??
     toBoolean(payload.session.sessionProgress?.isAdsRequired) ??
     toBoolean(payload.session.progressInfo?.isAdsRequired);
+  if (sessionAdsRequired) {
+    console.log(
+      `[Android CloudMatch] extractAdState: sessionAdsRequired=${payload.session.sessionAdsRequired}, ` +
+        `isAdsRequired=${payload.session.isAdsRequired}, ` +
+        `sessionAds=${JSON.stringify(payload.session.sessionAds ?? null)}, ` +
+        `opportunity=${JSON.stringify(payload.session.opportunity ?? null)}`,
+    );
+  }
   const ads = (payload.session.sessionAds ?? []).map((ad, index) => normalizeSessionAdInfo(ad, index)).filter((ad): ad is import("@shared/gfn").SessionAdInfo => ad !== null);
   const opportunity = payload.session.opportunity;
   const normalizedOpportunity = opportunity ? { state: toOptionalString(opportunity.state), queuePaused: toBoolean(opportunity.queuePaused), gracePeriodSeconds: toPositiveInt(opportunity.gracePeriodSeconds), message: toOptionalString(opportunity.message), title: toOptionalString(opportunity.title), description: toOptionalString(opportunity.description) } : undefined;
@@ -812,7 +820,73 @@ async function pollSessionRequest(input: SessionPollRequest): Promise<SessionInf
   return toSessionInfo(input.zone, base, response, clientId, deviceId);
 }
 async function stopSessionRequest(input: SessionStopRequest): Promise<void> { const token = await authStore.resolveJwtToken(input.token); const clientId = input.clientId ?? crypto.randomUUID(); const deviceId = input.deviceId ?? (await Device.getId()).identifier ?? crypto.randomUUID(); const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp); await httpRequest<string>(`${base}/v2/session/${input.sessionId}`, { method: "DELETE", headers: requestHeaders({ token, clientId, deviceId }), responseType: "text" }); }
-async function reportSessionAdRequest(input: SessionAdReportRequest): Promise<SessionInfo> { const token = await authStore.resolveJwtToken(input.token); const clientId = input.clientId ?? crypto.randomUUID(); const deviceId = input.deviceId ?? (await Device.getId()).identifier ?? crypto.randomUUID(); const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp); const clientTimestamp = input.clientTimestamp ?? Math.floor(Date.now() / 1000); const response = await httpRequest<CloudMatchResponse>(`${base}/v2/session/${input.sessionId}`, { method: "PUT", headers: requestHeaders({ token, clientId, deviceId }), data: { action: SESSION_MODIFY_ACTION_AD_UPDATE, adUpdates: [{ adId: input.adId, adAction: AD_ACTION_CODES[input.action], clientTimestamp, ...(typeof input.watchedTimeInMs === "number" ? { watchedTimeInMs: input.watchedTimeInMs } : {}), ...(typeof input.pausedTimeInMs === "number" ? { pausedTimeInMs: input.pausedTimeInMs } : {}), ...(input.cancelReason ? { cancelReason: input.cancelReason } : {}), ...(input.errorInfo ? { errorInfo: input.errorInfo } : {}) }] } }); return toSessionInfo(input.zone, base, response, clientId, deviceId); }
+async function reportSessionAdRequest(input: SessionAdReportRequest): Promise<SessionInfo> {
+  const token = await authStore.resolveJwtToken(input.token);
+  const clientId = input.clientId ?? crypto.randomUUID();
+  const deviceId = input.deviceId ?? (await Device.getId()).identifier ?? crypto.randomUUID();
+  let base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
+  const zoneBase = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
+  const clientTimestamp = input.clientTimestamp ?? Math.floor(Date.now() / 1000);
+  const requestBody = {
+    action: SESSION_MODIFY_ACTION_AD_UPDATE,
+    adUpdates: [{
+      adId: input.adId,
+      adAction: AD_ACTION_CODES[input.action],
+      clientTimestamp,
+      ...(typeof input.watchedTimeInMs === "number" ? { watchedTimeInMs: Math.max(0, Math.round(input.watchedTimeInMs)) } : {}),
+      ...(typeof input.pausedTimeInMs === "number" ? { pausedTimeInMs: Math.max(0, Math.round(input.pausedTimeInMs)) } : {}),
+      ...(input.cancelReason ? { cancelReason: input.cancelReason } : {}),
+    }],
+  };
+  const send = (targetBase: string) => httpRequest<CloudMatchResponse>(`${targetBase}/v2/session/${input.sessionId}`, {
+    method: "PUT",
+    headers: requestHeaders({ token, clientId, deviceId }),
+    data: requestBody,
+  });
+
+  console.log(
+    `[Android CloudMatch] reportSessionAd: sending action=${input.action}(${AD_ACTION_CODES[input.action]}), ` +
+      `adId=${input.adId}, sessionId=${input.sessionId}, base=${base}, ` +
+      `watchedTimeInMs=${input.watchedTimeInMs ?? "n/a"}, pausedTimeInMs=${input.pausedTimeInMs ?? 0}, ` +
+      `cancelReason=${input.cancelReason ?? "n/a"}, errorInfo=${input.errorInfo ?? "n/a"}`,
+  );
+
+  let response: CloudMatchResponse;
+  try {
+    response = await send(base);
+  } catch (error) {
+    const shouldRetryViaZone =
+      base !== zoneBase &&
+      isNativeHttpError(error) &&
+      (error.status === 403 || error.status === 404 || error.status === 409);
+
+    if (!shouldRetryViaZone) {
+      console.warn(
+        `[Android CloudMatch] reportSessionAd: failed action=${input.action}, adId=${input.adId}, ` +
+          `status=${isNativeHttpError(error) ? error.status : "n/a"}, body=${isNativeHttpError(error) ? error.body.slice(0, 500) : String(error)}`,
+      );
+      throw error;
+    }
+
+    console.warn(`[Android CloudMatch] reportSessionAd: ${base} returned HTTP ${error.status}; retrying via ${zoneBase}.`);
+    base = zoneBase;
+    response = await send(zoneBase);
+  }
+
+  if (response.requestStatus.statusCode !== 1) {
+    console.warn(
+      `[Android CloudMatch] reportSessionAd: API error requestStatus=${response.requestStatus.statusCode}, ` +
+        `description=${response.requestStatus.statusDescription ?? "unknown"}, adId=${input.adId}, action=${input.action}`,
+    );
+  } else {
+    console.log(
+      `[Android CloudMatch] reportSessionAd: success action=${input.action}, adId=${input.adId}, ` +
+        `status=${response.session.status}, queuePosition=${extractQueuePosition(response) ?? "n/a"}`,
+    );
+  }
+
+  return toSessionInfo(input.zone, base, response, clientId, deviceId);
+}
 async function getActiveSessionsRequest(token: string, streamingBaseUrl?: string): Promise<ActiveSessionInfo[]> { const base = resolveStreamingBaseUrl("", streamingBaseUrl || authStore.getSelectedProvider().streamingServiceUrl); try { const response = await httpRequest<CloudMatchResponse>(`${base}/v2/session`, { headers: requestHeaders({ token, clientId: LCARS_CLIENT_ID, deviceId: crypto.randomUUID(), includeOrigin: false }) }); if (response.requestStatus.statusCode !== 1) return []; return (response.sessions ?? []).filter((session) => session.status === 1 || session.status === 2 || session.status === 3).map((session) => { const connection = session.connectionInfo?.find((entry) => entry.usage === 14 && (entry.ip || entry.resourcePath)) ?? session.connectionInfo?.find((entry) => entry.ip || entry.resourcePath); const controlIpRaw = session.sessionControlInfo?.ip; const controlIp = Array.isArray(controlIpRaw) ? controlIpRaw[0] : controlIpRaw; const serverIp = resolveActiveSessionServerIp(connection, controlIp); const { signalingServer, signalingUrl } = resolveActiveSessionSignaling(connection, serverIp); const monitor = session.monitorSettings?.[0]; const rawAppId = session.sessionRequestData?.appId ?? session.appId; const appId = typeof rawAppId === "string" || typeof rawAppId === "number" ? Number(rawAppId) : 0; return { sessionId: session.sessionId, appId: Number.isFinite(appId) ? appId : 0, gpuType: session.gpuType, status: session.status, streamingBaseUrl: base, serverIp, signalingServer, signalingUrl, resolution: session.resolution ?? (monitor?.widthInPixels && monitor?.heightInPixels ? `${monitor.widthInPixels}x${monitor.heightInPixels}` : undefined), fps: session.fps ?? monitor?.framesPerSecond }; }); } catch { return []; } }
 async function claimSessionRequest(input: SessionClaimRequest): Promise<SessionInfo> { const token = await authStore.resolveJwtToken(input.token); const clientId = crypto.randomUUID(); const deviceId = (await Device.getId()).identifier || crypto.randomUUID(); const settings = input.settings ?? { resolution: "1920x1080", fps: 60, maxBitrateMbps: 75, codec: "H264", colorQuality: "8bit_420", keyboardLayout: DEFAULT_KEYBOARD_LAYOUT, gameLanguage: "en_US", enableL4S: false, enableCloudGsync: false }; const appId = input.appId ?? "0"; const keyboardLayout = resolveGfnKeyboardLayout(settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, "linux"); const languageCode = settings.gameLanguage ?? "en_US"; let effectiveServerIp = input.serverIp; if (isZoneHostname(effectiveServerIp)) { try { const zoneBase = `https://${effectiveServerIp}`; const prefetchPayload = await httpRequest<CloudMatchResponse>(`${zoneBase}/v2/session/${input.sessionId}`, { headers: requestHeaders({ token, clientId, deviceId, includeOrigin: false }) }); const realIp = streamingServerIp(prefetchPayload); if (realIp) effectiveServerIp = realIp; } catch {} } const effectiveBase = `https://${effectiveServerIp}`; const sessionUrl = `${effectiveBase}/v2/session/${input.sessionId}`; let preClaimStatus: number | null = null; try { const preClaimPayload = await httpRequest<CloudMatchResponse>(sessionUrl, { headers: requestHeaders({ token, clientId, deviceId, includeOrigin: false }) }); preClaimStatus = preClaimPayload.session?.status ?? null; } catch {} if (preClaimStatus !== 1) { const claimUrl = `${sessionUrl}?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`; await httpRequest<unknown>(claimUrl, { method: "PUT", headers: requestHeaders({ token, clientId, deviceId }), data: buildClaimRequestBody(input.sessionId, appId, settings) }); } for (let attempt = 0; attempt < 60; attempt += 1) { if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, 1000)); try { const polled = await httpRequest<CloudMatchResponse>(sessionUrl, { headers: requestHeaders({ token, clientId, deviceId, includeOrigin: false }) }); if (polled.session.status === 2 || polled.session.status === 3) return toSessionInfo("", effectiveBase, polled, clientId, deviceId); if (polled.session.status > 3 && polled.session.status !== 6) break; } catch {} } throw new Error("Session did not become ready after claiming"); }
 async function fetchSubscriptionInfo(input: SubscriptionFetchRequest): Promise<SubscriptionInfo> { const token = await authStore.resolveJwtToken(input.token); const vpcId = await getVpcId(token, input.providerStreamingBaseUrl); const userId = input.userId || authStore.getSession()?.user.userId; if (!userId) throw new Error("No authenticated user available for subscription lookup"); const url = new URL(MES_URL); url.searchParams.append("serviceName", "gfn_pc"); url.searchParams.append("languageCode", "en_US"); url.searchParams.append("vpcId", vpcId); url.searchParams.append("userId", userId); const data = await httpRequest<SubscriptionResponse>(url.toString(), { headers: { Authorization: `GFNJWT ${token}`, Accept: "application/json", "nv-client-id": LCARS_CLIENT_ID, "nv-client-type": "NATIVE", "nv-client-version": GFN_CLIENT_VERSION, "nv-client-streamer": "NVIDIA-CLASSIC", "nv-device-os": "ANDROID", "nv-device-type": "PHONE" } }); const allottedMinutes = data.allottedTimeInMinutes ?? 0; const purchasedMinutes = data.purchasedTimeInMinutes ?? 0; const rolledOverMinutes = data.rolledOverTimeInMinutes ?? 0; const totalMinutes = data.totalTimeInMinutes ?? allottedMinutes + purchasedMinutes + rolledOverMinutes; const remainingMinutes = data.remainingTimeInMinutes ?? 0; const usedMinutes = Math.max(totalMinutes - remainingMinutes, 0); const storageAddon = data.addons?.find((addon) => addon.type === "STORAGE" && addon.subType === "PERMANENT_STORAGE" && addon.status === "OK"); const attr = (key: string) => storageAddon?.attributes?.find((entry) => entry.key === key)?.textValue; return { membershipTier: data.membershipTier ?? "FREE", subscriptionType: data.type, subscriptionSubType: data.subType, allottedHours: allottedMinutes / 60, purchasedHours: purchasedMinutes / 60, rolledOverHours: rolledOverMinutes / 60, usedHours: usedMinutes / 60, remainingHours: remainingMinutes / 60, totalHours: totalMinutes / 60, firstEntitlementStartDateTime: data.firstEntitlementStartDateTime, serverRegionId: vpcId, currentSpanStartDateTime: data.currentSpanStartDateTime, currentSpanEndDateTime: data.currentSpanEndDateTime, notifyUserWhenTimeRemainingInMinutes: data.notifications?.notifyUserWhenTimeRemainingInMinutes, notifyUserOnSessionWhenRemainingTimeInMinutes: data.notifications?.notifyUserOnSessionWhenRemainingTimeInMinutes, state: data.currentSubscriptionState?.state, isGamePlayAllowed: data.currentSubscriptionState?.isGamePlayAllowed, isUnlimited: data.subType === "UNLIMITED", storageAddon: storageAddon ? { type: "PERMANENT_STORAGE", sizeGb: attr("TOTAL_STORAGE_SIZE_IN_GB") ? Number(attr("TOTAL_STORAGE_SIZE_IN_GB")) : undefined, usedGb: attr("USED_STORAGE_SIZE_IN_GB") ? Number(attr("USED_STORAGE_SIZE_IN_GB")) : undefined, regionName: attr("STORAGE_METRO_REGION_NAME"), regionCode: attr("STORAGE_METRO_REGION") } : undefined, entitledResolutions: (data.features?.resolutions ?? []).map((res) => ({ width: res.widthInPixels, height: res.heightInPixels, fps: res.framesPerSecond })) }; }

@@ -1408,6 +1408,7 @@ export function StreamView({
   const [showSessionClock, setShowSessionClock] = useState(false);
   const [showSideBar, setShowSideBar] = useState(false);
   const [isPointerLocked, setIsPointerLocked] = useState(false);
+  const [hasVideoFrame, setHasVideoFrame] = useState(false);
   const [screenshots, setScreenshots] = useState<ScreenshotEntry[]>([]);
   const [isSavingScreenshot, setIsSavingScreenshot] = useState(false);
   const [galleryError, setGalleryError] = useState<string | null>(null);
@@ -2080,6 +2081,22 @@ export function StreamView({
       (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = element;
     }
   }, [videoRef]);
+
+  useEffect(() => {
+    if (isConnecting) {
+      setHasVideoFrame(false);
+    }
+  }, [isConnecting]);
+
+  const markVideoFrameReady = useCallback(() => {
+    const video = localVideoRef.current;
+    if (!video) {
+      return;
+    }
+    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA || (video.videoWidth > 0 && video.videoHeight > 0)) {
+      setHasVideoFrame(true);
+    }
+  }, []);
 
   const setAudioRef = useCallback((element: HTMLAudioElement | null) => {
     localAudioRef.current = element;

@@ -157,7 +157,7 @@ interface CatalogDefinitions {
 
 function optimizeImage(url: string): string {
   if (url.includes("img.nvidiagrid.net")) {
-    return `${url};f=webp;w=272`;
+    return `${url};f=webp;w=544`;
   }
   return url;
 }
@@ -166,7 +166,7 @@ function isNumericId(value: string | undefined): value is string {
   if (!value) {
     return false;
   }
-  return /^\d+$/.test(value);
+  return /^\d+$/.test(value) && Number.parseInt(value, 10) > 0;
 }
 
 function randomHuId(): string {
