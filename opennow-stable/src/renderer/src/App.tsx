@@ -1086,56 +1086,30 @@ export function App(): JSX.Element {
     && controllerConnected
     && !(settings.controllerMode && currentPage === "library");
 
-  useEffect(() => {
-    let raf = 0;
-    const prev = { pressed: false };
-    const tick = () => {
-      try {
-        if (streamStatus !== "streaming") {
-          prev.pressed = false;
-          raf = window.requestAnimationFrame(tick);
-          return;
-        }
-        const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-        const pad = Array.from(pads).find((p) => p && p.connected) ?? null;
-        if (!pad) {
-          prev.pressed = false;
-          raf = window.requestAnimationFrame(tick);
-          return;
-        }
-        // Meta/Home button only: button 16 (standard)
-        const metaPressed = Boolean(pad.buttons[16]?.pressed);
-        if (metaPressed && !prev.pressed) {
-          setControllerOverlayOpen((v) => {
-            const opening = !v;
-            if (settings.controllerUiSounds) {
-              playControllerUiSound(opening ? "confirm" : "move", true);
-            }
-            try {
-              const act = pad.vibrationActuator;
-              if (act && typeof act.playEffect === "function") {
-                void act.playEffect("dual-rumble", { duration: 42, strongMagnitude: 0.35, weakMagnitude: 0.45 });
-              }
-            } catch {
-              // ignore
-            }
-            return !v;
-          });
-        }
-        prev.pressed = metaPressed;
-      } catch {
-        // ignore
-      }
-      raf = window.requestAnimationFrame(tick);
-    };
-    raf = window.requestAnimationFrame(tick);
-    return () => { if (raf) window.cancelAnimationFrame(raf); };
-  }, [streamStatus, settings.controllerUiSounds]);
-
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clientRef = useRef<GfnWebRtcClient | null>(null);
+  const controllerUiSoundsRef = useRef(settings.controllerUiSounds);
+  const isStreamingRef = useRef(streamStatus === "streaming");
+
+  useEffect(() => {
+    controllerUiSoundsRef.current = settings.controllerUiSounds;
+  }, [settings.controllerUiSounds]);
+  useEffect(() => {
+    isStreamingRef.current = streamStatus === "streaming";
+  }, [streamStatus]);
+
+  const handleControllerMetaToggle = useCallback(() => {
+    if (!isStreamingRef.current) return;
+    setControllerOverlayOpen((currentOpen) => {
+      const opening = !currentOpen;
+      if (controllerUiSoundsRef.current) {
+        playControllerUiSound(opening ? "confirm" : "move", true);
+      }
+      return opening;
+    });
+  }, []);
 
   useEffect(() => {
     if (streamStatus === "streaming" && audioRef.current) {
@@ -1470,6 +1444,14 @@ export function App(): JSX.Element {
       document.body.classList.remove("controller-mode");
     };
   }, [controllerUiActive]);
+
+  useEffect(() => {
+    const lowFx = streamStatus === "streaming" && controllerOverlayOpen;
+    document.body.classList.toggle("controller-overlay-lowfx", lowFx);
+    return () => {
+      document.body.classList.remove("controller-overlay-lowfx");
+    };
+  }, [controllerOverlayOpen, streamStatus]);
 
   useEffect(() => {
     if (!controllerUiActive || !controllerConnected) {
@@ -2919,6 +2901,9 @@ export function App(): JSX.Element {
               },
               onMicStateChange: (state) => {
                 console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
+              },
+              onControllerMetaPress: () => {
+                handleControllerMetaToggle();
               },
             });
             clientRef.current.inputPaused = controllerOverlayOpenRef.current;

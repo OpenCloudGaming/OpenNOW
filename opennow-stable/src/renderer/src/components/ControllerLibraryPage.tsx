@@ -1194,12 +1194,9 @@ export function ControllerLibraryPage({
       return;
     }
 
-    let offset = 0;
-    for (let i = 0; i < selectedIndex; i++) {
-      const childStyle = window.getComputedStyle(children[i]);
-      offset += children[i].offsetHeight + parseFloat(childStyle.marginBottom);
-    }
-    offset += children[selectedIndex].offsetHeight / 2;
+    // Use offsetTop/offsetHeight to avoid per-item style reads on every navigation move.
+    const activeChild = children[selectedIndex];
+    const offset = activeChild.offsetTop + (activeChild.offsetHeight / 2);
     setListTranslateY(-offset);
     setListTranslateX(0);
   }, [
@@ -1226,6 +1223,24 @@ export function ControllerLibraryPage({
       playUiSound("confirm");
     }
   }, [onToggleFavoriteGame, playUiSound, selectedGame]);
+
+  const controllerEventHandlersRef = useRef<{
+    onDirection: (event: Event) => void;
+    onShoulder: (event: Event) => void;
+    onActivate: () => void;
+    onSecondaryActivate: () => void;
+    onTertiaryActivate: () => void;
+    onCancel: (event: Event) => void;
+    onKeyboard: (event: KeyboardEvent) => void;
+  }>({
+    onDirection: () => {},
+    onShoulder: () => {},
+    onActivate: () => {},
+    onSecondaryActivate: () => {},
+    onTertiaryActivate: () => {},
+    onCancel: () => {},
+    onKeyboard: () => {},
+  });
 
   useEffect(() => {
     const applyDirection = (direction: Direction): void => {
@@ -2330,21 +2345,14 @@ export function ControllerLibraryPage({
       }
     };
 
-    window.addEventListener("opennow:controller-direction", handler);
-    window.addEventListener("opennow:controller-shoulder", shoulderHandler);
-    window.addEventListener("opennow:controller-activate", activateHandler);
-    window.addEventListener("opennow:controller-secondary-activate", secondaryActivateHandler);
-    window.addEventListener("opennow:controller-tertiary-activate", tertiaryActivateHandler);
-    window.addEventListener("opennow:controller-cancel", cancelHandler);
-    window.addEventListener("keydown", kbdHandler);
-    return () => {
-      window.removeEventListener("opennow:controller-direction", handler);
-      window.removeEventListener("opennow:controller-shoulder", shoulderHandler);
-      window.removeEventListener("opennow:controller-activate", activateHandler);
-      window.removeEventListener("opennow:controller-secondary-activate", secondaryActivateHandler);
-      window.removeEventListener("opennow:controller-tertiary-activate", tertiaryActivateHandler);
-      window.removeEventListener("opennow:controller-cancel", cancelHandler);
-      window.removeEventListener("keydown", kbdHandler);
+    controllerEventHandlersRef.current = {
+      onDirection: handler as (event: Event) => void,
+      onShoulder: shoulderHandler as (event: Event) => void,
+      onActivate: activateHandler,
+      onSecondaryActivate: secondaryActivateHandler,
+      onTertiaryActivate: tertiaryActivateHandler,
+      onCancel: cancelHandler,
+      onKeyboard: kbdHandler,
     };
   }, [
     isLoading,
@@ -2422,6 +2430,33 @@ export function ControllerLibraryPage({
     onStreamMenuToggleFullscreen,
     controllerType,
   ]);
+
+  useEffect(() => {
+    const directionListener = (event: Event) => controllerEventHandlersRef.current.onDirection(event);
+    const shoulderListener = (event: Event) => controllerEventHandlersRef.current.onShoulder(event);
+    const activateListener = () => controllerEventHandlersRef.current.onActivate();
+    const secondaryActivateListener = () => controllerEventHandlersRef.current.onSecondaryActivate();
+    const tertiaryActivateListener = () => controllerEventHandlersRef.current.onTertiaryActivate();
+    const cancelListener = (event: Event) => controllerEventHandlersRef.current.onCancel(event);
+    const keyboardListener = (event: KeyboardEvent) => controllerEventHandlersRef.current.onKeyboard(event);
+
+    window.addEventListener("opennow:controller-direction", directionListener);
+    window.addEventListener("opennow:controller-shoulder", shoulderListener);
+    window.addEventListener("opennow:controller-activate", activateListener);
+    window.addEventListener("opennow:controller-secondary-activate", secondaryActivateListener);
+    window.addEventListener("opennow:controller-tertiary-activate", tertiaryActivateListener);
+    window.addEventListener("opennow:controller-cancel", cancelListener);
+    window.addEventListener("keydown", keyboardListener);
+    return () => {
+      window.removeEventListener("opennow:controller-direction", directionListener);
+      window.removeEventListener("opennow:controller-shoulder", shoulderListener);
+      window.removeEventListener("opennow:controller-activate", activateListener);
+      window.removeEventListener("opennow:controller-secondary-activate", secondaryActivateListener);
+      window.removeEventListener("opennow:controller-tertiary-activate", tertiaryActivateListener);
+      window.removeEventListener("opennow:controller-cancel", cancelListener);
+      window.removeEventListener("keydown", keyboardListener);
+    };
+  }, []);
 
   const renderFaceButton = (kind: "primary" | "secondary" | "tertiary", className: string, size: number): JSX.Element => {
     if (kind === "primary") {

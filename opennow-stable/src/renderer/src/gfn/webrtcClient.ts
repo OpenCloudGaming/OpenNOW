@@ -183,6 +183,8 @@ interface ClientOptions {
   onStats?: (stats: StreamDiagnostics) => void;
   onTimeWarning?: (warning: StreamTimeWarning) => void;
   onMicStateChange?: (state: MicStateChange) => void;
+  /** Optional host callback for Meta/Home button edge presses (button 16). */
+  onControllerMetaPress?: (event: { controllerId: number; gamepad: Gamepad }) => void;
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
@@ -600,6 +602,7 @@ export class GfnWebRtcClient {
   } | null = null;
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private connectedGamepads: Set<number> = new Set();
+  private gamepadMetaPressed: Map<number, boolean> = new Map();
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
   private lastRumbleWeak: number[] = [0, 0, 0, 0];
   private lastRumbleStrong: number[] = [0, 0, 0, 0];
@@ -1912,7 +1915,7 @@ export class GfnWebRtcClient {
   }
 
   private pollGamepads(): void {
-    if (this.isStreamInputBlocked()) return;
+    const streamInputBlocked = this.isStreamInputBlocked();
     const gamepads = navigator.getGamepads();
     if (!gamepads) {
       return;
@@ -1927,6 +1930,16 @@ export class GfnWebRtcClient {
       if (gamepad && gamepad.connected) {
         connectedCount++;
         this.updateGamepadBitmap(i, gamepad);
+        const metaPressed = Boolean(gamepad.buttons[16]?.pressed);
+        const prevMetaPressed = this.gamepadMetaPressed.get(i) ?? false;
+        if (metaPressed && !prevMetaPressed) {
+          try {
+            this.options.onControllerMetaPress?.({ controllerId: i, gamepad });
+          } catch {
+            // Host callbacks must never break stream input polling.
+          }
+        }
+        this.gamepadMetaPressed.set(i, metaPressed);
 
         // Track connected gamepads and update bitmap
         if (!this.connectedGamepads.has(i)) {
@@ -1939,6 +1952,9 @@ export class GfnWebRtcClient {
         }
 
         // Read and encode gamepad state
+        if (streamInputBlocked) {
+          continue;
+        }
         const gamepadInput = this.readGamepadState(gamepad, i);
         const stateChanged = this.hasGamepadStateChanged(i, gamepadInput);
 
@@ -1974,6 +1990,7 @@ export class GfnWebRtcClient {
         // Gamepad disconnected — clear bit from bitmap
         this.stopGamepadRumble(i, gamepad ?? undefined);
         this.connectedGamepads.delete(i);
+        this.gamepadMetaPressed.delete(i);
         this.previousGamepadStates.delete(i);
         this.clearGamepadBitmap(i);
         this.log(`Gamepad ${i} disconnected, bitmap now: 0x${this.gamepadBitmap.toString(16)}`);
