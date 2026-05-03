@@ -15,6 +15,7 @@ type UseControllerLibraryLayoutMotionArgs = {
   selectedIndex: number;
   selectedMediaIndex: number;
   gamesDualShelf: boolean;
+  homeDualShelf: boolean;
   spotlightIndex: number;
   spotlightEntriesLength: number;
   itemsContainerRef: RefObject<HTMLDivElement | null>;
@@ -52,6 +53,7 @@ export function useControllerLibraryLayoutMotion({
   selectedIndex,
   selectedMediaIndex,
   gamesDualShelf,
+  homeDualShelf,
   spotlightIndex,
   spotlightEntriesLength,
   itemsContainerRef,
@@ -105,11 +107,13 @@ export function useControllerLibraryLayoutMotion({
 
   useLayoutEffect(() => {
     const gamesRoot = topCategory === "all" && gameSubcategory === "root";
-    if (!gamesRoot || !gamesDualShelf) {
+    const homeDualRoot = topCategory === "current" && homeDualShelf;
+    const dualShelfActive = (gamesRoot && gamesDualShelf) || homeDualRoot;
+    if (!dualShelfActive) {
       setSpotlightShelfTranslateX(0);
       setGamesRootMenuTranslateX(0);
     }
-    if (gamesRoot && gamesDualShelf) {
+    if (dualShelfActive) {
       setSpotlightShelfTranslateX(computeShelfTranslateXClamped(spotlightTrackRef.current, spotlightIndex));
       setGamesRootMenuTranslateX(computeShelfTranslateXClamped(itemsContainerRef.current, topLevelShelfIndex));
       setListTranslateY(0);
@@ -144,6 +148,7 @@ export function useControllerLibraryLayoutMotion({
     topCategory,
     gameSubcategory,
     gamesDualShelf,
+    homeDualShelf,
     spotlightIndex,
     spotlightEntriesLength,
     itemsContainerRef,
@@ -166,7 +171,7 @@ export function useControllerLibraryLayoutMotion({
   } as CSSProperties;
   const wrapperClassName = `xmb-wrapper xmb-theme-${themeStyleSafe} ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"} xmb-layout--ps5-home`;
   const wrapperClassNameWithRow = `${wrapperClassName} xmb-row-${ps5Row} ${topCategory === "settings" ? "xmb-ps5-section-settings" : ""} ${topCategory === "settings" && settingsSubcategory === "root" ? "xmb-ps5-settings-root" : ""} ${topCategory === "settings" && settingsSubcategory !== "root" ? "xmb-ps5-settings-sub" : ""}`;
-  const menuShelfTranslateX = gamesDualShelf ? gamesRootMenuTranslateX : listTranslateX;
+  const menuShelfTranslateX = gamesDualShelf || homeDualShelf ? gamesRootMenuTranslateX : listTranslateX;
 
   return {
     isEntering,

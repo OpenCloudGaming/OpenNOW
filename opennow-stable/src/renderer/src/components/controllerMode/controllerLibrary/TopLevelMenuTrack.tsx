@@ -11,6 +11,8 @@ interface TopLevelMenuTrackProps {
   topLevelShelfIndex: number;
   gameCategoryPreviewById: Record<string, string[]>;
   currentStreamingImageUrl?: string;
+  /** Home “Featured” tile poster (separate from resume snapshot). */
+  featuredPreviewImageUrl?: string | null;
   settingsSubcategory: string;
   editingBandwidth: boolean;
   maxBitrateMbpsForTrack: number;
@@ -36,6 +38,7 @@ export function TopLevelMenuTrack({
   topLevelShelfIndex,
   gameCategoryPreviewById,
   currentStreamingImageUrl,
+  featuredPreviewImageUrl = null,
   settingsSubcategory,
   editingBandwidth,
   maxBitrateMbpsForTrack,
@@ -66,15 +69,16 @@ export function TopLevelMenuTrack({
         const themeChannelForRow = item.id === "themeR" ? "r" : item.id === "themeG" ? "g" : item.id === "themeB" ? "b" : null;
         const isGameRootTile = topCategory === "all" && gameSubcategory === "root";
         const isCurrentResumeTile = topCategory === "current" && item.id === "resume";
+        const isCurrentFeaturedTile = topCategory === "current" && item.id === "featured";
         const isSettingsTile = topCategory === "settings";
         const previewThumbs = isGameRootTile ? (gameCategoryPreviewById[item.id] ?? []) : [];
         return (
           <div
             key={item.id}
-            className={`xmb-ps5-menu-tile ${isActive ? "active" : ""} ${isCurrentResumeTile ? "xmb-ps5-menu-tile--resume" : ""} ${isSettingsTile ? "xmb-ps5-menu-tile--settings" : ""} ${isSettingsTile && settingsSubcategory === "root" ? "xmb-ps5-menu-tile--settings-root" : ""}`}
+            className={`xmb-ps5-menu-tile ${isActive ? "active" : ""} ${isCurrentResumeTile || isCurrentFeaturedTile ? "xmb-ps5-menu-tile--resume" : ""} ${isSettingsTile ? "xmb-ps5-menu-tile--settings" : ""} ${isSettingsTile && settingsSubcategory === "root" ? "xmb-ps5-menu-tile--settings-root" : ""}`}
             role="option"
             aria-selected={isActive}
-            {...(isCurrentResumeTile ? { "aria-label": item.label } : {})}
+            {...(isCurrentResumeTile || isCurrentFeaturedTile ? { "aria-label": item.label } : {})}
           >
             {isCurrentResumeTile ? (
               <div className="xmb-ps5-menu-resume-preview" aria-hidden>
@@ -84,7 +88,19 @@ export function TopLevelMenuTrack({
                   <div className="xmb-ps5-menu-resume-image xmb-ps5-menu-resume-image--placeholder" />
                 )}
                 <div className="xmb-ps5-menu-resume-overlay">
-                  <span className="xmb-ps5-menu-resume-badge">Snapshot</span>
+                  <span className="xmb-ps5-menu-resume-badge">Last played</span>
+                </div>
+              </div>
+            ) : null}
+            {isCurrentFeaturedTile ? (
+              <div className="xmb-ps5-menu-resume-preview" aria-hidden>
+                {featuredPreviewImageUrl ? (
+                  <img src={featuredPreviewImageUrl} alt="" className="xmb-ps5-menu-resume-image" decoding="async" />
+                ) : (
+                  <div className="xmb-ps5-menu-resume-image xmb-ps5-menu-resume-image--placeholder" />
+                )}
+                <div className="xmb-ps5-menu-resume-overlay">
+                  <span className="xmb-ps5-menu-resume-badge">Featured</span>
                 </div>
               </div>
             ) : null}
@@ -100,7 +116,7 @@ export function TopLevelMenuTrack({
                 ))}
               </div>
             ) : null}
-            {isCurrentResumeTile ? null : <div className="xmb-ps5-menu-title">{item.label}</div>}
+            {isCurrentResumeTile || isCurrentFeaturedTile ? null : <div className="xmb-ps5-menu-title">{item.label}</div>}
             {item.value ? (
               <div className="xmb-ps5-menu-meta">
                 {item.id === "bandwidth" && settingsSubcategory !== "root" ? (

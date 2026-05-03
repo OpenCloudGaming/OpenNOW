@@ -2,7 +2,7 @@ import type { JSX } from "react";
 import { ButtonA, ButtonB, ButtonPSCircle, ButtonPSCross } from "../ControllerButtons";
 import { spotlightEntryHasGame } from "./helpers";
 import type { GameInfo } from "@shared/gfn";
-import type { GameSubcategory, SettingsSubcategory, SpotlightEntry } from "./types";
+import type { GameSubcategory, HomeRootPlane, SettingsSubcategory, SpotlightEntry } from "./types";
 
 interface FooterHintsProps {
   localVideoPlayerOpen?: boolean;
@@ -14,6 +14,8 @@ interface FooterHintsProps {
   gameSubcategory: GameSubcategory;
   gamesHubOpen: boolean;
   gamesRootPlane: "spotlight" | "categories";
+  homeRootPlane?: HomeRootPlane;
+  homeDualShelf?: boolean;
   spotlightEntries: SpotlightEntry[];
   spotlightIndex: number;
   currentStreamingGame: GameInfo | null | undefined;
@@ -32,6 +34,8 @@ export function FooterHints({
   gameSubcategory,
   gamesHubOpen,
   gamesRootPlane,
+  homeRootPlane = "spotlight",
+  homeDualShelf = false,
   spotlightEntries,
   spotlightIndex,
   currentStreamingGame,
@@ -57,19 +61,45 @@ export function FooterHints({
   return (
     <div className="xmb-footer">
       {topLevelRowBehaviorActive ? (
-        <>
-          <div className="xmb-btn-hint">
-            {controllerType === "ps" ? (
-              <ButtonPSCross className="xmb-btn-icon" size={24} />
-            ) : (
-              <ButtonA className="xmb-btn-icon" size={24} />
-            )}
-            <span>Select</span>
-          </div>
-          <div className="xmb-btn-hint"><span className="xmb-btn-keycap">L1</span> <span>Prev Section</span></div>
-          <div className="xmb-btn-hint"><span className="xmb-btn-keycap">R1</span> <span>Next Section</span></div>
-        </>
-      ) : topCategory === "current" ? (
+        topCategory === "current" && homeDualShelf ? (
+          <>
+            <div className="xmb-btn-hint"><span>Rows · ↑ / ↓</span></div>
+            <div className="xmb-btn-hint">
+              {controllerType === "ps" ? (
+                <ButtonPSCross className="xmb-btn-icon" size={24} />
+              ) : (
+                <ButtonA className="xmb-btn-icon" size={24} />
+              )}
+              <span>
+                {homeRootPlane === "spotlight" && spotlightEntries[spotlightIndex]?.kind === "cloudResume"
+                  ? spotlightEntries[spotlightIndex].busy
+                    ? "Please wait"
+                    : "Resume session"
+                  : homeRootPlane === "spotlight" && spotlightEntryHasGame(spotlightEntries[spotlightIndex])
+                    ? "Game hub"
+                    : homeRootPlane === "spotlight"
+                      ? "Enter"
+                      : "Select"}
+              </span>
+            </div>
+            <div className="xmb-btn-hint"><span className="xmb-btn-keycap">L1</span> <span>Prev Section</span></div>
+            <div className="xmb-btn-hint"><span className="xmb-btn-keycap">R1</span> <span>Next Section</span></div>
+          </>
+        ) : (
+          <>
+            <div className="xmb-btn-hint">
+              {controllerType === "ps" ? (
+                <ButtonPSCross className="xmb-btn-icon" size={24} />
+              ) : (
+                <ButtonA className="xmb-btn-icon" size={24} />
+              )}
+              <span>Select</span>
+            </div>
+            <div className="xmb-btn-hint"><span className="xmb-btn-keycap">L1</span> <span>Prev Section</span></div>
+            <div className="xmb-btn-hint"><span className="xmb-btn-keycap">R1</span> <span>Next Section</span></div>
+          </>
+        )
+      ) : topCategory === "current" && !gamesHubOpen ? (
         <div className="xmb-btn-hint" style={{ margin: "0 auto" }}>
           {controllerType === "ps" ? (
             <ButtonPSCross className="xmb-btn-icon" size={24} />
@@ -182,7 +212,8 @@ export function FooterHints({
             </>
           )}
         </>
-      ) : topCategory === "all" && gameSubcategory !== "root" ? (
+      ) : (topCategory === "all" && gameSubcategory !== "root") ||
+        (topCategory === "current" && gamesHubOpen) ? (
         gamesHubOpen ? (
           <>
             <div className="xmb-btn-hint"><span>Actions · Left / Right</span></div>
@@ -200,7 +231,7 @@ export function FooterHints({
               ) : (
                 <ButtonB className="xmb-btn-icon" size={24} />
               )}
-              <span>Back</span>
+              <span>{topCategory === "current" ? "Back to Home" : "Back"}</span>
             </div>
             <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>Options</span></div>
           </>

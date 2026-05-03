@@ -2,6 +2,7 @@ import type { ControllerThemeStyle, GameInfo, MediaListingEntry, Settings } from
 import type {
   GameSubcategory,
   GamesHubReturnSnapshot,
+  HomeRootPlane,
   LibrarySortId,
   MediaSubcategory,
   SettingsSubcategory,
@@ -24,6 +25,9 @@ export interface OptionsActionContext {
   selectedMediaIndex: number;
   mediaAssetItems: MediaListingEntry[];
   selectedGame: GameInfo | null;
+  /** When Game Hub is open from Home, the focused title (Games browse uses `selectedGame`). */
+  gamesHubDisplayGame?: GameInfo | null;
+  gamesHubOpen?: boolean;
   currentStreamingGame?: GameInfo | null;
   favoriteGameIdSet: Set<string>;
   setOptionsEntries: (entries: OptionEntry[]) => void;
@@ -151,6 +155,8 @@ export interface AllCancelContext {
   setSpotlightIndex: (index: number) => void;
   throttledOnSelectGame: (id: string) => void;
   playUiSound: (kind: SoundKind) => void;
+  setCategoryIndex?: (index: number) => void;
+  setHomeRootPlane?: (plane: HomeRootPlane) => void;
 }
 
 export type ControllerLibrarySettings = {

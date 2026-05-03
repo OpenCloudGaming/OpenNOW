@@ -69,7 +69,11 @@ export function routeCancel(context: {
   if (context.topCategory === "media" && context.media) {
     return handleMediaCancelAction(context.media);
   }
-  if (context.topCategory === "all" && context.all) {
+  if (
+    context.all &&
+    (context.topCategory === "all" ||
+      (context.topCategory === "current" && context.all.gamesHubOpen))
+  ) {
     return handleAllCancelAction(context.all);
   }
   return false;

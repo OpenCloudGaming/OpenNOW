@@ -34,6 +34,7 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
     getCategoryIcon,
     gameSubcategory,
     gamesHubOpen,
+    gamesHubDisplayGame,
     selectedGame,
     gameHubScreenshotUrls,
     playtimeData,
@@ -51,11 +52,15 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
     topLevelShelfActive,
     selectedTopLevelItemLabel,
     gamesRootPlane,
+    homeRootPlane,
     spotlightEntries,
     spotlightIndex,
     displayItems,
     topLevelShelfIndex,
     gamesDualShelf,
+    homeDualShelf,
+    featuredHomeGame,
+    featuredIsFavorite,
     cloudSessionResumable,
     onResumeCloudSession,
     spotlightTrackRef,
@@ -162,14 +167,14 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
         getCategoryIcon={getCategoryIcon}
       />
 
-      {topCategory === "all" && gameSubcategory !== "root" && gamesHubOpen && selectedGame ? (
+      {gamesHubOpen && gamesHubDisplayGame && ((topCategory === "all" && gameSubcategory !== "root") || topCategory === "current") ? (
         <ControllerGameHub
-          game={selectedGame}
+          game={gamesHubDisplayGame}
           screenshotUrls={gameHubScreenshotUrls}
           playtimeData={playtimeData}
           selectedVariantId={selectedVariantId}
           currentStreamingGame={currentStreamingGame}
-          librarySortLabel={gameSubcategory === "all" ? LIBRARY_SORT_LABEL[librarySortId as keyof typeof LIBRARY_SORT_LABEL] : null}
+          librarySortLabel={topCategory === "all" && gameSubcategory === "all" ? LIBRARY_SORT_LABEL[librarySortId as keyof typeof LIBRARY_SORT_LABEL] : null}
           tiles={gamesHubTiles}
           focusIndex={gamesHubFocusIndex}
           inStreamMenu={inStreamMenu}
@@ -200,13 +205,19 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
         topCategory={topCategory}
         gameSubcategory={gameSubcategory}
         gamesRootPlane={gamesRootPlane}
+        homeRootPlane={homeRootPlane ?? "spotlight"}
         spotlightEntries={spotlightEntries}
         spotlightIndex={spotlightIndex}
         displayItems={displayItems}
         topLevelShelfIndex={topLevelShelfIndex}
         currentTabGame={currentTabGame}
+        featuredHomeGame={featuredHomeGame ?? null}
+        featuredIsFavorite={Boolean(featuredIsFavorite)}
         playtimeData={playtimeData}
         gamesDualShelf={gamesDualShelf}
+        homeDualShelf={Boolean(homeDualShelf)}
+        inStreamMenu={inStreamMenu}
+        subscriptionInfo={subscriptionInfo}
         cloudSessionResumable={cloudSessionResumable}
         onResumeCloudSession={onResumeCloudSession}
         spotlightTrackRef={spotlightTrackRef}
@@ -254,6 +265,8 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
         gameSubcategory={gameSubcategory}
         gamesHubOpen={gamesHubOpen}
         gamesRootPlane={gamesRootPlane}
+        homeRootPlane={homeRootPlane ?? "spotlight"}
+        homeDualShelf={Boolean(homeDualShelf)}
         spotlightEntries={spotlightEntries}
         spotlightIndex={spotlightIndex}
         currentStreamingGame={currentStreamingGame}

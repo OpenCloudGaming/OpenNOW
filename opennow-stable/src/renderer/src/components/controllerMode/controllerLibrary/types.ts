@@ -70,12 +70,17 @@ export type MediaSubcategory = "root" | "Videos" | "Screenshots";
 export type GameSubcategory = "root" | "all" | "favorites" | `genre:${string}`;
 export type LibrarySortId = "recent" | "az" | "za" | "favoritesFirst";
 
+export type HomeRootPlane = "spotlight" | "actions";
+
 export type GamesHubReturnSnapshot = {
   gameSubcategory: GameSubcategory;
   selectedGameSubcategoryIndex: number;
   gamesRootPlane: "spotlight" | "categories";
   spotlightIndex: number;
   restoreSelectedGameId?: string;
+  /** When hub was opened from Home spotlight, restore this top tab on back. */
+  restoreCategoryIndex?: number;
+  restoreHomeRootPlane?: HomeRootPlane;
 };
 
 export type SpotlightEntry =

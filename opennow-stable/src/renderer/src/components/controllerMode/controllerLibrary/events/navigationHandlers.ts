@@ -57,10 +57,13 @@ export function createNavigationHandlers(
     optionsFocusIndex,
     optionsEntries,
     gamesRootPlane,
+    homeRootPlane,
     spotlightIndex,
     spotlightEntries,
     gamesDualShelf,
+    homeDualShelf,
     gamesHubOpen,
+    gamesHubDisplayGame,
     gamesHubFocusIndex,
     gamesHubTiles,
     onSettingChange,
@@ -80,6 +83,7 @@ export function createNavigationHandlers(
     setPs5Row,
     setDetailRailIndex,
     setGamesRootPlane,
+    setHomeRootPlane,
     setSpotlightIndex,
     gamesHubReturnSnapshotRef,
     setGamesHubOpen,
@@ -94,6 +98,7 @@ export function createNavigationHandlers(
     setMediaSubcategory("root");
     setSelectedGameSubcategoryIndex(0);
     setGameSubcategory("root");
+    setHomeRootPlane("spotlight");
     setEditingBandwidth(false);
     setEditingThemeChannel(null);
     setEditingStreamVolume(false);
@@ -196,7 +201,11 @@ export function createNavigationHandlers(
       return;
     }
 
-    if (gamesHubOpen && topCategory === "all" && gameSubcategory !== "root") {
+    if (
+      gamesHubOpen &&
+      gamesHubDisplayGame &&
+      ((topCategory === "all" && gameSubcategory !== "root") || topCategory === "current")
+    ) {
       const n = gamesHubTiles.length;
       if (n === 0) return;
       if (direction === "left") {
@@ -226,6 +235,9 @@ export function createNavigationHandlers(
         setPs5Row("main");
         if (topCategory === "all" && gameSubcategory === "root" && gamesDualShelf) {
           setGamesRootPlane("spotlight");
+        }
+        if (topCategory === "current" && homeDualShelf) {
+          setHomeRootPlane("spotlight");
         }
         return;
       }
@@ -348,7 +360,17 @@ export function createNavigationHandlers(
 
     if (topLevelRowBehaviorActive) {
       const isGamesRoot = topCategory === "all" && gameSubcategory === "root";
+      const isHomeDual = topCategory === "current" && homeDualShelf;
       const itemCount = displayItems.length;
+      if (isHomeDual && homeRootPlane === "spotlight" && (direction === "left" || direction === "right")) {
+        const delta = direction === "left" ? -1 : 1;
+        const next = Math.max(0, Math.min(spotlightEntries.length - 1, spotlightIndex + delta));
+        if (next !== spotlightIndex) {
+          playUiSound("move");
+          setSpotlightIndex(next);
+        }
+        return;
+      }
       if (isGamesRoot && gamesDualShelf && gamesRootPlane === "spotlight" && (direction === "left" || direction === "right")) {
         const delta = direction === "left" ? -1 : 1;
         const next = Math.max(0, Math.min(spotlightEntries.length - 1, spotlightIndex + delta));
@@ -372,6 +394,25 @@ export function createNavigationHandlers(
       }
 
       if (direction === "up" || direction === "down") {
+        if (isHomeDual) {
+          if (direction === "up") {
+            if (homeRootPlane === "actions") {
+              playUiSound("move");
+              setHomeRootPlane("spotlight");
+              return;
+            }
+            if (homeRootPlane === "spotlight" && canEnterTopRow) {
+              playUiSound("move");
+              setPs5Row("top");
+              return;
+            }
+          }
+          if (direction === "down" && homeRootPlane === "spotlight") {
+            playUiSound("move");
+            setHomeRootPlane("actions");
+            return;
+          }
+        }
         if (isGamesRoot && gamesDualShelf) {
           if (direction === "up") {
             if (gamesRootPlane === "categories") {
@@ -426,6 +467,7 @@ export function createNavigationHandlers(
       setMediaSubcategory("root");
       setSelectedGameSubcategoryIndex(0);
       setGameSubcategory("root");
+      setHomeRootPlane("spotlight");
       setEditingBandwidth(false);
       setEditingThemeChannel(null);
       return;
@@ -439,6 +481,7 @@ export function createNavigationHandlers(
       setMediaSubcategory("root");
       setSelectedGameSubcategoryIndex(0);
       setGameSubcategory("root");
+      setHomeRootPlane("spotlight");
       setEditingBandwidth(false);
       setEditingThemeChannel(null);
       return;

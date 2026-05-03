@@ -5,6 +5,8 @@ export function openOptionsMenuAction(context: OptionsActionContext): boolean {
   const {
     gamesShelfBrowseActive,
     selectedGame,
+    gamesHubDisplayGame = null,
+    gamesHubOpen = false,
     currentStreamingGame,
     favoriteGameIdSet,
     mediaShelfBrowseActive,
@@ -24,16 +26,22 @@ export function openOptionsMenuAction(context: OptionsActionContext): boolean {
   } = context;
 
   const entries: Array<{ id: string; label: string }> = [];
-  if (gamesShelfBrowseActive && selectedGame) {
+  const gameForHubOptions =
+    gamesShelfBrowseActive && selectedGame
+      ? selectedGame
+      : topCategory === "current" && gamesHubOpen && gamesHubDisplayGame
+        ? gamesHubDisplayGame
+        : null;
+  if (gameForHubOptions) {
     entries.push({
       id: "play",
-      label: currentStreamingGame && currentStreamingGame.id !== selectedGame.id ? "Switch" : "Play",
+      label: currentStreamingGame && currentStreamingGame.id !== gameForHubOptions.id ? "Switch" : "Play",
     });
     entries.push({
       id: "favorite",
-      label: favoriteGameIdSet.has(selectedGame.id) ? "Remove favorite" : "Add favorite",
+      label: favoriteGameIdSet.has(gameForHubOptions.id) ? "Remove favorite" : "Add favorite",
     });
-    if (selectedGame.variants.length > 1) {
+    if (gameForHubOptions.variants.length > 1) {
       entries.push({ id: "variant", label: "Change version" });
     }
   } else if (
@@ -88,6 +96,9 @@ export function handleOptionsActivateAction(context: OptionsActivateContext): bo
     optionsEntries,
     optionsFocusIndex,
     selectedGame,
+    gamesHubDisplayGame = null,
+    gamesHubOpen = false,
+    topCategory,
     onPlayGame,
     gamesHubReturnSnapshotRef,
     setGamesHubOpen,
@@ -125,24 +136,26 @@ export function handleOptionsActivateAction(context: OptionsActivateContext): bo
     playUiSound("move");
     return true;
   }
-  if (opt.id === "play" && selectedGame) {
-    onPlayGame(selectedGame);
+  const gameForOption =
+    topCategory === "current" && gamesHubOpen && gamesHubDisplayGame ? gamesHubDisplayGame : selectedGame;
+  if (opt.id === "play" && gameForOption) {
+    onPlayGame(gameForOption);
     gamesHubReturnSnapshotRef.current = null;
     setGamesHubOpen(false);
     setOptionsOpen(false);
     playUiSound("confirm");
     return true;
   }
-  if (opt.id === "favorite" && selectedGame) {
-    onToggleFavoriteGame(selectedGame.id);
+  if (opt.id === "favorite" && gameForOption) {
+    onToggleFavoriteGame(gameForOption.id);
     setOptionsOpen(false);
     playUiSound("confirm");
     return true;
   }
-  if (opt.id === "variant" && selectedGame && selectedGame.variants.length > 1) {
-    const idx = selectedGame.variants.findIndex((v) => v.id === selectedVariantId);
-    const next = selectedGame.variants[(idx + 1) % selectedGame.variants.length];
-    onSelectGameVariant(selectedGame.id, next.id);
+  if (opt.id === "variant" && gameForOption && gameForOption.variants.length > 1) {
+    const idx = gameForOption.variants.findIndex((v) => v.id === selectedVariantId);
+    const next = gameForOption.variants[(idx + 1) % gameForOption.variants.length];
+    onSelectGameVariant(gameForOption.id, next.id);
     setOptionsOpen(false);
     playUiSound("confirm");
     return true;
