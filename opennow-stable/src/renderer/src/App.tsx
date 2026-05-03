@@ -49,7 +49,6 @@ import { useControllerNavigation } from "./controllerNavigation";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
-import { pickStreamPreset, type StreamQualityPresetId } from "./utils/streamQualityPresets";
 import { playControllerUiSound } from "./utils/controllerUiSound";
 import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
 import { chooseAccountLinked, getEpicOwnershipLaunchError } from "./lib/launchOwnership";
@@ -2215,26 +2214,6 @@ export function App(): JSX.Element {
     if (audioRef.current) audioRef.current.volume = n;
   }, []);
 
-  const handleApplyStreamPreset = useCallback(
-    (preset: StreamQualityPresetId) => {
-      const resolutions = getResolutionsByAspectRatio(settings.aspectRatio);
-      const pick = pickStreamPreset(preset, resolutions, fpsOptions);
-      if (!pick) return;
-      void updateSetting("resolution", pick.resolution as Settings["resolution"]);
-      void updateSetting("fps", pick.fps as Settings["fps"]);
-      void updateSetting("maxBitrateMbps", pick.maxBitrateMbps as Settings["maxBitrateMbps"]);
-    },
-    [settings.aspectRatio, updateSetting],
-  );
-
-  const handleCycleAspectRatio = useCallback(() => {
-    const list = [...aspectRatioOptions] as string[];
-    const cur = settings.aspectRatio ?? "16:9";
-    const i = list.indexOf(cur);
-    const next = list[(i + 1) % list.length] ?? list[0]!;
-    void updateSetting("aspectRatio", next as Settings["aspectRatio"]);
-  }, [settings.aspectRatio, updateSetting]);
-
   const handleToggleStreamMicrophone = useCallback(() => {
     clientRef.current?.toggleMicrophone();
   }, []);
@@ -4214,14 +4193,11 @@ export function App(): JSX.Element {
               streamMenuVolume={streamVolume}
               onStreamMenuVolumeChange={handleStreamVolumeChange}
               onStreamMenuToggleMicrophone={handleToggleStreamMicrophone}
-              onStreamMenuApplyPreset={handleApplyStreamPreset}
               onStreamMenuToggleFullscreen={() => {
                 void toggleSessionFullscreen();
               }}
-              onStreamMenuCycleAspect={handleCycleAspectRatio}
               streamMenuMicOn={streamMenuMicOn}
               streamMenuIsFullscreen={sessionFullscreen || !!document.fullscreenElement}
-              streamMenuAspectLabel={settings.aspectRatio ?? "16:9"}
               cloudSessionResumable={controllerCloudSessionResumable}
               cloudResumeTitle={activeSessionGameTitle}
               cloudResumeCoverUrl={controllerCloudResumeCoverUrl}

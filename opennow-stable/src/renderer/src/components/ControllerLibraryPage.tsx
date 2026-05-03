@@ -14,7 +14,6 @@ import {
   readControllerOverlayNav,
   writeControllerOverlayNav,
 } from "../utils/controllerOverlayNavStorage";
-import type { StreamQualityPresetId } from "../utils/streamQualityPresets";
 
 interface ControllerLibraryPageProps {
   games: GameInfo[];
@@ -69,12 +68,9 @@ interface ControllerLibraryPageProps {
   streamMenuVolume?: number;
   onStreamMenuVolumeChange?: (volume01: number) => void;
   onStreamMenuToggleMicrophone?: () => void;
-  onStreamMenuApplyPreset?: (preset: StreamQualityPresetId) => void;
   onStreamMenuToggleFullscreen?: () => void;
-  onStreamMenuCycleAspect?: () => void;
   streamMenuMicOn?: boolean;
   streamMenuIsFullscreen?: boolean;
-  streamMenuAspectLabel?: string;
   /** When a cloud session can be continued (server ready, app idle), show a PS5-style resume tile in the Games spotlight row. */
   cloudSessionResumable?: boolean;
   cloudResumeTitle?: string | null;
@@ -230,12 +226,9 @@ export function ControllerLibraryPage({
   streamMenuVolume = 1,
   onStreamMenuVolumeChange,
   onStreamMenuToggleMicrophone,
-  onStreamMenuApplyPreset,
   onStreamMenuToggleFullscreen,
-  onStreamMenuCycleAspect,
   streamMenuMicOn = false,
   streamMenuIsFullscreen = false,
-  streamMenuAspectLabel,
   cloudSessionResumable = false,
   cloudResumeTitle = null,
   cloudResumeCoverUrl = null,
@@ -574,31 +567,22 @@ export function ControllerLibraryPage({
   }, [settings, microphoneDevices]);
  
   const currentGameItems = useMemo(() => {
-    const streamExtras =
-      inStreamMenu && onStreamMenuApplyPreset
-        ? [
-            { id: "toggleMic", label: "Microphone", value: streamMenuMicOn ? "On" : "Off" },
-            {
-              id: "streamVolume",
-              label: "Stream volume",
-              value: `${Math.round((streamMenuVolume ?? 1) * 100)}%`,
-            },
-            { id: "presetPerf", label: "Apply · Performance", value: "" },
-            { id: "presetBal", label: "Apply · Balanced", value: "" },
-            { id: "presetQual", label: "Apply · Quality", value: "" },
-            { id: "openMedia", label: "Media & captures", value: "Open" },
-            {
-              id: "toggleFullscreen",
-              label: "Fullscreen",
-              value: streamMenuIsFullscreen ? "On" : "Off",
-            },
-            {
-              id: "cycleAspect",
-              label: "Aspect ratio",
-              value: streamMenuAspectLabel ?? "—",
-            },
-          ]
-        : [];
+    const streamExtras = inStreamMenu
+      ? [
+          { id: "toggleMic", label: "Microphone", value: streamMenuMicOn ? "On" : "Off" },
+          {
+            id: "streamVolume",
+            label: "Stream volume",
+            value: `${Math.round((streamMenuVolume ?? 1) * 100)}%`,
+          },
+          { id: "openMedia", label: "Media & captures", value: "Open" },
+          {
+            id: "toggleFullscreen",
+            label: "Fullscreen",
+            value: streamMenuIsFullscreen ? "On" : "Off",
+          },
+        ]
+      : [];
     return [
       { id: "resume", label: "Resume Game", value: "" },
       ...streamExtras,
@@ -612,11 +596,9 @@ export function ControllerLibraryPage({
   }, [
     inStreamMenu,
     endSessionConfirm,
-    onStreamMenuApplyPreset,
     streamMenuMicOn,
     streamMenuVolume,
     streamMenuIsFullscreen,
-    streamMenuAspectLabel,
   ]);
 
   const mediaRootItems = useMemo(() => [
@@ -1862,21 +1844,6 @@ export function ControllerLibraryPage({
           playUiSound("confirm");
           return;
         }
-        if (item?.id === "presetPerf" && onStreamMenuApplyPreset) {
-          onStreamMenuApplyPreset("performance");
-          playUiSound("confirm");
-          return;
-        }
-        if (item?.id === "presetBal" && onStreamMenuApplyPreset) {
-          onStreamMenuApplyPreset("balanced");
-          playUiSound("confirm");
-          return;
-        }
-        if (item?.id === "presetQual" && onStreamMenuApplyPreset) {
-          onStreamMenuApplyPreset("quality");
-          playUiSound("confirm");
-          return;
-        }
         if (item?.id === "openMedia") {
           window.dispatchEvent(new CustomEvent("opennow:controller-navigate", { detail: { target: "media" } }));
           playUiSound("confirm");
@@ -1884,11 +1851,6 @@ export function ControllerLibraryPage({
         }
         if (item?.id === "toggleFullscreen" && onStreamMenuToggleFullscreen) {
           onStreamMenuToggleFullscreen();
-          playUiSound("confirm");
-          return;
-        }
-        if (item?.id === "cycleAspect" && onStreamMenuCycleAspect) {
-          onStreamMenuCycleAspect();
           playUiSound("confirm");
           return;
         }
@@ -2457,9 +2419,7 @@ export function ControllerLibraryPage({
     streamMenuVolume,
     onStreamMenuVolumeChange,
     onStreamMenuToggleMicrophone,
-    onStreamMenuApplyPreset,
     onStreamMenuToggleFullscreen,
-    onStreamMenuCycleAspect,
     controllerType,
   ]);
 
@@ -2912,10 +2872,6 @@ export function ControllerLibraryPage({
                 })()}
               </div>
             ) : null}
-            <div className="xmb-ps5-actions">
-              <span className="xmb-ps5-action xmb-ps5-action--primary">Enter</span>
-              <span className="xmb-ps5-action">Change Section</span>
-            </div>
           </div>
           {gamesDualShelf ? (
             <div className="xmb-ps5-shelf-anchored">
