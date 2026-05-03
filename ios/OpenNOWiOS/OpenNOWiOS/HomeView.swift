@@ -522,6 +522,7 @@ struct GameLaunchDetailsSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     detailHero
+                    launchOptionsSection
 
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Overview")
@@ -570,40 +571,6 @@ struct GameLaunchDetailsSheet: View {
                         Text(launchUnavailableMessage)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                    }
-
-                    if !launcherOptions.isEmpty {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Launch With")
-                                .font(.headline)
-                            ForEach(launcherOptions) { option in
-                                Button {
-                                    Haptics.selection()
-                                    selectedOption = option
-                                } label: {
-                                    HStack(spacing: 12) {
-                                        StoreGlyph(store: option.storefront)
-                                            .frame(width: 34, height: 34)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(option.storefront.capitalized)
-                                                .font(.subheadline.weight(.semibold))
-                                            Text(launchOptionSubtitle(option))
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                        Spacer()
-                                        if selectedOption?.id == option.id {
-                                            Image(systemName: "checkmark.circle.fill")
-                                                .foregroundStyle(brandAccent)
-                                        }
-                                    }
-                                    .padding(14)
-                                    .glassCard()
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
                     }
 
                     if !detailLabels.isEmpty {
@@ -709,6 +676,43 @@ struct GameLaunchDetailsSheet: View {
 
     private var detailMetadataColumns: [GridItem] {
         [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 12)]
+    }
+
+    @ViewBuilder
+    private var launchOptionsSection: some View {
+        if !launcherOptions.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Launch With")
+                    .font(.headline)
+                ForEach(launcherOptions) { option in
+                    Button {
+                        Haptics.selection()
+                        selectedOption = option
+                    } label: {
+                        HStack(spacing: 12) {
+                            StoreGlyph(store: option.storefront)
+                                .frame(width: 34, height: 34)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(option.storefront.capitalized)
+                                    .font(.subheadline.weight(.semibold))
+                                Text(launchOptionSubtitle(option))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            if selectedOption?.id == option.id {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(brandAccent)
+                            }
+                        }
+                        .padding(14)
+                        .glassCard()
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
     }
 
     private var detailHero: some View {

@@ -373,7 +373,8 @@ private struct StreamerWebView: UIViewRepresentable {
 <head>
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
   <style>
-    html,body{margin:0;padding:0;background:#000;width:100%;height:100%;min-height:100%;overflow:hidden;overscroll-behavior:none}
+    html,body{margin:0;padding:0;background:#000;width:100%;height:100%;min-height:100%;overflow:hidden;overscroll-behavior:none;
+      -webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
     #video{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;object-fit:contain;background:#000}
     #hudToggle{position:fixed;right:max(6px,calc(env(safe-area-inset-right) + 6px));
       bottom:max(8px,calc(env(safe-area-inset-bottom) + 8px));z-index:36;display:inline-flex;
@@ -386,24 +387,26 @@ private struct StreamerWebView: UIViewRepresentable {
       font-size:20px;line-height:1;}
     #hudPanel{position:fixed;right:max(8px,calc(env(safe-area-inset-right) + 8px));
       bottom:max(54px,calc(env(safe-area-inset-bottom) + 54px));z-index:35;width:min(300px,calc(100vw - 20px));
-      max-height:min(58vh,360px);overflow:auto;overscroll-behavior:contain;padding:10px;border-radius:18px;
+      max-width:calc(100vw - 20px);box-sizing:border-box;max-height:min(58vh,360px);overflow-y:auto;overflow-x:hidden;
+      overscroll-behavior:contain;padding:10px;border-radius:18px;
       color:#fff;background:rgba(18,18,22,0.74);border:1px solid rgba(255,255,255,0.14);
       font:11px -apple-system;transition:transform .22s ease,opacity .22s ease;opacity:0;
       transform:translateY(20px) scale(0.98);pointer-events:none;
       backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);}
     #hudPanel.open{transform:translateY(0) scale(1);opacity:1;pointer-events:auto;}
     .hudHeader{display:flex;gap:8px;align-items:flex-start;justify-content:space-between;margin-bottom:8px;}
-    .hudHeaderTitle{display:flex;flex-direction:column;gap:2px;min-width:0;}
+    .hudHeaderTitle{display:flex;flex-direction:column;gap:2px;min-width:0;max-width:100%;}
     .hudHeaderTitle strong{font-size:13px;}
     .hudHeaderTitle span{display:none;}
     .hudSection{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);}
-    .hudSectionTitle{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px;}
+    .hudSectionTitle{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px;min-width:0;}
     .hudSectionTitle strong{font-size:12px;}
     .hudSectionTitle span{color:rgba(255,255,255,0.55);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .toggleList{display:flex;flex-direction:column;gap:6px;}
+    .toggleList{display:flex;flex-direction:column;gap:6px;min-width:0;}
     .toggleRow{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:8px 9px;
       border-radius:12px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:#fff;
-      font:11px -apple-system;cursor:pointer;text-align:left;}
+      font:11px -apple-system;cursor:pointer;text-align:left;box-sizing:border-box;min-width:0;max-width:100%;}
+    .toggleRow div{min-width:0;overflow:hidden;}
     .toggleRow strong{display:block;font-size:11px;font-weight:600;}
     .toggleRow div span{display:none;}
     .toggleRow .toggleValue{flex:0 0 auto;margin-top:0;color:rgba(255,255,255,0.92);font-weight:600;}
@@ -416,7 +419,7 @@ private struct StreamerWebView: UIViewRepresentable {
       border:1px solid rgba(255,255,255,0.1);font-size:10px;line-height:1;}
     .layoutPanel{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);}
     .layoutPanel label{display:block;margin-top:6px;color:rgba(255,255,255,0.82);font-size:11px;}
-    .layoutPanel input[type=range]{width:100%;margin-top:3px;}
+    .layoutPanel input[type=range]{width:100%;max-width:100%;box-sizing:border-box;margin-top:3px;}
     .layoutHint{display:none;}
     #gpPad.layoutEditing .layoutGroup{outline:1px dashed rgba(120,210,255,0.9);background:rgba(120,210,255,0.1);border-radius:18px;}
     #gpPad.layoutEditing .layoutGroup::after{content:'Drag';position:absolute;left:50%;top:-18px;transform:translateX(-50%);
@@ -427,11 +430,12 @@ private struct StreamerWebView: UIViewRepresentable {
 </head>
 <body>
   <video id="video" playsinline autoplay muted></video>
-  <div id="stats" style="position:fixed;left:12px;top:12px;z-index:30;display:flex;flex-direction:column;gap:6px;
-    min-width:244px;padding:10px 12px;color:#eef7ee;background:rgba(0,0,0,0.58);border:1px solid rgba(255,255,255,0.15);
-    border-radius:14px;font:12px -apple-system;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);">
+  <div id="stats" style="position:fixed;left:max(8px,calc(env(safe-area-inset-left) + 8px));
+    top:max(8px,calc(env(safe-area-inset-top) + 8px));z-index:30;display:flex;flex-direction:column;gap:3px;
+    min-width:188px;padding:7px 8px;color:#eef7ee;background:rgba(0,0,0,0.54);border:1px solid rgba(255,255,255,0.13);
+    border-radius:11px;font:10.5px -apple-system;line-height:1.25;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);">
     <div id="statsPrimary">FPS -- | Ping -- ms | Loss -- | Rate -- Mbps</div>
-    <div id="statsMeta" style="display:none;color:rgba(255,255,255,0.7);font-size:11px;"></div>
+    <div id="statsMeta" style="display:none;color:rgba(255,255,255,0.7);font-size:9.5px;"></div>
   </div>
   <div id="touchpad" style="position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;z-index:10;touch-action:none;"></div>
   <div id="touchHint" style="position:fixed;left:50%;bottom:max(50px,calc(env(safe-area-inset-bottom) + 50px));transform:translateX(-50%);
@@ -491,10 +495,10 @@ private struct StreamerWebView: UIViewRepresentable {
           <div><strong>Touch Controller</strong><span id="touchModeDescription">Touchpad is active. Optional touch controls stay hidden until needed.</span></div>
           <span class="toggleValue" id="gpValue">Hidden</span>
         </button>
-        <button id="physicalControllerBtn" class="toggleRow" onclick="togglePhysicalControllerPassthrough()">
-          <div><strong>Bluetooth Controller</strong><span>Pass connected controllers through as native GFN gamepad packets.</span></div>
-          <span class="toggleValue" id="physicalControllerValue">On</span>
-        </button>
+        <div class="toggleRow is-active" role="status">
+          <div><strong>Bluetooth Controller</strong><span>Connected controllers are detected automatically.</span></div>
+          <span class="toggleValue">Auto</span>
+        </div>
       </div>
     </div>
     <div class="layoutPanel">
@@ -503,11 +507,11 @@ private struct StreamerWebView: UIViewRepresentable {
         <button id="gpEditBtn" class="infoAction" style="width:auto;padding:8px 12px;">Edit Layout</button>
       </div>
       <label for="gpScaleRange">Control Size <span id="gpScaleValue">100%</span></label>
-      <input id="gpScaleRange" type="range" min="50" max="160" step="1" value="100">
+      <input id="gpScaleRange" type="range" min="35" max="160" step="1" value="100">
       <label for="gpButtonRange">Button Size <span id="gpButtonValue">100%</span></label>
-      <input id="gpButtonRange" type="range" min="60" max="150" step="1" value="100">
+      <input id="gpButtonRange" type="range" min="40" max="150" step="1" value="100">
       <label for="gpStickRange">Stick Size <span id="gpStickValue">100%</span></label>
-      <input id="gpStickRange" type="range" min="60" max="150" step="1" value="100">
+      <input id="gpStickRange" type="range" min="40" max="150" step="1" value="100">
       <label for="gpOpacityRange">Control Opacity <span id="gpOpacityValue">58%</span></label>
       <input id="gpOpacityRange" type="range" min="15" max="100" step="1" value="58">
       <div style="display:flex;gap:8px;margin-top:10px;">
@@ -598,7 +602,7 @@ private struct StreamerWebView: UIViewRepresentable {
       showStatsClock: raw?.showStatsClock === true,
       showStatsBattery: raw?.showStatsBattery === true,
       touchControllerVisible: raw?.touchControllerVisible === true,
-      physicalControllerPassthrough: raw?.physicalControllerPassthrough !== false
+      physicalControllerPassthrough: true
     };
   }
   let streamerPreferences = sanitizeStreamerPreferences(cfg.streamerPreferences);
@@ -712,15 +716,15 @@ private struct StreamerWebView: UIViewRepresentable {
   const GAMEPAD_B = 0x2000;
   const GAMEPAD_X = 0x4000;
   const GAMEPAD_Y = 0x8000;
-  const TOUCH_LAYOUT_SCALE_MIN = 0.5;
+  const TOUCH_LAYOUT_SCALE_MIN = 0.35;
   const TOUCH_LAYOUT_SCALE_MAX = 1.6;
-  const TOUCH_LAYOUT_BUTTON_SCALE_MIN = 0.6;
+  const TOUCH_LAYOUT_BUTTON_SCALE_MIN = 0.4;
   const TOUCH_LAYOUT_BUTTON_SCALE_MAX = 1.5;
-  const TOUCH_LAYOUT_STICK_SCALE_MIN = 0.6;
+  const TOUCH_LAYOUT_STICK_SCALE_MIN = 0.4;
   const TOUCH_LAYOUT_STICK_SCALE_MAX = 1.5;
   const TOUCH_LAYOUT_OPACITY_MIN = 0.15;
   const TOUCH_LAYOUT_OPACITY_MAX = 1.0;
-  const TOUCH_LAYOUT_VISUAL_BASE_SCALE = 0.70;
+  const TOUCH_LAYOUT_VISUAL_BASE_SCALE = 0.56;
 
   function post(type, message) {
     try { window.webkit.messageHandlers.opennow.postMessage({ type, message }); } catch (_) {}
@@ -862,18 +866,10 @@ private struct StreamerWebView: UIViewRepresentable {
     updateHudSummary();
   }
   function updatePhysicalControllerButton() {
-    const enabled = streamerPreferences.physicalControllerPassthrough;
     if (physicalControllerValue) {
-      physicalControllerValue.textContent = enabled ? 'On' : 'Off';
+      physicalControllerValue.textContent = 'Auto';
     }
-    setToggleRowState(physicalControllerBtn, enabled);
-  }
-  function togglePhysicalControllerPassthrough() {
-    updateStreamerPreference('physicalControllerPassthrough', !streamerPreferences.physicalControllerPassthrough);
-    updatePhysicalControllerButton();
-    if (!streamerPreferences.physicalControllerPassthrough && nativeGamepadState?.connected) {
-      sendCurrentGamepadState(null);
-    }
+    setToggleRowState(physicalControllerBtn, true);
   }
   function updateTouchModeCopy() {
     if (!touchModeDescription) return;
@@ -894,8 +890,8 @@ private struct StreamerWebView: UIViewRepresentable {
     if (!touchpad) return;
     const touchControllerActive = gpPad && gpPad.style.display !== 'none';
     if (touchControllerActive) {
-      touchpad.style.pointerEvents = 'none';
-      touchpad.style.display = 'none';
+      touchpad.style.pointerEvents = 'auto';
+      touchpad.style.display = 'block';
     } else {
       touchpad.style.pointerEvents = 'auto';
       touchpad.style.display = 'block';
@@ -1120,6 +1116,15 @@ private struct StreamerWebView: UIViewRepresentable {
     const reason = event && event.reason ? String(event.reason) : 'unknown';
     fail('Unhandled promise rejection: ' + reason);
   });
+  window.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+  }, { passive: false });
+  document.addEventListener('selectionchange', () => {
+    const selection = window.getSelection && window.getSelection();
+    if (selection && !selection.isCollapsed) {
+      selection.removeAllRanges();
+    }
+  });
   function nextAck() { ack += 1; return ack; }
   function scheduleReconnect(reason) {
     if (reconnectAttempts >= maxReconnectAttempts) {
@@ -1283,7 +1288,7 @@ private struct StreamerWebView: UIViewRepresentable {
       `FPS ${latestStats.fps > 0 ? Math.round(latestStats.fps) : '--'}`,
       `Ping ${latestStats.pingMs > 0 ? Math.round(latestStats.pingMs) : '--'} ms`,
       `Loss ${lossText}%`,
-      `Rate ${latestStats.bitrateMbps > 0 ? latestStats.bitrateMbps.toFixed(1) : '--'} Mbps`
+      `${latestStats.bitrateMbps > 0 ? latestStats.bitrateMbps.toFixed(1) : '--'} Mbps`
     ];
     const metaParts = [];
     if (showStatsClock) {
@@ -1296,8 +1301,8 @@ private struct StreamerWebView: UIViewRepresentable {
         metaParts.push('Battery unavailable');
       }
     }
-    const nextPrimary = primaryParts.join(' | ');
-    const nextMeta = metaParts.join(' | ');
+    const nextPrimary = primaryParts.join(' · ');
+    const nextMeta = metaParts.join(' · ');
     const combined = `${nextPrimary}\n${nextMeta}`;
     if (combined === lastStatsMarkup) return;
     lastStatsMarkup = combined;
@@ -2739,7 +2744,7 @@ private struct StreamerWebView: UIViewRepresentable {
     };
   }
   function selectActiveGamepadSource() {
-    if (streamerPreferences.physicalControllerPassthrough && nativeGamepadState?.connected) {
+    if (nativeGamepadState?.connected) {
       const nativeIndex = Number.isFinite(nativeGamepadState.index) ? nativeGamepadState.index : 0;
       return { label: nativeGamepadState.id || 'iOS Controller', input: buildGamepadInputFromState(nativeGamepadState, nativeIndex) };
     }

@@ -88,35 +88,32 @@ struct StreamLoadingView: View {
             .ignoresSafeArea()
         #endif
 
-        ScrollView {
-          Group {
-            if isWide {
-              HStack(alignment: .center, spacing: 28) {
-                gameHeader(isWide: true)
-                  .frame(maxWidth: 440)
-
-                queueProgressPanel(isWide: true)
-                  .frame(maxWidth: 430)
-              }
-              .frame(maxWidth: 960)
-            } else {
-              VStack(spacing: 24) {
-                gameHeader(isWide: false)
+        if isWide {
+          landscapeQueueLayout(proxy: proxy)
+        } else {
+          let hasAd = store.activeQueueAd != nil
+          let topContentInset = max(28, proxy.safeAreaInsets.top + (hasAd ? 14 : 18))
+          let bottomContentInset = max(28, proxy.safeAreaInsets.bottom + 18)
+          ScrollView {
+            Group {
+              VStack(spacing: hasAd ? 18 : 24) {
+                gameHeader(isWide: false, compact: hasAd)
                 queueProgressPanel(isWide: false)
               }
               .frame(maxWidth: 430)
             }
+            .padding(.horizontal, 24)
+            .padding(.top, topContentInset)
+            .padding(.bottom, bottomContentInset)
+            .frame(maxWidth: .infinity)
+            .frame(
+              minHeight: max(
+                0, proxy.size.height - topContentInset - bottomContentInset))
           }
-          .padding(.horizontal, isWide ? 32 : 24)
-          .padding(.vertical, isWide ? 20 : 28)
-          .frame(maxWidth: .infinity)
-          .frame(
-            minHeight: max(
-              0, proxy.size.height - proxy.safeAreaInsets.top - proxy.safeAreaInsets.bottom))
+          #if os(iOS)
+            .scrollBounceBehavior(.basedOnSize)
+          #endif
         }
-        #if os(iOS)
-          .scrollBounceBehavior(.basedOnSize)
-        #endif
       }
     }
     .animation(.spring(response: 0.34, dampingFraction: 0.84), value: currentPhase)
@@ -130,16 +127,44 @@ struct StreamLoadingView: View {
     size.width > size.height && size.width >= 680
   }
 
-  private func gameHeader(isWide: Bool) -> some View {
-    VStack(alignment: isWide ? .leading : .center, spacing: 14) {
-      gameArtworkHero(isWide: isWide)
+  private func landscapeQueueLayout(proxy: GeometryProxy) -> some View {
+    let hasAd = store.activeQueueAd != nil
+    return HStack(alignment: .center, spacing: hasAd ? 18 : 26) {
+      VStack(alignment: .leading, spacing: hasAd ? 10 : 12) {
+        gameHeader(isWide: true, compact: hasAd)
+        compactQueueStatus
+      }
+      .frame(maxWidth: hasAd ? 330 : 360, alignment: .leading)
+
+      VStack(spacing: 10) {
+        if let ad = store.activeQueueAd {
+          QueueAdPlayerCard(ad: ad, compact: true)
+            .environmentObject(store)
+        } else {
+          queueProgressPanel(isWide: true, includeAd: false, includeActions: false)
+        }
+        actionButtons
+          .frame(maxWidth: 320)
+      }
+      .frame(maxWidth: hasAd ? 330 : 380)
+    }
+    .padding(.leading, max(56, proxy.safeAreaInsets.leading + 38))
+    .padding(.trailing, max(18, proxy.safeAreaInsets.trailing + 14))
+    .padding(.vertical, 12)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    .clipped()
+  }
+
+  private func gameHeader(isWide: Bool, compact: Bool = false) -> some View {
+    VStack(alignment: isWide ? .leading : .center, spacing: compact ? 8 : 14) {
+      gameArtworkHero(isWide: isWide, compact: compact)
 
       VStack(alignment: isWide ? .leading : .center, spacing: 4) {
         Text(store.activeSession?.game.title ?? "Preparing your game")
-          .font(isWide ? .title.bold() : .title2.bold())
+          .font(compact ? .headline.bold() : isWide ? .title.bold() : .title2.bold())
           .foregroundStyle(.primary)
           .multilineTextAlignment(isWide ? .leading : .center)
-          .lineLimit(3)
+          .lineLimit(compact ? 2 : 3)
           .minimumScaleFactor(0.78)
           .fixedSize(horizontal: false, vertical: true)
 
@@ -153,19 +178,19 @@ struct StreamLoadingView: View {
   }
 
   @ViewBuilder
-  private func gameArtworkHero(isWide: Bool) -> some View {
-    let cornerRadius: CGFloat = isWide ? 26 : 22
+  private func gameArtworkHero(isWide: Bool, compact: Bool = false) -> some View {
+    let cornerRadius: CGFloat = compact ? 18 : isWide ? 24 : 22
     ZStack {
       if let game = store.activeSession?.game {
-        GameArtworkView(game: game, iconSize: isWide ? 72 : 58)
+        GameArtworkView(game: game, iconSize: compact ? 48 : isWide ? 64 : 58)
       } else {
-        BrandLogoView(size: isWide ? 92 : 78)
+        BrandLogoView(size: compact ? 60 : isWide ? 86 : 78)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .background(.regularMaterial)
       }
     }
     .aspectRatio(16.0 / 9.0, contentMode: .fit)
-    .frame(maxWidth: isWide ? 440 : 340)
+    .frame(maxWidth: compact ? 280 : isWide ? 340 : 340)
     .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -174,11 +199,11 @@ struct StreamLoadingView: View {
     .shadow(color: .black.opacity(0.18), radius: 18, y: 10)
   }
 
-  private func queueProgressPanel(isWide: Bool) -> some View {
+  private func queueProgressPanel(isWide: Bool, includeAd: Bool = true, includeActions: Bool = true) -> some View {
     VStack(spacing: isWide ? 18 : 22) {
       queuePositionBadge
 
-      if let ad = store.activeQueueAd {
+      if includeAd, let ad = store.activeQueueAd {
         QueueAdPlayerCard(ad: ad)
           .environmentObject(store)
       }
@@ -196,29 +221,60 @@ struct StreamLoadingView: View {
         .tint(brandAccent)
         .scaleEffect(1.3)
 
-      HStack(spacing: 12) {
-        Button {
-          Haptics.light()
-          store.minimizeQueueOverlay()
-        } label: {
-          Label("Minimize", systemImage: "rectangle.compress.vertical")
-            .frame(maxWidth: .infinity)
-        }
-        .streamActionButtonStyle()
-
-        Button(role: .destructive) {
-          Haptics.medium()
-          Task { await store.endSession() }
-        } label: {
-          Label("Cancel", systemImage: "xmark")
-            .frame(maxWidth: .infinity)
-        }
-        .streamActionButtonStyle(tint: .red.opacity(0.92))
+      if includeActions {
+        actionButtons
+          .frame(maxWidth: 360)
+          .padding(.top, 4)
       }
-      .frame(maxWidth: 360)
-      .padding(.top, 4)
     }
     .frame(maxWidth: .infinity)
+  }
+
+  private var compactQueueStatus: some View {
+    VStack(alignment: .leading, spacing: 9) {
+      queuePositionBadge
+        .frame(maxWidth: 260, alignment: .leading)
+
+      compactStepsView
+
+      Text(statusMessage)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .lineLimit(2)
+        .minimumScaleFactor(0.82)
+        .fixedSize(horizontal: false, vertical: true)
+        .numericQueueTransition(value: store.activeSession?.queuePosition ?? -1)
+
+      ProgressView()
+        .progressViewStyle(.circular)
+        .tint(brandAccent)
+        .scaleEffect(0.82)
+        .frame(width: 22, height: 22)
+    }
+    .padding(.top, 2)
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private var actionButtons: some View {
+    HStack(spacing: 10) {
+      Button {
+        Haptics.light()
+        store.minimizeQueueOverlay()
+      } label: {
+        Label("Minimize", systemImage: "rectangle.compress.vertical")
+          .frame(maxWidth: .infinity)
+      }
+      .streamActionButtonStyle()
+
+      Button(role: .destructive) {
+        Haptics.medium()
+        Task { await store.endSession() }
+      } label: {
+        Label("Cancel", systemImage: "xmark")
+          .frame(maxWidth: .infinity)
+      }
+      .streamActionButtonStyle(tint: .red.opacity(0.92))
+    }
   }
 
   @ViewBuilder
@@ -299,6 +355,44 @@ struct StreamLoadingView: View {
     .frame(maxWidth: 320)
   }
 
+  private var compactStepsView: some View {
+    HStack(spacing: 0) {
+      ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+        VStack(spacing: 5) {
+          ZStack {
+            stepCircle(for: stepState(index: index))
+
+            if stepState(index: index) == .completed {
+              Image(systemName: "checkmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white)
+            } else {
+              Image(systemName: step.icon)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(iconColor(for: stepState(index: index)))
+            }
+          }
+          .frame(width: 28, height: 28)
+
+          Text(step.title)
+            .font(.caption2.bold())
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .foregroundStyle(labelColor(for: stepState(index: index)))
+        }
+        .frame(width: 58)
+
+        if index < steps.count - 1 {
+          Rectangle()
+            .fill(connectorGradient(after: index))
+            .frame(width: 16, height: 2)
+            .padding(.bottom, 17)
+        }
+      }
+    }
+    .frame(maxWidth: 230, alignment: .leading)
+  }
+
   private func stepState(index: Int) -> StepState {
     let activeIndex: Int
     switch currentPhase {
@@ -322,7 +416,7 @@ struct StreamLoadingView: View {
             .stroke(Color.secondary.opacity(0.2), lineWidth: 2)
         )
     case .active:
-      TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
+      TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: false)) { timeline in
         let phase = timeline.date.timeIntervalSinceReferenceDate.remainder(dividingBy: 0.9) / 0.9
         let pulse = 0.5 - 0.5 * cos(phase * 2 * .pi)
         Group {
@@ -410,6 +504,7 @@ private struct AdVideoView: UIViewControllerRepresentable {
 private struct QueueAdPlayerCard: View {
   @EnvironmentObject private var store: OpenNOWStore
   let ad: SessionAdInfo
+  var compact = false
 
   @State private var player = AVPlayer()
   @State private var adDurationObserver: Any?
@@ -424,12 +519,12 @@ private struct QueueAdPlayerCard: View {
 
   var body: some View {
     if !didSendFinish {
-      VStack(alignment: .leading, spacing: 10) {
+      VStack(alignment: .leading, spacing: compact ? 7 : 10) {
         HStack(spacing: 8) {
           Image(systemName: "play.rectangle.fill")
             .foregroundStyle(.orange)
           Text("Ad Queue")
-            .font(.caption.bold())
+            .font((compact ? Font.caption2 : Font.caption).bold())
             .foregroundStyle(.secondary)
         }
 
@@ -437,7 +532,7 @@ private struct QueueAdPlayerCard: View {
           if let mediaUrl = preferredMediaURLString(for: ad), let url = URL(string: mediaUrl) {
             ZStack(alignment: .bottom) {
               AdVideoView(player: player)
-                .frame(height: 150)
+                .frame(height: compact ? 118 : 150)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
 
               HStack {
@@ -501,11 +596,13 @@ private struct QueueAdPlayerCard: View {
 
         if let message = store.effectiveAdState?.message, !message.isEmpty {
           Text(message)
-            .font(.caption)
+            .font(compact ? .caption2 : .caption)
             .foregroundStyle(.secondary)
+            .lineLimit(compact ? 2 : nil)
+            .minimumScaleFactor(0.82)
         }
       }
-      .padding(12)
+      .padding(compact ? 9 : 12)
       .background(
         RoundedRectangle(cornerRadius: 14)
           .fill(.regularMaterial)
@@ -514,7 +611,7 @@ private struct QueueAdPlayerCard: View {
               .stroke(.orange.opacity(0.28), lineWidth: 1)
           )
       )
-      .frame(maxWidth: 320)
+      .frame(maxWidth: compact ? 320 : 320)
     }
   }
 

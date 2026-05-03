@@ -106,6 +106,40 @@ struct PrintedWasteQueueView: View {
         }
     }
 
+    private var selectedRoutingZone: PrintedWasteZone? {
+        switch routingPreference {
+        case .auto:
+            return autoZone
+        case .closest:
+            return closestZone ?? autoZone
+        case .manual:
+            return zones.first(where: { $0.id == selectedZoneId }) ?? autoZone
+        }
+    }
+
+    private var routingExplanation: String {
+        switch routingPreference {
+        case .auto:
+            if let autoZone {
+                return "Auto will launch on \(zoneDisplayName(autoZone))."
+            }
+            return "Auto will pick the best available server once queue data finishes loading."
+        case .closest:
+            if let closestZone {
+                return "Closest will launch on \(zoneDisplayName(closestZone))."
+            }
+            if let autoZone {
+                return "Closest is still measuring; launch will fall back to \(zoneDisplayName(autoZone))."
+            }
+            return "Closest is measuring network latency."
+        case .manual:
+            if let selectedRoutingZone {
+                return "Manual selection will launch on \(zoneDisplayName(selectedRoutingZone))."
+            }
+            return "Choose a specific server below."
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -144,6 +178,10 @@ struct PrintedWasteQueueView: View {
                                     .font(.headline)
                                     .foregroundStyle(.secondary)
                                 routingRow
+                                Text(routingExplanation)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                             .padding(14)
                             .printedWasteGlassSurface()
@@ -223,12 +261,12 @@ struct PrintedWasteQueueView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if let autoZone {
+            if let selectedRoutingZone {
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("Best")
+                    Text(routingPreference == .closest ? "Closest" : routingPreference == .manual ? "Selected" : "Auto")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
-                    Text(autoZone.id)
+                    Text(selectedRoutingZone.id)
                         .font(.caption.weight(.bold))
                 }
             }
@@ -284,6 +322,11 @@ struct PrintedWasteQueueView: View {
         .accessibilityLabel(accessibilityLabel)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.6)
+    }
+
+    private func zoneDisplayName(_ zone: PrintedWasteZone) -> String {
+        let ping = zone.pingMs.map { "\($0) ms" } ?? (zone.isMeasuring ? "measuring" : "ping unknown")
+        return "\(zone.id) in \(zone.region) · Q \(zone.queuePosition) · \(ping)"
     }
 
     private func loadZones() async {

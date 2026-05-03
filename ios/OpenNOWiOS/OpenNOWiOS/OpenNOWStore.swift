@@ -170,6 +170,7 @@ struct AppSettings: Codable, Equatable {
     var keepMicEnabled: Bool
     var showStatsOverlay: Bool
     var hideServerSelector: Bool
+    var queueLiveActivitiesEnabled: Bool
     var selectedProviderIdpId: String
     var fortnitePrefersNativeTouch: Bool
     var touchControlLayouts: [String: TouchControlLayout]
@@ -190,6 +191,7 @@ struct AppSettings: Codable, Equatable {
         case keepMicEnabled
         case showStatsOverlay
         case hideServerSelector
+        case queueLiveActivitiesEnabled
         case selectedProviderIdpId
         case fortnitePrefersNativeTouch
         case touchControlLayouts
@@ -211,6 +213,7 @@ struct AppSettings: Codable, Equatable {
         keepMicEnabled: Bool,
         showStatsOverlay: Bool,
         hideServerSelector: Bool,
+        queueLiveActivitiesEnabled: Bool,
         selectedProviderIdpId: String,
         fortnitePrefersNativeTouch: Bool,
         touchControlLayouts: [String: TouchControlLayout],
@@ -230,6 +233,7 @@ struct AppSettings: Codable, Equatable {
         self.keepMicEnabled = keepMicEnabled
         self.showStatsOverlay = showStatsOverlay
         self.hideServerSelector = hideServerSelector
+        self.queueLiveActivitiesEnabled = queueLiveActivitiesEnabled
         self.selectedProviderIdpId = selectedProviderIdpId
         self.fortnitePrefersNativeTouch = fortnitePrefersNativeTouch
         self.touchControlLayouts = touchControlLayouts
@@ -252,6 +256,7 @@ struct AppSettings: Codable, Equatable {
         keepMicEnabled = try container.decodeIfPresent(Bool.self, forKey: .keepMicEnabled) ?? false
         showStatsOverlay = try container.decodeIfPresent(Bool.self, forKey: .showStatsOverlay) ?? true
         hideServerSelector = try container.decodeIfPresent(Bool.self, forKey: .hideServerSelector) ?? false
+        queueLiveActivitiesEnabled = try container.decodeIfPresent(Bool.self, forKey: .queueLiveActivitiesEnabled) ?? true
         selectedProviderIdpId = try container.decodeIfPresent(String.self, forKey: .selectedProviderIdpId)
             ?? "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg"
         fortnitePrefersNativeTouch = try container.decodeIfPresent(Bool.self, forKey: .fortnitePrefersNativeTouch) ?? true
@@ -277,6 +282,7 @@ struct AppSettings: Codable, Equatable {
         keepMicEnabled: false,
         showStatsOverlay: true,
         hideServerSelector: false,
+        queueLiveActivitiesEnabled: true,
         selectedProviderIdpId: "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg",
         fortnitePrefersNativeTouch: true,
         touchControlLayouts: TouchControlLayout.defaultProfiles,
@@ -3078,7 +3084,7 @@ private actor GFNAPIClient {
                 "requestedStreamingFeatures": [
                     "reflex": profile.fps >= 120,
                     "bitDepth": 0,
-                    "cloudGsync": settings.enableCloudGsync,
+                    "cloudGsync": false,
                     "enabledL4S": settings.enableL4S,
                     "mouseMovementFlags": 0,
                     "trueHdr": false,
@@ -3752,6 +3758,10 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
+    func refreshTrackedSessionSurface() {
+        syncTrackedSessionSurface()
+    }
+
     func isFavorite(_ game: CloudGame) -> Bool {
         settings.favoriteGameIds.contains(game.id)
     }
@@ -4070,13 +4080,26 @@ final class OpenNOWStore: ObservableObject {
             let refreshed = try await api.refreshSession(currentAuth)
             authSession = refreshed
             persistAuthSession(refreshed)
-            let polled = try await api.pollSession(session: refreshed, activeSession: session)
-            let handoff = await prepareSessionForStreamer(polled)
+            var latest = try await api.pollSession(session: refreshed, activeSession: session)
+            for attempt in 0..<6 {
+                if isReadyForStreamer(latest) {
+                    let handoff = await prepareSessionForStreamer(latest)
+                    guard activeSession?.id == session.id else { return }
+                    activeSession = handoff
+                    setStreamSession(handoff, reason: "reopenStreamer.refreshed")
+                    lastError = nil
+                    return
+                }
+                logger.info(
+                    "Reopen waiting for ready endpoint id=\(latest.id, privacy: .public) status=\(latest.status) attempt=\(attempt + 1) signalingServer=\(latest.signalingServer ?? "nil", privacy: .public) signalingUrl=\(latest.signalingUrl ?? "nil", privacy: .public) mediaIp=\(latest.mediaIp ?? "nil", privacy: .public) mediaPort=\(latest.mediaPort)"
+                )
+                try await Task.sleep(for: .milliseconds(900))
+                latest = try await api.pollSession(session: refreshed, activeSession: latest)
+            }
 
             guard activeSession?.id == session.id else { return }
-            activeSession = handoff
-            setStreamSession(handoff, reason: "reopenStreamer.refreshed")
-            lastError = nil
+            activeSession = latest
+            lastError = "Session is still preparing its stream endpoint. Try reopening again in a moment."
         } catch is CancellationError {
             return
         } catch {
@@ -4184,7 +4207,7 @@ final class OpenNOWStore: ObservableObject {
     private func syncTrackedSessionSurface() {
         persistActiveSession(activeSession)
         let active = activeSession
-        let state = active.flatMap(queueActivityState(for:))
+        let state = settings.queueLiveActivitiesEnabled ? active.flatMap(queueActivityState(for:)) : nil
         Task {
             await QueueLiveActivityManager.shared.sync(
                 sessionId: active?.id,
@@ -4195,7 +4218,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func queueActivityState(for session: ActiveSession) -> QueueActivityAttributes.ContentState? {
-        if streamSession != nil && currentScenePhase == .active {
+        if streamSession != nil {
             return nil
         }
         if isReadyForStreamer(session) || session.status == 3 {
