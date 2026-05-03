@@ -111,6 +111,11 @@ export function useControllerLibraryEvents(
     setLastThemeRootIndex,
     setLastRootMediaIndex,
     setLibrarySortId,
+    localVideoPlayerOpen,
+    closeLocalVideoPlayer,
+    openLocalVideoPlayer,
+    localVideoFilePathForOptions,
+    bumpMediaListRefresh,
   } = ctx;
 
   return useMemo(() => {
@@ -215,6 +220,11 @@ export function useControllerLibraryEvents(
       setLastThemeRootIndex,
       setLastRootMediaIndex,
       setLibrarySortId,
+      localVideoPlayerOpen,
+      closeLocalVideoPlayer,
+      openLocalVideoPlayer,
+      localVideoFilePathForOptions,
+      bumpMediaListRefresh,
     };
     const { applyDirection, cycleTopCategory, onDirection, onShoulder } =
       createNavigationHandlers(eventContext);
@@ -307,6 +317,11 @@ export function useControllerLibraryEvents(
     onStreamMenuVolumeChange,
     onStreamMenuToggleMicrophone,
     onStreamMenuToggleFullscreen,
+    localVideoPlayerOpen,
+    closeLocalVideoPlayer,
+    openLocalVideoPlayer,
+    localVideoFilePathForOptions,
+    bumpMediaListRefresh,
   ]);
 
 }

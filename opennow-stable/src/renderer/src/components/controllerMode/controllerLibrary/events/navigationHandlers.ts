@@ -83,6 +83,7 @@ export function createNavigationHandlers(
     setSpotlightIndex,
     gamesHubReturnSnapshotRef,
     setGamesHubOpen,
+    localVideoPlayerOpen,
   } = ctx;
 
   const cycleTopCategory = (delta: number): void => {
@@ -188,6 +189,10 @@ export function createNavigationHandlers(
         }
         return;
       }
+      return;
+    }
+
+    if (localVideoPlayerOpen) {
       return;
     }
 
@@ -511,6 +516,8 @@ export function createNavigationHandlers(
   const onShoulder = (e: any): void => {
     const direction = e?.detail?.direction as "prev" | "next" | undefined;
     if (!direction) return;
+    if (optionsOpen) return;
+    if (localVideoPlayerOpen) return;
     if (gamesHubOpen) return;
     if (topCategory === "settings" && settingsSubcategory !== "root") return;
     if (editingBandwidth || editingThemeChannel || editingStreamVolume || editingStreamMicLevel) return;

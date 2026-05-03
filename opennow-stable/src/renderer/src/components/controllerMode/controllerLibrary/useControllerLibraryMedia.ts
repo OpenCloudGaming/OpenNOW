@@ -11,6 +11,8 @@ type UseControllerLibraryMediaArgs = {
   topCategory: TopCategory;
   mediaSubcategory: MediaSubcategory;
   selectedMediaIndex: number;
+  /** Increment to refetch listing and thumbnails after delete/regen. */
+  mediaListRefreshNonce: number;
 };
 
 type UseControllerLibraryMediaResult = {
@@ -29,6 +31,7 @@ export function useControllerLibraryMedia({
   topCategory,
   mediaSubcategory,
   selectedMediaIndex,
+  mediaListRefreshNonce,
 }: UseControllerLibraryMediaArgs): UseControllerLibraryMediaResult {
   const [mediaLoading, setMediaLoading] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
@@ -92,7 +95,7 @@ export function useControllerLibraryMedia({
     return () => {
       cancelled = true;
     };
-  }, [topCategory, mediaSubcategory]);
+  }, [topCategory, mediaSubcategory, mediaListRefreshNonce]);
 
   const mediaAssetItems = useMemo(() => {
     if (mediaSubcategory === "Videos") return mediaVideos;

@@ -64,6 +64,9 @@ export const IPC_CHANNELS = {
   MEDIA_LIST_BY_GAME: "media:list-by-game",
   MEDIA_THUMBNAIL: "media:thumbnail",
   MEDIA_SHOW_IN_FOLDER: "media:show-in-folder",
+  MEDIA_PLAYBACK_URL: "media:playback-url",
+  MEDIA_DELETE_FILE: "media:delete-file",
+  MEDIA_REGEN_THUMBNAIL: "media:regen-thumbnail",
   // PrintedWaste queue integration
   PRINTEDWASTE_QUEUE_FETCH: "printedwaste:queue-fetch",
   PRINTEDWASTE_SERVER_MAPPING_FETCH: "printedwaste:server-mapping-fetch",

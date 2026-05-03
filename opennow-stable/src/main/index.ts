@@ -1,6 +1,6 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, systemPreferences, session } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, systemPreferences, session, protocol } from "electron";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve, relative } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { existsSync, readFileSync, createWriteStream } from "node:fs";
 import { copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile, realpath } from "node:fs/promises";
 import * as net from "node:net";
@@ -14,6 +14,11 @@ import { spawn } from "node:child_process";
 // F8  - Toggle mouse/pointer lock (handled in main process via IPC)
 
 import { IPC_CHANNELS } from "@shared/ipc";
+import {
+  getTrustedVideoPlaybackFileUrl,
+  registerOpenNowMediaProtocol,
+  resolveTrustedOpenNowMediaPath,
+} from "./mediaPaths";
 import { initLogCapture, exportLogs } from "@shared/logger";
 import { cacheManager } from "./services/cacheManager";
 import { refreshScheduler } from "./services/refreshScheduler";
@@ -222,6 +227,20 @@ app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 // Remove getUserMedia FPS cap (not strictly needed for receive-only but avoids potential limits)
 app.commandLine.appendSwitch("max-gum-fps", "999");
+
+// file:// in &lt;video&gt; is blocked by Chromium for renderer pages; use a privileged custom scheme.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "opennow-media",
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      corsEnabled: true,
+    },
+  },
+]);
 
 let mainWindow: BrowserWindow | null = null;
 let rendererControlledFullscreen = false;
@@ -648,7 +667,7 @@ async function listRecordings(): Promise<RecordingEntry[]> {
       const filePath = join(dir, fileName);
       try {
         const fileStats = await stat(filePath);
-        const stem = fileName.replace(/\.webm$/i, "");
+        const stem = fileName.replace(/\.(mp4|webm)$/i, "");
         const thumbName = `${stem}-thumb.jpg`;
         const thumbPath = join(dir, thumbName);
 
@@ -1803,14 +1822,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.MEDIA_THUMBNAIL, async (_event, payload: { filePath: string }): Promise<string | null> => {
     const rawFp = payload?.filePath;
     if (typeof rawFp !== "string") return null;
-    if (rawFp.length > 4096) return null;
     try {
-      const allowedRoot = resolve(join(app.getPath("pictures"), "OpenNOW"));
-      const fpResolved = resolve(rawFp);
-      const allowedRootReal = await realpath(allowedRoot).catch(() => allowedRoot);
-      const fpReal = await realpath(fpResolved).catch(() => fpResolved);
-      const rel = relative(allowedRootReal, fpReal);
-      if (rel.startsWith("..")) return null;
+      const fpReal = await resolveTrustedOpenNowMediaPath(rawFp);
+      if (!fpReal) return null;
 
       const lower = fpReal.toLowerCase();
       if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
@@ -1855,17 +1869,88 @@ function registerIpcHandlers(): void {
     const rawFp = payload?.filePath;
     if (typeof rawFp !== "string") return;
     try {
-      const allowedRoot = resolve(join(app.getPath("pictures"), "OpenNOW"));
-      const fpResolved = resolve(rawFp);
-      const allowedRootReal = await realpath(allowedRoot).catch(() => allowedRoot);
-      const fpReal = await realpath(fpResolved).catch(() => fpResolved);
-      const rel = relative(allowedRootReal, fpReal);
-      if (rel.startsWith("..")) return;
+      const fpReal = await resolveTrustedOpenNowMediaPath(rawFp);
+      if (!fpReal) return;
       shell.showItemInFolder(fpReal);
     } catch {
       return;
     }
   });
+
+  ipcMain.handle(IPC_CHANNELS.MEDIA_PLAYBACK_URL, async (_event, payload: { filePath: string }): Promise<string | null> => {
+    const rawFp = payload?.filePath;
+    if (typeof rawFp !== "string") return null;
+    try {
+      return await getTrustedVideoPlaybackFileUrl(rawFp);
+    } catch (err) {
+      console.warn("MEDIA_PLAYBACK_URL error:", err);
+      return null;
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.MEDIA_DELETE_FILE, async (_event, payload: { filePath: string }): Promise<{ ok: boolean }> => {
+    const rawFp = payload?.filePath;
+    if (typeof rawFp !== "string") return { ok: false };
+    try {
+      const fpReal = await resolveTrustedOpenNowMediaPath(rawFp);
+      if (!fpReal) return { ok: false };
+      let st: Awaited<ReturnType<typeof stat>>;
+      try {
+        st = await stat(fpReal);
+      } catch {
+        return { ok: false };
+      }
+      const key = md5(`${fpReal}|${st.mtimeMs}`);
+      const cacheDir = await ensureThumbnailCacheDirectory();
+      await unlink(join(cacheDir, `${key}.jpg`)).catch(() => undefined);
+      const stem = fpReal.replace(/\.(mp4|webm|mkv|mov|png|jpg|jpeg|webp)$/i, "");
+      await unlink(`${stem}-thumb.jpg`).catch(() => undefined);
+      await unlink(fpReal);
+      return { ok: true };
+    } catch (err) {
+      console.warn("MEDIA_DELETE_FILE error:", err);
+      return { ok: false };
+    }
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.MEDIA_REGEN_THUMBNAIL,
+    async (_event, payload: { filePath: string }): Promise<{ ok: boolean; thumbnailDataUrl: string | null }> => {
+      const rawFp = payload?.filePath;
+      if (typeof rawFp !== "string") return { ok: false, thumbnailDataUrl: null };
+      try {
+        const fpReal = await resolveTrustedOpenNowMediaPath(rawFp);
+        if (!fpReal) return { ok: false, thumbnailDataUrl: null };
+        const st = await stat(fpReal);
+        const key = md5(`${fpReal}|${st.mtimeMs}`);
+        const cacheDir = await ensureThumbnailCacheDirectory();
+        await unlink(join(cacheDir, `${key}.jpg`)).catch(() => undefined);
+        if (/\.(mp4|webm|mkv|mov)$/i.test(fpReal)) {
+          const videoStem = fpReal.replace(/\.(mp4|webm|mkv|mov)$/i, "");
+          await unlink(`${videoStem}-thumb.jpg`).catch(() => undefined);
+        }
+        const genPath = await ensureThumbnailForMedia(fpReal);
+        if (!genPath) return { ok: false, thumbnailDataUrl: null };
+
+        if (/\.(mp4|webm|mkv|mov)$/i.test(fpReal)) {
+          const videoStem = fpReal.replace(/\.(mp4|webm|mkv|mov)$/i, "");
+          const sidecar = `${videoStem}-thumb.jpg`;
+          await copyFile(genPath, sidecar).catch((err) => {
+            console.warn("MEDIA_REGEN_THUMBNAIL sidecar copy:", err);
+          });
+        }
+
+        const b = await readFile(genPath);
+        return {
+          ok: true,
+          thumbnailDataUrl: `data:image/jpeg;base64,${b.toString("base64")}`,
+        };
+      } catch (err) {
+        console.warn("MEDIA_REGEN_THUMBNAIL error:", err);
+        return { ok: false, thumbnailDataUrl: null };
+      }
+    },
+  );
 
   ipcMain.handle(IPC_CHANNELS.CACHE_REFRESH_MANUAL, async (): Promise<void> => {
     await refreshScheduler.manualRefresh();
@@ -2173,6 +2258,7 @@ app.whenReady().then(async () => {
     return allowedPermissions.has(permission);
   });
 
+  registerOpenNowMediaProtocol();
   registerIpcHandlers();
 
   refreshScheduler.initialize(

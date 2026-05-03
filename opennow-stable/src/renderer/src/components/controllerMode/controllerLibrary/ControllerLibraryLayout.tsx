@@ -245,6 +245,7 @@ export function ControllerLibraryLayout(props: Record<string, any>): JSX.Element
       />
 
       <FooterHints
+        localVideoPlayerOpen={props.localVideoPlayerOpen}
         topLevelRowBehaviorActive={topLevelRowBehaviorActive}
         topCategory={topCategory}
         settingsSubcategory={props.settingsSubcategory}

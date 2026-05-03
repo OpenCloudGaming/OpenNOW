@@ -853,6 +853,15 @@ export interface OpenNowApi {
   /** Reveal a media file path in the system file manager */
   showMediaInFolder(input: { filePath: string }): Promise<void>;
 
+  /** Trusted file:// URL for in-app playback of a video under OpenNOW media root, or null */
+  getMediaPlaybackUrl(input: { filePath: string }): Promise<string | null>;
+
+  /** Delete a media file under the OpenNOW pictures root (recordings, screenshots, etc.) */
+  deleteMediaFile(input: { filePath: string }): Promise<{ ok: boolean }>;
+
+  /** Invalidate cached / sidecar thumbnails and regenerate (returns data URL when possible) */
+  regenMediaThumbnail(input: { filePath: string }): Promise<{ ok: boolean; thumbnailDataUrl: string | null }>;
+
   deleteCache(): Promise<void>;
 
   /** Fetch current GFN queue wait times from the PrintedWaste API */

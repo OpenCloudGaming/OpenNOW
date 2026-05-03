@@ -10000,3 +10000,55 @@ button.game-card-store-chip.owned.active:hover {
     font-size: 0.88rem;
   }
 }
+
+/* Local video playback (Media hub) */
+.xmb-local-video-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+
+.xmb-local-video-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  background: rgba(2, 6, 10, 0.92);
+}
+
+.xmb-local-video-panel {
+  position: relative;
+  z-index: 1;
+  width: min(96vw, 1200px);
+  max-height: min(92vh, 900px);
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  border-radius: 16px;
+  background: rgba(12, 18, 24, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+}
+
+.xmb-local-video-frame {
+  flex: 1;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.xmb-local-video-element {
+  width: 100%;
+  max-height: min(72vh, 760px);
+  vertical-align: middle;
+}

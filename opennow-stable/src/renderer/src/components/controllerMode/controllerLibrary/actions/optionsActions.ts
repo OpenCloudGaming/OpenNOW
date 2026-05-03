@@ -20,6 +20,7 @@ export function openOptionsMenuAction(context: OptionsActionContext): boolean {
     setOptionsFocusIndex,
     setOptionsOpen,
     playUiSound,
+    localVideoFilePathForOptions,
   } = context;
 
   const entries: Array<{ id: string; label: string }> = [];
@@ -35,8 +36,18 @@ export function openOptionsMenuAction(context: OptionsActionContext): boolean {
     if (selectedGame.variants.length > 1) {
       entries.push({ id: "variant", label: "Change version" });
     }
-  } else if (mediaShelfBrowseActive && mediaAssetItems[selectedMediaIndex]) {
-    entries.push({ id: "openFolder", label: "Open folder" });
+  } else if (
+    (mediaShelfBrowseActive && mediaAssetItems[selectedMediaIndex]) ||
+    (typeof localVideoFilePathForOptions === "string" && localVideoFilePathForOptions.length > 0)
+  ) {
+    const mediaPath = localVideoFilePathForOptions ?? mediaAssetItems[selectedMediaIndex]?.filePath;
+    if (!mediaPath) {
+      /* noop */
+    } else {
+      entries.push({ id: "openFolder", label: "Open folder" });
+      entries.push({ id: "mediaDelete", label: "Delete File" });
+      entries.push({ id: "mediaRegenThumb", label: "Regen Thumbnail" });
+    }
   } else if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight" && spotlightEntryHasGame(spotlightEntries[spotlightIndex])) {
     entries.push({ id: "openLibrary", label: "View in library" });
   }
@@ -97,7 +108,14 @@ export function handleOptionsActivateAction(context: OptionsActivateContext): bo
     setGamesHubFocusIndex,
     setPs5Row,
     playUiSound,
+    localVideoFilePathForOptions,
+    bumpMediaListRefresh,
+    closeLocalVideoPlayer,
+    setSelectedMediaIndex,
   } = context;
+
+  const mediaOptionsFilePath = (): string | null =>
+    localVideoFilePathForOptions ?? mediaAssetItems[selectedMediaIndex]?.filePath ?? null;
 
   if (optionsEntries.length === 0) return false;
   const opt = optionsEntries[optionsFocusIndex];
@@ -130,12 +148,42 @@ export function handleOptionsActivateAction(context: OptionsActivateContext): bo
     return true;
   }
   if (opt.id === "openFolder") {
-    const cur = mediaAssetItems[selectedMediaIndex];
-    if (cur && typeof window.openNow?.showMediaInFolder === "function") {
-      void window.openNow.showMediaInFolder({ filePath: cur.filePath });
+    const fp = mediaOptionsFilePath();
+    if (fp && typeof window.openNow?.showMediaInFolder === "function") {
+      void window.openNow.showMediaInFolder({ filePath: fp });
     }
     setOptionsOpen(false);
     playUiSound("confirm");
+    return true;
+  }
+  if (opt.id === "mediaDelete") {
+    const fp = mediaOptionsFilePath();
+    if (!fp || typeof window.openNow?.deleteMediaFile !== "function") return true;
+    void window.openNow.deleteMediaFile({ filePath: fp }).then((r) => {
+      if (r.ok) {
+        setOptionsOpen(false);
+        closeLocalVideoPlayer();
+        bumpMediaListRefresh();
+        setSelectedMediaIndex((i) => Math.max(0, i - 1));
+        playUiSound("confirm");
+      } else {
+        playUiSound("move");
+      }
+    });
+    return true;
+  }
+  if (opt.id === "mediaRegenThumb") {
+    const fp = mediaOptionsFilePath();
+    if (!fp || typeof window.openNow?.regenMediaThumbnail !== "function") return true;
+    void window.openNow.regenMediaThumbnail({ filePath: fp }).then((r) => {
+      if (r.ok) {
+        setOptionsOpen(false);
+        bumpMediaListRefresh();
+        playUiSound("confirm");
+      } else {
+        playUiSound("move");
+      }
+    });
     return true;
   }
   if (opt.id === "openLibrary") {

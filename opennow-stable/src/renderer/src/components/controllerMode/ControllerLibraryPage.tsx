@@ -34,7 +34,9 @@ import { TopLevelMenuTrack } from "./controllerLibrary/TopLevelMenuTrack";
 import { useControllerLibraryGameDerivations } from "./controllerLibrary/useControllerLibraryGameDerivations";
 import { useControllerLibraryEvents } from "./controllerLibrary/useControllerLibraryEvents";
 import { useControllerLibraryLayoutMotion } from "./controllerLibrary/useControllerLibraryLayoutMotion";
+import { LocalVideoPlayerOverlay } from "./controllerLibrary/LocalVideoPlayerOverlay";
 import { useControllerLibraryMedia } from "./controllerLibrary/useControllerLibraryMedia";
+import { useLocalVideoPlayback } from "./controllerLibrary/useLocalVideoPlayback";
 import { useControllerWindowBindings } from "./controllerLibrary/useControllerWindowBindings";
 import {
   routeCancel,
@@ -135,6 +137,7 @@ export function ControllerLibraryPage({
   const [optionsFocusIndex, setOptionsFocusIndex] = useState(0);
   const [gamesHubOpen, setGamesHubOpen] = useState(false);
   const [gamesHubFocusIndex, setGamesHubFocusIndex] = useState(0);
+  const [mediaListRefreshNonce, setMediaListRefreshNonce] = useState(0);
   /** Local captures for the focused game; loaded when hub opens so Media tab need not be visited first */
   const [gameHubScreenshotUrls, setGameHubScreenshotUrls] = useState<string[]>([]);
   /** Random capture for Home Snapshot resume tile; falls back to poster in TopLevelMenuTrack */
@@ -200,6 +203,17 @@ export function ControllerLibraryPage({
     playControllerUiSound(kind, uiSoundsEnabled);
   }, [uiSoundsEnabled]);
 
+  const {
+    playback: localVideoPlayback,
+    localVideoPlayerOpen,
+    openFromEntry: openLocalVideoPlayer,
+    close: closeLocalVideoPlayer,
+  } = useLocalVideoPlayback(playUiSound);
+
+  const bumpMediaListRefresh = useCallback((): void => {
+    setMediaListRefreshNonce((n) => n + 1);
+  }, []);
+
   const lastPlayedGame = useMemo((): GameInfo | null => {
     const lastPlayedMs = (gameId: string) => {
       const raw = playtimeData[gameId]?.lastPlayedAt;
@@ -241,7 +255,19 @@ export function ControllerLibraryPage({
     topCategory,
     mediaSubcategory,
     selectedMediaIndex,
+    mediaListRefreshNonce,
   });
+
+  useEffect(() => {
+    if (topCategory !== "media" || mediaSubcategory === "root") return;
+    const len = mediaAssetItems.length;
+    if (len === 0) {
+      if (selectedMediaIndex !== 0) setSelectedMediaIndex(0);
+      return;
+    }
+    if (selectedMediaIndex >= len) setSelectedMediaIndex(len - 1);
+  }, [topCategory, mediaSubcategory, mediaAssetItems.length, selectedMediaIndex]);
+
   const {
     favoriteGameIdSet,
     allGenres,
@@ -522,7 +548,8 @@ export function ControllerLibraryPage({
     gameSubcategory === "root" &&
     (games.length > 0 || Boolean(cloudSessionResumable && onResumeCloudSession));
   const topLevelRowBehaviorActive = topLevelShelfActive && !(topCategory === "settings" && settingsSubcategory !== "root");
-  const canEnterDetailRow = mediaShelfBrowseActive;
+  /** Media browse: no secondary “detail” row (down used to open Open folder / Media hub cards). */
+  const canEnterDetailRow = false;
   const canEnterTopRow = topLevelRowBehaviorActive || gamesShelfBrowseActive || mediaShelfBrowseActive;
   const topLevelShelfIndex =
     topCategory === "media"
@@ -797,6 +824,8 @@ export function ControllerLibraryPage({
     setEditingThemeChannel,
     setEditingStreamVolume,
     setEditingStreamMicLevel,
+    setOptionsEntries,
+    setOptionsOpen,
     setOptionsFocusIndex,
     setGamesHubFocusIndex,
     setPs5Row,
@@ -812,6 +841,11 @@ export function ControllerLibraryPage({
     setLastThemeRootIndex,
     setLastRootMediaIndex,
     setLibrarySortId,
+    localVideoPlayerOpen,
+    closeLocalVideoPlayer,
+    openLocalVideoPlayer,
+    localVideoFilePathForOptions: localVideoPlayback?.filePath ?? null,
+    bumpMediaListRefresh,
   });
 
 
@@ -918,8 +952,10 @@ export function ControllerLibraryPage({
   ]);
 
   return (
+    <>
     <ControllerLibraryLayout
       isLoading={isLoading}
+      localVideoPlayerOpen={localVideoPlayerOpen}
       topCategory={topCategory}
       wrapperClassNameWithRow={wrapperClassNameWithRow}
       wrapperThemeVars={wrapperThemeVars}
@@ -990,5 +1026,9 @@ export function ControllerLibraryPage({
       controllerType={controllerType}
       renderFaceButton={renderFaceButton}
     />
+    {localVideoPlayback ? (
+      <LocalVideoPlayerOverlay src={localVideoPlayback.src} onClose={closeLocalVideoPlayer} />
+    ) : null}
+    </>
   );
 }

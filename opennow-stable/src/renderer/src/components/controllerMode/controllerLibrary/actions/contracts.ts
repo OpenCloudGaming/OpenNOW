@@ -31,6 +31,11 @@ export interface OptionsActionContext {
   setOptionsOpen: (open: boolean) => void;
   playUiSound: (kind: SoundKind) => void;
   spotlightEntryHasGame: (entry: SpotlightEntry | undefined) => entry is { kind: "recent"; game: GameInfo };
+  /** When the in-app video player is open, options apply to this file path. */
+  localVideoFilePathForOptions: string | null;
+  bumpMediaListRefresh: () => void;
+  closeLocalVideoPlayer: () => void;
+  setSelectedMediaIndex: (updater: (prev: number) => number) => void;
 }
 
 export interface SettingsActivateContext {
@@ -93,6 +98,8 @@ export interface MediaActivateContext {
   setSelectedMediaIndex: (index: number) => void;
   mediaAssetItems: MediaListingEntry[];
   playUiSound: (kind: SoundKind) => void;
+  /** In-app playback for Media > Videos (orchestrated outside this module). */
+  openLocalVideoPlayer: (entry: MediaListingEntry) => void;
 }
 
 export interface MediaCancelContext {

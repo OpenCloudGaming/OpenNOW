@@ -121,6 +121,11 @@ export function createActionHandlers(
     setCategoryIndex,
     setGamesRootPlane,
     setSpotlightIndex,
+    localVideoPlayerOpen,
+    closeLocalVideoPlayer,
+    openLocalVideoPlayer,
+    localVideoFilePathForOptions,
+    bumpMediaListRefresh,
   } = ctx;
 
   const openOptionsMenu = (): void => {
@@ -142,10 +147,15 @@ export function createActionHandlers(
       setOptionsOpen,
       playUiSound,
       spotlightEntryHasGame,
+      localVideoFilePathForOptions,
+      bumpMediaListRefresh,
+      closeLocalVideoPlayer,
+      setSelectedMediaIndex,
     });
   };
 
   const onSecondaryActivate = (): void => {
+    if (localVideoPlayerOpen) return;
     if (optionsOpen) return;
     if (gamesHubOpen) return;
     if (routeSecondaryActivate({
@@ -218,7 +228,12 @@ export function createActionHandlers(
       setGamesHubFocusIndex,
       setPs5Row,
       gamesHubReturnSnapshotRef,
+      localVideoFilePathForOptions,
+      bumpMediaListRefresh,
+      closeLocalVideoPlayer,
+      setSelectedMediaIndex,
     })) return;
+    if (localVideoPlayerOpen) return;
 
     if (gamesHubOpen && topCategory === "all" && gameSubcategory !== "root" && selectedGame) {
       const tile = gamesHubTiles[gamesHubFocusIndex];
@@ -380,6 +395,7 @@ export function createActionHandlers(
         setSelectedMediaIndex,
         mediaAssetItems,
         playUiSound,
+        openLocalVideoPlayer,
       } : undefined,
       all: topCategory === "all" ? {
         gameSubcategory,
@@ -424,6 +440,12 @@ export function createActionHandlers(
   const onCancel = (e: Event): void => {
     if (optionsOpen) {
       setOptionsOpen(false);
+      playUiSound("move");
+      e.preventDefault();
+      return;
+    }
+    if (localVideoPlayerOpen) {
+      closeLocalVideoPlayer();
       playUiSound("move");
       e.preventDefault();
       return;
@@ -550,12 +572,12 @@ export function createActionHandlers(
       onTertiaryActivate();
       return;
     }
-    if (e.key.toLowerCase() === "q" && topLevelRowBehaviorActive && !gamesHubOpen) {
+    if (e.key.toLowerCase() === "q" && topLevelRowBehaviorActive && !gamesHubOpen && !localVideoPlayerOpen) {
       e.preventDefault();
       cycleTopCategory(-1);
       return;
     }
-    if (e.key.toLowerCase() === "e" && topLevelRowBehaviorActive && !gamesHubOpen) {
+    if (e.key.toLowerCase() === "e" && topLevelRowBehaviorActive && !gamesHubOpen && !localVideoPlayerOpen) {
       e.preventDefault();
       cycleTopCategory(1);
       return;

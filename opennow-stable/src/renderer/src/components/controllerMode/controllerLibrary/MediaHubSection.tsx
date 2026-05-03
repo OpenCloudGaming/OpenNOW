@@ -47,9 +47,6 @@ export function MediaHubSection({
           <span className="xmb-ps5-action">Options</span>
         </div>
       </div>
-      <div className="xmb-ps5-shelf-label-row xmb-ps5-shelf-label-row--active xmb-ps5-shelf-label-row--media-list">
-        <span className="xmb-ps5-shelf-label">Captures</span>
-      </div>
       <div className="xmb-ps5-shelf-viewport">
         <div
           ref={itemsContainerRef}

@@ -5,6 +5,7 @@ import type { GameInfo } from "@shared/gfn";
 import type { GameSubcategory, SettingsSubcategory, SpotlightEntry } from "./types";
 
 interface FooterHintsProps {
+  localVideoPlayerOpen?: boolean;
   topLevelRowBehaviorActive: boolean;
   topCategory: string;
   settingsSubcategory: SettingsSubcategory;
@@ -22,6 +23,7 @@ interface FooterHintsProps {
 }
 
 export function FooterHints({
+  localVideoPlayerOpen = false,
   topLevelRowBehaviorActive,
   topCategory,
   settingsSubcategory,
@@ -37,6 +39,21 @@ export function FooterHints({
   controllerType,
   renderFaceButton,
 }: FooterHintsProps): JSX.Element {
+  if (localVideoPlayerOpen) {
+    return (
+      <div className="xmb-footer">
+        <div className="xmb-btn-hint">
+          {controllerType === "ps" ? (
+            <ButtonPSCircle className="xmb-btn-icon" size={24} />
+          ) : (
+            <ButtonB className="xmb-btn-icon" size={24} />
+          )}
+          <span>Close</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="xmb-footer">
       {topLevelRowBehaviorActive ? (
@@ -151,7 +168,7 @@ export function FooterHints({
                 ) : (
                   <ButtonA className="xmb-btn-icon" size={24} />
                 )}
-                <span>Open Folder</span>
+                <span>{mediaSubcategory === "Videos" ? "Play" : "Open Folder"}</span>
               </div>
               <div className="xmb-btn-hint">{renderFaceButton("tertiary", "xmb-btn-icon", 24)} <span>Options</span></div>
               <div className="xmb-btn-hint">
