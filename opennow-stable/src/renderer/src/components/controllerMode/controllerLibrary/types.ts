@@ -51,6 +51,8 @@ export interface ControllerLibraryPageProps {
   onStreamMenuVolumeChange?: (volume01: number) => void;
   streamMenuMicLevel?: number;
   onStreamMenuMicLevelChange?: (level01: number) => void;
+  /** Live mic track from the streaming client; used for the in-stream mic level test meter. */
+  streamMicTrack?: MediaStreamTrack | null;
   onStreamMenuToggleMicrophone?: () => void;
   onStreamMenuToggleFullscreen?: () => void;
   streamMenuMicOn?: boolean;

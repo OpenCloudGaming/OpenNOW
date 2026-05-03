@@ -4648,6 +4648,7 @@ export function App(): JSX.Element {
               onStreamMenuVolumeChange={handleStreamVolumeChange}
               streamMenuMicLevel={streamMicLevel}
               onStreamMenuMicLevelChange={handleStreamMicLevelChange}
+              streamMicTrack={clientRef.current?.getMicTrack() ?? null}
               onStreamMenuToggleMicrophone={handleToggleStreamMicrophone}
               onStreamMenuToggleFullscreen={() => {
                 void toggleSessionFullscreen();

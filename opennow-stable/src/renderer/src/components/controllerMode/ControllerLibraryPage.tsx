@@ -93,6 +93,7 @@ export function ControllerLibraryPage({
   onStreamMenuVolumeChange,
   streamMenuMicLevel = 1,
   onStreamMenuMicLevelChange,
+  streamMicTrack = null,
   onStreamMenuToggleMicrophone,
   onStreamMenuToggleFullscreen,
   streamMenuMicOn = false,
@@ -1025,6 +1026,7 @@ export function ControllerLibraryPage({
       onStreamMenuVolumeChange={onStreamMenuVolumeChange}
       editingStreamVolume={editingStreamVolume}
       controllerType={controllerType}
+      streamMicTrack={streamMicTrack}
     />
   ), [
     topCategory,
@@ -1052,6 +1054,7 @@ export function ControllerLibraryPage({
     editingStreamVolume,
     editingStreamMicLevel,
     controllerType,
+    streamMicTrack,
   ]);
 
   return (

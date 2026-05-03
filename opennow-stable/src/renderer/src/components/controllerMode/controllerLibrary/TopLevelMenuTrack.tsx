@@ -1,6 +1,7 @@
 import type { JSX, RefObject } from "react";
 import { PREVIEW_TILE_COUNT, SHELF_IMAGE_PROPS } from "./constants";
 import { clampRgbByte } from "./helpers";
+import { StreamMenuMicLevelField } from "./StreamMenuMicLevelField";
 
 interface TopLevelMenuTrackProps {
   itemsContainerRef: RefObject<HTMLDivElement | null>;
@@ -27,6 +28,8 @@ interface TopLevelMenuTrackProps {
   onStreamMenuVolumeChange?: ((value: number) => void) | undefined;
   editingStreamVolume: boolean;
   controllerType: "ps" | "xbox" | "nintendo" | "generic";
+  /** Live capture track while streaming; drives the mic test meter on the Mic level row. */
+  streamMicTrack?: MediaStreamTrack | null;
 }
 
 export function TopLevelMenuTrack({
@@ -53,6 +56,7 @@ export function TopLevelMenuTrack({
   onStreamMenuVolumeChange,
   editingStreamVolume,
   controllerType,
+  streamMicTrack = null,
 }: TopLevelMenuTrackProps): JSX.Element {
   return (
     <div
@@ -151,22 +155,14 @@ export function TopLevelMenuTrack({
                     </span>
                   </div>
                 ) : item.id === "streamMicLevel" && inStreamMenu ? (
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={1}
-                      value={Math.round((streamMenuMicLevel ?? 1) * 100)}
-                      onChange={(e) => onStreamMenuMicLevelChange?.(Math.max(0, Math.min(1, Number(e.target.value) / 100)))}
-                      aria-label="Microphone level"
-                      style={editingStreamMicLevel ? { outline: "2px solid rgba(255,255,255,0.2)" } : undefined}
-                    />
-                    <span className="xmb-game-meta-chip">
-                      {`${Math.round((streamMenuMicLevel ?? 1) * 100)}%`}
-                      {editingStreamMicLevel ? " • Editing ←/→" : controllerType === "ps" ? " • □ to adjust" : " • X to adjust"}
-                    </span>
-                  </div>
+                  <StreamMenuMicLevelField
+                    streamMenuMicLevel={streamMenuMicLevel}
+                    onStreamMenuMicLevelChange={onStreamMenuMicLevelChange}
+                    editingStreamMicLevel={editingStreamMicLevel}
+                    isRowSelected={isActive}
+                    micTrack={streamMicTrack}
+                    controllerType={controllerType}
+                  />
                 ) : item.id === "streamVolume" && inStreamMenu ? (
                   <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                     <input

@@ -4348,8 +4348,8 @@ export class GfnWebRtcClient {
   }
 
   /**
-   * Return the live audio track from the microphone stream, or null if
-   * the mic has not been started or has been stopped.
+   * Live audio track for UI metering / local recording mix: post-gain send path when available
+   * (same levels the remote session hears), else raw capture.
    */
   getMicTrack(): MediaStreamTrack | null {
     return this.micManager?.getTrack() ?? null;
