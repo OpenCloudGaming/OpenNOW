@@ -1145,6 +1145,8 @@ export function App(): JSX.Element {
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
+  /** Joins concurrent claim/resume calls for the same Cloud session id (single CloudMatch RESUME + signaling). */
+  const claimResumePromisesRef = useRef<Map<string, Promise<void>>>(new Map());
   const launchAbortRef = useRef(false);
   const streamStatusRef = useRef<StreamStatus>(streamStatus);
   const signalingRecoveryRef = useRef<SignalingRecoveryState>({
@@ -2631,49 +2633,69 @@ export function App(): JSX.Element {
   }, [isRecoveryGenerationCurrent]);
 
   const claimAndConnectSession = useCallback(async (existingSession: ActiveSessionInfo): Promise<void> => {
-    const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
-    if (!token) {
-      throw new Error("Missing token for session resume");
-    }
-    if (!existingSession.serverIp) {
-      throw new Error("Active session is missing server address. Start the game again to create a new session.");
-    }
-
-    console.log("[Resume] claimAndConnectSession: invoking claimSession", {
-      sessionId: existingSession.sessionId,
-      serverIp: existingSession.serverIp,
-      status: existingSession.status,
-      appId: existingSession.appId,
-    });
-
-    const matchedContext = findGameContextForSession(existingSession);
-    if (matchedContext) {
-      setStreamingGame(matchedContext.game);
-      setStreamingStore(matchedContext.variant?.store ?? null);
-    } else {
-      setStreamingStore(null);
+    const sid = existingSession.sessionId;
+    const inflight = claimResumePromisesRef.current.get(sid);
+    if (inflight) {
+      console.log("[Resume] claimAndConnectSession: deduped — joining in-flight claim for session", sid);
+      await inflight;
+      return;
     }
 
-    const claimed = await window.openNow.claimSession({
-      token,
-      streamingBaseUrl: effectiveStreamingBaseUrl,
-      serverIp: existingSession.serverIp,
-      sessionId: existingSession.sessionId,
-      appId: resolveSessionClaimAppId(existingSession),
-      settings: {
-        resolution: settings.resolution,
-        fps: settings.fps,
-        maxBitrateMbps: settings.maxBitrateMbps,
-        codec: settings.codec,
-        colorQuality: settings.colorQuality,
-        keyboardLayout: settings.keyboardLayout,
-        gameLanguage: settings.gameLanguage,
-        enableL4S: settings.enableL4S,
-        enableCloudGsync: settings.enableCloudGsync,
-      },
-    });
+    const run = (async (): Promise<void> => {
+      try {
+        const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken;
+        if (!token) {
+          throw new Error("Missing token for session resume");
+        }
+        if (!existingSession.serverIp) {
+          throw new Error("Active session is missing server address. Start the game again to create a new session.");
+        }
 
-    await applyClaimedSessionAndConnect(claimed);
+        console.log("[Resume] claimAndConnectSession: invoking claimSession", {
+          sessionId: existingSession.sessionId,
+          serverIp: existingSession.serverIp,
+          status: existingSession.status,
+          appId: existingSession.appId,
+        });
+
+        const matchedContext = findGameContextForSession(existingSession);
+        if (matchedContext) {
+          setStreamingGame(matchedContext.game);
+          setStreamingStore(matchedContext.variant?.store ?? null);
+        } else {
+          setStreamingStore(null);
+        }
+
+        const claimed = await window.openNow.claimSession({
+          token,
+          streamingBaseUrl: effectiveStreamingBaseUrl,
+          serverIp: existingSession.serverIp,
+          sessionId: existingSession.sessionId,
+          appId: resolveSessionClaimAppId(existingSession),
+          settings: {
+            resolution: settings.resolution,
+            fps: settings.fps,
+            maxBitrateMbps: settings.maxBitrateMbps,
+            codec: settings.codec,
+            colorQuality: settings.colorQuality,
+            keyboardLayout: settings.keyboardLayout,
+            gameLanguage: settings.gameLanguage,
+            enableL4S: settings.enableL4S,
+            enableCloudGsync: settings.enableCloudGsync,
+          },
+        });
+
+        await applyClaimedSessionAndConnect(claimed);
+      } finally {
+        const map = claimResumePromisesRef.current;
+        if (map.get(sid) === run) {
+          map.delete(sid);
+        }
+      }
+    })();
+
+    claimResumePromisesRef.current.set(sid, run);
+    await run;
   }, [applyClaimedSessionAndConnect, authSession, effectiveStreamingBaseUrl, findGameContextForSession, resolveSessionClaimAppId, settings]);
 
   const attemptSessionRecovery = useCallback(async (reason: string): Promise<boolean> => {
