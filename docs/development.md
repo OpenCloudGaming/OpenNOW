@@ -138,12 +138,26 @@ cd opennow-stable
 npm run dist:signed
 ```
 
+### Update localized copy
+
+The source locale is [`locales/en.json`](../locales/en.json). Edit that file for new or changed strings, then let Crowdin generate the other `locales/*.json` files.
+
+If the Crowdin CLI is installed and `CROWDIN_PROJECT_ID` and `CROWDIN_PERSONAL_TOKEN` are set, these root commands mirror CI:
+
+```bash
+npm run crowdin:upload
+npm run crowdin:download
+```
+
+Do not manually edit downloaded translation files. Translation updates should come from Crowdin sync pull requests.
+
 ## CI And Releases
 
 The repository includes two main GitHub Actions workflows:
 
 - [`auto-build.yml`](../.github/workflows/auto-build.yml) builds pull requests and pushes to `main` and `dev`
 - [`release.yml`](../.github/workflows/release.yml) packages and publishes tagged or manually-triggered releases
+- [`crowdin.yml`](../.github/workflows/crowdin.yml) syncs `locales/en.json` with Crowdin and opens translation pull requests
 
 Current build matrix:
 

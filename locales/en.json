@@ -1,0 +1,503 @@
+{
+  "app": {
+    "name": "OpenNOW",
+    "tagline": "Open-source cloud gaming client",
+    "description": "Cloud gaming, open source.",
+    "actions": {
+      "add": "Add",
+      "back": "Back",
+      "browse": "Browse",
+      "cancel": "Cancel",
+      "close": "Close",
+      "continue": "Continue",
+      "delete": "Delete",
+      "done": "Done",
+      "open": "Open",
+      "play": "Play",
+      "refresh": "Refresh",
+      "remove": "Remove",
+      "reset": "Reset",
+      "resume": "Resume",
+      "retry": "Retry",
+      "save": "Save",
+      "search": "Search",
+      "select": "Select",
+      "settings": "Settings",
+      "showInFolder": "Show in folder",
+      "sort": "Sort",
+      "stop": "Stop",
+      "switch": "Switch"
+    },
+    "status": {
+      "checking": "Checking",
+      "connecting": "Connecting...",
+      "disabled": "Disabled",
+      "error": "Error",
+      "failed": "Failed",
+      "idle": "Idle",
+      "loading": "Loading...",
+      "ready": "Ready",
+      "saved": "Saved",
+      "testing": "Testing...",
+      "unknown": "Unknown",
+      "upToDate": "Up to date"
+    },
+    "units": {
+      "bitrateMbps": "{{value}} Mbps",
+      "gb": "{{value}} GB",
+      "gbLeft": "{{value}} GB left",
+      "gbTotal": "{{value}} GB total",
+      "gbUsed": "{{value}} GB used",
+      "hours": "{{value}}h",
+      "hoursLeft": "{{value}}h left",
+      "milliseconds": "{{value}}ms",
+      "minutes": "{{value}} min",
+      "percent": "{{value}}%",
+      "seconds": "{{value}}s"
+    },
+    "labels": {
+      "auto": "Auto",
+      "best": "Best",
+      "beta": "Beta",
+      "current": "Current",
+      "default": "Default",
+      "defaultDevice": "Default Device",
+      "free": "Free",
+      "hardware": "Hardware",
+      "other": "Other",
+      "priority": "Priority",
+      "softwareCpu": "Software (CPU)",
+      "ultimate": "Ultimate",
+      "unlimited": "Unlimited"
+    }
+  },
+  "auth": {
+    "title": {
+      "signIn": "Sign in",
+      "restoringSession": "Restoring session"
+    },
+    "subtitle": {
+      "checkingSavedAccounts": "Checking saved accounts."
+    },
+    "provider": {
+      "label": "Provider",
+      "select": "Select provider",
+      "loading": "Loading..."
+    },
+    "actions": {
+      "signIn": "Sign In",
+      "connecting": "Connecting...",
+      "restoringSession": "Restoring Session..."
+    },
+    "accounts": {
+      "activeAccount": "Active account",
+      "addAccount": "Add account",
+      "logOutAll": "Log out all accounts",
+      "logOutConfirmation": "Log out confirmation",
+      "removeAccount": "Remove account",
+      "removeAccountConfirmation": "Remove account confirmation",
+      "signOutAllTitle": "Sign out all accounts?",
+      "switchAccount": "Switch account",
+      "kicker": "Accounts"
+    }
+  },
+  "navigation": {
+    "home": "Store",
+    "library": "Library",
+    "settings": "Settings"
+  },
+  "home": {
+    "searchPlaceholder": "Search games...",
+    "filters": "Filters",
+    "count": {
+      "loading": "Loading...",
+      "shown": "{{shown}} shown",
+      "shownTotal": "{{shown}} shown \u00b7 {{total}} total",
+      "shownTotalSupported": "{{shown}} shown \u00b7 {{total}} total \u00b7 {{supported}} supported",
+      "shownSupported": "{{shown}} shown \u00b7 {{supported}} supported"
+    },
+    "empty": {
+      "loadingGames": "Loading games...",
+      "noGamesFound": "No games found",
+      "tryAdjustingSearch": "Try adjusting your search terms or filters",
+      "checkBackLater": "Check back later for new additions"
+    }
+  },
+  "library": {
+    "title": "My Library",
+    "searchPlaceholder": "Search your library...",
+    "gameCount": "{{count}} game",
+    "gameCount_plural": "{{count}} games",
+    "lastPlayed": {
+      "never": "Never played",
+      "justNow": "Just now",
+      "minutesAgo": "{{count}}m ago",
+      "hoursAgo": "{{count}}h ago",
+      "daysAgo": "{{count}}d ago",
+      "weeksAgo": "{{count}}w ago"
+    },
+    "empty": {
+      "loadingLibrary": "Loading your library...",
+      "libraryEmpty": "Your library is empty",
+      "ownedGamesAppearHere": "Games you own will appear here. Browse the catalog to find games.",
+      "noGamesFound": "No games found",
+      "noGamesMatch": "No games match \"{{query}}\""
+    }
+  },
+  "gameCard": {
+    "selectGame": "Select {{title}}",
+    "playGame": "Play {{title}}",
+    "store": "{{store}} store",
+    "owned": "Owned",
+    "available": "Available"
+  },
+  "streamLoading": {
+    "labels": {
+      "launchError": "Launch Error",
+      "nowLoading": "Now Loading",
+      "adQueue": "Ad Queue"
+    },
+    "steps": {
+      "queue": "Queue",
+      "setup": "Setup",
+      "ready": "Ready"
+    },
+    "status": {
+      "gameLaunchFailed": "Game launch failed",
+      "queuePaused": "Session queue paused",
+      "positionInQueue": "Position #{{position}} in queue",
+      "waitingInQueue": "Waiting in queue...",
+      "settingUpRig": "Setting up your gaming rig...",
+      "startingStream": "Starting stream...",
+      "connectingToServer": "Connecting to server...",
+      "settingUpStream": "Setting up stream...",
+      "loading": "Loading..."
+    },
+    "ads": {
+      "resumeToStayInQueue": "Resume ads to stay in queue.",
+      "availableForProgression": "{{count}} ad available for queue progression.",
+      "availableForProgression_plural": "{{count}} ads available for queue progression.",
+      "playbackRequired": "Ad playback is required while your session is queued.",
+      "advertisement": "Advertisement",
+      "titledAdvertisement": "{{title}} advertisement"
+    },
+    "actions": {
+      "cancelLoading": "Cancel loading"
+    }
+  },
+  "queue": {
+    "servers": {
+      "allServers": "All Servers",
+      "close": "Close",
+      "cancel": "Cancel",
+      "wait": "{{duration}} wait"
+    }
+  },
+  "session": {
+    "active": "Active Session",
+    "current": "Current",
+    "control": "Session Control",
+    "elapsed": "Elapsed",
+    "endSession": "End session",
+    "exitStream": "Exit Stream?",
+    "exitConfirmation": "Exit stream confirmation",
+    "cancelExit": "Cancel exit",
+    "resume": "Resume",
+    "resumeCurrentStream": "Resume current stream",
+    "readyToLaunch": "Ready To Launch",
+    "readyToSwitch": "Ready To Switch",
+    "timeWarning": "Session time warning",
+    "elapsedTitle": "Current gaming session elapsed time",
+    "warnings": {
+      "sessionTimeLimitApproaching": "Session time limit approaching",
+      "idleTimeoutApproaching": "Idle timeout approaching",
+      "maximumSessionTimeApproaching": "Maximum session time approaching"
+    }
+  },
+  "stream": {
+    "stats": {
+      "connecting": "Connecting...",
+      "network": "Network",
+      "decode": "Decode",
+      "input": "Input",
+      "render": "Render",
+      "stable": "Stable",
+      "roundTripLatency": "Round-trip network latency",
+      "decodeTime": "D = decode time",
+      "renderTime": "R = render time",
+      "jitterBuffer": "JB = jitter buffer delay",
+      "packetLoss": "Packet loss percentage",
+      "inputQueuePressure": "Input queue pressure (buffered bytes and delayed flush)",
+      "inputChannelState": "Partially reliable input channel state and queued bytes",
+      "mouseFlushCadence": "Mouse flush cadence and packet rate"
+    },
+    "controls": {
+      "antiAfkEnabled": "Anti-AFK is enabled",
+      "muteMicrophone": "Mute microphone",
+      "unmuteMicrophone": "Unmute microphone",
+      "enterFullscreen": "Enter fullscreen",
+      "exitFullscreen": "Exit fullscreen",
+      "controllerConnected": "{{count}} controller connected",
+      "controllerConnected_plural": "{{count}} controllers connected"
+    },
+    "sidebar": {
+      "title": "Settings",
+      "remainingPlaytime": "Remaining Playtime",
+      "sections": "Sidebar sections",
+      "microphoneHandling": "Microphone handling",
+      "microphoneMode": "Microphone Mode",
+      "microphoneInputLevel": "Microphone input level",
+      "screenshotShortcut": "Screenshot Shortcut",
+      "recordingShortcut": "Recording Shortcut",
+      "toggleStats": "Toggle Stats",
+      "stopStream": "Stop Stream",
+      "toggleMicrophone": "Toggle Microphone",
+      "toggleStreamSidebar": "Toggle stream sidebar"
+    },
+    "screenshots": {
+      "title": "Screenshot",
+      "preview": "Screenshot preview",
+      "closePreview": "Close screenshot preview",
+      "alt": "Screenshot {{fileName}}",
+      "scrollLeft": "Scroll gallery left",
+      "scrollRight": "Scroll gallery right"
+    },
+    "recordings": {
+      "title": "Recordings",
+      "delete": "Delete recording",
+      "scrollLeft": "Scroll recordings left",
+      "scrollRight": "Scroll recordings right"
+    },
+    "shortcuts": {
+      "empty": "Shortcut cannot be empty.",
+      "invalidFormat": "Invalid shortcut format.",
+      "conflict": "Shortcut conflicts with an existing binding.",
+      "clickThenPress": "Click, then press a key",
+      "clickHereThenPress": "Click here, then press a key",
+      "focusAndPress": "Focus and press the key combination to bind",
+      "examples": "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K",
+      "stats": "Stats"
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "saved": "Saved",
+    "searchPlaceholder": "Search settings...",
+    "noMatches": "No settings matched \"{{query}}\".",
+    "sections": {
+      "stream": "Stream",
+      "game": "Game",
+      "audio": "Audio",
+      "input": "Input",
+      "interface": "Interface",
+      "about": "About",
+      "thanks": "Thanks"
+    },
+    "region": {
+      "title": "Region",
+      "autoBest": "Auto (Best)",
+      "searchPlaceholder": "Search regions...",
+      "refreshPing": "Refresh ping",
+      "noRegionsMatch": "No regions match \"{{query}}\""
+    },
+    "video": {
+      "title": "Video",
+      "aspectRatio": "Aspect Ratio",
+      "resolution": "Resolution",
+      "fps": "FPS",
+      "codec": "Codec",
+      "decoder": "Decoder",
+      "encoder": "Encoder",
+      "colorDepth": "Color Depth",
+      "maxBitrate": "Max Bitrate",
+      "appliesAfterRestart": "Applies after app restart.",
+      "requiresH265OrAv1": "This mode requires H265 or AV1. Codec will be auto-switched.",
+      "testing": "Testing...",
+      "gpu": "GPU",
+      "cpu": "CPU"
+    },
+    "colorQuality": {
+      "mostCompatible": "Most compatible",
+      "sharperChroma": "Sharper chroma",
+      "higherBitDepth": "Higher bit depth",
+      "highestChromaAndBitDepth": "Highest chroma and bit depth",
+      "requiresH265OrAv1Title": "{{description}} - requires H265/AV1"
+    },
+    "game": {
+      "title": "Game",
+      "language": "Language",
+      "keyboardLayout": "Keyboard Layout",
+      "preferredStore": "Preferred Store",
+      "launchBehavior": "Launch Behavior"
+    },
+    "audio": {
+      "title": "Audio",
+      "microphone": "Microphone",
+      "microphoneMode": "Microphone Mode",
+      "microphoneDevice": "Microphone Device",
+      "microphoneInputLevel": "Microphone input level",
+      "disabled": "Disabled",
+      "pushToTalk": "Push-to-Talk",
+      "voiceActivity": "Voice Activity",
+      "permissionDenied": "Microphone access was denied. Enable microphone access for OpenNOW in System Settings > Privacy & Security > Microphone.",
+      "permissionRestricted": "Microphone access is restricted by macOS and cannot be enabled from OpenNOW.",
+      "permissionUnknown": "Unable to determine microphone permission status. Check macOS microphone privacy settings for OpenNOW.",
+      "permissionUnavailable": "Microphone access is not available."
+    },
+    "input": {
+      "title": "Input",
+      "mouseAndKeyboard": "Mouse and Keyboard",
+      "shortcuts": "Shortcuts",
+      "shortcutConflictSidebar": "Shortcut conflicts with the settings sidebar toggle.",
+      "shortcutConflictBinding": "Shortcut conflicts with another binding.",
+      "shortcutEmpty": "Shortcut cannot be empty.",
+      "shortcutInvalid": "Invalid shortcut format.",
+      "toggleStats": "Toggle Stats",
+      "togglePointerLock": "Toggle Pointer Lock",
+      "toggleFullscreen": "Toggle Fullscreen",
+      "stopStream": "Stop Stream",
+      "toggleAntiAfk": "Toggle Anti-AFK",
+      "toggleMicrophone": "Toggle Microphone",
+      "screenshot": "Screenshot",
+      "recording": "Recording",
+      "toggleStreamSidebar": "Toggle stream sidebar",
+      "shortcutHint": "Click a field and press the keys to bind, or paste a shortcut ({{examples}}). Escape cancels focus. Full screen: {{fullscreen}}. Stop: {{stop}}. Mic: {{mic}}. Screenshot: {{screenshot}}. Recording: {{recording}}."
+    },
+    "interface": {
+      "appearance": "Appearance",
+      "hideStreamOverlayButtons": "Hide Stream Overlay Buttons",
+      "hideStreamOverlayButtonsHint": "Hide microphone, fullscreen, and end-session buttons while streaming.",
+      "showStatsOnStreamLaunch": "Show Stats on Stream Launch",
+      "showStatsOnStreamLaunchHint": "Automatically show the stats overlay when a new stream starts.",
+      "hideServerSelector": "Hide Server Selector",
+      "hideServerSelectorHint": "Skip the free-tier server selection dialog and always launch with OpenNOW's default routing.",
+      "showAntiAfkIndicator": "Show Anti-AFK Indicator",
+      "showAntiAfkIndicatorHint": "Show the ANTI-AFK ON badge while Anti-AFK is enabled during streaming.",
+      "autoFullScreen": "Auto Full Screen",
+      "autoFullScreenHint": "Automatically enter fullscreen when connecting to or starting a session.",
+      "escapeExitsFullscreen": "Escape Exits Fullscreen",
+      "escapeExitsFullscreenHint": "When enabled, pressing Escape will exit fullscreen. When disabled (default), Escape is forwarded to the game while the mouse is pointer-locked.",
+      "discordRichPresence": "Discord Rich Presence",
+      "discordRichPresenceHint": "Show the game you are streaming as your Discord activity, including elapsed time.",
+      "controllerModeLibrary": "Controller Mode Library",
+      "controllerModeLibraryHint": "Replace the desktop library/settings navigation with the controller-first layout only when controller mode is enabled.",
+      "controllerUiSounds": "Controller UI Sounds",
+      "controllerUiSoundsHint": "Play subtle move, open, and back sounds inside controller mode only.",
+      "controllerBackgroundAnimations": "Background Animations (Controller Mode)",
+      "controllerBackgroundAnimationsHint": "Show animated background visuals on controller-mode loading screens only.",
+      "autoLoadControllerLibrary": "Auto-Load Controller Library",
+      "autoLoadControllerLibraryHint": "Automatically open the controller library at startup when controller mode is enabled.",
+      "posterSize": "Poster Size",
+      "posterSizeHint": "Adjusts game posters in real time across the library and controller views.",
+      "sessionElapsedCounter": "Session Elapsed Counter",
+      "sessionElapsedCounterHint": "Enable or disable the live session elapsed counter while streaming.",
+      "sessionTimerReappear": "Session Timer Reappear",
+      "sessionTimerVisibleTime": "Session Timer Visible Time",
+      "sessionTimerReappearHint": "How often the session timer pops back up while streaming (0 disables repeats).",
+      "sessionTimerVisibleTimeHint": "How long the session timer stays visible each time it appears.",
+      "sessionTimerDisabledHint": "Disabling the session elapsed counter stops the live elapsed timer from rendering at all. Remaining playtime indicators stay unchanged.",
+      "off": "Off",
+      "everyMinutes": "Every {{count}} min"
+    },
+    "about": {
+      "updateStatus": {
+        "packagedBuildsOnly": "Packaged builds only",
+        "checking": "Checking",
+        "updateAvailable": "Update available",
+        "downloading": "Downloading",
+        "readyToInstall": "Ready to install"
+      }
+    },
+    "thanks": {
+      "title": "Thanks for helping OpenNOW grow",
+      "subtitle": "OpenNOW is shaped by contributors building the client and supporters backing the project behind the scenes.",
+      "contributorsTitle": "Contributors",
+      "contributorsSubtitle": "People improving OpenNOW in code, fixes, and features.",
+      "supportersTitle": "Supporters",
+      "loadingContributors": "Loading contributors from GitHub...",
+      "loadingSupporters": "Loading supporters from GitHub Sponsors..."
+    }
+  },
+  "navbar": {
+    "subscriptionDetails": "Subscription details",
+    "playtimeDetails": "Playtime Details",
+    "storageDetails": "Storage Details",
+    "showPlaytimeDetails": "Show playtime details",
+    "showStorageDetails": "Show storage details",
+    "time": {
+      "unlimitedTime": "Unlimited time",
+      "timeUsage": "Time Usage",
+      "used": "{{percent}} used",
+      "tier": "Tier",
+      "type": "Type",
+      "subType": "Sub Type",
+      "timeLeft": "Time Left",
+      "totalTime": "Total Time",
+      "usedTime": "Used Time",
+      "allotted": "Allotted",
+      "purchased": "Purchased",
+      "rolledOver": "Rolled Over",
+      "firstEntitlement": "First Entitlement",
+      "periodStart": "Period Start",
+      "periodEnd": "Period End",
+      "notifyAtGeneral": "Notify At (General)",
+      "notifyAtInSession": "Notify At (In Session)",
+      "planState": "Plan State",
+      "gameplayAllowed": "Gameplay Allowed",
+      "yes": "Yes",
+      "no": "No"
+    },
+    "storage": {
+      "storageUsage": "Storage Usage",
+      "storageLeft": "Storage Left",
+      "storageUsed": "Storage Used",
+      "storageTotal": "Storage Total",
+      "storageRegion": "Storage Region",
+      "storageRegionCode": "Storage Region Code",
+      "serverRegionVpc": "Server Region (VPC)",
+      "notAvailable": "N/A"
+    }
+  },
+  "controllerMode": {
+    "gameHub": {
+      "ariaLabel": "{{title}} game hub",
+      "actions": "Game hub actions"
+    },
+    "library": {
+      "loadingTitle": "Loading your library",
+      "loadingSubtitle": "Please wait",
+      "gameHub": "Game hub",
+      "games": "Games",
+      "gameLibrary": "Game library",
+      "emptySlot": "Empty slot",
+      "emptyRecentSlot": "Empty recent slot",
+      "recentlyPlayed": "Recently played",
+      "recentlyPlayedHint": "Recently played \u00b7 Enter opens this title in your library",
+      "recentlyPlayedEmptyHint": "Recently played \u00b7 Empty slot - play games to fill your shelf",
+      "recentlyPlayedGames": "Recently played games",
+      "resumeGame": "Resume {{title}}",
+      "library": "Library",
+      "detailRow": "Detail row",
+      "options": "Options",
+      "browseLeftRight": "Browse \u00b7 Left / Right",
+      "backToMedia": "Back To Media",
+      "libraryFiltersUp": "Library filters \u00b7 Up",
+      "bandwidthLimit": "Bandwidth Limit (Mbps)",
+      "theme": "Theme {{label}}"
+    },
+    "streamLoading": {
+      "adQueue": "Ad Queue",
+      "queuePaused": "Session queue paused",
+      "settingUpRig": "Setting up your gaming rig...",
+      "startingStream": "Starting stream...",
+      "settingUpStream": "Setting up stream...",
+      "loading": "Loading..."
+    }
+  },
+  "errors": {
+    "launchUnknown": "The game could not start. Please try again.",
+    "queueAdPlayTimeout": "Ad play timeout",
+    "queueAdVideoStuck": "Ad video is stuck",
+    "queueAdUrlLoad": "Error loading url"
+  }
+}
