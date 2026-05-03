@@ -7990,6 +7990,172 @@ button.game-card-store-chip.owned.active:hover {
   flex-wrap: wrap;
 }
 
+/* Full-screen game hub (Games library browse — replaces shelf until Back) */
+.xmb-ps5-game-hub {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: auto;
+  padding: clamp(16px, 3vh, 40px) clamp(20px, 4vw, 56px) clamp(96px, 14vh, 140px);
+  box-sizing: border-box;
+}
+
+.xmb-ps5-game-hub-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.xmb-ps5-game-hub-hero {
+  position: absolute;
+  inset: -12%;
+  background-size: cover;
+  background-position: center center;
+  filter: blur(22px) saturate(1.08) brightness(0.85);
+  opacity: 0.55;
+  transform: scale(1.05);
+}
+
+.xmb-ps5-game-hub-scrim {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(6, 8, 12, 0.45) 0%, rgba(4, 6, 10, 0.72) 55%, rgba(2, 4, 8, 0.92) 100%),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.35) 0%, transparent 35%, transparent 65%, rgba(0, 0, 0, 0.35) 100%);
+}
+
+.xmb-ps5-game-hub-content {
+  position: relative;
+  z-index: 1;
+  max-width: min(920px, 92vw);
+  margin: 0 auto;
+  width: 100%;
+}
+
+.xmb-ps5-game-hub-header {
+  margin-bottom: clamp(12px, 2vh, 20px);
+}
+
+.xmb-ps5-game-hub-title {
+  margin: 0 0 12px;
+  font-size: clamp(1.65rem, 4.2vw, 2.35rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: rgba(255, 255, 255, 0.96);
+  text-shadow:
+    0 2px 24px rgba(0, 0, 0, 0.75),
+    0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
+.xmb-ps5-game-hub-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.xmb-ps5-game-hub-description {
+  margin: 0 0 clamp(16px, 3vh, 28px);
+  font-size: 0.92rem;
+  line-height: 1.55;
+  color: rgba(235, 242, 250, 0.82);
+  max-height: clamp(72px, 14vh, 140px);
+  overflow-y: auto;
+  padding-right: 8px;
+  scrollbar-width: none;
+}
+
+.xmb-ps5-game-hub-description::-webkit-scrollbar {
+  display: none;
+}
+
+.xmb-ps5-game-hub-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.xmb-ps5-game-hub-tile {
+  flex: 1 1 clamp(140px, 28vw, 220px);
+  min-height: 108px;
+  border-radius: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  background: rgba(10, 14, 22, 0.55);
+  opacity: 0.55;
+  transform: translateY(6px) scale(0.98);
+  transition:
+    opacity 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 320ms ease,
+    box-shadow 320ms ease;
+}
+
+.xmb-ps5-game-hub-tile.active {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  border-color: rgba(255, 255, 255, 0.72);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.45),
+    0 0 0 2px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.35);
+}
+
+.xmb-ps5-game-hub-tile--primary.active {
+  border-color: rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.65);
+}
+
+.xmb-ps5-game-hub-tile--disabled {
+  opacity: 0.38;
+}
+
+.xmb-ps5-game-hub-tile--disabled.active {
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: none;
+}
+
+.xmb-ps5-game-hub-tile-body {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: center;
+  min-height: 100%;
+  box-sizing: border-box;
+}
+
+.xmb-ps5-game-hub-tile-title {
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.xmb-ps5-game-hub-tile-sub {
+  font-size: 0.74rem;
+  color: rgba(220, 230, 242, 0.72);
+  line-height: 1.35;
+}
+
+.xmb-ps5-game-hub-stream-hint {
+  margin-top: 14px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xmb-ps5-game-hub-tile {
+    transition-duration: 0.01ms;
+  }
+}
+
 .xmb-ps5-detail-rail {
   position: absolute;
   left: clamp(24px, 4vw, 56px);
