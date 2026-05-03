@@ -8036,6 +8036,49 @@ button.game-card-store-chip.owned.active:hover {
   width: 100%;
 }
 
+.xmb-ps5-game-hub-poster-row {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: clamp(14px, 2.2vh, 22px);
+}
+
+.xmb-ps5-game-hub-poster-frame {
+  border-radius: 18px;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  max-height: min(38vh, 320px);
+  width: 100%;
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow:
+    0 24px 48px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.xmb-ps5-game-hub-poster-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center center;
+  display: block;
+}
+
+.xmb-ps5-game-hub-shot-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.xmb-ps5-game-hub-shot-thumb {
+  width: clamp(72px, 14vw, 112px);
+  height: clamp(40px, 8vw, 63px);
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  opacity: 0.92;
+}
+
 .xmb-ps5-game-hub-header {
   margin-bottom: clamp(12px, 2vh, 20px);
 }

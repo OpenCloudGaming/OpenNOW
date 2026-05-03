@@ -269,6 +269,8 @@ export function ControllerLibraryPage({
   const [heroTransitionMs, setHeroTransitionMs] = useState(420);
   const [gamesHubOpen, setGamesHubOpen] = useState(false);
   const [gamesHubFocusIndex, setGamesHubFocusIndex] = useState(0);
+  /** Local captures for the focused game; loaded when hub opens so Media tab need not be visited first */
+  const [gameHubScreenshotUrls, setGameHubScreenshotUrls] = useState<string[]>([]);
   const gamesHubReturnSnapshotRef = useRef<GamesHubReturnSnapshot | null>(null);
   const spotlightTrackRef = useRef<HTMLDivElement>(null);
 
@@ -725,6 +727,50 @@ export function ControllerLibraryPage({
   }, [categorizedGames, selectedGameId]);
 
   const selectedGame = useMemo(() => categorizedGames[selectedIndex] ?? null, [categorizedGames, selectedIndex]);
+
+  useEffect(() => {
+    if (!gamesHubOpen || !selectedGame?.title?.trim()) {
+      setGameHubScreenshotUrls([]);
+      return;
+    }
+    if (typeof window.openNow?.listMediaByGame !== "function") {
+      setGameHubScreenshotUrls([]);
+      return;
+    }
+
+    let cancelled = false;
+    const titleArg = selectedGame.title.trim();
+
+    void (async () => {
+      try {
+        const listing = await window.openNow.listMediaByGame({ gameTitle: titleArg });
+        if (cancelled) return;
+
+        const rows = [...(listing.screenshots ?? [])].sort((a, b) => b.createdAtMs - a.createdAtMs);
+        const urls: string[] = [];
+
+        for (const s of rows) {
+          let u = s.thumbnailDataUrl || s.dataUrl;
+          if (!u && typeof window.openNow?.getMediaThumbnail === "function") {
+            try {
+              u = (await window.openNow.getMediaThumbnail({ filePath: s.filePath })) ?? undefined;
+            } catch {
+              u = undefined;
+            }
+          }
+          if (u) urls.push(u);
+        }
+
+        if (!cancelled) setGameHubScreenshotUrls(urls);
+      } catch {
+        if (!cancelled) setGameHubScreenshotUrls([]);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gamesHubOpen, selectedGame?.id, selectedGame?.title]);
 
   const selectedVariantId = useMemo(() => {
     if (!selectedGame) return "";
@@ -2325,7 +2371,7 @@ export function ControllerLibraryPage({
       {topCategory === "all" && gameSubcategory !== "root" && gamesHubOpen && selectedGame ? (
         <ControllerGameHub
           game={selectedGame}
-          heroBackdropUrl={heroBackdropUrl}
+          screenshotUrls={gameHubScreenshotUrls}
           playtimeData={playtimeData}
           selectedVariantId={selectedVariantId}
           currentStreamingGame={currentStreamingGame}

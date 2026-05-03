@@ -19,7 +19,8 @@ function sanitizeGenreName(raw: string): string {
 
 export interface ControllerGameHubProps {
   game: GameInfo;
-  heroBackdropUrl: string | null;
+  /** Local captures for this title (newest first); hub prefers these over poster art */
+  screenshotUrls: string[];
   playtimeData: PlaytimeStore;
   selectedVariantId: string;
   currentStreamingGame: GameInfo | null | undefined;
@@ -30,7 +31,7 @@ export interface ControllerGameHubProps {
 
 export function ControllerGameHub({
   game,
-  heroBackdropUrl,
+  screenshotUrls,
   playtimeData,
   selectedVariantId,
   currentStreamingGame,
@@ -51,7 +52,12 @@ export function ControllerGameHub({
   const description =
     game.longDescription?.trim() || game.description?.trim() || `${game.title} is ready to launch from your library.`;
 
+  const primaryVisualUrl =
+    screenshotUrls[0] ?? game.screenshotUrl ?? game.imageUrl ?? null;
+  const heroBackdropUrl = primaryVisualUrl;
+
   const safeFocus = Math.max(0, Math.min(tiles.length - 1, focusIndex));
+  const extraShots = screenshotUrls.slice(1, 8);
 
   return (
     <div className="xmb-ps5-game-hub" role="region" aria-label={`${game.title} game hub`}>
@@ -63,6 +69,32 @@ export function ControllerGameHub({
       </div>
 
       <div className="xmb-ps5-game-hub-content">
+        {primaryVisualUrl ? (
+          <div className="xmb-ps5-game-hub-poster-row">
+            <div className="xmb-ps5-game-hub-poster-frame">
+              <img
+                src={primaryVisualUrl}
+                alt=""
+                className="xmb-ps5-game-hub-poster-img"
+                decoding="async"
+              />
+            </div>
+            {extraShots.length > 0 ? (
+              <div className="xmb-ps5-game-hub-shot-strip" aria-hidden>
+                {extraShots.map((src, i) => (
+                  <img
+                    key={`hub-strip-${i}`}
+                    src={src}
+                    alt=""
+                    className="xmb-ps5-game-hub-shot-thumb"
+                    decoding="async"
+                  />
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         <header className="xmb-ps5-game-hub-header">
           <h1 className="xmb-ps5-game-hub-title">{game.title}</h1>
           <div className="xmb-ps5-game-hub-chips">
