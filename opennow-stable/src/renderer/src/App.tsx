@@ -111,6 +111,7 @@ const SESSION_AD_FORCE_PLAY_TIMEOUT_MS = 10000;
 const SESSION_AD_STUCK_TIMEOUT_MS = 30000;
 const VARIANT_SELECTION_LOCALSTORAGE_KEY = "opennow.variantByGameId";
 const CATALOG_PREFERENCES_LOCALSTORAGE_KEY = "opennow.catalogPreferences.v1";
+const RUNTIME_SNAPSHOT_LOCALSTORAGE_KEY = "opennow.runtimeSnapshot.v1";
 const PLAYTIME_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
 const FREE_TIER_SESSION_LIMIT_SECONDS = 60 * 60;
 const FREE_TIER_30_MIN_WARNING_SECONDS = 30 * 60;
@@ -121,6 +122,27 @@ const STREAM_WARNING_VISIBILITY_MS = 15 * 1000;
 interface CatalogPreferences {
   sortId: string;
   filterIds: string[];
+}
+
+interface RuntimeSnapshot {
+  version: 1;
+  updatedAt: number;
+  streamStatus: StreamStatus;
+  sessionId: string | null;
+  sessionAppId: number | null;
+  streamingGameId: string | null;
+  streamingStore: string | null;
+  recoveryAppId: number | null;
+  resumeContext: {
+    sessionId: string;
+    serverIp: string;
+    streamingBaseUrl?: string;
+    signalingServer?: string;
+    signalingUrl?: string;
+    appId?: number;
+    clientId?: string;
+    deviceId?: string;
+  } | null;
 }
 
 function loadCatalogPreferences(): CatalogPreferences {
@@ -142,6 +164,77 @@ function loadCatalogPreferences(): CatalogPreferences {
 function saveCatalogPreferences(prefs: CatalogPreferences): void {
   try {
     localStorage.setItem(CATALOG_PREFERENCES_LOCALSTORAGE_KEY, JSON.stringify(prefs));
+  } catch {
+    // ignore
+  }
+}
+
+function loadRuntimeSnapshot(): RuntimeSnapshot | null {
+  try {
+    const raw = localStorage.getItem(RUNTIME_SNAPSHOT_LOCALSTORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<RuntimeSnapshot>;
+    if (parsed.version !== 1) return null;
+    return {
+      version: 1,
+      updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : Date.now(),
+      streamStatus: (typeof parsed.streamStatus === "string" ? parsed.streamStatus : "idle") as StreamStatus,
+      sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : null,
+      sessionAppId: typeof parsed.sessionAppId === "number" ? parsed.sessionAppId : null,
+      streamingGameId: typeof parsed.streamingGameId === "string" ? parsed.streamingGameId : null,
+      streamingStore: typeof parsed.streamingStore === "string" ? parsed.streamingStore : null,
+      recoveryAppId: typeof parsed.recoveryAppId === "number" ? parsed.recoveryAppId : null,
+      resumeContext:
+        parsed.resumeContext &&
+        typeof parsed.resumeContext === "object" &&
+        typeof parsed.resumeContext.sessionId === "string" &&
+        typeof parsed.resumeContext.serverIp === "string"
+          ? {
+            sessionId: parsed.resumeContext.sessionId,
+            serverIp: parsed.resumeContext.serverIp,
+            streamingBaseUrl:
+              typeof parsed.resumeContext.streamingBaseUrl === "string"
+                ? parsed.resumeContext.streamingBaseUrl
+                : undefined,
+            signalingServer:
+              typeof parsed.resumeContext.signalingServer === "string"
+                ? parsed.resumeContext.signalingServer
+                : undefined,
+            signalingUrl:
+              typeof parsed.resumeContext.signalingUrl === "string"
+                ? parsed.resumeContext.signalingUrl
+                : undefined,
+            appId:
+              typeof parsed.resumeContext.appId === "number" && Number.isFinite(parsed.resumeContext.appId)
+                ? parsed.resumeContext.appId
+                : undefined,
+            clientId:
+              typeof parsed.resumeContext.clientId === "string"
+                ? parsed.resumeContext.clientId
+                : undefined,
+            deviceId:
+              typeof parsed.resumeContext.deviceId === "string"
+                ? parsed.resumeContext.deviceId
+                : undefined,
+          }
+          : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveRuntimeSnapshot(snapshot: RuntimeSnapshot): void {
+  try {
+    localStorage.setItem(RUNTIME_SNAPSHOT_LOCALSTORAGE_KEY, JSON.stringify(snapshot));
+  } catch {
+    // ignore
+  }
+}
+
+function clearRuntimeSnapshot(): void {
+  try {
+    localStorage.removeItem(RUNTIME_SNAPSHOT_LOCALSTORAGE_KEY);
   } catch {
     // ignore
   }
@@ -187,8 +280,11 @@ type SignalingRecoveryState = {
 };
 
 const APP_PAGE_ORDER: AppPage[] = ["home", "library", "settings"];
-const RECOVERABLE_STREAM_STATUSES: readonly StreamStatus[] = ["queue", "setup", "starting", "connecting", "streaming"];
+const RECOVERABLE_STREAM_STATUSES: readonly StreamStatus[] = ["streaming"];
 const SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS = [0, 3000] as const;
+const SIGNALING_RECOVERY_STABLE_RESET_DELAY_MS = 15000;
+const SIGNALING_REMOTE_ICE_GRACE_MS = 5000;
+const ICE_DISCONNECTED_RECOVERY_GRACE_MS = 7000;
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
 
@@ -1061,6 +1157,7 @@ export function App(): JSX.Element {
 
   const [controllerOverlayOpen, setControllerOverlayOpen] = useState(false);
   const [streamVolume, setStreamVolume] = useState(1);
+  const [streamMicLevel, setStreamMicLevel] = useState(1);
   const [isSwitchingGame, setIsSwitchingGame] = useState(false);
   const [switchingPhase, setSwitchingPhase] = useState<null | "cleaning" | "creating">(null);
   const [pendingSwitchGameTitle, setPendingSwitchGameTitle] = useState<string | null>(null);
@@ -1086,56 +1183,30 @@ export function App(): JSX.Element {
     && controllerConnected
     && !(settings.controllerMode && currentPage === "library");
 
-  useEffect(() => {
-    let raf = 0;
-    const prev = { pressed: false };
-    const tick = () => {
-      try {
-        if (streamStatus !== "streaming") {
-          prev.pressed = false;
-          raf = window.requestAnimationFrame(tick);
-          return;
-        }
-        const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-        const pad = Array.from(pads).find((p) => p && p.connected) ?? null;
-        if (!pad) {
-          prev.pressed = false;
-          raf = window.requestAnimationFrame(tick);
-          return;
-        }
-        // Meta/Home button only: button 16 (standard)
-        const metaPressed = Boolean(pad.buttons[16]?.pressed);
-        if (metaPressed && !prev.pressed) {
-          setControllerOverlayOpen((v) => {
-            const opening = !v;
-            if (settings.controllerUiSounds) {
-              playControllerUiSound(opening ? "confirm" : "move", true);
-            }
-            try {
-              const act = pad.vibrationActuator;
-              if (act && typeof act.playEffect === "function") {
-                void act.playEffect("dual-rumble", { duration: 42, strongMagnitude: 0.35, weakMagnitude: 0.45 });
-              }
-            } catch {
-              // ignore
-            }
-            return !v;
-          });
-        }
-        prev.pressed = metaPressed;
-      } catch {
-        // ignore
-      }
-      raf = window.requestAnimationFrame(tick);
-    };
-    raf = window.requestAnimationFrame(tick);
-    return () => { if (raf) window.cancelAnimationFrame(raf); };
-  }, [streamStatus, settings.controllerUiSounds]);
-
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clientRef = useRef<GfnWebRtcClient | null>(null);
+  const controllerUiSoundsRef = useRef(settings.controllerUiSounds);
+  const isStreamingRef = useRef(streamStatus === "streaming");
+
+  useEffect(() => {
+    controllerUiSoundsRef.current = settings.controllerUiSounds;
+  }, [settings.controllerUiSounds]);
+  useEffect(() => {
+    isStreamingRef.current = streamStatus === "streaming";
+  }, [streamStatus]);
+
+  const handleControllerMetaToggle = useCallback(() => {
+    if (!isStreamingRef.current) return;
+    setControllerOverlayOpen((currentOpen) => {
+      const opening = !currentOpen;
+      if (controllerUiSoundsRef.current) {
+        playControllerUiSound(opening ? "confirm" : "move", true);
+      }
+      return opening;
+    });
+  }, []);
 
   useEffect(() => {
     if (streamStatus === "streaming" && audioRef.current) {
@@ -1146,10 +1217,21 @@ export function App(): JSX.Element {
   const hasInitializedRef = useRef(false);
   const regionsRequestRef = useRef(0);
   const launchInFlightRef = useRef(false);
+  const runtimeSnapshotRef = useRef<RuntimeSnapshot | null>(loadRuntimeSnapshot());
   /** Joins concurrent claim/resume calls for the same Cloud session id (single CloudMatch RESUME + signaling). */
   const claimResumePromisesRef = useRef<Map<string, Promise<void>>>(new Map());
   const launchAbortRef = useRef(false);
   const streamStatusRef = useRef<StreamStatus>(streamStatus);
+  const stableRecoveryResetTimerRef = useRef<number | null>(null);
+  const remoteIceGraceTimerRef = useRef<number | null>(null);
+  const remoteIceSeenForSessionRef = useRef<string | null>(null);
+  const remoteIceRecoveryGenerationRef = useRef<number | null>(null);
+  const awaitingRecoveryRemoteIceRef = useRef(false);
+  const appUnloadingRef = useRef(false);
+  const hasConfirmedRemoteIceRef = useRef(false);
+  const latestIceConnectionStateRef = useRef<RTCIceConnectionState>("new");
+  const iceDisconnectedRecoveryTimerRef = useRef<number | null>(null);
+  const pendingControlledDisconnectsRef = useRef(0);
   const signalingRecoveryRef = useRef<SignalingRecoveryState>({
     attemptCount: 0,
     inFlight: null,
@@ -1376,6 +1458,24 @@ export function App(): JSX.Element {
     keepLaunchError?: boolean;
     keepStreamingContext?: boolean;
   }): void => {
+    if (stableRecoveryResetTimerRef.current !== null) {
+      window.clearTimeout(stableRecoveryResetTimerRef.current);
+      stableRecoveryResetTimerRef.current = null;
+    }
+    if (remoteIceGraceTimerRef.current !== null) {
+      window.clearTimeout(remoteIceGraceTimerRef.current);
+      remoteIceGraceTimerRef.current = null;
+    }
+    if (iceDisconnectedRecoveryTimerRef.current !== null) {
+      window.clearTimeout(iceDisconnectedRecoveryTimerRef.current);
+      iceDisconnectedRecoveryTimerRef.current = null;
+    }
+    remoteIceSeenForSessionRef.current = null;
+    remoteIceRecoveryGenerationRef.current = null;
+    awaitingRecoveryRemoteIceRef.current = false;
+    hasConfirmedRemoteIceRef.current = false;
+    latestIceConnectionStateRef.current = "new";
+    pendingControlledDisconnectsRef.current = 0;
     signalingRecoveryRef.current.attemptCount = 0;
     signalingRecoveryRef.current.inFlight = null;
     signalingRecoveryRef.current.appId = null;
@@ -1401,11 +1501,31 @@ export function App(): JSX.Element {
     if (settings.discordRichPresence) {
       void window.openNow.clearDiscordActivity();
     }
+    runtimeSnapshotRef.current = null;
+    clearRuntimeSnapshot();
   }, [diagnosticsStore, resetStatsOverlayToPreference, settings.discordRichPresence]);
 
   const resetSignalingRecoveryState = useCallback((options?: {
     keepExplicitShutdown?: boolean;
   }): void => {
+    if (stableRecoveryResetTimerRef.current !== null) {
+      window.clearTimeout(stableRecoveryResetTimerRef.current);
+      stableRecoveryResetTimerRef.current = null;
+    }
+    if (remoteIceGraceTimerRef.current !== null) {
+      window.clearTimeout(remoteIceGraceTimerRef.current);
+      remoteIceGraceTimerRef.current = null;
+    }
+    if (iceDisconnectedRecoveryTimerRef.current !== null) {
+      window.clearTimeout(iceDisconnectedRecoveryTimerRef.current);
+      iceDisconnectedRecoveryTimerRef.current = null;
+    }
+    remoteIceSeenForSessionRef.current = null;
+    remoteIceRecoveryGenerationRef.current = null;
+    awaitingRecoveryRemoteIceRef.current = false;
+    hasConfirmedRemoteIceRef.current = false;
+    latestIceConnectionStateRef.current = "new";
+    pendingControlledDisconnectsRef.current = 0;
     signalingRecoveryRef.current.generation += 1;
     signalingRecoveryRef.current.attemptCount = 0;
     signalingRecoveryRef.current.inFlight = null;
@@ -1416,6 +1536,24 @@ export function App(): JSX.Element {
   }, []);
 
   const markExplicitSignalingShutdown = useCallback((): void => {
+    if (stableRecoveryResetTimerRef.current !== null) {
+      window.clearTimeout(stableRecoveryResetTimerRef.current);
+      stableRecoveryResetTimerRef.current = null;
+    }
+    if (remoteIceGraceTimerRef.current !== null) {
+      window.clearTimeout(remoteIceGraceTimerRef.current);
+      remoteIceGraceTimerRef.current = null;
+    }
+    if (iceDisconnectedRecoveryTimerRef.current !== null) {
+      window.clearTimeout(iceDisconnectedRecoveryTimerRef.current);
+      iceDisconnectedRecoveryTimerRef.current = null;
+    }
+    remoteIceSeenForSessionRef.current = null;
+    remoteIceRecoveryGenerationRef.current = null;
+    awaitingRecoveryRemoteIceRef.current = false;
+    hasConfirmedRemoteIceRef.current = false;
+    latestIceConnectionStateRef.current = "new";
+    pendingControlledDisconnectsRef.current = 0;
     signalingRecoveryRef.current.generation += 1;
     signalingRecoveryRef.current.explicitShutdown = true;
     signalingRecoveryRef.current.inFlight = null;
@@ -1426,10 +1564,140 @@ export function App(): JSX.Element {
     return state.generation === generation && !state.explicitShutdown;
   }, []);
 
+  const scheduleStableRecoveryReset = useCallback((sessionId: string): void => {
+    if (stableRecoveryResetTimerRef.current !== null) {
+      window.clearTimeout(stableRecoveryResetTimerRef.current);
+      stableRecoveryResetTimerRef.current = null;
+    }
+
+    stableRecoveryResetTimerRef.current = window.setTimeout(() => {
+      stableRecoveryResetTimerRef.current = null;
+      const activeSessionId = sessionRef.current?.sessionId;
+      if (
+        streamStatusRef.current !== "streaming"
+        || !activeSessionId
+        || activeSessionId !== sessionId
+      ) {
+        return;
+      }
+      console.log(
+        `[Recovery] Stream remained stable for ${SIGNALING_RECOVERY_STABLE_RESET_DELAY_MS}ms; resetting recovery budget`,
+      );
+      resetSignalingRecoveryState({ keepExplicitShutdown: true });
+    }, SIGNALING_RECOVERY_STABLE_RESET_DELAY_MS);
+  }, [resetSignalingRecoveryState]);
+
+  const disconnectSignalingControlled = useCallback(async (): Promise<void> => {
+    pendingControlledDisconnectsRef.current += 1;
+    await window.openNow.disconnectSignaling().catch(() => {});
+  }, []);
+
   // Session ref sync
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    const streamIsActive = streamStatus !== "idle" || session !== null || navbarActiveSession !== null;
+    if (!streamIsActive) {
+      runtimeSnapshotRef.current = null;
+      clearRuntimeSnapshot();
+      return;
+    }
+
+    const snapshot: RuntimeSnapshot = {
+      version: 1,
+      updatedAt: Date.now(),
+      streamStatus,
+      sessionId: session?.sessionId ?? navbarActiveSession?.sessionId ?? null,
+      sessionAppId:
+        (Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId : null) ??
+        (navbarActiveSession ? navbarActiveSession.appId : null),
+      streamingGameId: streamingGame?.id ?? null,
+      streamingStore: streamingStore ?? null,
+      recoveryAppId: signalingRecoveryRef.current.appId,
+      resumeContext: session
+        ? {
+          sessionId: session.sessionId,
+          serverIp: session.serverIp,
+          streamingBaseUrl: session.streamingBaseUrl,
+          signalingServer: session.signalingServer,
+          signalingUrl: session.signalingUrl,
+          appId: Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId ?? undefined : undefined,
+          clientId: session.clientId,
+          deviceId: session.deviceId,
+        }
+        : (navbarActiveSession?.sessionId && navbarActiveSession.serverIp)
+          ? {
+            sessionId: navbarActiveSession.sessionId,
+            serverIp: navbarActiveSession.serverIp,
+            streamingBaseUrl: navbarActiveSession.streamingBaseUrl,
+            signalingUrl: navbarActiveSession.signalingUrl,
+            appId: Number.isFinite(navbarActiveSession.appId) ? navbarActiveSession.appId : undefined,
+          }
+          : null,
+    };
+
+    runtimeSnapshotRef.current = snapshot;
+    saveRuntimeSnapshot(snapshot);
+  }, [navbarActiveSession, session, streamStatus, streamingGame?.id, streamingStore]);
+
+  const persistRuntimeSnapshotNow = useCallback((): void => {
+    const latestSession = sessionRef.current;
+    const latestNavbarSession = navbarActiveSession;
+    const hasActiveContext =
+      streamStatusRef.current !== "idle" || latestSession !== null || latestNavbarSession !== null;
+    if (!hasActiveContext) {
+      runtimeSnapshotRef.current = null;
+      clearRuntimeSnapshot();
+      return;
+    }
+
+    const snapshot: RuntimeSnapshot = {
+      version: 1,
+      updatedAt: Date.now(),
+      streamStatus: streamStatusRef.current,
+      sessionId: latestSession?.sessionId ?? latestNavbarSession?.sessionId ?? null,
+      sessionAppId:
+        (Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId : null) ??
+        (latestNavbarSession ? latestNavbarSession.appId : null),
+      streamingGameId: streamingGame?.id ?? null,
+      streamingStore: streamingStore ?? null,
+      recoveryAppId: signalingRecoveryRef.current.appId,
+      resumeContext: latestSession
+        ? {
+          sessionId: latestSession.sessionId,
+          serverIp: latestSession.serverIp,
+          streamingBaseUrl: latestSession.streamingBaseUrl,
+          signalingServer: latestSession.signalingServer,
+          signalingUrl: latestSession.signalingUrl,
+          appId: Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId ?? undefined : undefined,
+          clientId: latestSession.clientId,
+          deviceId: latestSession.deviceId,
+        }
+        : (latestNavbarSession?.sessionId && latestNavbarSession.serverIp)
+          ? {
+            sessionId: latestNavbarSession.sessionId,
+            serverIp: latestNavbarSession.serverIp,
+            streamingBaseUrl: latestNavbarSession.streamingBaseUrl,
+            signalingUrl: latestNavbarSession.signalingUrl,
+            appId: Number.isFinite(latestNavbarSession.appId) ? latestNavbarSession.appId : undefined,
+          }
+          : null,
+    };
+
+    runtimeSnapshotRef.current = snapshot;
+    saveRuntimeSnapshot(snapshot);
+  }, [navbarActiveSession, streamingGame?.id, streamingStore]);
+
+  useEffect(() => {
+    const onBeforeUnload = (): void => {
+      appUnloadingRef.current = true;
+      persistRuntimeSnapshotNow();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [persistRuntimeSnapshotNow]);
 
   useEffect(() => {
     adReportStateRef.current = {};
@@ -1470,6 +1738,14 @@ export function App(): JSX.Element {
       document.body.classList.remove("controller-mode");
     };
   }, [controllerUiActive]);
+
+  useEffect(() => {
+    const lowFx = streamStatus === "streaming" && controllerOverlayOpen;
+    document.body.classList.toggle("controller-overlay-lowfx", lowFx);
+    return () => {
+      document.body.classList.remove("controller-overlay-lowfx");
+    };
+  }, [controllerOverlayOpen, streamStatus]);
 
   useEffect(() => {
     if (!controllerUiActive || !controllerConnected) {
@@ -1752,7 +2028,17 @@ export function App(): JSX.Element {
     }
     try {
       const activeSessions = await window.openNow.getActiveSessions(token, streamingBaseUrl);
-      const candidate = activeSessions.find((entry) => entry.status === 3 || entry.status === 2) ?? null;
+      const snapshot = runtimeSnapshotRef.current;
+      const resumableSessions = activeSessions.filter((entry) => entry.status === 3 || entry.status === 2);
+      const candidate =
+        (snapshot?.sessionId
+          ? resumableSessions.find((entry) => entry.sessionId === snapshot.sessionId)
+          : undefined) ??
+        (snapshot?.sessionAppId !== null && snapshot?.sessionAppId !== undefined
+          ? resumableSessions.find((entry) => entry.appId === snapshot.sessionAppId)
+          : undefined) ??
+        resumableSessions[0] ??
+        null;
       setNavbarActiveSession(candidate);
     } catch (error) {
       console.warn("Failed to refresh active sessions:", error);
@@ -2195,6 +2481,12 @@ export function App(): JSX.Element {
     clientRef.current?.toggleMicrophone();
   }, []);
 
+  const handleStreamMicLevelChange = useCallback((level: number) => {
+    const next = Math.max(0, Math.min(1, Number.isFinite(level) ? level : 1));
+    setStreamMicLevel(next);
+    clientRef.current?.setMicrophoneLevel(next);
+  }, []);
+
   const handleMouseSensitivityChange = useCallback((value: number) => {
     void updateSetting("mouseSensitivity", value);
   }, [updateSetting]);
@@ -2228,10 +2520,12 @@ export function App(): JSX.Element {
   }, [settingsLoaded]);
 
   const handleExitApp = useCallback(() => {
+    appUnloadingRef.current = true;
+    persistRuntimeSnapshotNow();
     void window.openNow.quitApp().catch((error) => {
       console.warn("Failed to quit application:", error);
     });
-  }, []);
+  }, [persistRuntimeSnapshotNow]);
 
   const handleMicrophoneModeChange = useCallback((value: import("@shared/gfn").MicrophoneMode) => {
     // Keep UI responsive while still surfacing persistence failures.
@@ -2351,6 +2645,12 @@ export function App(): JSX.Element {
           }
         } catch (e) {
           // ignore parse/storage errors
+        }
+
+        const persistedRuntimeSnapshot = loadRuntimeSnapshot();
+        runtimeSnapshotRef.current = persistedRuntimeSnapshot;
+        if (persistedRuntimeSnapshot?.recoveryAppId !== null && persistedRuntimeSnapshot?.recoveryAppId !== undefined) {
+          signalingRecoveryRef.current.appId = persistedRuntimeSnapshot.recoveryAppId;
         }
 
         setProviders(providerList);
@@ -2565,13 +2865,35 @@ export function App(): JSX.Element {
 
   const resolveSessionClaimAppId = useCallback((existingSession: ActiveSessionInfo): string => {
     const trackedAppId = signalingRecoveryRef.current.appId;
+    const persistedAppId = runtimeSnapshotRef.current?.sessionAppId ?? runtimeSnapshotRef.current?.recoveryAppId;
     if (Number.isFinite(existingSession.appId) && existingSession.appId > 0) {
       return String(existingSession.appId);
     }
     if (trackedAppId && Number.isFinite(trackedAppId)) {
       return String(trackedAppId);
     }
+    if (persistedAppId && Number.isFinite(persistedAppId)) {
+      return String(persistedAppId);
+    }
     throw new Error("Active session is missing app metadata required for resume.");
+  }, []);
+
+  const resolveResumeIdentity = useCallback((sessionId: string): { clientId?: string; deviceId?: string } => {
+    const liveSession = sessionRef.current;
+    if (liveSession?.sessionId === sessionId) {
+      return {
+        clientId: liveSession.clientId,
+        deviceId: liveSession.deviceId,
+      };
+    }
+    const persisted = runtimeSnapshotRef.current?.resumeContext;
+    if (persisted?.sessionId === sessionId) {
+      return {
+        clientId: persisted.clientId,
+        deviceId: persisted.deviceId,
+      };
+    }
+    return {};
   }, []);
 
   const applyClaimedSessionAndConnect = useCallback(async (
@@ -2630,7 +2952,8 @@ export function App(): JSX.Element {
     });
     clientRef.current?.dispose();
     clientRef.current = null;
-    await window.openNow.disconnectSignaling().catch(() => {});
+    await disconnectSignalingControlled();
+    awaitingRecoveryRemoteIceRef.current = expectedRecoveryGeneration !== undefined;
 
     setSession(claimed);
     sessionRef.current = claimed;
@@ -2642,7 +2965,7 @@ export function App(): JSX.Element {
       signalingServer: claimed.signalingServer,
       signalingUrl: claimed.signalingUrl,
     });
-  }, [isRecoveryGenerationCurrent]);
+  }, [disconnectSignalingControlled, isRecoveryGenerationCurrent]);
 
   const claimAndConnectSession = useCallback(async (existingSession: ActiveSessionInfo): Promise<void> => {
     const sid = existingSession.sessionId;
@@ -2684,6 +3007,7 @@ export function App(): JSX.Element {
           streamingBaseUrl: effectiveStreamingBaseUrl,
           serverIp: existingSession.serverIp,
           sessionId: existingSession.sessionId,
+          ...resolveResumeIdentity(existingSession.sessionId),
           appId: resolveSessionClaimAppId(existingSession),
           settings: {
             resolution: settings.resolution,
@@ -2710,7 +3034,7 @@ export function App(): JSX.Element {
 
     claimResumePromisesRef.current.set(sid, resumePromiseHolder.promise);
     await resumePromiseHolder.promise;
-  }, [applyClaimedSessionAndConnect, authSession, effectiveStreamingBaseUrl, findGameContextForSession, resolveSessionClaimAppId, settings]);
+  }, [applyClaimedSessionAndConnect, authSession, effectiveStreamingBaseUrl, findGameContextForSession, resolveResumeIdentity, resolveSessionClaimAppId, settings]);
 
   const attemptSessionRecovery = useCallback(async (reason: string): Promise<boolean> => {
     const recoveryState = signalingRecoveryRef.current;
@@ -2749,7 +3073,7 @@ export function App(): JSX.Element {
       clientRef.current?.dispose();
       clientRef.current = null;
       setStreamStatus("connecting");
-      await window.openNow.disconnectSignaling().catch(() => {});
+      await disconnectSignalingControlled();
 
       let lastError: Error | null = null;
       while (recoveryState.attemptCount < SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS.length) {
@@ -2800,6 +3124,32 @@ export function App(): JSX.Element {
           }
 
           if (!candidate) {
+            const persisted = runtimeSnapshotRef.current?.resumeContext;
+            if (
+              persisted &&
+              persisted.sessionId === currentSessionId &&
+              persisted.serverIp
+            ) {
+              candidate = {
+                sessionId: persisted.sessionId,
+                appId:
+                  Number.isFinite(persisted.appId ?? NaN)
+                    ? (persisted.appId as number)
+                    : (previousAppId ?? 0),
+                status: 2,
+                serverIp: persisted.serverIp,
+                streamingBaseUrl: persisted.streamingBaseUrl,
+                signalingUrl: persisted.signalingUrl,
+              };
+              console.log("[Recovery] Falling back to persisted resume context", {
+                sessionId: persisted.sessionId,
+                serverIp: persisted.serverIp,
+                appId: persisted.appId ?? previousAppId ?? null,
+              });
+            }
+          }
+
+          if (!candidate) {
             const hasQueueOnlyMatch = activeSessions.some((entry) => entry.sessionId === currentSessionId && entry.status === 1);
             if (hasQueueOnlyMatch) {
               throw new Error("The session is still queued and cannot be reclaimed until the server marks it ready again.");
@@ -2816,6 +3166,8 @@ export function App(): JSX.Element {
             streamingBaseUrl: effectiveStreamingBaseUrl,
             serverIp: candidate.serverIp,
             sessionId: candidate.sessionId,
+            ...resolveResumeIdentity(candidate.sessionId),
+            recoveryMode: true,
             appId: resolveSessionClaimAppId(candidate),
             settings: {
               resolution: settings.resolution,
@@ -2847,7 +3199,6 @@ export function App(): JSX.Element {
             console.log("[Recovery] Recovery generation changed before connect completed");
             return false;
           }
-          recoveryState.attemptCount = 0;
           return true;
         } catch (error) {
           lastError = error instanceof Error ? error : new Error(String(error));
@@ -2872,9 +3223,11 @@ export function App(): JSX.Element {
   }, [
     applyClaimedSessionAndConnect,
     authSession,
+    disconnectSignalingControlled,
     effectiveStreamingBaseUrl,
     findGameContextForSession,
     isRecoveryGenerationCurrent,
+    resolveResumeIdentity,
     resolveSessionClaimAppId,
     settings,
   ]);
@@ -2885,10 +3238,45 @@ export function App(): JSX.Element {
       console.log(`[App] Signaling event: ${event.type}`, event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "", event.type === "remote-ice" ? event.candidate : "");
       try {
         if (event.type === "offer") {
+          pendingControlledDisconnectsRef.current = 0;
           const activeSession = sessionRef.current;
           if (!activeSession) {
             console.warn("[App] Received offer but no active session in sessionRef!");
             return;
+          }
+          const shouldEnforceRemoteIceGrace = awaitingRecoveryRemoteIceRef.current;
+          remoteIceSeenForSessionRef.current = null;
+          hasConfirmedRemoteIceRef.current = false;
+          if (remoteIceGraceTimerRef.current !== null) {
+            window.clearTimeout(remoteIceGraceTimerRef.current);
+            remoteIceGraceTimerRef.current = null;
+          }
+          const expectedSessionId = activeSession.sessionId;
+          const recoveryGenerationAtOffer = signalingRecoveryRef.current.generation;
+          if (shouldEnforceRemoteIceGrace) {
+            remoteIceGraceTimerRef.current = window.setTimeout(() => {
+              remoteIceGraceTimerRef.current = null;
+              if (sessionRef.current?.sessionId !== expectedSessionId) {
+                return;
+              }
+              if (remoteIceSeenForSessionRef.current === expectedSessionId) {
+                return;
+              }
+              if (remoteIceRecoveryGenerationRef.current === recoveryGenerationAtOffer) {
+                return;
+              }
+              if (!RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)) {
+                return;
+              }
+              awaitingRecoveryRemoteIceRef.current = false;
+              remoteIceRecoveryGenerationRef.current = recoveryGenerationAtOffer;
+              console.warn(
+                `[Recovery] No remote ICE received within ${SIGNALING_REMOTE_ICE_GRACE_MS}ms after offer; forcing targeted recovery`,
+              );
+              void attemptSessionRecovery("No remote ICE received after offer").catch((error) => {
+                console.error("[Recovery] ICE-timeout recovery failed:", error);
+              });
+            }, SIGNALING_REMOTE_ICE_GRACE_MS);
           }
           console.log("[App] Active session for offer:", JSON.stringify({
             sessionId: activeSession.sessionId,
@@ -2920,8 +3308,47 @@ export function App(): JSX.Element {
               onMicStateChange: (state) => {
                 console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
               },
+              onIceConnectionStateChange: (iceState) => {
+                latestIceConnectionStateRef.current = iceState;
+                if (iceDisconnectedRecoveryTimerRef.current !== null) {
+                  window.clearTimeout(iceDisconnectedRecoveryTimerRef.current);
+                  iceDisconnectedRecoveryTimerRef.current = null;
+                }
+                if (appUnloadingRef.current) {
+                  return;
+                }
+                if (streamStatusRef.current !== "streaming") {
+                  return;
+                }
+                if (iceState === "failed") {
+                  console.warn("[Recovery] ICE failed; attempting targeted recovery");
+                  void attemptSessionRecovery("ICE failed").catch((error) => {
+                    console.error("[Recovery] ICE-failed recovery failed:", error);
+                  });
+                  return;
+                }
+                if (iceState === "disconnected") {
+                  iceDisconnectedRecoveryTimerRef.current = window.setTimeout(() => {
+                    iceDisconnectedRecoveryTimerRef.current = null;
+                    if (appUnloadingRef.current || streamStatusRef.current !== "streaming") {
+                      return;
+                    }
+                    if (latestIceConnectionStateRef.current !== "disconnected") {
+                      return;
+                    }
+                    console.warn("[Recovery] ICE remained disconnected; attempting targeted recovery");
+                    void attemptSessionRecovery("ICE disconnected timeout").catch((error) => {
+                      console.error("[Recovery] ICE-disconnected recovery failed:", error);
+                    });
+                  }, ICE_DISCONNECTED_RECOVERY_GRACE_MS);
+                }
+              },
+              onControllerMetaPress: () => {
+                handleControllerMetaToggle();
+              },
             });
             clientRef.current.inputPaused = controllerOverlayOpenRef.current;
+            clientRef.current.setMicrophoneLevel(streamMicLevel);
             if (settings.microphoneMode !== "disabled") {
               void clientRef.current.startMicrophone();
             }
@@ -2937,7 +3364,7 @@ export function App(): JSX.Element {
             });
             setLaunchError(null);
             setStreamStatus("streaming");
-            resetSignalingRecoveryState({ keepExplicitShutdown: true });
+            scheduleStableRecoveryReset(activeSession.sessionId);
             console.log(
               "[Stream] Offer applied; use [WebRTC] logs for ICE/video dimensions. signalingServer=%s media=%s",
               activeSession.signalingServer,
@@ -2947,8 +3374,55 @@ export function App(): JSX.Element {
             );
           }
         } else if (event.type === "remote-ice") {
+          remoteIceSeenForSessionRef.current = sessionRef.current?.sessionId ?? null;
+          hasConfirmedRemoteIceRef.current = true;
+          awaitingRecoveryRemoteIceRef.current = false;
+          if (remoteIceGraceTimerRef.current !== null) {
+            window.clearTimeout(remoteIceGraceTimerRef.current);
+            remoteIceGraceTimerRef.current = null;
+          }
           await clientRef.current?.addRemoteCandidate(event.candidate);
         } else if (event.type === "disconnected") {
+          if (appUnloadingRef.current) {
+            console.log("[Recovery] Ignoring signaling disconnect during app shutdown");
+            return;
+          }
+          const iceState = latestIceConnectionStateRef.current;
+          if (
+            iceState === "connected" ||
+            iceState === "completed" ||
+            iceState === "checking"
+          ) {
+            console.log(`[Recovery] Ignoring signaling disconnect while ICE state is ${iceState}`);
+            return;
+          }
+          // Official-style behavior: if the attach never reached a confirmed remote ICE
+          // handshake, do not auto-recover. Fail this attempt and require explicit resume.
+          if (!hasConfirmedRemoteIceRef.current) {
+            console.warn("[Recovery] Skipping auto-recovery: disconnected before remote ICE handshake");
+            clientRef.current?.dispose();
+            clientRef.current = null;
+            setLaunchError({
+              stage: streamStatusToLoadingStage(streamStatusRef.current),
+              title: "Session Connection Lost",
+              description: "Resume attach failed before media handshake. Try resuming once again.",
+            });
+            resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
+            void refreshNavbarActiveSession();
+            launchInFlightRef.current = false;
+            return;
+          }
+          if (remoteIceGraceTimerRef.current !== null) {
+            window.clearTimeout(remoteIceGraceTimerRef.current);
+            remoteIceGraceTimerRef.current = null;
+          }
+          remoteIceSeenForSessionRef.current = null;
+          awaitingRecoveryRemoteIceRef.current = false;
+          if (pendingControlledDisconnectsRef.current > 0) {
+            pendingControlledDisconnectsRef.current -= 1;
+            console.log("[Recovery] Ignoring controlled signaling disconnect");
+            return;
+          }
           console.warn("Signaling disconnected:", event.reason);
           const recovered = await attemptSessionRecovery(event.reason).catch((error) => {
             console.error("[Recovery] Signaling recovery failed:", error);
@@ -2977,6 +3451,10 @@ export function App(): JSX.Element {
           console.error("Signaling error:", event.message);
         }
       } catch (error) {
+        if (appUnloadingRef.current) {
+          console.log("[Recovery] Suppressing signaling handler errors during app shutdown");
+          return;
+        }
         if (
           signalingRecoveryRef.current.explicitShutdown
           || !RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)
@@ -3000,7 +3478,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [attemptSessionRecovery, diagnosticsStore, refreshNavbarActiveSession, resetLaunchRuntime, resetSignalingRecoveryState, settings]);
+  }, [attemptSessionRecovery, diagnosticsStore, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
@@ -3288,7 +3766,7 @@ export function App(): JSX.Element {
       }
       console.error("Launch failed:", error);
       setLaunchError(toLaunchErrorState(error, loadingStep));
-      await window.openNow.disconnectSignaling().catch(() => {});
+      await disconnectSignalingControlled();
       clientRef.current?.dispose();
       clientRef.current = null;
       resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
@@ -3568,7 +4046,7 @@ export function App(): JSX.Element {
     } catch (error) {
       console.error("Navbar resume failed:", error);
       setLaunchError(toLaunchErrorState(error, loadingStep));
-      await window.openNow.disconnectSignaling().catch(() => {});
+      await disconnectSignalingControlled();
       clientRef.current?.dispose();
       clientRef.current = null;
       resetLaunchRuntime({ keepLaunchError: true });
@@ -3647,7 +4125,7 @@ export function App(): JSX.Element {
         launchAbortRef.current = true;
       }
       markExplicitSignalingShutdown();
-      await window.openNow.disconnectSignaling();
+      await disconnectSignalingControlled();
 
       const current = sessionRef.current;
       if (current) {
@@ -3722,7 +4200,7 @@ export function App(): JSX.Element {
 
   const handleDismissLaunchError = useCallback(async () => {
     markExplicitSignalingShutdown();
-    await window.openNow.disconnectSignaling().catch(() => {});
+    await disconnectSignalingControlled();
     clientRef.current?.dispose();
     clientRef.current = null;
     resetLaunchRuntime();
@@ -4162,6 +4640,8 @@ export function App(): JSX.Element {
               inStreamMenu
               streamMenuVolume={streamVolume}
               onStreamMenuVolumeChange={handleStreamVolumeChange}
+              streamMenuMicLevel={streamMicLevel}
+              onStreamMenuMicLevelChange={handleStreamMicLevelChange}
               onStreamMenuToggleMicrophone={handleToggleStreamMicrophone}
               onStreamMenuToggleFullscreen={() => {
                 void toggleSessionFullscreen();

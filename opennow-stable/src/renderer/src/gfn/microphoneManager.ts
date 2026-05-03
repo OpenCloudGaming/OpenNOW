@@ -25,6 +25,7 @@ export class MicrophoneManager {
   private pc: RTCPeerConnection | null = null;
   private micSender: RTCRtpSender | null = null;
   private deviceId: string = "";
+  private micLevel = 1;
   private onStateChangeCallback: ((state: MicStateChange) => void) | null = null;
   private sampleRate: number = 48000; // Official client uses 48kHz
 
@@ -198,6 +199,7 @@ export class MicrophoneManager {
         console.log("[Microphone] Track ended");
         this.stop();
       };
+      await this.applyTrackMicLevel(track);
 
       // Add track to peer connection if available
       if (this.pc) {
@@ -267,6 +269,7 @@ export class MicrophoneManager {
               console.log("[Microphone] Track ended");
               this.stop();
             };
+            await this.applyTrackMicLevel(track);
             if (this.pc && track) {
               await this.addTrackToPeerConnection(track);
             }
@@ -435,6 +438,17 @@ export class MicrophoneManager {
     }
   }
 
+  setMicLevel(level01: number): void {
+    this.micLevel = Math.max(0, Math.min(1, Number.isFinite(level01) ? level01 : 1));
+    const track = this.micStream?.getAudioTracks()[0] ?? null;
+    if (!track) return;
+    void this.applyTrackMicLevel(track);
+  }
+
+  getMicLevel(): number {
+    return this.micLevel;
+  }
+
   /**
    * Check if microphone is currently enabled (unmuted)
    */
@@ -489,6 +503,25 @@ export class MicrophoneManager {
    */
   getTrack(): MediaStreamTrack | null {
     return this.micStream?.getAudioTracks()[0] ?? null;
+  }
+
+  private async applyTrackMicLevel(track: MediaStreamTrack): Promise<void> {
+    const applyConstraints = (track as MediaStreamTrack & {
+      applyConstraints?: (constraints?: MediaTrackConstraints) => Promise<void>;
+    }).applyConstraints;
+    if (typeof applyConstraints !== "function") {
+      return;
+    }
+    try {
+      const volumeConstraints = {
+        advanced: [{ volume: this.micLevel }],
+      } as unknown as MediaTrackConstraints;
+      await applyConstraints.call(track, {
+        ...volumeConstraints,
+      });
+    } catch {
+      // Ignore unsupported volume constraints on some browsers/devices.
+    }
   }
 
   /**
