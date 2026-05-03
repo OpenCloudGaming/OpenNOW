@@ -1444,6 +1444,20 @@ body.controller-mode.controller-hide-cursor * {
   box-shadow: none !important;
 }
 
+.controller-overlay > .xmb-wrapper.xmb-layout--ps5-home {
+  inset: unset !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: auto !important;
+  bottom: auto !important;
+  width: calc(100% / 0.75) !important;
+  height: calc(100% / 0.75) !important;
+  max-width: none !important;
+  max-height: none !important;
+  transform: scale(0.75) !important;
+  transform-origin: top left !important;
+}
+
 /* Keep the same XMB background stack in-stream for visual parity. */
 
 @media (max-width: 760px) {
@@ -6572,6 +6586,24 @@ button.game-card-store-chip.owned.active:hover {
   --xmb-theme-b: 177;
 }
 
+/*
+ * PS5 controller hub: 25% smaller (scale 0.75). Layout size is expanded so the scaled
+ * subtree still covers the viewport (avoids letterboxing).
+ */
+.xmb-wrapper.xmb-layout--ps5-home {
+  inset: unset;
+  top: 0;
+  left: 0;
+  right: auto;
+  bottom: auto;
+  width: calc(100vw / 0.75);
+  height: calc(100vh / 0.75);
+  max-width: none;
+  max-height: none;
+  transform: scale(0.75);
+  transform-origin: top left;
+}
+
 .xmb-wrapper::after {
   content: "";
   position: absolute;
@@ -6791,6 +6823,29 @@ button.game-card-store-chip.owned.active:hover {
   opacity: 0.62;
   pointer-events: none;
   transform: scale(1.06);
+  transition:
+    opacity var(--xmb-hero-crossfade-ms, 420ms) cubic-bezier(0.22, 1, 0.36, 1),
+    filter 420ms ease,
+    transform 420ms ease;
+}
+
+@keyframes xmb-ps5-hero-burns {
+  0% {
+    transform: scale(1.06) translate(0, 0);
+  }
+  100% {
+    transform: scale(1.11) translate(-1.1%, -0.7%);
+  }
+}
+
+.xmb-ps5-hero-art--motion {
+  animation: xmb-ps5-hero-burns 28s ease-in-out infinite alternate;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xmb-ps5-hero-art--motion {
+    animation: none !important;
+  }
 }
 
 .xmb-ps5-parallax-field {
@@ -6854,10 +6909,11 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .xmb-layout--ps5-home .xmb-bg-overlay {
+  /* Keep readability at top; avoid a heavy bottom vignette that reads as “masking” through translucent shelf cards */
   background:
-    linear-gradient(180deg, rgba(8, 10, 14, 0.52) 0%, rgba(10, 14, 18, 0.28) 38%, rgba(6, 8, 12, 0.06) 62%, rgba(0, 0, 0, 0.72) 100%),
-    radial-gradient(120% 90% at 50% 22%, rgba(0, 0, 0, 0.08), transparent 52%),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.26) 0%, rgba(0, 0, 0, 0) 22%, rgba(0, 0, 0, 0) 78%, rgba(0, 0, 0, 0.26) 100%);
+    linear-gradient(180deg, rgba(8, 10, 14, 0.36) 0%, rgba(10, 14, 18, 0.16) 42%, rgba(6, 8, 12, 0.05) 68%, rgba(0, 0, 0, 0.28) 100%),
+    radial-gradient(120% 90% at 50% 22%, rgba(0, 0, 0, 0.06), transparent 52%),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.14) 0%, rgba(0, 0, 0, 0) 22%, rgba(0, 0, 0, 0) 78%, rgba(0, 0, 0, 0.14) 100%);
 }
 
 .xmb-layout--ps5-home .xmb-categories-container {
@@ -6968,6 +7024,12 @@ button.game-card-store-chip.owned.active:hover {
   border-top: 1px solid rgba(221, 255, 233, 0.12);
 }
 
+/* Dual-shelf column: vertical band + footer clearance (overridden in compact media) */
+.xmb-layout--ps5-home {
+  --xmb-ps5-shelf-bottom: calc(84px + 20px);
+  --xmb-ps5-shelf-top: clamp(156px, 20dvh, 280px);
+}
+
 .xmb-wrapper .xmb-ps5-stack {
   position: absolute;
   inset: 0;
@@ -6987,19 +7049,35 @@ button.game-card-store-chip.owned.active:hover {
   align-items: flex-start;
   max-width: min(82vw, 1080px);
   z-index: 6;
-  animation: xmb-ps5-focus-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: xmb-ps5-focus-in var(--xmb-hero-crossfade-ms, 280ms) cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .xmb-ps5-focus-title {
   margin: 0;
-  font-size: clamp(1.65rem, 3.6vw, 2.75rem);
+  font-size: clamp(1.85rem, 4vw, 3.05rem);
   font-weight: 800;
   letter-spacing: -0.03em;
+  line-height: 1.05;
   color: rgba(255, 255, 255, 0.97);
   text-shadow:
     0 2px 24px rgba(0, 0, 0, 0.55),
     0 1px 3px rgba(0, 0, 0, 0.45);
   max-width: min(720px, 88vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.xmb-ps5-focus-subtitle {
+  margin: 0;
+  max-width: min(560px, 88vw);
+  font-size: 0.95rem;
+  line-height: 1.35;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.72);
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.45);
 }
 
 .xmb-ps5-focus-chips {
@@ -7060,13 +7138,573 @@ button.game-card-store-chip.owned.active:hover {
   bottom: 108px;
   height: clamp(240px, 30vh, 330px);
   overflow: hidden;
-  mask-image: linear-gradient(90deg, transparent 0%, #000 7%, #000 93%, transparent 100%);
-  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 7%, #000 93%, transparent 100%);
 }
 
 .xmb-ps5-shelf-viewport--games-root {
   bottom: 132px;
   height: clamp(340px, 44vh, 520px);
+}
+
+/* Non–dual-shelf games root: never exceed viewport; scroll if the window is very short */
+.xmb-layout--ps5-home .xmb-ps5-stack > .xmb-ps5-shelf-viewport--games-root {
+  height: min(clamp(300px, 40vh, 520px), calc(100dvh - 200px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.xmb-layout--ps5-home .xmb-ps5-stack > .xmb-ps5-shelf-viewport--games-root::-webkit-scrollbar {
+  display: none;
+}
+
+.xmb-ps5-shelf-label-row {
+  position: absolute;
+  left: clamp(24px, 4vw, 48px);
+  z-index: 6;
+  pointer-events: none;
+  opacity: 0.45;
+  transition: opacity 280ms ease;
+}
+
+.xmb-ps5-shelf-label-row--active {
+  opacity: 1;
+}
+
+.xmb-ps5-shelf-label {
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.45);
+}
+
+.xmb-ps5-shelf-label-row--active .xmb-ps5-shelf-label {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.xmb-ps5-shelf-label-row--spotlight {
+  bottom: clamp(308px, 43vh, 452px);
+}
+
+.xmb-ps5-shelf-label-row--library,
+.xmb-ps5-shelf-label-row--games-list,
+.xmb-ps5-shelf-label-row--media-list {
+  bottom: clamp(188px, 28vh, 268px);
+}
+
+/* Spotlight strip (fallback when not using dual-shelf stack metrics) */
+.xmb-ps5-shelf-viewport--spotlight {
+  bottom: clamp(300px, 42vh, 440px);
+  height: clamp(150px, 20vh, 210px);
+  overflow: visible;
+}
+
+/*
+ * Games root + spotlight: bottom-anchored flex column so spotlight and library stack in flow
+ * (no overlapping absolute bands). Spotlight tiles use flex-end + scale; transform-origin
+ * bottom limits growth into the library row.
+ */
+.xmb-ps5-shelf-anchored {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--xmb-ps5-shelf-top);
+  bottom: var(--xmb-ps5-shelf-bottom);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: stretch;
+  gap: clamp(12px, 2.2vh, 28px);
+  min-height: 0;
+  overflow-x: visible;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  pointer-events: auto;
+}
+
+.xmb-ps5-shelf-anchored::-webkit-scrollbar {
+  display: none;
+}
+
+.xmb-ps5-shelf-band {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.xmb-ps5-shelf-anchored .xmb-ps5-shelf-label-row {
+  position: relative;
+  left: clamp(24px, 4vw, 48px);
+  bottom: auto;
+  z-index: 2;
+}
+
+.xmb-ps5-shelf-anchored .xmb-ps5-shelf-label-row--library .xmb-ps5-shelf-label {
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.95),
+    0 2px 28px rgba(0, 0, 0, 0.82),
+    0 0 1px rgba(0, 0, 0, 0.98);
+}
+
+.xmb-ps5-shelf-anchored .xmb-ps5-shelf-viewport {
+  position: relative;
+  left: 0;
+  right: 0;
+  bottom: auto;
+  flex-shrink: 0;
+}
+
+.xmb-ps5-shelf-anchored .xmb-ps5-shelf-viewport--spotlight {
+  height: auto;
+  z-index: 7;
+  overflow: visible;
+}
+
+.xmb-ps5-shelf-anchored .xmb-ps5-shelf-viewport--games-root {
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  z-index: 6;
+  overflow: visible;
+}
+
+.xmb-ps5-shelf-anchored .xmb-ps5-shelf-viewport--spotlight .xmb-ps5-tile {
+  transform-origin: 50% 100%;
+}
+
+.xmb-ps5-shelf-anchored .xmb-ps5-tile--spotlight.active {
+  transform: translateY(-6px) scale(1.03) translateZ(0);
+}
+
+.xmb-ps5-shelf-track--spotlight {
+  align-items: flex-end;
+  padding: 8px 24px 12px;
+  gap: 12px;
+}
+
+.xmb-ps5-shelf-anchored .xmb-ps5-shelf-track--spotlight {
+  padding-bottom: 6px;
+}
+
+/* PS5 home: fit hero, shelves, and category tiles on shorter or narrower windows */
+@media (max-height: 860px), (max-width: 1240px) {
+  .xmb-layout--ps5-home {
+    --xmb-ps5-shelf-bottom: calc(72px + 20px);
+    --xmb-ps5-shelf-top: clamp(132px, 17dvh, 232px);
+  }
+
+  .xmb-layout--ps5-home .xmb-detail-layer {
+    bottom: 148px;
+  }
+
+  .xmb-layout--ps5-home .xmb-categories-container {
+    top: 10%;
+  }
+
+  .xmb-layout--ps5-home .xmb-category-item {
+    width: 92px;
+    height: 82px;
+    margin-right: 22px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-focus-meta {
+    top: clamp(92px, 14.5vh, 188px);
+    gap: 10px;
+    max-width: min(90vw, 960px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-focus-title {
+    font-size: clamp(1.42rem, 3.35vw, 2.5rem);
+    -webkit-line-clamp: 2;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-focus-subtitle {
+    font-size: 0.86rem;
+    line-height: 1.32;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-action {
+    padding: 5px 12px;
+    font-size: 0.66rem;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-viewport {
+    bottom: 92px;
+    height: clamp(196px, 25.5vh, 300px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-stack > .xmb-ps5-shelf-viewport--games-root {
+    bottom: 114px;
+    height: clamp(268px, 36vh, 420px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-viewport--spotlight {
+    bottom: clamp(268px, 38vh, 400px);
+    height: clamp(128px, 16.5vh, 188px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-label-row--spotlight {
+    bottom: clamp(276px, 39vh, 412px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-label-row--library,
+  .xmb-layout--ps5-home .xmb-ps5-shelf-label-row--games-list,
+  .xmb-layout--ps5-home .xmb-ps5-shelf-label-row--media-list {
+    bottom: clamp(168px, 25vh, 248px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-anchored {
+    gap: clamp(10px, 1.8vh, 22px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-band {
+    gap: 5px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-track {
+    padding: 10px 18px 20px;
+    gap: 14px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-track--menu {
+    padding-bottom: 20px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-track--games-root {
+    padding-bottom: 48px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-track--spotlight {
+    padding: 6px 16px 8px;
+    gap: 10px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-tile {
+    width: 106px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-tile.active {
+    transform: translateY(0) scale(1.06) translateZ(12px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-tile--spotlight {
+    width: 82px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-tile--spotlight.active {
+    transform: translateY(-4px) scale(1.04) translateZ(8px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-anchored .xmb-ps5-tile--spotlight.active {
+    transform: translateY(-4px) scale(1.02) translateZ(0);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-menu-tile {
+    width: clamp(212px, 21vw, 308px);
+    min-height: 112px;
+    padding: 12px 14px;
+    border-radius: 14px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-menu-tile.active {
+    transform: translateY(0) scale(1.02) translateZ(8px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-menu-tile--resume {
+    width: clamp(268px, 27vw, 420px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-menu-title {
+    font-size: 0.96rem;
+    margin-bottom: 6px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-menu-thumb-row {
+    min-height: 72px;
+    gap: 5px;
+    margin-bottom: 8px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-detail-rail {
+    bottom: clamp(162px, 23.5vh, 268px);
+    gap: 10px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-detail-card {
+    width: clamp(152px, 15vw, 220px);
+    padding: 8px;
+    border-radius: 12px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-media-tile {
+    width: clamp(228px, 27vw, 360px);
+  }
+
+  .xmb-layout--ps5-home .xmb-footer {
+    height: 72px;
+    gap: 42px;
+  }
+
+  .xmb-layout--ps5-home .xmb-btn-hint {
+    font-size: 0.68rem;
+    gap: 10px;
+    letter-spacing: 0.12em;
+  }
+
+  .xmb-layout--ps5-home .xmb-top-left {
+    top: 26px;
+    left: 42px;
+  }
+
+  .xmb-layout--ps5-home .xmb-top-right {
+    top: 26px;
+    right: 42px;
+    gap: 18px;
+  }
+
+  .xmb-layout--ps5-home .xmb-logo img {
+    height: 76px;
+  }
+
+  .xmb-layout--ps5-home .xmb-clock {
+    font-size: 1.12rem;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-parallax-tile {
+    width: clamp(96px, 10vw, 158px);
+    border-radius: 12px;
+  }
+}
+
+@media (max-height: 700px), (max-width: 980px) {
+  .xmb-layout--ps5-home {
+    --xmb-ps5-shelf-bottom: calc(64px + 16px);
+    --xmb-ps5-shelf-top: clamp(118px, 14dvh, 200px);
+  }
+
+  .xmb-layout--ps5-home .xmb-detail-layer {
+    bottom: 124px;
+  }
+
+  .xmb-layout--ps5-home .xmb-categories-container {
+    top: 8%;
+  }
+
+  .xmb-layout--ps5-home .xmb-category-item {
+    width: 84px;
+    height: 76px;
+    margin-right: 16px;
+    transform: scale(0.78);
+  }
+
+  .xmb-layout--ps5-home .xmb-category-item.active {
+    transform: scale(1.02);
+  }
+
+  .xmb-layout--ps5-home .xmb-row-top .xmb-category-item.active {
+    transform: scale(1.12);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-focus-meta {
+    top: clamp(76px, 12vh, 148px);
+    gap: 8px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-focus-title {
+    font-size: clamp(1.18rem, 3vw, 2.05rem);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-focus-subtitle {
+    font-size: 0.8rem;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-viewport {
+    bottom: 80px;
+    height: clamp(172px, 22vh, 260px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-stack > .xmb-ps5-shelf-viewport--games-root {
+    bottom: 100px;
+    height: clamp(220px, 30vh, 340px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-viewport--spotlight {
+    bottom: clamp(232px, 34vh, 340px);
+    height: clamp(108px, 13.5vh, 158px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-label-row--spotlight {
+    bottom: clamp(240px, 35vh, 352px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-label-row--library,
+  .xmb-layout--ps5-home .xmb-ps5-shelf-label-row--games-list,
+  .xmb-layout--ps5-home .xmb-ps5-shelf-label-row--media-list {
+    bottom: clamp(144px, 21vh, 212px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-anchored {
+    gap: clamp(8px, 1.5vh, 16px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-track {
+    padding: 8px 14px 16px;
+    gap: 12px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-track--games-root {
+    padding-bottom: 40px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-tile {
+    width: 96px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-tile--spotlight {
+    width: 74px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-menu-tile {
+    width: clamp(188px, 19vw, 268px);
+    min-height: 100px;
+    padding: 10px 12px;
+    border-radius: 12px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-menu-tile--resume {
+    width: clamp(228px, 24vw, 360px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-menu-title {
+    font-size: 0.88rem;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-menu-thumb-row {
+    min-height: 62px;
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-detail-rail {
+    bottom: clamp(138px, 20vh, 228px);
+    gap: 8px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-detail-card {
+    width: clamp(138px, 14vw, 196px);
+    padding: 6px;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-media-tile {
+    width: clamp(200px, 24vw, 300px);
+  }
+
+  .xmb-layout--ps5-home .xmb-footer {
+    height: 64px;
+    gap: 28px;
+  }
+
+  .xmb-layout--ps5-home .xmb-btn-hint {
+    font-size: 0.62rem;
+    gap: 8px;
+  }
+
+  .xmb-layout--ps5-home .xmb-top-left {
+    top: 18px;
+    left: 28px;
+  }
+
+  .xmb-layout--ps5-home .xmb-top-right {
+    top: 18px;
+    right: 28px;
+    gap: 12px;
+  }
+
+  .xmb-layout--ps5-home .xmb-logo img {
+    height: 62px;
+  }
+
+  .xmb-layout--ps5-home .xmb-clock {
+    font-size: 1rem;
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-options-sheet {
+    padding-bottom: clamp(56px, 9vh, 96px);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-shelf-anchored .xmb-ps5-tile--spotlight.active {
+    transform: translateY(-3px) scale(1.02) translateZ(0);
+  }
+
+  .xmb-layout--ps5-home .xmb-ps5-parallax-tile {
+    width: clamp(88px, 9vw, 140px);
+    border-radius: 12px;
+  }
+}
+
+.xmb-ps5-options-sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  pointer-events: auto;
+  padding-bottom: clamp(72px, 12vh, 120px);
+}
+
+.xmb-ps5-options-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 6, 10, 0.55);
+  backdrop-filter: blur(6px);
+}
+
+.xmb-ps5-options-panel {
+  position: relative;
+  width: min(420px, 92vw);
+  max-height: min(52vh, 420px);
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(10, 14, 20, 0.92);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+
+.xmb-ps5-options-title {
+  padding: 14px 18px 8px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.xmb-ps5-options-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 0 12px;
+}
+
+.xmb-ps5-options-item {
+  padding: 12px 20px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.82);
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.xmb-ps5-options-item.active {
+  background: rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.22);
+  color: rgba(255, 255, 255, 0.98);
 }
 
 .xmb-ps5-shelf-track {
@@ -7099,17 +7737,53 @@ button.game-card-store-chip.owned.active:hover {
   position: relative;
   flex-shrink: 0;
   width: 118px;
-  opacity: 0.52;
-  transform: translateY(10px) scale(0.92);
+  opacity: 0.38;
+  transform: translateY(12px) scale(0.9) translateZ(0);
+  filter: saturate(0.88);
   transition:
     opacity 420ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 420ms ease;
 }
 
 .xmb-ps5-tile.active {
   opacity: 1;
-  transform: translateY(0) scale(1.06);
+  transform: translateY(0) scale(1.1) translateZ(12px);
+  filter: saturate(1.05);
   z-index: 2;
+}
+
+.xmb-ps5-tile--spotlight {
+  width: 96px;
+  opacity: 0.4;
+}
+
+.xmb-ps5-tile--spotlight.active {
+  transform: translateY(0) scale(1.06) translateZ(8px);
+}
+
+/* Empty “recently played” slot (no title yet): reads as reserved space, not a missing cover */
+.xmb-ps5-tile--spotlight-empty .xmb-ps5-tile-frame {
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(0, 0, 0, 0.22);
+  box-shadow: none;
+}
+
+.xmb-ps5-tile--spotlight-empty .xmb-ps5-tile-cover--placeholder {
+  background: repeating-linear-gradient(
+    -18deg,
+    rgba(255, 255, 255, 0.04),
+    rgba(255, 255, 255, 0.04) 6px,
+    rgba(0, 0, 0, 0.06) 6px,
+    rgba(0, 0, 0, 0.06) 12px
+  );
+}
+
+/* Spotlight covers use same 2:3 poster box; placeholders must not force a taller min than the frame */
+.xmb-ps5-tile--spotlight .xmb-ps5-tile-frame--placeholder,
+.xmb-ps5-tile--spotlight .xmb-ps5-tile-cover--placeholder {
+  min-height: 0;
 }
 
 .xmb-ps5-tile-frame {
@@ -7126,12 +7800,26 @@ button.game-card-store-chip.owned.active:hover {
     box-shadow 360ms ease;
 }
 
+.xmb-ps5-tile-frame--placeholder {
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.35));
+}
+
+.xmb-ps5-tile-cover--placeholder {
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.06), rgba(0, 0, 0, 0.4));
+}
+
 .xmb-ps5-tile.active .xmb-ps5-tile-frame {
   border-color: rgba(255, 255, 255, 0.96);
   box-shadow:
-    0 22px 52px rgba(0, 0, 0, 0.62),
-    0 0 0 3px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.42),
-    0 0 28px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.35);
+    0 26px 58px rgba(0, 0, 0, 0.68),
+    0 0 0 3px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.45),
+    0 0 36px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.38);
 }
 
 .xmb-ps5-tile-cover {
@@ -7160,18 +7848,20 @@ button.game-card-store-chip.owned.active:hover {
   box-sizing: border-box;
   background: rgba(10, 14, 20, 0.44);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  opacity: 0.58;
-  transform: translateY(10px) scale(0.92);
+  opacity: 0.48;
+  transform: translateY(12px) scale(0.9) translateZ(0);
+  filter: saturate(0.9);
   transition: all 420ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .xmb-ps5-menu-tile.active {
   opacity: 1;
-  transform: translateY(0) scale(1.03);
-  border-color: rgba(255, 255, 255, 0.65);
+  transform: translateY(0) scale(1.04) translateZ(8px);
+  filter: saturate(1.02);
+  border-color: rgba(255, 255, 255, 0.72);
   box-shadow:
-    0 18px 44px rgba(0, 0, 0, 0.48),
-    0 0 0 2px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.28);
+    0 22px 50px rgba(0, 0, 0, 0.52),
+    0 0 0 2px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.32);
 }
 
 .xmb-ps5-menu-title {
@@ -7281,8 +7971,10 @@ button.game-card-store-chip.owned.active:hover {
 
 .xmb-ps5-media-caption {
   margin-top: 10px;
+  min-height: 2.75em;
   font-size: 0.9rem;
   font-weight: 700;
+  line-height: 1.35;
   color: rgba(255, 255, 255, 0.94);
   white-space: nowrap;
   overflow: hidden;
@@ -7361,10 +8053,10 @@ button.game-card-store-chip.owned.active:hover {
 
 .xmb-ps5-menu-thumb-row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   margin-bottom: 10px;
-  min-height: 128px;
+  min-height: 88px;
 }
 
 .xmb-ps5-menu-thumb {
@@ -7428,6 +8120,20 @@ button.game-card-store-chip.owned.active:hover {
       rgba(0, 0, 0, 0.38) 100%
     ),
     linear-gradient(90deg, rgba(0, 0, 0, 0.1) 0%, rgba(0, 0, 0, 0) 28%, rgba(0, 0, 0, 0) 72%, rgba(0, 0, 0, 0.12) 100%);
+}
+
+/* Grid theme + PS5 hub: previous rule is darker at bottom; lighten so library row doesn’t look masked */
+.xmb-wrapper.xmb-layout--ps5-home.xmb-theme-grid .xmb-bg-overlay {
+  background:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 56px),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 56px),
+    linear-gradient(
+      180deg,
+      rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.08) 0%,
+      rgba(0, 0, 0, 0.1) 50%,
+      rgba(0, 0, 0, 0.2) 100%
+    ),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.1) 0%, rgba(0, 0, 0, 0) 28%, rgba(0, 0, 0, 0) 72%, rgba(0, 0, 0, 0.1) 100%);
 }
 
 .xmb-theme-minimal .xmb-bg-layer {

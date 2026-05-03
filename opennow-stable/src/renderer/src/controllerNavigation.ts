@@ -25,6 +25,16 @@ const INTERACTIVE_SELECTOR = [
 
 const DIRECTION_INITIAL_REPEAT_MS = 240;
 const DIRECTION_REPEAT_MS = 110;
+const DIRECTION_REPEAT_MIN_MS = 48;
+const DIRECTION_REPEAT_ACCEL_STEP_MS = 7;
+const DIRECTION_REPEAT_ACCEL_MAX_EXTRA = 62;
+
+function nextAcceleratedRepeatMs(repeatCount: number): number {
+  return Math.max(
+    DIRECTION_REPEAT_MIN_MS,
+    DIRECTION_REPEAT_MS - Math.min(DIRECTION_REPEAT_ACCEL_MAX_EXTRA, repeatCount * DIRECTION_REPEAT_ACCEL_STEP_MS),
+  );
+}
 
 function isElementInteractive(el: Element): el is HTMLElement {
   return el instanceof HTMLElement;
@@ -268,11 +278,11 @@ export function useControllerNavigation({
   const connectedRef = useRef(false);
   const frameRef = useRef<number | null>(null);
 
-  const directionStateRef = useRef<Record<Direction, { pressed: boolean; nextRepeatAt: number }>>({
-    up: { pressed: false, nextRepeatAt: 0 },
-    down: { pressed: false, nextRepeatAt: 0 },
-    left: { pressed: false, nextRepeatAt: 0 },
-    right: { pressed: false, nextRepeatAt: 0 },
+  const directionStateRef = useRef<Record<Direction, { pressed: boolean; nextRepeatAt: number; repeatCount: number }>>({
+    up: { pressed: false, nextRepeatAt: 0, repeatCount: 0 },
+    down: { pressed: false, nextRepeatAt: 0, repeatCount: 0 },
+    left: { pressed: false, nextRepeatAt: 0, repeatCount: 0 },
+    right: { pressed: false, nextRepeatAt: 0, repeatCount: 0 },
   });
 
   const actionStateRef = useRef({
@@ -311,6 +321,7 @@ export function useControllerNavigation({
       if (!pad || !enabled) {
         for (const state of Object.values(directionStateRef.current)) {
           state.pressed = false;
+          state.repeatCount = 0;
         }
         actionStateRef.current = { a: false, x: false, y: false, b: false, lb: false, rb: false };
         frameRef.current = window.requestAnimationFrame(tick);
@@ -334,11 +345,13 @@ export function useControllerNavigation({
         const state = directionStateRef.current[direction];
         if (!pressed) {
           state.pressed = false;
+          state.repeatCount = 0;
           return;
         }
 
         if (!state.pressed) {
           state.pressed = true;
+          state.repeatCount = 0;
           state.nextRepeatAt = now + DIRECTION_INITIAL_REPEAT_MS;
           if (onDirectionInput?.(direction)) {
             return;
@@ -348,10 +361,13 @@ export function useControllerNavigation({
         }
 
         if (now >= state.nextRepeatAt) {
-          state.nextRepeatAt = now + DIRECTION_REPEAT_MS;
           if (onDirectionInput?.(direction)) {
+            state.repeatCount += 1;
+            state.nextRepeatAt = now + nextAcceleratedRepeatMs(state.repeatCount);
             return;
           }
+          state.repeatCount = 0;
+          state.nextRepeatAt = now + DIRECTION_REPEAT_MS;
           moveFocus(direction);
         }
       };
