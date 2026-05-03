@@ -85,7 +85,7 @@ export function TopLevelShelfSection({
                   : "Active cloud session · Enter continues from where you left off";
               }
               if (spotlightEntryHasGame(se)) {
-                return "Recently played · Enter opens this title in your library";
+                return "Recently played";
               }
               return "Recently played · Empty slot — play games to fill your shelf";
             })()}
@@ -101,7 +101,7 @@ export function TopLevelShelfSection({
                   : "Active cloud session · Enter continues from where you left off";
               }
               if (spotlightEntryHasGame(se)) {
-                return "Recently played · Enter opens this title in your library";
+                return "Recently played";
               }
               return "Recently played · Empty slot — play games to fill your shelf";
             })()}
