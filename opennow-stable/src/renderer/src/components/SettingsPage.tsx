@@ -1,4 +1,4 @@
-import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, FolderOpen, Cpu } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -17,6 +17,7 @@ import type {
     ThankYouContributor,
     ThankYouSupporter,
     AppUpdaterState,
+    NativeStreamerStatus,
   } from "@shared/gfn";
 import {
   colorQualityRequiresHevc,
@@ -60,18 +61,6 @@ const allColorQualityOptions: { value: ColorQuality; label: string; description:
 ];
 
 const colorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [...allColorQualityOptions];
-
-const nativeStreamerBackendOptions: Array<{ value: Settings["nativeStreamerBackend"]; label: string }> = [
-  { value: "auto", label: "Auto" },
-  { value: "gstreamer", label: "GStreamer" },
-  { value: "stub", label: "Stub" },
-];
-
-const nativeFeatureModeOptions: Array<{ value: Settings["nativeCloudGsyncMode"]; label: string; description: string }> = [
-  { value: "auto", label: "Auto", description: "Use detection and the native streamer default." },
-  { value: "disabled", label: "Disabled", description: "Force the native override off for debugging." },
-  { value: "forced", label: "Forced", description: "Bypass detection when you know the display path supports it." },
-];
 
 /* ── Static fallbacks (used when MES API is unavailable) ─────────── */
 
@@ -527,6 +516,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const resolutionDropdownRef = useRef<HTMLDivElement | null>(null);
   const [settingsSearch, setSettingsSearch] = useState("");
   const [codecAdvancedOpen, setCodecAdvancedOpen] = useState(false);
+  const [nativeStreamerStatus, setNativeStreamerStatus] = useState<NativeStreamerStatus | null>(null);
+  const [nativeStreamerStatusLoading, setNativeStreamerStatusLoading] = useState(false);
   const [updaterState, setUpdaterState] = useState<AppUpdaterState>({
     status: "idle",
     currentVersion: "0.0.0",
@@ -595,6 +586,29 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       unsubscribe();
     };
   }, []);
+
+  const refreshNativeStreamerStatus = useCallback(async () => {
+    setNativeStreamerStatusLoading(true);
+    try {
+      setNativeStreamerStatus(await window.openNow.getNativeStreamerStatus());
+    } catch (error) {
+      console.warn("[Settings] Failed to detect native streamer:", error);
+      setNativeStreamerStatus({
+        detected: false,
+        gstreamerAvailable: false,
+        supportsOfferAnswer: false,
+        message: "Native streamer status could not be checked.",
+      });
+    } finally {
+      setNativeStreamerStatusLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeSection === "native-streamer" || settingsSearch.length > 0) {
+      void refreshNativeStreamerStatus();
+    }
+  }, [activeSection, refreshNativeStreamerStatus, settingsSearch.length]);
 
   // Fetch subscription data (cached per account; reload only when account changes)
   useEffect(() => {
@@ -688,15 +702,17 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     [onSettingChange]
   );
 
-  const handleSelectNativeStreamerExecutable = useCallback(async () => {
-    try {
-      const selectedPath = await window.openNow.selectNativeStreamerExecutable();
-      if (selectedPath) {
-        handleChange("nativeStreamerExecutablePath", selectedPath);
-      }
-    } catch (error) {
-      console.error("[SettingsPage] Failed to select native streamer executable:", error);
+  const setNativeFramePacing = useCallback((mode: "low-latency" | "smooth") => {
+    if (mode === "low-latency") {
+      handleChange("enableCloudGsync", false);
+      handleChange("nativeCloudGsyncMode", "disabled");
+      handleChange("nativeD3dFullscreenMode", "disabled");
+      return;
     }
+
+    handleChange("enableCloudGsync", true);
+    handleChange("nativeCloudGsyncMode", "auto");
+    handleChange("nativeD3dFullscreenMode", "auto");
   }, [handleChange]);
 
   const handleColorQualityChange = useCallback(
@@ -1857,7 +1873,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 <div className="settings-row-top settings-row-top--compact">
                   <label className="settings-label settings-label--wrap">
                     <span className="settings-label-title">
-                      Use Native Streamer
+                      Native Streaming
                       <span className="settings-inline-badge settings-inline-badge--beta">Experimental</span>
                     </span>
                   </label>
@@ -1871,140 +1887,68 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </label>
                 </div>
                 <span className="settings-subtle-hint">
-                  Use the native streamer process for new sessions when available. OpenNOW falls back to the web streamer if the native path cannot accept the stream.
+                  Uses the faster GStreamer-based desktop streamer for new sessions. If it cannot start, OpenNOW falls back to the web streamer.
                 </span>
               </div>
 
-              <div className="settings-row">
-                <label className="settings-label">Native Backend</label>
-                <select
-                  className="settings-text-input settings-select"
-                  value={settings.nativeStreamerBackend}
-                  onChange={(e) => handleChange("nativeStreamerBackend", e.target.value as Settings["nativeStreamerBackend"])}
-                >
-                  {nativeStreamerBackendOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="settings-row settings-row--top-aligned">
-                <label className="settings-label">Streamer Executable</label>
-                <div className="settings-path-setting">
-                  <div className="settings-path-control">
-                    <input
-                      type="text"
-                      className="settings-text-input settings-path-input"
-                      value={settings.nativeStreamerExecutablePath}
-                      onChange={(e) => handleChange("nativeStreamerExecutablePath", e.target.value)}
-                      placeholder="Use bundled executable"
-                      spellCheck={false}
-                    />
-                    <button
-                      type="button"
-                      className="settings-icon-button"
-                      onClick={handleSelectNativeStreamerExecutable}
-                      title="Browse for streamer executable"
-                      aria-label="Browse for streamer executable"
-                    >
-                      <FolderOpen size={15} />
-                    </button>
-                    {settings.nativeStreamerExecutablePath && (
-                      <button
-                        type="button"
-                        className="settings-icon-button"
-                        onClick={() => handleChange("nativeStreamerExecutablePath", "")}
-                        title="Use bundled executable"
-                        aria-label="Use bundled executable"
-                      >
-                        <X size={15} />
-                      </button>
-                    )}
-                  </div>
-                  <span className="settings-subtle-hint">
-                    Leave empty to use the bundled streamer or OPENNOW_NATIVE_STREAMER.
+              <div className="settings-row settings-row--column">
+                <div className="settings-row-top settings-row-top--compact">
+                  <label className="settings-label settings-label--wrap">
+                    <span className="settings-label-title">Streamer Status</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="settings-icon-button"
+                    onClick={() => void refreshNativeStreamerStatus()}
+                    disabled={nativeStreamerStatusLoading}
+                    title="Check native streamer"
+                    aria-label="Check native streamer"
+                  >
+                    {nativeStreamerStatusLoading ? <Loader size={15} className="spin" /> : <RefreshCcw size={15} />}
+                  </button>
+                </div>
+                <div className="settings-chip-row">
+                  <span
+                    className={`settings-inline-badge ${
+                      nativeStreamerStatusLoading
+                        ? "settings-inline-badge--codec-testing"
+                        : nativeStreamerStatus?.gstreamerAvailable
+                          ? "settings-inline-badge--codec-gpu"
+                          : "settings-inline-badge--updater-error"
+                    }`}
+                  >
+                    {nativeStreamerStatusLoading
+                      ? "Checking"
+                      : nativeStreamerStatus?.gstreamerAvailable
+                        ? "GStreamer Ready"
+                        : "Not Ready"}
                   </span>
                 </div>
-              </div>
-
-              <div className="settings-row settings-row--column">
-                <div className="settings-row-top settings-row-top--compact">
-                  <label className="settings-label settings-label--wrap">
-                    <span className="settings-label-title">
-                      Cloud G-Sync / Variable Refresh Rate
-                      <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
-                    </span>
-                  </label>
-                  <label className="settings-toggle">
-                    <input
-                      type="checkbox"
-                      checked={settings.enableCloudGsync}
-                      onChange={(e) => handleChange("enableCloudGsync", e.target.checked)}
-                    />
-                    <span className="settings-toggle-track" />
-                  </label>
-                </div>
                 <span className="settings-subtle-hint">
-                  Request Cloud G-Sync on newly created sessions. Native mode also checks display support before requesting it unless detection is forced below.
+                  {nativeStreamerStatus?.message ?? "OpenNOW will check the bundled GStreamer streamer when this tab opens."}
                 </span>
               </div>
 
               <div className="settings-row settings-row--column">
-                <label className="settings-label">Cloud G-Sync Detection</label>
+                <label className="settings-label">Frame Pacing</label>
                 <div className="settings-chip-row">
-                  {nativeFeatureModeOptions.map((option) => (
-                    <button
-                      key={`cloud-gsync-${option.value}`}
-                      className={`settings-chip ${settings.nativeCloudGsyncMode === option.value ? "active" : ""}`}
-                      onClick={() => handleChange("nativeCloudGsyncMode", option.value)}
-                      title={option.description}
-                    >
-                      <span>{option.label}</span>
-                    </button>
-                  ))}
+                  <button
+                    type="button"
+                    className={`settings-chip ${!settings.enableCloudGsync ? "active" : ""}`}
+                    onClick={() => setNativeFramePacing("low-latency")}
+                  >
+                    <span>Lowest Latency</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`settings-chip ${settings.enableCloudGsync ? "active" : ""}`}
+                    onClick={() => setNativeFramePacing("smooth")}
+                  >
+                    <span>Smooth G-Sync</span>
+                  </button>
                 </div>
                 <span className="settings-subtle-hint">
-                  Maps to OPENNOW_NATIVE_CLOUD_GSYNC. Forced still requires the Cloud G-Sync request toggle and the session FPS threshold.
-                </span>
-              </div>
-
-              <div className="settings-row settings-row--column">
-                <label className="settings-label">D3D Fullscreen Presentation</label>
-                <div className="settings-chip-row">
-                  {nativeFeatureModeOptions.map((option) => (
-                    <button
-                      key={`d3d-fullscreen-${option.value}`}
-                      className={`settings-chip ${settings.nativeD3dFullscreenMode === option.value ? "active" : ""}`}
-                      onClick={() => handleChange("nativeD3dFullscreenMode", option.value as Settings["nativeD3dFullscreenMode"])}
-                      title={option.description}
-                    >
-                      <span>{option.label}</span>
-                    </button>
-                  ))}
-                </div>
-                <span className="settings-subtle-hint">
-                  Maps to OPENNOW_NATIVE_D3D_FULLSCREEN. Auto enables fullscreen presentation when native Cloud G-Sync resolves on.
-                </span>
-              </div>
-
-              <div className="settings-row settings-row--column">
-                <div className="settings-row-top settings-row-top--compact">
-                  <label className="settings-label settings-label--wrap">
-                    <span className="settings-label-title">External Renderer Window</span>
-                  </label>
-                  <label className="settings-toggle">
-                    <input
-                      type="checkbox"
-                      checked={settings.nativeExternalRenderer}
-                      onChange={(e) => handleChange("nativeExternalRenderer", e.target.checked)}
-                    />
-                    <span className="settings-toggle-track" />
-                  </label>
-                </div>
-                <span className="settings-subtle-hint">
-                  Maps to OPENNOW_NATIVE_EXTERNAL_RENDERER. Disable it to retry Electron HWND embedding on the next native streamer launch.
+                  Lowest Latency avoids G-Sync pacing and is best for mouse feel. Smooth G-Sync can reduce tearing, but may cap rendering to the monitor refresh rate.
                 </span>
               </div>
             </div>

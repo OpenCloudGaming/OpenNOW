@@ -142,6 +142,15 @@ export interface MicrophonePermissionResult {
   shouldUseBrowserApi: boolean;
 }
 
+export interface NativeStreamerStatus {
+  detected: boolean;
+  gstreamerAvailable: boolean;
+  supportsOfferAnswer: boolean;
+  backend?: NativeStreamerBackend;
+  fallbackReason?: string;
+  message: string;
+}
+
 export interface Settings {
   resolution: string;
   aspectRatio: AspectRatio;
@@ -827,6 +836,7 @@ export interface OpenNowApi {
   getActiveSessions(token?: string, streamingBaseUrl?: string): Promise<ActiveSessionInfo[]>;
   /** Claim/resume an existing session */
   claimSession(input: SessionClaimRequest): Promise<SessionInfo>;
+  getNativeStreamerStatus(): Promise<NativeStreamerStatus>;
   getNativeCloudGsyncCapabilities(): Promise<NativeCloudGsyncCapabilities>;
   /** Show dialog asking user how to handle session conflict */
   showSessionConflictDialog(): Promise<SessionConflictChoice>;

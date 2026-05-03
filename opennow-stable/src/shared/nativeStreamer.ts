@@ -114,8 +114,13 @@ export type NativeStreamerEvent =
   | {
       type: "video-stall";
       stallMs: number;
+      encodedKbps?: number;
       decodedFps: number;
       sinkFps: number;
+      encodedAgeMs?: number;
+      decodedAgeMs?: number;
+      sinkAgeMs?: number;
+      likelyStage?: string;
       sinkRendered?: number;
       sinkDropped?: number;
       zeroCopyD3D11: boolean;

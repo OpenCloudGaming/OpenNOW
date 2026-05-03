@@ -131,7 +131,7 @@ const DEFAULT_SETTINGS: Settings = {
   fps: 60,
   maxBitrateMbps: 75,
   streamClientMode: "web",
-  nativeStreamerBackend: "auto",
+  nativeStreamerBackend: "gstreamer",
   nativeStreamerExecutablePath: "",
   nativeCloudGsyncMode: "auto",
   nativeD3dFullscreenMode: "auto",
@@ -230,17 +230,27 @@ export class SettingsManager {
   }
 
   private enforceCompatibility(settings: Settings): boolean {
+    let migrated = false;
     const normalized = normalizeStreamPreferences(settings.codec, settings.colorQuality);
-    if (!normalized.migrated) {
-      return false;
+    if (normalized.migrated) {
+      console.warn(
+        `[Settings] Migrating unsupported stream settings codec="${settings.codec}" colorQuality="${settings.colorQuality}" to ${normalized.codec}/${normalized.colorQuality}`,
+      );
+      settings.codec = normalized.codec;
+      settings.colorQuality = normalized.colorQuality;
+      migrated = true;
     }
 
-    console.warn(
-      `[Settings] Migrating unsupported stream settings codec="${settings.codec}" colorQuality="${settings.colorQuality}" to ${normalized.codec}/${normalized.colorQuality}`,
-    );
-    settings.codec = normalized.codec;
-    settings.colorQuality = normalized.colorQuality;
-    return true;
+    if (settings.nativeStreamerBackend !== "gstreamer") {
+      settings.nativeStreamerBackend = "gstreamer";
+      migrated = true;
+    }
+    if (!settings.nativeExternalRenderer) {
+      settings.nativeExternalRenderer = true;
+      migrated = true;
+    }
+
+    return migrated;
   }
 
   private migrateLegacyShortcutDefaults(settings: Settings): boolean {

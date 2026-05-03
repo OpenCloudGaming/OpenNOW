@@ -219,8 +219,16 @@ pub struct SendAnswerRequest {
 #[serde(rename_all = "camelCase")]
 pub struct VideoStallEvent {
     pub stall_ms: u64,
+    pub encoded_kbps: f64,
     pub decoded_fps: f64,
     pub sink_fps: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoded_age_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decoded_age_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sink_age_ms: Option<u64>,
+    pub likely_stage: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sink_rendered: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -329,8 +337,13 @@ mod tests {
     fn video_stall_event_serializes_as_flat_native_event() {
         let event = Event::VideoStall(VideoStallEvent {
             stall_ms: 2_500,
+            encoded_kbps: 0.0,
             decoded_fps: 0.0,
             sink_fps: 0.0,
+            encoded_age_ms: Some(2_500),
+            decoded_age_ms: Some(2_500),
+            sink_age_ms: Some(2_500),
+            likely_stage: "video-output-stalled".to_owned(),
             sink_rendered: Some(42),
             sink_dropped: Some(1),
             zero_copy_d3d11: true,
@@ -341,6 +354,8 @@ mod tests {
 
         assert_eq!(value["type"], "video-stall");
         assert_eq!(value["stallMs"], 2_500);
+        assert_eq!(value["encodedAgeMs"], 2_500);
+        assert_eq!(value["likelyStage"], "video-output-stalled");
         assert_eq!(value["sinkRendered"], 42);
         assert_eq!(value["recoveryAttempt"], 1);
     }

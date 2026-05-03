@@ -57,6 +57,7 @@ static NATIVE_INPUT_STARTED_AT: OnceLock<Instant> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct VideoRateSnapshot {
+    encoded_kbps: f64,
     decoded_fps: f64,
     sink_fps: f64,
 }
@@ -145,6 +146,7 @@ struct VideoLivenessState {
     stats_overlay_visible: AtomicBool,
     target_bitrate_kbps: AtomicU32,
     encoded_bytes_total: AtomicU64,
+    last_encoded_ms: AtomicU64,
     last_decoded_ms: AtomicU64,
     last_sink_ms: AtomicU64,
     decoded_total: AtomicU64,
@@ -164,6 +166,7 @@ impl VideoLivenessState {
             stats_overlay_visible: AtomicBool::new(false),
             target_bitrate_kbps: AtomicU32::new(0),
             encoded_bytes_total: AtomicU64::new(0),
+            last_encoded_ms: AtomicU64::new(0),
             last_decoded_ms: AtomicU64::new(0),
             last_sink_ms: AtomicU64::new(0),
             decoded_total: AtomicU64::new(0),
@@ -198,6 +201,7 @@ impl VideoLivenessState {
     }
 
     fn record_encoded_buffer(&self, size: usize) {
+        self.last_encoded_ms.store(self.now_ms(), Ordering::Relaxed);
         self.encoded_bytes_total
             .fetch_add(size as u64, Ordering::Relaxed);
     }
@@ -3308,6 +3312,7 @@ fn run_video_liveness_watchdog(
     let mut last_decoded_total = state.decoded_total.load(Ordering::Relaxed);
     let mut last_sink_total = state.sink_total.load(Ordering::Relaxed);
     let mut rates = VideoRateSnapshot {
+        encoded_kbps: 0.0,
         decoded_fps: 0.0,
         sink_fps: 0.0,
     };
@@ -3327,13 +3332,14 @@ fn run_video_liveness_watchdog(
                 / elapsed_secs
                 / 1000.0;
             rates = VideoRateSnapshot {
+                encoded_kbps: bitrate_kbps.max(0.0),
                 decoded_fps: decoded_total.saturating_sub(last_decoded_total) as f64 / elapsed_secs,
                 sink_fps: sink_total.saturating_sub(last_sink_total) as f64 / elapsed_secs,
             };
             update_native_stats_overlay(
                 &sink,
                 &state,
-                bitrate_kbps.max(0.0).round() as u32,
+                rates.encoded_kbps.round() as u32,
                 rates,
                 decoded_total,
                 sink_total,
@@ -3474,6 +3480,14 @@ fn emit_video_stall_event(
     will_resync: bool,
 ) {
     let stats = read_sink_stats(sink);
+    let now_ms = state.now_ms();
+    let last_encoded_ms = state.last_encoded_ms.load(Ordering::Relaxed);
+    let last_decoded_ms = state.last_decoded_ms.load(Ordering::Relaxed);
+    let last_sink_ms = state.last_sink_ms.load(Ordering::Relaxed);
+    let encoded_age_ms = age_since_ms(now_ms, last_encoded_ms);
+    let decoded_age_ms = age_since_ms(now_ms, last_decoded_ms);
+    let sink_age_ms = age_since_ms(now_ms, last_sink_ms);
+    let likely_stage = classify_video_stall(encoded_age_ms, decoded_age_ms, sink_age_ms);
     let resync_suffix = if will_resync {
         " Requesting keyframe and resyncing GStreamer latency."
     } else {
@@ -3483,9 +3497,13 @@ fn emit_video_stall_event(
         event_sender,
         "warn",
         format!(
-            "Native video stall detected: stall={stall_ms}ms decoded={:.1}fps sink={:.1}fps rendered={} dropped={} zeroCopyD3D11={} zeroCopyD3D12={}.{}",
+            "Native video stall detected: stall={stall_ms}ms stage={likely_stage} encoded={:.0}kbps decoded={:.1}fps sink={:.1}fps ages=encoded:{} decoded:{} sink:{} rendered={} dropped={} zeroCopyD3D11={} zeroCopyD3D12={}.{}",
+            rates.encoded_kbps,
             rates.decoded_fps,
             rates.sink_fps,
+            format_age_ms(encoded_age_ms),
+            format_age_ms(decoded_age_ms),
+            format_age_ms(sink_age_ms),
             stats
                 .rendered
                 .map(|value| value.to_string())
@@ -3502,14 +3520,52 @@ fn emit_video_stall_event(
     if let Some(event_sender) = event_sender {
         let _ = event_sender.send(Event::VideoStall(VideoStallEvent {
             stall_ms,
+            encoded_kbps: rates.encoded_kbps,
             decoded_fps: rates.decoded_fps,
             sink_fps: rates.sink_fps,
+            encoded_age_ms,
+            decoded_age_ms,
+            sink_age_ms,
+            likely_stage: likely_stage.to_owned(),
             sink_rendered: stats.rendered,
             sink_dropped: stats.dropped,
             zero_copy_d3d11: state.zero_copy_d3d11(),
             zero_copy_d3d12: state.zero_copy_d3d12(),
             recovery_attempt,
         }));
+    }
+}
+
+fn age_since_ms(now_ms: u64, last_ms: u64) -> Option<u64> {
+    (last_ms != 0).then_some(now_ms.saturating_sub(last_ms))
+}
+
+fn format_age_ms(age_ms: Option<u64>) -> String {
+    age_ms
+        .map(|value| format!("{value}ms"))
+        .unwrap_or_else(|| "n/a".to_owned())
+}
+
+fn classify_video_stall(
+    encoded_age_ms: Option<u64>,
+    decoded_age_ms: Option<u64>,
+    sink_age_ms: Option<u64>,
+) -> &'static str {
+    const ACTIVE_RECENT_MS: u64 = 1_000;
+    match (encoded_age_ms, decoded_age_ms, sink_age_ms) {
+        (Some(encoded), _, _) if encoded > VIDEO_STALL_WARNING_MS => "video-rtp-idle",
+        (Some(encoded), Some(decoded), _)
+            if encoded <= ACTIVE_RECENT_MS && decoded > VIDEO_STALL_WARNING_MS =>
+        {
+            "decode-chain-stalled"
+        }
+        (_, Some(decoded), Some(sink))
+            if decoded <= ACTIVE_RECENT_MS && sink > VIDEO_STALL_WARNING_MS =>
+        {
+            "present-chain-stalled"
+        }
+        (None, _, _) => "video-rtp-not-observed",
+        _ => "video-output-stalled",
     }
 }
 

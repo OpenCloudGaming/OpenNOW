@@ -11,6 +11,7 @@ import {
   type MainToRendererSignalingEvent,
   type NativeStreamerBackendPreference,
   type NativeStreamerFeatureMode,
+  type NativeStreamerStatus,
   type NativeRenderSurface,
   type NativeStreamerSessionContext,
   type SendAnswerRequest,
@@ -239,6 +240,31 @@ export class NativeStreamerManager {
       type: "log",
       message: "Native streamer accepted the WebRTC offer; waiting for decoded media.",
     });
+  }
+
+  async probeStatus(): Promise<NativeStreamerStatus> {
+    try {
+      await this.ensureProcess();
+      const backend = this.capabilities?.backend;
+      const gstreamerAvailable = backend === "gstreamer" && this.capabilities?.supportsOfferAnswer === true;
+      return {
+        detected: true,
+        gstreamerAvailable,
+        supportsOfferAnswer: this.capabilities?.supportsOfferAnswer === true,
+        backend,
+        fallbackReason: this.capabilities?.fallbackReason,
+        message: gstreamerAvailable
+          ? "GStreamer native streamer is ready."
+          : this.capabilities?.fallbackReason ?? "Native streamer is present, but GStreamer is not available.",
+      };
+    } catch (error) {
+      return {
+        detected: false,
+        gstreamerAvailable: false,
+        supportsOfferAnswer: false,
+        message: `Native streamer was not detected: ${formatError(error)}`,
+      };
+    }
   }
 
   async addRemoteIce(candidate: IceCandidatePayload): Promise<void> {
@@ -615,10 +641,14 @@ export class NativeStreamerManager {
     }
 
     if (message.type === "video-stall") {
+      const formatAge = (value: number | undefined): string => value === undefined ? "n/a" : `${value}ms`;
       const stats = [
         `stall=${message.stallMs}ms`,
+        `stage=${message.likelyStage ?? "unknown"}`,
+        `encoded=${(message.encodedKbps ?? 0).toFixed(0)}kbps`,
         `decoded=${message.decodedFps.toFixed(1)}fps`,
         `sink=${message.sinkFps.toFixed(1)}fps`,
+        `ages=encoded:${formatAge(message.encodedAgeMs)} decoded:${formatAge(message.decodedAgeMs)} sink:${formatAge(message.sinkAgeMs)}`,
         `rendered=${message.sinkRendered ?? "n/a"}`,
         `dropped=${message.sinkDropped ?? "n/a"}`,
         `zeroCopyD3D11=${message.zeroCopyD3D11}`,

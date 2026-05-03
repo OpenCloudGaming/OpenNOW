@@ -41,9 +41,9 @@ import type {
   SessionCreateRequest,
   SessionPollRequest,
   SessionStopRequest,
-  SessionClaimRequest,
-  StreamSettings,
-  SignalingConnectRequest,
+    SessionClaimRequest,
+    StreamSettings,
+    SignalingConnectRequest,
   SendAnswerRequest,
   IceCandidatePayload,
   NativeInputPacket,
@@ -69,8 +69,9 @@ import type {
   RecordingFinishRequest,
   RecordingAbortRequest,
   RecordingDeleteRequest,
-  MicrophonePermissionResult,
-  ThankYouContributor,
+    MicrophonePermissionResult,
+    NativeStreamerStatus,
+    ThankYouContributor,
   ThankYouDataResult,
   ThankYouSupporter,
 } from "@shared/gfn";
@@ -700,11 +701,11 @@ function emitToRenderer(event: MainToRendererSignalingEvent): void {
 function getNativeStreamerManager(): NativeStreamerManager {
   nativeStreamerManager ??= new NativeStreamerManager({
     mainDir: __dirname,
-    getBackendPreference: () => settingsManager?.get("nativeStreamerBackend") ?? "auto",
+    getBackendPreference: () => "gstreamer",
     getExecutablePathOverride: () => settingsManager?.get("nativeStreamerExecutablePath") ?? "",
     getCloudGsyncMode: () => settingsManager?.get("nativeCloudGsyncMode") ?? "auto",
     getD3dFullscreenMode: () => settingsManager?.get("nativeD3dFullscreenMode") ?? "auto",
-    getExternalRendererEnabled: () => settingsManager?.get("nativeExternalRenderer") ?? true,
+    getExternalRendererEnabled: () => true,
     emit: emitToRenderer,
     sendAnswer: async (payload) => {
       if (!signalingClient) {
@@ -1030,7 +1031,7 @@ async function resolveSessionCloudGsyncSettings(settings: StreamSettings): Promi
     userRequested,
     fps: settings.fps,
     clientMode,
-    nativeBackendAvailable: clientMode === "native" && settings.nativeStreamerBackend !== "stub",
+    nativeBackendAvailable: clientMode === "native",
     capabilities,
     override: normalizeCloudGsyncOverride(cloudGsyncMode),
   });
@@ -1865,6 +1866,10 @@ function registerIpcHandlers(): void {
       return null;
     }
     return result.filePaths[0] ?? null;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.NATIVE_STREAMER_STATUS, async (): Promise<NativeStreamerStatus> => {
+    return getNativeStreamerManager().probeStatus();
   });
 
   ipcMain.handle(IPC_CHANNELS.NATIVE_CLOUD_GSYNC_CAPABILITIES, async () => {
