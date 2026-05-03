@@ -32,7 +32,7 @@ function prependEnvPath(env, directory) {
 
 function configureWindowsGstreamerSdk(env) {
   if (process.platform !== "win32") {
-    return;
+    return null;
   }
 
   const candidates = [
@@ -51,7 +51,7 @@ function configureWindowsGstreamerSdk(env) {
     console.warn(
       "GStreamer SDK was not found automatically; relying on the current PKG_CONFIG environment.",
     );
-    return;
+    return null;
   }
 
   const pkgConfigDir = join(sdkRoot, "lib", "pkgconfig");
@@ -61,6 +61,33 @@ function configureWindowsGstreamerSdk(env) {
     : pkgConfigDir;
   prependEnvPath(env, join(sdkRoot, "bin"));
   console.log(`Configured GStreamer SDK: ${sdkRoot}`);
+  return sdkRoot;
+}
+
+function bundleGstreamerRuntime(sdkRoot) {
+  if (process.env.OPENNOW_BUNDLE_GSTREAMER_RUNTIME !== "1") {
+    return;
+  }
+
+  const args = [
+    join(__dirname, "bundle-gstreamer-runtime.mjs"),
+    "--dest",
+    join(packagePlatformBinaryDir, "gstreamer"),
+  ];
+
+  if (sdkRoot) {
+    args.push("--sdk-root", sdkRoot);
+  }
+
+  const result = spawnSync(process.execPath, args, {
+    cwd: packageRoot,
+    stdio: "inherit",
+    env: process.env,
+  });
+
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
 }
 
 function verifyGstreamerBinary(binaryPath, env) {
@@ -122,8 +149,9 @@ console.log(
 );
 
 const buildEnv = { ...process.env };
+let gstreamerSdkRoot = null;
 if (hasFeature(nativeFeatures, "gstreamer")) {
-  configureWindowsGstreamerSdk(buildEnv);
+  gstreamerSdkRoot = configureWindowsGstreamerSdk(buildEnv);
 }
 
 const cargoCommand = process.platform === "win32" ? "cargo.exe" : "cargo";
@@ -154,6 +182,7 @@ if (process.platform !== "win32") {
 
 if (hasFeature(nativeFeatures, "gstreamer")) {
   verifyGstreamerBinary(packageBinary, buildEnv);
+  bundleGstreamerRuntime(gstreamerSdkRoot);
 }
 
 console.log(`Copied native streamer to ${packageBinary}`);

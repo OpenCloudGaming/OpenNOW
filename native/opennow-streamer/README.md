@@ -43,13 +43,13 @@ Run GStreamer feature tests:
 cargo test --manifest-path native/opennow-streamer/Cargo.toml --features gstreamer
 ```
 
-For Electron packaging, run the OpenNOW native build script from `opennow-stable`; it copies the release binary into `native/opennow-streamer/bin`. Set `OPENNOW_NATIVE_STREAMER_FEATURES=gstreamer` when the packaging environment has the GStreamer development packages installed and should ship the GStreamer backend.
+For Electron packaging, run the OpenNOW native build script from `opennow-stable`; it copies the release binary into `native/opennow-streamer/bin`. Set `OPENNOW_NATIVE_STREAMER_FEATURES=gstreamer` when the packaging environment has the GStreamer development packages installed and should ship the GStreamer backend. On Windows x64 release builders, also set `OPENNOW_BUNDLE_GSTREAMER_RUNTIME=1` to copy a private GStreamer runtime next to the platform-specific streamer binary before Electron packages `extraResources`.
 
 The build script also writes a platform-specific copy under `native/opennow-streamer/bin/<platform>-<arch>/`, for example `darwin-arm64`, `linux-x64`, or `linux-arm64`. Electron checks that directory first in packaged apps and still supports the flat `bin/opennow-streamer` development path.
 
 Runtime dependency notes:
 
-- Windows: install the GStreamer MSVC runtime/development packages with webrtc, d3d11, d3d12, libav, and codecs plugins.
+- Windows: install the GStreamer MSVC runtime/development packages with webrtc, d3d11, d3d12, libav, and codecs plugins. Packaged x64 releases can bundle these files under `native/opennow-streamer/win32-x64/gstreamer`, and Electron will point only the native child process at that private runtime.
 - macOS: install GStreamer with webrtc, applemedia/VideoToolbox, gl, libav, and codec parser plugins.
 - Linux x64: install GStreamer base/good/bad/ugly/libav plus VAAPI plugins for hardware decode.
 - Raspberry Pi 64-bit Linux: install GStreamer base/good/bad/ugly/libav plus v4l2 stateless decoder plugins where the distro provides them.

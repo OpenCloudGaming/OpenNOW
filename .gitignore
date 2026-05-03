@@ -10,6 +10,7 @@ dist/
 target/
 target2/
 target3/
+native/opennow-streamer/bin/*/gstreamer/
 
 # IDE
 .idea/

@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - "native/**"
       - "opennow-stable/**"
       - ".github/workflows/auto-build.yml"
   push:
@@ -11,6 +12,7 @@ on:
       - main
       - dev
     paths:
+      - "native/**"
       - "opennow-stable/**"
       - ".github/workflows/auto-build.yml"
 
@@ -29,34 +31,46 @@ jobs:
           - label: windows-x64
             os: blacksmith-4vcpu-windows-2025
             builder_args: "--win nsis portable --x64"
+            native_build: "true"
+            bundle_gstreamer: "1"
             artifact_paths: |
               opennow-stable/dist-release/*-x64.exe
           - label: windows-arm64
             os: blacksmith-4vcpu-windows-2025
             builder_args: "--win nsis portable --arm64"
+            native_build: "false"
+            bundle_gstreamer: "0"
             artifact_paths: |
               opennow-stable/dist-release/*-arm64.exe
           - label: macos-x64
             os: blacksmith-6vcpu-macos-latest
             builder_args: "--mac dmg zip --x64"
+            native_build: "false"
+            bundle_gstreamer: "0"
             artifact_paths: |
               opennow-stable/dist-release/*.dmg
               opennow-stable/dist-release/*-x64.zip
           - label: macos-arm64
             os: blacksmith-6vcpu-macos-latest
             builder_args: "--mac dmg zip --arm64"
+            native_build: "false"
+            bundle_gstreamer: "0"
             artifact_paths: |
               opennow-stable/dist-release/*.dmg
               opennow-stable/dist-release/*-arm64.zip
           - label: linux-x64
             os: blacksmith-4vcpu-ubuntu-2404
             builder_args: "--linux AppImage deb --x64"
+            native_build: "true"
+            bundle_gstreamer: "0"
             artifact_paths: |
               opennow-stable/dist-release/*-x86_64.AppImage
               opennow-stable/dist-release/*-amd64.deb
           - label: linux-arm64
             os: blacksmith-4vcpu-ubuntu-2404-arm
             builder_args: "--linux AppImage deb --arm64"
+            native_build: "true"
+            bundle_gstreamer: "0"
             artifact_paths: |
               opennow-stable/dist-release/*-arm64.AppImage
               opennow-stable/dist-release/*-arm64.deb
@@ -72,6 +86,7 @@ jobs:
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       npm_config_audit: "false"
       npm_config_fund: "false"
+      GSTREAMER_VERSION: "1.28.2"
       # Use system fpm on arm64 (no prebuilt binaries available)
       USE_SYSTEM_FPM: ${{ matrix.label == 'linux-arm64' && 'true' || 'false' }}
 
@@ -85,6 +100,10 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: "**/package-lock.json"
+
+      - name: Setup Rust
+        if: matrix.native_build == 'true'
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Electron binaries
         uses: actions/cache@v4
@@ -101,12 +120,51 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y fakeroot rpm
+
+      - name: Install Linux GStreamer build/runtime packages
+        if: matrix.native_build == 'true' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libglib2.0-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
+            gstreamer1.0-alsa \
+            gstreamer1.0-libav \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-vaapi
+
+      - name: Install Windows GStreamer SDK
+        if: matrix.native_build == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GSTREAMER_VERSION/msvc"
+          $runtime = Join-Path $env:RUNNER_TEMP "gstreamer-runtime.msi"
+          $devel = Join-Path $env:RUNNER_TEMP "gstreamer-devel.msi"
+          curl.exe --fail --location --retry 3 --output $runtime "$base/gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.msi"
+          curl.exe --fail --location --retry 3 --output $devel "$base/gstreamer-1.0-devel-msvc-x86_64-$env:GSTREAMER_VERSION.msi"
+          Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart") -Wait
+          Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart") -Wait
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=C:\gstreamer\1.0\msvc_x86_64" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Install FPM for arm64 deb builds
         if: matrix.label == 'linux-arm64'
         run: sudo apt-get install -y ruby ruby-dev build-essential && sudo gem install fpm
 
       - name: Install dependencies
         run: npm ci --prefer-offline --no-audit --progress=false
+
+      - name: Build native streamer
+        if: matrix.native_build == 'true'
+        env:
+          OPENNOW_NATIVE_STREAMER_FEATURES: gstreamer
+          OPENNOW_BUNDLE_GSTREAMER_RUNTIME: ${{ matrix.bundle_gstreamer }}
+        run: npm run native:build
 
       - name: Build app bundles
         run: npm run build

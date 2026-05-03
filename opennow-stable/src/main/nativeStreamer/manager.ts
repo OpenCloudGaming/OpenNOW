@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { dirname, resolve, join, delimiter } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import type {
@@ -72,6 +72,67 @@ function isExistingFile(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isExistingDirectory(path: string): boolean {
+  try {
+    return existsSync(path) && statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function prependEnvPath(env: NodeJS.ProcessEnv, key: string, directory: string): void {
+  env[key] = env[key] ? `${directory}${delimiter}${env[key]}` : directory;
+}
+
+function prependProcessPath(env: NodeJS.ProcessEnv, directory: string): void {
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
+  prependEnvPath(env, pathKey, directory);
+}
+
+function configureBundledGstreamerRuntime(
+  env: NodeJS.ProcessEnv,
+  executablePath: string,
+): boolean {
+  const runtimeRoot = join(dirname(executablePath), "gstreamer");
+  if (!isExistingDirectory(runtimeRoot)) {
+    return false;
+  }
+
+  const binDir = join(runtimeRoot, "bin");
+  const pluginDir = join(runtimeRoot, "lib", "gstreamer-1.0");
+  const scanner = join(
+    runtimeRoot,
+    "libexec",
+    "gstreamer-1.0",
+    process.platform === "win32" ? "gst-plugin-scanner.exe" : "gst-plugin-scanner",
+  );
+  const gioModulesDir = join(runtimeRoot, "lib", "gio", "modules");
+
+  if (isExistingDirectory(binDir)) {
+    prependProcessPath(env, binDir);
+  }
+  if (isExistingDirectory(pluginDir)) {
+    env.GST_PLUGIN_PATH = pluginDir;
+    env.GST_PLUGIN_PATH_1_0 = pluginDir;
+    env.GST_PLUGIN_SYSTEM_PATH = pluginDir;
+    env.GST_PLUGIN_SYSTEM_PATH_1_0 = pluginDir;
+  }
+  if (isExistingFile(scanner)) {
+    env.GST_PLUGIN_SCANNER = scanner;
+  }
+  if (isExistingDirectory(gioModulesDir)) {
+    env.GIO_MODULE_DIR = gioModulesDir;
+  }
+  if (process.platform === "linux" && isExistingDirectory(binDir)) {
+    prependEnvPath(env, "LD_LIBRARY_PATH", binDir);
+  }
+  if (process.platform === "darwin" && isExistingDirectory(binDir)) {
+    prependEnvPath(env, "DYLD_LIBRARY_PATH", binDir);
+  }
+
+  return true;
 }
 
 function formatError(error: unknown): string {
@@ -287,6 +348,9 @@ export class NativeStreamerManager {
     }
     if (backendPreference !== "auto") {
       childEnv.OPENNOW_NATIVE_STREAMER_BACKEND = backendPreference;
+    }
+    if (configureBundledGstreamerRuntime(childEnv, executablePath)) {
+      console.log("[NativeStreamer] Using bundled GStreamer runtime:", join(dirname(executablePath), "gstreamer"));
     }
 
     const child = spawn(executablePath, [], {
