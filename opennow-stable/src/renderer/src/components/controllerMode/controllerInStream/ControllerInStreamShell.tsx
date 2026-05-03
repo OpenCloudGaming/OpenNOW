@@ -1,9 +1,9 @@
 import type { JSX, ReactNode } from "react";
 import { Activity } from "lucide-react";
-import type { StreamDiagnosticsStore } from "../../utils/streamDiagnosticsStore";
-import { useStreamDiagnosticsSelector } from "../../utils/streamDiagnosticsStore";
-import { getStreamHealthSummary, type StreamHealthTier } from "../../utils/streamHealthSummary";
-import { SessionElapsedIndicator } from "../ElapsedSessionIndicators";
+import type { StreamDiagnosticsStore } from "../../../utils/streamDiagnosticsStore";
+import { useStreamDiagnosticsSelector } from "../../../utils/streamDiagnosticsStore";
+import { getStreamHealthSummary, type StreamHealthTier } from "../../../utils/streamHealthSummary";
+import { SessionElapsedIndicator } from "../../ElapsedSessionIndicators";
 
 export interface StreamWarningLine {
   message: string;

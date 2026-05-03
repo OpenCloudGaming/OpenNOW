@@ -7197,6 +7197,37 @@ button.game-card-store-chip.owned.active:hover {
     linear-gradient(90deg, rgba(0, 0, 0, 0.14) 0%, rgba(0, 0, 0, 0) 22%, rgba(0, 0, 0, 0) 78%, rgba(0, 0, 0, 0.14) 100%);
 }
 
+.xmb-layout--ps5-home.xmb-ps5-section-settings .xmb-bg-layer {
+  background:
+    radial-gradient(120% 78% at 50% -8%, rgba(146, 194, 255, 0.34) 0%, rgba(146, 194, 255, 0.12) 36%, rgba(20, 28, 34, 0) 58%),
+    linear-gradient(180deg, rgba(31, 62, 112, 0.42) 0%, rgba(16, 34, 68, 0.48) 34%, rgba(10, 20, 40, 0.64) 68%, rgba(6, 12, 24, 0.9) 100%);
+}
+
+.xmb-layout--ps5-home.xmb-ps5-section-settings .xmb-bg-overlay {
+  background:
+    linear-gradient(180deg, rgba(8, 22, 46, 0.16) 0%, rgba(10, 18, 34, 0.12) 44%, rgba(4, 10, 22, 0.36) 100%),
+    radial-gradient(108% 76% at 54% 16%, rgba(166, 204, 255, 0.18), rgba(166, 204, 255, 0) 56%);
+}
+
+.xmb-layout--ps5-home.xmb-ps5-section-settings .xmb-ps5-focus-title {
+  font-size: clamp(2rem, 3.85vw, 2.9rem);
+  letter-spacing: -0.024em;
+  font-weight: 700;
+}
+
+.xmb-layout--ps5-home.xmb-ps5-section-settings .xmb-ps5-focus-subtitle {
+  font-size: 0.9rem;
+  color: rgba(229, 239, 255, 0.78);
+}
+
+.xmb-layout--ps5-home.xmb-ps5-section-settings .xmb-category-item.active .xmb-category-icon-wrap {
+  background: linear-gradient(160deg, rgba(239, 246, 255, 0.42), rgba(148, 193, 255, 0.36));
+  border-color: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 12px 26px rgba(3, 12, 32, 0.52),
+    0 0 0 2px rgba(160, 203, 255, 0.46);
+}
+
 .xmb-layout--ps5-home .xmb-categories-container {
   top: 12%;
 }
@@ -7207,6 +7238,9 @@ button.game-card-store-chip.owned.active:hover {
   margin-right: 28px;
   opacity: 0.48;
   transform: scale(0.82);
+  transition:
+    transform var(--xmb-ps5-dur-medium) var(--xmb-ps5-ease-focus),
+    opacity var(--xmb-ps5-dur-fast) ease;
 }
 
 .xmb-layout--ps5-home .xmb-category-item.active {
@@ -7229,15 +7263,22 @@ button.game-card-store-chip.owned.active:hover {
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.15);
   box-shadow: 0 8px 16px rgba(0, 0, 0, 0.34);
+  transition:
+    transform var(--xmb-ps5-dur-medium) var(--xmb-ps5-ease-focus),
+    border-color var(--xmb-ps5-dur-fast) ease,
+    background var(--xmb-ps5-dur-fast) ease,
+    box-shadow var(--xmb-ps5-dur-medium) ease;
 }
 
 .xmb-layout--ps5-home .xmb-category-item.active .xmb-category-icon-wrap {
   background: rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.28);
   border-color: rgba(255, 255, 255, 0.8);
+  transform: scale(1.04);
 }
 
 .xmb-row-top .xmb-categories-container {
   filter: brightness(1.08);
+  transition: filter var(--xmb-ps5-dur-medium) var(--xmb-ps5-ease-pane);
 }
 
 .xmb-row-top .xmb-category-item {
@@ -7253,11 +7294,15 @@ button.game-card-store-chip.owned.active:hover {
 .xmb-row-top .xmb-ps5-shelf-viewport {
   opacity: 0.36;
   filter: blur(1px);
+  transition:
+    opacity var(--xmb-ps5-dur-medium) ease,
+    filter var(--xmb-ps5-dur-medium) var(--xmb-ps5-ease-pane);
 }
 
 .xmb-row-detail .xmb-categories-container,
 .xmb-row-detail .xmb-ps5-shelf-viewport {
   opacity: 0.62;
+  transition: opacity var(--xmb-ps5-dur-medium) ease;
 }
 
 .xmb-row-detail .xmb-ps5-detail-rail {
@@ -7266,6 +7311,9 @@ button.game-card-store-chip.owned.active:hover {
 
 .xmb-row-detail .xmb-ps5-focus-meta {
   opacity: 0.82;
+  transition:
+    opacity var(--xmb-ps5-dur-medium) ease,
+    transform var(--xmb-ps5-dur-medium) var(--xmb-ps5-ease-pane);
 }
 
 .xmb-layout--ps5-home .xmb-items-container {
@@ -7309,6 +7357,11 @@ button.game-card-store-chip.owned.active:hover {
 .xmb-layout--ps5-home {
   --xmb-ps5-shelf-bottom: calc(84px + 20px);
   --xmb-ps5-shelf-top: clamp(156px, 20dvh, 280px);
+  --xmb-ps5-ease-focus: cubic-bezier(0.16, 1, 0.3, 1);
+  --xmb-ps5-ease-pane: cubic-bezier(0.22, 1, 0.36, 1);
+  --xmb-ps5-dur-fast: 260ms;
+  --xmb-ps5-dur-medium: 380ms;
+  --xmb-ps5-dur-slow: 520ms;
 }
 
 .xmb-wrapper .xmb-ps5-stack {
@@ -7331,6 +7384,9 @@ button.game-card-store-chip.owned.active:hover {
   max-width: min(82vw, 1080px);
   z-index: 6;
   animation: xmb-ps5-focus-in var(--xmb-hero-crossfade-ms, 280ms) cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition:
+    opacity var(--xmb-ps5-dur-medium) ease,
+    transform var(--xmb-ps5-dur-medium) var(--xmb-ps5-ease-pane);
 }
 
 .xmb-ps5-focus-title {
@@ -7997,7 +8053,7 @@ button.game-card-store-chip.owned.active:hover {
   min-height: 100%;
   padding: 12px 24px 28px;
   box-sizing: border-box;
-  transition: transform var(--xmb-shelf-pan-ms, 600ms) cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform var(--xmb-shelf-pan-ms, var(--xmb-ps5-dur-slow)) var(--xmb-ps5-ease-pane);
 }
 
 .xmb-ps5-shelf-track--menu {
@@ -8175,7 +8231,102 @@ button.game-card-store-chip.owned.active:hover {
   opacity: 0.48;
   transform: translateY(12px) scale(0.9) translateZ(0);
   filter: saturate(0.9);
-  transition: all 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    transform var(--xmb-ps5-dur-medium) var(--xmb-ps5-ease-focus),
+    opacity var(--xmb-ps5-dur-fast) ease,
+    filter var(--xmb-ps5-dur-medium) ease,
+    border-color var(--xmb-ps5-dur-fast) ease,
+    box-shadow var(--xmb-ps5-dur-medium) ease,
+    background var(--xmb-ps5-dur-medium) ease;
+}
+
+.xmb-ps5-shelf-track--settings {
+  padding-top: 16px;
+  gap: 14px;
+  transition: transform 460ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.xmb-ps5-menu-tile--settings {
+  position: relative;
+  width: clamp(254px, 22vw, 348px);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.19) 0%, rgba(218, 232, 255, 0.12) 36%, rgba(104, 156, 255, 0.1) 100%),
+    linear-gradient(180deg, rgba(14, 30, 58, 0.52) 0%, rgba(7, 15, 34, 0.62) 100%);
+  border: 1px solid rgba(214, 229, 255, 0.42);
+  box-shadow:
+    0 22px 56px rgba(2, 8, 24, 0.56),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(18px) saturate(1.15);
+  -webkit-backdrop-filter: blur(18px) saturate(1.15);
+  transform: translateY(10px) scale(0.92) translateZ(0);
+  transition:
+    transform 430ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 260ms ease,
+    box-shadow 320ms ease,
+    background 360ms ease,
+    opacity 260ms ease;
+}
+
+.xmb-ps5-menu-tile--settings::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 34% 30%, rgba(255, 255, 255, 0.95), rgba(184, 216, 255, 0.78) 45%, rgba(92, 150, 255, 0.6) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.68);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.24),
+    0 8px 16px rgba(5, 16, 46, 0.52);
+  opacity: 0.78;
+}
+
+.xmb-ps5-menu-tile--settings-root {
+  min-height: 168px;
+}
+
+.xmb-ps5-menu-tile--settings .xmb-ps5-menu-title {
+  font-size: 1.04rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: rgba(244, 248, 255, 0.98);
+  text-shadow: 0 3px 18px rgba(2, 8, 20, 0.48);
+}
+
+.xmb-ps5-menu-tile--settings .xmb-game-meta-chip {
+  background: rgba(232, 242, 255, 0.2);
+  border-color: rgba(224, 238, 255, 0.56);
+  color: rgba(245, 250, 255, 0.98);
+  font-weight: 700;
+}
+
+.xmb-ps5-menu-tile--settings.active {
+  transform: translateY(-4px) scale(1.042) translateZ(10px);
+  border-color: rgba(248, 252, 255, 0.95);
+  box-shadow:
+    0 30px 72px rgba(4, 10, 26, 0.68),
+    0 0 0 2px rgba(218, 235, 255, 0.7),
+    0 0 0 8px rgba(120, 174, 255, 0.22);
+}
+
+.xmb-ps5-menu-tile--settings.active::before {
+  opacity: 1;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.46),
+    0 0 24px rgba(140, 188, 255, 0.65),
+    0 12px 22px rgba(5, 16, 46, 0.58);
+}
+
+.xmb-layout--ps5-home.xmb-ps5-settings-root .xmb-ps5-shelf-track--settings {
+  align-items: flex-end;
+}
+
+.xmb-layout--ps5-home.xmb-ps5-settings-sub .xmb-ps5-menu-tile--settings {
+  width: clamp(312px, 24vw, 388px);
+  min-height: 132px;
 }
 
 .xmb-ps5-menu-tile.active {
@@ -8253,12 +8404,17 @@ button.game-card-store-chip.owned.active:hover {
   width: clamp(260px, 30vw, 420px);
   opacity: 0.58;
   transform: translateY(10px) scale(0.94);
-  transition: all 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 300ms ease,
+    filter 320ms ease;
+  filter: saturate(0.92);
 }
 
 .xmb-ps5-media-tile.active {
   opacity: 1;
   transform: translateY(0) scale(1.02);
+  filter: saturate(1.04);
 }
 
 .xmb-ps5-media-frame {
@@ -8269,7 +8425,10 @@ button.game-card-store-chip.owned.active:hover {
   border: 2px solid rgba(255, 255, 255, 0.18);
   background: rgba(12, 16, 20, 0.6);
   box-shadow: 0 16px 36px rgba(0, 0, 0, 0.46);
-  transition: all 360ms ease;
+  transition:
+    box-shadow 360ms ease,
+    border-color 260ms ease,
+    transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .xmb-ps5-media-tile.active .xmb-ps5-media-frame {
@@ -8277,6 +8436,7 @@ button.game-card-store-chip.owned.active:hover {
   box-shadow:
     0 22px 48px rgba(0, 0, 0, 0.6),
     0 0 0 3px rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.34);
+  transform: translateY(-2px);
 }
 
 .xmb-ps5-media-image {
@@ -8290,7 +8450,8 @@ button.game-card-store-chip.owned.active:hover {
 .xmb-ps5-media-frame--placeholder {
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
-    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.05) 0 8px, rgba(255, 255, 255, 0.01) 8px 16px);
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.05) 0 8px, rgba(255, 255, 255, 0.01) 8px 16px),
+    radial-gradient(120% 120% at 50% 0%, rgb(var(--xmb-theme-r) var(--xmb-theme-g) var(--xmb-theme-b) / 0.2), rgba(0, 0, 0, 0.08) 55%);
 }
 
 .xmb-ps5-media-frame--virtualized {
@@ -8315,6 +8476,48 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.xmb-ps5-media-hub .xmb-ps5-focus-meta {
+  max-width: min(84vw, 1120px);
+}
+
+.xmb-ps5-media-hub-subtitle {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: rgba(229, 239, 255, 0.78);
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.42);
+}
+
+.xmb-ps5-media-tile--placeholder-slot {
+  opacity: 0.72;
+  filter: saturate(0.72);
+}
+
+.xmb-ps5-media-slot-overlay {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(4, 10, 18, 0.06) 0%, rgba(4, 10, 18, 0.62) 100%);
+}
+
+.xmb-ps5-media-slot-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(230, 240, 255, 0.92);
+  color: #0d1624;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 /* Full-screen game hub (Games library browse — replaces shelf until Back) */
