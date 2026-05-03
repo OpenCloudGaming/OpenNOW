@@ -50,6 +50,7 @@ const NATIVE_GAMEPAD_KEEPALIVE_INTERVAL: Duration = Duration::from_millis(100);
 const EXTERNAL_RENDERER_ENV: &str = "OPENNOW_NATIVE_EXTERNAL_RENDERER";
 const NATIVE_VIDEO_API_ENV: &str = "OPENNOW_NATIVE_VIDEO_API";
 const NATIVE_PRESENT_MAX_FPS_ENV: &str = "OPENNOW_NATIVE_PRESENT_MAX_FPS";
+const NATIVE_D3D_FULLSCREEN_ENV: &str = "OPENNOW_NATIVE_D3D_FULLSCREEN";
 
 #[cfg(target_os = "windows")]
 static NATIVE_INPUT_STARTED_AT: OnceLock<Instant> = OnceLock::new();
@@ -1134,6 +1135,7 @@ struct GstreamerPipeline {
     native_window_input_bridge: Option<NativeWindowInputBridge>,
     render_state: GstreamerRenderState,
     present_max_fps: Arc<AtomicU32>,
+    d3d_fullscreen_sink: Arc<AtomicBool>,
     video_liveness: VideoLivenessMonitor,
     event_sender: Option<Sender<Event>>,
     original_remote_ice_credentials: Option<IceCredentials>,
@@ -1164,12 +1166,14 @@ impl GstreamerPipeline {
             video_liveness.stop.clone(),
         );
         let present_max_fps = Arc::new(AtomicU32::new(0));
+        let d3d_fullscreen_sink = Arc::new(AtomicBool::new(false));
         wire_incoming_media_sink(
             &pipeline,
             &webrtc,
             event_sender.clone(),
             render_state.clone(),
             present_max_fps.clone(),
+            d3d_fullscreen_sink.clone(),
             video_liveness.clone(),
         );
 
@@ -1189,6 +1193,7 @@ impl GstreamerPipeline {
             native_window_input_bridge: None,
             render_state,
             present_max_fps,
+            d3d_fullscreen_sink,
             video_liveness,
             event_sender,
             original_remote_ice_credentials: None,
@@ -1208,6 +1213,10 @@ impl GstreamerPipeline {
 
     fn set_present_max_fps(&self, fps: u32) {
         self.present_max_fps.store(fps, Ordering::SeqCst);
+    }
+
+    fn set_d3d_fullscreen_sink(&self, enabled: bool) {
+        self.d3d_fullscreen_sink.store(enabled, Ordering::SeqCst);
     }
 
     fn configure_stats(&self, settings: &StreamSettings, target_bitrate_kbps: u32) {
@@ -3634,6 +3643,20 @@ fn resolve_present_max_fps(requested_fps: u32) -> u32 {
     0
 }
 
+fn resolve_d3d_fullscreen_sink(cloud_gsync_enabled: bool) -> bool {
+    if let Ok(value) = std::env::var(NATIVE_D3D_FULLSCREEN_ENV) {
+        let value = value.trim().to_ascii_lowercase();
+        if value == "1" || value == "on" || value == "true" || value == "yes" {
+            return true;
+        }
+        if value == "0" || value == "off" || value == "false" || value == "no" {
+            return false;
+        }
+    }
+
+    cloud_gsync_enabled
+}
+
 #[cfg(target_os = "windows")]
 fn primary_display_refresh_hz() -> Option<u32> {
     const VREFRESH: i32 = 116;
@@ -3673,6 +3696,7 @@ fn wire_incoming_media_sink(
     event_sender: Option<Sender<Event>>,
     render_state: GstreamerRenderState,
     present_max_fps: Arc<AtomicU32>,
+    d3d_fullscreen_sink: Arc<AtomicBool>,
     video_liveness: VideoLivenessMonitor,
 ) {
     let pipeline = pipeline.downgrade();
@@ -3704,6 +3728,7 @@ fn wire_incoming_media_sink(
                 &event_sender,
                 &streaming_reported,
                 present_max_fps.clone(),
+                d3d_fullscreen_sink.load(Ordering::SeqCst),
                 video_liveness.clone(),
             ) {
                 Ok(()) => return,
@@ -3998,7 +4023,11 @@ fn required_video_chain_elements_available(specs: &[RtpVideoChainSpec]) -> bool 
         .all(|spec| gst::ElementFactory::find(spec.factory).is_some())
 }
 
-fn configure_rtp_video_chain_element(element: &gst::Element, spec: RtpVideoChainSpec) {
+fn configure_rtp_video_chain_element(
+    element: &gst::Element,
+    spec: RtpVideoChainSpec,
+    d3d_fullscreen_sink: bool,
+) {
     match spec.role {
         RtpVideoChainRole::Depayloader => {
             set_property_if_supported(element, "request-keyframe", true);
@@ -4035,7 +4064,7 @@ fn configure_rtp_video_chain_element(element: &gst::Element, spec: RtpVideoChain
             configure_sink_for_low_latency(element);
             set_property_if_supported(element, "direct-swapchain", true);
             set_property_if_supported(element, "error-on-closed", false);
-            set_property_if_supported(element, "fullscreen", false);
+            set_property_if_supported(element, "fullscreen", d3d_fullscreen_sink);
             set_property_if_supported(element, "fullscreen-on-alt-enter", false);
             set_property_from_str_if_supported(element, "fullscreen-toggle-mode", "none");
         }
@@ -4050,6 +4079,7 @@ fn link_rtp_video_pad(
     event_sender: &Option<Sender<Event>>,
     streaming_reported: &Arc<AtomicBool>,
     present_max_fps: Arc<AtomicU32>,
+    d3d_fullscreen_sink: bool,
     video_liveness: VideoLivenessMonitor,
 ) -> Result<(), String> {
     if src_pad.is_linked() {
@@ -4071,9 +4101,18 @@ fn link_rtp_video_pad(
             "info",
             format_video_chain_selection(encoding, video_api, &specs),
         );
+        if d3d_fullscreen_sink {
+            send_log(
+                event_sender,
+                "info",
+                format!(
+                    "Native D3D sink fullscreen presentation enabled for Cloud G-Sync/VRR; set {NATIVE_D3D_FULLSCREEN_ENV}=0 to disable."
+                ),
+            );
+        }
         for spec in &specs {
             let element = make_element(spec.factory)?;
-            configure_rtp_video_chain_element(&element, *spec);
+            configure_rtp_video_chain_element(&element, *spec, d3d_fullscreen_sink);
             if spec.role == RtpVideoChainRole::StatsOverlay {
                 video_liveness.set_stats_overlay(Some(element.clone()));
             }
@@ -4841,7 +4880,9 @@ impl NativeStreamerBackend for GstreamerBackend {
         };
 
         let present_max_fps = resolve_present_max_fps(context.settings.fps);
+        let d3d_fullscreen_sink = resolve_d3d_fullscreen_sink(context.settings.enable_cloud_gsync);
         pipeline.set_present_max_fps(present_max_fps);
+        pipeline.set_d3d_fullscreen_sink(d3d_fullscreen_sink);
         pipeline.configure_stats(&context.settings, prepared.nvst_params.max_bitrate_kbps);
         if present_max_fps > 0 {
             events.push(Event::Log {
@@ -4849,6 +4890,14 @@ impl NativeStreamerBackend for GstreamerBackend {
                 message: format!(
                     "Native present limiter enabled at {present_max_fps} fps for {} fps stream; set {NATIVE_PRESENT_MAX_FPS_ENV}=0 to disable.",
                     context.settings.fps
+                ),
+            });
+        }
+        if d3d_fullscreen_sink {
+            events.push(Event::Log {
+                level: "info",
+                message: format!(
+                    "Native D3D fullscreen presentation is enabled for Cloud G-Sync/VRR; set {NATIVE_D3D_FULLSCREEN_ENV}=0 to disable."
                 ),
             });
         }

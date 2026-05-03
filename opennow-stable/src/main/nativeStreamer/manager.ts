@@ -4,14 +4,16 @@ import { existsSync, statSync } from "node:fs";
 import { dirname, resolve, join, delimiter } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
-import type {
-  IceCandidatePayload,
-  KeyframeRequest,
-  MainToRendererSignalingEvent,
-  NativeStreamerBackendPreference,
-  NativeRenderSurface,
-  NativeStreamerSessionContext,
-  SendAnswerRequest,
+import {
+  nativeStreamerFeatureModeToEnvValue,
+  type IceCandidatePayload,
+  type KeyframeRequest,
+  type MainToRendererSignalingEvent,
+  type NativeStreamerBackendPreference,
+  type NativeStreamerFeatureMode,
+  type NativeRenderSurface,
+  type NativeStreamerSessionContext,
+  type SendAnswerRequest,
 } from "@shared/gfn";
 import {
   NATIVE_STREAMER_PROTOCOL_VERSION,
@@ -40,6 +42,9 @@ interface NativeStreamerManagerOptions extends NativeStreamerCallbacks {
   mainDir: string;
   getBackendPreference(): NativeStreamerBackendPreference;
   getExecutablePathOverride(): string;
+  getCloudGsyncMode(): NativeStreamerFeatureMode;
+  getD3dFullscreenMode(): NativeStreamerFeatureMode;
+  getExternalRendererEnabled(): boolean;
 }
 
 interface PendingRequest {
@@ -195,6 +200,11 @@ export class NativeStreamerManager {
     }
 
     if (this.activeSessionId !== context.session.sessionId) {
+      if (context.settings.enableCloudGsync) {
+        console.log(
+          "[NativeStreamer] Cloud G-Sync/VRR mode resolved for this session; preserving unthrottled low-latency present behavior.",
+        );
+      }
       await this.request({
         type: "start",
         context,
@@ -343,9 +353,11 @@ export class NativeStreamerManager {
       ...process.env,
       OPENNOW_NATIVE_STREAMER_PROTOCOL: String(NATIVE_STREAMER_PROTOCOL_VERSION),
     };
-    if (process.platform === "win32" && childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER === undefined) {
-      childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER = "1";
+    if (process.platform === "win32") {
+      childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER = this.options.getExternalRendererEnabled() ? "1" : "0";
     }
+    childEnv.OPENNOW_NATIVE_CLOUD_GSYNC = nativeStreamerFeatureModeToEnvValue(this.options.getCloudGsyncMode());
+    childEnv.OPENNOW_NATIVE_D3D_FULLSCREEN = nativeStreamerFeatureModeToEnvValue(this.options.getD3dFullscreenMode());
     if (backendPreference !== "auto") {
       childEnv.OPENNOW_NATIVE_STREAMER_BACKEND = backendPreference;
     }

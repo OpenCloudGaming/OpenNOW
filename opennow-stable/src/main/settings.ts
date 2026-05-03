@@ -11,6 +11,7 @@ import type {
   KeyboardLayout,
   StreamClientMode,
   NativeStreamerBackendPreference,
+  NativeStreamerFeatureMode,
 } from "@shared/gfn";
 import { DEFAULT_KEYBOARD_LAYOUT, getDefaultStreamPreferences, normalizeStreamPreferences } from "@shared/gfn";
 
@@ -31,6 +32,12 @@ export interface Settings {
   nativeStreamerBackend: NativeStreamerBackendPreference;
   /** Optional path to a custom native streamer executable */
   nativeStreamerExecutablePath: string;
+  /** Native-only override for Cloud G-Sync / VRR display detection */
+  nativeCloudGsyncMode: NativeStreamerFeatureMode;
+  /** Native D3D sink fullscreen presentation override */
+  nativeD3dFullscreenMode: NativeStreamerFeatureMode;
+  /** Use the native GStreamer renderer window instead of Electron HWND embedding */
+  nativeExternalRenderer: boolean;
   /** Preferred video codec */
   codec: VideoCodec;
   /** Preferred video decode acceleration mode */
@@ -126,6 +133,9 @@ const DEFAULT_SETTINGS: Settings = {
   streamClientMode: "web",
   nativeStreamerBackend: "auto",
   nativeStreamerExecutablePath: "",
+  nativeCloudGsyncMode: "auto",
+  nativeD3dFullscreenMode: "auto",
+  nativeExternalRenderer: true,
   codec: DEFAULT_STREAM_PREFERENCES.codec,
   decoderPreference: "auto",
   encoderPreference: "auto",

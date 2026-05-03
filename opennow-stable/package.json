@@ -23,7 +23,7 @@
     "native:check": "cargo check --manifest-path ../native/opennow-streamer/Cargo.toml",
     "native:build": "node scripts/build-native-streamer.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test src/shared/gfn.test.ts src/renderer/src/lib/launchOwnership.test.ts src/renderer/src/components/GameCard.test.ts src/renderer/src/gfn/inputProtocol.test.ts"
+    "test": "tsx --test src/shared/gfn.test.ts src/shared/cloudGsync.test.ts src/main/gfn/cloudmatch.test.ts src/renderer/src/lib/launchOwnership.test.ts src/renderer/src/components/GameCard.test.ts src/renderer/src/gfn/inputProtocol.test.ts"
   },
   "dependencies": {
     "discord-rpc": "^4.0.1",

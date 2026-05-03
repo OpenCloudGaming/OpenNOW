@@ -39,6 +39,7 @@ export const IPC_CHANNELS = {
   SETTINGS_SET: "settings:set",
   SETTINGS_RESET: "settings:reset",
   SETTINGS_SELECT_NATIVE_STREAMER_EXECUTABLE: "settings:select-native-streamer-executable",
+  NATIVE_CLOUD_GSYNC_CAPABILITIES: "native:cloud-gsync-capabilities",
   MICROPHONE_PERMISSION_GET: "microphone:permission:get",
   LOGS_EXPORT: "logs:export",
   LOGS_GET_RENDERER: "logs:get-renderer",

@@ -842,6 +842,9 @@ export function App(): JSX.Element {
     streamClientMode: "web",
     nativeStreamerBackend: "auto",
     nativeStreamerExecutablePath: "",
+    nativeCloudGsyncMode: "auto",
+    nativeD3dFullscreenMode: "auto",
+    nativeExternalRenderer: true,
     codec: DEFAULT_STREAM_PREFERENCES.codec,
     decoderPreference: "auto",
     encoderPreference: "auto",
@@ -1423,7 +1426,10 @@ export function App(): JSX.Element {
     keyboardLayout: settings.keyboardLayout,
     gameLanguage: settings.gameLanguage,
     enableL4S: settings.enableL4S,
-    enableCloudGsync: settings.streamClientMode === "native" ? false : settings.enableCloudGsync,
+    enableCloudGsync: settings.enableCloudGsync,
+    clientMode: settings.streamClientMode,
+    nativeStreamerBackend: settings.nativeStreamerBackend,
+    nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
   }), [
     settings.codec,
     settings.colorQuality,
@@ -1433,19 +1439,27 @@ export function App(): JSX.Element {
     settings.gameLanguage,
     settings.keyboardLayout,
     settings.maxBitrateMbps,
+    settings.nativeStreamerBackend,
+    settings.nativeCloudGsyncMode,
     settings.resolution,
     settings.streamClientMode,
   ]);
 
-  const buildSignalingConnectRequest = useCallback((activeSession: SessionInfo): SignalingConnectRequest => ({
-    sessionId: activeSession.sessionId,
-    signalingServer: activeSession.signalingServer,
-    signalingUrl: activeSession.signalingUrl,
-    nativeStreamer: {
-      session: activeSession,
-      settings: buildCurrentStreamSettings(),
-    },
-  }), [buildCurrentStreamSettings]);
+  const buildSignalingConnectRequest = useCallback((activeSession: SessionInfo): SignalingConnectRequest => {
+    const streamSettings = buildCurrentStreamSettings();
+    return {
+      sessionId: activeSession.sessionId,
+      signalingServer: activeSession.signalingServer,
+      signalingUrl: activeSession.signalingUrl,
+      nativeStreamer: {
+        session: activeSession,
+        settings: {
+          ...streamSettings,
+          enableCloudGsync: activeSession.negotiatedStreamProfile?.enableCloudGsync ?? streamSettings.enableCloudGsync,
+        },
+      },
+    };
+  }, [buildCurrentStreamSettings]);
 
   // Session ref sync
   useEffect(() => {

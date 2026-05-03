@@ -424,6 +424,7 @@ mod tests {
                 max_bitrate_mbps: 75,
                 codec: VideoCodec::H265,
                 color_quality: ColorQuality::TenBit420,
+                enable_cloud_gsync: false,
             },
         }
     }

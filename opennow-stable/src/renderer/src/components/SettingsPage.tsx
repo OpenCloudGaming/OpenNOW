@@ -1,4 +1,4 @@
-import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, FolderOpen } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, FolderOpen, Cpu } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -38,7 +38,7 @@ interface SettingsPageProps {
 
 type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 
-type SettingsSectionId = "stream" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
+type SettingsSectionId = "stream" | "native-streamer" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
 
 const POSTER_SIZE_MIN = 75;
 const POSTER_SIZE_MAX = 135;
@@ -65,6 +65,12 @@ const nativeStreamerBackendOptions: Array<{ value: Settings["nativeStreamerBacke
   { value: "auto", label: "Auto" },
   { value: "gstreamer", label: "GStreamer" },
   { value: "stub", label: "Stub" },
+];
+
+const nativeFeatureModeOptions: Array<{ value: Settings["nativeCloudGsyncMode"]; label: string; description: string }> = [
+  { value: "auto", label: "Auto", description: "Use detection and the native streamer default." },
+  { value: "disabled", label: "Disabled", description: "Force the native override off for debugging." },
+  { value: "forced", label: "Forced", description: "Bypass detection when you know the display path supports it." },
 ];
 
 /* ── Static fallbacks (used when MES API is unavailable) ─────────── */
@@ -1316,6 +1322,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
   const showAll = settingsSearch.length > 0;
   const showStream = activeSection === "stream" || showAll;
+  const showNativeStreamer = activeSection === "native-streamer" || showAll;
   const showGame = activeSection === "game" || showAll;
   const showAudio = activeSection === "audio" || showAll;
   const showInput = activeSection === "input" || showAll;
@@ -1354,6 +1361,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         <nav className="settings-nav">
           {([
             { id: "stream" as SettingsSectionId, label: "Stream", icon: <Wifi size={15} /> },
+            { id: "native-streamer" as SettingsSectionId, label: "Native Streamer", icon: <Cpu size={15} /> },
             { id: "game" as SettingsSectionId, label: "Game", icon: <Globe size={15} /> },
             { id: "audio" as SettingsSectionId, label: "Audio", icon: <Mic size={15} /> },
             { id: "input" as SettingsSectionId, label: "Input", icon: <Keyboard size={15} /> },
@@ -1727,84 +1735,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   <div className="settings-row-top settings-row-top--compact">
                     <label className="settings-label settings-label--wrap">
                       <span className="settings-label-title">
-                        Native Streamer
-                        <span className="settings-inline-badge settings-inline-badge--beta">Experimental</span>
-                      </span>
-                    </label>
-                    <label className="settings-toggle">
-                      <input
-                        type="checkbox"
-                        checked={settings.streamClientMode === "native"}
-                        onChange={(e) => handleChange("streamClientMode", e.target.checked ? "native" : "web")}
-                      />
-                      <span className="settings-toggle-track" />
-                    </label>
-                  </div>
-                  <span className="settings-subtle-hint">
-                    Use the native streamer process for new sessions when available. OpenNOW falls back to the web streamer if the native path cannot accept the stream.
-                  </span>
-                  {settings.streamClientMode === "native" && (
-                    <div className="settings-native-streamer-options">
-                      <div className="settings-row">
-                        <label className="settings-label">Native Backend</label>
-                        <select
-                          className="settings-text-input settings-select"
-                          value={settings.nativeStreamerBackend}
-                          onChange={(e) => handleChange("nativeStreamerBackend", e.target.value as Settings["nativeStreamerBackend"])}
-                        >
-                          {nativeStreamerBackendOptions.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="settings-row settings-row--top-aligned">
-                        <label className="settings-label">Streamer Executable</label>
-                        <div className="settings-path-setting">
-                          <div className="settings-path-control">
-                            <input
-                              type="text"
-                              className="settings-text-input settings-path-input"
-                              value={settings.nativeStreamerExecutablePath}
-                              onChange={(e) => handleChange("nativeStreamerExecutablePath", e.target.value)}
-                              placeholder="Use bundled executable"
-                              spellCheck={false}
-                            />
-                            <button
-                              type="button"
-                              className="settings-icon-button"
-                              onClick={handleSelectNativeStreamerExecutable}
-                              title="Browse for streamer executable"
-                              aria-label="Browse for streamer executable"
-                            >
-                              <FolderOpen size={15} />
-                            </button>
-                            {settings.nativeStreamerExecutablePath && (
-                              <button
-                                type="button"
-                                className="settings-icon-button"
-                                onClick={() => handleChange("nativeStreamerExecutablePath", "")}
-                                title="Use bundled executable"
-                                aria-label="Use bundled executable"
-                              >
-                                <X size={15} />
-                              </button>
-                            )}
-                          </div>
-                          <span className="settings-subtle-hint">
-                            Leave empty to use the bundled streamer or OPENNOW_NATIVE_STREAMER.
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="settings-row settings-row--column">
-                  <div className="settings-row-top settings-row-top--compact">
-                    <label className="settings-label settings-label--wrap">
-                      <span className="settings-label-title">
                         Experimental L4S Request
                         <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
                       </span>
@@ -1820,28 +1750,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
                   <span className="settings-subtle-hint">
                     Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path.
-                  </span>
-                </div>
-
-                <div className="settings-row settings-row--column">
-                  <div className="settings-row-top settings-row-top--compact">
-                    <label className="settings-label settings-label--wrap">
-                      <span className="settings-label-title">
-                        Cloud G-Sync / Variable Refresh Rate
-                        <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
-                      </span>
-                    </label>
-                    <label className="settings-toggle">
-                      <input
-                        type="checkbox"
-                        checked={settings.enableCloudGsync}
-                        onChange={(e) => handleChange("enableCloudGsync", e.target.checked)}
-                      />
-                      <span className="settings-toggle-track" />
-                    </label>
-                  </div>
-                  <span className="settings-subtle-hint">
-                    Request Cloud G-Sync (VRR) on newly created sessions. Smooths frame pacing on variable frame rate streams. Requires a VRR-capable display. The service may ignore this request depending on your subscription tier.
                   </span>
                 </div>
               </div>
@@ -1935,6 +1843,172 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               )}
             </div>
           </>
+        )}
+
+        {/* ═══ NATIVE STREAMER ═════════════════════════════ */}
+        {showNativeStreamer && (
+          <section className="settings-section">
+            {showAll && <div className="settings-section-context">Native Streamer</div>}
+            <div className="settings-section-header">
+              <h2>Native Streamer</h2>
+            </div>
+            <div className="settings-rows">
+              <div className="settings-row settings-row--column">
+                <div className="settings-row-top settings-row-top--compact">
+                  <label className="settings-label settings-label--wrap">
+                    <span className="settings-label-title">
+                      Use Native Streamer
+                      <span className="settings-inline-badge settings-inline-badge--beta">Experimental</span>
+                    </span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.streamClientMode === "native"}
+                      onChange={(e) => handleChange("streamClientMode", e.target.checked ? "native" : "web")}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
+                </div>
+                <span className="settings-subtle-hint">
+                  Use the native streamer process for new sessions when available. OpenNOW falls back to the web streamer if the native path cannot accept the stream.
+                </span>
+              </div>
+
+              <div className="settings-row">
+                <label className="settings-label">Native Backend</label>
+                <select
+                  className="settings-text-input settings-select"
+                  value={settings.nativeStreamerBackend}
+                  onChange={(e) => handleChange("nativeStreamerBackend", e.target.value as Settings["nativeStreamerBackend"])}
+                >
+                  {nativeStreamerBackendOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="settings-row settings-row--top-aligned">
+                <label className="settings-label">Streamer Executable</label>
+                <div className="settings-path-setting">
+                  <div className="settings-path-control">
+                    <input
+                      type="text"
+                      className="settings-text-input settings-path-input"
+                      value={settings.nativeStreamerExecutablePath}
+                      onChange={(e) => handleChange("nativeStreamerExecutablePath", e.target.value)}
+                      placeholder="Use bundled executable"
+                      spellCheck={false}
+                    />
+                    <button
+                      type="button"
+                      className="settings-icon-button"
+                      onClick={handleSelectNativeStreamerExecutable}
+                      title="Browse for streamer executable"
+                      aria-label="Browse for streamer executable"
+                    >
+                      <FolderOpen size={15} />
+                    </button>
+                    {settings.nativeStreamerExecutablePath && (
+                      <button
+                        type="button"
+                        className="settings-icon-button"
+                        onClick={() => handleChange("nativeStreamerExecutablePath", "")}
+                        title="Use bundled executable"
+                        aria-label="Use bundled executable"
+                      >
+                        <X size={15} />
+                      </button>
+                    )}
+                  </div>
+                  <span className="settings-subtle-hint">
+                    Leave empty to use the bundled streamer or OPENNOW_NATIVE_STREAMER.
+                  </span>
+                </div>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <div className="settings-row-top settings-row-top--compact">
+                  <label className="settings-label settings-label--wrap">
+                    <span className="settings-label-title">
+                      Cloud G-Sync / Variable Refresh Rate
+                      <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
+                    </span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.enableCloudGsync}
+                      onChange={(e) => handleChange("enableCloudGsync", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
+                </div>
+                <span className="settings-subtle-hint">
+                  Request Cloud G-Sync on newly created sessions. Native mode also checks display support before requesting it unless detection is forced below.
+                </span>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <label className="settings-label">Cloud G-Sync Detection</label>
+                <div className="settings-chip-row">
+                  {nativeFeatureModeOptions.map((option) => (
+                    <button
+                      key={`cloud-gsync-${option.value}`}
+                      className={`settings-chip ${settings.nativeCloudGsyncMode === option.value ? "active" : ""}`}
+                      onClick={() => handleChange("nativeCloudGsyncMode", option.value)}
+                      title={option.description}
+                    >
+                      <span>{option.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <span className="settings-subtle-hint">
+                  Maps to OPENNOW_NATIVE_CLOUD_GSYNC. Forced still requires the Cloud G-Sync request toggle and the session FPS threshold.
+                </span>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <label className="settings-label">D3D Fullscreen Presentation</label>
+                <div className="settings-chip-row">
+                  {nativeFeatureModeOptions.map((option) => (
+                    <button
+                      key={`d3d-fullscreen-${option.value}`}
+                      className={`settings-chip ${settings.nativeD3dFullscreenMode === option.value ? "active" : ""}`}
+                      onClick={() => handleChange("nativeD3dFullscreenMode", option.value as Settings["nativeD3dFullscreenMode"])}
+                      title={option.description}
+                    >
+                      <span>{option.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <span className="settings-subtle-hint">
+                  Maps to OPENNOW_NATIVE_D3D_FULLSCREEN. Auto enables fullscreen presentation when native Cloud G-Sync resolves on.
+                </span>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <div className="settings-row-top settings-row-top--compact">
+                  <label className="settings-label settings-label--wrap">
+                    <span className="settings-label-title">External Renderer Window</span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.nativeExternalRenderer}
+                      onChange={(e) => handleChange("nativeExternalRenderer", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
+                </div>
+                <span className="settings-subtle-hint">
+                  Maps to OPENNOW_NATIVE_EXTERNAL_RENDERER. Disable it to retry Electron HWND embedding on the next native streamer launch.
+                </span>
+              </div>
+            </div>
+          </section>
         )}
 
         {/* ═══ GAME ══════════════════════════════════════ */}

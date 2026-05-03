@@ -59,6 +59,9 @@ pub struct StreamSettings {
     pub max_bitrate_mbps: u32,
     pub codec: VideoCodec,
     pub color_quality: ColorQuality,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub enable_cloud_gsync: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]

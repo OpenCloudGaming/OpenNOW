@@ -1,8 +1,22 @@
+import type { NativeCloudGsyncCapabilities, CloudGsyncResolution } from "./cloudGsync";
+
 export type VideoCodec = "H264" | "H265" | "AV1";
 export type VideoAccelerationPreference = "auto" | "hardware" | "software";
 export type StreamClientMode = "web" | "native";
 export type NativeStreamerBackend = "stub" | "gstreamer";
 export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
+export type NativeStreamerFeatureMode = "auto" | "disabled" | "forced";
+
+export function nativeStreamerFeatureModeToEnvValue(mode: NativeStreamerFeatureMode): "auto" | "0" | "1" {
+  switch (mode) {
+    case "disabled":
+      return "0";
+    case "forced":
+      return "1";
+    default:
+      return "auto";
+  }
+}
 
 /** Color quality (bit depth + chroma subsampling), matching Rust ColorQuality enum */
 export type ColorQuality = "8bit_420" | "8bit_444" | "10bit_420" | "10bit_444";
@@ -137,6 +151,9 @@ export interface Settings {
   streamClientMode: StreamClientMode;
   nativeStreamerBackend: NativeStreamerBackendPreference;
   nativeStreamerExecutablePath: string;
+  nativeCloudGsyncMode: NativeStreamerFeatureMode;
+  nativeD3dFullscreenMode: NativeStreamerFeatureMode;
+  nativeExternalRenderer: boolean;
   codec: VideoCodec;
   decoderPreference: VideoAccelerationPreference;
   encoderPreference: VideoAccelerationPreference;
@@ -462,6 +479,16 @@ export interface StreamSettings {
   enableL4S: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
   enableCloudGsync: boolean;
+  /** Renderer-selected client path; main uses this to apply native-only Cloud G-Sync gating. */
+  clientMode?: StreamClientMode;
+  /** Selected native streamer backend; stub cannot support Cloud G-Sync presentation. */
+  nativeStreamerBackend?: NativeStreamerBackendPreference;
+  /** Native-only override for Cloud G-Sync display detection. */
+  nativeCloudGsyncMode?: NativeStreamerFeatureMode;
+  /** User's raw Cloud G-Sync preference before main-process capability resolution. */
+  requestedCloudGsync?: boolean;
+  /** Diagnostics from the main-process Cloud G-Sync resolver. */
+  cloudGsyncResolution?: CloudGsyncResolution;
 }
 
 export interface SessionCreateRequest {
@@ -531,6 +558,8 @@ export interface NegotiatedStreamProfile {
   fps?: number;
   colorQuality?: ColorQuality;
   enableL4S?: boolean;
+  enableCloudGsync?: boolean;
+  enableReflex?: boolean;
 }
 
 export interface SessionAdMediaFile {
@@ -798,6 +827,7 @@ export interface OpenNowApi {
   getActiveSessions(token?: string, streamingBaseUrl?: string): Promise<ActiveSessionInfo[]>;
   /** Claim/resume an existing session */
   claimSession(input: SessionClaimRequest): Promise<SessionInfo>;
+  getNativeCloudGsyncCapabilities(): Promise<NativeCloudGsyncCapabilities>;
   /** Show dialog asking user how to handle session conflict */
   showSessionConflictDialog(): Promise<SessionConflictChoice>;
   connectSignaling(input: SignalingConnectRequest): Promise<void>;

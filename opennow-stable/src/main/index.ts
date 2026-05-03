@@ -42,6 +42,7 @@ import type {
   SessionPollRequest,
   SessionStopRequest,
   SessionClaimRequest,
+  StreamSettings,
   SignalingConnectRequest,
   SendAnswerRequest,
   IceCandidatePayload,
@@ -74,6 +75,7 @@ import type {
   ThankYouSupporter,
 } from "@shared/gfn";
 import { serializeSessionErrorTransport } from "@shared/sessionError";
+import { normalizeCloudGsyncOverride, resolveCloudGsync } from "@shared/cloudGsync";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
 
@@ -92,6 +94,7 @@ import { isSessionError, SessionError, GfnErrorCode } from "./gfn/errorCodes";
 import { connectDiscordRpc, setActivity, clearActivity, destroyDiscordRpc, getCurrentActivity, isDiscordRpcConnected } from "./discordRpc";
 import { createAppUpdaterController, type AppUpdaterController } from "./updater";
 import { NativeStreamerManager } from "./nativeStreamer/manager";
+import { getNativeCloudGsyncCapabilities } from "./nativeCloudGsync";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -699,6 +702,9 @@ function getNativeStreamerManager(): NativeStreamerManager {
     mainDir: __dirname,
     getBackendPreference: () => settingsManager?.get("nativeStreamerBackend") ?? "auto",
     getExecutablePathOverride: () => settingsManager?.get("nativeStreamerExecutablePath") ?? "",
+    getCloudGsyncMode: () => settingsManager?.get("nativeCloudGsyncMode") ?? "auto",
+    getD3dFullscreenMode: () => settingsManager?.get("nativeD3dFullscreenMode") ?? "auto",
+    getExternalRendererEnabled: () => settingsManager?.get("nativeExternalRenderer") ?? true,
     emit: emitToRenderer,
     sendAnswer: async (payload) => {
       if (!signalingClient) {
@@ -1011,6 +1017,38 @@ function isAutoResumeReadySession(entry: ActiveSessionInfo): boolean {
 
 function isActiveCreateSessionConflict(entry: ActiveSessionInfo): boolean {
   return ACTIVE_CREATE_SESSION_STATUSES.has(entry.status);
+}
+
+async function resolveSessionCloudGsyncSettings(settings: StreamSettings): Promise<StreamSettings> {
+  const userRequested = settings.enableCloudGsync;
+  const clientMode = settings.clientMode ?? "web";
+  const cloudGsyncMode = settings.nativeCloudGsyncMode ?? "auto";
+  const capabilities = clientMode === "native"
+    ? await getNativeCloudGsyncCapabilities(cloudGsyncMode)
+    : undefined;
+  const resolution = resolveCloudGsync({
+    userRequested,
+    fps: settings.fps,
+    clientMode,
+    nativeBackendAvailable: clientMode === "native" && settings.nativeStreamerBackend !== "stub",
+    capabilities,
+    override: normalizeCloudGsyncOverride(cloudGsyncMode),
+  });
+
+  console.log(
+    `[CloudGsync] requested=${resolution.requested} resolved=${resolution.enabled} reflex=${resolution.reflexEnabled} reason=${resolution.reason} clientMode=${clientMode} fps=${settings.fps} capabilities=${JSON.stringify(resolution.capabilities)}`,
+  );
+
+  if (resolution.enabled) {
+    console.log("[CloudGsync] Native Cloud G-Sync/VRR mode is resolved on; keeping low-latency unthrottled presentation.");
+  }
+
+  return {
+    ...settings,
+    requestedCloudGsync: userRequested,
+    enableCloudGsync: resolution.enabled,
+    cloudGsyncResolution: resolution,
+  };
 }
 
 function selectReadySessionToClaim(activeSessions: ActiveSessionInfo[], numericAppId: number): ActiveSessionInfo | null {
@@ -1371,6 +1409,8 @@ function registerIpcHandlers(): void {
     const token = await resolveJwt(payload.token);
     const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
     const forceNewSession = shouldForceNewSession(payload.existingSessionStrategy);
+    const resolvedSettings = await resolveSessionCloudGsyncSettings(payload.settings);
+    const resolvedPayload: SessionCreateRequest = { ...payload, settings: resolvedSettings };
 
     /**
      * Attempt to find and claim an existing active session.
@@ -1390,7 +1430,7 @@ function registerIpcHandlers(): void {
       try {
         const activeSessions = await getActiveSessions(token, streamingBaseUrl);
         if (activeSessions.length === 0) return null;
-        const numericAppId = parseInt(payload.appId, 10);
+        const numericAppId = parseInt(resolvedPayload.appId, 10);
 
         // First prefer a paused/ready session (status 2 or 3) that can be RESUME'd.
         const readyCandidate = selectReadySessionToClaim(activeSessions, numericAppId);
@@ -1403,8 +1443,8 @@ function registerIpcHandlers(): void {
             streamingBaseUrl,
             sessionId: readyCandidate.sessionId,
             serverIp: readyCandidate.serverIp!,
-            appId: payload.appId,
-            settings: payload.settings,
+            appId: resolvedPayload.appId,
+            settings: resolvedPayload.settings,
           });
         }
 
@@ -1420,7 +1460,7 @@ function registerIpcHandlers(): void {
               token,
               streamingBaseUrl,
               serverIp: launchingCandidate.serverIp!,
-              zone: payload.zone,
+              zone: resolvedPayload.zone,
               sessionId: launchingCandidate.sessionId,
             });
           } catch (hydrateError) {
@@ -1431,7 +1471,7 @@ function registerIpcHandlers(): void {
             return {
               sessionId: launchingCandidate.sessionId,
               status: 1,
-              zone: payload.zone,
+              zone: resolvedPayload.zone,
               streamingBaseUrl,
               serverIp: launchingCandidate.serverIp!,
               signalingServer: launchingCandidate.serverIp!,
@@ -1464,11 +1504,11 @@ function registerIpcHandlers(): void {
         await stopActiveSessionsForCreate({
           token,
           streamingBaseUrl,
-          zone: payload.zone,
-          appId: payload.appId,
+          zone: resolvedPayload.zone,
+          appId: resolvedPayload.appId,
         });
       }
-      const sessionResult = await createSession({ ...payload, token, streamingBaseUrl });
+      const sessionResult = await createSession({ ...resolvedPayload, token, streamingBaseUrl });
       if (settingsManager.get("discordRichPresence")) {
         void setActivity(payload.internalTitle || payload.appId, new Date(), payload.appId);
       }
@@ -1547,10 +1587,14 @@ function registerIpcHandlers(): void {
     try {
       const token = await resolveJwt(payload.token);
       const streamingBaseUrl = payload.streamingBaseUrl ?? authService.getSelectedProvider().streamingServiceUrl;
+      const resolvedSettings = payload.settings
+        ? await resolveSessionCloudGsyncSettings(payload.settings)
+        : undefined;
       return claimSession({
         ...payload,
         token,
         streamingBaseUrl,
+        settings: resolvedSettings,
       });
     } catch (error) {
       rethrowSerializedSessionError(error);
@@ -1755,13 +1799,22 @@ function registerIpcHandlers(): void {
         (key === "streamClientMode" && value !== "native")
         || key === "nativeStreamerBackend"
         || key === "nativeStreamerExecutablePath"
+        || key === "nativeCloudGsyncMode"
+        || key === "nativeD3dFullscreenMode"
+        || key === "nativeExternalRenderer"
       ) {
         void nativeStreamerManager?.stop(
           key === "nativeStreamerBackend"
             ? "native streamer backend changed"
             : key === "nativeStreamerExecutablePath"
               ? "native streamer executable changed"
-              : "native streamer disabled",
+              : key === "nativeCloudGsyncMode"
+                ? "native Cloud G-Sync mode changed"
+                : key === "nativeD3dFullscreenMode"
+                  ? "native D3D fullscreen mode changed"
+                  : key === "nativeExternalRenderer"
+                    ? "native external renderer setting changed"
+                    : "native streamer disabled",
         );
         nativeStreamerContext = null;
         nativeStreamerFallbackSessionId = null;
@@ -1812,6 +1865,12 @@ function registerIpcHandlers(): void {
       return null;
     }
     return result.filePaths[0] ?? null;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.NATIVE_CLOUD_GSYNC_CAPABILITIES, async () => {
+    const capabilities = await getNativeCloudGsyncCapabilities(settingsManager?.get("nativeCloudGsyncMode") ?? "auto");
+    console.log(`[CloudGsync] capability probe: ${JSON.stringify(capabilities)}`);
+    return capabilities;
   });
 
   ipcMain.handle(IPC_CHANNELS.MICROPHONE_PERMISSION_GET, async (): Promise<MicrophonePermissionResult> => {

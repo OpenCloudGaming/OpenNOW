@@ -24,6 +24,7 @@ import {
   colorQualityChromaFormat,
   resolveGfnKeyboardLayout,
 } from "@shared/gfn";
+import { DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR } from "@shared/cloudGsync";
 
 import type { CloudMatchRequest, CloudMatchResponse, GetSessionsResponse } from "./types";
 import { SessionError } from "./errorCodes";
@@ -47,6 +48,46 @@ const GFN_AD_MEDIA_PROFILE_ORDER = new Map<string, number>([
   ["webm", 1],
   ["hlsadaptive", 2],
 ]);
+
+export function buildRequestedStreamingFeatures(
+  settings: StreamSettings,
+  bitDepth: number,
+  chromaFormat: number,
+  hdrEnabled: boolean,
+): CloudMatchRequest["sessionRequestData"]["requestedStreamingFeatures"] {
+  const cloudGsync = settings.enableCloudGsync;
+
+  return {
+    reflex: shouldRequestReflex(settings),
+    bitDepth,
+    cloudGsync,
+    enabledL4S: settings.enableL4S,
+    mouseMovementFlags: 0,
+    trueHdr: hdrEnabled,
+    supportedHidDevices: 0,
+    profile: 0,
+    fallbackToLogicalResolution: false,
+    hidDevices: null,
+    chromaFormat,
+    prefilterMode: 0,
+    prefilterSharpness: 0,
+    prefilterNoiseReduction: 0,
+    hudStreamingMode: 0,
+    sdrColorSpace: 2,
+    hdrColorSpace: hdrEnabled ? 4 : 0,
+  };
+}
+
+export function shouldRequestReflex(settings: StreamSettings): boolean {
+  if (typeof settings.cloudGsyncResolution?.reflexEnabled === "boolean") {
+    return settings.cloudGsyncResolution.reflexEnabled;
+  }
+
+  const reflexMinimum =
+    settings.cloudGsyncResolution?.capabilities.minimumFpsForReflexWithoutVrr
+    ?? DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR;
+  return settings.enableCloudGsync || settings.fps >= reflexMinimum;
+}
 
 function isReadySessionStatus(status: number): boolean {
   return READY_SESSION_STATUSES.has(status);
@@ -533,25 +574,12 @@ function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest
       accountLinked,
       enablePersistingInGameSettings: true,
       userAge: 26,
-      requestedStreamingFeatures: {
-        reflex: input.settings.fps >= 120,
+      requestedStreamingFeatures: buildRequestedStreamingFeatures(
+        input.settings,
         bitDepth,
-        cloudGsync: input.settings.enableCloudGsync,
-        enabledL4S: input.settings.enableL4S,
-        mouseMovementFlags: 0,
-        trueHdr: hdrEnabled,
-        supportedHidDevices: 0,
-        profile: 0,
-        fallbackToLogicalResolution: false,
-        hidDevices: null,
         chromaFormat,
-        prefilterMode: 0,
-        prefilterSharpness: 0,
-        prefilterNoiseReduction: 0,
-        hudStreamingMode: 0,
-        sdrColorSpace: 2,
-        hdrColorSpace: hdrEnabled ? 4 : 0,
-      },
+        hdrEnabled,
+      ),
     },
   };
 }
@@ -822,6 +850,8 @@ function extractNegotiatedStreamProfile(payload: CloudMatchResponse): Negotiated
     finalizedFeatures?.chromaFormat ?? requestedFeatures?.chromaFormat,
   );
   const enabledL4S = finalizedFeatures?.enabledL4S ?? requestedFeatures?.enabledL4S;
+  const enabledCloudGsync = finalizedFeatures?.cloudGsync ?? requestedFeatures?.cloudGsync;
+  const enabledReflex = finalizedFeatures?.reflex ?? requestedFeatures?.reflex;
 
   const profile: NegotiatedStreamProfile = {};
 
@@ -848,6 +878,14 @@ function extractNegotiatedStreamProfile(payload: CloudMatchResponse): Negotiated
     profile.enableL4S = enabledL4S;
   }
 
+  if (typeof enabledCloudGsync === "boolean") {
+    profile.enableCloudGsync = enabledCloudGsync;
+  }
+
+  if (typeof enabledReflex === "boolean") {
+    profile.enableReflex = enabledReflex;
+  }
+
   return Object.keys(profile).length > 0 ? profile : undefined;
 }
 
@@ -871,6 +909,7 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
   const queuePosition = extractQueuePosition(payload);
   const seatSetupStep = extractSeatSetupStep(payload);
   const adState = extractAdState(payload);
+  const negotiatedStreamProfile = extractNegotiatedStreamProfile(payload);
 
   // Debug logging to trace signaling resolution
   const connections = payload.session.connectionInfo ?? [];
@@ -890,6 +929,9 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     `signalingUrl=${signaling.signalingUrl}, ` +
     `connections=[${connectionSummary}]`,
   );
+  console.log(
+    `[CloudMatch] negotiated streaming features: cloudGsync=${negotiatedStreamProfile?.enableCloudGsync ?? "n/a"}, reflex=${negotiatedStreamProfile?.enableReflex ?? "n/a"}, l4s=${negotiatedStreamProfile?.enableL4S ?? "n/a"}`,
+  );
 
   return {
     sessionId: payload.session.sessionId,
@@ -905,7 +947,7 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     gpuType: payload.session.gpuType,
     iceServers: await normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,
-    negotiatedStreamProfile: extractNegotiatedStreamProfile(payload),
+    negotiatedStreamProfile,
     clientId,
     deviceId,
   };
@@ -1242,10 +1284,9 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
       secureRTSPSupported: false,
       userAge: 26,
       requestedStreamingFeatures: {
-        reflex: false,
+        reflex: shouldRequestReflex(settings),
         bitDepth: 0,
-        // RESUME claims must not renegotiate session creation-only streaming features.
-        cloudGsync: false,
+        cloudGsync: settings.enableCloudGsync,
         profile: 0,
         fallbackToLogicalResolution: false,
         chromaFormat: 0,
@@ -1428,6 +1469,10 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       // Session is ready
       const signaling = resolveSignaling(pollApiResponse);
       const queuePosition = extractQueuePosition(pollApiResponse);
+      const negotiatedStreamProfile = extractNegotiatedStreamProfile(pollApiResponse);
+      console.log(
+        `[CloudMatch] claimed negotiated streaming features: cloudGsync=${negotiatedStreamProfile?.enableCloudGsync ?? "n/a"}, reflex=${negotiatedStreamProfile?.enableReflex ?? "n/a"}, l4s=${negotiatedStreamProfile?.enableL4S ?? "n/a"}`,
+      );
 
       return {
         sessionId: sessionData.sessionId,
@@ -1441,7 +1486,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
         gpuType: sessionData.gpuType,
         iceServers: await normalizeIceServers(pollApiResponse),
         mediaConnectionInfo: signaling.mediaConnectionInfo,
-        negotiatedStreamProfile: extractNegotiatedStreamProfile(pollApiResponse),
+        negotiatedStreamProfile,
       };
     }
 

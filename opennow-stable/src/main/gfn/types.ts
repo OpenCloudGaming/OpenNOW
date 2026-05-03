@@ -159,13 +159,17 @@ export interface CloudMatchResponse {
         framesPerSecond?: number;
       }>;
       requestedStreamingFeatures?: {
+        reflex?: boolean;
         bitDepth?: number;
+        cloudGsync?: boolean;
         chromaFormat?: number;
         enabledL4S?: boolean;
       };
     };
     finalizedStreamingFeatures?: {
+      reflex?: boolean;
       bitDepth?: number;
+      cloudGsync?: boolean;
       chromaFormat?: number;
       enabledL4S?: boolean;
     };
