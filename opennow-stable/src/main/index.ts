@@ -586,16 +586,63 @@ function md5(input: string): string {
   return createHash("md5").update(input).digest("hex");
 }
 
-async function generateVideoThumbnail(sourcePath: string, outPath: string): Promise<boolean> {
+/** Seconds; null if ffprobe missing or unreadable. */
+async function probeVideoDurationSeconds(sourcePath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const args = [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      sourcePath,
+    ];
+    const child = spawn("ffprobe", args, { stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      out += chunk.toString();
+    });
+    child.on("error", () => resolve(null));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        resolve(null);
+        return;
+      }
+      const n = Number.parseFloat(out.trim());
+      resolve(Number.isFinite(n) && n > 0 ? n : null);
+    });
+  });
+}
+
+function randomThumbnailSeekSeconds(durationSec: number | null): number {
+  if (durationSec !== null && durationSec > 0.2) {
+    const margin = Math.min(0.35, durationSec * 0.08);
+    const hi = Math.max(durationSec - margin, margin + 0.05);
+    const lo = Math.min(margin, hi * 0.5);
+    return lo + Math.random() * (hi - lo);
+  }
+  return 0.2 + Math.random() * 4.8;
+}
+
+function ffmpegExtractOneFrame(sourcePath: string, outPath: string, seekSec: number): Promise<boolean> {
+  const ss = seekSec.toFixed(3);
   return new Promise<boolean>((resolve) => {
-    // Try to run ffmpeg to extract a frame at 1s.
-    const args = ["-y", "-ss", "1", "-i", sourcePath, "-frames:v", "1", "-q:v", "2", outPath];
+    const args = ["-y", "-ss", ss, "-i", sourcePath, "-frames:v", "1", "-q:v", "2", outPath];
     const child = spawn("ffmpeg", args, { stdio: "ignore" });
     child.on("error", () => resolve(false));
     child.on("close", (code) => {
       resolve(code === 0);
     });
   });
+}
+
+async function generateVideoThumbnail(sourcePath: string, outPath: string): Promise<boolean> {
+  const durationSec = await probeVideoDurationSeconds(sourcePath);
+  const seekSec = randomThumbnailSeekSeconds(durationSec);
+  if (await ffmpegExtractOneFrame(sourcePath, outPath, seekSec)) return true;
+  if (seekSec > 0.02) return ffmpegExtractOneFrame(sourcePath, outPath, 0);
+  return false;
 }
 
 async function ensureThumbnailForMedia(filePath: string): Promise<string | null> {
