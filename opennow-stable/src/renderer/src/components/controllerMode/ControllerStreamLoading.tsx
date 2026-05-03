@@ -5,8 +5,8 @@ import {
   isSessionQueuePaused,
 } from "@shared/gfn";
 import type { SessionAdInfo, SessionAdState } from "@shared/gfn";
-import { QueueAdPreview, type QueueAdPlaybackEvent, type QueueAdPreviewHandle } from "./QueueAdPreview";
-import { Ps5ThreeDots } from "./Ps5LoadingScreen";
+import { QueueAdPreview, type QueueAdPlaybackEvent, type QueueAdPreviewHandle } from "../QueueAdPreview";
+import { Ps5ThreeDots } from "../Ps5LoadingScreen";
 
 export interface ControllerStreamLoadingProps {
   gameTitle: string;
