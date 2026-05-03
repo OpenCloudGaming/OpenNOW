@@ -5,6 +5,8 @@ export function openOptionsMenuAction(context: OptionsActionContext): boolean {
   const {
     gamesShelfBrowseActive,
     selectedGame,
+    gamesHubDisplayGame = null,
+    gamesHubOpen = false,
     currentStreamingGame,
     favoriteGameIdSet,
     mediaShelfBrowseActive,
@@ -13,6 +15,7 @@ export function openOptionsMenuAction(context: OptionsActionContext): boolean {
     topCategory,
     gameSubcategory,
     gamesRootPlane,
+    gamesDualShelf = true,
     spotlightEntries,
     spotlightIndex,
     spotlightEntryHasGame,
@@ -20,24 +23,47 @@ export function openOptionsMenuAction(context: OptionsActionContext): boolean {
     setOptionsFocusIndex,
     setOptionsOpen,
     playUiSound,
+    localVideoFilePathForOptions,
   } = context;
 
   const entries: Array<{ id: string; label: string }> = [];
-  if (gamesShelfBrowseActive && selectedGame) {
+  const gameForHubOptions =
+    gamesShelfBrowseActive && selectedGame
+      ? selectedGame
+      : topCategory === "current" && gamesHubOpen && gamesHubDisplayGame
+        ? gamesHubDisplayGame
+        : null;
+  if (gameForHubOptions) {
     entries.push({
       id: "play",
-      label: currentStreamingGame && currentStreamingGame.id !== selectedGame.id ? "Switch" : "Play",
+      label: currentStreamingGame && currentStreamingGame.id !== gameForHubOptions.id ? "Switch" : "Play",
     });
     entries.push({
       id: "favorite",
-      label: favoriteGameIdSet.has(selectedGame.id) ? "Remove favorite" : "Add favorite",
+      label: favoriteGameIdSet.has(gameForHubOptions.id) ? "Remove favorite" : "Add favorite",
     });
-    if (selectedGame.variants.length > 1) {
+    if (gameForHubOptions.variants.length > 1) {
       entries.push({ id: "variant", label: "Change version" });
     }
-  } else if (mediaShelfBrowseActive && mediaAssetItems[selectedMediaIndex]) {
-    entries.push({ id: "openFolder", label: "Open folder" });
-  } else if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight" && spotlightEntryHasGame(spotlightEntries[spotlightIndex])) {
+  } else if (
+    (mediaShelfBrowseActive && mediaAssetItems[selectedMediaIndex]) ||
+    (typeof localVideoFilePathForOptions === "string" && localVideoFilePathForOptions.length > 0)
+  ) {
+    const mediaPath = localVideoFilePathForOptions ?? mediaAssetItems[selectedMediaIndex]?.filePath;
+    if (!mediaPath) {
+      /* noop */
+    } else {
+      entries.push({ id: "openFolder", label: "Open folder" });
+      entries.push({ id: "mediaDelete", label: "Delete File" });
+      entries.push({ id: "mediaRegenThumb", label: "Regen Thumbnail" });
+    }
+  } else if (
+    topCategory === "all" &&
+    gameSubcategory === "root" &&
+    gamesDualShelf &&
+    gamesRootPlane === "spotlight" &&
+    spotlightEntryHasGame(spotlightEntries[spotlightIndex])
+  ) {
     entries.push({ id: "openLibrary", label: "View in library" });
   }
   if (entries.length === 0) return false;
@@ -77,6 +103,9 @@ export function handleOptionsActivateAction(context: OptionsActivateContext): bo
     optionsEntries,
     optionsFocusIndex,
     selectedGame,
+    gamesHubDisplayGame = null,
+    gamesHubOpen = false,
+    topCategory,
     onPlayGame,
     gamesHubReturnSnapshotRef,
     setGamesHubOpen,
@@ -97,7 +126,14 @@ export function handleOptionsActivateAction(context: OptionsActivateContext): bo
     setGamesHubFocusIndex,
     setPs5Row,
     playUiSound,
+    localVideoFilePathForOptions,
+    bumpMediaListRefresh,
+    closeLocalVideoPlayer,
+    setSelectedMediaIndex,
   } = context;
+
+  const mediaOptionsFilePath = (): string | null =>
+    localVideoFilePathForOptions ?? mediaAssetItems[selectedMediaIndex]?.filePath ?? null;
 
   if (optionsEntries.length === 0) return false;
   const opt = optionsEntries[optionsFocusIndex];
@@ -107,35 +143,67 @@ export function handleOptionsActivateAction(context: OptionsActivateContext): bo
     playUiSound("move");
     return true;
   }
-  if (opt.id === "play" && selectedGame) {
-    onPlayGame(selectedGame);
+  const gameForOption =
+    topCategory === "current" && gamesHubOpen && gamesHubDisplayGame ? gamesHubDisplayGame : selectedGame;
+  if (opt.id === "play" && gameForOption) {
+    onPlayGame(gameForOption);
     gamesHubReturnSnapshotRef.current = null;
     setGamesHubOpen(false);
     setOptionsOpen(false);
     playUiSound("confirm");
     return true;
   }
-  if (opt.id === "favorite" && selectedGame) {
-    onToggleFavoriteGame(selectedGame.id);
+  if (opt.id === "favorite" && gameForOption) {
+    onToggleFavoriteGame(gameForOption.id);
     setOptionsOpen(false);
     playUiSound("confirm");
     return true;
   }
-  if (opt.id === "variant" && selectedGame && selectedGame.variants.length > 1) {
-    const idx = selectedGame.variants.findIndex((v) => v.id === selectedVariantId);
-    const next = selectedGame.variants[(idx + 1) % selectedGame.variants.length];
-    onSelectGameVariant(selectedGame.id, next.id);
+  if (opt.id === "variant" && gameForOption && gameForOption.variants.length > 1) {
+    const idx = gameForOption.variants.findIndex((v) => v.id === selectedVariantId);
+    const next = gameForOption.variants[(idx + 1) % gameForOption.variants.length];
+    onSelectGameVariant(gameForOption.id, next.id);
     setOptionsOpen(false);
     playUiSound("confirm");
     return true;
   }
   if (opt.id === "openFolder") {
-    const cur = mediaAssetItems[selectedMediaIndex];
-    if (cur && typeof window.openNow?.showMediaInFolder === "function") {
-      void window.openNow.showMediaInFolder({ filePath: cur.filePath });
+    const fp = mediaOptionsFilePath();
+    if (fp && typeof window.openNow?.showMediaInFolder === "function") {
+      void window.openNow.showMediaInFolder({ filePath: fp });
     }
     setOptionsOpen(false);
     playUiSound("confirm");
+    return true;
+  }
+  if (opt.id === "mediaDelete") {
+    const fp = mediaOptionsFilePath();
+    if (!fp || typeof window.openNow?.deleteMediaFile !== "function") return true;
+    void window.openNow.deleteMediaFile({ filePath: fp }).then((r) => {
+      if (r.ok) {
+        setOptionsOpen(false);
+        closeLocalVideoPlayer();
+        bumpMediaListRefresh();
+        setSelectedMediaIndex((i) => Math.max(0, i - 1));
+        playUiSound("confirm");
+      } else {
+        playUiSound("move");
+      }
+    });
+    return true;
+  }
+  if (opt.id === "mediaRegenThumb") {
+    const fp = mediaOptionsFilePath();
+    if (!fp || typeof window.openNow?.regenMediaThumbnail !== "function") return true;
+    void window.openNow.regenMediaThumbnail({ filePath: fp }).then((r) => {
+      if (r.ok) {
+        setOptionsOpen(false);
+        bumpMediaListRefresh();
+        playUiSound("confirm");
+      } else {
+        playUiSound("move");
+      }
+    });
     return true;
   }
   if (opt.id === "openLibrary") {

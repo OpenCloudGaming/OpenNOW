@@ -16,6 +16,10 @@ type UseControllerLibraryGameDerivationsArgs = {
   playtimeData: PlaytimeStore;
   topCategory: TopCategory;
   currentStreamingGame?: GameInfo | null;
+  /** Shown as the first row label on the Home shelf (stream or last-played title). */
+  homeShelfGameTitle?: string | null;
+  /** Resume / Home context game id — excluded from Featured pick. */
+  resumeContextGameId?: string | null;
   gameSubcategory: GameSubcategory;
   selectedGameId: string;
   selectedVariantByGameId: Record<string, string>;
@@ -60,9 +64,20 @@ type UseControllerLibraryGameDerivationsResult = {
   selectedVariantId: string;
   selectedGameDescription: string;
   selectedGameSessionState: string | null;
+  featuredHomeGame: GameInfo | null;
 };
 
 const isNonEmptyString = (value: string | undefined): value is string => typeof value === "string" && value.length > 0;
+
+function pickFeaturedGameDeterministic(pool: GameInfo[]): GameInfo {
+  const sorted = [...pool].sort((a, b) => a.id.localeCompare(b.id));
+  const seed = sorted.map((g) => g.id).join("|");
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) {
+    h = (h * 31 + seed.charCodeAt(i)) | 0;
+  }
+  return sorted[Math.abs(h) % sorted.length]!;
+}
 
 export function useControllerLibraryGameDerivations({
   games,
@@ -70,6 +85,8 @@ export function useControllerLibraryGameDerivations({
   playtimeData,
   topCategory,
   currentStreamingGame,
+  homeShelfGameTitle,
+  resumeContextGameId = null,
   gameSubcategory,
   selectedGameId,
   selectedVariantByGameId,
@@ -88,6 +105,20 @@ export function useControllerLibraryGameDerivations({
 }: UseControllerLibraryGameDerivationsArgs): UseControllerLibraryGameDerivationsResult {
   const favoriteGameIdSet = useMemo(() => new Set(favoriteGameIds), [favoriteGameIds]);
   const favoriteGames = useMemo(() => games.filter((game) => favoriteGameIdSet.has(game.id)), [games, favoriteGameIdSet]);
+
+  const featuredHomeGame = useMemo((): GameInfo | null => {
+    const excludeId = resumeContextGameId ?? undefined;
+    const candidates = excludeId ? games.filter((g) => g.id !== excludeId) : [...games];
+    if (candidates.length === 0) return null;
+    const playSecs = (id: string) => playtimeData[id]?.totalSeconds ?? 0;
+    const favUnplayed = candidates.filter((g) => favoriteGameIdSet.has(g.id) && playSecs(g.id) === 0);
+    if (favUnplayed.length > 0) return pickFeaturedGameDeterministic(favUnplayed);
+    const anyUnplayed = candidates.filter((g) => playSecs(g.id) === 0);
+    if (anyUnplayed.length > 0) return pickFeaturedGameDeterministic(anyUnplayed);
+    const favs = candidates.filter((g) => favoriteGameIdSet.has(g.id));
+    if (favs.length > 0) return pickFeaturedGameDeterministic(favs);
+    return pickFeaturedGameDeterministic(candidates);
+  }, [games, favoriteGameIdSet, playtimeData, resumeContextGameId]);
 
   const allGenres = useMemo(() => {
     const genreSet = new Set<string>();
@@ -109,12 +140,28 @@ export function useControllerLibraryGameDerivations({
           { id: "toggleFullscreen", label: "Fullscreen", value: streamMenuIsFullscreen ? "On" : "Off" },
         ]
       : [];
+    const resumeLabel = homeShelfGameTitle?.trim() || "Last played";
+    const homeHead: Array<{ id: string; label: string; value: string }> = [{ id: "resume", label: resumeLabel, value: "" }];
+    if (!inStreamMenu && featuredHomeGame) {
+      homeHead.push({ id: "featured", label: featuredHomeGame.title, value: "" });
+    }
     return [
-      { id: "resume", label: "Resume Game", value: "" },
+      ...homeHead,
       ...streamExtras,
-      { id: "closeGame", label: inStreamMenu && endSessionConfirm ? "End session (confirm)" : "Close Game", value: "" },
+      ...(inStreamMenu
+        ? [{ id: "closeGame", label: endSessionConfirm ? "End session (confirm)" : "Close Game", value: "" }]
+        : []),
     ];
-  }, [inStreamMenu, endSessionConfirm, streamMenuMicOn, streamMenuMicLevel, streamMenuVolume, streamMenuIsFullscreen]);
+  }, [
+    inStreamMenu,
+    endSessionConfirm,
+    streamMenuMicOn,
+    streamMenuMicLevel,
+    streamMenuVolume,
+    streamMenuIsFullscreen,
+    homeShelfGameTitle,
+    featuredHomeGame,
+  ]);
 
   const mediaRootItems = useMemo(
     () => [
@@ -318,5 +365,6 @@ export function useControllerLibraryGameDerivations({
     selectedVariantId,
     selectedGameDescription,
     selectedGameSessionState,
+    featuredHomeGame,
   };
 }

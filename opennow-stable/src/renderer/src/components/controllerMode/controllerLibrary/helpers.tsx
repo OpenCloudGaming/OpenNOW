@@ -73,8 +73,8 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
 }
 
-export function getCategoryLabel(categoryId: string, currentGameTitle?: string): { label: string } {
-  if (categoryId === "current") return { label: currentGameTitle || "Current" };
+export function getCategoryLabel(categoryId: string): { label: string } {
+  if (categoryId === "current") return { label: "Home" };
   if (categoryId === "all") return { label: "Games" };
   if (categoryId === "settings") return { label: "Settings" };
   if (categoryId === "media") return { label: "Media" };

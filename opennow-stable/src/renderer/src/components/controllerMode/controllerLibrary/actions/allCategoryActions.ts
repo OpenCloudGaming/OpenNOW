@@ -107,6 +107,8 @@ export function handleAllCancelAction(context: AllCancelContext): boolean {
     throttledOnSelectGame,
     lastRootGameIndex,
     playUiSound,
+    setCategoryIndex,
+    setHomeRootPlane,
   } = context;
 
   if (gamesHubOpen) {
@@ -122,6 +124,12 @@ export function handleAllCancelAction(context: AllCancelContext): boolean {
       setSpotlightIndex(snap.spotlightIndex);
       if (snap.restoreSelectedGameId) {
         throttledOnSelectGame(snap.restoreSelectedGameId);
+      }
+      if (snap.restoreCategoryIndex != null && setCategoryIndex) {
+        setCategoryIndex(snap.restoreCategoryIndex);
+      }
+      if (snap.restoreHomeRootPlane != null && setHomeRootPlane) {
+        setHomeRootPlane(snap.restoreHomeRootPlane);
       }
     }
     return true;

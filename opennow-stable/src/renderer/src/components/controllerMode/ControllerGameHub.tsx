@@ -29,6 +29,8 @@ export interface ControllerGameHubProps {
   focusIndex: number;
   /** In-stream overlay: copy emphasizes switching away from the active title */
   inStreamMenu?: boolean;
+  /** When false, omit the full-bleed blurred hero; poster row and copy remain */
+  showHeroBackdrop?: boolean;
 }
 
 export function ControllerGameHub({
@@ -41,6 +43,7 @@ export function ControllerGameHub({
   tiles,
   focusIndex,
   inStreamMenu = false,
+  showHeroBackdrop = true,
 }: ControllerGameHubProps): JSX.Element {
   const record = playtimeData[game.id];
   const totalSecs = record?.totalSeconds ?? 0;
@@ -65,7 +68,7 @@ export function ControllerGameHub({
   return (
     <div className="xmb-ps5-game-hub" role="region" aria-label={`${game.title} game hub`}>
       <div className="xmb-ps5-game-hub-bg" aria-hidden>
-        {heroBackdropUrl ? (
+        {showHeroBackdrop && heroBackdropUrl ? (
           <div className="xmb-ps5-game-hub-hero" style={{ backgroundImage: `url(${heroBackdropUrl})` }} />
         ) : null}
         <div className="xmb-ps5-game-hub-scrim" />

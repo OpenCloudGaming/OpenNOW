@@ -29,11 +29,14 @@ import {
   spotlightEntryHasGame,
 } from "./controllerLibrary/helpers";
 import { ControllerLibraryLayout } from "./controllerLibrary/ControllerLibraryLayout";
+import { loadScreenshotUrlsForGameTitle } from "./controllerLibrary/loadGameScreenshotUrls";
 import { TopLevelMenuTrack } from "./controllerLibrary/TopLevelMenuTrack";
 import { useControllerLibraryGameDerivations } from "./controllerLibrary/useControllerLibraryGameDerivations";
 import { useControllerLibraryEvents } from "./controllerLibrary/useControllerLibraryEvents";
 import { useControllerLibraryLayoutMotion } from "./controllerLibrary/useControllerLibraryLayoutMotion";
+import { LocalVideoPlayerOverlay } from "./controllerLibrary/LocalVideoPlayerOverlay";
 import { useControllerLibraryMedia } from "./controllerLibrary/useControllerLibraryMedia";
+import { useLocalVideoPlayback } from "./controllerLibrary/useLocalVideoPlayback";
 import { useControllerWindowBindings } from "./controllerLibrary/useControllerWindowBindings";
 import {
   routeCancel,
@@ -47,11 +50,11 @@ import type {
   Direction,
   GameSubcategory,
   GamesHubReturnSnapshot,
+  HomeRootPlane,
   LibrarySortId,
   MediaSubcategory,
   SettingsSubcategory,
   SoundKind,
-  SpotlightEntry,
   TopCategory,
 } from "./controllerLibrary/types";
 
@@ -72,7 +75,6 @@ export function ControllerLibraryPage({
   onResumeGame,
   onCloseGame,
   onExitApp,
-  pendingSwitchGameCover,
   userName = "Player One",
   userAvatarUrl,
   subscriptionInfo,
@@ -86,12 +88,12 @@ export function ControllerLibraryPage({
   onExitControllerMode,
   sessionStartedAtMs = null,
   isStreaming = false,
-  sessionCounterEnabled = false,
   inStreamMenu = false,
   streamMenuVolume = 1,
   onStreamMenuVolumeChange,
   streamMenuMicLevel = 1,
   onStreamMenuMicLevelChange,
+  streamMicTrack = null,
   onStreamMenuToggleMicrophone,
   onStreamMenuToggleFullscreen,
   streamMenuMicOn = false,
@@ -102,14 +104,8 @@ export function ControllerLibraryPage({
   onResumeCloudSession,
   cloudResumeBusy = false,
 }: ControllerLibraryPageProps): JSX.Element {
-  const initialCategoryIndex = (() => {
-    if (currentStreamingGame) {
-      // TOP_CATEGORIES: current (game title), settings, all, media
-      return 0;
-    }
-    // TOP_CATEGORIES without `current`: settings, all, media
-    return 1;
-  })();
+  /** Top strip: Home (current / last played) is always the default landing tab. */
+  const initialCategoryIndex = 0;
   const [categoryIndex, setCategoryIndex] = useState(initialCategoryIndex);
   const [endSessionConfirm, setEndSessionConfirm] = useState(false);
   const [editingStreamVolume, setEditingStreamVolume] = useState(false);
@@ -135,15 +131,19 @@ export function ControllerLibraryPage({
   const [ps5Row, setPs5Row] = useState<"top" | "main" | "detail">("main");
   const [detailRailIndex, setDetailRailIndex] = useState(0);
   const [librarySortId, setLibrarySortId] = useState<LibrarySortId>(() => readLibrarySortId());
-  const [gamesRootPlane, setGamesRootPlane] = useState<"spotlight" | "categories">("spotlight");
+  const [gamesRootPlane, setGamesRootPlane] = useState<"spotlight" | "categories">("categories");
+  const [homeRootPlane, setHomeRootPlane] = useState<HomeRootPlane>("spotlight");
   const [spotlightIndex, setSpotlightIndex] = useState(0);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [optionsEntries, setOptionsEntries] = useState<Array<{ id: string; label: string }>>([]);
   const [optionsFocusIndex, setOptionsFocusIndex] = useState(0);
   const [gamesHubOpen, setGamesHubOpen] = useState(false);
   const [gamesHubFocusIndex, setGamesHubFocusIndex] = useState(0);
+  const [mediaListRefreshNonce, setMediaListRefreshNonce] = useState(0);
   /** Local captures for the focused game; loaded when hub opens so Media tab need not be visited first */
   const [gameHubScreenshotUrls, setGameHubScreenshotUrls] = useState<string[]>([]);
+  /** Random capture for Home last-played resume tile; falls back to poster in TopLevelMenuTrack */
+  const [homeResumeSnapshotUrl, setHomeResumeSnapshotUrl] = useState<string | null>(null);
   const gamesHubReturnSnapshotRef = useRef<GamesHubReturnSnapshot | null>(null);
   const spotlightTrackRef = useRef<HTMLDivElement>(null);
 
@@ -153,8 +153,6 @@ export function ControllerLibraryPage({
     } catch {
     }
   }, [librarySortId]);
-
-  // poster measurement handled by `attachPosterRef` callback ref
 
   useEffect(() => {
     const detectTypeFromGamepad = (g: Gamepad | null): "ps" | "xbox" | "nintendo" | "generic" => {
@@ -207,16 +205,44 @@ export function ControllerLibraryPage({
     playControllerUiSound(kind, uiSoundsEnabled);
   }, [uiSoundsEnabled]);
 
-  const TOP_CATEGORIES = useMemo(() => {
-    const categories: Array<{ id: TopCategory; label: string }> = [];
-    if (currentStreamingGame) {
-      categories.push({ id: "current", label: currentStreamingGame.title || "Current Game" });
-    }
-    categories.push({ id: "settings", label: "Settings" });
-    categories.push({ id: "all", label: "Games" });
-    categories.push({ id: "media", label: "Media" });
-    return categories;
-  }, [currentStreamingGame]);
+  const {
+    playback: localVideoPlayback,
+    localVideoPlayerOpen,
+    openFromEntry: openLocalVideoPlayer,
+    close: closeLocalVideoPlayer,
+  } = useLocalVideoPlayback(playUiSound);
+
+  const bumpMediaListRefresh = useCallback((): void => {
+    setMediaListRefreshNonce((n) => n + 1);
+  }, []);
+
+  const lastPlayedGame = useMemo((): GameInfo | null => {
+    const lastPlayedMs = (gameId: string) => {
+      const raw = playtimeData[gameId]?.lastPlayedAt;
+      if (!raw) return 0;
+      const ms = Date.parse(raw);
+      return Number.isFinite(ms) ? ms : 0;
+    };
+    const played = games.filter((g) => lastPlayedMs(g.id) > 0);
+    if (played.length === 0) return null;
+    played.sort((a, b) => {
+      const d = lastPlayedMs(b.id) - lastPlayedMs(a.id);
+      if (d !== 0) return d;
+      return a.title.localeCompare(b.title);
+    });
+    return played[0] ?? null;
+  }, [games, playtimeData]);
+
+  const currentTabGame = currentStreamingGame ?? lastPlayedGame;
+
+  const TOP_CATEGORIES = useMemo((): Array<{ id: TopCategory; label: string }> => {
+    return [
+      { id: "current", label: "Home" },
+      { id: "all", label: "Games" },
+      { id: "media", label: "Media" },
+      { id: "settings", label: "Settings" },
+    ];
+  }, []);
 
   const topCategory = (TOP_CATEGORIES[categoryIndex]?.id ?? "all") as TopCategory;
   const {
@@ -231,7 +257,19 @@ export function ControllerLibraryPage({
     topCategory,
     mediaSubcategory,
     selectedMediaIndex,
+    mediaListRefreshNonce,
   });
+
+  useEffect(() => {
+    if (topCategory !== "media" || mediaSubcategory === "root") return;
+    const len = mediaAssetItems.length;
+    if (len === 0) {
+      if (selectedMediaIndex !== 0) setSelectedMediaIndex(0);
+      return;
+    }
+    if (selectedMediaIndex >= len) setSelectedMediaIndex(len - 1);
+  }, [topCategory, mediaSubcategory, mediaAssetItems.length, selectedMediaIndex]);
+
   const {
     favoriteGameIdSet,
     allGenres,
@@ -245,12 +283,15 @@ export function ControllerLibraryPage({
     selectedIndex,
     selectedGame,
     selectedVariantId,
+    featuredHomeGame,
   } = useControllerLibraryGameDerivations({
     games,
     favoriteGameIds,
     playtimeData,
     topCategory,
     currentStreamingGame,
+    homeShelfGameTitle: currentTabGame?.title ?? null,
+    resumeContextGameId: currentTabGame?.id ?? null,
     gameSubcategory,
     selectedGameId,
     selectedVariantByGameId,
@@ -396,6 +437,11 @@ export function ControllerLibraryPage({
       Theme: [
         { id: "themeColor", label: "Color", value: `RGB ${themeRgb.r}, ${themeRgb.g}, ${themeRgb.b}` },
         { id: "themeStyle", label: "Style", value: CONTROLLER_THEME_STYLE_LABEL[themeStyleResolved] },
+        {
+          id: "libraryGameBackdrop",
+          label: "Match background to game",
+          value: (settings.controllerLibraryGameBackdrop !== false) ? "On" : "Off",
+        },
       ],
       ThemeColor: [
         { id: "themeR", label: "Red", value: `${themeRgb.r}` },
@@ -446,80 +492,81 @@ export function ControllerLibraryPage({
     setSpotlightIndex((i) => Math.min(i, spotlightEntries.length - 1));
   }, [spotlightEntries.length]);
 
-  const hadCloudResumeSpotlightRef = useRef(false);
-  useEffect(() => {
-    const hasResume = spotlightEntries.some((e) => e.kind === "cloudResume");
-    if (hasResume && !hadCloudResumeSpotlightRef.current && topCategory === "all" && gameSubcategory === "root") {
-      setGamesRootPlane("spotlight");
-      setSpotlightIndex(0);
+  const gamesHubDisplayGame = useMemo((): GameInfo | null => {
+    if (!gamesHubOpen) return null;
+    if (topCategory === "current") {
+      return games.find((g) => g.id === selectedGameId) ?? null;
     }
-    hadCloudResumeSpotlightRef.current = hasResume;
-  }, [spotlightEntries, topCategory, gameSubcategory]);
-
+    if (topCategory === "all" && gameSubcategory !== "root") {
+      return selectedGame;
+    }
+    return null;
+  }, [gamesHubOpen, topCategory, gameSubcategory, games, selectedGameId, selectedGame]);
 
   useEffect(() => {
-    if (!gamesHubOpen || !selectedGame?.title?.trim()) {
-      setGameHubScreenshotUrls([]);
-      return;
-    }
-    if (typeof window.openNow?.listMediaByGame !== "function") {
+    if (!gamesHubOpen || !gamesHubDisplayGame?.title?.trim()) {
       setGameHubScreenshotUrls([]);
       return;
     }
 
     let cancelled = false;
-    const titleArg = selectedGame.title.trim();
-
-    void (async () => {
-      try {
-        const listing = await window.openNow.listMediaByGame({ gameTitle: titleArg });
-        if (cancelled) return;
-
-        const rows = [...(listing.screenshots ?? [])].sort((a, b) => b.createdAtMs - a.createdAtMs);
-        const urls: string[] = [];
-
-        for (const s of rows) {
-          let u = s.thumbnailDataUrl || s.dataUrl;
-          if (!u && typeof window.openNow?.getMediaThumbnail === "function") {
-            try {
-              u = (await window.openNow.getMediaThumbnail({ filePath: s.filePath })) ?? undefined;
-            } catch {
-              u = undefined;
-            }
-          }
-          if (u) urls.push(u);
-        }
-
-        if (!cancelled) setGameHubScreenshotUrls(urls);
-      } catch {
-        if (!cancelled) setGameHubScreenshotUrls([]);
-      }
-    })();
+    void loadScreenshotUrlsForGameTitle(gamesHubDisplayGame.title).then((urls) => {
+      if (!cancelled) setGameHubScreenshotUrls(urls);
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [gamesHubOpen, selectedGame?.id, selectedGame?.title]);
+  }, [gamesHubOpen, gamesHubDisplayGame?.id, gamesHubDisplayGame?.title]);
 
+  useEffect(() => {
+    const game = currentTabGame;
+    if (!game?.title?.trim()) {
+      setHomeResumeSnapshotUrl(null);
+      return;
+    }
 
-  const showCurrentDetail = topCategory === "current" && Boolean(currentStreamingGame);
-  const detailVisible = showCurrentDetail;
+    let cancelled = false;
+    void loadScreenshotUrlsForGameTitle(game.title).then((urls) => {
+      if (cancelled) return;
+      if (urls.length === 0) {
+        setHomeResumeSnapshotUrl(null);
+        return;
+      }
+      const pick = urls[Math.floor(Math.random() * urls.length)] ?? null;
+      setHomeResumeSnapshotUrl(pick);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTabGame?.id, currentTabGame?.title]);
+
 
   const gamesShelfBrowseActive = topCategory === "all" && gameSubcategory !== "root";
   const mediaShelfBrowseActive = topCategory === "media" && mediaSubcategory !== "root";
   const topLevelShelfActive =
     !gamesShelfBrowseActive &&
     !mediaShelfBrowseActive &&
+    !(topCategory === "current" && gamesHubOpen) &&
     (topCategory === "settings" ||
       topCategory === "current" ||
       (topCategory === "media" && mediaSubcategory === "root") ||
       (topCategory === "all" && gameSubcategory === "root"));
-  const gamesDualShelf =
-    topCategory === "all" &&
-    gameSubcategory === "root" &&
-    (games.length > 0 || Boolean(cloudSessionResumable && onResumeCloudSession));
+  /** Games root: category row only (no Recently played / spotlight strip; that lives on Home). */
+  const gamesDualShelf = false;
+  const homeDualShelf =
+    topCategory === "current" && !inStreamMenu && spotlightEntries.length > 0;
+
+  const featuredIsFavorite = Boolean(featuredHomeGame && favoriteGameIdSet.has(featuredHomeGame.id));
+
+  useEffect(() => {
+    if (topCategory !== "current") return;
+    if (!inStreamMenu) setHomeRootPlane("spotlight");
+  }, [topCategory, inStreamMenu]);
   const topLevelRowBehaviorActive = topLevelShelfActive && !(topCategory === "settings" && settingsSubcategory !== "root");
-  const canEnterDetailRow = mediaShelfBrowseActive;
+  /** Media browse: no secondary “detail” row (down used to open Open folder / Media hub cards). */
+  const canEnterDetailRow = false;
   const canEnterTopRow = topLevelRowBehaviorActive || gamesShelfBrowseActive || mediaShelfBrowseActive;
   const topLevelShelfIndex =
     topCategory === "media"
@@ -538,10 +585,16 @@ export function ControllerLibraryPage({
     if (item?.id !== "closeGame") setEndSessionConfirm(false);
   }, [inStreamMenu, endSessionConfirm, topCategory, displayItems, topLevelShelfIndex]);
 
-  const selectedCategoryLabel = useMemo(() => getCategoryLabel(topCategory, currentStreamingGame?.title).label, [topCategory, currentStreamingGame?.title]);
+  const selectedCategoryLabel = useMemo(() => getCategoryLabel(topCategory).label, [topCategory]);
   const selectedTopLevelItemLabel = useMemo(() => {
     if (!topLevelShelfActive) return selectedCategoryLabel;
-    if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight") {
+    if (topCategory === "current" && homeDualShelf && homeRootPlane === "spotlight") {
+      const entry = spotlightEntries[spotlightIndex];
+      if (entry?.kind === "cloudResume") return entry.title;
+      if (spotlightEntryHasGame(entry)) return entry.game.title;
+      return "Recently played";
+    }
+    if (topCategory === "all" && gameSubcategory === "root" && gamesDualShelf && gamesRootPlane === "spotlight") {
       const entry = spotlightEntries[spotlightIndex];
       if (entry?.kind === "cloudResume") return entry.title;
       if (spotlightEntryHasGame(entry)) return entry.game.title;
@@ -551,8 +604,23 @@ export function ControllerLibraryPage({
     if (topCategory === "all" && gameSubcategory === "root" && active?.label) return active.label;
     if (topCategory === "media" && mediaSubcategory === "root" && active?.label) return active.label;
     if (topCategory === "settings" && active?.label) return active.label;
+    if (topCategory === "current" && active?.label) return active.label;
     return selectedCategoryLabel;
-  }, [topLevelShelfActive, selectedCategoryLabel, displayItems, topLevelShelfIndex, topCategory, gameSubcategory, mediaSubcategory, gamesRootPlane, spotlightEntries, spotlightIndex]);
+  }, [
+    topLevelShelfActive,
+    selectedCategoryLabel,
+    displayItems,
+    topLevelShelfIndex,
+    topCategory,
+    gameSubcategory,
+    mediaSubcategory,
+    gamesRootPlane,
+    gamesDualShelf,
+    homeDualShelf,
+    homeRootPlane,
+    spotlightEntries,
+    spotlightIndex,
+  ]);
   const detailRailItems = useMemo<Array<{ id: string; title: string; subtitle: string; imageUrl?: string }>>(() => {
     if (topCategory === "media" && mediaSubcategory !== "root") {
       const current = mediaAssetItems[selectedMediaIndex];
@@ -566,16 +634,16 @@ export function ControllerLibraryPage({
   }, [topCategory, mediaSubcategory, mediaAssetItems, selectedMediaIndex, mediaThumbById]);
 
   const gamesHubTiles = useMemo(() => {
-    if (!selectedGame || topCategory !== "all" || gameSubcategory === "root") return [];
-    const fav = favoriteGameIdSet.has(selectedGame.id);
+    if (!gamesHubDisplayGame) return [];
+    const fav = favoriteGameIdSet.has(gamesHubDisplayGame.id);
     const tiles: Array<{ id: string; title: string; subtitle: string; disabled?: boolean }> = [
       {
         id: "play",
-        title: currentStreamingGame && currentStreamingGame.id !== selectedGame.id ? "Switch" : "Play",
+        title: currentStreamingGame && currentStreamingGame.id !== gamesHubDisplayGame.id ? "Switch" : "Play",
         subtitle:
-          inStreamMenu && currentStreamingGame && currentStreamingGame.id !== selectedGame.id
+          inStreamMenu && currentStreamingGame && currentStreamingGame.id !== gamesHubDisplayGame.id
             ? `Switch from ${currentStreamingGame.title}`
-            : currentStreamingGame && currentStreamingGame.id !== selectedGame.id
+            : currentStreamingGame && currentStreamingGame.id !== gamesHubDisplayGame.id
               ? "Switch to this title"
               : "Launch now",
       },
@@ -585,21 +653,30 @@ export function ControllerLibraryPage({
         subtitle: "Library",
       },
     ];
-    if (selectedGame.variants.length > 1) {
+    if (gamesHubDisplayGame.variants.length > 1) {
       tiles.push({ id: "version", title: "Version", subtitle: "Cycle stream variant" });
     }
     tiles.push({ id: "activities", title: "Activities", subtitle: "Coming soon", disabled: true });
     tiles.push({ id: "progress", title: "Progress", subtitle: "Coming soon", disabled: true });
     return tiles;
-  }, [topCategory, gameSubcategory, selectedGame, favoriteGameIdSet, currentStreamingGame, inStreamMenu]);
+  }, [gamesHubDisplayGame, favoriteGameIdSet, currentStreamingGame, inStreamMenu]);
 
   useEffect(() => {
     const n = gamesHubTiles.length;
     if (n === 0) return;
     setGamesHubFocusIndex((i) => Math.max(0, Math.min(n - 1, i)));
-  }, [gamesHubTiles.length, selectedGame?.id]);
+  }, [gamesHubTiles.length, gamesHubDisplayGame?.id]);
   const focusMotionKey = useMemo(() => {
-    if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight") {
+    if (topCategory === "current" && gamesHubOpen) {
+      return `game-${gamesHubDisplayGame?.id ?? "none"}`;
+    }
+    if (topCategory === "current" && homeDualShelf && homeRootPlane === "spotlight") {
+      const entry = spotlightEntries[spotlightIndex];
+      if (entry?.kind === "cloudResume") return `home-spotlight-resume-${entry.busy ? "busy" : "idle"}`;
+      if (spotlightEntryHasGame(entry)) return `home-spotlight-${entry.game.id}`;
+      return `home-spotlight-empty-${spotlightIndex}`;
+    }
+    if (topCategory === "all" && gameSubcategory === "root" && gamesDualShelf && gamesRootPlane === "spotlight") {
       const entry = spotlightEntries[spotlightIndex];
       if (entry?.kind === "cloudResume") return `spotlight-resume-${entry.busy ? "busy" : "idle"}`;
       if (spotlightEntryHasGame(entry)) return `spotlight-${entry.game.id}`;
@@ -608,14 +685,28 @@ export function ControllerLibraryPage({
     if (topCategory === "all" && gameSubcategory !== "root") return `game-${selectedGame?.id ?? "none"}`;
     if (topCategory === "media" && mediaSubcategory !== "root") return `media-${selectedMediaIndex}-${mediaAssetItems[selectedMediaIndex]?.id ?? "none"}`;
     return `menu-${topCategory}-${topLevelShelfIndex}`;
-  }, [topCategory, gameSubcategory, gamesRootPlane, spotlightEntries, spotlightIndex, selectedGame?.id, topLevelShelfIndex, mediaSubcategory, selectedMediaIndex, mediaAssetItems]);
+  }, [
+    topCategory,
+    gameSubcategory,
+    gamesRootPlane,
+    homeDualShelf,
+    homeRootPlane,
+    gamesHubOpen,
+    gamesHubDisplayGame?.id,
+    spotlightEntries,
+    spotlightIndex,
+    gamesDualShelf,
+    selectedGame?.id,
+    topLevelShelfIndex,
+    mediaSubcategory,
+    selectedMediaIndex,
+    mediaAssetItems,
+  ]);
   const {
     listTranslateX,
     spotlightShelfTranslateX,
     gamesRootMenuTranslateX,
     heroTransitionMs,
-    metaMaxWidth,
-    attachPosterRef,
     wrapperThemeVars,
     wrapperClassNameWithRow,
     menuShelfTranslateX,
@@ -631,6 +722,7 @@ export function ControllerLibraryPage({
     selectedIndex,
     selectedMediaIndex,
     gamesDualShelf,
+    homeDualShelf,
     spotlightIndex,
     spotlightEntriesLength: spotlightEntries.length,
     itemsContainerRef,
@@ -641,7 +733,7 @@ export function ControllerLibraryPage({
   });
   useEffect(() => {
     if (topCategory !== "all") {
-      setGamesRootPlane("spotlight");
+      setGamesRootPlane("categories");
       setSpotlightIndex(0);
     }
   }, [topCategory]);
@@ -745,6 +837,7 @@ export function ControllerLibraryPage({
     codecOptions,
     aspectRatioOptions,
     currentStreamingGame,
+    currentTabGame,
     onResumeGame,
     onResumeCloudSession,
     onCloseGame,
@@ -765,12 +858,17 @@ export function ControllerLibraryPage({
     optionsFocusIndex,
     optionsEntries,
     gamesRootPlane,
+    homeRootPlane,
     spotlightIndex,
     spotlightEntries,
     gamesDualShelf,
+    homeDualShelf,
+    categoryIndex,
+    featuredHomeGame,
     favoriteGameIdSet,
     microphoneDevices,
     gamesHubOpen,
+    gamesHubDisplayGame,
     gamesHubFocusIndex,
     gamesHubTiles,
     inStreamMenu,
@@ -794,11 +892,14 @@ export function ControllerLibraryPage({
     setEditingThemeChannel,
     setEditingStreamVolume,
     setEditingStreamMicLevel,
+    setOptionsEntries,
+    setOptionsOpen,
     setOptionsFocusIndex,
     setGamesHubFocusIndex,
     setPs5Row,
     setDetailRailIndex,
     setGamesRootPlane,
+    setHomeRootPlane,
     setSpotlightIndex,
     gamesHubReturnSnapshotRef,
     setGamesHubOpen,
@@ -809,6 +910,11 @@ export function ControllerLibraryPage({
     setLastThemeRootIndex,
     setLastRootMediaIndex,
     setLibrarySortId,
+    localVideoPlayerOpen,
+    closeLocalVideoPlayer,
+    openLocalVideoPlayer,
+    localVideoFilePathForOptions: localVideoPlayback?.filePath ?? null,
+    bumpMediaListRefresh,
   });
 
 
@@ -837,8 +943,29 @@ export function ControllerLibraryPage({
       : <ButtonY className={className} size={size} />;
   };
 
-  const heroBackdropUrl = useMemo(() => {
-    if (topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight" && spotlightEntries.length > 0) {
+  const libraryGameBackdropOn = settings.controllerLibraryGameBackdrop !== false;
+
+  const heroBackdropUrlRaw = useMemo(() => {
+    if (topCategory === "current" && gamesHubOpen && gamesHubDisplayGame?.imageUrl) {
+      return gamesHubDisplayGame.imageUrl;
+    }
+    if (
+      topCategory === "all" &&
+      gameSubcategory === "root" &&
+      gamesDualShelf &&
+      gamesRootPlane === "spotlight" &&
+      spotlightEntries.length > 0
+    ) {
+      const cur = spotlightEntries[spotlightIndex];
+      if (cur?.kind === "cloudResume" && cur.coverUrl) return cur.coverUrl;
+      if (spotlightEntryHasGame(cur) && cur.game.imageUrl) return cur.game.imageUrl;
+      for (const e of spotlightEntries) {
+        if (e.kind === "cloudResume" && e.coverUrl) return e.coverUrl;
+        if (e.kind === "recent" && e.game?.imageUrl) return e.game.imageUrl;
+      }
+      return null;
+    }
+    if (topCategory === "current" && homeDualShelf && homeRootPlane === "spotlight" && spotlightEntries.length > 0) {
       const cur = spotlightEntries[spotlightIndex];
       if (cur?.kind === "cloudResume" && cur.coverUrl) return cur.coverUrl;
       if (spotlightEntryHasGame(cur) && cur.game.imageUrl) return cur.game.imageUrl;
@@ -849,15 +976,36 @@ export function ControllerLibraryPage({
       return null;
     }
     if (topCategory === "all") return selectedGame?.imageUrl ?? null;
-    if (topCategory === "current") return currentStreamingGame?.imageUrl ?? null;
+    if (topCategory === "current") return currentTabGame?.imageUrl ?? null;
     if (topCategory === "media") {
       if (selectedMediaItem?.thumbnailDataUrl) return selectedMediaItem.thumbnailDataUrl;
       if (selectedMediaItem?.dataUrl) return selectedMediaItem.dataUrl;
       return selectedMediaItem ? mediaThumbById[selectedMediaItem.id] ?? null : null;
     }
-    if (currentStreamingGame?.imageUrl) return currentStreamingGame.imageUrl;
+    if (currentTabGame?.imageUrl) return currentTabGame.imageUrl;
     return selectedGame?.imageUrl ?? null;
-  }, [topCategory, gameSubcategory, gamesRootPlane, spotlightEntries, spotlightIndex, selectedGame, currentStreamingGame, selectedMediaItem, mediaThumbById]);
+  }, [
+    topCategory,
+    gameSubcategory,
+    gamesRootPlane,
+    homeDualShelf,
+    homeRootPlane,
+    gamesHubOpen,
+    gamesHubDisplayGame,
+    gamesDualShelf,
+    spotlightEntries,
+    spotlightIndex,
+    selectedGame,
+    currentTabGame,
+    selectedMediaItem,
+    mediaThumbById,
+  ]);
+
+  const heroBackdropUrl = useMemo(() => {
+    if (libraryGameBackdropOn) return heroBackdropUrlRaw;
+    if (topCategory === "media") return heroBackdropUrlRaw;
+    return null;
+  }, [libraryGameBackdropOn, topCategory, heroBackdropUrlRaw]);
 
   const themeRgbForTrack = settings.controllerThemeColor ?? { r: 124, g: 241, b: 177 };
   const maxBitrateMbpsForTrack = settings.maxBitrateMbps ?? 75;
@@ -871,7 +1019,8 @@ export function ControllerLibraryPage({
       displayItems={displayItems}
       topLevelShelfIndex={topLevelShelfIndex}
       gameCategoryPreviewById={gameCategoryPreviewById}
-      currentStreamingImageUrl={currentStreamingGame?.imageUrl}
+      currentStreamingImageUrl={homeResumeSnapshotUrl ?? currentTabGame?.imageUrl}
+      featuredPreviewImageUrl={featuredHomeGame?.imageUrl ?? null}
       settingsSubcategory={settingsSubcategory}
       editingBandwidth={editingBandwidth}
       maxBitrateMbpsForTrack={maxBitrateMbpsForTrack}
@@ -886,6 +1035,7 @@ export function ControllerLibraryPage({
       onStreamMenuVolumeChange={onStreamMenuVolumeChange}
       editingStreamVolume={editingStreamVolume}
       controllerType={controllerType}
+      streamMicTrack={streamMicTrack}
     />
   ), [
     topCategory,
@@ -894,7 +1044,9 @@ export function ControllerLibraryPage({
     displayItems,
     topLevelShelfIndex,
     gameCategoryPreviewById,
-    currentStreamingGame?.imageUrl,
+    homeResumeSnapshotUrl,
+    currentTabGame?.imageUrl,
+    featuredHomeGame?.imageUrl,
     editingBandwidth,
     editingThemeChannel,
     settingsSubcategory,
@@ -911,19 +1063,25 @@ export function ControllerLibraryPage({
     editingStreamVolume,
     editingStreamMicLevel,
     controllerType,
+    streamMicTrack,
   ]);
 
   return (
+    <>
     <ControllerLibraryLayout
       isLoading={isLoading}
+      localVideoPlayerOpen={localVideoPlayerOpen}
       topCategory={topCategory}
       wrapperClassNameWithRow={wrapperClassNameWithRow}
       wrapperThemeVars={wrapperThemeVars}
       currentStreamingGame={currentStreamingGame}
+      currentTabGame={currentTabGame}
       inStreamMenu={inStreamMenu}
       endSessionConfirm={endSessionConfirm}
-      parallaxBackdropTiles={parallaxBackdropTiles}
+      parallaxBackdropTiles={libraryGameBackdropOn ? parallaxBackdropTiles : []}
       heroBackdropUrl={heroBackdropUrl}
+      loadingBackdropImageUrl={libraryGameBackdropOn ? currentTabGame?.imageUrl ?? null : null}
+      gameHubShowHeroBackdrop={libraryGameBackdropOn}
       settings={settings}
       subscriptionInfo={subscriptionInfo}
       sessionStartedAtMs={sessionStartedAtMs}
@@ -935,6 +1093,7 @@ export function ControllerLibraryPage({
       getCategoryIcon={getCategoryIcon}
       gameSubcategory={gameSubcategory}
       gamesHubOpen={gamesHubOpen}
+      gamesHubDisplayGame={gamesHubDisplayGame}
       selectedGame={selectedGame}
       gameHubScreenshotUrls={gameHubScreenshotUrls}
       playtimeData={playtimeData}
@@ -952,6 +1111,10 @@ export function ControllerLibraryPage({
       topLevelShelfActive={topLevelShelfActive}
       selectedTopLevelItemLabel={selectedTopLevelItemLabel}
       gamesRootPlane={gamesRootPlane}
+      homeRootPlane={homeRootPlane}
+      homeDualShelf={homeDualShelf}
+      featuredHomeGame={featuredHomeGame}
+      featuredIsFavorite={featuredIsFavorite}
       spotlightEntries={spotlightEntries}
       spotlightIndex={spotlightIndex}
       displayItems={displayItems}
@@ -971,11 +1134,6 @@ export function ControllerLibraryPage({
       mediaHubSlots={mediaHubSlots}
       selectedMediaIndex={selectedMediaIndex}
       mediaThumbById={mediaThumbById}
-      detailVisible={detailVisible}
-      pendingSwitchGameCover={pendingSwitchGameCover}
-      attachPosterRef={attachPosterRef}
-      metaMaxWidth={metaMaxWidth}
-      sessionCounterEnabled={sessionCounterEnabled}
       ps5Row={ps5Row}
       canEnterDetailRow={canEnterDetailRow}
       detailRailItems={detailRailItems}
@@ -986,9 +1144,13 @@ export function ControllerLibraryPage({
       topLevelRowBehaviorActive={topLevelRowBehaviorActive}
       settingsSubcategory={settingsSubcategory}
       editingThemeChannel={editingThemeChannel}
-      selectedGameForHints={selectedGame}
+      selectedGameForHints={gamesHubDisplayGame ?? selectedGame}
       controllerType={controllerType}
       renderFaceButton={renderFaceButton}
     />
+    {localVideoPlayback ? (
+      <LocalVideoPlayerOverlay src={localVideoPlayback.src} onClose={closeLocalVideoPlayer} />
+    ) : null}
+    </>
   );
 }

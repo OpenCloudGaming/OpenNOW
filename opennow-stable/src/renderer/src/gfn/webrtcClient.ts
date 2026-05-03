@@ -542,6 +542,8 @@ export class GfnWebRtcClient {
   private controlChannel: RTCDataChannel | null = null;
   private audioContext: AudioContext | null = null;
   private audioSourceNode: MediaStreamAudioSourceNode | null = null;
+  private audioGainNode: GainNode | null = null;
+  private outputVolume = 1;
 
   private inputReady = false;
   /** When true, the host (e.g. in-stream controller menu) blocks forwarding; not cleared by focus/visibility. */
@@ -730,6 +732,7 @@ export class GfnWebRtcClient {
     options.videoElement.srcObject = this.videoStream;
     options.audioElement.srcObject = this.audioStream;
     options.audioElement.muted = true;
+    options.audioElement.volume = this.outputVolume;
     this.mouseSensitivity = options.mouseSensitivity ?? 1;
     this.mouseAccelerationPercent = Math.max(1, Math.min(150, Math.round(options.mouseAcceleration ?? 1)));
     this.autoFullScreenEnabled = options.autoFullScreen !== false;
@@ -1663,6 +1666,15 @@ export class GfnWebRtcClient {
       this.audioSourceNode = null;
     }
 
+    if (this.audioGainNode) {
+      try {
+        this.audioGainNode.disconnect();
+      } catch {
+        // Ignore cleanup errors from an already-disconnected node.
+      }
+      this.audioGainNode = null;
+    }
+
     if (this.audioContext) {
       void this.audioContext.close().catch(() => {});
       this.audioContext = null;
@@ -1675,6 +1687,7 @@ export class GfnWebRtcClient {
   private startDirectAudioPlayback(reason: string): void {
     this.log(reason);
     this.options.audioElement.muted = false;
+    this.options.audioElement.volume = this.outputVolume;
     this.options.audioElement
       .play()
       .then(() => {
@@ -1792,6 +1805,7 @@ export class GfnWebRtcClient {
       // matching what the official GFN browser client does for low-latency playback.
       let audioContext: AudioContext | null = null;
       let audioSourceNode: MediaStreamAudioSourceNode | null = null;
+      let audioGainNode: GainNode | null = null;
 
       try {
         audioContext = new AudioContext({
@@ -1799,7 +1813,10 @@ export class GfnWebRtcClient {
           sampleRate: 48000,
         });
         audioSourceNode = audioContext.createMediaStreamSource(this.audioStream);
-        audioSourceNode.connect(audioContext.destination);
+        audioGainNode = audioContext.createGain();
+        audioGainNode.gain.value = this.outputVolume;
+        audioSourceNode.connect(audioGainNode);
+        audioGainNode.connect(audioContext.destination);
 
         // Resume the context (browsers require user gesture, but Electron is more lenient)
         if (audioContext.state === "suspended") {
@@ -1808,6 +1825,7 @@ export class GfnWebRtcClient {
 
         this.audioContext = audioContext;
         this.audioSourceNode = audioSourceNode;
+        this.audioGainNode = audioGainNode;
         this.log(
           `Audio routed through AudioContext (latency: ${(audioContext.baseLatency * 1000).toFixed(1)}ms, sampleRate: ${audioContext.sampleRate}Hz)`,
         );
@@ -1815,6 +1833,13 @@ export class GfnWebRtcClient {
         if (audioSourceNode) {
           try {
             audioSourceNode.disconnect();
+          } catch {
+            // Ignore cleanup errors from a partially-created node.
+          }
+        }
+        if (audioGainNode) {
+          try {
+            audioGainNode.disconnect();
           } catch {
             // Ignore cleanup errors from a partially-created node.
           }
@@ -4295,6 +4320,15 @@ export class GfnWebRtcClient {
     this.micManager.setMicLevel(level01);
   }
 
+  setOutputVolume(volume: number): void {
+    const next = Math.max(0, Math.min(1, Number.isFinite(volume) ? volume : 1));
+    this.outputVolume = next;
+    this.options.audioElement.volume = next;
+    if (this.audioGainNode) {
+      this.audioGainNode.gain.value = next;
+    }
+  }
+
   getMicrophoneLevel(): number {
     return this.micManager?.getMicLevel() ?? 1;
   }
@@ -4314,8 +4348,8 @@ export class GfnWebRtcClient {
   }
 
   /**
-   * Return the live audio track from the microphone stream, or null if
-   * the mic has not been started or has been stopped.
+   * Live audio track for UI metering / local recording mix: post-gain send path when available
+   * (same levels the remote session hears), else raw capture.
    */
   getMicTrack(): MediaStreamTrack | null {
     return this.micManager?.getTrack() ?? null;

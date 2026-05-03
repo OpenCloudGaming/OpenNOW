@@ -60,6 +60,7 @@ export function createActionHandlers(
     codecOptions,
     aspectRatioOptions,
     currentStreamingGame,
+    currentTabGame,
     onResumeGame,
     onResumeCloudSession,
     onCloseGame,
@@ -83,6 +84,7 @@ export function createActionHandlers(
     favoriteGameIdSet,
     microphoneDevices,
     gamesHubOpen,
+    gamesHubDisplayGame,
     gamesHubFocusIndex,
     gamesHubTiles,
     inStreamMenu,
@@ -119,7 +121,17 @@ export function createActionHandlers(
     setLibrarySortId,
     setCategoryIndex,
     setGamesRootPlane,
+    setHomeRootPlane,
     setSpotlightIndex,
+    featuredHomeGame,
+    homeDualShelf,
+    gamesDualShelf,
+    homeRootPlane,
+    localVideoPlayerOpen,
+    closeLocalVideoPlayer,
+    openLocalVideoPlayer,
+    localVideoFilePathForOptions,
+    bumpMediaListRefresh,
   } = ctx;
 
   const openOptionsMenu = (): void => {
@@ -129,11 +141,14 @@ export function createActionHandlers(
       topCategory,
       gameSubcategory,
       gamesRootPlane,
+      gamesDualShelf,
       spotlightEntries,
       spotlightIndex,
       selectedMediaIndex,
       mediaAssetItems,
       selectedGame,
+      gamesHubDisplayGame,
+      gamesHubOpen,
       currentStreamingGame,
       favoriteGameIdSet,
       setOptionsEntries,
@@ -141,10 +156,15 @@ export function createActionHandlers(
       setOptionsOpen,
       playUiSound,
       spotlightEntryHasGame,
+      localVideoFilePathForOptions,
+      bumpMediaListRefresh,
+      closeLocalVideoPlayer,
+      setSelectedMediaIndex,
     });
   };
 
   const onSecondaryActivate = (): void => {
+    if (localVideoPlayerOpen) return;
     if (optionsOpen) return;
     if (gamesHubOpen) return;
     if (routeSecondaryActivate({
@@ -198,6 +218,8 @@ export function createActionHandlers(
       selectedMediaIndex,
       mediaAssetItems,
       selectedGame,
+      gamesHubDisplayGame,
+      gamesHubOpen,
       currentStreamingGame,
       favoriteGameIdSet,
       setOptionsEntries,
@@ -217,16 +239,26 @@ export function createActionHandlers(
       setGamesHubFocusIndex,
       setPs5Row,
       gamesHubReturnSnapshotRef,
+      localVideoFilePathForOptions,
+      bumpMediaListRefresh,
+      closeLocalVideoPlayer,
+      setSelectedMediaIndex,
     })) return;
+    if (localVideoPlayerOpen) return;
 
-    if (gamesHubOpen && topCategory === "all" && gameSubcategory !== "root" && selectedGame) {
+    if (
+      gamesHubOpen &&
+      gamesHubDisplayGame &&
+      ((topCategory === "all" && gameSubcategory !== "root") || topCategory === "current")
+    ) {
       const tile = gamesHubTiles[gamesHubFocusIndex];
+      const hubGame = gamesHubDisplayGame;
       if (!tile || tile.disabled) {
         playUiSound("move");
         return;
       }
       if (tile.id === "play") {
-        onPlayGame(selectedGame);
+        onPlayGame(hubGame);
         gamesHubReturnSnapshotRef.current = null;
         setGamesHubOpen(false);
         setGamesHubFocusIndex(0);
@@ -234,14 +266,14 @@ export function createActionHandlers(
         return;
       }
       if (tile.id === "favorite") {
-        onToggleFavoriteGame(selectedGame.id);
+        onToggleFavoriteGame(hubGame.id);
         playUiSound("confirm");
         return;
       }
-      if (tile.id === "version" && selectedGame.variants.length > 1) {
-        const idx = selectedGame.variants.findIndex((v: { id: string }) => v.id === selectedVariantId);
-        const next = selectedGame.variants[(idx + 1) % selectedGame.variants.length];
-        onSelectGameVariant(selectedGame.id, next.id);
+      if (tile.id === "version" && hubGame.variants.length > 1) {
+        const idx = hubGame.variants.findIndex((v: { id: string }) => v.id === selectedVariantId);
+        const next = hubGame.variants[(idx + 1) % hubGame.variants.length];
+        onSelectGameVariant(hubGame.id, next.id);
         playUiSound("confirm");
         return;
       }
@@ -307,10 +339,51 @@ export function createActionHandlers(
       return;
     }
 
+    if (topCategory === "current" && homeDualShelf && homeRootPlane === "spotlight") {
+      const entry = spotlightEntries[spotlightIndex];
+      if (entry?.kind === "cloudResume") {
+        if (!entry.busy && onResumeCloudSession) {
+          onResumeCloudSession();
+          playUiSound("confirm");
+        } else {
+          playUiSound("move");
+        }
+        return;
+      }
+      if (spotlightEntryHasGame(entry)) {
+        const game = entry.game;
+        if (game) {
+          gamesHubReturnSnapshotRef.current = {
+            gameSubcategory,
+            selectedGameSubcategoryIndex,
+            gamesRootPlane,
+            spotlightIndex,
+            restoreSelectedGameId: game.id,
+            restoreHomeRootPlane: homeRootPlane,
+          };
+          throttledOnSelectGame(game.id);
+          setGamesHubOpen(true);
+          setGamesHubFocusIndex(0);
+          setPs5Row("main");
+          playUiSound("confirm");
+        } else {
+          playUiSound("move");
+        }
+        return;
+      }
+      playUiSound("move");
+      return;
+    }
+
     if (topCategory === "current") {
       const item = displayItems[selectedSettingIndex];
-      if (item?.id === "resume" && currentStreamingGame && onResumeGame) {
-        onResumeGame(currentStreamingGame);
+      if (item?.id === "featured" && featuredHomeGame && onPlayGame) {
+        onPlayGame(featuredHomeGame);
+        playUiSound("confirm");
+        return;
+      }
+      if (item?.id === "resume" && currentTabGame && onResumeGame) {
+        onResumeGame(currentTabGame);
         playUiSound("confirm");
         return;
       }
@@ -379,6 +452,7 @@ export function createActionHandlers(
         setSelectedMediaIndex,
         mediaAssetItems,
         playUiSound,
+        openLocalVideoPlayer,
       } : undefined,
       all: topCategory === "all" ? {
         gameSubcategory,
@@ -423,6 +497,12 @@ export function createActionHandlers(
   const onCancel = (e: Event): void => {
     if (optionsOpen) {
       setOptionsOpen(false);
+      playUiSound("move");
+      e.preventDefault();
+      return;
+    }
+    if (localVideoPlayerOpen) {
+      closeLocalVideoPlayer();
       playUiSound("move");
       e.preventDefault();
       return;
@@ -478,7 +558,10 @@ export function createActionHandlers(
       e.preventDefault();
       return;
     }
-    if (topCategory === "all" && gameSubcategory !== "root") {
+    if (
+      (topCategory === "all" && gameSubcategory !== "root") ||
+      (topCategory === "current" && gamesHubOpen)
+    ) {
       routeCancel({
         topCategory,
         all: {
@@ -494,6 +577,10 @@ export function createActionHandlers(
           setSpotlightIndex,
           throttledOnSelectGame,
           playUiSound,
+          setCategoryIndex: (idx: number) => {
+            setCategoryIndex(idx);
+          },
+          setHomeRootPlane,
         },
       });
       e.preventDefault();
@@ -549,12 +636,12 @@ export function createActionHandlers(
       onTertiaryActivate();
       return;
     }
-    if (e.key.toLowerCase() === "q" && topLevelRowBehaviorActive && !gamesHubOpen) {
+    if (e.key.toLowerCase() === "q" && topLevelRowBehaviorActive && !gamesHubOpen && !localVideoPlayerOpen) {
       e.preventDefault();
       cycleTopCategory(-1);
       return;
     }
-    if (e.key.toLowerCase() === "e" && topLevelRowBehaviorActive && !gamesHubOpen) {
+    if (e.key.toLowerCase() === "e" && topLevelRowBehaviorActive && !gamesHubOpen && !localVideoPlayerOpen) {
       e.preventDefault();
       cycleTopCategory(1);
       return;

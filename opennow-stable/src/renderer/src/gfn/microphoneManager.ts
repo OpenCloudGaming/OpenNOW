@@ -29,10 +29,17 @@ export class MicrophoneManager {
   private onStateChangeCallback: ((state: MicStateChange) => void) | null = null;
   private sampleRate: number = 48000; // Official client uses 48kHz
 
+  /** Web Audio graph: raw getUserMedia → GainNode → track sent to WebRTC (`volume` constraints are rarely supported for input). */
+  private micProcessCtx: AudioContext | null = null;
+  private micMediaSource: MediaStreamAudioSourceNode | null = null;
+  private micGainNode: GainNode | null = null;
+  private outboundMicTrack: MediaStreamTrack | null = null;
+
   // Track if we should auto-retry with different devices on failure
   private attemptedDevices: Set<string> = new Set();
   private readonly handleMicStreamInactive = (): void => {
     console.log("[Microphone] Stream inactive");
+    this.tearDownMicProcessing();
     this.detachMicStreamListeners(this.micStream);
     this.attemptedDevices.clear();
     this.micStream = null;
@@ -94,12 +101,24 @@ export class MicrophoneManager {
     if (!this.pc) {
       return;
     }
-    const track = this.micStream?.getAudioTracks()[0];
-    if (!track) {
-      await this.ensurePlaceholderSender();
+    if (this.outboundMicTrack && this.outboundMicTrack.readyState === "live") {
+      await this.addTrackToPeerConnection(this.outboundMicTrack);
       return;
     }
-    await this.addTrackToPeerConnection(track);
+    if (this.micStream) {
+      const out = this.buildMicProcessingPipeline(this.micStream);
+      if (out) {
+        await this.addTrackToPeerConnection(out);
+        return;
+      }
+      const raw = this.micStream.getAudioTracks()[0];
+      if (raw) {
+        await this.addTrackToPeerConnection(raw);
+        void this.applyTrackMicLevel(raw);
+        return;
+      }
+    }
+    await this.ensurePlaceholderSender();
   }
 
   /**
@@ -199,11 +218,15 @@ export class MicrophoneManager {
         console.log("[Microphone] Track ended");
         this.stop();
       };
-      await this.applyTrackMicLevel(track);
 
-      // Add track to peer connection if available
+      const outbound = this.buildMicProcessingPipeline(stream);
+      const sendTrack = outbound ?? track;
+      if (!outbound) {
+        void this.applyTrackMicLevel(track);
+      }
+
       if (this.pc) {
-        await this.addTrackToPeerConnection(track);
+        await this.addTrackToPeerConnection(sendTrack);
       }
 
       this.setState("started", track.label);
@@ -269,9 +292,13 @@ export class MicrophoneManager {
               console.log("[Microphone] Track ended");
               this.stop();
             };
-            await this.applyTrackMicLevel(track);
-            if (this.pc && track) {
-              await this.addTrackToPeerConnection(track);
+            const outbound = this.buildMicProcessingPipeline(stream);
+            const sendTrack = outbound ?? track;
+            if (!outbound) {
+              void this.applyTrackMicLevel(track);
+            }
+            if (this.pc && sendTrack) {
+              await this.addTrackToPeerConnection(sendTrack);
             }
             this.setState("started", track?.label);
             return;
@@ -404,7 +431,73 @@ export class MicrophoneManager {
     }
   }
 
+  private tearDownMicProcessing(): void {
+    try {
+      this.micMediaSource?.disconnect();
+      this.micMediaSource = null;
+      this.micGainNode?.disconnect();
+      this.micGainNode = null;
+      this.outboundMicTrack = null;
+      const ctx = this.micProcessCtx;
+      this.micProcessCtx = null;
+      if (ctx && ctx.state !== "closed") {
+        void ctx.close();
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Build mic → GainNode → MediaStreamDestination; {@link outboundMicTrack} is what we attach to WebRTC.
+   * Raw {@link micStream} remains for mute state and {@link getTrack} (UI meter).
+   */
+  private buildMicProcessingPipeline(rawStream: MediaStream): MediaStreamTrack | null {
+    this.tearDownMicProcessing();
+    if (!rawStream.getAudioTracks()[0]) {
+      return null;
+    }
+
+    const AudioCtx = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) {
+      return null;
+    }
+
+    try {
+      let ctx: AudioContext;
+      try {
+        ctx = new AudioCtx({ sampleRate: this.sampleRate });
+      } catch {
+        ctx = new AudioCtx();
+      }
+      void ctx.resume().catch(() => undefined);
+
+      const src = ctx.createMediaStreamSource(rawStream);
+      const gain = ctx.createGain();
+      gain.gain.value = this.micLevel;
+      const dest = ctx.createMediaStreamDestination();
+      src.connect(gain).connect(dest);
+
+      const out = dest.stream.getAudioTracks()[0] ?? null;
+      if (!out) {
+        void ctx.close();
+        return null;
+      }
+
+      this.micProcessCtx = ctx;
+      this.micMediaSource = src;
+      this.micGainNode = gain;
+      this.outboundMicTrack = out;
+      return out;
+    } catch (e) {
+      console.warn("[Microphone] Web Audio gain pipeline failed:", e);
+      this.tearDownMicProcessing();
+      return null;
+    }
+  }
+
   private clearMicStream(): void {
+    this.tearDownMicProcessing();
     if (!this.micStream) {
       return;
     }
@@ -440,9 +533,14 @@ export class MicrophoneManager {
 
   setMicLevel(level01: number): void {
     this.micLevel = Math.max(0, Math.min(1, Number.isFinite(level01) ? level01 : 1));
+    if (this.micGainNode) {
+      this.micGainNode.gain.value = this.micLevel;
+      return;
+    }
     const track = this.micStream?.getAudioTracks()[0] ?? null;
-    if (!track) return;
-    void this.applyTrackMicLevel(track);
+    if (track) {
+      void this.applyTrackMicLevel(track);
+    }
   }
 
   getMicLevel(): number {
@@ -499,9 +597,14 @@ export class MicrophoneManager {
   }
 
   /**
-   * Get active microphone track if available
+   * MediaStreamTrack suitable for metering and local monitoring: post-gain audio that matches
+   * what is attached to the WebRTC sender when the processing pipeline is active; otherwise
+   * the raw capture track (fallback when Web Audio routing failed).
    */
   getTrack(): MediaStreamTrack | null {
+    if (this.outboundMicTrack && this.outboundMicTrack.readyState === "live") {
+      return this.outboundMicTrack;
+    }
     return this.micStream?.getAudioTracks()[0] ?? null;
   }
 

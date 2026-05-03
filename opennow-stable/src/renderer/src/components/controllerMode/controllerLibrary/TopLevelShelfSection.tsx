@@ -1,10 +1,11 @@
 import type { JSX, RefObject } from "react";
-import type { GameInfo } from "@shared/gfn";
-import { Clock, Calendar, Repeat2 } from "lucide-react";
-import { SHELF_IMAGE_PROPS } from "./constants";
+import type { GameInfo, SubscriptionInfo } from "@shared/gfn";
+import { Clock, Calendar, Repeat2, Star } from "lucide-react";
 import { spotlightEntryHasGame } from "./helpers";
-import type { SpotlightEntry } from "./types";
+import type { HomeRootPlane, SpotlightEntry } from "./types";
 import { formatLastPlayed, formatPlaytime, type PlaytimeStore } from "../../../utils/usePlaytime";
+import { HomeSubscriptionMeta } from "./HomeSubscriptionMeta";
+import { SpotlightShelfBand } from "./SpotlightShelfBand";
 
 interface TopLevelShelfSectionProps {
   topLevelShelfActive: boolean;
@@ -13,13 +14,20 @@ interface TopLevelShelfSectionProps {
   topCategory: string;
   gameSubcategory: string;
   gamesRootPlane: "spotlight" | "categories";
+  homeRootPlane?: HomeRootPlane;
   spotlightEntries: SpotlightEntry[];
   spotlightIndex: number;
   displayItems: Array<{ id?: string }>;
   topLevelShelfIndex: number;
-  currentStreamingGame?: GameInfo | null;
+  currentTabGame?: GameInfo | null;
+  featuredHomeGame?: GameInfo | null;
+  /** When focused tile is featured, true if that game is in favorites. */
+  featuredIsFavorite?: boolean;
   playtimeData: PlaytimeStore;
   gamesDualShelf: boolean;
+  homeDualShelf?: boolean;
+  inStreamMenu?: boolean;
+  subscriptionInfo?: SubscriptionInfo | null;
   cloudSessionResumable?: boolean;
   onResumeCloudSession?: () => void;
   spotlightTrackRef: RefObject<HTMLDivElement | null>;
@@ -34,13 +42,19 @@ export function TopLevelShelfSection({
   topCategory,
   gameSubcategory,
   gamesRootPlane,
+  homeRootPlane = "spotlight",
   spotlightEntries,
   spotlightIndex,
   displayItems,
   topLevelShelfIndex,
-  currentStreamingGame,
+  currentTabGame,
+  featuredHomeGame = null,
+  featuredIsFavorite = false,
   playtimeData,
   gamesDualShelf,
+  homeDualShelf = false,
+  inStreamMenu = false,
+  subscriptionInfo = null,
   cloudSessionResumable,
   onResumeCloudSession,
   spotlightTrackRef,
@@ -49,11 +63,19 @@ export function TopLevelShelfSection({
 }: TopLevelShelfSectionProps): JSX.Element | null {
   if (!topLevelShelfActive) return null;
 
+  const showDualShelf = gamesDualShelf || homeDualShelf;
+  const gamesSpotlightPlane = gamesRootPlane === "spotlight";
+  const homeSpotlightPlane = homeRootPlane === "spotlight";
+  const shelfLabel =
+    cloudSessionResumable && onResumeCloudSession ? "Resume & recently played" : "Recently played";
+
+  const focusedId = displayItems[topLevelShelfIndex]?.id;
+
   return (
     <div className="xmb-ps5-stack">
       <div className="xmb-ps5-focus-meta" aria-live="polite" key={focusMotionKey}>
         <h2 className="xmb-ps5-focus-title">{selectedTopLevelItemLabel}</h2>
-        {topCategory === "all" && gameSubcategory === "root" && gamesRootPlane === "spotlight" ? (
+        {topCategory === "all" && gameSubcategory === "root" && gamesDualShelf && gamesSpotlightPlane ? (
           <p className="xmb-ps5-focus-subtitle">
             {(() => {
               const se = spotlightEntries[spotlightIndex];
@@ -63,16 +85,33 @@ export function TopLevelShelfSection({
                   : "Active cloud session · Enter continues from where you left off";
               }
               if (spotlightEntryHasGame(se)) {
-                return "Recently played · Enter opens this title in your library";
+                return "Recently played";
               }
               return "Recently played · Empty slot — play games to fill your shelf";
             })()}
           </p>
         ) : null}
-        {topCategory === "current" && displayItems[topLevelShelfIndex]?.id === "resume" && currentStreamingGame ? (
+        {topCategory === "current" && homeSpotlightPlane && homeDualShelf ? (
+          <p className="xmb-ps5-focus-subtitle">
+            {(() => {
+              const se = spotlightEntries[spotlightIndex];
+              if (se?.kind === "cloudResume") {
+                return se.busy
+                  ? "Resuming your cloud session…"
+                  : "Active cloud session · Enter continues from where you left off";
+              }
+              if (spotlightEntryHasGame(se)) {
+                return "Recently played";
+              }
+              return "Recently played · Empty slot — play games to fill your shelf";
+            })()}
+          </p>
+        ) : null}
+        {topCategory === "current" && !inStreamMenu ? <HomeSubscriptionMeta subscriptionInfo={subscriptionInfo} /> : null}
+        {topCategory === "current" && focusedId === "resume" && currentTabGame ? (
           <div className="xmb-ps5-focus-chips">
             {(() => {
-              const record = playtimeData[currentStreamingGame.id];
+              const record = playtimeData[currentTabGame.id];
               const totalSecs = record?.totalSeconds ?? 0;
               const lastPlayedAt = record?.lastPlayedAt ?? null;
               const sessionCount = record?.sessionCount ?? 0;
@@ -97,79 +136,54 @@ export function TopLevelShelfSection({
             })()}
           </div>
         ) : null}
-      </div>
-      {gamesDualShelf ? (
-        <div className="xmb-ps5-shelf-anchored">
-          <div className="xmb-ps5-shelf-band xmb-ps5-shelf-band--spotlight">
-            <div className={`xmb-ps5-shelf-label-row xmb-ps5-shelf-label-row--spotlight ${gamesRootPlane === "spotlight" ? "xmb-ps5-shelf-label-row--active" : ""}`}>
-              <span className="xmb-ps5-shelf-label">
-                {cloudSessionResumable && onResumeCloudSession ? "Resume & recently played" : "Recently played"}
-              </span>
-            </div>
-            <div className="xmb-ps5-shelf-viewport xmb-ps5-shelf-viewport--spotlight">
-              <div
-                ref={spotlightTrackRef}
-                className="xmb-ps5-shelf-track xmb-ps5-shelf-track--spotlight"
-                role="listbox"
-                aria-label="Recently played games"
-                style={{ transform: `translateX(${spotlightShelfTranslateX}px)` }}
-              >
-                {spotlightEntries.map((entry, idx) => {
-                  const isActive = gamesRootPlane === "spotlight" && idx === spotlightIndex;
-                  if (entry.kind === "cloudResume") {
-                    return (
-                      <div
-                        key="spotlight-cloud-resume"
-                        className={`xmb-ps5-tile xmb-ps5-tile--spotlight xmb-ps5-tile--spotlight-resume ${isActive ? "active" : ""} ${entry.busy ? "xmb-ps5-tile--spotlight-resume-busy" : ""}`.trim()}
-                        role="option"
-                        aria-selected={isActive}
-                        aria-label={`Resume ${entry.title}`}
-                      >
-                        <div className="xmb-ps5-tile-frame">
-                          {entry.coverUrl ? (
-                            <img src={entry.coverUrl} alt="" className="xmb-ps5-tile-cover" {...SHELF_IMAGE_PROPS} />
-                          ) : (
-                            <div className="xmb-ps5-tile-cover xmb-ps5-tile-cover--placeholder" />
-                          )}
-                          <div className="xmb-ps5-spotlight-resume-badge" aria-hidden>
-                            <span className="xmb-ps5-spotlight-resume-label">{entry.busy ? "Connecting…" : "Resume"}</span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  }
-                  const game = entry.game;
-                  const key = game ? game.id : `recent-empty-${idx}`;
-                  return (
-                    <div
-                      key={key}
-                      className={`xmb-ps5-tile xmb-ps5-tile--spotlight ${game ? "" : "xmb-ps5-tile--spotlight-empty"} ${isActive ? "active" : ""}`.trim()}
-                      role="option"
-                      aria-selected={isActive}
-                      aria-label={game ? game.title : "Empty recent slot"}
-                    >
-                      <div className="xmb-ps5-tile-frame">
-                        {game?.imageUrl ? <img src={game.imageUrl} alt="" className="xmb-ps5-tile-cover" {...SHELF_IMAGE_PROPS} /> : <div className="xmb-ps5-tile-cover xmb-ps5-tile-cover--placeholder" />}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+        {topCategory === "current" && focusedId === "featured" && featuredHomeGame ? (
+          <div className="xmb-ps5-focus-chips">
+            {(() => {
+              const record = playtimeData[featuredHomeGame.id];
+              const totalSecs = record?.totalSeconds ?? 0;
+              const genres = featuredHomeGame.genres?.filter(Boolean).slice(0, 2).join(" · ");
+              return (
+                <>
+                  {totalSecs === 0 ? (
+                    <span className="xmb-game-meta-chip xmb-game-meta-chip--playtime">Never played</span>
+                  ) : (
+                    <span className="xmb-game-meta-chip xmb-game-meta-chip--playtime">
+                      <Clock size={10} className="xmb-meta-icon" />
+                      {formatPlaytime(totalSecs)}
+                    </span>
+                  )}
+                  <span className="xmb-game-meta-chip xmb-game-meta-chip--sessions">
+                    <Star size={10} className="xmb-meta-icon" />
+                    {featuredIsFavorite ? "Favorite · featured pick" : "Featured pick"}
+                  </span>
+                  {genres ? (
+                    <span className="xmb-game-meta-chip xmb-game-meta-chip--last-played">{genres}</span>
+                  ) : null}
+                </>
+              );
+            })()}
           </div>
+        ) : null}
+      </div>
+      {showDualShelf ? (
+        <div className="xmb-ps5-shelf-anchored">
+          <SpotlightShelfBand
+            spotlightTrackRef={spotlightTrackRef}
+            spotlightShelfTranslateX={spotlightShelfTranslateX}
+            spotlightEntries={spotlightEntries}
+            spotlightIndex={spotlightIndex}
+            spotlightPlaneActive={
+              gamesDualShelf ? gamesSpotlightPlane : Boolean(homeDualShelf && homeSpotlightPlane)
+            }
+            shelfLabel={shelfLabel}
+            ariaLabel="Recently played games"
+          />
           <div className="xmb-ps5-shelf-band xmb-ps5-shelf-band--library">
             <div className="xmb-ps5-shelf-viewport xmb-ps5-shelf-viewport--games-root">{topLevelMenuTrack}</div>
           </div>
         </div>
       ) : (
-        <>
-          {topCategory === "current" ? (
-            <div className={`xmb-ps5-shelf-label-row xmb-ps5-shelf-label-row--library ${!(topCategory === "all" && gameSubcategory === "root") || gamesRootPlane === "categories" ? "xmb-ps5-shelf-label-row--active" : ""}`}>
-              <span className="xmb-ps5-shelf-label">Current</span>
-            </div>
-          ) : null}
-          <div className={`xmb-ps5-shelf-viewport ${topCategory === "all" && gameSubcategory === "root" ? "xmb-ps5-shelf-viewport--games-root" : ""}`}>{topLevelMenuTrack}</div>
-        </>
+        <div className={`xmb-ps5-shelf-viewport ${topCategory === "all" && gameSubcategory === "root" ? "xmb-ps5-shelf-viewport--games-root" : ""}`}>{topLevelMenuTrack}</div>
       )}
     </div>
   );

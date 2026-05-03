@@ -173,6 +173,12 @@ const api: OpenNowApi = {
   getMediaThumbnail: (input: { filePath: string }) => ipcRenderer.invoke(IPC_CHANNELS.MEDIA_THUMBNAIL, input),
   showMediaInFolder: (input: { filePath: string }): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.MEDIA_SHOW_IN_FOLDER, input),
+  getMediaPlaybackUrl: (input: { filePath: string }): Promise<string | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEDIA_PLAYBACK_URL, input),
+  deleteMediaFile: (input: { filePath: string }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEDIA_DELETE_FILE, input),
+  regenMediaThumbnail: (input: { filePath: string }): Promise<{ ok: boolean; thumbnailDataUrl: string | null }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEDIA_REGEN_THUMBNAIL, input),
   deleteCache: (): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.CACHE_DELETE_ALL),
   fetchPrintedWasteQueue: (): Promise<PrintedWasteQueueData> =>

@@ -21,7 +21,6 @@ export interface ControllerLibraryPageProps {
   onResumeGame?: (game: GameInfo) => void;
   onCloseGame?: () => void;
   onExitApp?: () => void;
-  pendingSwitchGameCover?: string | null;
   settings?: {
     resolution?: string;
     fps?: number;
@@ -38,6 +37,7 @@ export interface ControllerLibraryPageProps {
     maxBitrateMbps?: number;
     controllerThemeStyle?: ControllerThemeStyle;
     controllerThemeColor?: { r: number; g: number; b: number };
+    controllerLibraryGameBackdrop?: boolean;
   };
   resolutionOptions?: string[];
   fpsOptions?: number[];
@@ -47,12 +47,13 @@ export interface ControllerLibraryPageProps {
   onExitControllerMode?: () => void;
   sessionStartedAtMs?: number | null;
   isStreaming?: boolean;
-  sessionCounterEnabled?: boolean;
   inStreamMenu?: boolean;
   streamMenuVolume?: number;
   onStreamMenuVolumeChange?: (volume01: number) => void;
   streamMenuMicLevel?: number;
   onStreamMenuMicLevelChange?: (level01: number) => void;
+  /** Live mic track from the streaming client; used for the in-stream mic level test meter. */
+  streamMicTrack?: MediaStreamTrack | null;
   onStreamMenuToggleMicrophone?: () => void;
   onStreamMenuToggleFullscreen?: () => void;
   streamMenuMicOn?: boolean;
@@ -72,12 +73,17 @@ export type MediaSubcategory = "root" | "Videos" | "Screenshots";
 export type GameSubcategory = "root" | "all" | "favorites" | `genre:${string}`;
 export type LibrarySortId = "recent" | "az" | "za" | "favoritesFirst";
 
+export type HomeRootPlane = "spotlight" | "actions";
+
 export type GamesHubReturnSnapshot = {
   gameSubcategory: GameSubcategory;
   selectedGameSubcategoryIndex: number;
   gamesRootPlane: "spotlight" | "categories";
   spotlightIndex: number;
   restoreSelectedGameId?: string;
+  /** When hub was opened from Home spotlight, restore this top tab on back. */
+  restoreCategoryIndex?: number;
+  restoreHomeRootPlane?: HomeRootPlane;
 };
 
 export type SpotlightEntry =

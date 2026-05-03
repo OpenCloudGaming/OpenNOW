@@ -173,6 +173,11 @@ export interface Settings {
   controllerThemeStyle: ControllerThemeStyle;
   /** Controller-mode library background tint (applied per style preset) */
   controllerThemeColor: ControllerThemeRgb;
+  /**
+   * When true, controller library/hub/loading layers may show art from the focused game or shelf.
+   * Theme color/style presets still apply when false.
+   */
+  controllerLibraryGameBackdrop: boolean;
   /** When true, the app will automatically enter fullscreen when controller mode triggers it */
   autoFullScreen: boolean;
   favoriteGameIds: string[];
@@ -852,6 +857,15 @@ export interface OpenNowApi {
 
   /** Reveal a media file path in the system file manager */
   showMediaInFolder(input: { filePath: string }): Promise<void>;
+
+  /** Trusted file:// URL for in-app playback of a video under OpenNOW media root, or null */
+  getMediaPlaybackUrl(input: { filePath: string }): Promise<string | null>;
+
+  /** Delete a media file under the OpenNOW pictures root (recordings, screenshots, etc.) */
+  deleteMediaFile(input: { filePath: string }): Promise<{ ok: boolean }>;
+
+  /** Invalidate cached / sidecar thumbnails and regenerate (returns data URL when possible) */
+  regenMediaThumbnail(input: { filePath: string }): Promise<{ ok: boolean; thumbnailDataUrl: string | null }>;
 
   deleteCache(): Promise<void>;
 

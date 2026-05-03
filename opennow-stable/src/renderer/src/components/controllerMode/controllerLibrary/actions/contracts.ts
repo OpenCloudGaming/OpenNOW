@@ -2,6 +2,7 @@ import type { ControllerThemeStyle, GameInfo, MediaListingEntry, Settings } from
 import type {
   GameSubcategory,
   GamesHubReturnSnapshot,
+  HomeRootPlane,
   LibrarySortId,
   MediaSubcategory,
   SettingsSubcategory,
@@ -19,11 +20,16 @@ export interface OptionsActionContext {
   topCategory: TopCategory;
   gameSubcategory: GameSubcategory;
   gamesRootPlane: "spotlight" | "categories";
+  /** When false, Games root has no spotlight row. */
+  gamesDualShelf?: boolean;
   spotlightEntries: SpotlightEntry[];
   spotlightIndex: number;
   selectedMediaIndex: number;
   mediaAssetItems: MediaListingEntry[];
   selectedGame: GameInfo | null;
+  /** When Game Hub is open from Home, the focused title (Games browse uses `selectedGame`). */
+  gamesHubDisplayGame?: GameInfo | null;
+  gamesHubOpen?: boolean;
   currentStreamingGame?: GameInfo | null;
   favoriteGameIdSet: Set<string>;
   setOptionsEntries: (entries: OptionEntry[]) => void;
@@ -31,6 +37,11 @@ export interface OptionsActionContext {
   setOptionsOpen: (open: boolean) => void;
   playUiSound: (kind: SoundKind) => void;
   spotlightEntryHasGame: (entry: SpotlightEntry | undefined) => entry is { kind: "recent"; game: GameInfo };
+  /** When the in-app video player is open, options apply to this file path. */
+  localVideoFilePathForOptions: string | null;
+  bumpMediaListRefresh: () => void;
+  closeLocalVideoPlayer: () => void;
+  setSelectedMediaIndex: (updater: (prev: number) => number) => void;
 }
 
 export interface SettingsActivateContext {
@@ -93,6 +104,8 @@ export interface MediaActivateContext {
   setSelectedMediaIndex: (index: number) => void;
   mediaAssetItems: MediaListingEntry[];
   playUiSound: (kind: SoundKind) => void;
+  /** In-app playback for Media > Videos (orchestrated outside this module). */
+  openLocalVideoPlayer: (entry: MediaListingEntry) => void;
 }
 
 export interface MediaCancelContext {
@@ -144,6 +157,8 @@ export interface AllCancelContext {
   setSpotlightIndex: (index: number) => void;
   throttledOnSelectGame: (id: string) => void;
   playUiSound: (kind: SoundKind) => void;
+  setCategoryIndex?: (index: number) => void;
+  setHomeRootPlane?: (plane: HomeRootPlane) => void;
 }
 
 export type ControllerLibrarySettings = {
@@ -161,4 +176,5 @@ export type ControllerLibrarySettings = {
   maxBitrateMbps?: number;
   controllerThemeStyle?: ControllerThemeStyle;
   controllerThemeColor?: { r: number; g: number; b: number };
+  controllerLibraryGameBackdrop?: boolean;
 };

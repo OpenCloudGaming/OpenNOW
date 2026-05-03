@@ -1,3 +1,4 @@
+import { isPlayableVideoFilePath } from "@shared/mediaPlayback";
 import type { MediaActivateContext, MediaCancelContext } from "./contracts";
 
 export function handleMediaActivateAction(context: MediaActivateContext): boolean {
@@ -10,6 +11,7 @@ export function handleMediaActivateAction(context: MediaActivateContext): boolea
     setSelectedMediaIndex,
     mediaAssetItems,
     playUiSound,
+    openLocalVideoPlayer,
   } = context;
 
   const item = displayItems[selectedMediaIndex];
@@ -23,6 +25,10 @@ export function handleMediaActivateAction(context: MediaActivateContext): boolea
 
   if (mediaSubcategory !== "root") {
     const selectedMedia = mediaAssetItems[selectedMediaIndex];
+    if (mediaSubcategory === "Videos" && selectedMedia && isPlayableVideoFilePath(selectedMedia.filePath)) {
+      openLocalVideoPlayer(selectedMedia);
+      return true;
+    }
     if (selectedMedia && typeof window.openNow?.showMediaInFolder === "function") {
       void window.openNow.showMediaInFolder({ filePath: selectedMedia.filePath });
       playUiSound("confirm");

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 import { computeShelfTranslateXClamped, sanitizeControllerThemeStyle } from "./helpers";
 import type { GameSubcategory, MediaSubcategory, SettingsSubcategory, TopCategory } from "./types";
@@ -15,6 +15,7 @@ type UseControllerLibraryLayoutMotionArgs = {
   selectedIndex: number;
   selectedMediaIndex: number;
   gamesDualShelf: boolean;
+  homeDualShelf: boolean;
   spotlightIndex: number;
   spotlightEntriesLength: number;
   itemsContainerRef: RefObject<HTMLDivElement | null>;
@@ -35,8 +36,6 @@ type UseControllerLibraryLayoutMotionResult = {
   spotlightShelfTranslateX: number;
   gamesRootMenuTranslateX: number;
   heroTransitionMs: number;
-  metaMaxWidth: number | null;
-  attachPosterRef: (el: HTMLImageElement | null) => void;
   wrapperThemeVars: CSSProperties;
   wrapperClassNameWithRow: string;
   menuShelfTranslateX: number;
@@ -54,6 +53,7 @@ export function useControllerLibraryLayoutMotion({
   selectedIndex,
   selectedMediaIndex,
   gamesDualShelf,
+  homeDualShelf,
   spotlightIndex,
   spotlightEntriesLength,
   itemsContainerRef,
@@ -69,34 +69,6 @@ export function useControllerLibraryLayoutMotion({
   const [gamesRootMenuTranslateX, setGamesRootMenuTranslateX] = useState(0);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 1200 : window.innerWidth));
   const [heroTransitionMs, setHeroTransitionMs] = useState(420);
-  const [metaMaxWidth, setMetaMaxWidth] = useState<number | null>(null);
-  const currentPosterImgRef = useRef<HTMLImageElement | null>(null);
-  const posterObserverRef = useRef<ResizeObserver | null>(null);
-
-  const attachPosterRef = (el: HTMLImageElement | null) => {
-    if (posterObserverRef.current) {
-      try {
-        posterObserverRef.current.disconnect();
-      } catch {
-      }
-      posterObserverRef.current = null;
-    }
-    currentPosterImgRef.current = el;
-    const update = () => setMetaMaxWidth(currentPosterImgRef.current?.clientWidth ?? null);
-    if (el) {
-      if (typeof ResizeObserver !== "undefined") {
-        const ro = new ResizeObserver(update);
-        posterObserverRef.current = ro;
-        try {
-          ro.observe(el);
-        } catch {
-        }
-      }
-      update();
-    } else {
-      setMetaMaxWidth(null);
-    }
-  };
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -135,11 +107,13 @@ export function useControllerLibraryLayoutMotion({
 
   useLayoutEffect(() => {
     const gamesRoot = topCategory === "all" && gameSubcategory === "root";
-    if (!gamesRoot || !gamesDualShelf) {
+    const homeDualRoot = topCategory === "current" && homeDualShelf;
+    const dualShelfActive = (gamesRoot && gamesDualShelf) || homeDualRoot;
+    if (!dualShelfActive) {
       setSpotlightShelfTranslateX(0);
       setGamesRootMenuTranslateX(0);
     }
-    if (gamesRoot && gamesDualShelf) {
+    if (dualShelfActive) {
       setSpotlightShelfTranslateX(computeShelfTranslateXClamped(spotlightTrackRef.current, spotlightIndex));
       setGamesRootMenuTranslateX(computeShelfTranslateXClamped(itemsContainerRef.current, topLevelShelfIndex));
       setListTranslateY(0);
@@ -174,6 +148,7 @@ export function useControllerLibraryLayoutMotion({
     topCategory,
     gameSubcategory,
     gamesDualShelf,
+    homeDualShelf,
     spotlightIndex,
     spotlightEntriesLength,
     itemsContainerRef,
@@ -196,7 +171,7 @@ export function useControllerLibraryLayoutMotion({
   } as CSSProperties;
   const wrapperClassName = `xmb-wrapper xmb-theme-${themeStyleSafe} ${settings.controllerBackgroundAnimations ? "xmb-animate" : "xmb-static"} ${isEntering ? "xmb-entering" : "xmb-ready"} xmb-layout--ps5-home`;
   const wrapperClassNameWithRow = `${wrapperClassName} xmb-row-${ps5Row} ${topCategory === "settings" ? "xmb-ps5-section-settings" : ""} ${topCategory === "settings" && settingsSubcategory === "root" ? "xmb-ps5-settings-root" : ""} ${topCategory === "settings" && settingsSubcategory !== "root" ? "xmb-ps5-settings-sub" : ""}`;
-  const menuShelfTranslateX = gamesDualShelf ? gamesRootMenuTranslateX : listTranslateX;
+  const menuShelfTranslateX = gamesDualShelf || homeDualShelf ? gamesRootMenuTranslateX : listTranslateX;
 
   return {
     isEntering,
@@ -205,8 +180,6 @@ export function useControllerLibraryLayoutMotion({
     spotlightShelfTranslateX,
     gamesRootMenuTranslateX,
     heroTransitionMs,
-    metaMaxWidth,
-    attachPosterRef,
     wrapperThemeVars,
     wrapperClassNameWithRow,
     menuShelfTranslateX,
