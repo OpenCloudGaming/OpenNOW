@@ -142,6 +142,22 @@ export interface MicrophonePermissionResult {
   shouldUseBrowserApi: boolean;
 }
 
+export type NativeGstreamerRuntimeSource = "bundled" | "system" | "missing" | "unknown";
+
+export interface NativeGstreamerInstallInstruction {
+  distro: string;
+  command: string;
+  note?: string;
+}
+
+export interface NativeGstreamerRuntimeStatus {
+  source: NativeGstreamerRuntimeSource;
+  bundled: boolean;
+  path?: string;
+  message: string;
+  installInstructions?: NativeGstreamerInstallInstruction[];
+}
+
 export interface NativeStreamerStatus {
   detected: boolean;
   gstreamerAvailable: boolean;
@@ -152,6 +168,7 @@ export interface NativeStreamerStatus {
   activeVideoBackend?: NativeVideoBackendCapability;
   codecSummary?: string;
   zeroCopySummary?: string;
+  gstreamerRuntime: NativeGstreamerRuntimeStatus;
   message: string;
 }
 

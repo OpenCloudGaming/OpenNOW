@@ -1,4 +1,4 @@
-import { copyFileSync, chmodSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -34,43 +34,94 @@ function prependEnvPath(env, directory) {
   env[pathKey] = env[pathKey] ? `${directory}${delimiter}${env[pathKey]}` : directory;
 }
 
-function configureWindowsGstreamerSdk(env) {
-  if (process.platform !== "win32") {
-    return null;
+function appendEnvValue(env, key, value) {
+  env[key] = env[key]?.trim() ? `${env[key]} ${value}` : value;
+}
+
+function configureDarwinLinkerPadding(env, nativeFeatures) {
+  const isDarwinBuild = process.platform === "darwin" || /apple-darwin$/.test(nativeTarget);
+  if (!isDarwinBuild || !hasFeature(nativeFeatures, "gstreamer") || process.env.OPENNOW_BUNDLE_GSTREAMER_RUNTIME !== "1") {
+    return;
+  }
+  appendEnvValue(env, "RUSTFLAGS", "-C link-arg=-Wl,-headerpad_max_install_names");
+}
+
+function brewPrefix() {
+  const result = spawnSync("brew", ["--prefix"], { encoding: "utf8" });
+  return result.status === 0 ? result.stdout.trim() || null : null;
+}
+
+function configureGstreamerSdk(env) {
+  if (process.platform === "win32") {
+    const candidates = [
+      env.GSTREAMER_1_0_ROOT_MSVC_X86_64,
+      "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64",
+      "C:\\gstreamer\\1.0\\msvc_x86_64",
+    ].filter(Boolean);
+    const sdk = candidates
+      .map((root) => {
+        const pkgConfig = join(root, "bin", "pkg-config.exe");
+        const pkgconf = join(root, "bin", "pkgconf.exe");
+        const pkgConfigFile = join(root, "lib", "pkgconfig", "gstreamer-1.0.pc");
+        const pkgConfigBinary = existsSync(pkgConfig) ? pkgConfig : existsSync(pkgconf) ? pkgconf : null;
+        return { root, pkgConfigBinary, pkgConfigFile };
+      })
+      .find((candidate) => candidate.pkgConfigBinary && existsSync(candidate.pkgConfigFile));
+    if (!sdk) {
+      console.warn(
+        [
+          "GStreamer SDK was not found automatically; relying on the current PKG_CONFIG environment.",
+          `Checked roots: ${candidates.join(", ") || "none"}`,
+          "Expected files: bin/pkg-config.exe or bin/pkgconf.exe, and lib/pkgconfig/gstreamer-1.0.pc",
+        ].join(" "),
+      );
+      return null;
+    }
+    const pkgConfigDir = join(sdk.root, "lib", "pkgconfig");
+    env.PKG_CONFIG = sdk.pkgConfigBinary;
+    env.PKG_CONFIG_PATH = env.PKG_CONFIG_PATH ? `${pkgConfigDir}${delimiter}${env.PKG_CONFIG_PATH}` : pkgConfigDir;
+    prependEnvPath(env, join(sdk.root, "bin"));
+    console.log(`Configured GStreamer SDK: ${sdk.root}`);
+    return sdk.root;
   }
 
-  const candidates = [
-    env.GSTREAMER_1_0_ROOT_MSVC_X86_64,
-    "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64",
-    "C:\\gstreamer\\1.0\\msvc_x86_64",
-  ].filter(Boolean);
-
-  const sdkRoot = candidates.find(
-    (candidate) =>
-      existsSync(join(candidate, "bin", "pkg-config.exe")) &&
-      existsSync(join(candidate, "lib", "pkgconfig", "gstreamer-1.0.pc")),
-  );
-
-  if (!sdkRoot) {
-    console.warn(
-      "GStreamer SDK was not found automatically; relying on the current PKG_CONFIG environment.",
+  if (process.platform === "darwin") {
+    const candidates = [
+      env.GSTREAMER_1_0_ROOT_MACOS,
+      "/Library/Frameworks/GStreamer.framework/Versions/1.0",
+      "/Library/Frameworks/GStreamer.framework/Versions/Current",
+      brewPrefix(),
+      "/opt/homebrew",
+      "/usr/local",
+    ].filter(Boolean);
+    const sdkRoot = candidates.find((candidate) =>
+      existsSync(join(candidate, "lib", "pkgconfig", "gstreamer-1.0.pc"))
+      && existsSync(join(candidate, "lib", "libgstreamer-1.0.dylib")),
     );
-    return null;
+    if (!sdkRoot) {
+      console.warn("GStreamer macOS SDK was not found automatically; relying on the current PKG_CONFIG environment.");
+      return null;
+    }
+    const pkgConfigDir = join(sdkRoot, "lib", "pkgconfig");
+    env.GSTREAMER_1_0_ROOT_MACOS = sdkRoot;
+    env.PKG_CONFIG_PATH = env.PKG_CONFIG_PATH ? `${pkgConfigDir}${delimiter}${env.PKG_CONFIG_PATH}` : pkgConfigDir;
+    prependEnvPath(env, join(sdkRoot, "bin"));
+    env.DYLD_LIBRARY_PATH = env.DYLD_LIBRARY_PATH ? `${join(sdkRoot, "lib")}${delimiter}${env.DYLD_LIBRARY_PATH}` : join(sdkRoot, "lib");
+    env.DYLD_FALLBACK_LIBRARY_PATH = env.DYLD_FALLBACK_LIBRARY_PATH ? `${join(sdkRoot, "lib")}${delimiter}${env.DYLD_FALLBACK_LIBRARY_PATH}` : join(sdkRoot, "lib");
+    if (/apple-darwin$/.test(nativeTarget)) {
+      env.PKG_CONFIG_ALLOW_CROSS = "1";
+      env.PKG_CONFIG_SYSROOT_DIR = env.PKG_CONFIG_SYSROOT_DIR || "/";
+    }
+    console.log(`Configured GStreamer SDK: ${sdkRoot}`);
+    return sdkRoot;
   }
 
-  const pkgConfigDir = join(sdkRoot, "lib", "pkgconfig");
-  env.PKG_CONFIG = join(sdkRoot, "bin", "pkg-config.exe");
-  env.PKG_CONFIG_PATH = env.PKG_CONFIG_PATH
-    ? `${pkgConfigDir}${delimiter}${env.PKG_CONFIG_PATH}`
-    : pkgConfigDir;
-  prependEnvPath(env, join(sdkRoot, "bin"));
-  console.log(`Configured GStreamer SDK: ${sdkRoot}`);
-  return sdkRoot;
+  return null;
 }
 
 function bundleGstreamerRuntime(sdkRoot) {
   if (process.env.OPENNOW_BUNDLE_GSTREAMER_RUNTIME !== "1") {
-    return;
+    return false;
   }
 
   const args = [
@@ -82,6 +133,7 @@ function bundleGstreamerRuntime(sdkRoot) {
   if (sdkRoot) {
     args.push("--sdk-root", sdkRoot);
   }
+  args.push("--binary", packagePlatformBinary);
 
   const result = spawnSync(process.execPath, args, {
     cwd: packageRoot,
@@ -92,6 +144,65 @@ function bundleGstreamerRuntime(sdkRoot) {
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
+  return true;
+}
+
+function isExistingFile(path) {
+  try {
+    return existsSync(path) && statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isExistingDirectory(path) {
+  try {
+    return existsSync(path) && statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function buildBundledGstreamerEnv(baseEnv, binaryPath) {
+  const env = { SystemRoot: baseEnv.SystemRoot, WINDIR: baseEnv.WINDIR };
+  const runtimeRoot = join(dirname(binaryPath), "gstreamer");
+  const binDir = join(runtimeRoot, "bin");
+  const libDir = join(runtimeRoot, "lib");
+  const pluginDir = join(libDir, "gstreamer-1.0");
+  const scanner = join(runtimeRoot, "libexec", "gstreamer-1.0", process.platform === "win32" ? "gst-plugin-scanner.exe" : "gst-plugin-scanner");
+  const gioModulesDir = join(libDir, "gio", "modules");
+
+  if (!isExistingDirectory(runtimeRoot)) {
+    throw new Error(`Bundled GStreamer runtime was not found next to ${binaryPath}`);
+  }
+  if (process.platform === "win32") prependEnvPath(env, dirname(binaryPath));
+  if (isExistingDirectory(binDir)) prependEnvPath(env, binDir);
+  if (isExistingDirectory(pluginDir)) {
+    env.GST_PLUGIN_PATH = pluginDir;
+    env.GST_PLUGIN_PATH_1_0 = pluginDir;
+    env.GST_PLUGIN_SYSTEM_PATH = pluginDir;
+    env.GST_PLUGIN_SYSTEM_PATH_1_0 = pluginDir;
+  }
+  if (isExistingFile(scanner)) {
+    env.GST_PLUGIN_SCANNER = scanner;
+    env.GST_PLUGIN_SCANNER_1_0 = scanner;
+  }
+  env.GST_REGISTRY_REUSE_PLUGIN_SCANNER = "no";
+  if (isExistingDirectory(gioModulesDir)) {
+    env.GIO_MODULE_DIR = gioModulesDir;
+    env.GIO_EXTRA_MODULES = gioModulesDir;
+  }
+  if (process.platform === "linux" && isExistingDirectory(libDir)) {
+    env.LD_LIBRARY_PATH = env.LD_LIBRARY_PATH ? `${libDir}${delimiter}${env.LD_LIBRARY_PATH}` : libDir;
+  }
+  if (process.platform === "darwin" && isExistingDirectory(libDir)) {
+    env.DYLD_LIBRARY_PATH = env.DYLD_LIBRARY_PATH ? `${libDir}${delimiter}${env.DYLD_LIBRARY_PATH}` : libDir;
+    env.DYLD_FALLBACK_LIBRARY_PATH = env.DYLD_FALLBACK_LIBRARY_PATH ? `${libDir}${delimiter}${env.DYLD_FALLBACK_LIBRARY_PATH}` : libDir;
+  }
+  if (process.platform === "win32" && isExistingDirectory(libDir)) {
+    prependEnvPath(env, libDir);
+  }
+  return env;
 }
 
 function verifyGstreamerBinary(binaryPath, env) {
@@ -185,8 +296,9 @@ console.log(
 const buildEnv = { ...process.env };
 let gstreamerSdkRoot = null;
 if (hasFeature(nativeFeatures, "gstreamer")) {
-  gstreamerSdkRoot = configureWindowsGstreamerSdk(buildEnv);
+  gstreamerSdkRoot = configureGstreamerSdk(buildEnv);
 }
+configureDarwinLinkerPadding(buildEnv, nativeFeatures);
 
 const cargoCommand = process.platform === "win32" ? "cargo.exe" : "cargo";
 const result = spawnSync(cargoCommand, cargoArgs, {
@@ -216,7 +328,9 @@ if (process.platform !== "win32") {
 
 if (hasFeature(nativeFeatures, "gstreamer")) {
   verifyGstreamerBinary(packageBinary, buildEnv);
-  bundleGstreamerRuntime(gstreamerSdkRoot);
+  if (bundleGstreamerRuntime(gstreamerSdkRoot)) {
+    verifyGstreamerBinary(packagePlatformBinary, buildBundledGstreamerEnv(buildEnv, packagePlatformBinary));
+  }
 }
 
 console.log(`Copied native streamer to ${packageBinary}`);

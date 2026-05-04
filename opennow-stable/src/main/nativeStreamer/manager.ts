@@ -12,6 +12,8 @@ import {
   type NativeStreamerBackendPreference,
   type NativeStreamerFeatureMode,
   type NativeStreamerStatus,
+  type NativeGstreamerRuntimeStatus,
+  type NativeGstreamerInstallInstruction,
   type NativeRenderSurface,
   type NativeStreamerSessionContext,
   type NativeVideoBackendCapability,
@@ -98,13 +100,45 @@ function prependProcessPath(env: NodeJS.ProcessEnv, directory: string): void {
   prependEnvPath(env, pathKey, directory);
 }
 
+const LINUX_GSTREAMER_INSTALL_INSTRUCTIONS: NativeGstreamerInstallInstruction[] = [
+  {
+    distro: "Debian / Ubuntu / Mint / Pop!_OS / KDE neon",
+    command: "sudo apt update && sudo apt install libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 gstreamer1.0-tools gstreamer1.0-libav gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-gl gstreamer1.0-vaapi gstreamer1.0-x gstreamer1.0-alsa libva2 libva-drm2 libvulkan1 mesa-vulkan-drivers",
+  },
+  {
+    distro: "Fedora / RHEL / Nobara / Bazzite",
+    command: "sudo dnf install gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good gstreamer1-plugins-bad-free gstreamer1-plugins-bad-freeworld gstreamer1-plugins-ugly gstreamer1-libav gstreamer1-vaapi gstreamer1-plugin-openh264 mesa-vulkan-drivers libva",
+    note: "RPM Fusion may be required for libav, ugly, or bad-freeworld packages.",
+  },
+  {
+    distro: "Arch / Manjaro / EndeavourOS / SteamOS",
+    command: "sudo pacman -S --needed gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav gst-plugin-va libva mesa vulkan-radeon",
+    note: "NVIDIA users should use their distro NVIDIA/Vulkan driver packages instead of vulkan-radeon.",
+  },
+  {
+    distro: "openSUSE Tumbleweed / Leap",
+    command: "sudo zypper install gstreamer gstreamer-plugins-base gstreamer-plugins-good gstreamer-plugins-bad gstreamer-plugins-ugly gstreamer-plugins-libav gstreamer-plugins-vaapi libva2 Mesa-vulkan-device-select",
+  },
+];
+
+function linuxInstallInstructions(): NativeGstreamerInstallInstruction[] | undefined {
+  return process.platform === "linux" ? LINUX_GSTREAMER_INSTALL_INSTRUCTIONS : undefined;
+}
+
 function configureBundledGstreamerRuntime(
   env: NodeJS.ProcessEnv,
   executablePath: string,
-): boolean {
+): NativeGstreamerRuntimeStatus {
   const runtimeRoot = join(dirname(executablePath), "gstreamer");
   if (!isExistingDirectory(runtimeRoot)) {
-    return false;
+    return {
+      source: "system",
+      bundled: false,
+      message: process.platform === "linux"
+        ? "No bundled GStreamer runtime was found. Linux uses distro GStreamer packages so VAAPI/V4L2/Vulkan plugins match the host driver stack."
+        : "No bundled GStreamer runtime was found; using the system runtime if available.",
+      installInstructions: linuxInstallInstructions(),
+    };
   }
 
   const binDir = join(runtimeRoot, "bin");
@@ -118,9 +152,8 @@ function configureBundledGstreamerRuntime(
   );
   const gioModulesDir = join(runtimeRoot, "lib", "gio", "modules");
 
-  if (isExistingDirectory(binDir)) {
-    prependProcessPath(env, binDir);
-  }
+  if (process.platform === "win32") prependProcessPath(env, dirname(executablePath));
+  if (isExistingDirectory(binDir)) prependProcessPath(env, binDir);
   if (isExistingDirectory(pluginDir)) {
     env.GST_PLUGIN_PATH = pluginDir;
     env.GST_PLUGIN_PATH_1_0 = pluginDir;
@@ -129,28 +162,48 @@ function configureBundledGstreamerRuntime(
   }
   if (isExistingFile(scanner)) {
     env.GST_PLUGIN_SCANNER = scanner;
+    env.GST_PLUGIN_SCANNER_1_0 = scanner;
   }
+  env.GST_REGISTRY_REUSE_PLUGIN_SCANNER = "no";
   if (isExistingDirectory(gioModulesDir)) {
     env.GIO_MODULE_DIR = gioModulesDir;
+    env.GIO_EXTRA_MODULES = gioModulesDir;
   }
   if (process.platform === "linux") {
-    if (isExistingDirectory(libDir)) {
-      prependEnvPath(env, "LD_LIBRARY_PATH", libDir);
-    }
-    if (isExistingDirectory(binDir)) {
-      prependEnvPath(env, "LD_LIBRARY_PATH", binDir);
-    }
+    if (isExistingDirectory(libDir)) prependEnvPath(env, "LD_LIBRARY_PATH", libDir);
+    if (isExistingDirectory(binDir)) prependEnvPath(env, "LD_LIBRARY_PATH", binDir);
   }
   if (process.platform === "darwin") {
     if (isExistingDirectory(libDir)) {
       prependEnvPath(env, "DYLD_LIBRARY_PATH", libDir);
+      prependEnvPath(env, "DYLD_FALLBACK_LIBRARY_PATH", libDir);
     }
     if (isExistingDirectory(binDir)) {
       prependEnvPath(env, "DYLD_LIBRARY_PATH", binDir);
+      prependEnvPath(env, "DYLD_FALLBACK_LIBRARY_PATH", binDir);
     }
   }
 
-  return true;
+  return {
+    source: "bundled",
+    bundled: true,
+    path: runtimeRoot,
+    message: "Using bundled GStreamer runtime next to the native streamer executable.",
+  };
+}
+
+function isWindowsDllLoadFailure(error: unknown): boolean {
+  const message = formatError(error);
+  return process.platform === "win32" && (message.includes("3221225781") || message.toLowerCase().includes("0xc0000135"));
+}
+
+function formatNativeStreamerDetectionFailure(error: unknown, runtime: NativeGstreamerRuntimeStatus | null): string {
+  if (isWindowsDllLoadFailure(error)) {
+    return runtime?.bundled
+      ? `Native streamer could not load a required DLL even though bundled GStreamer was detected at ${runtime.path}. The packaged runtime may be incomplete or blocked. ${formatError(error)}`
+      : `Native streamer could not load a required DLL and no bundled GStreamer runtime was detected. ${formatError(error)}`;
+  }
+  return `Native streamer was not detected: ${formatError(error)}`;
 }
 
 function formatError(error: unknown): string {
@@ -249,6 +302,8 @@ function isEvent(message: NativeStreamerMessage): message is NativeStreamerEvent
 export class NativeStreamerManager {
   private child: ChildProcessWithoutNullStreams | null = null;
   private stdoutBuffer = "";
+  private stderrTail: string[] = [];
+  private gstreamerRuntime: NativeGstreamerRuntimeStatus | null = null;
   private pending = new Map<string, PendingRequest>();
   private capabilities: NativeStreamerCapabilities | null = null;
   private activeSessionId: string | null = null;
@@ -329,6 +384,30 @@ export class NativeStreamerManager {
       const activeVideoBackend = resolveActiveVideoBackend(videoBackends);
       const codecSummary = summarizeCodecs(activeVideoBackend);
       const zeroCopySummary = summarizeZeroCopy(activeVideoBackend);
+      const runtime = this.gstreamerRuntime ?? {
+        source: "unknown",
+        bundled: false,
+        message: "GStreamer runtime has not been checked yet.",
+        installInstructions: linuxInstallInstructions(),
+      } satisfies NativeGstreamerRuntimeStatus;
+      const effectiveRuntime: NativeGstreamerRuntimeStatus = gstreamerAvailable
+        ? runtime.bundled
+          ? runtime
+          : {
+            ...runtime,
+            source: "system",
+            message: "Using system GStreamer runtime; packaged Windows/macOS builds should use the bundled runtime.",
+          }
+        : {
+          ...runtime,
+          source: runtime.bundled ? "bundled" : process.platform === "linux" ? "missing" : runtime.source,
+          message: runtime.bundled
+            ? "Bundled GStreamer runtime was found, but the GStreamer backend is not ready."
+            : process.platform === "linux"
+              ? "GStreamer is not ready. Install distro GStreamer packages so plugins match the host GPU/driver stack."
+              : runtime.message,
+          installInstructions: runtime.installInstructions ?? linuxInstallInstructions(),
+        };
       return {
         detected: true,
         gstreamerAvailable,
@@ -339,16 +418,26 @@ export class NativeStreamerManager {
         activeVideoBackend,
         codecSummary,
         zeroCopySummary,
+        gstreamerRuntime: effectiveRuntime,
         message: gstreamerAvailable
-          ? `GStreamer native streamer is ready. Video path: ${formatVideoBackendName(activeVideoBackend?.backend)}.`
-          : this.capabilities?.fallbackReason ?? "Native streamer is present, but GStreamer is not available.",
+          ? `${effectiveRuntime.message} Video path: ${formatVideoBackendName(activeVideoBackend?.backend)}.`
+          : this.capabilities?.fallbackReason ?? effectiveRuntime.message,
       };
     } catch (error) {
+      const runtime = this.gstreamerRuntime ?? {
+        source: process.platform === "linux" ? "missing" : "unknown",
+        bundled: false,
+        message: process.platform === "linux"
+          ? "GStreamer is not ready. Linux uses distro packages because private AppImage GStreamer bundling is unreliable across glibc, libdrm/VAAPI/Vulkan, and GPU driver stacks."
+          : "GStreamer runtime could not be checked because the native streamer did not start.",
+        installInstructions: linuxInstallInstructions(),
+      } satisfies NativeGstreamerRuntimeStatus;
       return {
         detected: false,
         gstreamerAvailable: false,
         supportsOfferAnswer: false,
-        message: `Native streamer was not detected: ${formatError(error)}`,
+        gstreamerRuntime: runtime,
+        message: formatNativeStreamerDetectionFailure(error, runtime),
       };
     }
   }
@@ -473,8 +562,12 @@ export class NativeStreamerManager {
     if (backendPreference !== "auto") {
       childEnv.OPENNOW_NATIVE_STREAMER_BACKEND = backendPreference;
     }
-    if (configureBundledGstreamerRuntime(childEnv, executablePath)) {
-      console.log("[NativeStreamer] Using bundled GStreamer runtime:", join(dirname(executablePath), "gstreamer"));
+    const runtimeStatus = configureBundledGstreamerRuntime(childEnv, executablePath);
+    this.gstreamerRuntime = runtimeStatus;
+    if (runtimeStatus.bundled) {
+      console.log("[NativeStreamer] Using bundled GStreamer runtime:", runtimeStatus.path);
+    } else {
+      console.log("[NativeStreamer]", runtimeStatus.message);
     }
 
     const child = spawn(executablePath, [], {
@@ -488,6 +581,7 @@ export class NativeStreamerManager {
 
     this.child = child;
     this.stdoutBuffer = "";
+    this.stderrTail = [];
 
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => this.handleStdout(chunk));
@@ -495,6 +589,7 @@ export class NativeStreamerManager {
     child.stderr.on("data", (chunk: string) => {
       for (const line of chunk.split(/\r?\n/)) {
         if (line.trim()) {
+          this.appendStderr(line);
           console.warn(`[NativeStreamer] ${line}`);
         }
       }
@@ -592,7 +687,7 @@ export class NativeStreamerManager {
     return new Promise<NativeStreamerResponse>((resolveRequest, rejectRequest) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        rejectRequest(new Error(`Native streamer request "${input.type}" timed out.`));
+        rejectRequest(new Error(`Native streamer request "${input.type}" timed out.${this.formatStderrTail()}`));
       }, timeoutMs);
       timeout.unref?.();
 
@@ -781,12 +876,23 @@ export class NativeStreamerManager {
       return;
     }
 
-    console.warn(`[NativeStreamer] Process ended (${reason})`);
+    const tail = this.formatStderrTail();
+    console.warn(`[NativeStreamer] Process ended (${reason})${tail}`);
     this.child = null;
     this.stdoutBuffer = "";
+    this.stderrTail = [];
     this.activeSessionId = null;
     this.capabilities = null;
-    this.rejectPending(new Error(`Native streamer process ended (${reason}).`));
+    this.rejectPending(new Error(`Native streamer process ended (${reason}).${tail}`));
+  }
+
+  private appendStderr(line: string): void {
+    this.stderrTail.push(line);
+    if (this.stderrTail.length > 12) this.stderrTail.shift();
+  }
+
+  private formatStderrTail(): string {
+    return this.stderrTail.length > 0 ? ` Recent stderr: ${this.stderrTail.join(" | ")}` : "";
   }
 
   private rejectPending(error: Error): void {

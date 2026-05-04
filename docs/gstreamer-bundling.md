@@ -1,45 +1,54 @@
 # GStreamer Bundling
 
-OpenNOW's native streamer is dynamically linked against GStreamer. Release builds should not depend on a user having a matching global GStreamer install, so the packaged app should either ship a private runtime next to `opennow-streamer` or declare a platform package dependency.
+OpenNOW's native streamer is dynamically linked against GStreamer. Packaged builds use a private runtime where that is reliable and distro packages where host GPU/driver compatibility matters more than isolation.
 
-## Current Implementation
-
-The Windows x64 release path now supports a private runtime bundle:
-
-1. CI installs the official GStreamer MSVC runtime and development MSI packages.
-2. `npm run native:build` builds and verifies the Rust streamer with `OPENNOW_NATIVE_STREAMER_FEATURES=gstreamer`.
-3. When `OPENNOW_BUNDLE_GSTREAMER_RUNTIME=1`, `scripts/bundle-gstreamer-runtime.mjs` copies the Windows runtime layout to `native/opennow-streamer/bin/win32-x64/gstreamer`.
-4. Electron packages that directory through the existing `extraResources` rule.
-5. The Electron main process detects a sibling `gstreamer` directory next to the selected streamer binary and injects `PATH`, `GST_PLUGIN_PATH`, `GST_PLUGIN_SYSTEM_PATH`, `GST_PLUGIN_SCANNER`, and `GIO_MODULE_DIR` only into the native streamer child process.
-
-That keeps the app isolated from broken system installs and avoids leaking bundled GStreamer paths into the Electron process.
-
-## Platform Strategy
+## Platform strategy
 
 | Platform | Release strategy | Status |
 | --- | --- | --- |
-| Windows x64 | Bundle official MSVC runtime privately next to `opennow-streamer.exe`. | Implemented in CI. |
-| Windows arm64 | Needs either upstream arm64 GStreamer binaries or a Cerbero-built runtime and a Rust cross-build target. | Not enabled yet; keep web fallback. |
-| macOS x64/arm64 | Bundle `GStreamer.framework` into `Contents/Frameworks`, then codesign/notarize the framework with the app. | Planned. |
-| Linux deb | Prefer distro dependencies for GStreamer packages and GPU driver plugins. | CI builds against system packages; `.deb` declares core GStreamer dependencies. |
-| Linux AppImage | Bundle a private runtime or use linuxdeploy/AppImage tooling, but keep VAAPI/V4L2 driver plugins host-compatible. | Planned. |
+| Windows x64 | Bundle the official MSVC runtime privately next to `opennow-streamer.exe` at `native/opennow-streamer/win32-x64/gstreamer`. | Implemented in CI/release. |
+| Windows arm64 | No official upstream arm64 runtime path is enabled yet. | Native streamer packaging disabled; web fallback remains. |
+| macOS x64/arm64 | Install the official universal runtime/devel `.pkg` files, copy the framework version root into `native/opennow-streamer/darwin-*/gstreamer`, and relocate Mach-O load commands to the private runtime. | Implemented in CI/release. |
+| Linux deb | Use distro GStreamer packages. The `.deb` declares Debian/Ubuntu runtime dependencies. | Implemented. |
+| Linux AppImage | Use the host distro's GStreamer install and show Settings install commands when missing. | Implemented by runtime guidance, not private bundling. |
 
-## CI/CD Notes
+## Private runtime layout
 
-- `auto-build.yml` and `release.yml` build the native streamer before `electron-builder` on Windows x64 and Linux.
-- Windows x64 sets `OPENNOW_BUNDLE_GSTREAMER_RUNTIME=1`, so generated installers include the private runtime.
-- Linux currently validates the GStreamer backend in CI but does not copy a private runtime into the AppImage. The `.deb` path is a better fit for distro packages; AppImage bundling needs a separate dependency closure pass.
-- macOS native packaging should be enabled only after the framework copy and signing path is complete. Unsigned or partially relocated GStreamer dylibs will fail under Gatekeeper.
+`npm run native:build` copies the Rust streamer into both `native/opennow-streamer/bin/opennow-streamer` and `native/opennow-streamer/bin/<platformKey>/opennow-streamer`. Electron packages `native/opennow-streamer/bin` via `extraResources`, so runtime bundles live next to the platform-specific binary:
 
-## Manual Windows Packaging
-
-From `opennow-stable`:
-
-```powershell
-$env:OPENNOW_NATIVE_STREAMER_FEATURES = "gstreamer"
-$env:OPENNOW_BUNDLE_GSTREAMER_RUNTIME = "1"
-npm run native:build
-npm run dist
+```text
+native/opennow-streamer/bin/<platformKey>/
+  opennow-streamer(.exe)
+  gstreamer/
+    bin/
+    lib/
+    libexec/
+    share/
+    etc/
+    OPENNOW-GSTREAMER-RUNTIME.txt
 ```
 
-The runtime bundle is intentionally ignored by git under `native/opennow-streamer/bin/*/gstreamer/`.
+The Electron main process detects a sibling `gstreamer` directory next to the selected streamer executable, including custom executable overrides, and injects runtime paths only into the native streamer child process. It does not mutate the Electron process environment globally.
+
+## Windows
+
+CI installs the official GStreamer MSVC runtime and development MSI packages. With `OPENNOW_BUNDLE_GSTREAMER_RUNTIME=1`, `scripts/bundle-gstreamer-runtime.mjs` copies `bin`, plugins, GIO modules, helper scanners, shared data, and metadata into the private runtime directory. It also copies the GStreamer core loader DLL subset and available Microsoft VC runtime DLLs next to `opennow-streamer.exe` so Windows process loading succeeds before the child PATH is applied. Runtime detection prepends the executable directory and private `bin`, then sets GStreamer plugin/scanner environment variables for the child process.
+
+## macOS
+
+CI/release installs official universal packages from:
+
+```text
+https://gstreamer.freedesktop.org/data/pkg/macos/${GSTREAMER_VERSION}/gstreamer-1.0-${GSTREAMER_VERSION}-universal.pkg
+https://gstreamer.freedesktop.org/data/pkg/macos/${GSTREAMER_VERSION}/gstreamer-1.0-devel-${GSTREAMER_VERSION}-universal.pkg
+```
+
+The build exports `GSTREAMER_1_0_ROOT_MACOS=/Library/Frameworks/GStreamer.framework/Versions/1.0`, prepends its `bin`, and adds its `lib/pkgconfig` directory to `PKG_CONFIG_PATH`. Local development can still fall back to `GSTREAMER_1_0_ROOT_MACOS`, `/Library/Frameworks/GStreamer.framework/Versions/Current`, Homebrew `brew --prefix`, `/opt/homebrew`, or `/usr/local` if the root has both `lib/pkgconfig/gstreamer-1.0.pc` and `lib/libgstreamer-1.0.dylib`.
+
+The bundler copies framework/Homebrew runtime content into the private `gstreamer` directory and, when `otool` and `install_name_tool` are available, rewrites the packaged native executable, copied dylibs, plugins, GIO modules, and helper executables away from framework/Homebrew absolute paths. The native executable resolves dependencies through `@executable_path/gstreamer/lib`; files inside the runtime resolve through `@loader_path` relative paths.
+
+## Linux
+
+Linux private GStreamer bundling is not treated as reliable by default. VAAPI, V4L2, Vulkan, `libdrm`, GLib/glibc, Mesa, and proprietary GPU driver stacks must match the host distro closely; an AppImage-private dependency closure can break hardware decode or plugin loading on otherwise supported systems.
+
+The `.deb` package declares Debian/Ubuntu GStreamer dependencies, including core libraries, base/good/bad/ugly/libav plugins, GL/X/ALSA helpers, VAAPI, libva, Vulkan, and Mesa Vulkan drivers. AppImage builds use the host distro's packages. If GStreamer is missing, Settings shows distro-specific install commands for Debian/Ubuntu-family, Fedora/RHEL-family, Arch-family, and openSUSE systems.
