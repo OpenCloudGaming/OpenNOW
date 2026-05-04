@@ -261,7 +261,20 @@ jobs:
           curl.exe --fail --location --retry 3 --output $devel "$base/gstreamer-1.0-devel-msvc-x86_64-$env:GSTREAMER_VERSION.msi"
           Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart") -Wait
           Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart") -Wait
-          "GSTREAMER_1_0_ROOT_MSVC_X86_64=C:\gstreamer\1.0\msvc_x86_64" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $roots = @(
+            "C:\gstreamer\1.0\msvc_x86_64",
+            "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+          )
+          $root = $roots | Where-Object {
+            (Test-Path (Join-Path $_ "lib\pkgconfig\gstreamer-1.0.pc")) -and
+            ((Test-Path (Join-Path $_ "bin\pkg-config.exe")) -or (Test-Path (Join-Path $_ "bin\pkgconf.exe")))
+          } | Select-Object -First 1
+          if (-not $root) {
+            Write-Error "GStreamer SDK root not found. Checked: $($roots -join ', '). Expected lib\pkgconfig\gstreamer-1.0.pc and bin\pkg-config.exe or bin\pkgconf.exe."
+            exit 1
+          }
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Install FPM for arm64 deb builds
         if: matrix.label == 'linux-arm64'

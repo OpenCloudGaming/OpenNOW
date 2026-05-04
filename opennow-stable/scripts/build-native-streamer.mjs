@@ -46,21 +46,31 @@ function configureGstreamerSdk(env) {
       "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64",
       "C:\\gstreamer\\1.0\\msvc_x86_64",
     ].filter(Boolean);
-    const sdkRoot = candidates.find((candidate) =>
-      existsSync(join(candidate, "bin", "pkg-config.exe"))
-      && existsSync(join(candidate, "lib", "pkgconfig", "gstreamer-1.0.pc"))
-      && existsSync(join(candidate, "bin", "gstreamer-1.0-0.dll")),
-    );
-    if (!sdkRoot) {
-      console.warn("GStreamer SDK was not found automatically; relying on the current PKG_CONFIG environment.");
+    const sdk = candidates
+      .map((root) => {
+        const pkgConfig = join(root, "bin", "pkg-config.exe");
+        const pkgconf = join(root, "bin", "pkgconf.exe");
+        const pkgConfigFile = join(root, "lib", "pkgconfig", "gstreamer-1.0.pc");
+        const pkgConfigBinary = existsSync(pkgConfig) ? pkgConfig : existsSync(pkgconf) ? pkgconf : null;
+        return { root, pkgConfigBinary, pkgConfigFile };
+      })
+      .find((candidate) => candidate.pkgConfigBinary && existsSync(candidate.pkgConfigFile));
+    if (!sdk) {
+      console.warn(
+        [
+          "GStreamer SDK was not found automatically; relying on the current PKG_CONFIG environment.",
+          `Checked roots: ${candidates.join(", ") || "none"}`,
+          "Expected files: bin/pkg-config.exe or bin/pkgconf.exe, and lib/pkgconfig/gstreamer-1.0.pc",
+        ].join(" "),
+      );
       return null;
     }
-    const pkgConfigDir = join(sdkRoot, "lib", "pkgconfig");
-    env.PKG_CONFIG = join(sdkRoot, "bin", "pkg-config.exe");
+    const pkgConfigDir = join(sdk.root, "lib", "pkgconfig");
+    env.PKG_CONFIG = sdk.pkgConfigBinary;
     env.PKG_CONFIG_PATH = env.PKG_CONFIG_PATH ? `${pkgConfigDir}${delimiter}${env.PKG_CONFIG_PATH}` : pkgConfigDir;
-    prependEnvPath(env, join(sdkRoot, "bin"));
-    console.log(`Configured GStreamer SDK: ${sdkRoot}`);
-    return sdkRoot;
+    prependEnvPath(env, join(sdk.root, "bin"));
+    console.log(`Configured GStreamer SDK: ${sdk.root}`);
+    return sdk.root;
   }
 
   if (process.platform === "darwin") {
