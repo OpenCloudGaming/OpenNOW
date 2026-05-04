@@ -96,6 +96,10 @@ function configureGstreamerSdk(env) {
     prependEnvPath(env, join(sdkRoot, "bin"));
     env.DYLD_LIBRARY_PATH = env.DYLD_LIBRARY_PATH ? `${join(sdkRoot, "lib")}${delimiter}${env.DYLD_LIBRARY_PATH}` : join(sdkRoot, "lib");
     env.DYLD_FALLBACK_LIBRARY_PATH = env.DYLD_FALLBACK_LIBRARY_PATH ? `${join(sdkRoot, "lib")}${delimiter}${env.DYLD_FALLBACK_LIBRARY_PATH}` : join(sdkRoot, "lib");
+    if (/apple-darwin$/.test(nativeTarget)) {
+      env.PKG_CONFIG_ALLOW_CROSS = "1";
+      env.PKG_CONFIG_SYSROOT_DIR = env.PKG_CONFIG_SYSROOT_DIR || "/";
+    }
     console.log(`Configured GStreamer SDK: ${sdkRoot}`);
     return sdkRoot;
   }

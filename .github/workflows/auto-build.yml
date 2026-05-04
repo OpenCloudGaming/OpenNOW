@@ -180,13 +180,22 @@ jobs:
         if: matrix.native_build == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
-          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GSTREAMER_VERSION/msvc"
-          $runtime = Join-Path $env:RUNNER_TEMP "gstreamer-runtime.msi"
-          $devel = Join-Path $env:RUNNER_TEMP "gstreamer-devel.msi"
-          curl.exe --fail --location --retry 3 --output $runtime "$base/gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.msi"
-          curl.exe --fail --location --retry 3 --output $devel "$base/gstreamer-1.0-devel-msvc-x86_64-$env:GSTREAMER_VERSION.msi"
-          Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart") -Wait
-          Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart") -Wait
+          $installDir = "C:\gstreamer\1.0\msvc_x86_64"
+          $currentBase = "https://gstreamer.freedesktop.org/pkg/windows/$env:GSTREAMER_VERSION/msvc"
+          $legacyBase = "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GSTREAMER_VERSION/msvc"
+          $exe = Join-Path $env:RUNNER_TEMP "gstreamer-sdk.exe"
+          $exeUrl = "$currentBase/gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.exe"
+          curl.exe --fail --location --retry 3 --output $exe $exeUrl
+          if ($LASTEXITCODE -eq 0 -and (Test-Path $exe)) {
+            Start-Process -FilePath $exe -ArgumentList @("/quiet", "/norestart", "INSTALLDIR=$installDir") -Wait
+          } else {
+            $runtime = Join-Path $env:RUNNER_TEMP "gstreamer-runtime.msi"
+            $devel = Join-Path $env:RUNNER_TEMP "gstreamer-devel.msi"
+            curl.exe --fail --location --retry 3 --output $runtime "$legacyBase/gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.msi"
+            curl.exe --fail --location --retry 3 --output $devel "$legacyBase/gstreamer-1.0-devel-msvc-x86_64-$env:GSTREAMER_VERSION.msi"
+            Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart", "INSTALLDIR=$installDir") -Wait
+            Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart", "INSTALLDIR=$installDir") -Wait
+          }
           $roots = @(
             "C:\gstreamer\1.0\msvc_x86_64",
             "C:\Program Files\gstreamer\1.0\msvc_x86_64"
