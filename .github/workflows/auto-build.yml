@@ -221,10 +221,10 @@ jobs:
             $devel = Join-Path $env:RUNNER_TEMP "gstreamer-devel-$version.msi"
             if (-not (Invoke-Download "$base/gstreamer-1.0-msvc-x86_64-$version.msi" $runtime)) { return $false }
             if (-not (Invoke-Download "$base/gstreamer-1.0-devel-msvc-x86_64-$version.msi" $devel)) { return $false }
-            $runtimeInstall = Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart", "INSTALLDIR=$installBase") -Wait -PassThru
+            $runtimeInstall = Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart", "INSTALLDIR=$installBase", "ADDLOCAL=ALL") -Wait -PassThru
             $script:lastRuntimeMsiExitCode = $runtimeInstall.ExitCode
             if ($runtimeInstall.ExitCode -ne 0) { return $false }
-            $develInstall = Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart", "INSTALLDIR=$installBase") -Wait -PassThru
+            $develInstall = Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart", "INSTALLDIR=$installBase", "ADDLOCAL=ALL") -Wait -PassThru
             $script:lastDevelMsiExitCode = $develInstall.ExitCode
             if ($develInstall.ExitCode -ne 0) { return $false }
             return [bool](Find-GStreamerRoot)
@@ -243,6 +243,26 @@ jobs:
           Write-Host "Discovered gstreamer-1.0.pc paths: $(if ($script:gstreamerPcPaths.Count) { $script:gstreamerPcPaths -join ', ' } else { 'none' })"
           if (-not $root) {
             Write-Error "GStreamer SDK root not found. Checked: $($roots -join ', '). Expected lib\pkgconfig\gstreamer-1.0.pc and bin\pkg-config.exe or bin\pkgconf.exe."
+            exit 1
+          }
+          $gstInspect = Join-Path $root "bin\gst-inspect-1.0.exe"
+          if (-not (Test-Path $gstInspect)) {
+            Write-Error "gst-inspect-1.0.exe not found in $root\bin after GStreamer install."
+            exit 1
+          }
+          $h264Decoders = @("avdec_h264", "d3d11h264dec", "d3d12h264dec")
+          $availableH264Decoders = @()
+          foreach ($decoder in $h264Decoders) {
+            $inspect = Start-Process -FilePath $gstInspect -ArgumentList @($decoder) -Wait -PassThru -NoNewWindow
+            if ($inspect.ExitCode -eq 0) {
+              $availableH264Decoders += $decoder
+              Write-Host "GStreamer decoder available: $decoder"
+            } else {
+              Write-Host "GStreamer decoder unavailable: $decoder"
+            }
+          }
+          if ($availableH264Decoders.Count -eq 0) {
+            Write-Error "GStreamer Windows SDK installed, but no H.264 decoder plugins were found among: $($h264Decoders -join ', ')"
             exit 1
           }
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
