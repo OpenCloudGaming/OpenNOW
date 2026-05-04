@@ -157,6 +157,7 @@ struct VideoLivenessState {
     sink_total: AtomicU64,
     zero_copy_d3d11: AtomicBool,
     zero_copy_d3d12: AtomicBool,
+    rtp_video_src_pad: Mutex<Option<gst::Pad>>,
 }
 
 impl VideoLivenessState {
@@ -178,6 +179,7 @@ impl VideoLivenessState {
             sink_total: AtomicU64::new(0),
             zero_copy_d3d11: AtomicBool::new(false),
             zero_copy_d3d12: AtomicBool::new(false),
+            rtp_video_src_pad: Mutex::new(None),
         }
     }
 
@@ -277,6 +279,19 @@ impl VideoLivenessState {
     fn zero_copy(&self) -> bool {
         is_zero_copy_memory_mode(&self.memory_mode())
     }
+
+    fn set_rtp_video_src_pad(&self, pad: &gst::Pad) {
+        if let Ok(mut current) = self.rtp_video_src_pad.lock() {
+            *current = Some(pad.clone());
+        }
+    }
+
+    fn rtp_video_src_pad(&self) -> Option<gst::Pad> {
+        self.rtp_video_src_pad
+            .lock()
+            .ok()
+            .and_then(|current| current.clone())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -329,6 +344,10 @@ impl VideoLivenessMonitor {
 
     fn update_caps(&self, caps: &str) {
         self.state.update_caps(caps);
+    }
+
+    fn set_rtp_video_src_pad(&self, pad: &gst::Pad) {
+        self.state.set_rtp_video_src_pad(pad);
     }
 
     fn start(
@@ -3409,6 +3428,7 @@ fn run_video_liveness_watchdog(
         match tracker.evaluate(state.now_ms(), last_sink_ms) {
             VideoStallAction::None => {}
             VideoStallAction::RequestKeyframe { attempt, stall_ms } => {
+                request_upstream_key_unit(&state, &event_sender);
                 emit_video_stall_event(
                     &event_sender,
                     &sink,
@@ -3420,6 +3440,7 @@ fn run_video_liveness_watchdog(
                 );
             }
             VideoStallAction::Resync { attempt, stall_ms } => {
+                request_upstream_key_unit(&state, &event_sender);
                 emit_video_stall_event(
                     &event_sender,
                     &sink,
@@ -3452,6 +3473,39 @@ fn run_video_liveness_watchdog(
                 );
             }
         }
+    }
+}
+
+fn request_upstream_key_unit(state: &VideoLivenessState, event_sender: &Option<Sender<Event>>) {
+    let Some(src_pad) = state.rtp_video_src_pad() else {
+        send_log(
+            event_sender,
+            "warn",
+            "Unable to request upstream video key unit: no RTP video source pad registered."
+                .to_owned(),
+        );
+        return;
+    };
+
+    let event = gst::event::CustomUpstream::builder(
+        gst::Structure::builder("GstForceKeyUnit")
+            .field("all-headers", true)
+            .build(),
+    )
+    .build();
+
+    if src_pad.send_event(event) {
+        send_log(
+            event_sender,
+            "debug",
+            "Requested upstream video key unit via RTP source pad.".to_owned(),
+        );
+    } else {
+        send_log(
+            event_sender,
+            "warn",
+            "Upstream video key-unit request was not accepted by the RTP source pad.".to_owned(),
+        );
     }
 }
 
@@ -3549,7 +3603,7 @@ fn emit_video_stall_event(
         event_sender,
         "warn",
         format!(
-            "Native video stall detected: stall={stall_ms}ms stage={likely_stage} encoded={:.0}kbps decoded={:.1}fps sink={:.1}fps ages=encoded:{} decoded:{} sink:{} rendered={} dropped={} memoryMode={} zeroCopy={} zeroCopyD3D11={} zeroCopyD3D12={}.{}",
+            "Native video stall detected: stall={stall_ms}ms stage={likely_stage} encoded={:.0}kbps decoded={:.1}fps sink={:.1}fps ages=encoded:{} decoded:{} sink:{} rendered={} dropped={} memoryMode={} zeroCopy={} zeroCopyD3D11={} zeroCopyD3D12={}. If decoded/sink/rendered counters are still flowing but the visible frame is stale, suspect a transient D3D swapchain/present path freeze rather than RTP loss; it may recover after a keyframe/IDR or latency resync.{}",
             rates.encoded_kbps,
             rates.decoded_fps,
             rates.sink_fps,
@@ -3928,6 +3982,8 @@ fn wire_incoming_media_sink(
                 "warn",
                 format!("Failed to link WebRTC RTP pad to decodebin: {error:?}"),
             );
+        } else if rtp_video_encoding(src_pad).is_some() {
+            video_liveness.set_rtp_video_src_pad(src_pad);
         }
     });
 }
@@ -4080,9 +4136,11 @@ fn zero_copy_requested() -> bool {
 fn default_rtp_video_api_priority() -> Vec<RtpVideoApi> {
     #[cfg(target_os = "windows")]
     {
+        // D3D12 zero-copy is opt-in because it can decode-chain stall while RTP
+        // is still arriving on Windows; D3D11 is the safer default.
         vec![
-            RtpVideoApi::D3D12,
             RtpVideoApi::D3D11,
+            RtpVideoApi::D3D12,
             RtpVideoApi::Software,
         ]
     }
@@ -4328,6 +4386,7 @@ fn zero_copy_modes_for_backend(video_api: RtpVideoApi) -> Vec<String> {
 fn configure_rtp_video_chain_element(
     element: &gst::Element,
     spec: RtpVideoChainSpec,
+    video_api: RtpVideoApi,
     d3d_fullscreen_sink: bool,
 ) {
     match spec.role {
@@ -4364,7 +4423,11 @@ fn configure_rtp_video_chain_element(
         }
         RtpVideoChainRole::Sink => {
             configure_sink_for_low_latency(element);
-            set_property_if_supported(element, "direct-swapchain", true);
+            set_property_if_supported(
+                element,
+                "direct-swapchain",
+                !matches!(video_api, RtpVideoApi::D3D12),
+            );
             set_property_if_supported(element, "error-on-closed", false);
             set_property_if_supported(element, "fullscreen", d3d_fullscreen_sink);
             set_property_if_supported(element, "fullscreen-on-alt-enter", false);
@@ -4403,6 +4466,13 @@ fn link_rtp_video_pad(
             "info",
             format_video_chain_selection(encoding, video_api, &specs),
         );
+        if video_api == RtpVideoApi::D3D12 {
+            send_log(
+                event_sender,
+                "warn",
+                "Native D3D12 zero-copy video path is experimental and opt-in; if the visible frame freezes while sink/render counters keep increasing, use the default D3D11 path.".to_owned(),
+            );
+        }
         if d3d_fullscreen_sink {
             send_log(
                 event_sender,
@@ -4414,7 +4484,7 @@ fn link_rtp_video_pad(
         }
         for spec in &specs {
             let element = make_element(spec.factory)?;
-            configure_rtp_video_chain_element(&element, *spec, d3d_fullscreen_sink);
+            configure_rtp_video_chain_element(&element, *spec, video_api, d3d_fullscreen_sink);
             if spec.role == RtpVideoChainRole::StatsOverlay {
                 video_liveness.set_stats_overlay(Some(element.clone()));
             }
@@ -4448,6 +4518,7 @@ fn link_rtp_video_pad(
         src_pad
             .link(&first_sink_pad)
             .map_err(|error| format!("Failed to link RTP {encoding} video pad: {error:?}"))?;
+        video_liveness.set_rtp_video_src_pad(src_pad);
         watch_rtp_video_bitrate(src_pad, video_liveness.clone());
 
         let sink = elements
@@ -5626,6 +5697,19 @@ mod tests {
         assert_eq!(
             software.last().map(|spec| spec.factory),
             Some("autovideosink")
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_default_video_api_prefers_d3d11_before_d3d12() {
+        assert_eq!(
+            default_rtp_video_api_priority(),
+            vec![
+                RtpVideoApi::D3D11,
+                RtpVideoApi::D3D12,
+                RtpVideoApi::Software
+            ]
         );
     }
 
