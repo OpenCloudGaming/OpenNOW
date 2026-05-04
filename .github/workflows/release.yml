@@ -255,29 +255,55 @@ jobs:
         shell: pwsh
         run: |
           $installDir = "C:\gstreamer\1.0\msvc_x86_64"
-          $currentBase = "https://gstreamer.freedesktop.org/pkg/windows/$env:GSTREAMER_VERSION/msvc"
-          $legacyBase = "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GSTREAMER_VERSION/msvc"
-          $exe = Join-Path $env:RUNNER_TEMP "gstreamer-sdk.exe"
-          $exeUrl = "$currentBase/gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.exe"
-          curl.exe --fail --location --retry 3 --output $exe $exeUrl
-          if ($LASTEXITCODE -eq 0 -and (Test-Path $exe)) {
-            Start-Process -FilePath $exe -ArgumentList @("/quiet", "/norestart", "INSTALLDIR=$installDir") -Wait
-          } else {
-            $runtime = Join-Path $env:RUNNER_TEMP "gstreamer-runtime.msi"
-            $devel = Join-Path $env:RUNNER_TEMP "gstreamer-devel.msi"
-            curl.exe --fail --location --retry 3 --output $runtime "$legacyBase/gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.msi"
-            curl.exe --fail --location --retry 3 --output $devel "$legacyBase/gstreamer-1.0-devel-msvc-x86_64-$env:GSTREAMER_VERSION.msi"
-            Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart", "INSTALLDIR=$installDir") -Wait
-            Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart", "INSTALLDIR=$installDir") -Wait
-          }
           $roots = @(
             "C:\gstreamer\1.0\msvc_x86_64",
             "C:\Program Files\gstreamer\1.0\msvc_x86_64"
           )
-          $root = $roots | Where-Object {
-            (Test-Path (Join-Path $_ "lib\pkgconfig\gstreamer-1.0.pc")) -and
-            ((Test-Path (Join-Path $_ "bin\pkg-config.exe")) -or (Test-Path (Join-Path $_ "bin\pkgconf.exe")))
-          } | Select-Object -First 1
+          function Find-GStreamerRoot {
+            $roots | Where-Object {
+              (Test-Path (Join-Path $_ "lib\pkgconfig\gstreamer-1.0.pc")) -and
+              ((Test-Path (Join-Path $_ "bin\pkg-config.exe")) -or (Test-Path (Join-Path $_ "bin\pkgconf.exe")))
+            } | Select-Object -First 1
+          }
+          function Install-GStreamerMsiSdk([string] $version) {
+            $base = "https://gstreamer.freedesktop.org/pkg/windows/$version/msvc"
+            $runtime = Join-Path $env:RUNNER_TEMP "gstreamer-runtime-$version.msi"
+            $devel = Join-Path $env:RUNNER_TEMP "gstreamer-devel-$version.msi"
+            curl.exe --fail --location --retry 3 --output $runtime "$base/gstreamer-1.0-msvc-x86_64-$version.msi"
+            if ($LASTEXITCODE -ne 0) { return $false }
+            curl.exe --fail --location --retry 3 --output $devel "$base/gstreamer-1.0-devel-msvc-x86_64-$version.msi"
+            if ($LASTEXITCODE -ne 0) { return $false }
+            Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart", "INSTALLDIR=$installDir") -Wait
+            Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart", "INSTALLDIR=$installDir") -Wait
+            return $true
+          }
+          $currentBase = "https://gstreamer.freedesktop.org/pkg/windows/$env:GSTREAMER_VERSION/msvc"
+          $exe = Join-Path $env:RUNNER_TEMP "gstreamer-sdk.exe"
+          $exeUrl = "$currentBase/gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.exe"
+          $installed = $false
+          curl.exe --fail --location --retry 3 --output $exe $exeUrl
+          if ($LASTEXITCODE -eq 0 -and (Test-Path $exe)) {
+            $process = Start-Process -FilePath $exe -ArgumentList @("/S", "/D=$installDir") -PassThru
+            if ($process.WaitForExit(600000)) {
+              $installed = $process.ExitCode -eq 0
+            } else {
+              Write-Warning "GStreamer EXE installer timed out; killing process and falling back to MSI packages."
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            }
+            if (-not (Find-GStreamerRoot)) {
+              $installed = $false
+            }
+          }
+          if (-not $installed) {
+            if (-not (Install-GStreamerMsiSdk $env:GSTREAMER_VERSION)) {
+              Write-Warning "Current-version MSI packages unavailable; falling back to known-good GStreamer 1.26.1 Windows SDK."
+              if (-not (Install-GStreamerMsiSdk "1.26.1")) {
+                Write-Error "Failed to install GStreamer Windows SDK from EXE or MSI packages."
+                exit 1
+              }
+            }
+          }
+          $root = Find-GStreamerRoot
           if (-not $root) {
             Write-Error "GStreamer SDK root not found. Checked: $($roots -join ', '). Expected lib\pkgconfig\gstreamer-1.0.pc and bin\pkg-config.exe or bin\pkgconf.exe."
             exit 1
