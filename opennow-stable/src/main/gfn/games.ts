@@ -819,6 +819,128 @@ ${appFields}
   };
 }
 
+function findLikelyLibraryFilterId(definitions: CatalogDefinitions): string | null {
+  const options = definitions.filterGroups.flatMap((group) => group.options.map((opt) => ({
+    ...opt,
+    groupLabel: group.label,
+  })));
+  const byLabel = options.find((opt) => /\blibrary\b/i.test(opt.label) || /\bmy\s+library\b/i.test(opt.label));
+  if (byLabel) return byLabel.id;
+  const byGroup = options.find((opt) => /\blibrary\b/i.test(opt.groupLabel));
+  if (byGroup) return byGroup.id;
+  const byRawId = options.find((opt) => /\blibrary\b/i.test(opt.rawId) || /\bowned\b/i.test(opt.rawId));
+  return byRawId?.id ?? null;
+}
+
+async function fetchLibraryGamesViaCatalogBrowse(
+  token: string,
+  providerStreamingBaseUrl?: string,
+): Promise<GameInfo[] | null> {
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl);
+  const definitions = await fetchFilterAndSortDefinitions(token);
+  const libraryFilterId = findLikelyLibraryFilterId(definitions);
+
+  if (!libraryFilterId) {
+    return null;
+  }
+
+  const fetchCount = 200;
+  const filters = mergeFilterPayloads([libraryFilterId], definitions.filterPayloadById);
+  const sortId = DEFAULT_SORT_ID;
+  const selectedSort = definitions.sortOptions.find((option) => option.id === sortId)
+    ?? definitions.sortOptions[0]
+    ?? { id: sortId, label: "Relevance", orderBy: "itemMetadata.relevance:DESC,sortName:ASC" };
+
+  const appFields = `
+      numberReturned
+      numberSupported
+      pageInfo { hasNextPage endCursor totalCount }
+      items {
+        id
+        title
+        images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE }
+        variants {
+          id
+          appStore
+          supportedControls
+          gfn {
+            status
+            library { status selected lastPlayedDate }
+          }
+        }
+        gfn {
+          playabilityState
+          minimumMembershipTierLabel
+          catalogSkuStrings { SKU_BASED_TAG }
+        }
+        itemMetadata { campaignIds }
+      }
+  `;
+
+  const query = `query GetLibraryBrowseResults(
+      $vpcId: String!,
+      $locale: String!,
+      $sortString: String!,
+      $fetchCount: Int!,
+      $cursor: String!,
+      $filters: AppFilterFields!
+    ) {
+      apps(
+        vpcId: $vpcId,
+        language: $locale,
+        orderBy: $sortString,
+        first: $fetchCount,
+        after: $cursor,
+        filters: $filters
+      ) {
+${appFields}
+      }
+    }`;
+
+  const collectedApps: AppData[] = [];
+  let hasNextPage = false;
+  let endCursor = "";
+  let cursor = "";
+  let pages = 0;
+  const maxPages = 25;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    pages += 1;
+    const payload = await postGraphQl<AppsSearchResponse>(
+      query,
+      {
+        vpcId,
+        locale: DEFAULT_LOCALE,
+        sortString: selectedSort.orderBy,
+        fetchCount,
+        cursor,
+        filters,
+      },
+      token,
+    );
+
+    if (payload.errors?.length) {
+      throw new Error(payload.errors.map((error) => error.message).join(", "));
+    }
+
+    const apps = payload.data?.apps;
+    const items = apps?.items ?? [];
+    collectedApps.push(...items);
+    hasNextPage = apps?.pageInfo?.hasNextPage ?? false;
+    endCursor = apps?.pageInfo?.endCursor ?? "";
+
+    if (!hasNextPage || !endCursor) {
+      break;
+    }
+
+    cursor = endCursor;
+  }
+
+  const games = dedupeGames(collectedApps.map(appToGame)).filter((g) => g.isInLibrary);
+
+  return enrichGamesWithMetadata(token, vpcId, games);
+}
+
 export async function browseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult> {
   return browseCatalogUncached(input);
 }
@@ -860,6 +982,10 @@ async function fetchLibraryGamesUncached(
   providerStreamingBaseUrl?: string,
 ): Promise<GameInfo[]> {
   const vpcId = await getVpcId(token, providerStreamingBaseUrl);
+  const viaBrowse = await fetchLibraryGamesViaCatalogBrowse(token, providerStreamingBaseUrl);
+  if (viaBrowse) {
+    return viaBrowse;
+  }
   let payload: GraphQlResponse;
 
   try {
