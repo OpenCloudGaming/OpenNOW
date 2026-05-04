@@ -186,17 +186,30 @@ jobs:
       - name: Install macOS GStreamer build/runtime packages
         if: matrix.native_build == 'true' && runner.os == 'macOS'
         run: |
-          base="https://gstreamer.freedesktop.org/data/pkg/macos/${GSTREAMER_VERSION}"
+          primary_base="https://gstreamer.freedesktop.org/data/pkg/macos/${GSTREAMER_VERSION}"
+          mirror_base="https://gstreamer.freedesktop.org/pkg/macos/${GSTREAMER_VERSION}"
           cache_dir="${GITHUB_WORKSPACE}/.cache/gstreamer-macos/${GSTREAMER_VERSION}"
           mkdir -p "$cache_dir"
           runtime="$cache_dir/gstreamer-1.0-${GSTREAMER_VERSION}-universal.pkg"
           devel="$cache_dir/gstreamer-1.0-devel-${GSTREAMER_VERSION}-universal.pkg"
-          if [ ! -s "$runtime" ]; then
-            curl --fail --location --retry 3 --output "$runtime" "$base/gstreamer-1.0-${GSTREAMER_VERSION}-universal.pkg"
-          fi
-          if [ ! -s "$devel" ]; then
-            curl --fail --location --retry 3 --output "$devel" "$base/gstreamer-1.0-devel-${GSTREAMER_VERSION}-universal.pkg"
-          fi
+          download_pkg() {
+            local name="$1"
+            local destination="$2"
+            local partial="${destination}.part"
+            if [ -s "$destination" ]; then
+              return 0
+            fi
+            rm -f "$partial"
+            if ! curl --fail --location --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 30 --continue-at - --output "$partial" "$primary_base/$name"; then
+              curl --fail --location --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 30 --continue-at - --output "$partial" "$mirror_base/$name"
+            fi
+            test -s "$partial"
+            mv "$partial" "$destination"
+          }
+          download_pkg "gstreamer-1.0-${GSTREAMER_VERSION}-universal.pkg" "$runtime"
+          download_pkg "gstreamer-1.0-devel-${GSTREAMER_VERSION}-universal.pkg" "$devel"
+          test -s "$runtime"
+          test -s "$devel"
           sudo installer -pkg "$runtime" -target /
           sudo installer -pkg "$devel" -target /
           root="/Library/Frameworks/GStreamer.framework/Versions/1.0"
