@@ -255,20 +255,39 @@ jobs:
         if: matrix.native_build == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
-          $installDir = "C:\gstreamer\1.0\msvc_x86_64"
+          $installBase = "C:\gstreamer"
           $roots = @(
             "C:\gstreamer\1.0\msvc_x86_64",
             "C:\Program Files\gstreamer\1.0\msvc_x86_64"
           )
+          $searchBases = @("C:\gstreamer", "C:\Program Files\gstreamer")
+          $script:gstreamerPcPaths = @()
+          $script:lastRuntimeMsiExitCode = $null
+          $script:lastDevelMsiExitCode = $null
+          function Test-GStreamerRoot([string] $candidate) {
+            return [bool]($candidate -and
+              (Test-Path (Join-Path $candidate "lib\pkgconfig\gstreamer-1.0.pc")) -and
+              ((Test-Path (Join-Path $candidate "bin\pkg-config.exe")) -or (Test-Path (Join-Path $candidate "bin\pkgconf.exe"))))
+          }
           function Find-GStreamerRoot {
-            $roots | Where-Object {
-              (Test-Path (Join-Path $_ "lib\pkgconfig\gstreamer-1.0.pc")) -and
-              ((Test-Path (Join-Path $_ "bin\pkg-config.exe")) -or (Test-Path (Join-Path $_ "bin\pkgconf.exe")))
-            } | Select-Object -First 1
+            $script:gstreamerPcPaths = @()
+            foreach ($candidate in $roots) {
+              if (Test-GStreamerRoot $candidate) { return $candidate }
+            }
+            foreach ($base in $searchBases) {
+              if (-not (Test-Path $base)) { continue }
+              $pcFiles = @(Get-ChildItem -Path $base -Filter "gstreamer-1.0.pc" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like "*\lib\pkgconfig\gstreamer-1.0.pc" })
+              foreach ($pc in $pcFiles) {
+                $script:gstreamerPcPaths += $pc.FullName
+                $root = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $pc.FullName))
+                if (Test-GStreamerRoot $root) { return $root }
+              }
+            }
+            return $null
           }
           function Invoke-Download([string] $url, [string] $output) {
             $process = Start-Process -FilePath "curl.exe" -ArgumentList @("--fail", "--location", "--retry", "3", "--output", $output, $url) -Wait -PassThru -NoNewWindow
-            return $process.ExitCode -eq 0
+            return [bool]($process.ExitCode -eq 0)
           }
           function Install-GStreamerMsiSdk([string] $version) {
             $base = "https://gstreamer.freedesktop.org/pkg/windows/$version/msvc"
@@ -276,33 +295,26 @@ jobs:
             $devel = Join-Path $env:RUNNER_TEMP "gstreamer-devel-$version.msi"
             if (-not (Invoke-Download "$base/gstreamer-1.0-msvc-x86_64-$version.msi" $runtime)) { return $false }
             if (-not (Invoke-Download "$base/gstreamer-1.0-devel-msvc-x86_64-$version.msi" $devel)) { return $false }
-            $runtimeInstall = Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart", "INSTALLDIR=$installDir") -Wait -PassThru
+            $runtimeInstall = Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart", "INSTALLDIR=$installBase") -Wait -PassThru
+            $script:lastRuntimeMsiExitCode = $runtimeInstall.ExitCode
             if ($runtimeInstall.ExitCode -ne 0) { return $false }
-            $develInstall = Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart", "INSTALLDIR=$installDir") -Wait -PassThru
+            $develInstall = Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart", "INSTALLDIR=$installBase") -Wait -PassThru
+            $script:lastDevelMsiExitCode = $develInstall.ExitCode
             if ($develInstall.ExitCode -ne 0) { return $false }
             return [bool](Find-GStreamerRoot)
           }
-          function Install-GStreamerExeSdk([string] $version) {
-            $base = "https://gstreamer.freedesktop.org/pkg/windows/$version/msvc"
-            $exe = Join-Path $env:RUNNER_TEMP "gstreamer-sdk-$version.exe"
-            if (-not (Invoke-Download "$base/gstreamer-1.0-msvc-x86_64-$version.exe" $exe)) { return $false }
-            $process = Start-Process -FilePath $exe -ArgumentList @("/S", "/D=$installDir") -PassThru
-            if (-not $process.WaitForExit(600000)) {
-              Write-Warning "GStreamer EXE installer timed out; killing process."
-              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-              return $false
-            }
-            if ($process.ExitCode -ne 0) { return $false }
-            return [bool](Find-GStreamerRoot)
-          }
           if (-not (Install-GStreamerMsiSdk $env:GSTREAMER_WINDOWS_VERSION)) {
-            Write-Warning "GStreamer $env:GSTREAMER_WINDOWS_VERSION MSI SDK install failed; trying EXE fallback."
-            if (-not (Install-GStreamerExeSdk $env:GSTREAMER_WINDOWS_VERSION)) {
-              Write-Error "Failed to install GStreamer Windows SDK version $env:GSTREAMER_WINDOWS_VERSION from MSI or EXE packages."
-              exit 1
-            }
+            [void](Find-GStreamerRoot)
+            Write-Host "GStreamer explicit roots searched: $($roots -join ', ')"
+            Write-Host "GStreamer recursive search bases: $($searchBases -join ', ')"
+            Write-Host "Discovered gstreamer-1.0.pc paths: $(if ($script:gstreamerPcPaths.Count) { $script:gstreamerPcPaths -join ', ' } else { 'none' })"
+            Write-Error "Failed to install/discover GStreamer Windows MSI SDK version $env:GSTREAMER_WINDOWS_VERSION. Runtime MSI exit code: $script:lastRuntimeMsiExitCode; devel MSI exit code: $script:lastDevelMsiExitCode."
+            exit 1
           }
           $root = Find-GStreamerRoot
+          Write-Host "GStreamer explicit roots searched: $($roots -join ', ')"
+          Write-Host "GStreamer recursive search bases: $($searchBases -join ', ')"
+          Write-Host "Discovered gstreamer-1.0.pc paths: $(if ($script:gstreamerPcPaths.Count) { $script:gstreamerPcPaths -join ', ' } else { 'none' })"
           if (-not $root) {
             Write-Error "GStreamer SDK root not found. Checked: $($roots -join ', '). Expected lib\pkgconfig\gstreamer-1.0.pc and bin\pkg-config.exe or bin\pkgconf.exe."
             exit 1
