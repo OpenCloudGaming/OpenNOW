@@ -34,6 +34,18 @@ function prependEnvPath(env, directory) {
   env[pathKey] = env[pathKey] ? `${directory}${delimiter}${env[pathKey]}` : directory;
 }
 
+function appendEnvValue(env, key, value) {
+  env[key] = env[key]?.trim() ? `${env[key]} ${value}` : value;
+}
+
+function configureDarwinLinkerPadding(env, nativeFeatures) {
+  const isDarwinBuild = process.platform === "darwin" || /apple-darwin$/.test(nativeTarget);
+  if (!isDarwinBuild || !hasFeature(nativeFeatures, "gstreamer") || process.env.OPENNOW_BUNDLE_GSTREAMER_RUNTIME !== "1") {
+    return;
+  }
+  appendEnvValue(env, "RUSTFLAGS", "-C link-arg=-Wl,-headerpad_max_install_names");
+}
+
 function brewPrefix() {
   const result = spawnSync("brew", ["--prefix"], { encoding: "utf8" });
   return result.status === 0 ? result.stdout.trim() || null : null;
@@ -285,6 +297,7 @@ let gstreamerSdkRoot = null;
 if (hasFeature(nativeFeatures, "gstreamer")) {
   gstreamerSdkRoot = configureGstreamerSdk(buildEnv);
 }
+configureDarwinLinkerPadding(buildEnv, nativeFeatures);
 
 const cargoCommand = process.platform === "win32" ? "cargo.exe" : "cargo";
 const result = spawnSync(cargoCommand, cargoArgs, {
