@@ -60,10 +60,10 @@ function configureGstreamerSdk(env) {
     ].filter(Boolean);
     const sdk = candidates
       .map((root) => {
-        const pkgConfig = join(root, "bin", "pkg-config.exe");
-        const pkgconf = join(root, "bin", "pkgconf.exe");
         const pkgConfigFile = join(root, "lib", "pkgconfig", "gstreamer-1.0.pc");
-        const pkgConfigBinary = existsSync(pkgConfig) ? pkgConfig : existsSync(pkgconf) ? pkgconf : null;
+        const pkgConfigBinary = ["pkg-config.exe", "pkgconf.exe"]
+          .map((name) => join(root, "bin", name))
+          .find((path) => existsSync(path));
         return { root, pkgConfigBinary, pkgConfigFile };
       })
       .find((candidate) => candidate.pkgConfigBinary && existsSync(candidate.pkgConfigFile));
@@ -82,6 +82,7 @@ function configureGstreamerSdk(env) {
     env.PKG_CONFIG_PATH = env.PKG_CONFIG_PATH ? `${pkgConfigDir}${delimiter}${env.PKG_CONFIG_PATH}` : pkgConfigDir;
     prependEnvPath(env, join(sdk.root, "bin"));
     console.log(`Configured GStreamer SDK: ${sdk.root}`);
+    console.log(`Configured pkg-config executable: ${sdk.pkgConfigBinary}`);
     return sdk.root;
   }
 

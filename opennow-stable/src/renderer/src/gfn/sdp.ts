@@ -492,12 +492,27 @@ export function buildNvstSdp(params: NvstParams): string {
     "a=vqos.fec.repairMinPercent:5",
     "a=vqos.fec.repairPercent:5",
     "a=vqos.fec.repairMaxPercent:35",
-    // DRC — always disabled to allow full bitrate
+    // Official dynamicStreamingMode=0 path disables server resolution/FPS switching.
+    "a=vqos.dynamicStreamingMode:0",
     "a=vqos.drc.enable:0",
   ];
 
-  // Force-disable dynamic frame control to avoid server-side FPS/resolution adaptation.
-  lines.push("a=vqos.dfc.enable:0");
+  if (isHighFps) {
+    lines.push(
+      "a=vqos.dfc.enable:1",
+      "a=vqos.dfc.decodeFpsAdjPercent:85",
+      "a=vqos.dfc.targetDownCooldownMs:250",
+      `a=vqos.dfc.dfcAlgoVersion:${is120Fps || is240Fps ? 2 : 1}`,
+      `a=vqos.dfc.minTargetFps:${is120Fps || is240Fps ? 100 : 60}`,
+      "a=vqos.resControl.dfc.useClientFpsPerf:0",
+      "a=vqos.dfc.adjustResAndFps:0",
+    );
+  } else {
+    lines.push(
+      "a=vqos.dfc.enable:0",
+      "a=vqos.dfc.adjustResAndFps:0",
+    );
+  }
 
   // Video encoder settings
   lines.push(
@@ -542,7 +557,7 @@ export function buildNvstSdp(params: NvstParams): string {
     }
   }
 
-  // Out-of-focus handling + disable ALL dynamic resolution control
+  // Out-of-focus handling + disable CPM-based resolution changes
   lines.push(
     "a=vqos.adjustStreamingFpsDuringOutOfFocus:1",
     "a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1",
