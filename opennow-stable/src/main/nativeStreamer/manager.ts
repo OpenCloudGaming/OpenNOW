@@ -14,6 +14,7 @@ import {
   type NativeStreamerStatus,
   type NativeRenderSurface,
   type NativeStreamerSessionContext,
+  type NativeVideoBackendCapability,
   type SendAnswerRequest,
 } from "@shared/gfn";
 import {
@@ -107,6 +108,7 @@ function configureBundledGstreamerRuntime(
   }
 
   const binDir = join(runtimeRoot, "bin");
+  const libDir = join(runtimeRoot, "lib");
   const pluginDir = join(runtimeRoot, "lib", "gstreamer-1.0");
   const scanner = join(
     runtimeRoot,
@@ -131,11 +133,21 @@ function configureBundledGstreamerRuntime(
   if (isExistingDirectory(gioModulesDir)) {
     env.GIO_MODULE_DIR = gioModulesDir;
   }
-  if (process.platform === "linux" && isExistingDirectory(binDir)) {
-    prependEnvPath(env, "LD_LIBRARY_PATH", binDir);
+  if (process.platform === "linux") {
+    if (isExistingDirectory(libDir)) {
+      prependEnvPath(env, "LD_LIBRARY_PATH", libDir);
+    }
+    if (isExistingDirectory(binDir)) {
+      prependEnvPath(env, "LD_LIBRARY_PATH", binDir);
+    }
   }
-  if (process.platform === "darwin" && isExistingDirectory(binDir)) {
-    prependEnvPath(env, "DYLD_LIBRARY_PATH", binDir);
+  if (process.platform === "darwin") {
+    if (isExistingDirectory(libDir)) {
+      prependEnvPath(env, "DYLD_LIBRARY_PATH", libDir);
+    }
+    if (isExistingDirectory(binDir)) {
+      prependEnvPath(env, "DYLD_LIBRARY_PATH", binDir);
+    }
   }
 
   return true;
@@ -154,6 +166,72 @@ function normalizeBitrateKbps(value: number): number {
     MAX_NATIVE_BITRATE_KBPS,
     Math.max(MIN_NATIVE_BITRATE_KBPS, Math.round(value)),
   );
+}
+
+function formatVideoBackendName(backend: string | undefined): string {
+  switch (backend) {
+    case "d3d12":
+      return "D3D12";
+    case "d3d11":
+      return "D3D11";
+    case "videotoolbox":
+      return "VideoToolbox";
+    case "vaapi":
+      return "VAAPI";
+    case "v4l2":
+      return "V4L2";
+    case "vulkan":
+      return "Vulkan";
+    case "software":
+      return "Software";
+    default:
+      return backend ?? "Unknown";
+  }
+}
+
+function formatVideoCodec(codec: string): string {
+  switch (codec.toLowerCase()) {
+    case "h264":
+      return "H.264";
+    case "h265":
+      return "H.265";
+    case "av1":
+      return "AV1";
+    default:
+      return codec.toUpperCase();
+  }
+}
+
+function resolveActiveVideoBackend(
+  videoBackends: NativeVideoBackendCapability[],
+): NativeVideoBackendCapability | undefined {
+  const currentPlatform = process.platform === "win32"
+    ? "windows"
+    : process.platform === "darwin"
+      ? "macos"
+      : process.platform === "linux"
+        ? "linux"
+        : "other";
+
+  return videoBackends.find((candidate) => candidate.available && candidate.platform === currentPlatform)
+    ?? videoBackends.find((candidate) => candidate.available && candidate.platform === "cross-platform")
+    ?? videoBackends.find((candidate) => candidate.available);
+}
+
+function summarizeCodecs(backend: NativeVideoBackendCapability | undefined): string {
+  const codecs = backend?.codecs
+    .filter((codec) => codec.available)
+    .map((codec) => formatVideoCodec(codec.codec)) ?? [];
+  return codecs.length > 0 ? codecs.join(", ") : "No hardware codec path";
+}
+
+function summarizeZeroCopy(backend: NativeVideoBackendCapability | undefined): string {
+  if (!backend) {
+    return "Not available";
+  }
+  return backend.zeroCopyModes.length > 0
+    ? `Hardware memory: ${backend.zeroCopyModes.join(", ")}`
+    : "System memory";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -247,14 +325,22 @@ export class NativeStreamerManager {
       await this.ensureProcess();
       const backend = this.capabilities?.backend;
       const gstreamerAvailable = backend === "gstreamer" && this.capabilities?.supportsOfferAnswer === true;
+      const videoBackends = this.capabilities?.videoBackends ?? [];
+      const activeVideoBackend = resolveActiveVideoBackend(videoBackends);
+      const codecSummary = summarizeCodecs(activeVideoBackend);
+      const zeroCopySummary = summarizeZeroCopy(activeVideoBackend);
       return {
         detected: true,
         gstreamerAvailable,
         supportsOfferAnswer: this.capabilities?.supportsOfferAnswer === true,
         backend,
         fallbackReason: this.capabilities?.fallbackReason,
+        videoBackends,
+        activeVideoBackend,
+        codecSummary,
+        zeroCopySummary,
         message: gstreamerAvailable
-          ? "GStreamer native streamer is ready."
+          ? `GStreamer native streamer is ready. Video path: ${formatVideoBackendName(activeVideoBackend?.backend)}.`
           : this.capabilities?.fallbackReason ?? "Native streamer is present, but GStreamer is not available.",
       };
     } catch (error) {
@@ -651,6 +737,8 @@ export class NativeStreamerManager {
         `ages=encoded:${formatAge(message.encodedAgeMs)} decoded:${formatAge(message.decodedAgeMs)} sink:${formatAge(message.sinkAgeMs)}`,
         `rendered=${message.sinkRendered ?? "n/a"}`,
         `dropped=${message.sinkDropped ?? "n/a"}`,
+        `memory=${message.memoryMode ?? "unknown"}`,
+        `zeroCopy=${message.zeroCopy ?? "unknown"}`,
         `zeroCopyD3D11=${message.zeroCopyD3D11}`,
         `zeroCopyD3D12=${message.zeroCopyD3D12}`,
       ].join(" ");

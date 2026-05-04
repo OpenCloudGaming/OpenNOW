@@ -24,6 +24,7 @@ pub trait NativeStreamerBackend {
 }
 
 const BACKEND_ENV: &str = "OPENNOW_NATIVE_STREAMER_BACKEND";
+const NATIVE_CODEC_ENV: &str = "OPENNOW_NATIVE_CODEC";
 const MIN_BITRATE_KBPS: u32 = 5_000;
 const MAX_BITRATE_KBPS: u32 = 150_000;
 
@@ -148,9 +149,10 @@ pub fn prepare_native_offer(
         offer_sdp,
         &context.session.server_ip,
     ));
+    let codec = resolve_native_codec(context.settings.codec);
     let fixed_offer_sdp = prefer_codec(
         &fixed_offer_sdp,
-        context.settings.codec,
+        codec,
         PreferCodecOptions {
             prefer_hevc_profile_id: Some(preferred_hevc_profile_id(context.settings.color_quality)),
         },
@@ -164,7 +166,7 @@ pub fn prepare_native_offer(
         fps: context.settings.fps,
         max_bitrate_kbps: context.settings.max_bitrate_mbps.saturating_mul(1000),
         partial_reliable_threshold_ms: 16,
-        codec: context.settings.codec,
+        codec,
         color_quality: context.settings.color_quality,
         credentials,
         hid_device_mask: Some(PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL),
@@ -180,6 +182,19 @@ pub fn prepare_native_offer(
         nvst_params,
         media_connection_info: context.session.media_connection_info.clone(),
     })
+}
+
+fn resolve_native_codec(configured: VideoCodec) -> VideoCodec {
+    match env::var(NATIVE_CODEC_ENV)
+        .unwrap_or_else(|_| "auto".to_owned())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "h264" | "avc" => VideoCodec::H264,
+        "h265" | "hevc" => VideoCodec::H265,
+        "av1" => VideoCodec::AV1,
+        _ => configured,
+    }
 }
 
 pub fn prepared_offer_events(prepared: &PreparedNativeOffer) -> Vec<Event> {
@@ -276,6 +291,7 @@ impl NativeStreamerBackend for StubBackend {
             supports_remote_ice: true,
             supports_local_ice: false,
             supports_input: false,
+            video_backends: Vec::new(),
         }
     }
 

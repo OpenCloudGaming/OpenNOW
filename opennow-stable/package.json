@@ -118,7 +118,13 @@
         "gstreamer1.0-plugins-base",
         "gstreamer1.0-plugins-good",
         "gstreamer1.0-plugins-bad",
-        "gstreamer1.0-plugins-ugly"
+        "gstreamer1.0-plugins-ugly",
+        "gstreamer1.0-vaapi",
+        "gstreamer1.0-gl",
+        "libva2",
+        "libva-drm2",
+        "libvulkan1",
+        "mesa-vulkan-drivers"
       ]
     }
   }

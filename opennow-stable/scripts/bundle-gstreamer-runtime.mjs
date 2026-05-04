@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -143,6 +144,87 @@ function bundleWindowsRuntime({ sdkRoot, destination }) {
   console.log(`Bundled GStreamer runtime from ${resolvedSdkRoot} to ${destination} (${copied} paths).`);
 }
 
+function brewPrefix() {
+  const result = spawnSync("brew", ["--prefix"], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+  return result.stdout.trim() || null;
+}
+
+function macosRuntimeCandidates(explicitSdkRoot) {
+  return [
+    explicitSdkRoot,
+    process.env.GSTREAMER_1_0_ROOT_MACOS,
+    brewPrefix(),
+    "/opt/homebrew",
+    "/usr/local",
+  ].filter(Boolean);
+}
+
+function resolveMacosRuntimeRoot(explicitSdkRoot) {
+  const runtimeRoot = macosRuntimeCandidates(explicitSdkRoot).find((candidate) =>
+    existsSync(join(candidate, "lib", "libgstreamer-1.0.dylib"))
+    && existsSync(join(candidate, "lib", "gstreamer-1.0")),
+  );
+
+  if (!runtimeRoot) {
+    throw new Error(
+      "GStreamer Homebrew runtime was not found. Install gstreamer and plugin packages with brew or pass --sdk-root.",
+    );
+  }
+
+  return runtimeRoot;
+}
+
+function bundleMacosRuntime({ sdkRoot, destination }) {
+  const resolvedRuntimeRoot = resolveMacosRuntimeRoot(sdkRoot);
+  rmSync(destination, { recursive: true, force: true });
+  mkdirSync(destination, { recursive: true });
+
+  const copied = [
+    copyPathIfPresent(
+      join(resolvedRuntimeRoot, "lib", "gstreamer-1.0"),
+      join(destination, "lib", "gstreamer-1.0"),
+    ),
+    copyPathIfPresent(
+      join(resolvedRuntimeRoot, "lib", "gio", "modules"),
+      join(destination, "lib", "gio", "modules"),
+    ),
+    copyPathIfPresent(
+      join(resolvedRuntimeRoot, "libexec", "gstreamer-1.0"),
+      join(destination, "libexec", "gstreamer-1.0"),
+    ),
+    copyPathIfPresent(
+      join(resolvedRuntimeRoot, "share", "gstreamer-1.0"),
+      join(destination, "share", "gstreamer-1.0"),
+    ),
+    copyPathIfPresent(
+      join(resolvedRuntimeRoot, "share", "glib-2.0"),
+      join(destination, "share", "glib-2.0"),
+    ),
+  ].filter(Boolean).length;
+
+  copyMatchingFiles(join(resolvedRuntimeRoot, "lib"), join(destination, "lib"), /\.dylib$/);
+  copyMatchingFiles(resolvedRuntimeRoot, destination, /^(copying|license|readme)/i);
+  writeFileSync(
+    join(destination, "OPENNOW-GSTREAMER-RUNTIME.txt"),
+    [
+      "OpenNOW private GStreamer runtime bundle",
+      `Source: ${resolvedRuntimeRoot}`,
+      `Generated: ${new Date().toISOString()}`,
+      "",
+      "This directory is loaded only for the native streamer child process.",
+      "macOS uses DYLD_LIBRARY_PATH for this child process so copied plugins resolve against this bundle.",
+      "",
+    ].join("\n"),
+  );
+
+  console.log(`Bundled GStreamer runtime from ${resolvedRuntimeRoot} to ${destination} (${copied} paths plus dylibs).`);
+}
+
 const args = parseArgs(process.argv.slice(2));
 const destination = args.get("dest");
 if (!destination) {
@@ -151,16 +233,21 @@ if (!destination) {
 }
 
 try {
-  if (process.platform !== "win32") {
+  if (process.platform === "win32") {
+    bundleWindowsRuntime({
+      sdkRoot: args.get("sdk-root"),
+      destination: resolve(__dirname, "..", destination),
+    });
+  } else if (process.platform === "darwin") {
+    bundleMacosRuntime({
+      sdkRoot: args.get("sdk-root"),
+      destination: resolve(__dirname, "..", destination),
+    });
+  } else {
     throw new Error(
-      `Bundled GStreamer runtime collection is currently implemented for Windows only (got ${process.platform}).`,
+      `Bundled GStreamer runtime collection is implemented for Windows and macOS only (got ${process.platform}).`,
     );
   }
-
-  bundleWindowsRuntime({
-    sdkRoot: args.get("sdk-root"),
-    destination: resolve(__dirname, "..", destination),
-  });
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);

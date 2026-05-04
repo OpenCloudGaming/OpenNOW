@@ -10,8 +10,12 @@ const repoRoot = resolve(packageRoot, "..");
 const crateRoot = join(repoRoot, "native", "opennow-streamer");
 const manifestPath = join(crateRoot, "Cargo.toml");
 const exeName = process.platform === "win32" ? "opennow-streamer.exe" : "opennow-streamer";
-const platformKey = `${process.platform}-${process.arch}`;
-const builtBinary = join(crateRoot, "target", "release", exeName);
+const nativeTarget = process.env.OPENNOW_NATIVE_STREAMER_TARGET?.trim() || "";
+const platformKey = process.env.OPENNOW_NATIVE_STREAMER_PLATFORM_KEY?.trim() || `${process.platform}-${process.arch}`;
+const targetReleaseDir = nativeTarget
+  ? join(crateRoot, "target", nativeTarget, "release")
+  : join(crateRoot, "target", "release");
+const builtBinary = join(targetReleaseDir, exeName);
 const packageBinaryDir = join(crateRoot, "bin");
 const packageBinary = join(packageBinaryDir, exeName);
 const packagePlatformBinaryDir = join(packageBinaryDir, platformKey);
@@ -134,10 +138,40 @@ function verifyGstreamerBinary(binaryPath, env) {
     process.exit(1);
   }
 
-  console.log("Verified native streamer GStreamer capabilities.");
+  if (!Array.isArray(capabilities.videoBackends) || capabilities.videoBackends.length === 0) {
+    console.error(
+      `Native streamer verification expected video backend capabilities, got: ${JSON.stringify(
+        capabilities,
+      )}`,
+    );
+    process.exit(1);
+  }
+
+  const availableVideoBackends = capabilities.videoBackends
+    .filter((backend) => backend?.available)
+    .map((backend) => {
+      const codecs = Array.isArray(backend.codecs)
+        ? backend.codecs.filter((codec) => codec.available).map((codec) => codec.codec).join("/")
+        : "";
+      return `${backend.backend}${codecs ? `(${codecs})` : ""}`;
+    });
+
+  if (availableVideoBackends.length === 0) {
+    console.error(
+      `Native streamer verification found no usable video backend: ${JSON.stringify(
+        capabilities.videoBackends,
+      )}`,
+    );
+    process.exit(1);
+  }
+
+  console.log(`Verified native streamer GStreamer capabilities: ${availableVideoBackends.join(", ")}.`);
 }
 
 const cargoArgs = ["build", "--release", "--manifest-path", manifestPath];
+if (nativeTarget) {
+  cargoArgs.push("--target", nativeTarget);
+}
 const nativeFeatures = process.env.OPENNOW_NATIVE_STREAMER_FEATURES?.trim() || "gstreamer";
 if (nativeFeatures && nativeFeatures.toLowerCase() !== "none") {
   cargoArgs.push("--features", nativeFeatures);

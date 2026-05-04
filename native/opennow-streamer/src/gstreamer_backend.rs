@@ -8,8 +8,9 @@ use crate::input::{
 };
 use crate::protocol::{
     missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeRenderRect,
-    NativeRenderSurface, NativeStreamerCapabilities, NativeStreamerSessionContext, Response,
-    SendAnswerRequest, StreamSettings, VideoStallEvent, PROTOCOL_VERSION,
+    NativeRenderSurface, NativeStreamerCapabilities, NativeStreamerSessionContext,
+    NativeVideoBackendCapability, NativeVideoCodecCapability, Response, SendAnswerRequest,
+    StreamSettings, VideoStallEvent, PROTOCOL_VERSION,
 };
 use crate::sdp::{
     build_nvst_sdp_for_answer, extract_negotiated_video_codec, munge_answer_sdp, IceCredentials,
@@ -49,6 +50,8 @@ const NATIVE_GAMEPAD_POLL_INTERVAL: Duration = Duration::from_millis(4);
 const NATIVE_GAMEPAD_KEEPALIVE_INTERVAL: Duration = Duration::from_millis(100);
 const EXTERNAL_RENDERER_ENV: &str = "OPENNOW_NATIVE_EXTERNAL_RENDERER";
 const NATIVE_VIDEO_API_ENV: &str = "OPENNOW_NATIVE_VIDEO_API";
+const NATIVE_VIDEO_BACKEND_ENV: &str = "OPENNOW_NATIVE_VIDEO_BACKEND";
+const NATIVE_ZERO_COPY_ENV: &str = "OPENNOW_NATIVE_ZERO_COPY";
 const NATIVE_PRESENT_MAX_FPS_ENV: &str = "OPENNOW_NATIVE_PRESENT_MAX_FPS";
 const NATIVE_D3D_FULLSCREEN_ENV: &str = "OPENNOW_NATIVE_D3D_FULLSCREEN";
 
@@ -142,6 +145,7 @@ struct VideoLivenessState {
     codec: Mutex<String>,
     resolution: Mutex<String>,
     hardware_acceleration: Mutex<String>,
+    memory_mode: Mutex<String>,
     stats_overlay: Mutex<Option<gst::Element>>,
     stats_overlay_visible: AtomicBool,
     target_bitrate_kbps: AtomicU32,
@@ -162,6 +166,7 @@ impl VideoLivenessState {
             codec: Mutex::new(String::new()),
             resolution: Mutex::new(String::new()),
             hardware_acceleration: Mutex::new(String::new()),
+            memory_mode: Mutex::new("system-memory".to_owned()),
             stats_overlay: Mutex::new(None),
             stats_overlay_visible: AtomicBool::new(false),
             target_bitrate_kbps: AtomicU32::new(0),
@@ -249,6 +254,9 @@ impl VideoLivenessState {
             .store(caps.contains("memory:D3D11Memory"), Ordering::Relaxed);
         self.zero_copy_d3d12
             .store(caps.contains("memory:D3D12Memory"), Ordering::Relaxed);
+        if let Ok(mut memory_mode) = self.memory_mode.lock() {
+            *memory_mode = memory_mode_from_caps(caps).to_owned();
+        }
     }
 
     fn zero_copy_d3d11(&self) -> bool {
@@ -257,6 +265,17 @@ impl VideoLivenessState {
 
     fn zero_copy_d3d12(&self) -> bool {
         self.zero_copy_d3d12.load(Ordering::Relaxed)
+    }
+
+    fn memory_mode(&self) -> String {
+        self.memory_mode
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_else(|_| "unknown".to_owned())
+    }
+
+    fn zero_copy(&self) -> bool {
+        is_zero_copy_memory_mode(&self.memory_mode())
     }
 }
 
@@ -386,6 +405,7 @@ enum RtpVideoApi {
     VideoToolbox,
     Vaapi,
     V4L2,
+    Vulkan,
     Software,
 }
 
@@ -397,7 +417,29 @@ impl RtpVideoApi {
             Self::VideoToolbox => "VideoToolbox",
             Self::Vaapi => "VAAPI",
             Self::V4L2 => "V4L2",
+            Self::Vulkan => "Vulkan",
             Self::Software => "software",
+        }
+    }
+
+    fn capability_id(self) -> &'static str {
+        match self {
+            Self::D3D11 => "d3d11",
+            Self::D3D12 => "d3d12",
+            Self::VideoToolbox => "videotoolbox",
+            Self::Vaapi => "vaapi",
+            Self::V4L2 => "v4l2",
+            Self::Vulkan => "vulkan",
+            Self::Software => "software",
+        }
+    }
+
+    fn platform(self) -> &'static str {
+        match self {
+            Self::D3D11 | Self::D3D12 => "windows",
+            Self::VideoToolbox => "macos",
+            Self::Vaapi | Self::V4L2 | Self::Vulkan => "linux",
+            Self::Software => "cross-platform",
         }
     }
 
@@ -405,6 +447,9 @@ impl RtpVideoApi {
         match self {
             Self::D3D11 => Some("video/x-raw(memory:D3D11Memory)"),
             Self::D3D12 => Some("video/x-raw(memory:D3D12Memory)"),
+            Self::VideoToolbox => zero_copy_requested().then_some("video/x-raw(memory:GLMemory)"),
+            Self::Vaapi => zero_copy_requested().then_some("video/x-raw(memory:VAMemory)"),
+            Self::Vulkan => Some("video/x-raw(memory:VulkanImage)"),
             _ => None,
         }
     }
@@ -412,6 +457,8 @@ impl RtpVideoApi {
     fn post_decode_converter_factory(self) -> Option<&'static str> {
         match self {
             Self::D3D11 | Self::D3D12 => None,
+            Self::Vulkan => Some("vulkancolorconvert"),
+            Self::VideoToolbox | Self::Vaapi if zero_copy_requested() => None,
             // Non-D3D hardware decoders are not guaranteed to negotiate directly with every
             // platform sink. Keep these paths reliable with an explicit raw-video conversion stage.
             Self::VideoToolbox | Self::Vaapi | Self::V4L2 | Self::Software => Some("videoconvert"),
@@ -432,6 +479,7 @@ impl RtpVideoApi {
             Self::VideoToolbox => "glimagesink",
             Self::Vaapi => "glimagesink",
             Self::V4L2 => "glimagesink",
+            Self::Vulkan => "vulkansink",
             Self::Software => "autovideosink",
         }
     }
@@ -444,12 +492,14 @@ impl RtpVideoApi {
             (Self::D3D12, "H265" | "HEVC") => Some("d3d12h265dec"),
             (Self::D3D12, "H264") => Some("d3d12h264dec"),
             (Self::D3D12, "AV1") => Some("d3d12av1dec"),
-            (Self::VideoToolbox, "H265" | "HEVC" | "H264") => Some("vtdec"),
+            (Self::VideoToolbox, "H265" | "HEVC" | "H264") => Some("vtdec_hw"),
             (Self::Vaapi, "H265" | "HEVC") => Some("vah265dec"),
             (Self::Vaapi, "H264") => Some("vah264dec"),
             (Self::Vaapi, "AV1") => Some("vaav1dec"),
             (Self::V4L2, "H265" | "HEVC") => Some("v4l2slh265dec"),
             (Self::V4L2, "H264") => Some("v4l2slh264dec"),
+            (Self::Vulkan, "H265" | "HEVC") => Some("vulkanh265dec"),
+            (Self::Vulkan, "H264") => Some("vulkanh264dec"),
             (Self::Software, "H265" | "HEVC") => Some("avdec_h265"),
             (Self::Software, "H264") => Some("avdec_h264"),
             (Self::Software, "AV1") => Some("avdec_av1"),
@@ -464,6 +514,7 @@ impl RtpVideoApi {
             (Self::Vaapi, "AV1") => &["vaapiav1dec"],
             (Self::V4L2, "H265" | "HEVC") => &["v4l2h265dec"],
             (Self::V4L2, "H264") => &["v4l2h264dec"],
+            (Self::VideoToolbox, "H265" | "HEVC" | "H264") => &["vtdec"],
             _ => &[],
         }
     }
@@ -3444,12 +3495,11 @@ fn update_native_stats_overlay(
     };
     let target_mbps = f64::from(target_bitrate_kbps) / 1000.0;
     let bitrate_mbps = f64::from(bitrate_kbps) / 1000.0;
-    let memory_path = if state.zero_copy_d3d12() {
-        "D3D12 zero-copy"
-    } else if state.zero_copy_d3d11() {
-        "D3D11 zero-copy"
+    let memory_mode = state.memory_mode();
+    let memory_path = if state.zero_copy() {
+        format!("{memory_mode} zero-copy")
     } else {
-        "native"
+        memory_mode
     };
     let text = format!(
         "{} {}  {:.1}/{:.1} Mbps  Bit {:.0}%\nDecode {:.0}fps  Render {:.0}fps  Drop {:.2}%  {}",
@@ -3462,7 +3512,7 @@ fn update_native_stats_overlay(
         rates.sink_fps,
         drop_percent,
         if hardware_acceleration.is_empty() {
-            memory_path.to_owned()
+            memory_path
         } else {
             format!("{hardware_acceleration} {memory_path}")
         },
@@ -3488,6 +3538,8 @@ fn emit_video_stall_event(
     let decoded_age_ms = age_since_ms(now_ms, last_decoded_ms);
     let sink_age_ms = age_since_ms(now_ms, last_sink_ms);
     let likely_stage = classify_video_stall(encoded_age_ms, decoded_age_ms, sink_age_ms);
+    let memory_mode = state.memory_mode();
+    let zero_copy = state.zero_copy();
     let resync_suffix = if will_resync {
         " Requesting keyframe and resyncing GStreamer latency."
     } else {
@@ -3497,7 +3549,7 @@ fn emit_video_stall_event(
         event_sender,
         "warn",
         format!(
-            "Native video stall detected: stall={stall_ms}ms stage={likely_stage} encoded={:.0}kbps decoded={:.1}fps sink={:.1}fps ages=encoded:{} decoded:{} sink:{} rendered={} dropped={} zeroCopyD3D11={} zeroCopyD3D12={}.{}",
+            "Native video stall detected: stall={stall_ms}ms stage={likely_stage} encoded={:.0}kbps decoded={:.1}fps sink={:.1}fps ages=encoded:{} decoded:{} sink:{} rendered={} dropped={} memoryMode={} zeroCopy={} zeroCopyD3D11={} zeroCopyD3D12={}.{}",
             rates.encoded_kbps,
             rates.decoded_fps,
             rates.sink_fps,
@@ -3512,6 +3564,8 @@ fn emit_video_stall_event(
                 .dropped
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "n/a".to_owned()),
+            memory_mode.as_str(),
+            zero_copy,
             state.zero_copy_d3d11(),
             state.zero_copy_d3d12(),
             resync_suffix
@@ -3529,6 +3583,8 @@ fn emit_video_stall_event(
             likely_stage: likely_stage.to_owned(),
             sink_rendered: stats.rendered,
             sink_dropped: stats.dropped,
+            memory_mode,
+            zero_copy,
             zero_copy_d3d11: state.zero_copy_d3d11(),
             zero_copy_d3d12: state.zero_copy_d3d12(),
             recovery_attempt,
@@ -3995,19 +4051,30 @@ fn rtp_video_chain_definition(
 }
 
 fn preferred_rtp_video_apis() -> Vec<RtpVideoApi> {
-    match std::env::var(NATIVE_VIDEO_API_ENV)
+    let requested = std::env::var(NATIVE_VIDEO_BACKEND_ENV)
+        .or_else(|_| std::env::var(NATIVE_VIDEO_API_ENV))
         .unwrap_or_else(|_| "auto".to_owned())
-        .to_ascii_lowercase()
-        .as_str()
-    {
+        .to_ascii_lowercase();
+    match requested.as_str() {
         "d3d11" => vec![RtpVideoApi::D3D11],
         "d3d12" => vec![RtpVideoApi::D3D12],
         "videotoolbox" | "vt" => vec![RtpVideoApi::VideoToolbox],
         "vaapi" | "va" => vec![RtpVideoApi::Vaapi],
         "v4l2" | "v4l2stateless" => vec![RtpVideoApi::V4L2],
+        "vulkan" | "vk" => vec![RtpVideoApi::Vulkan],
         "software" | "sw" => vec![RtpVideoApi::Software],
         _ => default_rtp_video_api_priority(),
     }
+}
+
+fn zero_copy_requested() -> bool {
+    matches!(
+        std::env::var(NATIVE_ZERO_COPY_ENV)
+            .unwrap_or_else(|_| "auto".to_owned())
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "forced"
+    )
 }
 
 fn default_rtp_video_api_priority() -> Vec<RtpVideoApi> {
@@ -4025,11 +4092,21 @@ fn default_rtp_video_api_priority() -> Vec<RtpVideoApi> {
     }
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
-        vec![RtpVideoApi::V4L2, RtpVideoApi::Vaapi, RtpVideoApi::Software]
+        vec![
+            RtpVideoApi::V4L2,
+            RtpVideoApi::Vaapi,
+            RtpVideoApi::Vulkan,
+            RtpVideoApi::Software,
+        ]
     }
     #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
     {
-        vec![RtpVideoApi::Vaapi, RtpVideoApi::V4L2, RtpVideoApi::Software]
+        vec![
+            RtpVideoApi::Vaapi,
+            RtpVideoApi::Vulkan,
+            RtpVideoApi::V4L2,
+            RtpVideoApi::Software,
+        ]
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
@@ -4077,6 +4154,175 @@ fn required_video_chain_elements_available(specs: &[RtpVideoChainSpec]) -> bool 
     specs
         .iter()
         .all(|spec| gst::ElementFactory::find(spec.factory).is_some())
+}
+
+fn all_rtp_video_apis() -> &'static [RtpVideoApi] {
+    &[
+        RtpVideoApi::D3D12,
+        RtpVideoApi::D3D11,
+        RtpVideoApi::VideoToolbox,
+        RtpVideoApi::Vaapi,
+        RtpVideoApi::V4L2,
+        RtpVideoApi::Vulkan,
+        RtpVideoApi::Software,
+    ]
+}
+
+fn all_video_codec_labels() -> &'static [&'static str] {
+    &["H264", "H265", "AV1"]
+}
+
+fn current_platform_label() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "windows"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "macos"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "linux"
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        "other"
+    }
+}
+
+fn backend_runs_on_current_platform(video_api: RtpVideoApi) -> bool {
+    video_api.platform() == current_platform_label() || video_api.platform() == "cross-platform"
+}
+
+fn native_video_backend_capabilities() -> Vec<NativeVideoBackendCapability> {
+    all_rtp_video_apis()
+        .iter()
+        .copied()
+        .map(native_video_backend_capability)
+        .collect()
+}
+
+fn native_video_backend_capability(video_api: RtpVideoApi) -> NativeVideoBackendCapability {
+    let platform_supported = backend_runs_on_current_platform(video_api);
+    let sink_factory = platform_supported
+        .then(|| select_sink_factory(video_api))
+        .flatten();
+    let codecs = all_video_codec_labels()
+        .iter()
+        .map(|codec| {
+            native_video_codec_capability(video_api, codec, platform_supported, sink_factory)
+        })
+        .collect::<Vec<_>>();
+    let available =
+        platform_supported && sink_factory.is_some() && codecs.iter().any(|codec| codec.available);
+    let reason = if !platform_supported {
+        Some(format!(
+            "{} is a {} backend and does not run on {}.",
+            video_api.label(),
+            video_api.platform(),
+            current_platform_label()
+        ))
+    } else if sink_factory.is_none() {
+        Some(format!(
+            "{} sink is unavailable; install the platform GStreamer video sink plugins.",
+            video_api.label()
+        ))
+    } else if !available {
+        Some(format!(
+            "{} decoders are unavailable for H.264, H.265, and AV1.",
+            video_api.label()
+        ))
+    } else {
+        None
+    };
+
+    NativeVideoBackendCapability {
+        backend: video_api.capability_id().to_owned(),
+        platform: video_api.platform().to_owned(),
+        codecs,
+        zero_copy_modes: zero_copy_modes_for_backend(video_api),
+        sink: sink_factory.map(str::to_owned),
+        available,
+        reason,
+    }
+}
+
+fn native_video_codec_capability(
+    video_api: RtpVideoApi,
+    codec: &str,
+    platform_supported: bool,
+    sink: Option<&'static str>,
+) -> NativeVideoCodecCapability {
+    let depayloader = rtp_video_depayloader_factory(codec);
+    let parser = rtp_video_parser_factory(codec);
+    let decoder = platform_supported
+        .then(|| select_decoder_factory(video_api, codec))
+        .flatten();
+    let definition = rtp_video_chain_definition(codec, video_api);
+    let available = platform_supported
+        && sink.is_some()
+        && decoder.is_some()
+        && depayloader.is_some_and(|factory| gst::ElementFactory::find(factory).is_some())
+        && parser.is_some_and(|factory| gst::ElementFactory::find(factory).is_some())
+        && definition.is_some_and(|mut specs| {
+            for spec in &mut specs {
+                if spec.role == RtpVideoChainRole::Decoder {
+                    if let Some(decoder) = decoder {
+                        spec.factory = decoder;
+                    }
+                } else if spec.role == RtpVideoChainRole::Sink {
+                    if let Some(sink) = sink {
+                        spec.factory = sink;
+                    }
+                }
+            }
+            specs.retain(|spec| {
+                spec.role != RtpVideoChainRole::StatsOverlay
+                    || gst::ElementFactory::find(spec.factory).is_some()
+            });
+            required_video_chain_elements_available(&specs)
+        });
+
+    let reason = if !platform_supported {
+        Some("Backend is not available on this platform.".to_owned())
+    } else if depayloader.is_none() || parser.is_none() {
+        Some("RTP depayloader or parser is not mapped for this codec.".to_owned())
+    } else if decoder.is_none() {
+        Some(format!(
+            "{} decoder for {codec} is not installed.",
+            video_api.label()
+        ))
+    } else if sink.is_none() {
+        Some(format!(
+            "{} video sink is not installed.",
+            video_api.label()
+        ))
+    } else if !available {
+        Some("Required GStreamer elements are not all available.".to_owned())
+    } else {
+        None
+    };
+
+    NativeVideoCodecCapability {
+        codec: codec.to_ascii_lowercase(),
+        available,
+        decoder: decoder.map(str::to_owned),
+        parser: parser.map(str::to_owned),
+        depayloader: depayloader.map(str::to_owned),
+        reason,
+    }
+}
+
+fn zero_copy_modes_for_backend(video_api: RtpVideoApi) -> Vec<String> {
+    match video_api {
+        RtpVideoApi::D3D11 => vec!["D3D11Memory".to_owned()],
+        RtpVideoApi::D3D12 => vec!["D3D12Memory".to_owned()],
+        RtpVideoApi::VideoToolbox => vec!["GLMemory".to_owned()],
+        RtpVideoApi::Vaapi => vec!["VAMemory".to_owned()],
+        RtpVideoApi::Vulkan => vec!["VulkanImage".to_owned()],
+        RtpVideoApi::V4L2 | RtpVideoApi::Software => Vec::new(),
+    }
 }
 
 fn configure_rtp_video_chain_element(
@@ -4144,7 +4390,7 @@ fn link_rtp_video_pad(
 
     let (video_api, specs) = rtp_video_chain_specs(encoding).ok_or_else(|| {
         format!(
-            "Explicit low-latency decode chain is unavailable for RTP {encoding}; install the platform GStreamer plugin packages or set {NATIVE_VIDEO_API_ENV}=software to force software decode."
+            "Explicit low-latency decode chain is unavailable for RTP {encoding}; install the platform GStreamer plugin packages or set {NATIVE_VIDEO_BACKEND_ENV}=software to force software decode."
         )
     })?;
     video_liveness.update_hardware_acceleration(format!("GStreamer {}", video_api.label()));
@@ -4476,11 +4722,13 @@ fn watch_first_sink_buffer(
             .unwrap_or_else(|| "unknown caps".to_owned());
         let zero_copy_d3d11 = caps.contains("memory:D3D11Memory");
         let zero_copy_d3d12 = caps.contains("memory:D3D12Memory");
+        let memory_mode = memory_mode_from_caps(&caps);
+        let zero_copy = is_zero_copy_memory_mode(memory_mode);
         send_log(
             &sender,
             "info",
             format!(
-                "First decoded {label} buffer reached native sink; caps={caps}; zeroCopyD3D11={zero_copy_d3d11}; zeroCopyD3D12={zero_copy_d3d12}."
+                "First decoded {label} buffer reached native sink; caps={caps}; memoryMode={memory_mode}; zeroCopy={zero_copy}; zeroCopyD3D11={zero_copy_d3d11}; zeroCopyD3D12={zero_copy_d3d12}."
             ),
         );
 
@@ -4662,6 +4910,8 @@ fn watch_video_pad_rate(
                 .unwrap_or_else(|| "unknown caps".to_owned());
             let zero_copy_d3d11 = caps.contains("memory:D3D11Memory");
             let zero_copy_d3d12 = caps.contains("memory:D3D12Memory");
+            let memory_mode = memory_mode_from_caps(&caps);
+            let zero_copy = is_zero_copy_memory_mode(memory_mode);
             if let Some((monitor, _)) = &video_liveness {
                 monitor.update_caps(&caps);
             }
@@ -4676,7 +4926,7 @@ fn watch_video_pad_rate(
                 &sender,
                 "debug",
                 format!(
-                    "{label}: {fps:.1} fps; capsFramerate={caps_framerate}; zeroCopyD3D11={zero_copy_d3d11}; zeroCopyD3D12={zero_copy_d3d12}{sink_stats}."
+                    "{label}: {fps:.1} fps; capsFramerate={caps_framerate}; memoryMode={memory_mode}; zeroCopy={zero_copy}; zeroCopyD3D11={zero_copy_d3d11}; zeroCopyD3D12={zero_copy_d3d12}{sink_stats}."
                 ),
             );
 
@@ -4744,6 +4994,29 @@ fn caps_framerate_summary(caps: &str) -> Option<String> {
         (None, None) => rest.len(),
     };
     Some(rest[..end].trim().to_owned())
+}
+
+fn memory_mode_from_caps(caps: &str) -> &'static str {
+    if caps.contains("memory:D3D12Memory") {
+        "D3D12Memory"
+    } else if caps.contains("memory:D3D11Memory") {
+        "D3D11Memory"
+    } else if caps.contains("memory:VulkanImage") {
+        "VulkanImage"
+    } else if caps.contains("memory:VAMemory") {
+        "VAMemory"
+    } else if caps.contains("memory:GLMemory") {
+        "GLMemory"
+    } else {
+        "system-memory"
+    }
+}
+
+fn is_zero_copy_memory_mode(memory_mode: &str) -> bool {
+    matches!(
+        memory_mode,
+        "D3D12Memory" | "D3D11Memory" | "VulkanImage" | "VAMemory" | "GLMemory"
+    )
 }
 
 fn link_decoded_media_to_fakesink(
@@ -4835,6 +5108,18 @@ impl NativeStreamerBackend for GstreamerBackend {
             supports_remote_ice: true,
             supports_local_ice: true,
             supports_input: true,
+            video_backends: match init_gstreamer() {
+                Ok(()) => native_video_backend_capabilities(),
+                Err(error) => vec![NativeVideoBackendCapability {
+                    backend: "gstreamer".to_owned(),
+                    platform: current_platform_label().to_owned(),
+                    codecs: Vec::new(),
+                    zero_copy_modes: Vec::new(),
+                    sink: None,
+                    available: false,
+                    reason: Some(error),
+                }],
+            },
         }
     }
 
@@ -5312,7 +5597,7 @@ mod tests {
     fn maps_cross_platform_video_paths_to_expected_decoders() {
         let vt =
             rtp_video_chain_definition("H264", RtpVideoApi::VideoToolbox).expect("VideoToolbox");
-        assert_eq!(vt[3].factory, "vtdec");
+        assert_eq!(vt[3].factory, "vtdec_hw");
         assert!(vt.iter().any(|spec| spec.factory == "videoconvert"));
         assert_eq!(vt.last().map(|spec| spec.factory), Some("glimagesink"));
         assert!(!vt.iter().any(|spec| spec.factory == "capsfilter"));
@@ -5325,6 +5610,14 @@ mod tests {
         let v4l2 = rtp_video_chain_definition("H265", RtpVideoApi::V4L2).expect("V4L2 H265");
         assert_eq!(v4l2[3].factory, "v4l2slh265dec");
         assert!(v4l2.iter().any(|spec| spec.factory == "videoconvert"));
+
+        let vulkan = rtp_video_chain_definition("H265", RtpVideoApi::Vulkan).expect("Vulkan H265");
+        assert_eq!(vulkan[3].factory, "vulkanh265dec");
+        assert!(vulkan
+            .iter()
+            .any(|spec| spec.factory == "vulkancolorconvert"));
+        assert_eq!(vulkan.last().map(|spec| spec.factory), Some("vulkansink"));
+        assert!(rtp_video_chain_definition("AV1", RtpVideoApi::Vulkan).is_none());
 
         let software =
             rtp_video_chain_definition("H264", RtpVideoApi::Software).expect("software H264");

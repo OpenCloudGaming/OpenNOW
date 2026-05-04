@@ -422,8 +422,10 @@ function mergeNativeStreamStats(
   const dropPercent = totalSinkFrames > 0 ? (sinkDropped / totalSinkFrames) * 100 : 0;
   const hardwareAcceleration = [
     stats.hardwareAcceleration || "GStreamer native decode",
-    stats.zeroCopyD3D12 ? "D3D12 zero-copy" : "",
-    stats.zeroCopyD3D11 ? "D3D11 zero-copy" : "",
+    stats.zeroCopy && stats.memoryMode ? `${stats.memoryMode} zero-copy` : "",
+    !stats.zeroCopy && stats.memoryMode ? stats.memoryMode : "",
+    !stats.memoryMode && stats.zeroCopyD3D12 ? "D3D12 zero-copy" : "",
+    !stats.memoryMode && stats.zeroCopyD3D11 ? "D3D11 zero-copy" : "",
   ].filter(Boolean).join(" · ");
 
   return {

@@ -148,7 +148,40 @@ export interface NativeStreamerStatus {
   supportsOfferAnswer: boolean;
   backend?: NativeStreamerBackend;
   fallbackReason?: string;
+  videoBackends?: NativeVideoBackendCapability[];
+  activeVideoBackend?: NativeVideoBackendCapability;
+  codecSummary?: string;
+  zeroCopySummary?: string;
   message: string;
+}
+
+export type NativeVideoBackendId =
+  | "d3d12"
+  | "d3d11"
+  | "videotoolbox"
+  | "vaapi"
+  | "v4l2"
+  | "vulkan"
+  | "software"
+  | string;
+
+export interface NativeVideoCodecCapability {
+  codec: "h264" | "h265" | "av1" | string;
+  available: boolean;
+  decoder?: string;
+  parser?: string;
+  depayloader?: string;
+  reason?: string;
+}
+
+export interface NativeVideoBackendCapability {
+  backend: NativeVideoBackendId;
+  platform: "windows" | "macos" | "linux" | "cross-platform" | "other" | string;
+  codecs: NativeVideoCodecCapability[];
+  zeroCopyModes: string[];
+  sink?: string;
+  available: boolean;
+  reason?: string;
 }
 
 export interface Settings {
@@ -765,6 +798,8 @@ export interface NativeStreamStats {
   codec: string;
   resolution: string;
   hardwareAcceleration: string;
+  memoryMode?: string;
+  zeroCopy?: boolean;
   bitrateKbps: number;
   targetBitrateKbps: number;
   bitratePerformancePercent: number;

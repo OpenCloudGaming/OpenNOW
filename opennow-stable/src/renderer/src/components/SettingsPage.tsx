@@ -18,6 +18,7 @@ import type {
     ThankYouSupporter,
     AppUpdaterState,
     NativeStreamerStatus,
+    NativeVideoBackendCapability,
   } from "@shared/gfn";
 import {
   colorQualityRequiresHevc,
@@ -61,6 +62,46 @@ const allColorQualityOptions: { value: ColorQuality; label: string; description:
 ];
 
 const colorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [...allColorQualityOptions];
+
+function formatNativeVideoBackendName(backend: string | undefined): string {
+  switch (backend) {
+    case "d3d12":
+      return "D3D12";
+    case "d3d11":
+      return "D3D11";
+    case "videotoolbox":
+      return "VideoToolbox";
+    case "vaapi":
+      return "VAAPI";
+    case "v4l2":
+      return "V4L2";
+    case "vulkan":
+      return "Vulkan";
+    case "software":
+      return "Software";
+    default:
+      return backend ?? "Unknown";
+  }
+}
+
+function formatNativeVideoCodec(codec: string): string {
+  switch (codec.toLowerCase()) {
+    case "h264":
+      return "H.264";
+    case "h265":
+      return "H.265";
+    case "av1":
+      return "AV1";
+    default:
+      return codec.toUpperCase();
+  }
+}
+
+function getAvailableNativeCodecLabels(backend: NativeVideoBackendCapability | undefined): string[] {
+  return backend?.codecs
+    .filter((codec) => codec.available)
+    .map((codec) => formatNativeVideoCodec(codec.codec)) ?? [];
+}
 
 /* ── Static fallbacks (used when MES API is unavailable) ─────────── */
 
@@ -1926,6 +1967,34 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
                 <span className="settings-subtle-hint">
                   {nativeStreamerStatus?.message ?? "OpenNOW will check the bundled GStreamer streamer when this tab opens."}
+                </span>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <label className="settings-label">Video Path</label>
+                <div className="settings-chip-row">
+                  <span
+                    className={`settings-inline-badge ${
+                      nativeStreamerStatus?.activeVideoBackend?.available
+                        ? nativeStreamerStatus.activeVideoBackend.backend === "software"
+                          ? "settings-inline-badge--codec-testing"
+                          : "settings-inline-badge--codec-gpu"
+                        : "settings-inline-badge--updater-error"
+                    }`}
+                  >
+                    {formatNativeVideoBackendName(nativeStreamerStatus?.activeVideoBackend?.backend)}
+                  </span>
+                  {getAvailableNativeCodecLabels(nativeStreamerStatus?.activeVideoBackend).map((codec) => (
+                    <span key={codec} className="settings-inline-badge settings-inline-badge--codec">
+                      {codec}
+                    </span>
+                  ))}
+                </div>
+                <span className="settings-subtle-hint">
+                  {nativeStreamerStatus?.gstreamerAvailable
+                    ? `${nativeStreamerStatus.codecSummary ?? "Codec support unknown"}. ${nativeStreamerStatus.zeroCopySummary ?? "Memory path unknown"}.`
+                    : nativeStreamerStatus?.activeVideoBackend?.reason
+                      ?? "OpenNOW will show the active hardware decode path after GStreamer is detected."}
                 </span>
               </div>
 

@@ -180,6 +180,42 @@ pub struct NativeStreamerCapabilities {
     pub supports_local_ice: bool,
     #[serde(rename = "supportsInput")]
     pub supports_input: bool,
+    #[serde(
+        rename = "videoBackends",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub video_backends: Vec<NativeVideoBackendCapability>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeVideoBackendCapability {
+    pub backend: String,
+    pub platform: String,
+    pub codecs: Vec<NativeVideoCodecCapability>,
+    #[serde(rename = "zeroCopyModes")]
+    pub zero_copy_modes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sink: Option<String>,
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeVideoCodecCapability {
+    pub codec: String,
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decoder: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parser: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depayloader: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -233,6 +269,8 @@ pub struct VideoStallEvent {
     pub sink_rendered: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sink_dropped: Option<u64>,
+    pub memory_mode: String,
+    pub zero_copy: bool,
     pub zero_copy_d3d11: bool,
     pub zero_copy_d3d12: bool,
     pub recovery_attempt: u8,
@@ -255,6 +293,8 @@ pub struct NativeStatsEvent {
     pub sink_rendered: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sink_dropped: Option<u64>,
+    pub memory_mode: String,
+    pub zero_copy: bool,
     pub zero_copy_d3d11: bool,
     pub zero_copy_d3d12: bool,
 }
@@ -346,6 +386,8 @@ mod tests {
             likely_stage: "video-output-stalled".to_owned(),
             sink_rendered: Some(42),
             sink_dropped: Some(1),
+            memory_mode: "D3D11Memory".to_owned(),
+            zero_copy: true,
             zero_copy_d3d11: true,
             zero_copy_d3d12: false,
             recovery_attempt: 1,

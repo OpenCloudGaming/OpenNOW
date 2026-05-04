@@ -4,6 +4,7 @@ import type {
   NativeStreamStats,
   NativeRenderSurface,
   NativeStreamerSessionContext,
+  NativeVideoBackendCapability,
   SendAnswerRequest,
 } from "./gfn";
 
@@ -20,6 +21,7 @@ export interface NativeStreamerCapabilities {
   supportsRemoteIce: boolean;
   supportsLocalIce: boolean;
   supportsInput: boolean;
+  videoBackends?: NativeVideoBackendCapability[];
 }
 
 export interface NativeStreamerInputPacket {
@@ -123,6 +125,8 @@ export type NativeStreamerEvent =
       likelyStage?: string;
       sinkRendered?: number;
       sinkDropped?: number;
+      memoryMode?: string;
+      zeroCopy?: boolean;
       zeroCopyD3D11: boolean;
       zeroCopyD3D12: boolean;
       recoveryAttempt: number;

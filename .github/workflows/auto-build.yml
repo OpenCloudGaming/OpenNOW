@@ -33,6 +33,8 @@ jobs:
             builder_args: "--win nsis portable --x64"
             native_build: "true"
             bundle_gstreamer: "1"
+            native_target: ""
+            native_platform_key: "win32-x64"
             artifact_paths: |
               opennow-stable/dist-release/*-x64.exe
           - label: windows-arm64
@@ -40,21 +42,27 @@ jobs:
             builder_args: "--win nsis portable --arm64"
             native_build: "false"
             bundle_gstreamer: "0"
+            native_target: ""
+            native_platform_key: "win32-arm64"
             artifact_paths: |
               opennow-stable/dist-release/*-arm64.exe
           - label: macos-x64
             os: blacksmith-6vcpu-macos-latest
             builder_args: "--mac dmg zip --x64"
-            native_build: "false"
-            bundle_gstreamer: "0"
+            native_build: "true"
+            bundle_gstreamer: "1"
+            native_target: "x86_64-apple-darwin"
+            native_platform_key: "darwin-x64"
             artifact_paths: |
               opennow-stable/dist-release/*.dmg
               opennow-stable/dist-release/*-x64.zip
           - label: macos-arm64
             os: blacksmith-6vcpu-macos-latest
             builder_args: "--mac dmg zip --arm64"
-            native_build: "false"
-            bundle_gstreamer: "0"
+            native_build: "true"
+            bundle_gstreamer: "1"
+            native_target: "aarch64-apple-darwin"
+            native_platform_key: "darwin-arm64"
             artifact_paths: |
               opennow-stable/dist-release/*.dmg
               opennow-stable/dist-release/*-arm64.zip
@@ -63,6 +71,8 @@ jobs:
             builder_args: "--linux AppImage deb --x64"
             native_build: "true"
             bundle_gstreamer: "0"
+            native_target: ""
+            native_platform_key: "linux-x64"
             artifact_paths: |
               opennow-stable/dist-release/*-x86_64.AppImage
               opennow-stable/dist-release/*-amd64.deb
@@ -71,6 +81,8 @@ jobs:
             builder_args: "--linux AppImage deb --arm64"
             native_build: "true"
             bundle_gstreamer: "0"
+            native_target: ""
+            native_platform_key: "linux-arm64"
             artifact_paths: |
               opennow-stable/dist-release/*-arm64.AppImage
               opennow-stable/dist-release/*-arm64.deb
@@ -105,6 +117,10 @@ jobs:
         if: matrix.native_build == 'true'
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Rust target
+        if: matrix.native_build == 'true' && matrix.native_target != ''
+        run: rustup target add ${{ matrix.native_target }}
+
       - name: Cache Electron binaries
         uses: actions/cache@v4
         with:
@@ -138,7 +154,19 @@ jobs:
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
             gstreamer1.0-plugins-ugly \
-            gstreamer1.0-vaapi
+            gstreamer1.0-vaapi \
+            gstreamer1.0-gl \
+            libva2 \
+            libva-drm2 \
+            libvulkan1 \
+            mesa-vulkan-drivers
+
+      - name: Install macOS GStreamer build/runtime packages
+        if: matrix.native_build == 'true' && runner.os == 'macOS'
+        run: |
+          brew update
+          brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
+          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
 
       - name: Install Windows GStreamer SDK
         if: matrix.native_build == 'true' && runner.os == 'Windows'
@@ -164,6 +192,8 @@ jobs:
         env:
           OPENNOW_NATIVE_STREAMER_FEATURES: gstreamer
           OPENNOW_BUNDLE_GSTREAMER_RUNTIME: ${{ matrix.bundle_gstreamer }}
+          OPENNOW_NATIVE_STREAMER_TARGET: ${{ matrix.native_target }}
+          OPENNOW_NATIVE_STREAMER_PLATFORM_KEY: ${{ matrix.native_platform_key }}
         run: npm run native:build
 
       - name: Build app bundles
