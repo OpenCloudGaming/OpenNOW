@@ -32,7 +32,7 @@ The Electron main process detects a sibling `gstreamer` directory next to the se
 
 ## Windows
 
-CI installs the official GStreamer MSVC runtime and development MSI packages. With `OPENNOW_BUNDLE_GSTREAMER_RUNTIME=1`, `scripts/bundle-gstreamer-runtime.mjs` copies `bin`, plugins, GIO modules, helper scanners, shared data, and metadata into the private runtime directory. Runtime detection prepends the private `bin` and sets GStreamer plugin/scanner environment variables for the child process.
+CI installs the official GStreamer MSVC runtime and development MSI packages. With `OPENNOW_BUNDLE_GSTREAMER_RUNTIME=1`, `scripts/bundle-gstreamer-runtime.mjs` copies `bin`, plugins, GIO modules, helper scanners, shared data, and metadata into the private runtime directory. It also copies the GStreamer core loader DLL subset and available Microsoft VC runtime DLLs next to `opennow-streamer.exe` so Windows process loading succeeds before the child PATH is applied. Runtime detection prepends the executable directory and private `bin`, then sets GStreamer plugin/scanner environment variables for the child process.
 
 ## macOS
 

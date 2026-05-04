@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, extname, join, relative, resolve } from "node:path";
+import { delimiter, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -146,7 +146,69 @@ function writeMetadata(destination, source, platform) {
   );
 }
 
-function bundleWindowsRuntime({ sdkRoot, destination }) {
+const WINDOWS_LOADER_DLLS = [
+  "gstreamer-1.0-0.dll",
+  "glib-2.0-0.dll",
+  "gobject-2.0-0.dll",
+  "gio-2.0-0.dll",
+  "gmodule-2.0-0.dll",
+  "gthread-2.0-0.dll",
+  "intl-8.dll",
+  "ffi-8.dll",
+  "pcre2-8-0.dll",
+  "orc-0.4-0.dll",
+  "winpthread-1.dll",
+  "zlib1.dll",
+];
+
+const WINDOWS_VC_RUNTIME_DLLS = [
+  "vcruntime140.dll",
+  "vcruntime140_1.dll",
+  "msvcp140.dll",
+  "msvcp140_1.dll",
+  "msvcp140_2.dll",
+  "msvcp140_atomic_wait.dll",
+  "msvcp140_codecvt_ids.dll",
+  "concrt140.dll",
+];
+
+function windowsVcRuntimeSearchDirs() {
+  return [
+    process.env.VCToolsRedistDir ? join(process.env.VCToolsRedistDir, "x64", "Microsoft.VC143.CRT") : null,
+    process.env.VCToolsRedistDir ? join(process.env.VCToolsRedistDir, "x64", "Microsoft.VC142.CRT") : null,
+    process.env.VCToolsRedistDir ? join(process.env.VCToolsRedistDir, "x64", "Microsoft.VC141.CRT") : null,
+    process.env.SystemRoot ? join(process.env.SystemRoot, "System32") : null,
+    ...String(process.env.PATH ?? "").split(delimiter),
+  ].filter(Boolean);
+}
+
+function copyWindowsLoaderDlls({ sdkRoot, destination, binary }) {
+  const executableDir = binary ? dirname(binary) : dirname(destination);
+  const sdkBin = join(sdkRoot, "bin");
+  const copiedLoader = [];
+  const copiedVc = [];
+
+  for (const name of WINDOWS_LOADER_DLLS) {
+    const source = join(sdkBin, name);
+    if (!isExistingFile(source)) continue;
+    copyFileSync(source, join(executableDir, name));
+    copiedLoader.push(name);
+  }
+
+  const vcSearchDirs = windowsVcRuntimeSearchDirs();
+  for (const name of WINDOWS_VC_RUNTIME_DLLS) {
+    const source = vcSearchDirs.map((dir) => join(dir, name)).find(isExistingFile);
+    if (!source) continue;
+    copyFileSync(source, join(executableDir, name));
+    copyFileSync(source, join(destination, "bin", name));
+    copiedVc.push(name);
+  }
+
+  console.log(`Copied Windows loader DLLs next to native streamer: ${copiedLoader.length ? copiedLoader.join(", ") : "none"}.`);
+  console.log(`Copied Windows VC runtime DLLs: ${copiedVc.length ? copiedVc.join(", ") : "none found"}.`);
+}
+
+function bundleWindowsRuntime({ sdkRoot, destination, binary }) {
   const resolvedSdkRoot = resolveWindowsSdkRoot(sdkRoot);
   rmSync(destination, { recursive: true, force: true });
   mkdirSync(destination, { recursive: true });
@@ -160,6 +222,7 @@ function bundleWindowsRuntime({ sdkRoot, destination }) {
     copyPathIfPresent(join(resolvedSdkRoot, "etc"), join(destination, "etc")),
   ].filter(Boolean).length;
   copyMatchingFiles(resolvedSdkRoot, destination, /^(copying|license|readme)/i);
+  copyWindowsLoaderDlls({ sdkRoot: resolvedSdkRoot, destination, binary });
   writeMetadata(destination, resolvedSdkRoot, "win32");
   console.log(`Bundled GStreamer runtime from ${resolvedSdkRoot} to ${destination} (${copied} paths).`);
 }
@@ -314,7 +377,11 @@ if (!destination) {
 try {
   const resolvedDestination = resolve(packageRoot, destination);
   if (process.platform === "win32") {
-    bundleWindowsRuntime({ sdkRoot: args.get("sdk-root"), destination: resolvedDestination });
+    bundleWindowsRuntime({
+      sdkRoot: args.get("sdk-root"),
+      destination: resolvedDestination,
+      binary: args.get("binary") ? resolve(packageRoot, args.get("binary")) : null,
+    });
   } else if (process.platform === "darwin") {
     bundleMacosRuntime({
       sdkRoot: args.get("sdk-root"),

@@ -152,6 +152,7 @@ function configureBundledGstreamerRuntime(
   );
   const gioModulesDir = join(runtimeRoot, "lib", "gio", "modules");
 
+  if (process.platform === "win32") prependProcessPath(env, dirname(executablePath));
   if (isExistingDirectory(binDir)) prependProcessPath(env, binDir);
   if (isExistingDirectory(pluginDir)) {
     env.GST_PLUGIN_PATH = pluginDir;
@@ -189,6 +190,20 @@ function configureBundledGstreamerRuntime(
     path: runtimeRoot,
     message: "Using bundled GStreamer runtime next to the native streamer executable.",
   };
+}
+
+function isWindowsDllLoadFailure(error: unknown): boolean {
+  const message = formatError(error);
+  return process.platform === "win32" && (message.includes("3221225781") || message.toLowerCase().includes("0xc0000135"));
+}
+
+function formatNativeStreamerDetectionFailure(error: unknown, runtime: NativeGstreamerRuntimeStatus | null): string {
+  if (isWindowsDllLoadFailure(error)) {
+    return runtime?.bundled
+      ? `Native streamer could not load a required DLL even though bundled GStreamer was detected at ${runtime.path}. The packaged runtime may be incomplete or blocked. ${formatError(error)}`
+      : `Native streamer could not load a required DLL and no bundled GStreamer runtime was detected. ${formatError(error)}`;
+  }
+  return `Native streamer was not detected: ${formatError(error)}`;
 }
 
 function formatError(error: unknown): string {
@@ -409,19 +424,20 @@ export class NativeStreamerManager {
           : this.capabilities?.fallbackReason ?? effectiveRuntime.message,
       };
     } catch (error) {
+      const runtime = this.gstreamerRuntime ?? {
+        source: process.platform === "linux" ? "missing" : "unknown",
+        bundled: false,
+        message: process.platform === "linux"
+          ? "GStreamer is not ready. Linux uses distro packages because private AppImage GStreamer bundling is unreliable across glibc, libdrm/VAAPI/Vulkan, and GPU driver stacks."
+          : "GStreamer runtime could not be checked because the native streamer did not start.",
+        installInstructions: linuxInstallInstructions(),
+      } satisfies NativeGstreamerRuntimeStatus;
       return {
         detected: false,
         gstreamerAvailable: false,
         supportsOfferAnswer: false,
-        gstreamerRuntime: {
-          source: process.platform === "linux" ? "missing" : "unknown",
-          bundled: false,
-          message: process.platform === "linux"
-            ? "GStreamer is not ready. Linux uses distro packages because private AppImage GStreamer bundling is unreliable across glibc, libdrm/VAAPI/Vulkan, and GPU driver stacks."
-            : "GStreamer runtime could not be checked because the native streamer did not start.",
-          installInstructions: linuxInstallInstructions(),
-        },
-        message: `Native streamer was not detected: ${formatError(error)}`,
+        gstreamerRuntime: runtime,
+        message: formatNativeStreamerDetectionFailure(error, runtime),
       };
     }
   }

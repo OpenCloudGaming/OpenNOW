@@ -164,7 +164,7 @@ function isExistingDirectory(path) {
 }
 
 function buildBundledGstreamerEnv(baseEnv, binaryPath) {
-  const env = { ...baseEnv };
+  const env = { SystemRoot: baseEnv.SystemRoot, WINDIR: baseEnv.WINDIR };
   const runtimeRoot = join(dirname(binaryPath), "gstreamer");
   const binDir = join(runtimeRoot, "bin");
   const libDir = join(runtimeRoot, "lib");
@@ -175,6 +175,7 @@ function buildBundledGstreamerEnv(baseEnv, binaryPath) {
   if (!isExistingDirectory(runtimeRoot)) {
     throw new Error(`Bundled GStreamer runtime was not found next to ${binaryPath}`);
   }
+  if (process.platform === "win32") prependEnvPath(env, dirname(binaryPath));
   if (isExistingDirectory(binDir)) prependEnvPath(env, binDir);
   if (isExistingDirectory(pluginDir)) {
     env.GST_PLUGIN_PATH = pluginDir;
