@@ -157,6 +157,7 @@ struct VideoLivenessState {
     last_decoded_ms: AtomicU64,
     last_sink_ms: AtomicU64,
     last_audio_ms: AtomicU64,
+    first_startup_audio_ms: AtomicU64,
     decoded_total: AtomicU64,
     sink_total: AtomicU64,
     zero_copy_d3d11: AtomicBool,
@@ -186,6 +187,7 @@ impl VideoLivenessState {
             last_decoded_ms: AtomicU64::new(0),
             last_sink_ms: AtomicU64::new(0),
             last_audio_ms: AtomicU64::new(0),
+            first_startup_audio_ms: AtomicU64::new(0),
             decoded_total: AtomicU64::new(0),
             sink_total: AtomicU64::new(0),
             zero_copy_d3d11: AtomicBool::new(false),
@@ -220,6 +222,7 @@ impl VideoLivenessState {
         self.framerate_mismatch_warned
             .store(false, Ordering::Relaxed);
         self.first_encoded_logged.store(false, Ordering::Relaxed);
+        self.first_startup_audio_ms.store(0, Ordering::Relaxed);
         self.startup_keyframe_requested
             .store(false, Ordering::Relaxed);
         self.startup_resync_requested
@@ -241,7 +244,16 @@ impl VideoLivenessState {
     }
 
     fn record_audio_buffer(&self) {
-        self.last_audio_ms.store(self.now_ms(), Ordering::Relaxed);
+        let now_ms = self.now_ms();
+        self.last_audio_ms.store(now_ms, Ordering::Relaxed);
+        if self.last_sink_ms.load(Ordering::Relaxed) == 0 {
+            let _ = self.first_startup_audio_ms.compare_exchange(
+                0,
+                now_ms,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+        }
     }
 
     fn log_first_encoded_once(&self) -> bool {
@@ -3553,10 +3565,15 @@ fn maybe_recover_video_startup(
 ) {
     let now_ms = state.now_ms();
     let last_audio_ms = state.last_audio_ms.load(Ordering::Relaxed);
+    let first_audio_ms = state.first_startup_audio_ms.load(Ordering::Relaxed);
     let last_encoded_ms = state.last_encoded_ms.load(Ordering::Relaxed);
-    if last_audio_ms == 0 || now_ms.saturating_sub(last_audio_ms) > VIDEO_STARTUP_KEYFRAME_MS {
+    if first_audio_ms == 0
+        || last_audio_ms == 0
+        || now_ms.saturating_sub(last_audio_ms) > VIDEO_STARTUP_KEYFRAME_MS
+    {
         return;
     }
+    let audio_active_ms = now_ms.saturating_sub(first_audio_ms);
 
     let decoded_total = state.decoded_total.load(Ordering::Relaxed);
     let sink_total = state.sink_total.load(Ordering::Relaxed);
@@ -3566,7 +3583,7 @@ fn maybe_recover_video_startup(
         format!("{}ms", now_ms.saturating_sub(last_encoded_ms))
     };
 
-    if now_ms >= VIDEO_STARTUP_KEYFRAME_MS
+    if audio_active_ms >= VIDEO_STARTUP_KEYFRAME_MS
         && !state
             .startup_keyframe_requested
             .swap(true, Ordering::Relaxed)
@@ -3575,20 +3592,20 @@ fn maybe_recover_video_startup(
             event_sender,
             "warn",
             format!(
-                "Native video startup has no rendered frame after {now_ms}ms while audio is active; encodedAge={encoded_age} decoded={decoded_total} sink={sink_total}. Requesting keyframe."
+                "Native video startup has no rendered frame after {audio_active_ms}ms of active audio; startupAge={now_ms}ms encodedAge={encoded_age} decoded={decoded_total} sink={sink_total}. Requesting keyframe."
             ),
         );
         request_upstream_key_unit(state, event_sender);
     }
 
-    if now_ms >= VIDEO_STARTUP_RESYNC_MS
+    if audio_active_ms >= VIDEO_STARTUP_RESYNC_MS
         && !state.startup_resync_requested.swap(true, Ordering::Relaxed)
     {
         send_log(
             event_sender,
             "warn",
             format!(
-                "Native video startup still has no rendered frame after {now_ms}ms while audio is active; encodedAge={encoded_age} decoded={decoded_total} sink={sink_total}. Requesting keyframe and GStreamer latency resync."
+                "Native video startup still has no rendered frame after {audio_active_ms}ms of active audio; startupAge={now_ms}ms encodedAge={encoded_age} decoded={decoded_total} sink={sink_total}. Requesting keyframe and GStreamer latency resync."
             ),
         );
         request_upstream_key_unit(state, event_sender);
@@ -3601,7 +3618,7 @@ fn maybe_recover_video_startup(
         }
     }
 
-    if now_ms >= VIDEO_STARTUP_PIPELINE_RESTART_MS
+    if audio_active_ms >= VIDEO_STARTUP_PIPELINE_RESTART_MS
         && !state
             .startup_pipeline_restart_requested
             .swap(true, Ordering::Relaxed)
@@ -3610,7 +3627,7 @@ fn maybe_recover_video_startup(
             event_sender,
             "warn",
             format!(
-                "Native video startup still has no rendered frame after {now_ms}ms while audio is active; encodedAge={encoded_age} decoded={decoded_total} sink={sink_total}. Restarting the GStreamer pipeline to force video renegotiation."
+                "Native video startup still has no rendered frame after {audio_active_ms}ms of active audio; startupAge={now_ms}ms encodedAge={encoded_age} decoded={decoded_total} sink={sink_total}. Restarting the GStreamer pipeline to force video renegotiation."
             ),
         );
         request_upstream_key_unit(state, event_sender);
