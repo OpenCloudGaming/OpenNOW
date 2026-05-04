@@ -47,7 +47,7 @@ jobs:
             artifact_paths: |
               opennow-stable/dist-release/*-arm64.exe
           - label: macos-x64
-            os: blacksmith-6vcpu-macos-latest
+            os: macos-15-intel
             builder_args: "--mac dmg zip --x64"
             native_build: "true"
             bundle_gstreamer: "1"
@@ -57,7 +57,7 @@ jobs:
               opennow-stable/dist-release/*.dmg
               opennow-stable/dist-release/*-x64.zip
           - label: macos-arm64
-            os: blacksmith-6vcpu-macos-latest
+            os: macos-15
             builder_args: "--mac dmg zip --arm64"
             native_build: "true"
             bundle_gstreamer: "1"
@@ -122,6 +122,18 @@ jobs:
         if: matrix.native_build == 'true' && matrix.native_target != ''
         run: rustup target add ${{ matrix.native_target }}
 
+      - name: Cache Rust native build
+        if: matrix.native_build == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/opennow-streamer/target
+          key: ${{ runner.os }}-${{ matrix.label }}-cargo-${{ hashFiles('native/opennow-streamer/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.label }}-cargo-
+
       - name: Cache Electron binaries
         uses: actions/cache@v4
         with:
@@ -132,17 +144,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-electron-
 
-      - name: Install Linux packaging tools
+      - name: Install Linux build/runtime packages
         if: runner.os == 'Linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install -y fakeroot rpm
-
-      - name: Install Linux GStreamer build/runtime packages
-        if: matrix.native_build == 'true' && runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
+            fakeroot \
+            rpm \
             build-essential \
             pkg-config \
             libglib2.0-dev \
@@ -162,20 +172,40 @@ jobs:
             libvulkan1 \
             mesa-vulkan-drivers
 
+      - name: Cache macOS GStreamer packages
+        if: matrix.native_build == 'true' && runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache/gstreamer-macos
+          key: gstreamer-macos-${{ env.GSTREAMER_VERSION }}
+
       - name: Install macOS GStreamer build/runtime packages
         if: matrix.native_build == 'true' && runner.os == 'macOS'
         run: |
           base="https://gstreamer.freedesktop.org/data/pkg/macos/${GSTREAMER_VERSION}"
-          runtime="$RUNNER_TEMP/gstreamer-runtime.pkg"
-          devel="$RUNNER_TEMP/gstreamer-devel.pkg"
-          curl --fail --location --retry 3 --output "$runtime" "$base/gstreamer-1.0-${GSTREAMER_VERSION}-universal.pkg"
-          curl --fail --location --retry 3 --output "$devel" "$base/gstreamer-1.0-devel-${GSTREAMER_VERSION}-universal.pkg"
+          cache_dir="${GITHUB_WORKSPACE}/.cache/gstreamer-macos/${GSTREAMER_VERSION}"
+          mkdir -p "$cache_dir"
+          runtime="$cache_dir/gstreamer-1.0-${GSTREAMER_VERSION}-universal.pkg"
+          devel="$cache_dir/gstreamer-1.0-devel-${GSTREAMER_VERSION}-universal.pkg"
+          if [ ! -s "$runtime" ]; then
+            curl --fail --location --retry 3 --output "$runtime" "$base/gstreamer-1.0-${GSTREAMER_VERSION}-universal.pkg"
+          fi
+          if [ ! -s "$devel" ]; then
+            curl --fail --location --retry 3 --output "$devel" "$base/gstreamer-1.0-devel-${GSTREAMER_VERSION}-universal.pkg"
+          fi
           sudo installer -pkg "$runtime" -target /
           sudo installer -pkg "$devel" -target /
           root="/Library/Frameworks/GStreamer.framework/Versions/1.0"
           echo "GSTREAMER_1_0_ROOT_MACOS=$root" >> "$GITHUB_ENV"
           echo "$root/bin" >> "$GITHUB_PATH"
           echo "PKG_CONFIG_PATH=$root/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
+
+      - name: Cache Windows GStreamer SDK
+        if: matrix.native_build == 'true' && runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: C:\gstreamer
+          key: gstreamer-windows-${{ env.GSTREAMER_WINDOWS_VERSION }}
 
       - name: Install Windows GStreamer SDK
         if: matrix.native_build == 'true' && runner.os == 'Windows'
@@ -229,7 +259,10 @@ jobs:
             if ($develInstall.ExitCode -ne 0) { return $false }
             return [bool](Find-GStreamerRoot)
           }
-          if (-not (Install-GStreamerMsiSdk $env:GSTREAMER_WINDOWS_VERSION)) {
+          $root = Find-GStreamerRoot
+          if ($root) {
+            Write-Host "Using cached GStreamer Windows SDK: $root"
+          } elseif (-not (Install-GStreamerMsiSdk $env:GSTREAMER_WINDOWS_VERSION)) {
             [void](Find-GStreamerRoot)
             Write-Host "GStreamer explicit roots searched: $($roots -join ', ')"
             Write-Host "GStreamer recursive search bases: $($searchBases -join ', ')"
