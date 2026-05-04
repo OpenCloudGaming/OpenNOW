@@ -253,6 +253,13 @@ function patchMachO(file, destination, sourceRoot, libDir, bundledLibs) {
   }
 }
 
+function isExternalGstreamerDependency(dep, roots, bundledLibs) {
+  const name = dylibName(dep);
+  if (!name || !bundledLibs.has(name)) return false;
+  if (dep.startsWith("@")) return false;
+  return roots.some((root) => dep === join(root, "lib", name) || dep.startsWith(`${root}/`) || dep.includes("GStreamer.framework"));
+}
+
 function validatePackagedBinaryRelocation(binary, sourceRoot, bundledLibs) {
   if (!binary || !isMachO(binary) || !commandAvailable("otool")) return;
   const output = run("otool", ["-L", binary]);
@@ -264,7 +271,7 @@ function validatePackagedBinaryRelocation(binary, sourceRoot, bundledLibs) {
     .split(/\r?\n/)
     .slice(1)
     .map((line) => line.trim().split(/\s+/)[0])
-    .filter((dep) => dep && shouldRewriteDependency(dep, roots, bundledLibs));
+    .filter((dep) => dep && isExternalGstreamerDependency(dep, roots, bundledLibs));
   if (leakedDeps.length > 0) {
     throw new Error(
       `Packaged native streamer still references external GStreamer dependencies after relocation: ${leakedDeps.join(", ")}`,
