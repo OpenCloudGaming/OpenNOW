@@ -4961,7 +4961,9 @@ fn link_media_chain(
         }
         watch_first_sink_buffer(sink, media_label, event_sender, streaming_reported);
         if media_label == "audio" {
-            watch_audio_activity(sink, video_liveness);
+            if let Some(video_liveness) = video_liveness {
+                watch_audio_activity(sink, video_liveness);
+            }
         }
         if media_label == "video" {
             if let Some(video_liveness) = video_liveness {
