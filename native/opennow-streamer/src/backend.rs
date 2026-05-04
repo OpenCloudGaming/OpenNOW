@@ -114,6 +114,7 @@ pub struct PreparedNativeOffer {
     pub fixed_offer_sdp: String,
     pub gstreamer_offer_sdp: String,
     pub gstreamer_ice_pwd_replacements: usize,
+    pub gstreamer_framerate_adjusted: bool,
     pub nvst_params: NvstParams,
     pub media_connection_info: Option<MediaConnectionInfo>,
 }
@@ -157,8 +158,10 @@ pub fn prepare_native_offer(
             prefer_hevc_profile_id: Some(preferred_hevc_profile_id(context.settings.color_quality)),
         },
     );
+    let (gstreamer_framerate_offer_sdp, gstreamer_framerate_adjusted) =
+        align_video_sdp_framerate_for_gstreamer(&fixed_offer_sdp, context.settings.fps);
     let (gstreamer_offer_sdp, gstreamer_ice_pwd_replacements) =
-        sanitize_ice_pwd_for_gstreamer(&fixed_offer_sdp);
+        sanitize_ice_pwd_for_gstreamer(&gstreamer_framerate_offer_sdp);
     let credentials = extract_ice_credentials(&fixed_offer_sdp);
     let nvst_params = NvstParams {
         width,
@@ -179,9 +182,66 @@ pub fn prepare_native_offer(
         fixed_offer_sdp,
         gstreamer_offer_sdp,
         gstreamer_ice_pwd_replacements,
+        gstreamer_framerate_adjusted,
         nvst_params,
         media_connection_info: context.session.media_connection_info.clone(),
     })
+}
+
+fn align_video_sdp_framerate_for_gstreamer(sdp: &str, fps: u32) -> (String, bool) {
+    if fps == 0 {
+        return (sdp.to_owned(), false);
+    }
+
+    let line_ending = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
+    let has_trailing_ending = sdp.ends_with(line_ending);
+    let mut lines: Vec<String> = sdp
+        .split(line_ending)
+        .filter(|line| !line.is_empty() || !has_trailing_ending)
+        .map(ToOwned::to_owned)
+        .collect();
+    let mut output = Vec::with_capacity(lines.len() + 1);
+    let mut in_video = false;
+    let mut video_has_framerate = false;
+    let mut changed = false;
+    let target = format!("a=framerate:{fps}");
+
+    for line in lines.drain(..) {
+        if line.starts_with("m=") {
+            if in_video && !video_has_framerate {
+                output.push(target.clone());
+                changed = true;
+            }
+            in_video = line.starts_with("m=video");
+            video_has_framerate = false;
+            output.push(line);
+            continue;
+        }
+
+        if in_video && line.starts_with("a=framerate:") {
+            video_has_framerate = true;
+            if line != target {
+                output.push(target.clone());
+                changed = true;
+            } else {
+                output.push(line);
+            }
+            continue;
+        }
+
+        output.push(line);
+    }
+
+    if in_video && !video_has_framerate {
+        output.push(target);
+        changed = true;
+    }
+
+    let mut result = output.join(line_ending);
+    if has_trailing_ending {
+        result.push_str(line_ending);
+    }
+    (result, changed)
 }
 
 fn resolve_native_codec(configured: VideoCodec) -> VideoCodec {
@@ -212,6 +272,16 @@ pub fn prepared_offer_events(prepared: &PreparedNativeOffer) -> Vec<Event> {
             prepared.fixed_offer_sdp.len(),
         ),
     }];
+
+    if prepared.gstreamer_framerate_adjusted {
+        events.push(Event::Log {
+            level: "info",
+            message: format!(
+                "Aligned native WebRTC video SDP framerate to {} fps for GStreamer caps negotiation.",
+                nvst.fps
+            ),
+        });
+    }
 
     if let Some(media_connection_info) = &prepared.media_connection_info {
         events.push(Event::Log {
@@ -510,6 +580,40 @@ mod tests {
         assert!(prepared
             .gstreamer_offer_sdp
             .contains("a=rtpmap:100 flexfec-03/90000"));
+    }
+
+    #[test]
+    fn aligns_gstreamer_video_sdp_framerate() {
+        let sdp = "v=0\nm=video 9 UDP/TLS/RTP/SAVPF 96\na=framerate:60\na=rtpmap:96 H265/90000\n";
+
+        let (aligned, changed) = align_video_sdp_framerate_for_gstreamer(sdp, 240);
+
+        assert!(changed);
+        assert!(aligned.contains("a=framerate:240\n"));
+        assert!(!aligned.contains("a=framerate:60"));
+    }
+
+    #[test]
+    fn inserts_gstreamer_video_sdp_framerate_when_absent() {
+        let sdp = "v=0\nm=audio 9 UDP/TLS/RTP/SAVPF 111\na=rtpmap:111 OPUS/48000/2\nm=video 9 UDP/TLS/RTP/SAVPF 96\na=rtpmap:96 H265/90000\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\n";
+
+        let (aligned, changed) = align_video_sdp_framerate_for_gstreamer(sdp, 120);
+
+        assert!(changed);
+        assert!(aligned.contains(
+            "m=video 9 UDP/TLS/RTP/SAVPF 96\na=rtpmap:96 H265/90000\na=framerate:120\nm=application"
+        ));
+    }
+
+    #[test]
+    fn preserves_gstreamer_video_sdp_framerate_line_endings() {
+        let sdp = "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 H265/90000\r\n";
+
+        let (aligned, changed) = align_video_sdp_framerate_for_gstreamer(sdp, 240);
+
+        assert!(changed);
+        assert!(aligned.contains("a=framerate:240\r\n"));
+        assert!(!aligned.contains('\n') || aligned.contains("\r\n"));
     }
 
     #[test]

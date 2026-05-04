@@ -42,6 +42,9 @@ const VIDEO_STALL_WARNING_MS: u64 = 2_500;
 const VIDEO_STALL_SECOND_ATTEMPT_MS: u64 = 5_000;
 const VIDEO_STALL_RESYNC_MS: u64 = 8_000;
 const VIDEO_STALL_MIN_KEYFRAME_REQUEST_MS: u64 = 2_000;
+const VIDEO_STARTUP_KEYFRAME_MS: u64 = 2_500;
+const VIDEO_STARTUP_RESYNC_MS: u64 = 5_000;
+const VIDEO_STARTUP_PIPELINE_RESTART_MS: u64 = 8_000;
 const VIDEO_LIVENESS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 const HEARTBEAT_STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -153,11 +156,18 @@ struct VideoLivenessState {
     last_encoded_ms: AtomicU64,
     last_decoded_ms: AtomicU64,
     last_sink_ms: AtomicU64,
+    last_audio_ms: AtomicU64,
     decoded_total: AtomicU64,
     sink_total: AtomicU64,
     zero_copy_d3d11: AtomicBool,
     zero_copy_d3d12: AtomicBool,
     rtp_video_src_pad: Mutex<Option<gst::Pad>>,
+    requested_fps: AtomicU32,
+    framerate_mismatch_warned: AtomicBool,
+    first_encoded_logged: AtomicBool,
+    startup_keyframe_requested: AtomicBool,
+    startup_resync_requested: AtomicBool,
+    startup_pipeline_restart_requested: AtomicBool,
 }
 
 impl VideoLivenessState {
@@ -175,11 +185,18 @@ impl VideoLivenessState {
             last_encoded_ms: AtomicU64::new(0),
             last_decoded_ms: AtomicU64::new(0),
             last_sink_ms: AtomicU64::new(0),
+            last_audio_ms: AtomicU64::new(0),
             decoded_total: AtomicU64::new(0),
             sink_total: AtomicU64::new(0),
             zero_copy_d3d11: AtomicBool::new(false),
             zero_copy_d3d12: AtomicBool::new(false),
             rtp_video_src_pad: Mutex::new(None),
+            requested_fps: AtomicU32::new(0),
+            framerate_mismatch_warned: AtomicBool::new(false),
+            first_encoded_logged: AtomicBool::new(false),
+            startup_keyframe_requested: AtomicBool::new(false),
+            startup_resync_requested: AtomicBool::new(false),
+            startup_pipeline_restart_requested: AtomicBool::new(false),
         }
     }
 
@@ -199,6 +216,16 @@ impl VideoLivenessState {
         }
         self.target_bitrate_kbps
             .store(target_bitrate_kbps, Ordering::Relaxed);
+        self.requested_fps.store(settings.fps, Ordering::Relaxed);
+        self.framerate_mismatch_warned
+            .store(false, Ordering::Relaxed);
+        self.first_encoded_logged.store(false, Ordering::Relaxed);
+        self.startup_keyframe_requested
+            .store(false, Ordering::Relaxed);
+        self.startup_resync_requested
+            .store(false, Ordering::Relaxed);
+        self.startup_pipeline_restart_requested
+            .store(false, Ordering::Relaxed);
     }
 
     fn update_hardware_acceleration(&self, value: impl Into<String>) {
@@ -211,6 +238,14 @@ impl VideoLivenessState {
         self.last_encoded_ms.store(self.now_ms(), Ordering::Relaxed);
         self.encoded_bytes_total
             .fetch_add(size as u64, Ordering::Relaxed);
+    }
+
+    fn record_audio_buffer(&self) {
+        self.last_audio_ms.store(self.now_ms(), Ordering::Relaxed);
+    }
+
+    fn log_first_encoded_once(&self) -> bool {
+        !self.first_encoded_logged.swap(true, Ordering::Relaxed)
     }
 
     fn set_stats_overlay(&self, overlay: Option<gst::Element>) {
@@ -286,6 +321,15 @@ impl VideoLivenessState {
         }
     }
 
+    fn requested_fps(&self) -> Option<u32> {
+        let fps = self.requested_fps.load(Ordering::Relaxed);
+        (fps > 0).then_some(fps)
+    }
+
+    fn warn_framerate_mismatch_once(&self) -> bool {
+        !self.framerate_mismatch_warned.swap(true, Ordering::Relaxed)
+    }
+
     fn rtp_video_src_pad(&self) -> Option<gst::Pad> {
         self.rtp_video_src_pad
             .lock()
@@ -324,6 +368,10 @@ impl VideoLivenessMonitor {
 
     fn record_encoded_buffer(&self, size: usize) {
         self.state.record_encoded_buffer(size);
+    }
+
+    fn record_audio_buffer(&self) {
+        self.state.record_audio_buffer();
     }
 
     fn set_stats_overlay(&self, overlay: Option<gst::Element>) {
@@ -554,11 +602,11 @@ impl RtpVideoApi {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct RtpVideoChainSpec {
     factory: &'static str,
     role: RtpVideoChainRole,
-    caps: Option<&'static str>,
+    caps: Option<String>,
 }
 
 impl RtpVideoChainSpec {
@@ -570,11 +618,11 @@ impl RtpVideoChainSpec {
         }
     }
 
-    fn with_caps(factory: &'static str, role: RtpVideoChainRole, caps: &'static str) -> Self {
+    fn with_caps(factory: &'static str, role: RtpVideoChainRole, caps: impl Into<String>) -> Self {
         Self {
             factory,
             role,
-            caps: Some(caps),
+            caps: Some(caps.into()),
         }
     }
 }
@@ -2946,10 +2994,7 @@ fn wire_local_ice_events(
     };
 
     webrtc.connect("on-ice-candidate", false, move |values| {
-        let sdp_m_line_index = values
-            .get(1)
-            .and_then(|value| value.get::<u32>().ok())
-            .unwrap_or(0);
+        let sdp_m_line_index = values.get(1).and_then(glib_value_to_u32).unwrap_or(0);
         let candidate = values
             .get(2)
             .and_then(|value| value.get::<String>().ok())
@@ -2969,6 +3014,30 @@ fn wire_local_ice_events(
         None
     });
     Ok(())
+}
+
+fn glib_value_to_u32(value: &glib::Value) -> Option<u32> {
+    value
+        .get::<u32>()
+        .ok()
+        .or_else(|| {
+            value
+                .get::<i32>()
+                .ok()
+                .and_then(|value| u32::try_from(value).ok())
+        })
+        .or_else(|| {
+            value
+                .get::<u64>()
+                .ok()
+                .and_then(|value| u32::try_from(value).ok())
+        })
+        .or_else(|| {
+            value
+                .get::<i64>()
+                .ok()
+                .and_then(|value| u32::try_from(value).ok())
+        })
 }
 
 fn wire_webrtc_state_events(webrtc: &gst::Element, event_sender: Option<Sender<Event>>) {
@@ -3422,6 +3491,7 @@ fn run_video_liveness_watchdog(
 
         let last_sink_ms = state.last_sink_ms.load(Ordering::Relaxed);
         if last_sink_ms == 0 {
+            maybe_recover_video_startup(&state, &pipeline, &event_sender);
             continue;
         }
 
@@ -3472,6 +3542,100 @@ fn run_video_liveness_watchdog(
                     format!("Native video recovered after {stall_ms} ms."),
                 );
             }
+        }
+    }
+}
+
+fn maybe_recover_video_startup(
+    state: &VideoLivenessState,
+    pipeline: &gst::Pipeline,
+    event_sender: &Option<Sender<Event>>,
+) {
+    let now_ms = state.now_ms();
+    let last_audio_ms = state.last_audio_ms.load(Ordering::Relaxed);
+    let last_encoded_ms = state.last_encoded_ms.load(Ordering::Relaxed);
+    if last_audio_ms == 0 || now_ms.saturating_sub(last_audio_ms) > VIDEO_STARTUP_KEYFRAME_MS {
+        return;
+    }
+
+    let decoded_total = state.decoded_total.load(Ordering::Relaxed);
+    let sink_total = state.sink_total.load(Ordering::Relaxed);
+    let encoded_age = if last_encoded_ms == 0 {
+        "never".to_owned()
+    } else {
+        format!("{}ms", now_ms.saturating_sub(last_encoded_ms))
+    };
+
+    if now_ms >= VIDEO_STARTUP_KEYFRAME_MS
+        && !state
+            .startup_keyframe_requested
+            .swap(true, Ordering::Relaxed)
+    {
+        send_log(
+            event_sender,
+            "warn",
+            format!(
+                "Native video startup has no rendered frame after {now_ms}ms while audio is active; encodedAge={encoded_age} decoded={decoded_total} sink={sink_total}. Requesting keyframe."
+            ),
+        );
+        request_upstream_key_unit(state, event_sender);
+    }
+
+    if now_ms >= VIDEO_STARTUP_RESYNC_MS
+        && !state.startup_resync_requested.swap(true, Ordering::Relaxed)
+    {
+        send_log(
+            event_sender,
+            "warn",
+            format!(
+                "Native video startup still has no rendered frame after {now_ms}ms while audio is active; encodedAge={encoded_age} decoded={decoded_total} sink={sink_total}. Requesting keyframe and GStreamer latency resync."
+            ),
+        );
+        request_upstream_key_unit(state, event_sender);
+        if let Err(error) = pipeline.recalculate_latency() {
+            send_log(
+                event_sender,
+                "warn",
+                format!("Failed to resync GStreamer latency during native video startup recovery: {error}."),
+            );
+        }
+    }
+
+    if now_ms >= VIDEO_STARTUP_PIPELINE_RESTART_MS
+        && !state
+            .startup_pipeline_restart_requested
+            .swap(true, Ordering::Relaxed)
+    {
+        send_log(
+            event_sender,
+            "warn",
+            format!(
+                "Native video startup still has no rendered frame after {now_ms}ms while audio is active; encodedAge={encoded_age} decoded={decoded_total} sink={sink_total}. Restarting the GStreamer pipeline to force video renegotiation."
+            ),
+        );
+        request_upstream_key_unit(state, event_sender);
+        match pipeline.set_state(gst::State::Ready) {
+            Ok(_) => match pipeline.set_state(gst::State::Playing) {
+                Ok(_) => send_log(
+                    event_sender,
+                    "warn",
+                    "Restarted native GStreamer pipeline during video startup recovery.".to_owned(),
+                ),
+                Err(error) => send_log(
+                    event_sender,
+                    "warn",
+                    format!(
+                        "Failed to restore native GStreamer pipeline to Playing during video startup recovery: {error:?}."
+                    ),
+                ),
+            },
+            Err(error) => send_log(
+                event_sender,
+                "warn",
+                format!(
+                    "Failed to set native GStreamer pipeline to Ready during video startup recovery: {error:?}."
+                ),
+            ),
         }
     }
 }
@@ -4057,6 +4221,7 @@ fn rtp_video_parser_factory(codec: &str) -> Option<&'static str> {
 fn rtp_video_chain_definition(
     encoding: &str,
     video_api: RtpVideoApi,
+    requested_fps: Option<u32>,
 ) -> Option<Vec<RtpVideoChainSpec>> {
     let codec = encoding.to_ascii_uppercase();
     let mut specs = vec![
@@ -4079,7 +4244,7 @@ fn rtp_video_chain_definition(
         specs.push(RtpVideoChainSpec::with_caps(
             "capsfilter",
             RtpVideoChainRole::PostDecodeCapsFilter,
-            memory_caps,
+            memory_caps_with_framerate(memory_caps, requested_fps),
         ));
     }
     if let Some(converter) = video_api.post_decode_converter_factory() {
@@ -4104,6 +4269,13 @@ fn rtp_video_chain_definition(
     ));
 
     Some(specs)
+}
+
+fn memory_caps_with_framerate(memory_caps: &str, requested_fps: Option<u32>) -> String {
+    match requested_fps.filter(|fps| *fps > 0) {
+        Some(fps) => format!("{memory_caps},framerate=(fraction){fps}/1"),
+        None => memory_caps.to_owned(),
+    }
 }
 
 fn preferred_rtp_video_apis() -> Vec<RtpVideoApi> {
@@ -4172,14 +4344,17 @@ fn default_rtp_video_api_priority() -> Vec<RtpVideoApi> {
     }
 }
 
-fn rtp_video_chain_specs(encoding: &str) -> Option<(RtpVideoApi, Vec<RtpVideoChainSpec>)> {
+fn rtp_video_chain_specs(
+    encoding: &str,
+    requested_fps: Option<u32>,
+) -> Option<(RtpVideoApi, Vec<RtpVideoChainSpec>)> {
     preferred_rtp_video_apis()
         .into_iter()
         .find_map(|video_api| {
             let codec = encoding.to_ascii_uppercase();
             let decoder = select_decoder_factory(video_api, codec.as_str())?;
             let sink = select_sink_factory(video_api)?;
-            let mut specs = rtp_video_chain_definition(encoding, video_api)?;
+            let mut specs = rtp_video_chain_definition(encoding, video_api, requested_fps)?;
             for spec in &mut specs {
                 if spec.role == RtpVideoChainRole::Decoder {
                     spec.factory = decoder;
@@ -4317,7 +4492,7 @@ fn native_video_codec_capability(
     let decoder = platform_supported
         .then(|| select_decoder_factory(video_api, codec))
         .flatten();
-    let definition = rtp_video_chain_definition(codec, video_api);
+    let definition = rtp_video_chain_definition(codec, video_api, None);
     let available = platform_supported
         && sink.is_some()
         && decoder.is_some()
@@ -4408,7 +4583,11 @@ fn configure_rtp_video_chain_element(
             set_property_if_supported(element, "qos", false);
         }
         RtpVideoChainRole::PostDecodeCapsFilter => {
-            if let Some(caps) = spec.caps.and_then(|caps| caps.parse::<gst::Caps>().ok()) {
+            if let Some(caps) = spec
+                .caps
+                .as_deref()
+                .and_then(|caps| caps.parse::<gst::Caps>().ok())
+            {
                 element.set_property("caps", &caps);
             }
         }
@@ -4451,7 +4630,8 @@ fn link_rtp_video_pad(
         return Ok(());
     }
 
-    let (video_api, specs) = rtp_video_chain_specs(encoding).ok_or_else(|| {
+    let requested_fps = video_liveness.state.requested_fps();
+    let (video_api, specs) = rtp_video_chain_specs(encoding, requested_fps).ok_or_else(|| {
         format!(
             "Explicit low-latency decode chain is unavailable for RTP {encoding}; install the platform GStreamer plugin packages or set {NATIVE_VIDEO_BACKEND_ENV}=software to force software decode."
         )
@@ -4467,11 +4647,7 @@ fn link_rtp_video_pad(
             format_video_chain_selection(encoding, video_api, &specs),
         );
         if video_api == RtpVideoApi::D3D12 {
-            send_log(
-                event_sender,
-                "warn",
-                "Native D3D12 zero-copy video path is experimental and opt-in; if the visible frame freezes while sink/render counters keep increasing, use the default D3D11 path.".to_owned(),
-            );
+            send_log(event_sender, "warn", format_d3d12_selection_warning());
         }
         if d3d_fullscreen_sink {
             send_log(
@@ -4484,7 +4660,12 @@ fn link_rtp_video_pad(
         }
         for spec in &specs {
             let element = make_element(spec.factory)?;
-            configure_rtp_video_chain_element(&element, *spec, video_api, d3d_fullscreen_sink);
+            configure_rtp_video_chain_element(
+                &element,
+                spec.clone(),
+                video_api,
+                d3d_fullscreen_sink,
+            );
             if spec.role == RtpVideoChainRole::StatsOverlay {
                 video_liveness.set_stats_overlay(Some(element.clone()));
             }
@@ -4519,7 +4700,7 @@ fn link_rtp_video_pad(
             .link(&first_sink_pad)
             .map_err(|error| format!("Failed to link RTP {encoding} video pad: {error:?}"))?;
         video_liveness.set_rtp_video_src_pad(src_pad);
-        watch_rtp_video_bitrate(src_pad, video_liveness.clone());
+        watch_rtp_video_bitrate(src_pad, video_liveness.clone(), event_sender);
 
         let sink = elements
             .last()
@@ -4595,7 +4776,7 @@ fn format_video_chain_selection(
     let memory = specs
         .iter()
         .find(|spec| spec.role == RtpVideoChainRole::PostDecodeCapsFilter)
-        .and_then(|spec| spec.caps)
+        .and_then(|spec| spec.caps.as_deref())
         .unwrap_or("system-memory");
     let acceleration = if video_api.is_gpu_path() {
         "hardware"
@@ -4606,6 +4787,28 @@ fn format_video_chain_selection(
     format!(
         "Selected native {acceleration} video path for RTP {encoding}: backend={}, decoder={decoder}, converter={converter}, renderer={sink}, memory={memory}.",
         video_api.label()
+    )
+}
+
+fn format_d3d12_selection_warning() -> String {
+    let backend_env = std::env::var(NATIVE_VIDEO_BACKEND_ENV).ok();
+    let api_env = std::env::var(NATIVE_VIDEO_API_ENV).ok();
+    let reason = if backend_env
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("d3d12"))
+    {
+        format!("forced by {NATIVE_VIDEO_BACKEND_ENV}=d3d12")
+    } else if api_env
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("d3d12"))
+    {
+        format!("forced by {NATIVE_VIDEO_API_ENV}=d3d12")
+    } else {
+        "D3D11 was unavailable/probe failed after D3D11-first selection; if this build still prefers D3D12 by default, it is stale".to_owned()
+    };
+
+    format!(
+        "Native D3D12 zero-copy video path is experimental and opt-in; selection reason: {reason}. This build defaults Windows native video to D3D11; env {NATIVE_VIDEO_BACKEND_ENV}={backend_env:?}, {NATIVE_VIDEO_API_ENV}={api_env:?}. If the visible frame freezes while sink/render counters keep increasing, use the default D3D11 path."
     )
 }
 
@@ -4757,6 +4960,9 @@ fn link_media_chain(
             }
         }
         watch_first_sink_buffer(sink, media_label, event_sender, streaming_reported);
+        if media_label == "audio" {
+            watch_audio_activity(sink, video_liveness);
+        }
         if media_label == "video" {
             if let Some(video_liveness) = video_liveness {
                 watch_video_sink_rate(sink, event_sender, Some(video_liveness.clone()));
@@ -4772,6 +4978,17 @@ fn link_media_chain(
     }
 
     Ok(())
+}
+
+fn watch_audio_activity(sink: &gst::Element, video_liveness: &VideoLivenessMonitor) {
+    let Some(sink_pad) = sink.static_pad("sink") else {
+        return;
+    };
+    let monitor = video_liveness.clone();
+    sink_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
+        monitor.record_audio_buffer();
+        gst::PadProbeReturn::Ok
+    });
 }
 
 fn watch_first_sink_buffer(
@@ -4821,10 +5038,25 @@ fn watch_first_sink_buffer(
     });
 }
 
-fn watch_rtp_video_bitrate(pad: &gst::Pad, video_liveness: VideoLivenessMonitor) {
+fn watch_rtp_video_bitrate(
+    pad: &gst::Pad,
+    video_liveness: VideoLivenessMonitor,
+    event_sender: &Option<Sender<Event>>,
+) {
+    let sender = event_sender.clone();
     pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, info| {
         if let Some(buffer) = info.buffer() {
             video_liveness.record_encoded_buffer(buffer.size());
+            if video_liveness.state.log_first_encoded_once() {
+                send_log(
+                    &sender,
+                    "info",
+                    format!(
+                        "First encoded RTP video buffer arrived; size={} bytes.",
+                        buffer.size()
+                    ),
+                );
+            }
         }
         gst::PadProbeReturn::Ok
     });
@@ -4988,6 +5220,28 @@ fn watch_video_pad_rate(
             }
             let caps_framerate =
                 caps_framerate_summary(&caps).unwrap_or_else(|| "unknown".to_owned());
+            let requested_fps = video_liveness
+                .as_ref()
+                .and_then(|(monitor, _)| monitor.state.requested_fps());
+            let requested_fps_summary = requested_fps
+                .map(|fps| format!("; requestedFps={fps}"))
+                .unwrap_or_default();
+            if let (Some((monitor, _)), Some(requested_fps), Some(caps_framerate_value)) = (
+                video_liveness.as_ref(),
+                requested_fps,
+                caps_framerate_summary(&caps),
+            ) {
+                let expected = format!("{requested_fps}/1");
+                if caps_framerate_value != expected && monitor.state.warn_framerate_mismatch_once() {
+                    send_log(
+                        &sender,
+                        "warn",
+                        format!(
+                            "Native video caps framerate {caps_framerate_value} does not match requestedFps={requested_fps}; this can destabilize high-FPS native playback scheduling and buffer pools."
+                        ),
+                    );
+                }
+            }
             let sink_stats = sink
                 .as_ref()
                 .map(|sink| format!("; {}", sink_stats_summary(sink)))
@@ -4997,7 +5251,7 @@ fn watch_video_pad_rate(
                 &sender,
                 "debug",
                 format!(
-                    "{label}: {fps:.1} fps; capsFramerate={caps_framerate}; memoryMode={memory_mode}; zeroCopy={zero_copy}; zeroCopyD3D11={zero_copy_d3d11}; zeroCopyD3D12={zero_copy_d3d12}{sink_stats}."
+                    "{label}: {fps:.1} fps; capsFramerate={caps_framerate}{requested_fps_summary}; memoryMode={memory_mode}; zeroCopy={zero_copy}; zeroCopyD3D11={zero_copy_d3d11}; zeroCopyD3D12={zero_copy_d3d12}{sink_stats}."
                 ),
             );
 
@@ -5639,24 +5893,31 @@ mod tests {
     #[test]
     fn maps_rtp_video_codecs_to_explicit_gpu_decode_chains() {
         let h265 =
-            rtp_video_chain_definition("H265", RtpVideoApi::D3D11).expect("H265 D3D11 chain");
+            rtp_video_chain_definition("H265", RtpVideoApi::D3D11, None).expect("H265 D3D11 chain");
         assert_eq!(h265[0].factory, "rtph265depay");
         assert_eq!(h265[3].factory, "d3d11h265dec");
         assert_eq!(h265[4].factory, "capsfilter");
-        assert_eq!(h265[4].caps, Some("video/x-raw(memory:D3D11Memory)"));
+        assert_eq!(
+            h265[4].caps.as_deref(),
+            Some("video/x-raw(memory:D3D11Memory)")
+        );
         assert_eq!(h265[5].factory, "dwritetextoverlay");
         assert_eq!(h265[7].factory, "d3d11videosink");
 
         let h264 =
-            rtp_video_chain_definition("h264", RtpVideoApi::D3D12).expect("H264 D3D12 chain");
+            rtp_video_chain_definition("h264", RtpVideoApi::D3D12, None).expect("H264 D3D12 chain");
         assert_eq!(h264[0].factory, "rtph264depay");
         assert_eq!(h264[3].factory, "d3d12h264dec");
         assert_eq!(h264[4].factory, "capsfilter");
-        assert_eq!(h264[4].caps, Some("video/x-raw(memory:D3D12Memory)"));
+        assert_eq!(
+            h264[4].caps.as_deref(),
+            Some("video/x-raw(memory:D3D12Memory)")
+        );
         assert_eq!(h264[5].factory, "dwritetextoverlay");
         assert_eq!(h264[7].factory, "d3d12videosink");
 
-        let av1 = rtp_video_chain_definition("AV1", RtpVideoApi::D3D11).expect("AV1 D3D11 chain");
+        let av1 =
+            rtp_video_chain_definition("AV1", RtpVideoApi::D3D11, None).expect("AV1 D3D11 chain");
         assert_eq!(av1[0].factory, "rtpav1depay");
         assert_eq!(av1[3].factory, "d3d11av1dec");
         assert_eq!(av1[4].factory, "capsfilter");
@@ -5665,33 +5926,58 @@ mod tests {
     }
 
     #[test]
+    fn adds_requested_fps_to_d3d_memory_caps() {
+        let d3d11 = rtp_video_chain_definition("H265", RtpVideoApi::D3D11, Some(240))
+            .expect("H265 D3D11 chain");
+        assert_eq!(
+            d3d11[4].caps.as_deref(),
+            Some("video/x-raw(memory:D3D11Memory),framerate=(fraction)240/1")
+        );
+
+        let d3d12 = rtp_video_chain_definition("H264", RtpVideoApi::D3D12, Some(240))
+            .expect("H264 D3D12 chain");
+        assert_eq!(
+            d3d12[4].caps.as_deref(),
+            Some("video/x-raw(memory:D3D12Memory),framerate=(fraction)240/1")
+        );
+
+        let without_fps = rtp_video_chain_definition("H264", RtpVideoApi::D3D12, Some(0))
+            .expect("H264 D3D12 chain");
+        assert_eq!(
+            without_fps[4].caps.as_deref(),
+            Some("video/x-raw(memory:D3D12Memory)")
+        );
+    }
+
+    #[test]
     fn maps_cross_platform_video_paths_to_expected_decoders() {
-        let vt =
-            rtp_video_chain_definition("H264", RtpVideoApi::VideoToolbox).expect("VideoToolbox");
+        let vt = rtp_video_chain_definition("H264", RtpVideoApi::VideoToolbox, None)
+            .expect("VideoToolbox");
         assert_eq!(vt[3].factory, "vtdec_hw");
         assert!(vt.iter().any(|spec| spec.factory == "videoconvert"));
         assert_eq!(vt.last().map(|spec| spec.factory), Some("glimagesink"));
         assert!(!vt.iter().any(|spec| spec.factory == "capsfilter"));
 
-        let vaapi = rtp_video_chain_definition("AV1", RtpVideoApi::Vaapi).expect("VAAPI AV1");
+        let vaapi = rtp_video_chain_definition("AV1", RtpVideoApi::Vaapi, None).expect("VAAPI AV1");
         assert_eq!(vaapi[3].factory, "vaav1dec");
         assert!(vaapi.iter().any(|spec| spec.factory == "videoconvert"));
         assert_eq!(vaapi.last().map(|spec| spec.factory), Some("glimagesink"));
 
-        let v4l2 = rtp_video_chain_definition("H265", RtpVideoApi::V4L2).expect("V4L2 H265");
+        let v4l2 = rtp_video_chain_definition("H265", RtpVideoApi::V4L2, None).expect("V4L2 H265");
         assert_eq!(v4l2[3].factory, "v4l2slh265dec");
         assert!(v4l2.iter().any(|spec| spec.factory == "videoconvert"));
 
-        let vulkan = rtp_video_chain_definition("H265", RtpVideoApi::Vulkan).expect("Vulkan H265");
+        let vulkan =
+            rtp_video_chain_definition("H265", RtpVideoApi::Vulkan, None).expect("Vulkan H265");
         assert_eq!(vulkan[3].factory, "vulkanh265dec");
         assert!(vulkan
             .iter()
             .any(|spec| spec.factory == "vulkancolorconvert"));
         assert_eq!(vulkan.last().map(|spec| spec.factory), Some("vulkansink"));
-        assert!(rtp_video_chain_definition("AV1", RtpVideoApi::Vulkan).is_none());
+        assert!(rtp_video_chain_definition("AV1", RtpVideoApi::Vulkan, None).is_none());
 
         let software =
-            rtp_video_chain_definition("H264", RtpVideoApi::Software).expect("software H264");
+            rtp_video_chain_definition("H264", RtpVideoApi::Software, None).expect("software H264");
         assert_eq!(software[3].factory, "avdec_h264");
         assert!(software.iter().any(|spec| spec.factory == "videoconvert"));
         assert_eq!(
@@ -5716,7 +6002,7 @@ mod tests {
     #[test]
     fn formats_selected_video_chain_diagnostics() {
         let specs =
-            rtp_video_chain_definition("H264", RtpVideoApi::Software).expect("software H264");
+            rtp_video_chain_definition("H264", RtpVideoApi::Software, None).expect("software H264");
         let message = format_video_chain_selection("H264", RtpVideoApi::Software, &specs);
 
         assert!(message.contains("backend=software"));
