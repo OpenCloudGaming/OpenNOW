@@ -314,6 +314,14 @@ jobs:
       - name: Verify macOS Cargo network trust
         if: matrix.native_build == 'true' && runner.os == 'macOS'
         run: |
+          if [ -f /etc/ssl/cert.pem ]; then
+            cargo_cacert=/etc/ssl/cert.pem
+          else
+            cargo_cacert="$RUNNER_TEMP/cargo-cacert.pem"
+            security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain /Library/Keychains/System.keychain > "$cargo_cacert"
+          fi
+          echo "CARGO_HTTP_CAINFO=$cargo_cacert" >> "$GITHUB_ENV"
+          echo "SSL_CERT_FILE=$cargo_cacert" >> "$GITHUB_ENV"
           if ! curl --fail --location --retry 5 https://index.crates.io/config.json --output /tmp/cargo-index-config.json; then
             if command -v brew >/dev/null 2>&1; then
               brew update --quiet
@@ -321,6 +329,7 @@ jobs:
             fi
             curl --fail --location --retry 5 https://index.crates.io/config.json --output /tmp/cargo-index-config.json
           fi
+          CARGO_HTTP_CAINFO="$cargo_cacert" SSL_CERT_FILE="$cargo_cacert" cargo search base64 --limit 1 >/tmp/cargo-search-check.txt
 
       - name: Build native streamer
         if: matrix.native_build == 'true'
