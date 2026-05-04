@@ -640,8 +640,8 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
         "a=vqos.fec.repairMinPercent:5".to_owned(),
         "a=vqos.fec.repairPercent:5".to_owned(),
         "a=vqos.fec.repairMaxPercent:35".to_owned(),
+        "a=vqos.dynamicStreamingMode:0".to_owned(),
         "a=vqos.drc.enable:0".to_owned(),
-        "a=vqos.dfc.enable:0".to_owned(),
         "a=video.dx9EnableNv12:1".to_owned(),
         "a=video.dx9EnableHdr:1".to_owned(),
         "a=vqos.qpg.enable:1".to_owned(),
@@ -656,6 +656,21 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
 
     if is_high_fps {
         lines.extend([
+            "a=vqos.dfc.enable:1".to_owned(),
+            "a=vqos.dfc.decodeFpsAdjPercent:85".to_owned(),
+            "a=vqos.dfc.targetDownCooldownMs:250".to_owned(),
+            format!(
+                "a=vqos.dfc.dfcAlgoVersion:{}",
+                if is_120_fps || is_240_fps { 2 } else { 1 }
+            ),
+            format!(
+                "a=vqos.dfc.minTargetFps:{}",
+                if is_120_fps || is_240_fps { 100 } else { 60 }
+            ),
+            "a=vqos.resControl.dfc.useClientFpsPerf:0".to_owned(),
+            "a=vqos.dfc.adjustResAndFps:0".to_owned(),
+        ]);
+        lines.extend([
             "a=bwe.iirFilterFactor:8".to_owned(),
             "a=video.encoderFeatureSetting:47".to_owned(),
             "a=video.encoderPreset:6".to_owned(),
@@ -669,6 +684,11 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
                 "a=vqos.resControl.cpmRtc.serverResolutionUpdateCoolDownCount:{}",
                 if is_120_fps { 6000 } else { 12000 }
             ),
+        ]);
+    } else {
+        lines.extend([
+            "a=vqos.dfc.enable:0".to_owned(),
+            "a=vqos.dfc.adjustResAndFps:0".to_owned(),
         ]);
     }
 
@@ -976,6 +996,52 @@ mod tests {
         assert!(nvst.contains("a=general.dtlsFingerprint:CC:DD"));
         assert!(!nvst.contains("remote-password"));
         assert!(!nvst.contains("video-password"));
+    }
+
+    fn nvst_params_for_fps(fps: u32) -> NvstParams {
+        NvstParams {
+            width: 1920,
+            height: 1080,
+            fps,
+            max_bitrate_kbps: 75_000,
+            partial_reliable_threshold_ms: 16,
+            codec: VideoCodec::H265,
+            color_quality: ColorQuality::EightBit420,
+            credentials: IceCredentials {
+                ufrag: "user".to_owned(),
+                pwd: "password".to_owned(),
+                fingerprint: "AA:BB".to_owned(),
+            },
+            hid_device_mask: None,
+            enable_partially_reliable_transfer_gamepad: None,
+            enable_partially_reliable_transfer_hid: None,
+        }
+    }
+
+    #[test]
+    fn builds_nvst_sdp_disables_dynamic_streaming_for_normal_fps() {
+        let nvst = build_nvst_sdp(&nvst_params_for_fps(60));
+
+        assert!(nvst.contains("a=vqos.dynamicStreamingMode:0"));
+        assert!(nvst.contains("a=vqos.dfc.adjustResAndFps:0"));
+        assert!(nvst.contains("a=vqos.dfc.enable:0"));
+        assert!(!nvst.contains("a=vqos.dfc.decodeFpsAdjPercent:85"));
+        assert!(!nvst.contains("a=vqos.resControl.dfc.useClientFpsPerf:0"));
+    }
+
+    #[test]
+    fn builds_nvst_sdp_disables_dynamic_streaming_for_high_fps() {
+        for fps in [120, 240] {
+            let nvst = build_nvst_sdp(&nvst_params_for_fps(fps));
+
+            assert!(nvst.contains("a=vqos.dynamicStreamingMode:0"));
+            assert!(nvst.contains("a=vqos.dfc.adjustResAndFps:0"));
+            assert!(nvst.contains("a=vqos.dfc.enable:1"));
+            assert!(nvst.contains("a=vqos.resControl.dfc.useClientFpsPerf:0"));
+            assert!(nvst.contains("a=vqos.dfc.dfcAlgoVersion:2"));
+            assert!(nvst.contains("a=vqos.dfc.minTargetFps:100"));
+            assert!(!nvst.contains("a=vqos.dfc.enable:0"));
+        }
     }
 
     #[test]
