@@ -44,6 +44,7 @@ import {
   type StreamDiagnostics,
   type StreamTimeWarning,
 } from "./gfn/webrtcClient";
+import { requestSonyGamepadHidAccess } from "./gfn/gamepadMotion";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { useControllerNavigation } from "./controllerNavigation";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";
@@ -935,6 +936,7 @@ export function App(): JSX.Element {
     gameLanguage: "en_US",
     enableL4S: false,
     enableCloudGsync: false,
+    experimentalGamepadGyro: false,
     discordRichPresence: false,
     autoCheckForUpdates: true,
   });
@@ -2444,6 +2446,13 @@ export function App(): JSX.Element {
   // Save settings when changed
   const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
+    if (key === "experimentalGamepadGyro" && value) {
+      try {
+        void requestSonyGamepadHidAccess((line) => console.log(`[WebHID] ${line}`));
+      } catch {
+        // ignore
+      }
+    }
     if (settingsLoaded) {
       await window.openNow.setSetting(key, value);
     }
@@ -2472,6 +2481,13 @@ export function App(): JSX.Element {
     if (key === "maxBitrateMbps") {
       try {
         void (clientRef.current as any)?.setMaxBitrateKbps?.((value as number) * 1000);
+      } catch {
+        // ignore
+      }
+    }
+    if (key === "experimentalGamepadGyro") {
+      try {
+        clientRef.current?.setExperimentalGamepadGyroEnabled(Boolean(value));
       } catch {
         // ignore
       }
@@ -3025,6 +3041,7 @@ export function App(): JSX.Element {
             gameLanguage: settings.gameLanguage,
             enableL4S: settings.enableL4S,
             enableCloudGsync: settings.enableCloudGsync,
+                experimentalGamepadGyro: settings.experimentalGamepadGyro,
           },
         });
 
@@ -3185,6 +3202,7 @@ export function App(): JSX.Element {
               gameLanguage: settings.gameLanguage,
               enableL4S: settings.enableL4S,
               enableCloudGsync: settings.enableCloudGsync,
+                experimentalGamepadGyro: settings.experimentalGamepadGyro,
             },
           });
           if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
@@ -3301,6 +3319,7 @@ export function App(): JSX.Element {
               microphoneDeviceId: settings.microphoneDeviceId || undefined,
               mouseSensitivity: settings.mouseSensitivity,
               mouseAcceleration: settings.mouseAcceleration,
+                experimentalGamepadGyro: settings.experimentalGamepadGyro,
               onLog: (line: string) => console.log(`[WebRTC] ${line}`),
               onStats: (stats) => diagnosticsStore.set(stats),
               onTimeWarning: (warning) => {
@@ -3639,6 +3658,7 @@ export function App(): JSX.Element {
           gameLanguage: settings.gameLanguage,
           enableL4S: settings.enableL4S,
           enableCloudGsync: settings.enableCloudGsync,
+                experimentalGamepadGyro: settings.experimentalGamepadGyro,
         },
       });
 

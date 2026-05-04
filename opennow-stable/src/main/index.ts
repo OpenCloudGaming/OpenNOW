@@ -1622,7 +1622,7 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_SET, async <K extends keyof Settings>(_event: Electron.IpcMainInvokeEvent, key: K, value: Settings[K]) => {
-    settingsManager.set(key, value);
+    settingsManager.set(key as keyof import("./settings").Settings, value as import("./settings").Settings[keyof import("./settings").Settings]);
     // React to certain setting changes immediately in main process
     try {
       if (key === "autoCheckForUpdates") {
@@ -2281,6 +2281,7 @@ app.whenReady().then(async () => {
       "pointerLock",
       "keyboardLock",
       "speaker-selection",
+      "hid",
     ]);
 
     if (allowedPermissions.has(permission)) {
@@ -2300,9 +2301,22 @@ app.whenReady().then(async () => {
       "pointerLock",
       "keyboardLock",
       "speaker-selection",
+      "hid",
     ]);
 
     return allowedPermissions.has(permission);
+  });
+
+  session.defaultSession.setDevicePermissionHandler((details) => {
+    return details.deviceType === "hid" && details.device.vendorId === 0x054c;
+  });
+
+  session.defaultSession.on("select-hid-device", (event, details, callback) => {
+    const sonyDevice = details.deviceList.find((device) => device.vendorId === 0x054c);
+    if (sonyDevice) {
+      event.preventDefault();
+      callback(sonyDevice.deviceId);
+    }
   });
 
   registerOpenNowMediaProtocol();

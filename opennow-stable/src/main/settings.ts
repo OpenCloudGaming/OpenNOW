@@ -104,6 +104,8 @@ export interface Settings {
   enableL4S: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
   enableCloudGsync: boolean;
+  /** Experimental Sony controller gyro support over WebHID */
+  experimentalGamepadGyro: boolean;
   /** Show the currently streaming game as Discord Rich Presence activity */
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
@@ -187,6 +189,7 @@ const DEFAULT_SETTINGS: Settings = {
   gameLanguage: "en_US",
   enableL4S: false,
   enableCloudGsync: false,
+  experimentalGamepadGyro: false,
   discordRichPresence: false,
   autoCheckForUpdates: true,
   allowEscapeToExitFullscreen: false,

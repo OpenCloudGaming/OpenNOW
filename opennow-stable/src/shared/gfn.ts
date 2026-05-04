@@ -194,6 +194,7 @@ export interface Settings {
   enableL4S: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
   enableCloudGsync: boolean;
+  experimentalGamepadGyro?: boolean;
   /** Show the currently streaming game as Discord Rich Presence activity */
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
@@ -486,6 +487,7 @@ export interface StreamSettings {
   enableL4S: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
   enableCloudGsync: boolean;
+  experimentalGamepadGyro?: boolean;
 }
 
 export interface SessionCreateRequest {

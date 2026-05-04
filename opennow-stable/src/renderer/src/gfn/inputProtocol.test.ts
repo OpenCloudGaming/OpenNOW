@@ -3,7 +3,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { codeMap, mapKeyboardEvent, mapTextCharToKeySpec } from "./inputProtocol";
+import {
+  GAMEPAD_A,
+  GAMEPAD_DPAD_UP,
+  GAMEPAD_HID_PACKET_SIZE,
+  GAMEPAD_LB,
+  GAMEPAD_RB,
+  GAMEPAD_X,
+  INPUT_GAMEPAD_HID,
+  InputEncoder,
+  codeMap,
+  mapKeyboardEvent,
+  mapTextCharToKeySpec,
+} from "./inputProtocol";
 
 function keyboardEvent(init: Partial<KeyboardEvent> & Pick<KeyboardEvent, "code" | "key">): KeyboardEvent {
   return {
@@ -71,4 +83,47 @@ test("uses corrected scancodes for synthetic text injection", () => {
   assert.deepEqual(mapTextCharToKeySpec("<"), { ...codeMap.Comma, shift: true });
   assert.deepEqual(mapTextCharToKeySpec("/"), { ...codeMap.Slash });
   assert.deepEqual(mapTextCharToKeySpec("?"), { ...codeMap.Slash, shift: true });
+});
+
+test("encodes DS4-compatible Sony HID gamepad packet payload", () => {
+  const encoder = new InputEncoder();
+  encoder.setProtocolVersion(2);
+  const bytes = encoder.encodeSonyGamepadHidState({
+    controllerId: 0,
+    buttons: GAMEPAD_DPAD_UP | GAMEPAD_A | GAMEPAD_X | GAMEPAD_LB | GAMEPAD_RB,
+    leftTrigger: 7,
+    rightTrigger: 255,
+    leftStickX: 0,
+    leftStickY: 0,
+    rightStickX: 32767,
+    rightStickY: -32768,
+    connected: true,
+    timestampUs: 123456n,
+    sensorTimestamp: 0x3456,
+    gyroX: 111,
+    gyroY: -222,
+    gyroZ: 333,
+    accelX: -444,
+    accelY: 555,
+    accelZ: -666,
+  });
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const k = 7;
+
+  assert.equal(bytes.length, GAMEPAD_HID_PACKET_SIZE);
+  assert.equal(view.getUint32(0, true), INPUT_GAMEPAD_HID);
+  assert.equal(view.getUint8(4), 6);
+  assert.equal(view.getUint8(k), 1);
+  assert.equal(view.getUint8(k + 5), 0x30);
+  assert.equal(view.getUint8(k + 6), 0x0f);
+  assert.equal(view.getUint8(k + 8), 7);
+  assert.equal(view.getUint8(k + 9), 255);
+  assert.equal(view.getUint16(k + 10, true), 0x3456);
+  assert.equal(view.getInt16(k + 13, true), 111);
+  assert.equal(view.getInt16(k + 15, true), -222);
+  assert.equal(view.getInt16(k + 17, true), 333);
+  assert.equal(view.getInt16(k + 19, true), -444);
+  assert.equal(view.getInt16(k + 21, true), 555);
+  assert.equal(view.getInt16(k + 23, true), -666);
+  assert.equal(view.getUint8(k + 30), 11);
 });

@@ -2159,6 +2159,24 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                 <div className="settings-row settings-row--top-aligned">
                   <label className="settings-label settings-label--wrap">
+                    <span>
+                      Experimental Gamepad Gyro
+                      <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
+                    </span>
+                    <span className="settings-hint">Requires a Sony DualShock 4 or DualSense exposed through WebHID. Sends DS4-style HID motion packets to GFN when motion data is available.</span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.experimentalGamepadGyro ?? false}
+                      onChange={(e) => handleChange("experimentalGamepadGyro", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
+                </div>
+
+                <div className="settings-row settings-row--top-aligned">
+                  <label className="settings-label settings-label--wrap">
                     Keyboard Layout
                     <span className="settings-hint">Controls how your physical keyboard is mapped inside the remote session. Separate from the in-game language setting.</span>
                   </label>

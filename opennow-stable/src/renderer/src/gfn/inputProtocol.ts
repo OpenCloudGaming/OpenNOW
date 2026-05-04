@@ -7,6 +7,7 @@ export const INPUT_MOUSE_BUTTON_UP = 9;
 export const INPUT_MOUSE_WHEEL = 10;
 export const INPUT_GAMEPAD = 12;
 export const INPUT_HAPTICS_ENABLED = 13;
+export const INPUT_GAMEPAD_HID = 17;
 
 // Mouse button constants (1-based for GFN protocol)
 // GFN uses: 1=Left, 2=Middle, 3=Right, 4=Back, 5=Forward
@@ -44,6 +45,7 @@ export const GAMEPAD_AXIS_RT = 5; // Right trigger
 // Gamepad constants
 export const GAMEPAD_MAX_CONTROLLERS = 4;
 export const GAMEPAD_PACKET_SIZE = 38;
+export const GAMEPAD_HID_PACKET_SIZE = 72;
 export const GAMEPAD_DEADZONE = 0.15; // 15% radial deadzone
 export const PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL = (1 << GAMEPAD_MAX_CONTROLLERS) - 1;
 export const PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL = 0xFFFFFFFF;
@@ -82,6 +84,62 @@ export interface GamepadInput {
   rightStickY: number; // -32768 to 32767 (inverted in XInput)
   connected: boolean; // true = connected, false = disconnected
   timestampUs: bigint;
+}
+
+export interface SonyGamepadHidInput extends GamepadInput {
+  gyroX: number;
+  gyroY: number;
+  gyroZ: number;
+  accelX: number;
+  accelY: number;
+  accelZ: number;
+  sensorTimestamp?: number;
+}
+
+function clampUint8(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(255, Math.round(value))) : 0;
+}
+
+function clampInt16(value: number): number {
+  return Number.isFinite(value) ? Math.max(-32768, Math.min(32767, Math.round(value))) : 0;
+}
+
+function stickInt16ToDs4Byte(value: number): number {
+  return clampUint8(Math.round(((clampInt16(value) + 32768) * 255) / 65535));
+}
+
+function ds4Hat(buttons: number): number {
+  const up = (buttons & GAMEPAD_DPAD_UP) !== 0;
+  const down = (buttons & GAMEPAD_DPAD_DOWN) !== 0;
+  const left = (buttons & GAMEPAD_DPAD_LEFT) !== 0;
+  const right = (buttons & GAMEPAD_DPAD_RIGHT) !== 0;
+  if (up && right) return 1;
+  if (down && right) return 3;
+  if (down && left) return 5;
+  if (up && left) return 7;
+  if (up) return 0;
+  if (right) return 2;
+  if (down) return 4;
+  if (left) return 6;
+  return 8;
+}
+
+function ds4FaceButtons(buttons: number): number {
+  return ((buttons & GAMEPAD_X) ? 0x10 : 0)
+    | ((buttons & GAMEPAD_A) ? 0x20 : 0)
+    | ((buttons & GAMEPAD_B) ? 0x40 : 0)
+    | ((buttons & GAMEPAD_Y) ? 0x80 : 0);
+}
+
+function ds4ShoulderButtons(buttons: number, leftTrigger: number, rightTrigger: number): number {
+  return ((buttons & GAMEPAD_LB) ? 0x01 : 0)
+    | ((buttons & GAMEPAD_RB) ? 0x02 : 0)
+    | (leftTrigger > 0 ? 0x04 : 0)
+    | (rightTrigger > 0 ? 0x08 : 0)
+    | ((buttons & GAMEPAD_BACK) ? 0x10 : 0)
+    | ((buttons & GAMEPAD_START) ? 0x20 : 0)
+    | ((buttons & GAMEPAD_LS) ? 0x40 : 0)
+    | ((buttons & GAMEPAD_RS) ? 0x80 : 0);
 }
 
 export function partiallyReliableHidMaskForInputType(inputType: number): number {
@@ -765,6 +823,47 @@ export class InputEncoder {
       return wrapGamepadPartiallyReliable(bytes, this.protocolVersion, payload.controllerId, seq);
     }
     // Reliable channel: [0x23][8B ts][0x21][2B size][38B payload]
+    return wrapGamepadReliable(bytes, this.protocolVersion);
+  }
+
+  encodeSonyGamepadHidState(payload: SonyGamepadHidInput, usePartiallyReliable: boolean = false): Uint8Array {
+    const bytes = new Uint8Array(GAMEPAD_HID_PACKET_SIZE);
+    const view = new DataView(bytes.buffer);
+    const k = 7;
+
+    view.setUint32(0, INPUT_GAMEPAD_HID, true);
+    view.setUint8(4, 6 + (payload.controllerId & 0x03));
+    view.setUint8(5, 4);
+    view.setUint8(6, 0);
+    view.setUint8(k, 1);
+    view.setUint8(k + 1, stickInt16ToDs4Byte(payload.leftStickX));
+    view.setUint8(k + 2, stickInt16ToDs4Byte(payload.leftStickY));
+    view.setUint8(k + 3, stickInt16ToDs4Byte(payload.rightStickX));
+    view.setUint8(k + 4, stickInt16ToDs4Byte(payload.rightStickY));
+    view.setUint8(k + 5, ds4Hat(payload.buttons) | ds4FaceButtons(payload.buttons));
+    view.setUint8(k + 6, ds4ShoulderButtons(payload.buttons, payload.leftTrigger, payload.rightTrigger));
+    view.setUint8(k + 7, (payload.buttons & GAMEPAD_GUIDE) ? 0x01 : 0);
+    view.setUint8(k + 8, clampUint8(payload.leftTrigger));
+    view.setUint8(k + 9, clampUint8(payload.rightTrigger));
+    view.setUint16(k + 10, payload.sensorTimestamp ?? Number(payload.timestampUs & 0xffffn), true);
+    view.setUint8(k + 12, 0);
+    view.setInt16(k + 13, clampInt16(payload.gyroX), true);
+    view.setInt16(k + 15, clampInt16(payload.gyroY), true);
+    view.setInt16(k + 17, clampInt16(payload.gyroZ), true);
+    view.setInt16(k + 19, clampInt16(payload.accelX), true);
+    view.setInt16(k + 21, clampInt16(payload.accelY), true);
+    view.setInt16(k + 23, clampInt16(payload.accelZ), true);
+    view.setUint32(k + 25, 0, true);
+    view.setUint8(k + 29, 0);
+    view.setUint8(k + 30, 11);
+    view.setUint8(k + 31, 0);
+    view.setUint8(k + 32, 0);
+    view.setUint8(k + 33, 0);
+
+    if (usePartiallyReliable) {
+      const seq = this.getNextGamepadSequence(payload.controllerId);
+      return wrapGamepadPartiallyReliable(bytes, this.protocolVersion, payload.controllerId, seq);
+    }
     return wrapGamepadReliable(bytes, this.protocolVersion);
   }
 

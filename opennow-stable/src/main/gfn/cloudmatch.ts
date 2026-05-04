@@ -497,6 +497,7 @@ function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: stri
   const bitDepth = colorQualityBitDepth(cq);
   const chromaFormat = colorQualityChromaFormat(cq);
   const accountLinked = input.accountLinked ?? true;
+  const sonyHidEnabled = input.settings.experimentalGamepadGyro === true;
 
   return {
     sessionRequestData: {
@@ -550,7 +551,7 @@ function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: stri
           }
         : null,
       surroundAudioInfo: 0,
-      remoteControllersBitmap: 0,
+      remoteControllersBitmap: sonyHidEnabled ? 1 : 0,
       clientTimezoneOffset: timezoneOffsetMs(),
       enhancedStreamMode: 1,
       appLaunchMode: 1,
@@ -566,7 +567,7 @@ function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: stri
         enabledL4S: input.settings.enableL4S,
         mouseMovementFlags: 0,
         trueHdr: hdrEnabled,
-        supportedHidDevices: 0,
+        supportedHidDevices: sonyHidEnabled ? 3 : 0,
         profile: 0,
         fallbackToLogicalResolution: false,
         hidDevices: null,

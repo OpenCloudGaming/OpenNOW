@@ -23,6 +23,7 @@ import {
   normalizeToUint8,
   GAMEPAD_MAX_CONTROLLERS,
   type GamepadInput,
+  type SonyGamepadHidInput,
   codeMap,
   mapTextCharToKeySpec,
 } from "./inputProtocol";
@@ -38,6 +39,7 @@ import {
   rewriteH265TierFlag,
 } from "./sdp";
 import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
+import { GamepadMotionManager, isSonyGamepad } from "./gamepadMotion";
 
 interface OfferSettings {
   codec: VideoCodec;
@@ -187,6 +189,7 @@ interface ClientOptions {
   onPeerConnectionStateChange?: (state: RTCPeerConnectionState) => void;
   /** Optional host callback for Meta/Home button edge presses (button 16). */
   onControllerMetaPress?: (event: { controllerId: number; gamepad: Gamepad }) => void;
+  experimentalGamepadGyro?: boolean;
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
@@ -736,6 +739,10 @@ export class GfnWebRtcClient {
     this.mouseSensitivity = options.mouseSensitivity ?? 1;
     this.mouseAccelerationPercent = Math.max(1, Math.min(150, Math.round(options.mouseAcceleration ?? 1)));
     this.autoFullScreenEnabled = options.autoFullScreen !== false;
+    if (options.experimentalGamepadGyro) {
+      this.gamepadMotion = new GamepadMotionManager((line) => this.log(line));
+      void this.gamepadMotion.setEnabled(true, false);
+    }
 
     // Configure video element for lowest latency playback
     this.configureVideoElementForLowLatency(options.videoElement);
@@ -1044,6 +1051,7 @@ export class GfnWebRtcClient {
       this.controlChannel.onclose = null;
       this.controlChannel.onerror = null;
     }
+    this.gamepadMotion?.stop();
     this.reliableInputChannel?.close();
     this.partiallyReliableInputChannel?.close();
     this.controlChannel?.close();
@@ -1941,6 +1949,7 @@ export class GfnWebRtcClient {
   }
 
   private gamepadSendCount = 0;
+  private gamepadMotion: GamepadMotionManager | null = null;
 
   private updateGamepadBitmap(controllerId: number, gamepad: Gamepad): void {
     const connectedBit = 1 << controllerId;
@@ -1956,6 +1965,18 @@ export class GfnWebRtcClient {
   private clearGamepadBitmap(controllerId: number): void {
     this.gamepadBitmap &= ~(1 << controllerId);
     this.gamepadBitmap &= ~(1 << (controllerId + 8));
+  }
+
+  public setExperimentalGamepadGyroEnabled(enabled: boolean): void {
+    this.options.experimentalGamepadGyro = enabled;
+    if (enabled) {
+      if (!this.gamepadMotion) {
+        this.gamepadMotion = new GamepadMotionManager((line) => this.log(line));
+      }
+      void this.gamepadMotion.setEnabled(true, true);
+    } else {
+      this.gamepadMotion?.setEnabled(false).catch(() => {});
+    }
   }
 
   private pollGamepads(): void {
@@ -1999,6 +2020,10 @@ export class GfnWebRtcClient {
         if (streamInputBlocked) {
           continue;
         }
+        if (this.options.experimentalGamepadGyro && !this.gamepadMotion) {
+          this.gamepadMotion = new GamepadMotionManager((line) => this.log(line));
+          void this.gamepadMotion.setEnabled(true, false);
+        }
         const gamepadInput = this.readGamepadState(gamepad, i);
         const stateChanged = this.hasGamepadStateChanged(i, gamepadInput);
 
@@ -2009,12 +2034,33 @@ export class GfnWebRtcClient {
           && (nowMs - this.lastGamepadSendMs) >= GfnWebRtcClient.GAMEPAD_KEEPALIVE_MS;
 
         if (stateChanged || needsKeepalive) {
-          const usePR = this.canSendGamepadPartiallyReliable(i);
-          const bytes = this.inputEncoder.encodeGamepadState(gamepadInput, this.gamepadBitmap, usePR);
-          if (usePR) {
-            this.sendGamepad(bytes);
-          } else {
+          const motionSample = this.options.experimentalGamepadGyro && isSonyGamepad(gamepad)
+            ? this.gamepadMotion?.getFreshSample(gamepad, i) ?? null
+            : null;
+          let sentBytesLength = 0;
+          if (motionSample) {
+            const hidInput: SonyGamepadHidInput = {
+              ...gamepadInput,
+              gyroX: motionSample.gyroX,
+              gyroY: motionSample.gyroY,
+              gyroZ: motionSample.gyroZ,
+              accelX: motionSample.accelX,
+              accelY: motionSample.accelY,
+              accelZ: motionSample.accelZ,
+              sensorTimestamp: motionSample.sensorTimestamp,
+            };
+            const bytes = this.inputEncoder.encodeSonyGamepadHidState(hidInput, false);
             this.sendReliable(bytes);
+            sentBytesLength = bytes.length;
+          } else {
+            const usePR = this.canSendGamepadPartiallyReliable(i);
+            const bytes = this.inputEncoder.encodeGamepadState(gamepadInput, this.gamepadBitmap, usePR);
+            if (usePR) {
+              this.sendGamepad(bytes);
+            } else {
+              this.sendReliable(bytes);
+            }
+            sentBytesLength = bytes.length;
           }
           this.lastGamepadSendMs = nowMs;
 
@@ -2026,7 +2072,7 @@ export class GfnWebRtcClient {
           if (stateChanged) {
             this.gamepadSendCount++;
             if (this.gamepadSendCount <= 20) {
-              this.log(`Gamepad send #${this.gamepadSendCount}: pad=${i} btns=0x${gamepadInput.buttons.toString(16)} lt=${gamepadInput.leftTrigger} rt=${gamepadInput.rightTrigger} lx=${gamepadInput.leftStickX} ly=${gamepadInput.leftStickY} rx=${gamepadInput.rightStickX} ry=${gamepadInput.rightStickY} bytes=${bytes.length}`);
+              this.log(`Gamepad send #${this.gamepadSendCount}: pad=${i} btns=0x${gamepadInput.buttons.toString(16)} lt=${gamepadInput.leftTrigger} rt=${gamepadInput.rightTrigger} lx=${gamepadInput.leftStickX} ly=${gamepadInput.leftStickY} rx=${gamepadInput.rightStickX} ry=${gamepadInput.rightStickY} bytes=${sentBytesLength}`);
             }
           }
         }
