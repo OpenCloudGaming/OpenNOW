@@ -221,7 +221,9 @@ jobs:
         if: matrix.native_build == 'true' && runner.os == 'Windows'
         uses: actions/cache@v4
         with:
-          path: C:\gstreamer
+          path: |
+            C:\gstreamer
+            ${{ github.workspace }}\.cache\gstreamer-windows
           key: gstreamer-windows-${{ env.GSTREAMER_WINDOWS_VERSION }}
 
       - name: Install Windows GStreamer SDK
@@ -258,16 +260,52 @@ jobs:
             }
             return $null
           }
-          function Invoke-Download([string] $url, [string] $output) {
-            $process = Start-Process -FilePath "curl.exe" -ArgumentList @("--fail", "--location", "--retry", "3", "--output", $output, $url) -Wait -PassThru -NoNewWindow
-            return [bool]($process.ExitCode -eq 0)
+          function Get-GStreamerMsi([string] $fileName, [string] $downloadDir, [string[]] $urlBases) {
+            New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+            $output = Join-Path $downloadDir $fileName
+            $partial = "$output.part"
+            if ((Test-Path $output) -and ((Get-Item $output).Length -gt 0)) {
+              Write-Host "Using cached GStreamer MSI: $output"
+              return $output
+            }
+            foreach ($base in $urlBases) {
+              $url = "$base/$fileName"
+              Write-Host "Downloading GStreamer MSI from $url"
+              if ((Test-Path $partial) -and ((Get-Item $partial).Length -eq 0)) { Remove-Item -Force $partial }
+              $process = Start-Process -FilePath "curl.exe" -ArgumentList @(
+                "--fail",
+                "--location",
+                "--retry", "8",
+                "--retry-all-errors",
+                "--retry-delay", "5",
+                "--connect-timeout", "30",
+                "--continue-at", "-",
+                "--output", $partial,
+                $url
+              ) -Wait -PassThru -NoNewWindow
+              if ($process.ExitCode -eq 0 -and (Test-Path $partial) -and ((Get-Item $partial).Length -gt 0)) {
+                Move-Item -Force $partial $output
+                return $output
+              }
+              Write-Host "GStreamer MSI download failed from $url with curl exit code $($process.ExitCode)."
+              if ((Test-Path $partial) -and ((Get-Item $partial).Length -eq 0)) { Remove-Item -Force $partial }
+            }
+            if (Test-Path $partial) {
+              Write-Host "Removing incomplete GStreamer MSI download: $partial"
+              Remove-Item -Force $partial
+            }
+            return $null
           }
           function Install-GStreamerMsiSdk([string] $version) {
-            $base = "https://gstreamer.freedesktop.org/pkg/windows/$version/msvc"
-            $runtime = Join-Path $env:RUNNER_TEMP "gstreamer-runtime-$version.msi"
-            $devel = Join-Path $env:RUNNER_TEMP "gstreamer-devel-$version.msi"
-            if (-not (Invoke-Download "$base/gstreamer-1.0-msvc-x86_64-$version.msi" $runtime)) { return $false }
-            if (-not (Invoke-Download "$base/gstreamer-1.0-devel-msvc-x86_64-$version.msi" $devel)) { return $false }
+            $urlBases = @(
+              "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc",
+              "https://gstreamer.freedesktop.org/pkg/windows/$version/msvc"
+            )
+            $downloadDir = Join-Path $env:GITHUB_WORKSPACE ".cache\gstreamer-windows\$version"
+            $runtime = Get-GStreamerMsi "gstreamer-1.0-msvc-x86_64-$version.msi" $downloadDir $urlBases
+            if (-not $runtime) { return $false }
+            $devel = Get-GStreamerMsi "gstreamer-1.0-devel-msvc-x86_64-$version.msi" $downloadDir $urlBases
+            if (-not $devel) { return $false }
             $runtimeInstall = Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart", "INSTALLDIR=$installBase", "ADDLOCAL=ALL") -Wait -PassThru
             $script:lastRuntimeMsiExitCode = $runtimeInstall.ExitCode
             if ($runtimeInstall.ExitCode -ne 0) { return $false }
