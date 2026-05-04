@@ -158,6 +158,8 @@ Current build matrix:
 
 Windows ARM64 artifacts are release downloads only for now. The Windows auto-update channel remains the x64 `latest.yml` feed so ARM64 packaging cannot overwrite updater metadata.
 
+Manual release runs sync `opennow-stable/package.json` and `opennow-stable/package-lock.json` to the requested version, commit that change to the selected branch when needed, and create the release tag from that commit so GitHub source archives match the app's internal version. Direct tag-push releases do not rewrite tags; the tagged source must already have matching package and lockfile versions or the release workflow fails before publishing.
+
 ## Notes For Contributors
 
 - The active app is the Electron client. If you see older references to previous implementations, prefer `opennow-stable/`.
