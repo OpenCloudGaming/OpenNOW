@@ -164,9 +164,17 @@ jobs:
       - name: Install macOS GStreamer build/runtime packages
         if: matrix.native_build == 'true' && runner.os == 'macOS'
         run: |
-          brew update
-          brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
-          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
+          base="https://gstreamer.freedesktop.org/data/pkg/macos/${GSTREAMER_VERSION}"
+          runtime="$RUNNER_TEMP/gstreamer-runtime.pkg"
+          devel="$RUNNER_TEMP/gstreamer-devel.pkg"
+          curl --fail --location --retry 3 --output "$runtime" "$base/gstreamer-1.0-${GSTREAMER_VERSION}-universal.pkg"
+          curl --fail --location --retry 3 --output "$devel" "$base/gstreamer-1.0-devel-${GSTREAMER_VERSION}-universal.pkg"
+          sudo installer -pkg "$runtime" -target /
+          sudo installer -pkg "$devel" -target /
+          root="/Library/Frameworks/GStreamer.framework/Versions/1.0"
+          echo "GSTREAMER_1_0_ROOT_MACOS=$root" >> "$GITHUB_ENV"
+          echo "$root/bin" >> "$GITHUB_PATH"
+          echo "PKG_CONFIG_PATH=$root/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
 
       - name: Install Windows GStreamer SDK
         if: matrix.native_build == 'true' && runner.os == 'Windows'

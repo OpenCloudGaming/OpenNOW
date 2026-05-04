@@ -103,6 +103,25 @@ function getAvailableNativeCodecLabels(backend: NativeVideoBackendCapability | u
     .map((codec) => formatNativeVideoCodec(codec.codec)) ?? [];
 }
 
+function formatGstreamerRuntimeLabel(status: NativeStreamerStatus | null): string {
+  switch (status?.gstreamerRuntime.source) {
+    case "bundled":
+      return status.gstreamerAvailable ? "Bundled Runtime Used" : "Bundled Runtime Found";
+    case "system":
+      return "System Runtime";
+    case "missing":
+      return "Runtime Missing";
+    default:
+      return "Runtime Unknown";
+  }
+}
+
+function getGstreamerRuntimeBadgeClass(status: NativeStreamerStatus | null): string {
+  if (status?.gstreamerRuntime.source === "bundled" && status.gstreamerAvailable) return "settings-inline-badge--codec-gpu";
+  if (status?.gstreamerRuntime.source === "system" && status.gstreamerAvailable) return "settings-inline-badge--codec-testing";
+  return "settings-inline-badge--updater-error";
+}
+
 /* ── Static fallbacks (used when MES API is unavailable) ─────────── */
 
 interface ResolutionPreset {
@@ -638,6 +657,11 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         detected: false,
         gstreamerAvailable: false,
         supportsOfferAnswer: false,
+        gstreamerRuntime: {
+          source: "unknown",
+          bundled: false,
+          message: "GStreamer runtime could not be checked.",
+        },
         message: "Native streamer status could not be checked.",
       });
     } finally {
@@ -1968,6 +1992,37 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 <span className="settings-subtle-hint">
                   {nativeStreamerStatus?.message ?? "OpenNOW will check the bundled GStreamer streamer when this tab opens."}
                 </span>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <label className="settings-label">GStreamer Runtime</label>
+                <div className="settings-chip-row">
+                  <span className={`settings-inline-badge ${getGstreamerRuntimeBadgeClass(nativeStreamerStatus)}`}>
+                    {formatGstreamerRuntimeLabel(nativeStreamerStatus)}
+                  </span>
+                  {nativeStreamerStatus?.gstreamerRuntime.path ? (
+                    <span className="settings-inline-badge settings-inline-badge--codec">
+                      Bundled path detected
+                    </span>
+                  ) : null}
+                </div>
+                <span className="settings-subtle-hint">
+                  {nativeStreamerStatus?.gstreamerRuntime.message ?? "Packaged Windows/macOS builds auto-detect a bundled runtime next to the native streamer. Linux uses distro packages."}
+                </span>
+                {!nativeStreamerStatus?.gstreamerAvailable && nativeStreamerStatus?.gstreamerRuntime.installInstructions?.length ? (
+                  <div className="settings-install-steps">
+                    <span className="settings-subtle-hint">
+                      Linux AppImage/private GStreamer bundling is intentionally not used by default because VAAPI/V4L2/Vulkan plugins must match the host distro and GPU driver stack. .deb packages declare Debian/Ubuntu dependencies automatically.
+                    </span>
+                    {nativeStreamerStatus.gstreamerRuntime.installInstructions.map((instruction) => (
+                      <div key={instruction.distro} className="settings-install-step">
+                        <span className="settings-install-step-title">{instruction.distro}</span>
+                        <code>{instruction.command}</code>
+                        {instruction.note ? <span className="settings-subtle-hint">{instruction.note}</span> : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               <div className="settings-row settings-row--column">
