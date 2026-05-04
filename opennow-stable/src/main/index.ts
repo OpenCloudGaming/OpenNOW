@@ -2272,19 +2272,24 @@ app.whenReady().then(async () => {
   }
 
   // Set up permission handlers for getUserMedia, fullscreen, pointer lock
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    const allowedPermissions = new Set([
-      "media",
-      "microphone",
-      "fullscreen",
-      "automatic-fullscreen",
-      "pointerLock",
-      "keyboardLock",
-      "speaker-selection",
-      "hid",
-    ]);
+  const isExperimentalGamepadGyroEnabled = (): boolean => settingsManager.get("experimentalGamepadGyro") === true;
+  const allowedNonHidPermissions = new Set([
+    "media",
+    "microphone",
+    "fullscreen",
+    "automatic-fullscreen",
+    "pointerLock",
+    "keyboardLock",
+    "speaker-selection",
+  ]);
 
-    if (allowedPermissions.has(permission)) {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    if ((permission as string) === "hid") {
+      callback(isExperimentalGamepadGyroEnabled());
+      return;
+    }
+
+    if (allowedNonHidPermissions.has(permission)) {
       callback(true);
       return;
     }
@@ -2293,25 +2298,21 @@ app.whenReady().then(async () => {
   });
 
   session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
-    const allowedPermissions = new Set([
-      "media",
-      "microphone",
-      "fullscreen",
-      "automatic-fullscreen",
-      "pointerLock",
-      "keyboardLock",
-      "speaker-selection",
-      "hid",
-    ]);
+    if ((permission as string) === "hid") {
+      return isExperimentalGamepadGyroEnabled();
+    }
 
-    return allowedPermissions.has(permission);
+    return allowedNonHidPermissions.has(permission);
   });
 
   session.defaultSession.setDevicePermissionHandler((details) => {
-    return details.deviceType === "hid" && details.device.vendorId === 0x054c;
+    return isExperimentalGamepadGyroEnabled() && details.deviceType === "hid" && details.device.vendorId === 0x054c;
   });
 
   session.defaultSession.on("select-hid-device", (event, details, callback) => {
+    if (!isExperimentalGamepadGyroEnabled()) {
+      return;
+    }
     const sonyDevice = details.deviceList.find((device) => device.vendorId === 0x054c);
     if (sonyDevice) {
       event.preventDefault();
