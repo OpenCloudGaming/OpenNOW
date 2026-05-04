@@ -174,6 +174,10 @@ jobs:
       npm_config_fund: "false"
       GSTREAMER_VERSION: "1.28.2"
       GSTREAMER_WINDOWS_VERSION: "1.26.1"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_MULTIPLEXING: "false"
+      CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
       USE_SYSTEM_FPM: ${{ matrix.label == 'linux-arm64' && 'true' || 'false' }}
 
@@ -384,6 +388,17 @@ jobs:
 
       - name: Update package version
         run: node -e "const fs=require('fs'); const path='package.json'; const pkg=JSON.parse(fs.readFileSync(path,'utf8')); pkg.version=process.env.RELEASE_VERSION; fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');"
+
+      - name: Verify macOS Cargo network trust
+        if: matrix.native_build == 'true' && runner.os == 'macOS'
+        run: |
+          if ! curl --fail --location --retry 5 https://index.crates.io/config.json --output /tmp/cargo-index-config.json; then
+            if command -v brew >/dev/null 2>&1; then
+              brew update --quiet
+              brew reinstall ca-certificates
+            fi
+            curl --fail --location --retry 5 https://index.crates.io/config.json --output /tmp/cargo-index-config.json
+          fi
 
       - name: Build native streamer
         if: matrix.native_build == 'true'
