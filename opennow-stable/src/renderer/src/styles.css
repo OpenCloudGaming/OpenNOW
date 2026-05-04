@@ -5116,6 +5116,38 @@ button.game-card-store-chip.owned.active:hover {
   }
 }
 
+/* Instant replay active (icon only, top-right; shifts left when stats HUD is open) */
+.sv-replay-icon {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 1001;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--panel-border);
+  background: rgba(10, 10, 12, 0.9);
+  color: var(--accent, #7cf4b1);
+  box-shadow: 0 0 12px rgba(124, 244, 177, 0.12);
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+  opacity: 0.5;
+}
+
+.sv-replay-icon--with-stats {
+  right: 334px;
+}
+
+@media (max-width: 520px) {
+  .sv-replay-icon--with-stats {
+    right: 14px;
+    top: 52px;
+  }
+}
+
 .sv-mic {
   position: fixed;
   top: 14px;

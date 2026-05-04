@@ -38,13 +38,14 @@ interface SettingsPageProps {
 
 type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 
-type SettingsSectionId = "stream" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
+type SettingsSectionId = "stream" | "game" | "audio" | "video" | "input" | "interface" | "about" | "thanks";
 type SettingsSearchScopeId =
   | "stream-region"
   | "stream-video"
   | "stream-codec-diagnostics"
   | "game"
   | "audio"
+  | "video"
   | "input"
   | "interface"
   | "about"
@@ -77,6 +78,7 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
   ],
   game: ["game", "language", "keyboard layout", "store", "launch"],
   audio: ["audio", "microphone", "mic", "push to talk", "voice activity"],
+  video: ["video", "instant replay", "replay buffer", "clip length", "recording"],
   input: [
     "input",
     "mouse",
@@ -191,6 +193,7 @@ const shortcutDefaults = {
   shortcutToggleMicrophone: "Ctrl+Shift+M",
   shortcutScreenshot: "F11",
   shortcutToggleRecording: "F12",
+  shortcutSaveInstantReplay: "Ctrl+Shift+R",
 } as const;
 
 /** Canonical shortcut for toggling the stream sidebar (must match StreamView key handler). */
@@ -564,6 +567,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [toggleMicrophoneInput, setToggleMicrophoneInput] = useState(settings.shortcutToggleMicrophone);
   const [screenshotInput, setScreenshotInput] = useState(settings.shortcutScreenshot);
   const [recordingInput, setRecordingInput] = useState(settings.shortcutToggleRecording);
+  const [saveInstantReplayInput, setSaveInstantReplayInput] = useState(settings.shortcutSaveInstantReplay);
   const [toggleStatsError, setToggleStatsError] = useState<string | null>(null);
   const [togglePointerLockError, setTogglePointerLockError] = useState<string | null>(null);
   const [toggleFullscreenError, setToggleFullscreenError] = useState<string | null>(null);
@@ -572,6 +576,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [toggleMicrophoneError, setToggleMicrophoneError] = useState<string | null>(null);
   const [screenshotError, setScreenshotError] = useState<string | null>(null);
   const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [saveInstantReplayError, setSaveInstantReplayError] = useState<string | null>(null);
 
   const [keyboardLayoutDropdownOpen, setKeyboardLayoutDropdownOpen] = useState(false);
   const keyboardLayoutDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -629,6 +634,10 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   useEffect(() => {
     setRecordingInput(settings.shortcutToggleRecording);
   }, [settings.shortcutToggleRecording]);
+
+  useEffect(() => {
+    setSaveInstantReplayInput(settings.shortcutSaveInstantReplay);
+  }, [settings.shortcutSaveInstantReplay]);
 
   useEffect(() => {
     let cancelled = false;
@@ -956,6 +965,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         case "shortcutToggleMicrophone": setToggleMicrophoneError(msg); break;
         case "shortcutScreenshot": setScreenshotError(msg); break;
         case "shortcutToggleRecording": setRecordingError(msg); break;
+        case "shortcutSaveInstantReplay": setSaveInstantReplayError(msg); break;
       }
       return;
     }
@@ -972,6 +982,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         case "shortcutToggleMicrophone": setToggleMicrophoneError(msg); break;
         case "shortcutScreenshot": setScreenshotError(msg); break;
         case "shortcutToggleRecording": setRecordingError(msg); break;
+        case "shortcutSaveInstantReplay": setSaveInstantReplayError(msg); break;
       }
       return;
     }
@@ -987,6 +998,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         case "shortcutToggleMicrophone": setToggleMicrophoneError(conflict); break;
         case "shortcutScreenshot": setScreenshotError(conflict); break;
         case "shortcutToggleRecording": setRecordingError(conflict); break;
+        case "shortcutSaveInstantReplay": setSaveInstantReplayError(conflict); break;
       }
       return;
     }
@@ -1000,6 +1012,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       case "shortcutToggleMicrophone": setToggleMicrophoneError(null); break;
       case "shortcutScreenshot": setScreenshotError(null); break;
       case "shortcutToggleRecording": setRecordingError(null); break;
+      case "shortcutSaveInstantReplay": setSaveInstantReplayError(null); break;
     }
 
     switch (key) {
@@ -1011,6 +1024,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       case "shortcutToggleMicrophone": setToggleMicrophoneInput(normalized.canonical); break;
       case "shortcutScreenshot": setScreenshotInput(normalized.canonical); break;
       case "shortcutToggleRecording": setRecordingInput(normalized.canonical); break;
+      case "shortcutSaveInstantReplay": setSaveInstantReplayInput(normalized.canonical); break;
     }
 
     if (settings[key] !== normalized.canonical) {
@@ -1030,6 +1044,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         case "shortcutToggleMicrophone": setToggleMicrophoneError(conflict); break;
         case "shortcutScreenshot": setScreenshotError(conflict); break;
         case "shortcutToggleRecording": setRecordingError(conflict); break;
+        case "shortcutSaveInstantReplay": setSaveInstantReplayError(conflict); break;
       }
       return;
     }
@@ -1043,6 +1058,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       case "shortcutToggleMicrophone": setToggleMicrophoneError(null); break;
       case "shortcutScreenshot": setScreenshotError(null); break;
       case "shortcutToggleRecording": setRecordingError(null); break;
+      case "shortcutSaveInstantReplay": setSaveInstantReplayError(null); break;
     }
 
     switch (key) {
@@ -1054,6 +1070,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       case "shortcutToggleMicrophone": setToggleMicrophoneInput(canonical); break;
       case "shortcutScreenshot": setScreenshotInput(canonical); break;
       case "shortcutToggleRecording": setRecordingInput(canonical); break;
+      case "shortcutSaveInstantReplay": setSaveInstantReplayInput(canonical); break;
     }
 
     if (settings[key] !== canonical) {
@@ -1099,6 +1116,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         case "shortcutToggleMicrophone": setToggleMicrophoneError(msg); break;
         case "shortcutScreenshot": setScreenshotError(msg); break;
         case "shortcutToggleRecording": setRecordingError(msg); break;
+        case "shortcutSaveInstantReplay": setSaveInstantReplayError(msg); break;
       }
       return;
     }
@@ -1114,7 +1132,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       && settings.shortcutToggleAntiAfk === shortcutDefaults.shortcutToggleAntiAfk
       && settings.shortcutToggleMicrophone === shortcutDefaults.shortcutToggleMicrophone
       && settings.shortcutScreenshot === shortcutDefaults.shortcutScreenshot
-      && settings.shortcutToggleRecording === shortcutDefaults.shortcutToggleRecording,
+      && settings.shortcutToggleRecording === shortcutDefaults.shortcutToggleRecording
+      && settings.shortcutSaveInstantReplay === shortcutDefaults.shortcutSaveInstantReplay,
     [
       settings.shortcutToggleStats,
       settings.shortcutTogglePointerLock,
@@ -1124,6 +1143,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       settings.shortcutToggleMicrophone,
       settings.shortcutScreenshot,
       settings.shortcutToggleRecording,
+      settings.shortcutSaveInstantReplay,
     ]
   );
 
@@ -1136,6 +1156,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     setToggleMicrophoneInput(shortcutDefaults.shortcutToggleMicrophone);
     setScreenshotInput(shortcutDefaults.shortcutScreenshot);
     setRecordingInput(shortcutDefaults.shortcutToggleRecording);
+    setSaveInstantReplayInput(shortcutDefaults.shortcutSaveInstantReplay);
     setToggleStatsError(null);
     setTogglePointerLockError(null);
     setToggleFullscreenError(null);
@@ -1144,6 +1165,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     setToggleMicrophoneError(null);
     setScreenshotError(null);
     setRecordingError(null);
+    setSaveInstantReplayError(null);
 
     for (const key of SHORTCUT_SETTING_KEYS) {
       const value = shortcutDefaults[key];
@@ -1417,11 +1439,12 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const showStream = showStreamRegion || showStreamVideo || showStreamCodecDiagnostics;
   const showGame = showAll ? scopeMatchesSearch("game") : activeSection === "game";
   const showAudio = showAll ? scopeMatchesSearch("audio") : activeSection === "audio";
+  const showVideo = showAll ? scopeMatchesSearch("video") : activeSection === "video";
   const showInput = showAll ? scopeMatchesSearch("input") : activeSection === "input";
   const showInterface = showAll ? scopeMatchesSearch("interface") : activeSection === "interface";
   const showAbout = showAll ? scopeMatchesSearch("about") : activeSection === "about";
   const showThanks = showAll ? scopeMatchesSearch("thanks") : activeSection === "thanks";
-  const hasAnySearchMatches = showStream || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
+  const hasAnySearchMatches = showStream || showGame || showAudio || showVideo || showInput || showInterface || showAbout || showThanks;
   const shouldRenderSettingsSections = showAll || activeSection !== "thanks";
 
   return (
@@ -1458,6 +1481,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             { id: "stream" as SettingsSectionId, label: "Stream", icon: <Wifi size={15} /> },
             { id: "game" as SettingsSectionId, label: "Game", icon: <Globe size={15} /> },
             { id: "audio" as SettingsSectionId, label: "Audio", icon: <Mic size={15} /> },
+            { id: "video" as SettingsSectionId, label: "Video", icon: <Zap size={15} /> },
             { id: "input" as SettingsSectionId, label: "Input", icon: <Keyboard size={15} /> },
             { id: "interface" as SettingsSectionId, label: "Interface", icon: <Monitor size={15} /> },
             { id: "about" as SettingsSectionId, label: "About", icon: <Info size={15} /> },
@@ -2137,6 +2161,82 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             </section>
         )}
 
+        {/* ═══ VIDEO ═══════════════════════════════════════ */}
+        {showVideo && (
+          <section className="settings-section">
+            {showAll && <div className="settings-section-context">Video</div>}
+            <div className="settings-section-header">
+              <h2>Instant Replay</h2>
+            </div>
+            <div className="settings-rows">
+              <div className="settings-row settings-row--column">
+                <div className="settings-row-top">
+                  <label className="settings-label">Instant replay</label>
+                  <span className="settings-value-badge">{settings.instantReplayEnabled ? "On" : "Off"}</span>
+                </div>
+                <span className="settings-subtle-hint">
+                  Keeps a rolling buffer while streaming so you can save the last stretch after the fact (extra CPU/GPU and temp disk).
+                </span>
+                <label className="settings-toggle" style={{ marginTop: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={settings.instantReplayEnabled}
+                    onChange={(e) => handleChange("instantReplayEnabled", e.target.checked)}
+                  />
+                  <span className="settings-toggle-track" />
+                </label>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <div className="settings-row-top">
+                  <label className="settings-label">Replay buffer length</label>
+                  <span className="settings-value-badge">{settings.instantReplayBufferMinutes} min</span>
+                </div>
+                <input
+                  type="range"
+                  className="settings-slider"
+                  min={1}
+                  max={10}
+                  step={1}
+                  value={settings.instantReplayBufferMinutes}
+                  onChange={(e) => {
+                    const buf = Math.max(1, Math.min(10, Math.round(Number(e.target.value) || 1)));
+                    handleChange("instantReplayBufferMinutes", buf);
+                    const maxSave = buf * 60;
+                    if (settings.instantReplaySaveSeconds > maxSave) {
+                      handleChange("instantReplaySaveSeconds", maxSave);
+                    }
+                  }}
+                />
+                <span className="settings-subtle-hint">Older footage is discarded beyond this window (1–10 minutes).</span>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <div className="settings-row-top">
+                  <label className="settings-label">Default clip length when saving replay</label>
+                  <span className="settings-value-badge">{settings.instantReplaySaveSeconds}s</span>
+                </div>
+                <input
+                  type="range"
+                  className="settings-slider"
+                  min={5}
+                  max={Math.min(120, settings.instantReplayBufferMinutes * 60)}
+                  step={1}
+                  value={Math.min(settings.instantReplaySaveSeconds, settings.instantReplayBufferMinutes * 60)}
+                  onChange={(e) => {
+                    const maxS = settings.instantReplayBufferMinutes * 60;
+                    const v = Math.max(5, Math.min(maxS, Math.round(Number(e.target.value) || 5)));
+                    handleChange("instantReplaySaveSeconds", v);
+                  }}
+                />
+                <span className="settings-subtle-hint">
+                  Clamped to the buffer window (max {settings.instantReplayBufferMinutes * 60}s).
+                </span>
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* ═══ INPUT ═══════════════════════════════════════ */}
         {showInput && (
             <section className="settings-section">
@@ -2432,6 +2532,25 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
 
                 <div className="settings-shortcut-row">
+                  <span className="settings-shortcut-label" id="shortcut-save-replay-label">Save instant replay</span>
+                  <input
+                    type="text"
+                    id="shortcut-save-replay"
+                    aria-labelledby="shortcut-save-replay-label"
+                    readOnly
+                    className={`settings-text-input settings-shortcut-input ${saveInstantReplayError ? "error" : ""}`}
+                    value={saveInstantReplayInput}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => handleShortcutBlur("shortcutSaveInstantReplay", saveInstantReplayInput)}
+                    onPaste={(e) => handleShortcutPaste("shortcutSaveInstantReplay", e)}
+                    onKeyDown={(e) => handleShortcutCaptureKeyDown("shortcutSaveInstantReplay", e)}
+                    placeholder="Click here, then press a key"
+                    title="Focus and press the key combination to bind"
+                    spellCheck={false}
+                  />
+                </div>
+
+                <div className="settings-shortcut-row">
                   <span className="settings-shortcut-label" id="shortcut-sidebar-label">Toggle stream sidebar</span>
                   <input
                     type="text"
@@ -2445,7 +2564,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
               </div>
 
-              {(toggleStatsError || togglePointerLockError || toggleFullscreenError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError || screenshotError || recordingError) && (
+              {(toggleStatsError || togglePointerLockError || toggleFullscreenError || stopStreamError || toggleAntiAfkError || toggleMicrophoneError || screenshotError || recordingError || saveInstantReplayError) && (
                 <span className="settings-input-hint">
                   {toggleStatsError
                     || togglePointerLockError
@@ -2454,13 +2573,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     || toggleAntiAfkError
                     || toggleMicrophoneError
                     || screenshotError
-                    || recordingError}
+                    || recordingError
+                    || saveInstantReplayError}
                 </span>
               )}
 
-              {!toggleStatsError && !togglePointerLockError && !toggleFullscreenError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && !screenshotError && !recordingError && (
+              {!toggleStatsError && !togglePointerLockError && !toggleFullscreenError && !stopStreamError && !toggleAntiAfkError && !toggleMicrophoneError && !screenshotError && !recordingError && !saveInstantReplayError && (
                 <span className="settings-shortcut-hint">
-                  Click a field and press the keys to bind, or paste a shortcut ({shortcutExamples}). Escape cancels focus. Full screen: {formatShortcutForDisplay(settings.shortcutToggleFullscreen, isMac)}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}. Screenshot: {formatShortcutForDisplay(settings.shortcutScreenshot, isMac)}. Recording: {formatShortcutForDisplay(settings.shortcutToggleRecording, isMac)}.
+                  Click a field and press the keys to bind, or paste a shortcut ({shortcutExamples}). Escape cancels focus. Full screen: {formatShortcutForDisplay(settings.shortcutToggleFullscreen, isMac)}. Stop: {formatShortcutForDisplay(settings.shortcutStopStream, isMac)}. Mic: {formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac)}. Screenshot: {formatShortcutForDisplay(settings.shortcutScreenshot, isMac)}. Recording: {formatShortcutForDisplay(settings.shortcutToggleRecording, isMac)}. Save replay: {formatShortcutForDisplay(settings.shortcutSaveInstantReplay, isMac)}.
                 </span>
               )}
                 </div>

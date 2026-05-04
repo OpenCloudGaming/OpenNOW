@@ -320,6 +320,7 @@ const DEFAULT_SHORTCUTS = {
   shortcutToggleMicrophone: "Ctrl+Shift+M",
   shortcutScreenshot: "F11",
   shortcutToggleRecording: "F12",
+  shortcutSaveInstantReplay: "Ctrl+Shift+R",
 } as const;
 
 
@@ -911,6 +912,10 @@ export function App(): JSX.Element {
     shortcutToggleMicrophone: DEFAULT_SHORTCUTS.shortcutToggleMicrophone,
     shortcutScreenshot: DEFAULT_SHORTCUTS.shortcutScreenshot,
     shortcutToggleRecording: DEFAULT_SHORTCUTS.shortcutToggleRecording,
+    shortcutSaveInstantReplay: DEFAULT_SHORTCUTS.shortcutSaveInstantReplay,
+    instantReplayEnabled: false,
+    instantReplayBufferMinutes: 2,
+    instantReplaySaveSeconds: 30,
     microphoneMode: "disabled",
     microphoneDeviceId: "",
     hideStreamButtons: false,
@@ -2160,7 +2165,21 @@ export function App(): JSX.Element {
     const toggleMicrophone = parseWithFallback(settings.shortcutToggleMicrophone, DEFAULT_SHORTCUTS.shortcutToggleMicrophone);
     const screenshot = parseWithFallback(settings.shortcutScreenshot, DEFAULT_SHORTCUTS.shortcutScreenshot);
     const recording = parseWithFallback(settings.shortcutToggleRecording, DEFAULT_SHORTCUTS.shortcutToggleRecording);
-    return { toggleStats, togglePointerLock, toggleFullscreen, stopStream, toggleAntiAfk, toggleMicrophone, screenshot, recording };
+    const saveInstantReplay = parseWithFallback(
+      settings.shortcutSaveInstantReplay,
+      DEFAULT_SHORTCUTS.shortcutSaveInstantReplay,
+    );
+    return {
+      toggleStats,
+      togglePointerLock,
+      toggleFullscreen,
+      stopStream,
+      toggleAntiAfk,
+      toggleMicrophone,
+      screenshot,
+      recording,
+      saveInstantReplay,
+    };
   }, [
     settings.shortcutToggleStats,
     settings.shortcutTogglePointerLock,
@@ -2170,6 +2189,7 @@ export function App(): JSX.Element {
     settings.shortcutToggleMicrophone,
     settings.shortcutScreenshot,
     settings.shortcutToggleRecording,
+    settings.shortcutSaveInstantReplay,
   ]);
 
   const setSessionFullscreen = useCallback(async (nextFullscreen: boolean) => {
@@ -2213,6 +2233,10 @@ export function App(): JSX.Element {
   const toggleSessionFullscreen = useCallback(async () => {
     await setSessionFullscreen(!(sessionFullscreen || document.fullscreenElement));
   }, [sessionFullscreen, setSessionFullscreen]);
+
+  const triggerSaveInstantReplay = useCallback(() => {
+    window.dispatchEvent(new Event("opennow:save-instant-replay"));
+  }, []);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -4520,6 +4544,7 @@ export function App(): JSX.Element {
               toggleMicrophone: formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac),
               screenshot: shortcuts.screenshot.canonical,
               recording: shortcuts.recording.canonical,
+              saveInstantReplay: shortcuts.saveInstantReplay.canonical,
             }}
             hideStreamButtons={settings.hideStreamButtons}
             serverRegion={session?.serverIp}
@@ -4560,6 +4585,12 @@ export function App(): JSX.Element {
             onRecordingShortcutChange={(value) => {
               void updateSetting("shortcutToggleRecording", value);
             }}
+            onInstantReplayShortcutChange={(value) => {
+              void updateSetting("shortcutSaveInstantReplay", value);
+            }}
+            instantReplayEnabled={settings.instantReplayEnabled}
+            instantReplayBufferMinutes={settings.instantReplayBufferMinutes}
+            instantReplaySaveSeconds={settings.instantReplaySaveSeconds}
             subscriptionInfo={subscriptionInfo}
             micTrack={clientRef.current?.getMicTrack() ?? null}
             onRequestPointerLock={handleRequestPointerLock}
@@ -4663,6 +4694,10 @@ export function App(): JSX.Element {
                 void handleResumeFromNavbar();
               }}
               cloudResumeBusy={isResumingNavbarSession}
+              onSaveInstantReplay={triggerSaveInstantReplay}
+              instantReplayEnabled={settings.instantReplayEnabled}
+              instantReplaySaveSeconds={settings.instantReplaySaveSeconds}
+              instantReplayBufferMinutes={settings.instantReplayBufferMinutes}
               onCloseGame={async () => {
                 setControllerOverlayOpen(false);
                 await sleep(300);

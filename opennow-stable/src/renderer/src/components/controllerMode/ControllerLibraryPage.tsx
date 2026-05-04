@@ -103,6 +103,10 @@ export function ControllerLibraryPage({
   cloudResumeCoverUrl = null,
   onResumeCloudSession,
   cloudResumeBusy = false,
+  onSaveInstantReplay,
+  instantReplayEnabled = false,
+  instantReplaySaveSeconds = 30,
+  instantReplayBufferMinutes = 2,
 }: ControllerLibraryPageProps): JSX.Element {
   /** Top strip: Home (current / last played) is always the default landing tab. */
   const initialCategoryIndex = 0;
@@ -300,6 +304,9 @@ export function ControllerLibraryPage({
     cloudResumeCoverUrl,
     cloudResumeBusy,
     onResumeCloudSession,
+    instantReplayEnabled,
+    instantReplaySaveSeconds,
+    instantReplayBufferMinutes,
     inStreamMenu,
     streamMenuMicOn,
     streamMenuMicLevel,
@@ -881,6 +888,7 @@ export function ControllerLibraryPage({
     onStreamMenuVolumeChange,
     onStreamMenuToggleMicrophone,
     onStreamMenuToggleFullscreen,
+    onSaveInstantReplay,
     setCategoryIndex,
     setSelectedSettingIndex,
     setSettingsSubcategory,

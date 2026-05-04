@@ -67,6 +67,10 @@ import type {
   RecordingFinishRequest,
   RecordingAbortRequest,
   RecordingDeleteRequest,
+  InstantReplayBeginSessionRequest,
+  InstantReplayAddSegmentRequest,
+  InstantReplaySaveRequest,
+  InstantReplayEndSessionRequest,
   MicrophonePermissionResult,
   ThankYouContributor,
   ThankYouDataResult,
@@ -76,6 +80,12 @@ import { serializeSessionErrorTransport } from "@shared/sessionError";
 import { enrichErrorForIpc, formatErrorChainForLog } from "@shared/networkError";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
+import {
+  instantReplayAddSegment,
+  instantReplayBeginSession,
+  instantReplayEndSession,
+  instantReplaySave,
+} from "./instantReplay";
 
 import { createSession, pollSession, reportSessionAd, stopSession, getActiveSessions, claimSession } from "./gfn/cloudmatch";
 import { AuthService } from "./gfn/auth";
@@ -1844,6 +1854,35 @@ function registerIpcHandlers(): void {
     activeRecordings.delete(input.recordingId);
     rec.writeStream.destroy();
     await unlink(rec.tempPath).catch(() => undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.INSTANT_REPLAY_BEGIN_SESSION, async (_event, input: InstantReplayBeginSessionRequest): Promise<void> => {
+    await instantReplayBeginSession({
+      sessionId: input.sessionId,
+      bufferWindowMs: input.bufferWindowMs,
+      segmentDurationMs: input.segmentDurationMs,
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.INSTANT_REPLAY_ADD_SEGMENT, async (_event, input: InstantReplayAddSegmentRequest): Promise<void> => {
+    await instantReplayAddSegment({
+      sessionId: input.sessionId,
+      data: Buffer.from(input.segment),
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.INSTANT_REPLAY_SAVE, async (_event, input: InstantReplaySaveRequest): Promise<RecordingEntry> => {
+    return instantReplaySave({
+      clipData: Buffer.from(input.clip),
+      mimeType: input.mimeType,
+      clipDurationMs: input.clipDurationMs,
+      gameTitle: input.gameTitle,
+      thumbnailDataUrl: input.thumbnailDataUrl,
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.INSTANT_REPLAY_END_SESSION, async (_event, input: InstantReplayEndSessionRequest): Promise<void> => {
+    await instantReplayEndSession(input.sessionId);
   });
 
   ipcMain.handle(IPC_CHANNELS.RECORDING_LIST, async (): Promise<RecordingEntry[]> => {

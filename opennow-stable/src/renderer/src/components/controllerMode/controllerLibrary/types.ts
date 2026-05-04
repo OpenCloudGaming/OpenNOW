@@ -63,6 +63,11 @@ export interface ControllerLibraryPageProps {
   cloudResumeCoverUrl?: string | null;
   onResumeCloudSession?: () => void;
   cloudResumeBusy?: boolean;
+  /** In-stream: save rolling instant replay clip (dispatched to StreamView). */
+  onSaveInstantReplay?: () => void;
+  instantReplayEnabled?: boolean;
+  instantReplaySaveSeconds?: number;
+  instantReplayBufferMinutes?: number;
 }
 
 export type Direction = "up" | "down" | "left" | "right";

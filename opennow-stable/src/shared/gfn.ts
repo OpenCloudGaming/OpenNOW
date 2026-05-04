@@ -157,6 +157,14 @@ export interface Settings {
   shortcutToggleMicrophone: string;
   shortcutScreenshot: string;
   shortcutToggleRecording: string;
+  /** Save instant replay clip (last N seconds from rolling buffer) */
+  shortcutSaveInstantReplay: string;
+  /** When true, keep a rolling capture buffer while streaming (extra CPU/GPU) */
+  instantReplayEnabled: boolean;
+  /** How long to retain in the rolling buffer (1–10 minutes) */
+  instantReplayBufferMinutes: number;
+  /** Default clip length when saving instant replay (seconds; clamped to buffer window) */
+  instantReplaySaveSeconds: number;
   microphoneMode: MicrophoneMode;
   microphoneDeviceId: string;
   hideStreamButtons: boolean;
@@ -840,6 +848,18 @@ export interface OpenNowApi {
   /** Abort an in-progress recording and remove the temporary file */
   abortRecording(input: RecordingAbortRequest): Promise<void>;
 
+  /** Start (or reset) instant replay segment storage for this stream session */
+  instantReplayBeginSession(input: InstantReplayBeginSessionRequest): Promise<void>;
+
+  /** Append one completed WebM segment file to the rolling buffer */
+  instantReplayAddSegment(input: InstantReplayAddSegmentRequest): Promise<void>;
+
+  /** Merge recent segments, trim to clipDurationMs, and save under Recordings */
+  instantReplaySave(input: InstantReplaySaveRequest): Promise<RecordingEntry>;
+
+  /** Remove temp segment files for the session */
+  instantReplayEndSession(input: InstantReplayEndSessionRequest): Promise<void>;
+
   /** List all saved recordings from the recordings directory */
   listRecordings(): Promise<RecordingEntry[]>;
 
@@ -942,6 +962,29 @@ export interface RecordingAbortRequest {
 
 export interface RecordingDeleteRequest {
   id: string;
+}
+
+export interface InstantReplayBeginSessionRequest {
+  sessionId: string;
+  bufferWindowMs: number;
+  segmentDurationMs: number;
+}
+
+export interface InstantReplayAddSegmentRequest {
+  sessionId: string;
+  segment: ArrayBuffer;
+}
+
+export interface InstantReplaySaveRequest {
+  clip: ArrayBuffer;
+  mimeType: string;
+  clipDurationMs: number;
+  gameTitle?: string;
+  thumbnailDataUrl?: string;
+}
+
+export interface InstantReplayEndSessionRequest {
+  sessionId: string;
 }
 
 export interface MediaListingEntry {

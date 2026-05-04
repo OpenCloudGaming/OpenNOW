@@ -34,6 +34,10 @@ import type {
   RecordingAbortRequest,
   RecordingEntry,
   RecordingDeleteRequest,
+  InstantReplayBeginSessionRequest,
+  InstantReplayAddSegmentRequest,
+  InstantReplaySaveRequest,
+  InstantReplayEndSessionRequest,
   MediaListingResult,
   PrintedWasteQueueData,
   PrintedWasteServerMapping,
@@ -162,6 +166,14 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.RECORDING_FINISH, input),
   abortRecording: (input: RecordingAbortRequest): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.RECORDING_ABORT, input),
+  instantReplayBeginSession: (input: InstantReplayBeginSessionRequest): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.INSTANT_REPLAY_BEGIN_SESSION, input),
+  instantReplayAddSegment: (input: InstantReplayAddSegmentRequest): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.INSTANT_REPLAY_ADD_SEGMENT, input),
+  instantReplaySave: (input: InstantReplaySaveRequest): Promise<RecordingEntry> =>
+    ipcRenderer.invoke(IPC_CHANNELS.INSTANT_REPLAY_SAVE, input),
+  instantReplayEndSession: (input: InstantReplayEndSessionRequest): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.INSTANT_REPLAY_END_SESSION, input),
   listRecordings: (): Promise<RecordingEntry[]> =>
     ipcRenderer.invoke(IPC_CHANNELS.RECORDING_LIST),
   deleteRecording: (input: RecordingDeleteRequest): Promise<void> =>

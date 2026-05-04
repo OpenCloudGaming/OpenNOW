@@ -57,6 +57,11 @@ export interface Settings {
   shortcutScreenshot: string;
   /** Toggle stream recording shortcut */
   shortcutToggleRecording: string;
+  /** Save instant replay clip from rolling buffer */
+  shortcutSaveInstantReplay: string;
+  instantReplayEnabled: boolean;
+  instantReplayBufferMinutes: number;
+  instantReplaySaveSeconds: number;
   /** How often to re-show the session timer while streaming (0 = off) */
   sessionClockShowEveryMinutes: number;
   /** How long the session timer stays visible when it appears */
@@ -163,6 +168,10 @@ const DEFAULT_SETTINGS: Settings = {
   shortcutToggleMicrophone: defaultMicShortcut,
   shortcutScreenshot: "F11",
   shortcutToggleRecording: "F12",
+  shortcutSaveInstantReplay: "Ctrl+Shift+R",
+  instantReplayEnabled: false,
+  instantReplayBufferMinutes: 2,
+  instantReplaySaveSeconds: 30,
   microphoneMode: "disabled",
   microphoneDeviceId: "",
   hideStreamButtons: false,

@@ -95,6 +95,7 @@ export function createActionHandlers(
     onStreamMenuVolumeChange,
     onStreamMenuToggleMicrophone,
     onStreamMenuToggleFullscreen,
+    onSaveInstantReplay,
     setSelectedSettingIndex,
     setSettingsSubcategory,
     setMediaSubcategory,
@@ -394,6 +395,11 @@ export function createActionHandlers(
       }
       if (item?.id === "openMedia") {
         window.dispatchEvent(new CustomEvent("opennow:controller-navigate", { detail: { target: "media" } }));
+        playUiSound("confirm");
+        return;
+      }
+      if (item?.id === "saveInstantReplay" && onSaveInstantReplay) {
+        onSaveInstantReplay();
         playUiSound("confirm");
         return;
       }

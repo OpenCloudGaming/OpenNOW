@@ -35,6 +35,9 @@ type UseControllerLibraryGameDerivationsArgs = {
   streamMenuIsFullscreen: boolean;
   endSessionConfirm: boolean;
   librarySortId: LibrarySortId;
+  instantReplayEnabled?: boolean;
+  instantReplaySaveSeconds?: number;
+  instantReplayBufferMinutes?: number;
 };
 
 type UseControllerLibraryGameDerivationsResult = {
@@ -102,6 +105,9 @@ export function useControllerLibraryGameDerivations({
   streamMenuIsFullscreen,
   endSessionConfirm,
   librarySortId,
+  instantReplayEnabled = false,
+  instantReplaySaveSeconds = 30,
+  instantReplayBufferMinutes = 2,
 }: UseControllerLibraryGameDerivationsArgs): UseControllerLibraryGameDerivationsResult {
   const favoriteGameIdSet = useMemo(() => new Set(favoriteGameIds), [favoriteGameIds]);
   const favoriteGames = useMemo(() => games.filter((game) => favoriteGameIdSet.has(game.id)), [games, favoriteGameIdSet]);
@@ -137,6 +143,15 @@ export function useControllerLibraryGameDerivations({
           { id: "streamMicLevel", label: "Mic level", value: `${Math.round((streamMenuMicLevel ?? 1) * 100)}%` },
           { id: "streamVolume", label: "Stream volume", value: `${Math.round((streamMenuVolume ?? 1) * 100)}%` },
           { id: "openMedia", label: "Media & captures", value: "Open" },
+          ...(instantReplayEnabled
+            ? [
+                {
+                  id: "saveInstantReplay",
+                  label: "Save replay clip",
+                  value: `Last ${Math.min(instantReplaySaveSeconds, instantReplayBufferMinutes * 60)}s`,
+                },
+              ]
+            : []),
           { id: "toggleFullscreen", label: "Fullscreen", value: streamMenuIsFullscreen ? "On" : "Off" },
         ]
       : [];
@@ -161,6 +176,9 @@ export function useControllerLibraryGameDerivations({
     streamMenuIsFullscreen,
     homeShelfGameTitle,
     featuredHomeGame,
+    instantReplayBufferMinutes,
+    instantReplayEnabled,
+    instantReplaySaveSeconds,
   ]);
 
   const mediaRootItems = useMemo(
