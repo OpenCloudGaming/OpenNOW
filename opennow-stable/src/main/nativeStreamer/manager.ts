@@ -678,9 +678,7 @@ export class NativeStreamerManager {
     if (videoBackendPreference !== "auto") {
       childEnv.OPENNOW_NATIVE_VIDEO_BACKEND = videoBackendPreference;
     }
-    if (process.platform === "win32") {
-      childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER = this.options.getExternalRendererEnabled() ? "1" : "0";
-    }
+    childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER = process.platform === "win32" && this.options.getExternalRendererEnabled() ? "1" : "0";
     childEnv.OPENNOW_NATIVE_CLOUD_GSYNC = nativeStreamerFeatureModeToEnvValue(this.options.getCloudGsyncMode());
     childEnv.OPENNOW_NATIVE_D3D_FULLSCREEN = nativeStreamerFeatureModeToEnvValue(this.options.getD3dFullscreenMode());
     if (backendPreference !== "auto") {
@@ -696,9 +694,9 @@ export class NativeStreamerManager {
 
     const child = spawn(executablePath, [], {
       stdio: "pipe",
-      // The default native path lets the GStreamer video sink create its own
-      // render window. Hiding the child process also hides that sink window on
-      // Windows, which leaves the Electron input placeholder black.
+      // The Windows external renderer path lets the GStreamer video sink create
+      // its own render window. Hiding the child process also hides that sink
+      // window, which leaves the Electron input placeholder black.
       windowsHide: false,
       env: childEnv,
     });

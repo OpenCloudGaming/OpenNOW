@@ -789,7 +789,7 @@ function getNativeStreamerManager(): NativeStreamerManager {
     getExecutablePathOverride: () => settingsManager?.get("nativeStreamerExecutablePath") ?? "",
     getCloudGsyncMode: () => settingsManager?.get("nativeCloudGsyncMode") ?? "auto",
     getD3dFullscreenMode: () => settingsManager?.get("nativeD3dFullscreenMode") ?? "auto",
-    getExternalRendererEnabled: () => true,
+    getExternalRendererEnabled: () => settingsManager?.get("nativeExternalRenderer") ?? true,
     emit: emitToRenderer,
     sendAnswer: async (payload) => {
       if (!signalingClient) {
