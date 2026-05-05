@@ -19,12 +19,29 @@ const targetDir = nativeTarget
   : join(crateRoot, "target", nativeProfile);
 const streamerBinary = join(targetDir, exeName);
 
+function sanitizedChildEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  for (const key of [
+    "NODE_OPTIONS",
+    "VSCODE_INSPECTOR_OPTIONS",
+    "VSCODE_PID",
+    "VSCODE_CWD",
+    "VSCODE_NLS_CONFIG",
+    "VSCODE_CODE_CACHE_PATH",
+    "ELECTRON_RUN_AS_NODE",
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
 function runNativeBuild() {
   if (process.env.OPENNOW_SKIP_NATIVE_STREAMER_BUILD === "1") {
     console.log("Skipping native streamer build because OPENNOW_SKIP_NATIVE_STREAMER_BUILD=1.");
     return;
   }
 
+  console.log(`Building native streamer for dev: profile=${nativeProfile}, features=${nativeFeatures}, binary=${streamerBinary}`);
   const args = [
     join(__dirname, "build-native-streamer.mjs"),
     "--profile",
@@ -37,26 +54,26 @@ function runNativeBuild() {
   const result = spawnSync(process.execPath, args, {
     cwd: packageRoot,
     stdio: "inherit",
-    env: process.env,
+    env: sanitizedChildEnv(),
   });
 
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
+  console.log("Native streamer dev build completed.");
 }
 
 function runElectronVite() {
   const explicitStreamerBinary = process.env.OPENNOW_NATIVE_STREAMER?.trim() || streamerBinary;
-  console.log(`Using native streamer executable for dev: ${explicitStreamerBinary}`);
+  console.log(`Launching Electron dev server with native streamer: ${explicitStreamerBinary}`);
 
   const child = spawn("electron-vite", ["dev"], {
     cwd: packageRoot,
     stdio: "inherit",
     shell: process.platform === "win32",
-    env: {
-      ...process.env,
+    env: sanitizedChildEnv({
       OPENNOW_NATIVE_STREAMER: explicitStreamerBinary,
-    },
+    }),
   });
 
   const forwardSignal = (signal) => {

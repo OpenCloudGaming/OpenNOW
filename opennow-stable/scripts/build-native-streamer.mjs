@@ -11,12 +11,35 @@ const crateRoot = join(repoRoot, "native", "opennow-streamer");
 const manifestPath = join(crateRoot, "Cargo.toml");
 const exeName = process.platform === "win32" ? "opennow-streamer.exe" : "opennow-streamer";
 const nativeStreamerProtocolVersion = 2;
-const nativeTarget = process.env.OPENNOW_NATIVE_STREAMER_TARGET?.trim() || "";
+
+function parseArgs(argv) {
+  const parsed = new Map();
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (!value.startsWith("--")) continue;
+    const key = value.slice(2);
+    const next = argv[index + 1];
+    if (!next || next.startsWith("--")) {
+      parsed.set(key, "true");
+      continue;
+    }
+    parsed.set(key, next);
+    index += 1;
+  }
+  return parsed;
+}
+
+const args = parseArgs(process.argv.slice(2));
+const nativeTarget = args.get("target")?.trim() || process.env.OPENNOW_NATIVE_STREAMER_TARGET?.trim() || "";
+const nativeProfile = args.get("profile")?.trim() || process.env.OPENNOW_NATIVE_STREAMER_PROFILE?.trim() || "release";
+const nativeFeatures = args.get("features")?.trim() || process.env.OPENNOW_NATIVE_STREAMER_FEATURES?.trim() || "gstreamer";
+const noCopy = args.has("no-copy");
+const skipVerify = args.has("skip-verify");
 const platformKey = process.env.OPENNOW_NATIVE_STREAMER_PLATFORM_KEY?.trim() || `${process.platform}-${process.arch}`;
-const targetReleaseDir = nativeTarget
-  ? join(crateRoot, "target", nativeTarget, "release")
-  : join(crateRoot, "target", "release");
-const builtBinary = join(targetReleaseDir, exeName);
+const targetProfileDir = nativeTarget
+  ? join(crateRoot, "target", nativeTarget, nativeProfile)
+  : join(crateRoot, "target", nativeProfile);
+const builtBinary = join(targetProfileDir, exeName);
 const packageBinaryDir = join(crateRoot, "bin");
 const packageBinary = join(packageBinaryDir, exeName);
 const packagePlatformBinaryDir = join(packageBinaryDir, platformKey);
@@ -391,18 +414,20 @@ function verifyGstreamerBinary(binaryPath, env) {
   console.log(`Verified native streamer GStreamer capabilities: ${availableVideoBackends.join(", ")}.`);
 }
 
-const cargoArgs = ["build", "--release", "--manifest-path", manifestPath];
+const cargoArgs = ["build", "--manifest-path", manifestPath];
+if (nativeProfile === "release") {
+  cargoArgs.push("--release");
+}
 if (nativeTarget) {
   cargoArgs.push("--target", nativeTarget);
 }
-const nativeFeatures = process.env.OPENNOW_NATIVE_STREAMER_FEATURES?.trim() || "gstreamer";
 if (nativeFeatures && nativeFeatures.toLowerCase() !== "none") {
   cargoArgs.push("--features", nativeFeatures);
 }
 console.log(
   nativeFeatures.toLowerCase() === "none"
-    ? "Building native streamer without optional features."
-    : `Building native streamer with features: ${nativeFeatures}`,
+    ? `Building native streamer without optional features: profile=${nativeProfile}`
+    : `Building native streamer with features: ${nativeFeatures}, profile=${nativeProfile}`,
 );
 
 const buildEnv = { ...process.env };
@@ -428,6 +453,11 @@ if (!existsSync(builtBinary)) {
   process.exit(1);
 }
 
+if (noCopy) {
+  console.log(`Built native streamer at ${builtBinary}`);
+  process.exit(0);
+}
+
 mkdirSync(packageBinaryDir, { recursive: true });
 mkdirSync(packagePlatformBinaryDir, { recursive: true });
 copyFileSync(builtBinary, packageBinary);
@@ -438,7 +468,7 @@ if (process.platform !== "win32") {
   chmodSync(packagePlatformBinary, 0o755);
 }
 
-if (hasFeature(nativeFeatures, "gstreamer")) {
+if (hasFeature(nativeFeatures, "gstreamer") && !skipVerify) {
   verifyGstreamerBinary(packageBinary, buildEnv);
   if (bundleGstreamerRuntime(gstreamerSdkRoot, nativeFeatures)) {
     verifyGstreamerBinary(packagePlatformBinary, buildBundledGstreamerEnv(buildEnv, packagePlatformBinary));
