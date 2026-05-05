@@ -3333,6 +3333,109 @@ export function App(): JSX.Element {
 
   // Signaling events
   useEffect(() => {
+    const ensureWebRtcClient = (): GfnWebRtcClient | null => {
+      if (clientRef.current) {
+        return clientRef.current;
+      }
+      if (!videoRef.current || !audioRef.current) {
+        return null;
+      }
+
+      clientRef.current = new GfnWebRtcClient({
+        videoElement: videoRef.current,
+        audioElement: audioRef.current,
+        autoFullScreen: settings.autoFullScreen,
+        microphoneMode: settings.microphoneMode,
+        microphoneDeviceId: settings.microphoneDeviceId || undefined,
+        mouseSensitivity: settings.mouseSensitivity,
+        mouseAcceleration: settings.mouseAcceleration,
+        onLog: (line: string) => console.log(`[WebRTC] ${line}`),
+        onStats: (stats) => diagnosticsStore.set(stats),
+        onTimeWarning: (warning) => {
+          setRemoteStreamWarning({
+            code: warning.code,
+            message: warningMessage(warning.code),
+            tone: warningTone(warning.code),
+            secondsLeft: warning.secondsLeft,
+          });
+        },
+        onMicStateChange: (state) => {
+          console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
+        },
+        onIceConnectionStateChange: (iceState) => {
+          latestIceConnectionStateRef.current = iceState;
+          if (iceDisconnectedRecoveryTimerRef.current !== null) {
+            window.clearTimeout(iceDisconnectedRecoveryTimerRef.current);
+            iceDisconnectedRecoveryTimerRef.current = null;
+          }
+          if (appUnloadingRef.current) {
+            return;
+          }
+          if (streamStatusRef.current !== "streaming") {
+            return;
+          }
+          if (iceState === "failed") {
+            console.warn("[Recovery] ICE failed; attempting targeted recovery");
+            void attemptSessionRecovery("ICE failed").catch((error) => {
+              console.error("[Recovery] ICE-failed recovery failed:", error);
+            });
+            return;
+          }
+          if (iceState === "disconnected") {
+            iceDisconnectedRecoveryTimerRef.current = window.setTimeout(() => {
+              iceDisconnectedRecoveryTimerRef.current = null;
+              if (appUnloadingRef.current || streamStatusRef.current !== "streaming") {
+                return;
+              }
+              if (latestIceConnectionStateRef.current !== "disconnected") {
+                return;
+              }
+              console.warn("[Recovery] ICE remained disconnected; attempting targeted recovery");
+              void attemptSessionRecovery("ICE disconnected timeout").catch((error) => {
+                console.error("[Recovery] ICE-disconnected recovery failed:", error);
+              });
+            }, ICE_DISCONNECTED_RECOVERY_GRACE_MS);
+          }
+        },
+        onControllerMetaPress: () => {
+          handleControllerMetaToggle();
+        },
+      });
+      clientRef.current.inputPaused = controllerOverlayOpenRef.current;
+      clientRef.current.setOutputVolume(streamVolume);
+      clientRef.current.setMicrophoneLevel(streamMicLevel);
+      if (settings.microphoneMode !== "disabled") {
+        void clientRef.current.startMicrophone();
+      }
+      return clientRef.current;
+    };
+
+    const activateNativeInputForCurrentSession = (protocolVersion?: number): void => {
+      const activeSession = sessionRef.current;
+      if (!activeSession) {
+        console.warn("[App] Received native stream event but no active session in sessionRef!");
+        return;
+      }
+      const client = ensureWebRtcClient();
+      if (!client) {
+        console.warn("[App] Native stream event received before media elements were ready");
+        return;
+      }
+
+      nativeStreamingRef.current = true;
+      pendingControlledDisconnectsRef.current = 0;
+      client.activateNativeInput(protocolVersion, {
+        codec: settings.codec,
+        colorQuality: settings.colorQuality,
+        resolution: settings.resolution,
+        fps: settings.fps,
+        maxBitrateKbps: settings.maxBitrateMbps * 1000,
+      });
+      setLaunchError(null);
+      setStreamStatus("streaming");
+      scheduleStableRecoveryReset(activeSession.sessionId);
+    };
+
     const unsubscribe = window.openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {
       console.log(`[App] Signaling event: ${event.type}`, event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "", event.type === "remote-ice" ? event.candidate : "");
       try {
@@ -3385,77 +3488,10 @@ export function App(): JSX.Element {
             iceServersCount: activeSession.iceServers?.length,
           }));
 
-          if (!clientRef.current && videoRef.current && audioRef.current) {
-            clientRef.current = new GfnWebRtcClient({
-              videoElement: videoRef.current,
-              audioElement: audioRef.current,
-              autoFullScreen: settings.autoFullScreen,
-              microphoneMode: settings.microphoneMode,
-              microphoneDeviceId: settings.microphoneDeviceId || undefined,
-              mouseSensitivity: settings.mouseSensitivity,
-              mouseAcceleration: settings.mouseAcceleration,
-              onLog: (line: string) => console.log(`[WebRTC] ${line}`),
-              onStats: (stats) => diagnosticsStore.set(stats),
-              onTimeWarning: (warning) => {
-                setRemoteStreamWarning({
-                  code: warning.code,
-                  message: warningMessage(warning.code),
-                  tone: warningTone(warning.code),
-                  secondsLeft: warning.secondsLeft,
-                });
-              },
-              onMicStateChange: (state) => {
-                console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
-              },
-              onIceConnectionStateChange: (iceState) => {
-                latestIceConnectionStateRef.current = iceState;
-                if (iceDisconnectedRecoveryTimerRef.current !== null) {
-                  window.clearTimeout(iceDisconnectedRecoveryTimerRef.current);
-                  iceDisconnectedRecoveryTimerRef.current = null;
-                }
-                if (appUnloadingRef.current) {
-                  return;
-                }
-                if (streamStatusRef.current !== "streaming") {
-                  return;
-                }
-                if (iceState === "failed") {
-                  console.warn("[Recovery] ICE failed; attempting targeted recovery");
-                  void attemptSessionRecovery("ICE failed").catch((error) => {
-                    console.error("[Recovery] ICE-failed recovery failed:", error);
-                  });
-                  return;
-                }
-                if (iceState === "disconnected") {
-                  iceDisconnectedRecoveryTimerRef.current = window.setTimeout(() => {
-                    iceDisconnectedRecoveryTimerRef.current = null;
-                    if (appUnloadingRef.current || streamStatusRef.current !== "streaming") {
-                      return;
-                    }
-                    if (latestIceConnectionStateRef.current !== "disconnected") {
-                      return;
-                    }
-                    console.warn("[Recovery] ICE remained disconnected; attempting targeted recovery");
-                    void attemptSessionRecovery("ICE disconnected timeout").catch((error) => {
-                      console.error("[Recovery] ICE-disconnected recovery failed:", error);
-                    });
-                  }, ICE_DISCONNECTED_RECOVERY_GRACE_MS);
-                }
-              },
-              onControllerMetaPress: () => {
-                handleControllerMetaToggle();
-              },
-            });
-            clientRef.current.inputPaused = controllerOverlayOpenRef.current;
-            clientRef.current.setOutputVolume(streamVolume);
-            clientRef.current.setMicrophoneLevel(streamMicLevel);
-            if (settings.microphoneMode !== "disabled") {
-              void clientRef.current.startMicrophone();
-            }
-          }
+          const client = ensureWebRtcClient();
 
-          if (clientRef.current) {
-            await clientRef.current.handleOffer(event.sdp, activeSession, {
+          if (client) {
+            await client.handleOffer(event.sdp, activeSession, {
               codec: settings.codec,
               colorQuality: settings.colorQuality,
               resolution: settings.resolution,
@@ -3473,6 +3509,28 @@ export function App(): JSX.Element {
                 : "n/a",
             );
           }
+        } else if (event.type === "native-stream-started") {
+          console.log("[App] Native streamer started:", event.message ?? "");
+          activateNativeInputForCurrentSession(nativeInputProtocolVersionRef.current ?? undefined);
+        } else if (event.type === "native-input-ready") {
+          console.log("[App] Native input protocol ready:", event.protocolVersion);
+          nativeInputProtocolVersionRef.current = event.protocolVersion;
+          clientRef.current?.setNativeInputProtocolVersion(event.protocolVersion);
+          if (nativeStreamingRef.current || sessionRef.current) {
+            activateNativeInputForCurrentSession(event.protocolVersion);
+          }
+        } else if (event.type === "native-stream-stats") {
+          diagnosticsStore.set(mergeNativeStreamStats(
+            diagnosticsStore.getSnapshot(),
+            event.stats,
+          ));
+        } else if (event.type === "native-stream-stopped") {
+          console.warn("[App] Native streamer stopped:", event.reason ?? "stopped");
+          nativeStreamingRef.current = false;
+          nativeInputProtocolVersionRef.current = null;
+          clientRef.current?.dispose();
+          clientRef.current = null;
+          launchInFlightRef.current = false;
         } else if (event.type === "remote-ice") {
           remoteIceSeenForSessionRef.current = sessionRef.current?.sessionId ?? null;
           hasConfirmedRemoteIceRef.current = true;
@@ -3578,7 +3636,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [attemptSessionRecovery, diagnosticsStore, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings]);
+  }, [attemptSessionRecovery, diagnosticsStore, handleControllerMetaToggle, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
