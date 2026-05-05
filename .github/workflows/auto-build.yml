@@ -49,10 +49,42 @@ jobs:
         run: npm ci --prefer-offline --no-audit --progress=false
 
       - name: Lint
+        id: lint
         run: npm run lint
 
       - name: Typecheck
+        id: typecheck
         run: npm run typecheck
 
       - name: Test
+        id: test
         run: npm test
+
+      - name: CI summary
+        if: always()
+        working-directory: .
+        run: |
+          status_icon() {
+            case "$1" in
+              success) printf '✅ success' ;;
+              failure) printf '❌ failure' ;;
+              cancelled) printf '❌ cancelled' ;;
+              skipped) printf '⏭️ skipped' ;;
+              *) printf '❌ %s' "$1" ;;
+            esac
+          }
+
+          {
+            echo "## CI Summary"
+            echo
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| Format | ⏭️ skipped/not configured |"
+            echo "| Lint | $(status_icon '${{ steps.lint.outcome }}') |"
+            echo "| Typecheck | $(status_icon '${{ steps.typecheck.outcome }}') |"
+            echo "| Test | $(status_icon '${{ steps.test.outcome }}') |"
+            echo "| Browser Test | ⏭️ skipped/not configured |"
+            echo "| Build | ⏭️ release-only / skipped for PR CI |"
+            echo
+            echo "Job summary generated at run-time"
+          } >> "$GITHUB_STEP_SUMMARY"
