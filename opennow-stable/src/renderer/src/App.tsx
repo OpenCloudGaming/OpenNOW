@@ -422,9 +422,24 @@ function areStringArraysEqual(left: string[], right: string[]): boolean {
   return left.every((value, index) => value === right[index]);
 }
 
-function sortLibraryGames(games: GameInfo[], sortId: string): GameInfo[] {
+function sortLibraryGames(
+  games: GameInfo[],
+  sortId: string,
+  playtimeData: Record<string, { lastPlayedAt?: string | null; totalSeconds?: number; sessionCount?: number }>,
+): GameInfo[] {
   const copy = [...games];
   const compareTitle = (left: GameInfo, right: GameInfo) => left.title.localeCompare(right.title);
+  const playtimeLastPlayedMs = (gameId: string): number => {
+    const raw = playtimeData[gameId]?.lastPlayedAt;
+    if (!raw) return 0;
+    const ms = Date.parse(raw);
+    return Number.isFinite(ms) ? ms : 0;
+  };
+  const legacyLastPlayedMs = (game: GameInfo): number => {
+    if (!game.lastPlayed) return 0;
+    const ms = Date.parse(game.lastPlayed);
+    return Number.isFinite(ms) ? ms : 0;
+  };
   if (sortId === "z_to_a") {
     return copy.sort((left, right) => right.title.localeCompare(left.title));
   }
@@ -433,22 +448,26 @@ function sortLibraryGames(games: GameInfo[], sortId: string): GameInfo[] {
   }
   if (sortId === "last_played") {
     return copy.sort((left, right) => {
-      const leftTime = left.lastPlayed ? new Date(left.lastPlayed).getTime() : 0;
-      const rightTime = right.lastPlayed ? new Date(right.lastPlayed).getTime() : 0;
+      const leftTime = playtimeLastPlayedMs(left.id) || legacyLastPlayedMs(left);
+      const rightTime = playtimeLastPlayedMs(right.id) || legacyLastPlayedMs(right);
       if (leftTime === rightTime) return compareTitle(left, right);
       return rightTime - leftTime;
     });
   }
   if (sortId === "last_added") {
-    return copy.sort((left, right) => {
-      const leftTime = left.isInLibrary ? new Date(left.lastPlayed ?? 0).getTime() : 0;
-      const rightTime = right.isInLibrary ? new Date(right.lastPlayed ?? 0).getTime() : 0;
-      if (leftTime === rightTime) return compareTitle(left, right);
-      return rightTime - leftTime;
-    });
+    // Preserve server-provided order. We do not currently have a trustworthy local "addedAt" field.
+    return copy;
   }
   if (sortId === "most_popular") {
-    return copy.sort((left, right) => (right.membershipTierLabel ? 1 : 0) - (left.membershipTierLabel ? 1 : 0) || compareTitle(left, right));
+    return copy.sort((left, right) => {
+      const leftSeconds = Math.max(0, playtimeData[left.id]?.totalSeconds ?? 0);
+      const rightSeconds = Math.max(0, playtimeData[right.id]?.totalSeconds ?? 0);
+      if (leftSeconds !== rightSeconds) return rightSeconds - leftSeconds;
+      const leftSessions = Math.max(0, playtimeData[left.id]?.sessionCount ?? 0);
+      const rightSessions = Math.max(0, playtimeData[right.id]?.sessionCount ?? 0);
+      if (leftSessions !== rightSessions) return rightSessions - leftSessions;
+      return compareTitle(left, right);
+    });
   }
   return copy.sort(compareTitle);
 }
@@ -4393,8 +4412,12 @@ export function App(): JSX.Element {
   const filteredLibraryGames = useMemo(() => {
     const query = searchQuery.trim();
     const searched = query ? libraryGames.filter((game) => matchesGameSearch(game, query)) : libraryGames;
-    return sortLibraryGames(searched, catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId);
-  }, [libraryGames, searchQuery, catalogSelectedSortId]);
+    return sortLibraryGames(
+      searched,
+      catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId,
+      playtime,
+    );
+  }, [libraryGames, searchQuery, catalogSelectedSortId, playtime]);
 
   const activeSessionGameTitle = useMemo(() => {
     if (!navbarActiveSession) return null;
