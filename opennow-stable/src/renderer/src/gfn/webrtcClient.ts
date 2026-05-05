@@ -94,6 +94,10 @@ function hevcPreferredProfileId(colorQuality: ColorQuality): 1 | 2 {
   return colorQuality.startsWith("10bit") ? 2 : 1;
 }
 
+function isWindowsPlatform(): boolean {
+  return /Win/i.test(navigator.platform) || /Windows/i.test(navigator.userAgent);
+}
+
 function describeColorQuality(colorQuality: ColorQuality): string {
   switch (colorQuality) {
     case "8bit_420":
@@ -583,6 +587,7 @@ export class GfnWebRtcClient {
   private partiallyReliableInputChannel: RTCDataChannel | null = null;
   private controlChannel: RTCDataChannel | null = null;
   private nativeInputActive = false;
+  private nativeRendererCapturesInput = false;
   private audioContext: AudioContext | null = null;
   private audioSourceNode: MediaStreamAudioSourceNode | null = null;
   private audioGainNode: GainNode | null = null;
@@ -1117,6 +1122,7 @@ export class GfnWebRtcClient {
   private resetInputState(): void {
     this.inputReady = false;
     this.nativeInputActive = false;
+    this.nativeRendererCapturesInput = false;
     this.inputProtocolVersion = 2;
     this.hapticsAdvertised = false;
     this.inputEncoder.setProtocolVersion(2);
@@ -1865,6 +1871,7 @@ export class GfnWebRtcClient {
   public activateNativeInput(protocolVersion?: number, settings?: OfferSettings): void {
     this.cleanupPeerConnection();
     this.nativeInputActive = true;
+    this.nativeRendererCapturesInput = isWindowsPlatform();
     this.inputReady = true;
     const nativeProtocolVersion = GfnWebRtcClient.normalizeInputProtocolVersion(
       protocolVersion
@@ -1890,13 +1897,17 @@ export class GfnWebRtcClient {
       ? "partially_reliable"
       : "reliable";
     this.emitStats();
-    this.detachInputCapture();
+    this.installInputCapture(this.options.videoElement);
     this.inputPaused = false;
     // Restart the polling loop for Meta/Home button detection. Full gamepad
-    // state forwarding is suppressed inside pollGamepads() when nativeInputActive
-    // is true so the native renderer remains the sole source for controller input.
+    // state forwarding is suppressed only when the native renderer has OS-level
+    // input capture; macOS/Linux still forward controller state through Electron.
     this.setupGamepadPolling();
-    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller meta detection active, gamepad forwarding handled by native renderer.`);
+    if (this.nativeRendererCapturesInput) {
+      this.log(`Native renderer OS-level input capture active (protocol v${nativeProtocolVersion}); controller meta detection active, gamepad forwarding handled by native renderer.`);
+    } else {
+      this.log(`Native input transport active (protocol v${nativeProtocolVersion}); Electron input forwarding remains active for keyboard, mouse when pointer-locked, and controllers.`);
+    }
   }
 
   public setNativeInputProtocolVersion(protocolVersion: number): void {
@@ -2174,7 +2185,7 @@ export class GfnWebRtcClient {
         // Read and encode gamepad state
         // Skip forwarding to the stream if input is blocked (dashboard open) or
         // the native renderer is handling controller input directly.
-        if (streamInputBlocked || this.nativeInputActive) {
+        if (streamInputBlocked || this.nativeRendererCapturesInput) {
           continue;
         }
         const gamepadInput = this.readGamepadState(gamepad, i);
