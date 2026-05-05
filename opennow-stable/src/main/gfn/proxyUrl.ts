@@ -1,6 +1,14 @@
+import crypto from "node:crypto";
+
 const INVALID_PROXY_MESSAGE =
   "Invalid session proxy URL. Use http://host:port, https://host:port, socks4://host:port, or socks5://host:port.";
 const SUPPORTED_PROXY_PROTOCOLS = new Set(["http:", "https:", "socks4:", "socks5:"]);
+const CLOUDMATCH_PROXY_PARTITION_PREFIX = "opennow:gfn-session-proxy";
+
+export function sessionProxyPartitionForUrl(normalizedProxyUrl: string): string {
+  const hash = crypto.createHash("sha256").update(normalizedProxyUrl).digest("hex").slice(0, 32);
+  return `${CLOUDMATCH_PROXY_PARTITION_PREFIX}:${hash}`;
+}
 
 export function normalizeSessionProxyUrl(raw?: string): string | null {
   const trimmed = raw?.trim() ?? "";

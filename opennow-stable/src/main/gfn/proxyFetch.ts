@@ -1,8 +1,6 @@
 import { session as electronSession } from "electron";
 
-import { normalizeSessionProxyUrl } from "./proxyUrl";
-
-const CLOUDMATCH_PROXY_PARTITION = "opennow:gfn-session-proxy";
+import { normalizeSessionProxyUrl, sessionProxyPartitionForUrl } from "./proxyUrl";
 
 type ElectronSessionWithFetch = Electron.Session & {
   fetch?: typeof fetch;
@@ -18,7 +16,7 @@ export async function fetchWithOptionalProxy(
     return fetch(input, init);
   }
 
-  const proxySession = electronSession.fromPartition(CLOUDMATCH_PROXY_PARTITION, { cache: false }) as ElectronSessionWithFetch;
+  const proxySession = electronSession.fromPartition(sessionProxyPartitionForUrl(normalizedProxyUrl), { cache: false }) as ElectronSessionWithFetch;
   await proxySession.setProxy({ proxyRules: normalizedProxyUrl });
 
   if (typeof proxySession.fetch === "function") {
