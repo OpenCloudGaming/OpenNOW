@@ -146,6 +146,8 @@ export interface Settings {
   encoderPreference: VideoAccelerationPreference;
   colorQuality: ColorQuality;
   region: string;
+  sessionProxyEnabled: boolean;
+  sessionProxyUrl: string;
   clipboardPaste: boolean;
   mouseSensitivity: number;
   mouseAcceleration: number;
@@ -497,6 +499,7 @@ export interface SessionCreateRequest {
   existingSessionStrategy?: ExistingSessionStrategy;
   zone: string;
   settings: StreamSettings;
+  proxyUrl?: string;
 }
 
 export interface SessionPollRequest {
@@ -507,6 +510,7 @@ export interface SessionPollRequest {
   sessionId: string;
   clientId?: string;
   deviceId?: string;
+  proxyUrl?: string;
 }
 
 export interface SessionStopRequest {

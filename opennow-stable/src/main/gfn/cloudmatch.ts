@@ -30,6 +30,7 @@ import {
 
 import type { CloudMatchRequest, CloudMatchResponse, GetSessionsResponse } from "./types";
 import { SessionError } from "./errorCodes";
+import { fetchWithOptionalProxy } from "./proxyFetch";
 
 const GFN_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
@@ -956,11 +957,11 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   const keyboardLayout = resolveGfnKeyboardLayout(input.settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);
   const languageCode = input.settings.gameLanguage ?? "en_US";
   const url = `${base}/v2/session?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`;
-  const response = await fetch(url, {
+  const response = await fetchWithOptionalProxy(url, {
     method: "POST",
     headers: requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: true }),
     body: JSON.stringify(body),
-  });
+  }, input.proxyUrl);
 
   const text = await response.text();
   if (!response.ok) {
@@ -982,13 +983,15 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   const deviceId = input.deviceId ?? crypto.randomUUID();
 
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
+  const baseHost = new URL(base).hostname;
+  const pollProxyUrl = isZoneHostname(baseHost) ? input.proxyUrl : undefined;
   const url = `${base}/v2/session/${input.sessionId}`;
   // Polling should NOT include Origin/Referer headers (matches claimSession polling pattern)
   const headers = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
-  const response = await fetch(url, {
+  const response = await fetchWithOptionalProxy(url, {
     method: "GET",
     headers,
-  });
+  }, pollProxyUrl);
 
   const text = await response.text();
   if (!response.ok) {
@@ -996,7 +999,6 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   }
 
   const payload = JSON.parse(text) as CloudMatchResponse;
-  const baseHost = new URL(base).hostname;
 
   // Match Rust behavior: if the poll was routed through the zone load balancer
   // and the response now contains a real server IP in connectionInfo, re-poll
@@ -1019,6 +1021,7 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
     const directBase = `https://${realServerIp}`;
     const directUrl = `${directBase}/v2/session/${input.sessionId}`;
     try {
+      // The ready-session direct real-IP re-poll intentionally bypasses the session proxy.
       const directResponse = await fetch(directUrl, {
         method: "GET",
         headers,
