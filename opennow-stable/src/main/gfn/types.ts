@@ -56,7 +56,6 @@ export interface CloudMatchRequest {
       enabledL4S: boolean;
       trueHdr: boolean;
       mouseMovementFlags: number;
-      trueHdr: boolean;
       supportedHidDevices: number;
       profile: number;
       fallbackToLogicalResolution: boolean;

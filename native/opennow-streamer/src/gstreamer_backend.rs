@@ -7,11 +7,10 @@ use crate::input::{
     MouseWheelPayload, GAMEPAD_MAX_CONTROLLERS, PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
 };
 use crate::protocol::{
-    missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeRenderRect,
-    NativeQueueMode, NativeRenderSurface, NativeStreamerCapabilities,
-    NativeStreamerSessionContext, NativeVideoBackendCapability, NativeVideoCodecCapability,
-    Response, SendAnswerRequest, StreamSettings, VideoStallEvent, VideoTransitionEvent,
-    PROTOCOL_VERSION,
+    missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeQueueMode, NativeRenderRect,
+    NativeRenderSurface, NativeStreamerCapabilities, NativeStreamerSessionContext,
+    NativeVideoBackendCapability, NativeVideoCodecCapability, Response, SendAnswerRequest,
+    StreamSettings, VideoStallEvent, VideoTransitionEvent, PROTOCOL_VERSION,
 };
 use crate::sdp::{
     build_nvst_sdp_for_answer, extract_negotiated_video_codec, munge_answer_sdp, IceCredentials,
@@ -545,8 +544,7 @@ impl VideoLivenessState {
 
     fn record_present_pacing_change(&self) {
         if let Ok(mut telemetry) = self.transition_telemetry.lock() {
-            telemetry.present_pacing_changes =
-                telemetry.present_pacing_changes.saturating_add(1);
+            telemetry.present_pacing_changes = telemetry.present_pacing_changes.saturating_add(1);
         }
     }
 
@@ -591,8 +589,7 @@ impl VideoLivenessState {
         let requested_fps = self.requested_fps();
         let queue_mode = self.queue_mode();
         let render_gap_ms = age_since_ms(self.now_ms(), self.last_sink_ms.load(Ordering::Relaxed));
-        let high_fps_risk = requested_fps
-            .is_some_and(|fps| fps >= 240)
+        let high_fps_risk = requested_fps.is_some_and(|fps| fps >= 240)
             && new_framerate
                 .as_deref()
                 .is_some_and(|value| value != format!("{}/1", requested_fps.unwrap_or_default()));
@@ -626,7 +623,11 @@ impl VideoLivenessState {
             telemetry.last_transition = Some(snapshot.clone());
         }
 
-        send_log(event_sender, "warn", format!("Native video transition: {summary}"));
+        send_log(
+            event_sender,
+            "warn",
+            format!("Native video transition: {summary}"),
+        );
         if let Some(event_sender) = event_sender {
             let _ = event_sender.send(Event::VideoTransition {
                 transition: snapshot.to_event(),
@@ -3907,11 +3908,7 @@ fn run_video_liveness_watchdog(
             VideoStallAction::PartialFlush { attempt, stall_ms } => {
                 if transition_stall && state.transition_flush_escalation_enabled() {
                     request_upstream_key_unit(&state, &event_sender);
-                    perform_transition_flush(
-                        &state,
-                        &event_sender,
-                        TransitionFlushKind::Partial,
-                    );
+                    perform_transition_flush(&state, &event_sender, TransitionFlushKind::Partial);
                 }
                 emit_video_stall_event(
                     &event_sender,
@@ -3926,11 +3923,7 @@ fn run_video_liveness_watchdog(
             VideoStallAction::CompleteFlush { attempt, stall_ms } => {
                 if transition_stall && state.transition_flush_escalation_enabled() {
                     request_upstream_key_unit(&state, &event_sender);
-                    perform_transition_flush(
-                        &state,
-                        &event_sender,
-                        TransitionFlushKind::Complete,
-                    );
+                    perform_transition_flush(&state, &event_sender, TransitionFlushKind::Complete);
                 }
                 emit_video_stall_event(
                     &event_sender,
@@ -4080,11 +4073,7 @@ fn maybe_recover_video_startup(
             ),
         );
         request_upstream_key_unit(state, event_sender);
-        restart_pipeline_for_video_recovery(
-            pipeline,
-            event_sender,
-            "video startup recovery",
-        );
+        restart_pipeline_for_video_recovery(pipeline, event_sender, "video startup recovery");
     }
 }
 
@@ -5373,9 +5362,7 @@ fn link_rtp_video_pad(
         if let Some(parser) = specs
             .iter()
             .zip(elements.iter())
-            .find_map(|(spec, element)| {
-                (spec.role == RtpVideoChainRole::Parser).then_some(element)
-            })
+            .find_map(|(spec, element)| (spec.role == RtpVideoChainRole::Parser).then_some(element))
         {
             watch_video_caps_transitions(parser, "parser", event_sender, video_liveness.clone());
         }
@@ -5389,7 +5376,12 @@ fn link_rtp_video_pad(
             watch_video_caps_transitions(decoder, "decoder", event_sender, video_liveness.clone());
         }
         render_state.set_video_sink(sink.clone(), event_sender);
-        install_present_limiter(sink, present_max_fps, event_sender, Some(video_liveness.clone()));
+        install_present_limiter(
+            sink,
+            present_max_fps,
+            event_sender,
+            Some(video_liveness.clone()),
+        );
         watch_video_sink_caps_transitions(sink, event_sender, Some(video_liveness.clone()));
         watch_first_sink_buffer(sink, "video", event_sender, streaming_reported);
         watch_video_sink_rate(sink, event_sender, Some(video_liveness.clone()));

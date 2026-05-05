@@ -29,9 +29,9 @@ import type {
   NativeStreamStats,
   PrintedWasteQueueData,
   PrintedWasteServerMapping,
-  buildNativeStreamerSessionContext,
 } from "@shared/gfn";
 import {
+  buildNativeStreamerSessionContext,
   DEFAULT_KEYBOARD_LAYOUT,
   getDefaultStreamPreferences,
   USER_FACING_VIDEO_CODEC_OPTIONS,

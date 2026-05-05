@@ -42,10 +42,13 @@ pub struct SessionInfo {
     pub server_ip: String,
     #[serde(default)]
     pub media_connection_info: Option<MediaConnectionInfo>,
+    #[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]
     #[serde(default)]
     pub negotiated_stream_profile: Option<NegotiatedStreamProfile>,
+    #[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]
     #[serde(default)]
     pub requested_streaming_features: Option<StreamingFeatures>,
+    #[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]
     #[serde(default)]
     pub finalized_streaming_features: Option<StreamingFeatures>,
 }
@@ -68,6 +71,7 @@ pub struct StreamSettings {
     #[serde(default)]
     #[allow(dead_code)]
     pub enable_cloud_gsync: bool,
+    #[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]
     #[serde(default)]
     pub native_transition_diagnostics: Option<NativeTransitionDiagnosticsSettings>,
 }
@@ -89,6 +93,7 @@ pub struct StreamingFeatures {
     pub true_hdr: Option<bool>,
 }
 
+#[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]
 impl StreamingFeatures {
     pub fn summary(&self) -> String {
         let mut parts = Vec::new();
@@ -139,6 +144,7 @@ pub enum NativeQueueMode {
     Vrr,
 }
 
+#[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]
 impl NativeQueueMode {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -481,9 +487,7 @@ pub enum Event {
     #[serde(rename = "video-stall")]
     VideoStall(VideoStallEvent),
     #[serde(rename = "video-transition")]
-    VideoTransition {
-        transition: VideoTransitionEvent,
-    },
+    VideoTransition { transition: VideoTransitionEvent },
     #[serde(rename = "stats")]
     Stats { stats: NativeStatsEvent },
     #[serde(rename = "error")]
@@ -581,8 +585,12 @@ mod tests {
                 transition_type: "sink-caps-change".to_owned(),
                 source: "sink".to_owned(),
                 at_ms: 3_100,
-                old_caps: Some("video/x-raw(memory:D3D11Memory),framerate=(fraction)240/1".to_owned()),
-                new_caps: Some("video/x-raw(memory:D3D11Memory),framerate=(fraction)60/1".to_owned()),
+                old_caps: Some(
+                    "video/x-raw(memory:D3D11Memory),framerate=(fraction)240/1".to_owned(),
+                ),
+                new_caps: Some(
+                    "video/x-raw(memory:D3D11Memory),framerate=(fraction)60/1".to_owned(),
+                ),
                 old_framerate: Some("240/1".to_owned()),
                 new_framerate: Some("60/1".to_owned()),
                 old_memory_mode: Some("D3D11Memory".to_owned()),
@@ -592,7 +600,8 @@ mod tests {
                 caps_framerate: Some("60/1".to_owned()),
                 high_fps_risk: true,
                 queue_mode: "adaptive".to_owned(),
-                summary: "sink caps moved from 240/1 to 60/1 while 240 FPS was requested".to_owned(),
+                summary: "sink caps moved from 240/1 to 60/1 while 240 FPS was requested"
+                    .to_owned(),
             },
         };
         let value = serde_json::to_value(event).expect("serializes");

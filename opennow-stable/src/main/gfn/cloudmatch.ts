@@ -890,7 +890,7 @@ function toColorQuality(bitDepth?: number, chromaFormat?: number): ColorQuality 
 
 function normalizeStreamingFeatures(
   features:
-    | CloudMatchResponse["session"]["sessionRequestData"]["requestedStreamingFeatures"]
+    | NonNullable<CloudMatchResponse["session"]["sessionRequestData"]>["requestedStreamingFeatures"]
     | CloudMatchResponse["session"]["finalizedStreamingFeatures"]
     | undefined,
 ): StreamingFeatures | undefined {
