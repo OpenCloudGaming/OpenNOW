@@ -1,6 +1,6 @@
 import { app } from "electron";
 import { randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, resolve, join, delimiter, sep } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
@@ -58,6 +58,7 @@ interface PendingRequest {
 }
 
 const HELLO_TIMEOUT_MS = 10000;
+const BUNDLED_GSTREAMER_HELLO_TIMEOUT_MS = 30000;
 const CONTROL_TIMEOUT_MS = 8000;
 const SESSION_START_TIMEOUT_MS = 45000;
 const SURFACE_UPDATE_TIMEOUT_MS = 15000;
@@ -184,6 +185,10 @@ function configureBundledGstreamerRuntime(
     env.GIO_MODULE_DIR = gioModulesDir;
     env.GIO_EXTRA_MODULES = gioModulesDir;
   }
+  const registryDir = join(app.getPath("userData"), "native-streamer", "gstreamer");
+  const registryPath = join(registryDir, `${nativeStreamerPlatformKey()}-registry.bin`);
+  mkdirSync(registryDir, { recursive: true });
+  env.GST_REGISTRY = registryPath;
   if (process.platform === "linux") {
     if (isExistingDirectory(libDir)) prependEnvPath(env, "LD_LIBRARY_PATH", libDir);
     if (isExistingDirectory(binDir)) prependEnvPath(env, "LD_LIBRARY_PATH", binDir);
@@ -316,6 +321,7 @@ function isEvent(message: NativeStreamerMessage): message is NativeStreamerEvent
 
 export class NativeStreamerManager {
   private child: ChildProcessWithoutNullStreams | null = null;
+  private startupPromise: Promise<void> | null = null;
   private stdoutBuffer = "";
   private stderrTail: string[] = [];
   private gstreamerRuntime: NativeGstreamerRuntimeStatus | null = null;
@@ -588,12 +594,61 @@ export class NativeStreamerManager {
   }
 
   private async ensureProcess(): Promise<void> {
-    if (this.child) {
+    if (this.child && this.capabilities) {
       return;
     }
 
-    const executablePath = this.resolveExecutablePath();
-    const backendPreference = this.options.getBackendPreference();
+    if (this.startupPromise) {
+      await this.startupPromise;
+      return;
+    }
+
+    if (this.child && !this.capabilities) {
+      console.warn("[NativeStreamer] Restarting native streamer after an incomplete startup handshake.");
+      this.rejectPending(new Error("Native streamer startup handshake did not complete."));
+      this.terminateProcess();
+      this.stdoutBuffer = "";
+      this.stderrTail = [];
+    }
+
+    const startupPromise = (async () => {
+      const backendPreference = this.options.getBackendPreference();
+      let lastError: Error | null = null;
+
+      for (const executablePath of this.resolveExecutableCandidates()) {
+        try {
+          await this.startProcess(executablePath, backendPreference);
+          return;
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          console.warn(
+            `[NativeStreamer] Failed to initialize ${executablePath}: ${formatError(lastError)}`,
+          );
+          this.rejectPending(lastError);
+          this.terminateProcess();
+          this.stdoutBuffer = "";
+          this.stderrTail = [];
+          this.capabilities = null;
+        }
+      }
+
+      throw lastError ?? new Error("Native streamer could not be initialized from any candidate path.");
+    })();
+
+    this.startupPromise = startupPromise;
+    try {
+      await startupPromise;
+    } finally {
+      if (this.startupPromise === startupPromise) {
+        this.startupPromise = null;
+      }
+    }
+  }
+
+  private async startProcess(
+    executablePath: string,
+    backendPreference: NativeStreamerBackendPreference,
+  ): Promise<void> {
     console.log("[NativeStreamer] Starting:", executablePath);
     console.log("[NativeStreamer] Backend preference:", backendPreference);
 
@@ -652,10 +707,11 @@ export class NativeStreamerManager {
       this.handleProcessExit(reason);
     });
 
+    const helloTimeoutMs = runtimeStatus.bundled ? BUNDLED_GSTREAMER_HELLO_TIMEOUT_MS : HELLO_TIMEOUT_MS;
     const response = await this.request({
       type: "hello",
       protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
-    }, HELLO_TIMEOUT_MS);
+    }, helloTimeoutMs);
 
     if (response.type !== "ready") {
       throw new Error(`Native streamer returned ${response.type} instead of ready.`);
@@ -686,36 +742,46 @@ export class NativeStreamerManager {
     );
   }
 
-  private resolveExecutablePath(): string {
+  private resolveExecutableCandidates(): string[] {
     const exeName = nativeStreamerExecutableName();
     const platformKey = nativeStreamerPlatformKey();
     const bundledCandidates = [
       join(process.resourcesPath, "native", "opennow-streamer", platformKey, exeName),
       join(process.resourcesPath, "native", "opennow-streamer", exeName),
     ];
-    if (app.isPackaged) {
-      const bundled = bundledCandidates.find((candidate) => isExistingFile(candidate));
-      if (bundled) {
-        return bundled;
+    const candidates: string[] = [];
+    const addCandidate = (candidate: string | undefined): void => {
+      if (!candidate || !isExistingFile(candidate) || candidates.includes(candidate)) {
+        return;
       }
+      candidates.push(candidate);
+    };
+
+    bundledCandidates.forEach(addCandidate);
+    if (app.isPackaged && candidates.length > 0) {
+      const packagedBundledCandidates = candidates.filter((candidate) =>
+        hasBundledRuntimeNextToExecutable(candidate),
+      );
+      return packagedBundledCandidates.length > 0 ? packagedBundledCandidates : candidates;
     }
 
     const configuredPath = this.options.getExecutablePathOverride().trim();
     if (configuredPath) {
       if (isExistingFile(configuredPath)) {
         if (!this.shouldIgnorePackagedExecutableOverride(configuredPath)) {
-          return configuredPath;
+          addCandidate(configuredPath);
+        } else {
+          console.warn(
+            "[NativeStreamer] Ignoring packaged executable override without bundled runtime:",
+            configuredPath,
+          );
         }
-        console.warn(
-          "[NativeStreamer] Ignoring packaged executable override without bundled runtime:",
-          configuredPath,
-        );
       } else {
         throw new Error(`Configured native streamer executable was not found: ${configuredPath}`);
       }
     }
 
-    const candidates = [
+    [
       process.env.OPENNOW_NATIVE_STREAMER,
       ...bundledCandidates,
       resolve(this.options.mainDir, "../../../native/opennow-streamer/bin", platformKey, exeName),
@@ -734,11 +800,12 @@ export class NativeStreamerManager {
       resolve(app.getAppPath(), "../native/opennow-streamer/target/release", exeName),
       resolve(app.getAppPath(), "../native/opennow-streamer/target/debug", platformKey, exeName),
       resolve(app.getAppPath(), "../native/opennow-streamer/target/debug", exeName),
-    ].filter((candidate): candidate is string => Boolean(candidate));
+    ]
+      .filter((candidate): candidate is string => Boolean(candidate))
+      .forEach(addCandidate);
 
-    const found = candidates.find((candidate) => isExistingFile(candidate));
-    if (found) {
-      return found;
+    if (candidates.length > 0) {
+      return candidates;
     }
 
     throw new Error(`Native streamer binary not found. Checked: ${candidates.join(", ")}`);

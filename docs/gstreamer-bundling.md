@@ -6,7 +6,7 @@ OpenNOW's native streamer is dynamically linked against GStreamer. Packaged buil
 
 | Platform | Release strategy | Status |
 | --- | --- | --- |
-| Windows x64 | Bundle the official MSVC runtime privately next to `opennow-streamer.exe` at `native/opennow-streamer/win32-x64/gstreamer`. | Implemented in CI/release. |
+| Windows x64 | Bundle the official MSVC runtime privately inside the packaged app's platform bundle at `native/opennow-streamer/win32-x64/gstreamer`, sourced from the `bin/win32-x64` staging directory during build. | Implemented in CI/release. |
 | Windows arm64 | No official upstream arm64 runtime path is enabled yet. | Native streamer packaging disabled; web fallback remains. |
 | macOS x64/arm64 | Install the official universal runtime/devel `.pkg` files, copy the framework version root into `native/opennow-streamer/darwin-*/gstreamer`, and relocate Mach-O load commands to the private runtime. | Implemented in CI/release. |
 | Linux deb | Use distro GStreamer packages. The `.deb` declares Debian/Ubuntu runtime dependencies. | Implemented. |
@@ -14,21 +14,24 @@ OpenNOW's native streamer is dynamically linked against GStreamer. Packaged buil
 
 ## Private runtime layout
 
-`npm run native:build` copies the Rust streamer into both `native/opennow-streamer/bin/opennow-streamer` and `native/opennow-streamer/bin/<platformKey>/opennow-streamer`. Electron packages `native/opennow-streamer/bin` via `extraResources`, so runtime bundles live next to the platform-specific binary:
+`npm run native:build` copies the Rust streamer into both `native/opennow-streamer/bin/opennow-streamer` and `native/opennow-streamer/bin/<platformKey>/opennow-streamer`. Electron packages `native/opennow-streamer/bin` via `extraResources`, and packaged builds prefer the platform-specific bundle so the installed app keeps the verified layout that `npm run native:build` tested:
 
 ```text
-native/opennow-streamer/bin/<platformKey>/
-  opennow-streamer(.exe)
-  gstreamer/
-    bin/
-    lib/
-    libexec/
-    share/
-    etc/
-    OPENNOW-GSTREAMER-RUNTIME.txt
+resources/native/opennow-streamer/
+  opennow-streamer(.exe)  (staging/dev copy)
+  <platformKey>/
+    opennow-streamer(.exe)
+    *.dll  (Windows loader/runtime helpers)
+    gstreamer/
+      bin/
+      lib/
+      libexec/
+      share/
+      etc/
+      OPENNOW-GSTREAMER-RUNTIME.txt
 ```
 
-The Electron main process detects a sibling `gstreamer` directory next to the selected streamer executable, including custom executable overrides, and injects runtime paths only into the native streamer child process. It does not mutate the Electron process environment globally.
+The Electron main process prefers the packaged `<platformKey>/opennow-streamer(.exe)` path when it exists, detects a sibling `gstreamer` directory next to the selected streamer executable, and injects runtime paths only into the native streamer child process. It does not mutate the Electron process environment globally.
 
 ## Windows
 
