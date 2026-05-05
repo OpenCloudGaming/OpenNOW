@@ -63,6 +63,9 @@ function copyPathIfPresent(source, destination) {
     cpSync(source, destination, {
       recursive: true,
       force: true,
+      // Follow symlinks to copy actual files instead of broken links
+      // (Homebrew GStreamer installs some plugins as symlinks).
+      dereference: true,
       filter: (entry) => {
         const lower = entry.toLowerCase();
         return !lower.endsWith(".pdb")
