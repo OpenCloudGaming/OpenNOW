@@ -6,6 +6,7 @@ export type StreamClientMode = "web" | "native";
 export type NativeStreamerBackend = "stub" | "gstreamer";
 export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
 export type NativeStreamerFeatureMode = "auto" | "disabled" | "forced";
+export type NativeVideoBackendPreference = "auto" | "d3d11" | "d3d12";
 export type NativeQueueMode = "auto" | "fixed" | "adaptive" | "vrr";
 
 export function nativeStreamerFeatureModeToEnvValue(mode: NativeStreamerFeatureMode): "auto" | "0" | "1" {
@@ -235,6 +236,7 @@ export interface Settings {
   maxBitrateMbps: number;
   streamClientMode: StreamClientMode;
   nativeStreamerBackend: NativeStreamerBackendPreference;
+  nativeVideoBackend: NativeVideoBackendPreference;
   nativeStreamerExecutablePath: string;
   nativeCloudGsyncMode: NativeStreamerFeatureMode;
   nativeD3dFullscreenMode: NativeStreamerFeatureMode;

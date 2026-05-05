@@ -11,6 +11,7 @@ import type {
   KeyboardLayout,
   StreamClientMode,
   NativeStreamerBackendPreference,
+  NativeVideoBackendPreference,
   NativeStreamerFeatureMode,
   NativeTransitionDiagnostics,
   ControllerThemeRgb,
@@ -33,6 +34,8 @@ export interface Settings {
   streamClientMode: StreamClientMode;
   /** Native streamer backend preference for new native sessions */
   nativeStreamerBackend: NativeStreamerBackendPreference;
+  /** Native GStreamer video backend preference for Windows DirectX paths */
+  nativeVideoBackend: NativeVideoBackendPreference;
   /** Optional path to a custom native streamer executable */
   nativeStreamerExecutablePath: string;
   /** Native-only override for Cloud G-Sync / VRR display detection */
@@ -142,6 +145,7 @@ const LEGACY_ANTI_AFK_SHORTCUTS = new Set(["META+SHIFT+F10", "CMD+SHIFT+F10", "C
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
 const CONTROLLER_THEME_STYLES_SET = new Set<ControllerThemeStyle>(["aurora", "nebula", "grid", "minimal", "pulse"]);
+const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>(["auto", "d3d11", "d3d12"]);
 
 function clampThemeByte(value: unknown): number {
   const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : NaN;
@@ -163,6 +167,12 @@ function normalizeControllerThemeStyle(raw: unknown): ControllerThemeStyle {
   return CONTROLLER_THEME_STYLES_SET.has(raw as ControllerThemeStyle) ? (raw as ControllerThemeStyle) : "aurora";
 }
 
+function normalizeNativeVideoBackendPreference(raw: unknown): NativeVideoBackendPreference {
+  return NATIVE_VIDEO_BACKEND_PREFERENCES.has(raw as NativeVideoBackendPreference)
+    ? (raw as NativeVideoBackendPreference)
+    : "auto";
+}
+
 const DEFAULT_SETTINGS: Settings = {
   resolution: "1920x1080",
   aspectRatio: "16:9",
@@ -171,6 +181,7 @@ const DEFAULT_SETTINGS: Settings = {
   maxBitrateMbps: 75,
   streamClientMode: "web",
   nativeStreamerBackend: "gstreamer",
+  nativeVideoBackend: "auto",
   nativeStreamerExecutablePath: "",
   nativeCloudGsyncMode: "auto",
   nativeD3dFullscreenMode: "auto",
@@ -306,6 +317,11 @@ export class SettingsManager {
     }
     if (!settings.nativeExternalRenderer) {
       settings.nativeExternalRenderer = true;
+      migrated = true;
+    }
+    const nativeVideoBackend = normalizeNativeVideoBackendPreference(settings.nativeVideoBackend);
+    if (settings.nativeVideoBackend !== nativeVideoBackend) {
+      settings.nativeVideoBackend = nativeVideoBackend;
       migrated = true;
     }
 

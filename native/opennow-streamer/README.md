@@ -15,6 +15,8 @@ Incoming RTP video is linked through an explicit low-latency decoder path when t
 
 Set `OPENNOW_NATIVE_VIDEO_API` to `d3d12`, `d3d11`, `videotoolbox`, `vaapi`, `v4l2`, or `software` to force one path for diagnostics. The streamer logs the selected backend, decoder, renderer, and memory mode at stream startup.
 
+When D3D11 is forced for a high-FPS stream above the display refresh rate, the native streamer automatically limits frames before the D3D11 sink so DXGI presentation cannot backpressure the decode pipeline and accumulate stale video. Set `OPENNOW_NATIVE_PRESENT_MAX_FPS=0` to disable that diagnostic limiter, or set a numeric value to force a specific cap.
+
 Native OS-level input capture is currently implemented on Windows. On macOS, Linux, and Raspberry Pi, the native streamer keeps the input data channels active and Electron input forwarding remains the supported fallback.
 
 Backend selection is controlled by OpenNOW settings and forwarded to the process with `OPENNOW_NATIVE_STREAMER_BACKEND`. Valid values are `stub` and, when the crate is built with `--features gstreamer`, `gstreamer`. Leaving the setting on auto omits the environment variable so the binary can choose the safest compiled default. If the requested backend is unavailable, the `ready` response includes `requestedBackend` and `fallbackReason` so Electron can fail early and fall back to the web streamer with a specific message.

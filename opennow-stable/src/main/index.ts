@@ -785,6 +785,7 @@ function getNativeStreamerManager(): NativeStreamerManager {
   nativeStreamerManager ??= new NativeStreamerManager({
     mainDir: __dirname,
     getBackendPreference: () => "gstreamer",
+    getVideoBackendPreference: () => settingsManager?.get("nativeVideoBackend") ?? "auto",
     getExecutablePathOverride: () => settingsManager?.get("nativeStreamerExecutablePath") ?? "",
     getCloudGsyncMode: () => settingsManager?.get("nativeCloudGsyncMode") ?? "auto",
     getD3dFullscreenMode: () => settingsManager?.get("nativeD3dFullscreenMode") ?? "auto",
@@ -1967,6 +1968,13 @@ function registerIpcHandlers(): void {
         );
         nativeStreamerContext = null;
         nativeStreamerFallbackSessionId = null;
+      }
+      if (key === "nativeVideoBackend") {
+        if (nativeStreamerManager?.hasActiveSession()) {
+          console.log("[NativeStreamer] Native video backend changed; active session will keep its current backend until the next native streamer restart.");
+        } else {
+          void nativeStreamerManager?.stop("native video backend changed");
+        }
       }
       if (key === "maxBitrateMbps") {
         updateNativeStreamerBitrateSetting(value);

@@ -982,6 +982,7 @@ export function App(): JSX.Element {
     maxBitrateMbps: 75,
     streamClientMode: "web",
     nativeStreamerBackend: "gstreamer",
+    nativeVideoBackend: "auto",
     nativeStreamerExecutablePath: "",
     nativeCloudGsyncMode: "auto",
     nativeD3dFullscreenMode: "auto",

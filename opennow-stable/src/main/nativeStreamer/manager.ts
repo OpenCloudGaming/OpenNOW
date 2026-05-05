@@ -11,6 +11,7 @@ import {
   type MainToRendererSignalingEvent,
   type NativeStreamerBackendPreference,
   type NativeStreamerFeatureMode,
+  type NativeVideoBackendPreference,
   type NativeStreamerStatus,
   type NativeGstreamerRuntimeStatus,
   type NativeGstreamerInstallInstruction,
@@ -45,6 +46,7 @@ interface NativeStreamerCallbacks {
 interface NativeStreamerManagerOptions extends NativeStreamerCallbacks {
   mainDir: string;
   getBackendPreference(): NativeStreamerBackendPreference;
+  getVideoBackendPreference(): NativeVideoBackendPreference;
   getExecutablePathOverride(): string;
   getCloudGsyncMode(): NativeStreamerFeatureMode;
   getD3dFullscreenMode(): NativeStreamerFeatureMode;
@@ -277,6 +279,7 @@ function formatVideoCodec(codec: string): string {
 
 function resolveActiveVideoBackend(
   videoBackends: NativeVideoBackendCapability[],
+  preferredBackend: NativeVideoBackendPreference = "auto",
 ): NativeVideoBackendCapability | undefined {
   const currentPlatform = process.platform === "win32"
     ? "windows"
@@ -285,6 +288,11 @@ function resolveActiveVideoBackend(
       : process.platform === "linux"
         ? "linux"
         : "other";
+
+  if (preferredBackend !== "auto") {
+    const preferred = videoBackends.find((candidate) => candidate.available && candidate.backend === preferredBackend);
+    if (preferred) return preferred;
+  }
 
   return videoBackends.find((candidate) => candidate.available && candidate.platform === currentPlatform)
     ?? videoBackends.find((candidate) => candidate.available && candidate.platform === "cross-platform")
@@ -341,6 +349,10 @@ export class NativeStreamerManager {
 
   isRunning(): boolean {
     return this.child !== null;
+  }
+
+  hasActiveSession(): boolean {
+    return this.activeSessionId !== null;
   }
 
   async handleOffer(sdp: string, context: NativeStreamerSessionContext): Promise<void> {
@@ -422,7 +434,10 @@ export class NativeStreamerManager {
       const backend = this.capabilities?.backend;
       const gstreamerAvailable = backend === "gstreamer" && this.capabilities?.supportsOfferAnswer === true;
       const videoBackends = this.capabilities?.videoBackends ?? [];
-      const activeVideoBackend = resolveActiveVideoBackend(videoBackends);
+      const activeVideoBackend = resolveActiveVideoBackend(
+        videoBackends,
+        this.options.getVideoBackendPreference(),
+      );
       const codecSummary = summarizeCodecs(activeVideoBackend);
       const zeroCopySummary = summarizeZeroCopy(activeVideoBackend);
       const runtime = this.gstreamerRuntime ?? {
@@ -651,11 +666,18 @@ export class NativeStreamerManager {
   ): Promise<void> {
     console.log("[NativeStreamer] Starting:", executablePath);
     console.log("[NativeStreamer] Backend preference:", backendPreference);
+    const videoBackendPreference = this.options.getVideoBackendPreference();
+    console.log("[NativeStreamer] Video backend preference:", videoBackendPreference);
 
     const childEnv: NodeJS.ProcessEnv = {
       ...process.env,
       OPENNOW_NATIVE_STREAMER_PROTOCOL: String(NATIVE_STREAMER_PROTOCOL_VERSION),
     };
+    delete childEnv.OPENNOW_NATIVE_VIDEO_API;
+    delete childEnv.OPENNOW_NATIVE_VIDEO_BACKEND;
+    if (videoBackendPreference !== "auto") {
+      childEnv.OPENNOW_NATIVE_VIDEO_BACKEND = videoBackendPreference;
+    }
     if (process.platform === "win32") {
       childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER = this.options.getExternalRendererEnabled() ? "1" : "0";
     }

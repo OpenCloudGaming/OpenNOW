@@ -62,6 +62,7 @@ const NATIVE_VIDEO_BACKEND_ENV: &str = "OPENNOW_NATIVE_VIDEO_BACKEND";
 const NATIVE_ZERO_COPY_ENV: &str = "OPENNOW_NATIVE_ZERO_COPY";
 const NATIVE_PRESENT_MAX_FPS_ENV: &str = "OPENNOW_NATIVE_PRESENT_MAX_FPS";
 const NATIVE_D3D_FULLSCREEN_ENV: &str = "OPENNOW_NATIVE_D3D_FULLSCREEN";
+const PRESENT_LIMITER_AUTO_SENTINEL: u32 = u32::MAX;
 
 #[cfg(target_os = "windows")]
 static NATIVE_INPUT_STARTED_AT: OnceLock<Instant> = OnceLock::new();
@@ -4685,18 +4686,39 @@ fn resolve_present_max_fps(requested_fps: u32) -> u32 {
             return 0;
         }
         if value == "auto" {
-            return automatic_present_max_fps(requested_fps, primary_display_refresh_hz());
+            return PRESENT_LIMITER_AUTO_SENTINEL;
         }
         if let Ok(fps) = value.parse::<u32>() {
             return fps;
         }
     }
-    automatic_present_max_fps(requested_fps, primary_display_refresh_hz())
+    let _ = requested_fps;
+    PRESENT_LIMITER_AUTO_SENTINEL
 }
 
 fn automatic_present_max_fps(requested_fps: u32, display_hz: Option<u32>) -> u32 {
     display_hz
         .filter(|display_hz| *display_hz >= 30 && *display_hz < requested_fps)
+        .unwrap_or(0)
+}
+
+fn effective_present_max_fps(
+    configured_present_max_fps: u32,
+    requested_fps: Option<u32>,
+    video_api: RtpVideoApi,
+    display_hz: Option<u32>,
+) -> u32 {
+    if configured_present_max_fps != PRESENT_LIMITER_AUTO_SENTINEL {
+        return configured_present_max_fps;
+    }
+
+    if !matches!(video_api, RtpVideoApi::D3D11) {
+        return 0;
+    }
+
+    requested_fps
+        .filter(|fps| *fps > 0)
+        .map(|fps| automatic_present_max_fps(fps, display_hz))
         .unwrap_or(0)
 }
 
@@ -5420,6 +5442,30 @@ fn link_rtp_video_pad(
                 event_sender,
                 "info",
                 format_d3d12_selection_summary(requested_fps),
+            );
+        }
+        let configured_present_max_fps = present_max_fps.load(Ordering::SeqCst);
+        let effective_present_max_fps = effective_present_max_fps(
+            configured_present_max_fps,
+            requested_fps,
+            video_api,
+            primary_display_refresh_hz(),
+        );
+        present_max_fps.store(effective_present_max_fps, Ordering::SeqCst);
+        if effective_present_max_fps > 0 {
+            let reason = if configured_present_max_fps == PRESENT_LIMITER_AUTO_SENTINEL {
+                "auto-enabled for the D3D11 path to prevent display-rate present backpressure"
+                    .to_owned()
+            } else {
+                format!("configured by {NATIVE_PRESENT_MAX_FPS_ENV}")
+            };
+            send_log(
+                event_sender,
+                "info",
+                format!(
+                    "Native present limiter enabled at {effective_present_max_fps} fps for {} video path; reason: {reason}.",
+                    video_api.label()
+                ),
             );
         }
         if d3d_fullscreen_sink {
@@ -6509,7 +6555,7 @@ impl NativeStreamerBackend for GstreamerBackend {
         pipeline.set_present_max_fps(present_max_fps);
         pipeline.set_d3d_fullscreen_sink(d3d_fullscreen_sink);
         pipeline.configure_stats(&context, prepared.nvst_params.max_bitrate_kbps);
-        if present_max_fps > 0 {
+        if present_max_fps > 0 && present_max_fps != PRESENT_LIMITER_AUTO_SENTINEL {
             events.push(Event::Log {
                 level: "info",
                 message: format!(
@@ -6957,6 +7003,36 @@ mod tests {
         assert_eq!(automatic_present_max_fps(240, Some(240)), 0);
         assert_eq!(automatic_present_max_fps(240, Some(1)), 0);
         assert_eq!(automatic_present_max_fps(240, None), 0);
+    }
+
+    #[test]
+    fn automatic_present_limiter_only_targets_d3d11() {
+        assert_eq!(
+            effective_present_max_fps(
+                PRESENT_LIMITER_AUTO_SENTINEL,
+                Some(240),
+                RtpVideoApi::D3D11,
+                Some(165)
+            ),
+            165
+        );
+        assert_eq!(
+            effective_present_max_fps(
+                PRESENT_LIMITER_AUTO_SENTINEL,
+                Some(240),
+                RtpVideoApi::D3D12,
+                Some(165)
+            ),
+            0
+        );
+        assert_eq!(
+            effective_present_max_fps(144, Some(240), RtpVideoApi::D3D12, Some(165)),
+            144
+        );
+        assert_eq!(
+            effective_present_max_fps(0, Some(240), RtpVideoApi::D3D11, Some(165)),
+            0
+        );
     }
 
     #[test]

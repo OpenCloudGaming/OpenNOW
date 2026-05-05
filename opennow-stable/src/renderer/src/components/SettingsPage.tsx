@@ -19,6 +19,7 @@ import type {
     AppUpdaterState,
     NativeStreamerStatus,
     NativeVideoBackendCapability,
+    NativeVideoBackendPreference,
   } from "@shared/gfn";
 import {
   colorQualityRequiresHevc,
@@ -93,7 +94,7 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "cpu",
     "test codecs",
   ],
-  "native-streamer": ["native", "streamer", "gstreamer", "backend", "cloud gsync", "diagnostics"],
+  "native-streamer": ["native", "streamer", "gstreamer", "backend", "directx", "dx11", "dx12", "cloud gsync", "diagnostics"],
   game: ["game", "language", "keyboard layout", "store", "launch"],
   audio: ["audio", "microphone", "mic", "push to talk", "voice activity"],
   input: [
@@ -148,6 +149,12 @@ const allColorQualityOptions: { value: ColorQuality; label: string; description:
 ];
 
 const colorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [...allColorQualityOptions];
+
+const nativeVideoBackendOptions: { value: NativeVideoBackendPreference; label: string; description: string }[] = [
+  { value: "auto", label: "Auto", description: "Pick the default native path for the session" },
+  { value: "d3d12", label: "DirectX 12", description: "Use the D3D12 decoder and renderer" },
+  { value: "d3d11", label: "DirectX 11", description: "Use the D3D11 decoder and renderer" },
+];
 
 function formatNativeVideoBackendName(backend: string | undefined): string {
   switch (backend) {
@@ -2229,6 +2236,26 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     ? `${nativeStreamerStatus.codecSummary ?? "Codec support unknown"}. ${nativeStreamerStatus.zeroCopySummary ?? "Memory path unknown"}.`
                     : nativeStreamerStatus?.activeVideoBackend?.reason
                       ?? "OpenNOW will show the active hardware decode path after GStreamer is detected."}
+                </span>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <label className="settings-label">DirectX Backend</label>
+                <div className="settings-chip-row">
+                  {nativeVideoBackendOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={`settings-chip ${settings.nativeVideoBackend === option.value ? "active" : ""}`}
+                      onClick={() => handleChange("nativeVideoBackend", option.value)}
+                      title={option.description}
+                    >
+                      <span>{option.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <span className="settings-subtle-hint">
+                  Applies to the next native streamer process. Auto uses the fastest default path; choose DirectX 11 or DirectX 12 to force a specific Windows renderer.
                 </span>
               </div>
 
