@@ -30,6 +30,16 @@ export interface NativeStreamerInputPacket {
   partiallyReliable?: boolean;
 }
 
+export interface NativeStreamerRecordingStartRequest {
+  recordingId: string;
+  tempPath: string;
+  container: "matroska";
+}
+
+export interface NativeStreamerRecordingRequest {
+  recordingId: string;
+}
+
 export type NativeStreamerCommand =
   | {
       id: string;
@@ -66,6 +76,21 @@ export type NativeStreamerCommand =
       id: string;
       type: "bitrate";
       maxBitrateKbps: number;
+    }
+  | {
+      id: string;
+      type: "recording-start";
+      recording: NativeStreamerRecordingStartRequest;
+    }
+  | {
+      id: string;
+      type: "recording-stop";
+      recording: NativeStreamerRecordingRequest;
+    }
+  | {
+      id: string;
+      type: "recording-abort";
+      recording: NativeStreamerRecordingRequest;
     }
   | {
       id: string;

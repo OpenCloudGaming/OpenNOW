@@ -1152,6 +1152,8 @@ export interface RecordingEntry {
 
 export interface RecordingBeginRequest {
   mimeType: string;
+  backend?: "media-recorder" | "native-gstreamer";
+  container?: "mp4" | "webm" | "matroska";
 }
 
 export interface RecordingBeginResult {

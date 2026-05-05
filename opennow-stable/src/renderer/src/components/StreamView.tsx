@@ -687,6 +687,8 @@ export function StreamView({
   const [recordingShortcutError, setRecordingShortcutError] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingIdRef = useRef<string | null>(null);
+  const recordingBackendRef = useRef<"media-recorder" | "native-gstreamer" | null>(null);
+  const recordingStopInFlightRef = useRef(false);
   const recordingStartTimeRef = useRef<number>(0);
   const recordingTimerRef = useRef<number | undefined>(undefined);
   const thumbnailDataUrlRef = useRef<string | null>(null);
@@ -1125,12 +1127,60 @@ export function StreamView({
     setRecordingError(null);
 
     if (isRecording) {
+      if (recordingStopInFlightRef.current) return;
+      if (recordingBackendRef.current === "native-gstreamer") {
+        const id = recordingIdRef.current;
+        if (!id) return;
+        recordingStopInFlightRef.current = true;
+        window.clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = undefined;
+        const durationMs = Date.now() - recordingStartTimeRef.current;
+        try {
+          const entry = await window.openNow.finishRecording({ recordingId: id, durationMs, gameTitle });
+          setRecordings((prev) => [entry, ...prev].slice(0, 20));
+        } catch (err) {
+          console.error("[StreamView] Failed to finish native recording:", err);
+          setRecordingError("Native recording could not be saved.");
+        } finally {
+          recordingIdRef.current = null;
+          recordingBackendRef.current = null;
+          recordingStopInFlightRef.current = false;
+          thumbnailDataUrlRef.current = null;
+          setIsRecording(false);
+        }
+        return;
+      }
       mediaRecorderRef.current?.stop();
       return;
     }
 
     if (!recordingApiAvailable) {
       setRecordingError("Recording API unavailable. Restart OpenNOW to enable recording.");
+      return;
+    }
+
+    if (nativeRendererActive) {
+      setUsedMimeType("video/x-matroska");
+      try {
+        const result = await window.openNow.beginRecording({
+          backend: "native-gstreamer",
+          mimeType: "video/x-matroska",
+          container: "matroska",
+        });
+        recordingIdRef.current = result.recordingId;
+        recordingBackendRef.current = "native-gstreamer";
+        thumbnailDataUrlRef.current = null;
+        recordingStartTimeRef.current = Date.now();
+        setRecordingDurationMs(0);
+        setIsRecording(true);
+        recordingTimerRef.current = window.setInterval(() => {
+          setRecordingDurationMs(Date.now() - recordingStartTimeRef.current);
+        }, 500);
+      } catch (error) {
+        console.error("[StreamView] Failed to begin native recording:", error);
+        setUsedMimeType(null);
+        setRecordingError(error instanceof Error ? error.message : "Native recording could not start.");
+      }
       return;
     }
 
@@ -1178,7 +1228,7 @@ export function StreamView({
 
     let recordingId: string;
     try {
-      const result = await window.openNow.beginRecording({ mimeType });
+      const result = await window.openNow.beginRecording({ backend: "media-recorder", mimeType });
       recordingId = result.recordingId;
     } catch (error) {
       console.error("[StreamView] Failed to begin recording:", error);
@@ -1189,6 +1239,7 @@ export function StreamView({
     }
 
     recordingIdRef.current = recordingId;
+    recordingBackendRef.current = "media-recorder";
     thumbnailDataUrlRef.current = null;
     recordingStartTimeRef.current = Date.now();
     setRecordingDurationMs(0);
@@ -1254,6 +1305,7 @@ export function StreamView({
       audioCtxRef.current = null;
       const id = recordingIdRef.current;
       recordingIdRef.current = null;
+      recordingBackendRef.current = null;
       setIsRecording(false);
 
       if (!id) return;
@@ -1283,6 +1335,7 @@ export function StreamView({
       audioCtxRef.current = null;
       const id = recordingIdRef.current;
       recordingIdRef.current = null;
+      recordingBackendRef.current = null;
       setIsRecording(false);
       thumbnailDataUrlRef.current = null;
       if (id) {
@@ -1293,7 +1346,7 @@ export function StreamView({
 
     mediaRecorderRef.current = recorder;
     recorder.start(2000);
-  }, [gameTitle, isRecording, micTrack, recordingApiAvailable]);
+  }, [gameTitle, isRecording, micTrack, nativeRendererActive, recordingApiAvailable]);
 
   // Cleanup: abort any active recording on unmount
   useEffect(() => {
@@ -1301,12 +1354,14 @@ export function StreamView({
       window.clearInterval(recordingTimerRef.current);
       const recorder = mediaRecorderRef.current;
       const id = recordingIdRef.current;
-      if (recorder && recorder.state !== "inactive") {
+      const backend = recordingBackendRef.current;
+      if (backend === "media-recorder" && recorder && recorder.state !== "inactive") {
         recorder.stop();
       }
       if (id) {
         window.openNow.abortRecording({ recordingId: id }).catch(() => undefined);
         recordingIdRef.current = null;
+        recordingBackendRef.current = null;
       }
       audioCtxRef.current?.close().catch(() => undefined);
       audioCtxRef.current = null;

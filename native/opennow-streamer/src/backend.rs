@@ -20,6 +20,9 @@ pub trait NativeStreamerBackend {
     fn send_input(&mut self, command: CommandEnvelope) -> BackendReply;
     fn update_render_surface(&mut self, command: CommandEnvelope) -> BackendReply;
     fn update_bitrate_limit(&mut self, command: CommandEnvelope) -> BackendReply;
+    fn start_recording(&mut self, command: CommandEnvelope) -> BackendReply;
+    fn stop_recording(&mut self, command: CommandEnvelope) -> BackendReply;
+    fn abort_recording(&mut self, command: CommandEnvelope) -> BackendReply;
     fn stop(&mut self, command: CommandEnvelope) -> BackendReply;
 }
 
@@ -458,6 +461,26 @@ impl NativeStreamerBackend for StubBackend {
             response: Some(Response::Ok { id: command.id }),
             should_continue: true,
         }
+    }
+
+    fn start_recording(&mut self, command: CommandEnvelope) -> BackendReply {
+        BackendReply::response(Response::Error {
+            id: Some(command.id),
+            code: "recording-unsupported".to_owned(),
+            message: "Native recording is not supported by the stub backend.".to_owned(),
+        })
+    }
+
+    fn stop_recording(&mut self, command: CommandEnvelope) -> BackendReply {
+        BackendReply::response(Response::Error {
+            id: Some(command.id),
+            code: "recording-unsupported".to_owned(),
+            message: "Native recording is not supported by the stub backend.".to_owned(),
+        })
+    }
+
+    fn abort_recording(&mut self, command: CommandEnvelope) -> BackendReply {
+        BackendReply::response(Response::Ok { id: command.id })
     }
 
     fn stop(&mut self, command: CommandEnvelope) -> BackendReply {

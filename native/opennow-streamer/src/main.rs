@@ -88,6 +88,15 @@ fn handle_command(
         "bitrate" => {
             return write_reply(backend.update_bitrate_limit(command));
         }
+        "recording-start" => {
+            return write_reply(backend.start_recording(command));
+        }
+        "recording-stop" => {
+            return write_reply(backend.stop_recording(command));
+        }
+        "recording-abort" => {
+            return write_reply(backend.abort_recording(command));
+        }
         "stop" => {
             return write_reply(backend.stop(command));
         }

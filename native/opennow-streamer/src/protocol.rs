@@ -27,6 +27,24 @@ pub struct CommandEnvelope {
     pub max_bitrate_kbps: Option<u32>,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub recording: Option<RecordingCommandPayload>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingCommandPayload {
+    pub recording_id: String,
+    #[serde(default)]
+    pub temp_path: Option<String>,
+    #[serde(default)]
+    pub container: Option<RecordingContainer>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecordingContainer {
+    Matroska,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -536,6 +554,26 @@ mod tests {
             packet.payload_bytes().expect("legacy payload").as_ref(),
             &[7, 8, 9]
         );
+    }
+
+    #[test]
+    fn recording_start_command_parses_typed_matroska_payload() {
+        let command = parse_command(serde_json::json!({
+            "id": "req-1",
+            "type": "recording-start",
+            "recording": {
+                "recordingId": "rec-1",
+                "tempPath": "/tmp/rec.mkv.tmp",
+                "container": "matroska"
+            }
+        }))
+        .expect("recording command parses");
+
+        assert_eq!(command.command_type, "recording-start");
+        let recording = command.recording.expect("recording payload");
+        assert_eq!(recording.recording_id, "rec-1");
+        assert_eq!(recording.temp_path.as_deref(), Some("/tmp/rec.mkv.tmp"));
+        assert_eq!(recording.container, Some(RecordingContainer::Matroska));
     }
 
     #[test]

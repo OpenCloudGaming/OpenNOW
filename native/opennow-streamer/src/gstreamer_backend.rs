@@ -9,8 +9,8 @@ use crate::input::{
 use crate::protocol::{
     missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeQueueMode, NativeRenderRect,
     NativeRenderSurface, NativeStreamerCapabilities, NativeStreamerSessionContext,
-    NativeVideoBackendCapability, NativeVideoCodecCapability, Response, SendAnswerRequest,
-    StreamSettings, VideoStallEvent, VideoTransitionEvent, PROTOCOL_VERSION,
+    NativeVideoBackendCapability, NativeVideoCodecCapability, RecordingContainer, Response,
+    SendAnswerRequest, StreamSettings, VideoStallEvent, VideoTransitionEvent, PROTOCOL_VERSION,
 };
 use crate::sdp::{
     build_nvst_sdp_for_answer, extract_negotiated_video_codec, munge_answer_sdp, IceCredentials,
@@ -1576,6 +1576,15 @@ struct GstreamerPipeline {
     event_sender: Option<Sender<Event>>,
     original_remote_ice_credentials: Option<IceCredentials>,
     original_remote_ice_credentials_restored: bool,
+    recording: Option<GstreamerRecordingBranch>,
+}
+
+#[derive(Debug)]
+struct GstreamerRecordingBranch {
+    recording_id: String,
+    elements: Vec<gst::Element>,
+    src_pad: gst::Pad,
+    probe_id: gst::PadProbeId,
 }
 
 impl GstreamerPipeline {
@@ -1635,7 +1644,156 @@ impl GstreamerPipeline {
             event_sender,
             original_remote_ice_credentials: None,
             original_remote_ice_credentials_restored: false,
+            recording: None,
         })
+    }
+
+    fn start_recording(
+        &mut self,
+        recording_id: String,
+        temp_path: String,
+        container: RecordingContainer,
+    ) -> Result<(), String> {
+        if self.recording.is_some() {
+            return Err("A native GStreamer recording is already active.".to_owned());
+        }
+        if container != RecordingContainer::Matroska {
+            return Err("Native GStreamer recording currently supports only Matroska.".to_owned());
+        }
+
+        let video_src = self.video_liveness.state.rtp_video_src_pad().ok_or_else(|| {
+            "Native video RTP is not connected yet; wait until the stream is visible before recording.".to_owned()
+        })?;
+        let encoding = rtp_video_encoding(&video_src)
+            .unwrap_or_else(|| "H264".to_owned())
+            .to_ascii_uppercase();
+        let depay = rtp_video_depayloader_factory(&encoding)
+            .ok_or_else(|| format!("Native recording does not support RTP {encoding}."))?;
+        let parser = rtp_video_parser_factory(&encoding)
+            .ok_or_else(|| format!("Native recording does not support RTP {encoding}."))?;
+        let elements = vec![
+            make_element("appsrc")?,
+            make_element("queue")?,
+            make_element("rtpjitterbuffer")?,
+            make_element(depay)?,
+            make_element(parser)?,
+            make_element("matroskamux")?,
+            make_element("filesink")?,
+        ];
+        if let Some(caps) = video_src.current_caps() {
+            elements[0].set_property("caps", &caps);
+        }
+        elements[0].set_property("is-live", true);
+        elements[0].set_property_from_str("format", "time");
+        elements[6].set_property("location", &temp_path);
+        for element in &elements {
+            self.pipeline
+                .add(element)
+                .map_err(|error| format!("Failed to add recording element: {error}"))?;
+        }
+        let result = (|| -> Result<(), String> {
+            for pair in elements.windows(2) {
+                pair[0]
+                    .link(&pair[1])
+                    .map_err(|error| format!("Failed to link recording branch: {error:?}"))?;
+            }
+            for element in &elements {
+                element
+                    .sync_state_with_parent()
+                    .map_err(|error| format!("Failed to sync recording element state: {error}"))?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            for element in &elements {
+                let _ = element.set_state(gst::State::Null);
+                let _ = self.pipeline.remove(element);
+            }
+            return Err(error);
+        }
+        let appsrc = elements[0].clone();
+        let probe_id = video_src.add_probe(gst::PadProbeType::BUFFER, move |_pad, info| {
+            if let Some(buffer) = info.buffer() {
+                let _ = appsrc.emit_by_name::<gst::FlowSuccess>("push-buffer", &[&buffer.copy()]);
+            }
+            gst::PadProbeReturn::Ok
+        });
+        send_log(&self.event_sender, "info", "Native recording started. Audio recording is not yet available on this path; saving video-only Matroska.".to_owned());
+        self.recording = Some(GstreamerRecordingBranch {
+            recording_id,
+            elements,
+            src_pad: video_src,
+            probe_id,
+        });
+        Ok(())
+    }
+
+    fn stop_recording(&mut self, recording_id: &str) -> Result<(), String> {
+        let Some(branch) = self.recording.take() else {
+            return Err("No native recording is active.".to_owned());
+        };
+        if branch.recording_id != recording_id {
+            self.recording = Some(branch);
+            return Err("Native recording id does not match the active recording.".to_owned());
+        }
+        self.finalize_recording_branch(branch)
+    }
+
+    fn finalize_recording_branch(&self, branch: GstreamerRecordingBranch) -> Result<(), String> {
+        branch.src_pad.remove_probe(branch.probe_id);
+        let filesink = branch
+            .elements
+            .last()
+            .ok_or_else(|| "Recording branch has no filesink.".to_owned())?;
+        let filesink_sink_pad = filesink
+            .static_pad("sink")
+            .ok_or_else(|| "Recording filesink has no sink pad.".to_owned())?;
+        let (eos_sender, eos_receiver) = mpsc::channel::<()>();
+        let eos_probe_id =
+            filesink_sink_pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
+                if info
+                    .event()
+                    .is_some_and(|event| event.type_() == gst::EventType::Eos)
+                {
+                    let _ = eos_sender.send(());
+                }
+                gst::PadProbeReturn::Ok
+            });
+
+        let eos_result = branch
+            .elements
+            .first()
+            .map(|appsrc| appsrc.emit_by_name::<gst::FlowSuccess>("end-of-stream", &[]));
+        if eos_result.is_none() {
+            filesink_sink_pad.remove_probe(eos_probe_id);
+            self.teardown_recording_branch(branch);
+            return Err("Recording branch has no appsrc.".to_owned());
+        }
+
+        let wait_result = eos_receiver.recv_timeout(Duration::from_secs(5));
+        filesink_sink_pad.remove_probe(eos_probe_id);
+        self.teardown_recording_branch(branch);
+        wait_result.map_err(|error| {
+            format!("Timed out waiting for native recording EOS finalization: {error}")
+        })
+    }
+
+    fn abort_recording(&mut self, recording_id: &str) {
+        if let Some(branch) = self.recording.take() {
+            if branch.recording_id == recording_id {
+                self.teardown_recording_branch(branch);
+            } else {
+                self.recording = Some(branch);
+            }
+        }
+    }
+
+    fn teardown_recording_branch(&self, branch: GstreamerRecordingBranch) {
+        branch.src_pad.remove_probe(branch.probe_id);
+        for element in branch.elements.iter().rev() {
+            let _ = element.set_state(gst::State::Null);
+            let _ = self.pipeline.remove(element);
+        }
     }
 
     fn parse_offer_sdp(sdp: &str) -> Result<gst_sdp::SDPMessage, String> {
@@ -1985,6 +2143,9 @@ impl GstreamerPipeline {
     }
 
     fn stop(mut self) -> Result<(), String> {
+        if let Some(branch) = self.recording.take() {
+            self.teardown_recording_branch(branch);
+        }
         self.video_liveness.set_stats_overlay_visible(false);
         self.render_state.stop_external_renderer_window_guard();
         #[cfg(target_os = "windows")]
@@ -6545,6 +6706,63 @@ impl NativeStreamerBackend for GstreamerBackend {
             response: Some(Response::Ok { id: command.id }),
             should_continue: true,
         }
+    }
+
+    fn start_recording(&mut self, command: CommandEnvelope) -> BackendReply {
+        let id = command.id.clone();
+        let Some(recording) = command.recording else {
+            return BackendReply::response(missing_field(&id, "recording"));
+        };
+        let Some(temp_path) = recording.temp_path else {
+            return BackendReply::response(missing_field(&id, "recording.tempPath"));
+        };
+        let Some(container) = recording.container else {
+            return BackendReply::response(missing_field(&id, "recording.container"));
+        };
+        let Some(pipeline) = self.pipeline.as_mut() else {
+            return BackendReply::response(Response::Error {
+                id: Some(id),
+                code: "gstreamer-not-started".to_owned(),
+                message: "GStreamer pipeline is not started.".to_owned(),
+            });
+        };
+        match pipeline.start_recording(recording.recording_id, temp_path, container) {
+            Ok(()) => BackendReply::response(Response::Ok { id }),
+            Err(message) => BackendReply::response(Response::Error {
+                id: Some(id),
+                code: "gstreamer-recording-start-failed".to_owned(),
+                message,
+            }),
+        }
+    }
+
+    fn stop_recording(&mut self, command: CommandEnvelope) -> BackendReply {
+        let id = command.id.clone();
+        let Some(recording) = command.recording else {
+            return BackendReply::response(missing_field(&id, "recording"));
+        };
+        let Some(pipeline) = self.pipeline.as_mut() else {
+            return BackendReply::response(Response::Error {
+                id: Some(id),
+                code: "gstreamer-not-started".to_owned(),
+                message: "GStreamer pipeline is not started.".to_owned(),
+            });
+        };
+        match pipeline.stop_recording(&recording.recording_id) {
+            Ok(()) => BackendReply::response(Response::Ok { id }),
+            Err(message) => BackendReply::response(Response::Error {
+                id: Some(id),
+                code: "gstreamer-recording-stop-failed".to_owned(),
+                message,
+            }),
+        }
+    }
+
+    fn abort_recording(&mut self, command: CommandEnvelope) -> BackendReply {
+        if let (Some(recording), Some(pipeline)) = (command.recording, self.pipeline.as_mut()) {
+            pipeline.abort_recording(&recording.recording_id);
+        }
+        BackendReply::response(Response::Ok { id: command.id })
     }
 
     fn stop(&mut self, command: CommandEnvelope) -> BackendReply {

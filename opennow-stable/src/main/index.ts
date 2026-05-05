@@ -303,6 +303,7 @@ function runShutdownCleanup(reason = "app-quit"): void {
   }
   signalingClient = null;
   signalingClientKey = null;
+  void cleanupNativeActiveRecordings(reason, true);
   nativeStreamerManager?.dispose(reason);
   nativeStreamerManager = null;
   nativeStreamerContext = null;
@@ -580,12 +581,15 @@ async function saveScreenshotAs(input: ScreenshotSaveAsRequest): Promise<Screens
 const RECORDING_LIMIT = 20;
 
 interface ActiveRecording {
-  writeStream: ReturnType<typeof createWriteStream>;
+  backend: "media-recorder" | "native-gstreamer";
+  writeStream?: ReturnType<typeof createWriteStream>;
   tempPath: string;
   mimeType: string;
+  container?: "matroska";
 }
 
 const activeRecordings = new Map<string, ActiveRecording>();
+let nativeRecordingCleanupInFlight = false;
 
 function getRecordingsDirectory(): string {
   return join(app.getPath("pictures"), "OpenNOW", "Recordings");
@@ -716,8 +720,13 @@ function assertSafeRecordingId(id: string): void {
   }
 }
 
-function extFromMimeType(mimeType: string): ".mp4" | ".webm" {
+function extFromMimeType(mimeType: string): ".mp4" | ".webm" | ".mkv" {
+  if (mimeType === "video/x-matroska" || mimeType === "video/matroska") return ".mkv";
   return mimeType.startsWith("video/mp4") ? ".mp4" : ".webm";
+}
+
+function recordingStem(fileName: string): string {
+  return fileName.replace(/\.(mp4|webm|mkv)$/i, "");
 }
 
 async function listRecordings(): Promise<RecordingEntry[]> {
@@ -726,14 +735,14 @@ async function listRecordings(): Promise<RecordingEntry[]> {
   const webmFiles = entries
     .filter((e) => e.isFile())
     .map((e) => e.name)
-    .filter((name) => /\.(mp4|webm)$/i.test(name));
+    .filter((name) => /\.(mp4|webm|mkv)$/i.test(name));
 
   const loaded = await Promise.all(
     webmFiles.map(async (fileName): Promise<RecordingEntry | null> => {
       const filePath = join(dir, fileName);
       try {
         const fileStats = await stat(filePath);
-        const stem = fileName.replace(/\.(mp4|webm)$/i, "");
+        const stem = recordingStem(fileName);
         const thumbName = `${stem}-thumb.jpg`;
         const thumbPath = join(dir, thumbName);
 
@@ -746,11 +755,11 @@ async function listRecordings(): Promise<RecordingEntry[]> {
         }
 
         // Parse durationMs encoded in filename as last numeric segment before extension
-        const durMatch = /-dur(\d+)\.(mp4|webm)$/i.exec(fileName);
+        const durMatch = /-dur(\d+)\.(mp4|webm|mkv)$/i.exec(fileName);
         const durationMs = durMatch ? Number(durMatch[1]) : 0;
 
         // Parse game title from filename: {stamp}-{title}-{rand}[-dur{ms}].{ext}
-        const titleMatch = /^[^-]+-[^-]+-([^-]+(?:-[^-]+)*?)-[a-f0-9]{6}(?:-dur\d+)?\.(mp4|webm)$/i.exec(fileName);
+        const titleMatch = /^[^-]+-[^-]+-([^-]+(?:-[^-]+)*?)-[a-f0-9]{6}(?:-dur\d+)?\.(mp4|webm|mkv)$/i.exec(fileName);
         const gameTitle = titleMatch ? titleMatch[1].replace(/-/g, " ") : undefined;
 
         return {
@@ -775,6 +784,33 @@ async function listRecordings(): Promise<RecordingEntry[]> {
     .slice(0, RECORDING_LIMIT);
 }
 
+async function cleanupNativeActiveRecordings(reason: string, abortNative = true): Promise<void> {
+  if (nativeRecordingCleanupInFlight) return;
+  const nativeEntries = Array.from(activeRecordings.entries()).filter(([, rec]) => rec.backend === "native-gstreamer");
+  if (nativeEntries.length === 0) return;
+  nativeRecordingCleanupInFlight = true;
+  try {
+    await Promise.all(nativeEntries.map(async ([recordingId, rec]) => {
+      if (activeRecordings.get(recordingId) !== rec) return;
+      activeRecordings.delete(recordingId);
+      if (abortNative) {
+        await nativeStreamerManager?.abortRecording(recordingId).catch(() => undefined);
+      }
+      await unlink(rec.tempPath).catch(() => undefined);
+      console.warn(`[Main] Removed incomplete native recording ${recordingId} after ${reason}.`);
+    }));
+  } finally {
+    nativeRecordingCleanupInFlight = false;
+  }
+}
+
+function emitNativeStreamerEvent(event: MainToRendererSignalingEvent): void {
+  if (event.type === "native-stream-stopped" || event.type === "error") {
+    void cleanupNativeActiveRecordings(event.type === "native-stream-stopped" ? (event.reason ?? "native stream stopped") : event.message, false);
+  }
+  emitToRenderer(event);
+}
+
 function emitToRenderer(event: MainToRendererSignalingEvent): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(IPC_CHANNELS.SIGNALING_EVENT, event);
@@ -789,7 +825,7 @@ function getNativeStreamerManager(): NativeStreamerManager {
     getCloudGsyncMode: () => settingsManager?.get("nativeCloudGsyncMode") ?? "auto",
     getD3dFullscreenMode: () => settingsManager?.get("nativeD3dFullscreenMode") ?? "auto",
     getExternalRendererEnabled: () => true,
-    emit: emitToRenderer,
+    emit: emitNativeStreamerEvent,
     sendAnswer: async (payload) => {
       if (!signalingClient) {
         throw new Error("Signaling is not connected");
@@ -934,6 +970,7 @@ function normalizeNativeInputPacket(input: unknown): NativeStreamerInputPacket |
 
 function routeSignalingEvent(event: MainToRendererSignalingEvent): void {
   if (event.type === "disconnected") {
+    void cleanupNativeActiveRecordings(`signaling disconnected: ${event.reason}`, true);
     void nativeStreamerManager?.stop(`signaling disconnected: ${event.reason}`);
     nativeStreamerContext = null;
     nativeStreamerFallbackSessionId = null;
@@ -973,6 +1010,7 @@ async function handleNativeStreamerOffer(sdp: string, context: NativeStreamerSes
     console.warn("[NativeStreamer] Falling back to web streamer:", message);
     nativeStreamerFallbackSessionId = context.session.sessionId;
     const queuedRemoteIce = nativeStreamerManager?.drainQueuedRemoteIce(context.session.sessionId) ?? [];
+    await cleanupNativeActiveRecordings("native streamer fallback", true);
     await nativeStreamerManager?.stop("native streamer fallback").catch(() => undefined);
     emitToRenderer({
       type: "error",
@@ -1765,6 +1803,7 @@ function registerIpcHandlers(): void {
       if (signalingClient) {
         signalingClient.disconnect();
       }
+      await cleanupNativeActiveRecordings("signaling reconnect", true);
       await nativeStreamerManager?.stop("signaling reconnect");
 
       signalingClient = new GfnSignalingClient(
@@ -1779,6 +1818,7 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle(IPC_CHANNELS.DISCONNECT_SIGNALING, async (): Promise<void> => {
+    await cleanupNativeActiveRecordings("signaling disconnect", true);
     await nativeStreamerManager?.stop("signaling disconnect");
     nativeStreamerContext = null;
     nativeStreamerFallbackSessionId = null;
@@ -1952,6 +1992,7 @@ function registerIpcHandlers(): void {
         || key === "nativeD3dFullscreenMode"
         || key === "nativeExternalRenderer"
       ) {
+        void cleanupNativeActiveRecordings(`setting changed: ${key}`, true);
         void nativeStreamerManager?.stop(
           key === "nativeStreamerBackend"
             ? "native streamer backend changed"
@@ -1987,6 +2028,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
     const resetSettings = settingsManager.reset();
     appUpdater?.setAutomaticChecksEnabled(resetSettings.autoCheckForUpdates);
+    void cleanupNativeActiveRecordings("settings reset", true);
     void nativeStreamerManager?.stop("settings reset");
     nativeStreamerContext = null;
     nativeStreamerFallbackSessionId = null;
@@ -2130,10 +2172,23 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.RECORDING_BEGIN, async (_event, input: RecordingBeginRequest): Promise<RecordingBeginResult> => {
     const dir = await ensureRecordingsDirectory();
     const recordingId = randomUUID();
-    const ext = extFromMimeType(input.mimeType);
+    const backend = input.backend ?? "media-recorder";
+    const mimeType = backend === "native-gstreamer" ? "video/x-matroska" : input.mimeType;
+    const ext = extFromMimeType(mimeType);
     const tempPath = join(dir, `${recordingId}${ext}.tmp`);
+    if (backend === "native-gstreamer") {
+      activeRecordings.set(recordingId, { backend, tempPath, mimeType, container: "matroska" });
+      try {
+        await getNativeStreamerManager().startRecording({ recordingId, tempPath, container: "matroska" });
+      } catch (error) {
+        activeRecordings.delete(recordingId);
+        await unlink(tempPath).catch(() => undefined);
+        throw error;
+      }
+      return { recordingId };
+    }
     const writeStream = createWriteStream(tempPath);
-    activeRecordings.set(recordingId, { writeStream, tempPath, mimeType: input.mimeType });
+    activeRecordings.set(recordingId, { backend, writeStream, tempPath, mimeType });
     return { recordingId };
   });
 
@@ -2142,8 +2197,12 @@ function registerIpcHandlers(): void {
     if (!rec) {
       throw new Error("Unknown recording id");
     }
+    if (rec.backend !== "media-recorder" || !rec.writeStream) {
+      throw new Error("Recording does not accept renderer chunks");
+    }
+    const writeStream = rec.writeStream;
     await new Promise<void>((resolve, reject) => {
-      rec.writeStream.write(Buffer.from(input.chunk), (err) => {
+      writeStream.write(Buffer.from(input.chunk), (err) => {
         if (err) reject(err);
         else resolve();
       });
@@ -2157,12 +2216,16 @@ function registerIpcHandlers(): void {
     }
     activeRecordings.delete(input.recordingId);
 
-    await new Promise<void>((resolve, reject) => {
-      rec.writeStream.end((err?: Error | null) => {
-        if (err) reject(err);
-        else resolve();
+    if (rec.backend === "native-gstreamer") {
+      await getNativeStreamerManager().stopRecording(input.recordingId);
+    } else if (rec.writeStream) {
+      await new Promise<void>((resolve, reject) => {
+        rec.writeStream?.end((err?: Error | null) => {
+          if (err) reject(err);
+          else resolve();
+        });
       });
-    });
+    }
 
     const dir = getRecordingsDirectory();
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -2180,7 +2243,7 @@ function registerIpcHandlers(): void {
     if (input.thumbnailDataUrl) {
       try {
         const { buffer } = dataUrlToBuffer(input.thumbnailDataUrl);
-        const stem = fileName.replace(/\.(mp4|webm)$/i, "");
+        const stem = recordingStem(fileName);
         const thumbPath = join(dir, `${stem}-thumb.jpg`);
         await writeFile(thumbPath, buffer);
         thumbnailDataUrl = input.thumbnailDataUrl;
@@ -2196,7 +2259,7 @@ function registerIpcHandlers(): void {
       await Promise.all(
         toDelete.map(async (entry) => {
           await unlink(entry.filePath).catch(() => undefined);
-          const stem = entry.fileName.replace(/\.(mp4|webm)$/i, "");
+          const stem = recordingStem(entry.fileName);
           await unlink(join(dir, `${stem}-thumb.jpg`)).catch(() => undefined);
         }),
       );
@@ -2221,7 +2284,11 @@ function registerIpcHandlers(): void {
       return;
     }
     activeRecordings.delete(input.recordingId);
-    rec.writeStream.destroy();
+    if (rec.backend === "native-gstreamer") {
+      await getNativeStreamerManager().abortRecording(input.recordingId);
+    } else {
+      rec.writeStream?.destroy();
+    }
     await unlink(rec.tempPath).catch(() => undefined);
   });
 
@@ -2234,7 +2301,7 @@ function registerIpcHandlers(): void {
     const dir = await ensureRecordingsDirectory();
     const filePath = join(dir, input.id);
     await unlink(filePath);
-    const stem = input.id.replace(/\.(mp4|webm)$/i, "");
+    const stem = recordingStem(input.id);
     await unlink(join(dir, `${stem}-thumb.jpg`)).catch(() => undefined);
   });
 

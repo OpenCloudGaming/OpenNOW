@@ -64,6 +64,8 @@ const SESSION_START_TIMEOUT_MS = 45000;
 const SURFACE_UPDATE_TIMEOUT_MS = 15000;
 const OFFER_TIMEOUT_MS = 20000;
 const STOP_TIMEOUT_MS = 1200;
+const RECORDING_START_TIMEOUT_MS = 10000;
+const RECORDING_STOP_TIMEOUT_MS = 15000;
 const MAX_INPUT_STDIN_BUFFER_BYTES = 64 * 1024;
 const MIN_NATIVE_BITRATE_KBPS = 5_000;
 const MAX_NATIVE_BITRATE_KBPS = 150_000;
@@ -865,6 +867,25 @@ export class NativeStreamerManager {
         }
       });
     });
+  }
+
+  async startRecording(input: { recordingId: string; tempPath: string; container: "matroska" }): Promise<void> {
+    if (!this.activeSessionId) {
+      throw new Error("No active native streaming session is running.");
+    }
+    await this.request({ type: "recording-start", recording: input }, RECORDING_START_TIMEOUT_MS);
+  }
+
+  async stopRecording(recordingId: string): Promise<void> {
+    await this.request({ type: "recording-stop", recording: { recordingId } }, RECORDING_STOP_TIMEOUT_MS);
+  }
+
+  async abortRecording(recordingId: string): Promise<void> {
+    try {
+      await this.request({ type: "recording-abort", recording: { recordingId } }, CONTROL_TIMEOUT_MS);
+    } catch (error) {
+      console.warn("[NativeStreamer] Failed to abort native recording:", error);
+    }
   }
 
   private async flushSurfaceUpdate(): Promise<void> {
