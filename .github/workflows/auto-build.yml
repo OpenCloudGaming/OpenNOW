@@ -46,7 +46,7 @@ jobs:
         run: npm ci --prefer-offline --no-audit --progress=false
 
       - name: Lint
-        run: npm run lint --if-present
+        run: npm run lint
 
       - name: Typecheck
         run: npm run typecheck
