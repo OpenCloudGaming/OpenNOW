@@ -296,11 +296,46 @@ function macosExternalRoots(sourceRoot) {
   ];
 }
 
+function filteredInstallNameToolStderr(stderr) {
+  return stderr
+    .split(/\r?\n/)
+    .filter((line) => line.trim() && !line.includes("will invalidate the code signature"))
+    .join("\n");
+}
+
 function runInstallNameTool(args, file) {
-  const result = run("install_name_tool", args, { stdio: "inherit" });
+  const result = run("install_name_tool", args);
   if (result.status !== 0) {
+    const stdout = result.stdout?.trim();
+    const stderr = result.stderr?.trim();
+    if (stdout) console.error(stdout);
+    if (stderr) console.error(stderr);
     throw new Error(`install_name_tool failed for ${file}: install_name_tool ${args.join(" ")}`);
   }
+  const stderr = filteredInstallNameToolStderr(result.stderr ?? "");
+  if (stderr) console.warn(stderr);
+}
+
+function adHocSignMachOFiles(files) {
+  if (!commandAvailable("codesign")) {
+    console.warn("codesign was not found; patched macOS GStreamer Mach-O files may retain invalid code signatures.");
+    return;
+  }
+
+  const machOFiles = [...new Set(files.filter(Boolean).filter(isMachO))];
+  if (machOFiles.length === 0) return;
+
+  for (const file of machOFiles) {
+    const result = run("codesign", ["--force", "--sign", "-", "--timestamp=none", file]);
+    if (result.status !== 0) {
+      const stdout = result.stdout?.trim();
+      const stderr = result.stderr?.trim();
+      if (stdout) console.error(stdout);
+      if (stderr) console.error(stderr);
+      throw new Error(`codesign failed for ${file}`);
+    }
+  }
+  console.log(`Ad-hoc signed ${machOFiles.length} relocated macOS Mach-O file(s).`);
 }
 
 function patchMachO(file, destination, sourceRoot, libDir, bundledLibs) {
@@ -361,10 +396,12 @@ function bundleMacosRuntime({ sdkRoot, destination, binary }) {
   copyMatchingFiles(resolvedRuntimeRoot, destination, /^(copying|license|readme)/i);
   const libDir = join(destination, "lib");
   const bundledLibs = new Set(readdirSync(libDir).filter((name) => name.endsWith(".dylib") || name.endsWith(".so")));
-  for (const file of [...walkFiles(destination), binary].filter(Boolean)) {
+  const machOFiles = [...walkFiles(destination), binary].filter(Boolean);
+  for (const file of machOFiles) {
     try { chmodSync(file, statSync(file).mode | 0o200); } catch {}
     patchMachO(file, destination, resolvedRuntimeRoot, libDir, bundledLibs);
   }
+  adHocSignMachOFiles(machOFiles);
   validatePackagedBinaryRelocation(binary, resolvedRuntimeRoot, bundledLibs);
   writeMetadata(destination, resolvedRuntimeRoot, "darwin");
   console.log(`Bundled GStreamer runtime from ${resolvedRuntimeRoot} to ${destination} (${copied} paths plus dylibs).`);

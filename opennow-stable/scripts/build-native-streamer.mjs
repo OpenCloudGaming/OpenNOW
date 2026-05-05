@@ -309,6 +309,11 @@ function buildBundledGstreamerEnv(baseEnv, binaryPath) {
   return env;
 }
 
+function formatProcessOutput(value) {
+  const trimmed = value?.trim();
+  return trimmed || "<empty>";
+}
+
 function verifyGstreamerBinary(binaryPath, env) {
   const result = spawnSync(binaryPath, {
     input: `${JSON.stringify({ id: "verify", type: "hello", protocolVersion: nativeStreamerProtocolVersion })}\n`,
@@ -319,9 +324,12 @@ function verifyGstreamerBinary(binaryPath, env) {
     },
   });
 
-  if (result.status !== 0) {
-    console.error(result.stderr || result.stdout);
+  if (result.status !== 0 || result.signal) {
     console.error(`Native streamer verification failed for ${binaryPath}`);
+    console.error(`status: ${result.status ?? "<null>"}`);
+    console.error(`signal: ${result.signal ?? "<null>"}`);
+    console.error(`stdout: ${formatProcessOutput(result.stdout)}`);
+    console.error(`stderr: ${formatProcessOutput(result.stderr)}`);
     process.exit(result.status ?? 1);
   }
 
