@@ -28,6 +28,7 @@ jobs:
       prerelease: ${{ steps.release.outputs.prerelease }}
       make_latest: ${{ steps.release.outputs.make_latest }}
       release_tag: ${{ steps.release.outputs.release_tag }}
+      source_ref: ${{ steps.release.outputs.source_ref }}
 
     steps:
       - name: Checkout
@@ -80,8 +81,10 @@ jobs:
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             release_tag="v${version}"
+            source_ref="$REF_NAME"
           else
             release_tag="$raw"
+            source_ref="$REF_NAME"
           fi
 
           {
@@ -89,12 +92,64 @@ jobs:
             echo "prerelease=$prerelease"
             echo "make_latest=$make_latest"
             echo "release_tag=$release_tag"
+            echo "source_ref=$source_ref"
           } >> "$GITHUB_OUTPUT"
+
+  prepare-source:
+    name: prepare-source
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    needs: preflight
+    permissions:
+      contents: write
+    outputs:
+      release_sha: ${{ steps.source.outputs.release_sha }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.source_ref }}
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Sync or validate release version
+        id: source
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          SOURCE_REF: ${{ needs.preflight.outputs.source_ref }}
+        run: |
+          if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
+            node opennow-stable/scripts/sync-release-version.mjs --check "$RELEASE_VERSION"
+            echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$REF_TYPE" != "branch" ]]; then
+            echo "workflow_dispatch releases must run from a branch so the version bump can be committed before tagging." >&2
+            exit 1
+          fi
+
+          node opennow-stable/scripts/sync-release-version.mjs "$RELEASE_VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add opennow-stable/package.json opennow-stable/package-lock.json
+          if git diff --cached --quiet; then
+            echo "No version bump changes to commit."
+          else
+            git commit -m "chore(release): prepare v${RELEASE_VERSION}"
+            git push origin HEAD:"$SOURCE_REF"
+          fi
+          echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
-    needs: preflight
+    needs:
+      - preflight
+      - prepare-source
     strategy:
       fail-fast: false
       matrix:
@@ -154,6 +209,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-source.outputs.release_sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -185,8 +242,8 @@ jobs:
       - name: Install dependencies
         run: npm ci --prefer-offline --no-audit --progress=false
 
-      - name: Update package version
-        run: node -e "const fs=require('fs'); const path='package.json'; const pkg=JSON.parse(fs.readFileSync(path,'utf8')); pkg.version=process.env.RELEASE_VERSION; fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');"
+      - name: Sync package version
+        run: node scripts/sync-release-version.mjs "$RELEASE_VERSION"
 
       - name: Build app bundles
         run: npm run build
@@ -208,6 +265,7 @@ jobs:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     needs:
       - preflight
+      - prepare-source
       - build
     permissions:
       contents: write
@@ -223,58 +281,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.preflight.outputs.release_tag }}
+          target_commitish: ${{ needs.prepare-source.outputs.release_sha }}
           name: OpenNOW v${{ needs.preflight.outputs.version }}
           prerelease: ${{ needs.preflight.outputs.prerelease }}
           make_latest: ${{ needs.preflight.outputs.make_latest }}
           generate_release_notes: true
           files: release-artifacts/**/*
-
-  finalize:
-    name: finalize-version-bump
-    runs-on: blacksmith-2vcpu-ubuntu-2404
-    needs:
-      - preflight
-      - release
-    permissions:
-      contents: write
-
-    steps:
-      - name: Resolve release branch
-        id: branch
-        shell: bash
-        env:
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          if [[ "$REF_TYPE" == "branch" ]]; then
-            branch="$REF_NAME"
-          else
-            branch="dev"
-          fi
-          echo "branch=$branch" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout release branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.branch.outputs.branch }}
-          fetch-depth: 0
-          token: ${{ secrets.RELEASE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
-
-      - name: Update package version
-        working-directory: opennow-stable
-        env:
-          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
-        run: node -e "const fs=require('fs'); const path='package.json'; const pkg=JSON.parse(fs.readFileSync(path,'utf8')); pkg.version=process.env.RELEASE_VERSION; fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');"
-
-      - name: Commit and push
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add opennow-stable/package.json
-          if git diff --cached --quiet; then
-            echo "No version bump changes to commit."
-            exit 0
-          fi
-          git commit -m "chore(release): prepare v${{ needs.preflight.outputs.version }}"
-          git push origin HEAD:${{ steps.branch.outputs.branch }}
