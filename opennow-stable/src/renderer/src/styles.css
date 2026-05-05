@@ -3526,6 +3526,55 @@ button.game-card-store-chip.owned.active:hover {
   gap: 8px;
 }
 
+.settings-native-streamer-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.settings-path-setting {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-path-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-path-input {
+  flex: 1;
+  min-width: 220px;
+}
+
+.settings-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--panel-border-solid);
+  border-radius: 6px;
+  background: var(--bg-a);
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+
+.settings-icon-button:hover {
+  color: var(--accent);
+  border-color: rgba(88, 217, 138, 0.35);
+  background: var(--accent-surface);
+}
+
 .settings-input-hint {
   font-size: 0.82rem;
   color: var(--error);
@@ -3536,6 +3585,36 @@ button.game-card-store-chip.owned.active:hover {
   font-size: 0.8rem;
   color: var(--ink-muted);
   font-weight: 500;
+}
+
+.settings-install-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.settings-install-step {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: var(--bg-e);
+}
+
+.settings-install-step-title {
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+
+.settings-install-step code {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.74rem;
+  color: var(--ink);
 }
 
 .settings-shortcut-hint {
@@ -4886,8 +4965,8 @@ button.game-card-store-chip.owned.active:hover {
 /* Stats HUD (StreamView inline stats) */
 .sv-stats {
   position: fixed;
-  top: 14px;
-  right: 14px;
+  left: 14px;
+  bottom: 14px;
   z-index: 1001;
   display: flex;
   flex-direction: column;
@@ -4897,8 +4976,8 @@ button.game-card-store-chip.owned.active:hover {
   border: 1px solid var(--panel-border);
   border-radius: var(--r-md);
   font-size: 0.7rem;
-  min-width: 240px;
-  max-width: 320px;
+  min-width: 260px;
+  max-width: 380px;
   font-variant-numeric: tabular-nums;
   backdrop-filter: blur(4px);
 }

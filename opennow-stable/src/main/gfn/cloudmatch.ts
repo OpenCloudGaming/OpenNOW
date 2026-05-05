@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import dns from "node:dns";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { app } from "electron";
+import { createRequire } from "node:module";
 
 import type {
   ActiveSessionInfo,
@@ -27,6 +27,7 @@ import {
   colorQualityChromaFormat,
   resolveGfnKeyboardLayout,
 } from "@shared/gfn";
+import { DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR } from "@shared/cloudGsync";
 
 import type { CloudMatchRequest, CloudMatchResponse, GetSessionsResponse } from "./types";
 import { SessionError } from "./errorCodes";
@@ -40,6 +41,15 @@ const READY_SESSION_STATUSES = new Set([2, 3]);
 const GFN_DEVICE_ID_FILENAME = "gfn-device-id.json";
 
 let cachedStableDeviceId: string | null = null;
+const require = createRequire(import.meta.url);
+
+function getElectronApp(): Electron.App | null {
+  try {
+    return require("electron").app ?? null;
+  } catch {
+    return null;
+  }
+}
 
 const AD_ACTION_CODES: Record<SessionAdAction, number> = {
   start: 1,
@@ -55,6 +65,46 @@ const GFN_AD_MEDIA_PROFILE_ORDER = new Map<string, number>([
   ["hlsadaptive", 2],
 ]);
 
+export function buildRequestedStreamingFeatures(
+  settings: StreamSettings,
+  bitDepth: number,
+  chromaFormat: number,
+  hdrEnabled: boolean,
+): CloudMatchRequest["sessionRequestData"]["requestedStreamingFeatures"] {
+  const cloudGsync = settings.enableCloudGsync;
+
+  return {
+    reflex: shouldRequestReflex(settings),
+    bitDepth,
+    cloudGsync,
+    enabledL4S: settings.enableL4S,
+    mouseMovementFlags: 0,
+    trueHdr: hdrEnabled,
+    supportedHidDevices: 0,
+    profile: 0,
+    fallbackToLogicalResolution: false,
+    hidDevices: null,
+    chromaFormat,
+    prefilterMode: 0,
+    prefilterSharpness: 0,
+    prefilterNoiseReduction: 0,
+    hudStreamingMode: 0,
+    sdrColorSpace: 2,
+    hdrColorSpace: hdrEnabled ? 4 : 0,
+  };
+}
+
+export function shouldRequestReflex(settings: StreamSettings): boolean {
+  if (typeof settings.cloudGsyncResolution?.reflexEnabled === "boolean") {
+    return settings.cloudGsyncResolution.reflexEnabled;
+  }
+
+  const reflexMinimum =
+    settings.cloudGsyncResolution?.capabilities.minimumFpsForReflexWithoutVrr
+    ?? DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR;
+  return settings.enableCloudGsync || settings.fps >= reflexMinimum;
+}
+
 function isReadySessionStatus(status: number): boolean {
   return READY_SESSION_STATUSES.has(status);
 }
@@ -65,7 +115,11 @@ function getStableDeviceId(): string {
   }
 
   try {
-    const path = join(app.getPath("userData"), GFN_DEVICE_ID_FILENAME);
+    const electronApp = getElectronApp();
+    if (!electronApp) {
+      throw new Error("Electron app is unavailable outside the main process.");
+    }
+    const path = join(electronApp.getPath("userData"), GFN_DEVICE_ID_FILENAME);
     if (existsSync(path)) {
       const parsed = JSON.parse(readFileSync(path, "utf-8")) as { deviceId?: unknown };
       if (typeof parsed.deviceId === "string" && parsed.deviceId.length > 0) {
@@ -486,6 +540,21 @@ function timezoneOffsetMs(): number {
   return -new Date().getTimezoneOffset() * 60 * 1000;
 }
 
+function webRtcSessionMetadata(width: number, height: number): Array<{ key: string; value: string }> {
+  return [
+    { key: "SubSessionId", value: crypto.randomUUID() },
+    { key: "wssignaling", value: "1" },
+    { key: "GSStreamerType", value: "WebRTC" },
+    { key: "networkType", value: "Unknown" },
+    { key: "ClientImeSupport", value: "0" },
+    {
+      key: "clientPhysicalResolution",
+      value: JSON.stringify({ horizontalPixels: width, verticalPixels: height }),
+    },
+    { key: "surroundAudioInfo", value: "2" },
+  ];
+}
+
 function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: string): CloudMatchRequest {
   const { width, height } = parseResolution(input.settings.resolution);
   const cq = input.settings.colorQuality;
@@ -516,32 +585,27 @@ function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: stri
       clientPlatformName: "windows",
       clientRequestMonitorSettings: [
         {
+          monitorId: 0,
+          positionX: 0,
+          positionY: 0,
           widthInPixels: width,
           heightInPixels: height,
           framesPerSecond: input.settings.fps,
           sdrHdrMode: hdrEnabled ? 1 : 0,
-          displayData: {
-            desiredContentMaxLuminance: hdrEnabled ? 1000 : 0,
-            desiredContentMinLuminance: 0,
-            desiredContentMaxFrameAverageLuminance: hdrEnabled ? 500 : 0,
-          },
+          displayData: hdrEnabled
+            ? {
+                desiredContentMaxLuminance: 1000,
+                desiredContentMinLuminance: 0,
+                desiredContentMaxFrameAverageLuminance: 500,
+              }
+            : null,
+          hdr10PlusGamingData: null,
           dpi: 100,
         },
       ],
       useOps: true,
       audioMode: 2,
-      metaData: [
-        { key: "SubSessionId", value: crypto.randomUUID() },
-        { key: "wssignaling", value: "1" },
-        { key: "GSStreamerType", value: "WebRTC" },
-        { key: "networkType", value: "Unknown" },
-        { key: "ClientImeSupport", value: "0" },
-        {
-          key: "clientPhysicalResolution",
-          value: JSON.stringify({ horizontalPixels: width, verticalPixels: height }),
-        },
-        { key: "surroundAudioInfo", value: "2" },
-      ],
+      metaData: webRtcSessionMetadata(width, height),
       sdrHdrMode: hdrEnabled ? 1 : 0,
       clientDisplayHdrCapabilities: hdrEnabled
         ? {
@@ -560,25 +624,12 @@ function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: stri
       accountLinked,
       enablePersistingInGameSettings: true,
       userAge: 26,
-      requestedStreamingFeatures: {
-        reflex: input.settings.fps >= 120,
+      requestedStreamingFeatures: buildRequestedStreamingFeatures(
+        input.settings,
         bitDepth,
-        cloudGsync: input.settings.enableCloudGsync,
-        enabledL4S: input.settings.enableL4S,
-        mouseMovementFlags: 0,
-        trueHdr: hdrEnabled,
-        supportedHidDevices: 0,
-        profile: 0,
-        fallbackToLogicalResolution: false,
-        hidDevices: null,
         chromaFormat,
-        prefilterMode: 0,
-        prefilterSharpness: 0,
-        prefilterNoiseReduction: 0,
-        hudStreamingMode: 0,
-        sdrColorSpace: 2,
-        hdrColorSpace: hdrEnabled ? 4 : 0,
-      },
+        hdrEnabled,
+      ),
     },
   };
 }
@@ -849,6 +900,8 @@ function extractNegotiatedStreamProfile(payload: CloudMatchResponse): Negotiated
     finalizedFeatures?.chromaFormat ?? requestedFeatures?.chromaFormat,
   );
   const enabledL4S = finalizedFeatures?.enabledL4S ?? requestedFeatures?.enabledL4S;
+  const enabledCloudGsync = finalizedFeatures?.cloudGsync ?? requestedFeatures?.cloudGsync;
+  const enabledReflex = finalizedFeatures?.reflex ?? requestedFeatures?.reflex;
 
   const profile: NegotiatedStreamProfile = {};
 
@@ -875,6 +928,14 @@ function extractNegotiatedStreamProfile(payload: CloudMatchResponse): Negotiated
     profile.enableL4S = enabledL4S;
   }
 
+  if (typeof enabledCloudGsync === "boolean") {
+    profile.enableCloudGsync = enabledCloudGsync;
+  }
+
+  if (typeof enabledReflex === "boolean") {
+    profile.enableReflex = enabledReflex;
+  }
+
   return Object.keys(profile).length > 0 ? profile : undefined;
 }
 
@@ -898,6 +959,7 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
   const queuePosition = extractQueuePosition(payload);
   const seatSetupStep = extractSeatSetupStep(payload);
   const adState = extractAdState(payload);
+  const negotiatedStreamProfile = extractNegotiatedStreamProfile(payload);
 
   // Debug logging to trace signaling resolution
   const connections = payload.session.connectionInfo ?? [];
@@ -917,6 +979,9 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     `signalingUrl=${signaling.signalingUrl}, ` +
     `connections=[${connectionSummary}]`,
   );
+  console.log(
+    `[CloudMatch] negotiated streaming features: cloudGsync=${negotiatedStreamProfile?.enableCloudGsync ?? "n/a"}, reflex=${negotiatedStreamProfile?.enableReflex ?? "n/a"}, l4s=${negotiatedStreamProfile?.enableL4S ?? "n/a"}`,
+  );
 
   return {
     sessionId: payload.session.sessionId,
@@ -932,7 +997,7 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     gpuType: payload.session.gpuType,
     iceServers: await normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,
-    negotiatedStreamProfile: extractNegotiatedStreamProfile(payload),
+    negotiatedStreamProfile,
     clientId,
     deviceId,
   };
@@ -1259,6 +1324,7 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
         { key: "GSStreamerType", value: "WebRTC" },
         { key: "networkType", value: "Unknown" },
         { key: "ClientImeSupport", value: "0" },
+        { key: "surroundAudioInfo", value: "2" },
       ],
       surroundAudioInfo: 0,
       clientTimezoneOffset: timezoneMs,
@@ -1276,17 +1342,6 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
       enablePersistingInGameSettings: true,
       secureRTSPSupported: false,
       userAge: 26,
-      requestedStreamingFeatures: {
-        reflex: false,
-        bitDepth: 0,
-        // RESUME claims must not renegotiate session creation-only streaming features.
-        cloudGsync: false,
-        profile: 0,
-        fallbackToLogicalResolution: false,
-        chromaFormat: 0,
-        prefilterMode: 0,
-        hudStreamingMode: 0,
-      },
     },
     metaData: [],
   };
@@ -1475,6 +1530,10 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       // Session is ready
       const signaling = resolveSignaling(pollApiResponse);
       const queuePosition = extractQueuePosition(pollApiResponse);
+      const negotiatedStreamProfile = extractNegotiatedStreamProfile(pollApiResponse);
+      console.log(
+        `[CloudMatch] claimed negotiated streaming features: cloudGsync=${negotiatedStreamProfile?.enableCloudGsync ?? "n/a"}, reflex=${negotiatedStreamProfile?.enableReflex ?? "n/a"}, l4s=${negotiatedStreamProfile?.enableL4S ?? "n/a"}`,
+      );
 
       return {
         sessionId: sessionData.sessionId,
@@ -1488,7 +1547,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
         gpuType: sessionData.gpuType,
         iceServers: await normalizeIceServers(pollApiResponse),
         mediaConnectionInfo: signaling.mediaConnectionInfo,
-        negotiatedStreamProfile: extractNegotiatedStreamProfile(pollApiResponse),
+        negotiatedStreamProfile: negotiatedStreamProfile ?? extractNegotiatedStreamProfile(pollApiResponse),
         clientId,
         deviceId,
       };

@@ -1,5 +1,22 @@
+import type { NativeCloudGsyncCapabilities, CloudGsyncResolution } from "./cloudGsync";
+
 export type VideoCodec = "H264" | "H265" | "AV1";
 export type VideoAccelerationPreference = "auto" | "hardware" | "software";
+export type StreamClientMode = "web" | "native";
+export type NativeStreamerBackend = "stub" | "gstreamer";
+export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
+export type NativeStreamerFeatureMode = "auto" | "disabled" | "forced";
+
+export function nativeStreamerFeatureModeToEnvValue(mode: NativeStreamerFeatureMode): "auto" | "0" | "1" {
+  switch (mode) {
+    case "disabled":
+      return "0";
+    case "forced":
+      return "1";
+    default:
+      return "auto";
+  }
+}
 
 /** Color quality (bit depth + chroma subsampling), matching Rust ColorQuality enum */
 export type ColorQuality = "8bit_420" | "8bit_444" | "10bit_420" | "10bit_444";
@@ -135,12 +152,77 @@ export interface MicrophonePermissionResult {
   shouldUseBrowserApi: boolean;
 }
 
+export type NativeGstreamerRuntimeSource = "bundled" | "system" | "missing" | "unknown";
+
+export interface NativeGstreamerInstallInstruction {
+  distro: string;
+  command: string;
+  note?: string;
+}
+
+export interface NativeGstreamerRuntimeStatus {
+  source: NativeGstreamerRuntimeSource;
+  bundled: boolean;
+  path?: string;
+  message: string;
+  installInstructions?: NativeGstreamerInstallInstruction[];
+}
+
+export interface NativeStreamerStatus {
+  detected: boolean;
+  gstreamerAvailable: boolean;
+  supportsOfferAnswer: boolean;
+  backend?: NativeStreamerBackend;
+  fallbackReason?: string;
+  videoBackends?: NativeVideoBackendCapability[];
+  activeVideoBackend?: NativeVideoBackendCapability;
+  codecSummary?: string;
+  zeroCopySummary?: string;
+  gstreamerRuntime: NativeGstreamerRuntimeStatus;
+  message: string;
+}
+
+export type NativeVideoBackendId =
+  | "d3d12"
+  | "d3d11"
+  | "videotoolbox"
+  | "vaapi"
+  | "v4l2"
+  | "vulkan"
+  | "software"
+  | string;
+
+export interface NativeVideoCodecCapability {
+  codec: "h264" | "h265" | "av1" | string;
+  available: boolean;
+  decoder?: string;
+  parser?: string;
+  depayloader?: string;
+  reason?: string;
+}
+
+export interface NativeVideoBackendCapability {
+  backend: NativeVideoBackendId;
+  platform: "windows" | "macos" | "linux" | "cross-platform" | "other" | string;
+  codecs: NativeVideoCodecCapability[];
+  zeroCopyModes: string[];
+  sink?: string;
+  available: boolean;
+  reason?: string;
+}
+
 export interface Settings {
   resolution: string;
   aspectRatio: AspectRatio;
   posterSizeScale: number;
   fps: number;
   maxBitrateMbps: number;
+  streamClientMode: StreamClientMode;
+  nativeStreamerBackend: NativeStreamerBackendPreference;
+  nativeStreamerExecutablePath: string;
+  nativeCloudGsyncMode: NativeStreamerFeatureMode;
+  nativeD3dFullscreenMode: NativeStreamerFeatureMode;
+  nativeExternalRenderer: boolean;
   codec: VideoCodec;
   decoderPreference: VideoAccelerationPreference;
   encoderPreference: VideoAccelerationPreference;
@@ -488,6 +570,16 @@ export interface StreamSettings {
   enableL4S: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
   enableCloudGsync: boolean;
+  /** Renderer-selected client path; main uses this to apply native-only Cloud G-Sync gating. */
+  clientMode?: StreamClientMode;
+  /** Selected native streamer backend; stub cannot support Cloud G-Sync presentation. */
+  nativeStreamerBackend?: NativeStreamerBackendPreference;
+  /** Native-only override for Cloud G-Sync display detection. */
+  nativeCloudGsyncMode?: NativeStreamerFeatureMode;
+  /** User's raw Cloud G-Sync preference before main-process capability resolution. */
+  requestedCloudGsync?: boolean;
+  /** Diagnostics from the main-process Cloud G-Sync resolver. */
+  cloudGsyncResolution?: CloudGsyncResolution;
 }
 
 export interface SessionCreateRequest {
@@ -559,6 +651,8 @@ export interface NegotiatedStreamProfile {
   fps?: number;
   colorQuality?: ColorQuality;
   enableL4S?: boolean;
+  enableCloudGsync?: boolean;
+  enableReflex?: boolean;
 }
 
 export interface SessionAdMediaFile {
@@ -694,6 +788,7 @@ export interface SignalingConnectRequest {
   sessionId: string;
   signalingServer: string;
   signalingUrl?: string;
+  nativeStreamer?: NativeStreamerSessionContext;
 }
 
 export interface IceCandidatePayload {
@@ -708,6 +803,34 @@ export interface SendAnswerRequest {
   nvstSdp?: string;
 }
 
+export interface NativeStreamerSessionContext {
+  session: SessionInfo;
+  settings: StreamSettings;
+}
+
+export interface NativeInputPacket {
+  payload: ArrayBuffer | Uint8Array | number[];
+  partiallyReliable?: boolean;
+}
+
+export interface NativeRenderSurfaceRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface NativeRenderSurfaceUpdate {
+  rect: NativeRenderSurfaceRect | null;
+  visible: boolean;
+  deviceScaleFactor: number;
+  showStats?: boolean;
+}
+
+export interface NativeRenderSurface extends NativeRenderSurfaceUpdate {
+  windowHandle?: string;
+}
+
 export interface KeyframeRequest {
   reason: string;
   backlogFrames: number;
@@ -719,8 +842,31 @@ export type MainToRendererSignalingEvent =
   | { type: "disconnected"; reason: string }
   | { type: "offer"; sdp: string }
   | { type: "remote-ice"; candidate: IceCandidatePayload }
+  | { type: "native-stream-started"; message?: string }
+  | { type: "native-stream-stopped"; reason?: string }
+  | { type: "native-stream-stats"; stats: NativeStreamStats }
+  | { type: "native-input-ready"; protocolVersion: number }
   | { type: "error"; message: string }
   | { type: "log"; message: string };
+
+export interface NativeStreamStats {
+  codec: string;
+  resolution: string;
+  hardwareAcceleration: string;
+  memoryMode?: string;
+  zeroCopy?: boolean;
+  bitrateKbps: number;
+  targetBitrateKbps: number;
+  bitratePerformancePercent: number;
+  decodedFps: number;
+  renderFps: number;
+  framesDecoded: number;
+  framesRendered: number;
+  sinkRendered?: number;
+  sinkDropped?: number;
+  zeroCopyD3D11: boolean;
+  zeroCopyD3D12: boolean;
+}
 
 /** Dialog result for session conflict resolution */
 export type SessionConflictChoice = "resume" | "new" | "cancel";
@@ -784,12 +930,16 @@ export interface OpenNowApi {
   getActiveSessions(token?: string, streamingBaseUrl?: string): Promise<ActiveSessionInfo[]>;
   /** Claim/resume an existing session */
   claimSession(input: SessionClaimRequest): Promise<SessionInfo>;
+  getNativeStreamerStatus(): Promise<NativeStreamerStatus>;
+  getNativeCloudGsyncCapabilities(): Promise<NativeCloudGsyncCapabilities>;
   /** Show dialog asking user how to handle session conflict */
   showSessionConflictDialog(): Promise<SessionConflictChoice>;
   connectSignaling(input: SignalingConnectRequest): Promise<void>;
   disconnectSignaling(): Promise<void>;
   sendAnswer(input: SendAnswerRequest): Promise<void>;
   sendIceCandidate(input: IceCandidatePayload): Promise<void>;
+  sendNativeInput(input: NativeInputPacket): void;
+  updateNativeRenderSurface(input: NativeRenderSurfaceUpdate): void;
   requestKeyframe(input: KeyframeRequest): Promise<void>;
   onSignalingEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void;
   /** Listen for F11 fullscreen toggle from main process */
@@ -808,6 +958,7 @@ export interface OpenNowApi {
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
   resetSettings(): Promise<Settings>;
+  selectNativeStreamerExecutable(): Promise<string | null>;
   getMicrophonePermission(): Promise<MicrophonePermissionResult>;
   /** Export logs in redacted format */
   exportLogs(format?: "text" | "json"): Promise<string>;

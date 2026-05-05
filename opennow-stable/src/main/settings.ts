@@ -9,6 +9,9 @@ import type {
   GameLanguage,
   AspectRatio,
   KeyboardLayout,
+  StreamClientMode,
+  NativeStreamerBackendPreference,
+  NativeStreamerFeatureMode,
   ControllerThemeRgb,
   ControllerThemeStyle,
 } from "@shared/gfn";
@@ -25,6 +28,18 @@ export interface Settings {
   fps: number;
   /** Maximum bitrate in Mbps (cap at 150) */
   maxBitrateMbps: number;
+  /** Stream client implementation to use for new sessions */
+  streamClientMode: StreamClientMode;
+  /** Native streamer backend preference for new native sessions */
+  nativeStreamerBackend: NativeStreamerBackendPreference;
+  /** Optional path to a custom native streamer executable */
+  nativeStreamerExecutablePath: string;
+  /** Native-only override for Cloud G-Sync / VRR display detection */
+  nativeCloudGsyncMode: NativeStreamerFeatureMode;
+  /** Native D3D sink fullscreen presentation override */
+  nativeD3dFullscreenMode: NativeStreamerFeatureMode;
+  /** Use the native GStreamer renderer window instead of Electron HWND embedding */
+  nativeExternalRenderer: boolean;
   /** Preferred video codec */
   codec: VideoCodec;
   /** Preferred video decode acceleration mode */
@@ -151,6 +166,12 @@ const DEFAULT_SETTINGS: Settings = {
   posterSizeScale: 1,
   fps: 60,
   maxBitrateMbps: 75,
+  streamClientMode: "web",
+  nativeStreamerBackend: "gstreamer",
+  nativeStreamerExecutablePath: "",
+  nativeCloudGsyncMode: "auto",
+  nativeD3dFullscreenMode: "auto",
+  nativeExternalRenderer: true,
   codec: DEFAULT_STREAM_PREFERENCES.codec,
   decoderPreference: "auto",
   encoderPreference: "auto",
@@ -264,17 +285,27 @@ export class SettingsManager {
   }
 
   private enforceCompatibility(settings: Settings): boolean {
+    let migrated = false;
     const normalized = normalizeStreamPreferences(settings.codec, settings.colorQuality);
-    if (!normalized.migrated) {
-      return false;
+    if (normalized.migrated) {
+      console.warn(
+        `[Settings] Migrating unsupported stream settings codec="${settings.codec}" colorQuality="${settings.colorQuality}" to ${normalized.codec}/${normalized.colorQuality}`,
+      );
+      settings.codec = normalized.codec;
+      settings.colorQuality = normalized.colorQuality;
+      migrated = true;
     }
 
-    console.warn(
-      `[Settings] Migrating unsupported stream settings codec="${settings.codec}" colorQuality="${settings.colorQuality}" to ${normalized.codec}/${normalized.colorQuality}`,
-    );
-    settings.codec = normalized.codec;
-    settings.colorQuality = normalized.colorQuality;
-    return true;
+    if (settings.nativeStreamerBackend !== "gstreamer") {
+      settings.nativeStreamerBackend = "gstreamer";
+      migrated = true;
+    }
+    if (!settings.nativeExternalRenderer) {
+      settings.nativeExternalRenderer = true;
+      migrated = true;
+    }
+
+    return migrated;
   }
 
   private migrateLegacyShortcutDefaults(settings: Settings): boolean {

@@ -103,6 +103,13 @@ function getInputQueueColor(bufferedBytes: number, dropCount: number): string {
   return "var(--success)";
 }
 
+function getBitratePerformanceColor(percent: number): string {
+  if (percent <= 0) return "var(--ink-muted)";
+  if (percent >= 70 && percent <= 110) return "var(--success)";
+  if (percent >= 45 && percent < 130) return "var(--warning)";
+  return "var(--error)";
+}
+
 function getLagReasonLabel(reason: StreamLagReason): string {
   switch (reason) {
     case "network":
@@ -187,14 +194,34 @@ function StreamStatsHud({
   serverRegion?: string;
 }): JSX.Element {
   const stats = useStreamDiagnosticsStore(diagnosticsStore);
-  const bitrateMbps = (stats.bitrateKbps / 1000).toFixed(1);
-  const hasResolution = stats.resolution && stats.resolution !== "";
+  const hasLiveBitrate = stats.bitrateKbps > 0;
+  const bitrateKbps = hasLiveBitrate ? stats.bitrateKbps : stats.targetBitrateKbps;
+  const bitrateMbps = bitrateKbps > 0 ? (bitrateKbps / 1000).toFixed(1) : "--";
+  const bitrateLabel = hasLiveBitrate
+    ? `${bitrateMbps} Mbps`
+    : stats.targetBitrateKbps > 0
+      ? `Target ${bitrateMbps} Mbps`
+      : "-- Mbps";
+  const bitratePerformancePercent = stats.targetBitrateKbps > 0 && stats.bitrateKbps > 0
+    ? (stats.bitrateKbps / stats.targetBitrateKbps) * 100
+    : 0;
+  const bitratePerformanceText = bitratePerformancePercent > 0
+    ? `${bitratePerformancePercent.toFixed(0)}%`
+    : "--";
+  const bitratePerformanceColor = getBitratePerformanceColor(bitratePerformancePercent);
+  const hasResolution = stats.nativeRendererActive || stats.resolution !== "";
+  const displayFps = Math.max(stats.decodeFps, stats.renderFps);
+  const primaryText = hasResolution
+    ? `${stats.resolution || "Native renderer"}${displayFps > 0 ? ` · ${displayFps}fps` : ""}`
+    : "";
   const hasCodec = stats.codec && stats.codec !== "";
   const regionLabel = stats.serverRegion || serverRegion || "";
   const decodeColor = getTimingColor(stats.decodeTimeMs, 8, 16);
   const renderColor = getTimingColor(stats.renderTimeMs, 12, 22);
   const jitterBufferColor = getTimingColor(stats.jitterBufferDelayMs, 10, 24);
   const lossColor = getPacketLossColor(stats.packetLossPercent);
+  const lossLabel = stats.nativeRendererActive ? "Drop" : "Loss";
+  const lossTitle = stats.nativeRendererActive ? "Native renderer dropped frame percentage" : "Packet loss percentage";
   const dText = stats.decodeTimeMs > 0 ? `${stats.decodeTimeMs.toFixed(1)}ms` : "--";
   const rText = stats.renderTimeMs > 0 ? `${stats.renderTimeMs.toFixed(1)}ms` : "--";
   const jbText = stats.jitterBufferDelayMs > 0 ? `${stats.jitterBufferDelayMs.toFixed(1)}ms` : "--";
@@ -208,7 +235,7 @@ function StreamStatsHud({
     <div className="sv-stats">
       <div className="sv-stats-head">
         {hasResolution ? (
-          <span className="sv-stats-primary">{stats.resolution} · {stats.decodeFps}fps</span>
+          <span className="sv-stats-primary">{primaryText}</span>
         ) : (
           <span className="sv-stats-primary sv-stats-wait">Connecting...</span>
         )}
@@ -222,7 +249,7 @@ function StreamStatsHud({
           {hasCodec ? stats.codec : "N/A"}
           {stats.isHdr && <span className="sv-stats-hdr">HDR</span>}
         </span>
-        <span className="sv-stats-sub-right">{bitrateMbps} Mbps</span>
+        <span className="sv-stats-sub-right">{bitrateLabel}</span>
       </div>
 
       <div className="sv-stats-metrics">
@@ -238,8 +265,11 @@ function StreamStatsHud({
         <span className="sv-stats-chip" title="JB = jitter buffer delay">
           JB <span className="sv-stats-chip-val" style={{ color: jitterBufferColor }}>{jbText}</span>
         </span>
-        <span className="sv-stats-chip" title="Packet loss percentage">
-          Loss <span className="sv-stats-chip-val" style={{ color: lossColor }}>{stats.packetLossPercent.toFixed(2)}%</span>
+        <span className="sv-stats-chip" title={lossTitle}>
+          {lossLabel} <span className="sv-stats-chip-val" style={{ color: lossColor }}>{stats.packetLossPercent.toFixed(2)}%</span>
+        </span>
+        <span className="sv-stats-chip" title="Actual receive bitrate compared with the negotiated target">
+          Bit <span className="sv-stats-chip-val" style={{ color: bitratePerformanceColor }}>{bitratePerformanceText}</span>
         </span>
         <span className="sv-stats-chip" title="Input queue pressure (buffered bytes and delayed flush)">
           IQ <span className="sv-stats-chip-val" style={{ color: inputQueueColor }}>{inputQueueText}</span>
@@ -264,6 +294,12 @@ function StreamStatsHud({
       <div className="sv-stats-foot">
         Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · PR peak {(stats.partiallyReliableInputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms · residual {mouseResidualText}
       </div>
+
+      {(stats.hardwareAcceleration || stats.colorCodec) && (
+        <div className="sv-stats-foot">
+          {[stats.hardwareAcceleration, stats.colorCodec].filter(Boolean).join(" · ")}
+        </div>
+      )}
 
       {(stats.decoderPressureActive || stats.decoderRecoveryAttempts > 0) && (
         <div className="sv-stats-foot">
@@ -470,7 +506,7 @@ function StreamTitleBar({
 }): JSX.Element | null {
   const hasResolution = useStreamDiagnosticsSelector(
     diagnosticsStore,
-    (stats) => stats.resolution !== "",
+    (stats) => stats.nativeRendererActive || stats.resolution !== "",
   );
 
   if (!hasResolution || !showHints) {
@@ -499,7 +535,7 @@ function StreamEmptyState({
 }): JSX.Element | null {
   const hasResolution = useStreamDiagnosticsSelector(
     diagnosticsStore,
-    (stats) => stats.resolution !== "",
+    (stats) => stats.nativeRendererActive || stats.resolution !== "",
   );
 
   if (hasResolution) {
@@ -541,13 +577,13 @@ function VideoFocusOnReady({
   isConnecting: boolean;
   videoRef: React.RefObject<HTMLVideoElement | null>;
 }): null {
-  const hasResolution = useStreamDiagnosticsSelector(
+  const shouldFocusVideo = useStreamDiagnosticsSelector(
     diagnosticsStore,
-    (stats) => stats.resolution !== "",
+    (stats) => stats.resolution !== "" && !stats.nativeRendererActive,
   );
 
   useEffect(() => {
-    if (!isConnecting && videoRef.current && hasResolution) {
+    if (!isConnecting && videoRef.current && shouldFocusVideo) {
       const timer = window.setTimeout(() => {
         if (videoRef.current && document.activeElement !== videoRef.current) {
           videoRef.current.focus();
@@ -556,7 +592,7 @@ function VideoFocusOnReady({
       }, 100);
       return () => clearTimeout(timer);
     }
-  }, [hasResolution, isConnecting, videoRef]);
+  }, [isConnecting, shouldFocusVideo, videoRef]);
 
   return null;
 }
@@ -623,6 +659,11 @@ export function StreamView({
     typeof window.openNow?.listScreenshots === "function" &&
     typeof window.openNow?.deleteScreenshot === "function" &&
     typeof window.openNow?.saveScreenshotAs === "function";
+  const nativeRendererActive = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => stats.nativeRendererActive,
+  );
+  const showStatsHud = showStats && !nativeRendererActive && !isConnecting;
 
   // Recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -1279,6 +1320,81 @@ export function StreamView({
   }, [audioRef]);
 
   useEffect(() => {
+    const updateSurface = window.openNow?.updateNativeRenderSurface;
+    if (typeof updateSurface !== "function") {
+      return undefined;
+    }
+
+    let frame = 0;
+    const publish = (): void => {
+      const element = localVideoRef.current;
+      const dpr = window.devicePixelRatio || 1;
+      if (!element || document.visibilityState === "hidden") {
+        updateSurface({ rect: null, visible: false, deviceScaleFactor: dpr });
+        return;
+      }
+
+      const rect = element.getBoundingClientRect();
+      const width = Math.round(rect.width * dpr);
+      const height = Math.round(rect.height * dpr);
+      const visible = width >= 2 && height >= 2;
+      updateSurface({
+        deviceScaleFactor: dpr,
+        visible,
+        showStats,
+        rect: visible
+          ? {
+              x: Math.round(rect.left * dpr),
+              y: Math.round(rect.top * dpr),
+              width,
+              height,
+            }
+          : null,
+      });
+    };
+
+    const schedule = (): void => {
+      if (frame !== 0) {
+        return;
+      }
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        publish();
+      });
+    };
+
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+    if (observer && localVideoRef.current) {
+      observer.observe(localVideoRef.current);
+    }
+
+    window.addEventListener("resize", schedule);
+    window.addEventListener("fullscreenchange", schedule);
+    document.addEventListener("visibilitychange", schedule);
+    window.visualViewport?.addEventListener("resize", schedule);
+    window.visualViewport?.addEventListener("scroll", schedule);
+    schedule();
+
+    return () => {
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame);
+      }
+      observer?.disconnect();
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("fullscreenchange", schedule);
+      document.removeEventListener("visibilitychange", schedule);
+      window.visualViewport?.removeEventListener("resize", schedule);
+      window.visualViewport?.removeEventListener("scroll", schedule);
+      updateSurface({
+        rect: null,
+        visible: false,
+        deviceScaleFactor: window.devicePixelRatio || 1,
+        showStats: false,
+      });
+    };
+  }, [showStats]);
+
+  useEffect(() => {
     const handlePointerLockChange = () => {
       setIsPointerLocked(document.pointerLockElement === localVideoRef.current);
     };
@@ -1930,7 +2046,7 @@ export function StreamView({
       )}
 
       {/* Stats HUD (top-right) */}
-      {showStats && !isConnecting && (
+      {(showStatsHud || showStats) && !isConnecting && (
         <StreamStatsHud diagnosticsStore={diagnosticsStore} serverRegion={serverRegion} />
       )}
 

@@ -22,8 +22,11 @@ import type {
   SavedAccount,
   Settings,
   SubscriptionInfo,
+  SignalingConnectRequest,
+  StreamSettings,
   StreamRegion,
   VideoCodec,
+  NativeStreamStats,
   PrintedWasteQueueData,
   PrintedWasteServerMapping,
 } from "@shared/gfn";
@@ -70,7 +73,7 @@ import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
 const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 const allResolutionOptions = ["1280x720", "1280x800", "1440x900", "1680x1050", "1920x1080", "1920x1200", "2560x1080", "2560x1440", "2560x1600", "3440x1440", "3840x2160", "3840x2400"];
-const fpsOptions = [30, 60, 120, 144, 240];
+const fpsOptions = [30, 60, 120, 144, 165, 240];
 const aspectRatioOptions = ["16:9", "16:10", "21:9", "32:9"] as const;
 
 const RESOLUTION_TO_ASPECT_RATIO: Record<string, string> = {
@@ -495,11 +498,15 @@ function defaultDiagnostics(): StreamDiagnostics {
   return {
     connectionState: "closed",
     inputReady: false,
+    nativeRendererActive: false,
     connectedGamepads: 0,
     resolution: "",
     codec: "",
+    hardwareAcceleration: "",
+    colorCodec: "",
     isHdr: false,
     bitrateKbps: 0,
+    targetBitrateKbps: 0,
     decodeFps: 0,
     renderFps: 0,
     packetsLost: 0,
@@ -534,6 +541,44 @@ function defaultDiagnostics(): StreamDiagnostics {
     decoderRecoveryAction: "none",
     micState: "uninitialized",
     micEnabled: false,
+  };
+}
+
+function mergeNativeStreamStats(
+  current: StreamDiagnostics,
+  stats: NativeStreamStats,
+): StreamDiagnostics {
+  const sinkDropped = stats.sinkDropped ?? 0;
+  const sinkRendered = stats.sinkRendered ?? stats.framesRendered;
+  const totalSinkFrames = sinkRendered + sinkDropped;
+  const dropPercent = totalSinkFrames > 0 ? (sinkDropped / totalSinkFrames) * 100 : 0;
+  const hardwareAcceleration = [
+    stats.hardwareAcceleration || "GStreamer native decode",
+    stats.zeroCopy && stats.memoryMode ? `${stats.memoryMode} zero-copy` : "",
+    !stats.zeroCopy && stats.memoryMode ? stats.memoryMode : "",
+    !stats.memoryMode && stats.zeroCopyD3D12 ? "D3D12 zero-copy" : "",
+    !stats.memoryMode && stats.zeroCopyD3D11 ? "D3D11 zero-copy" : "",
+  ].filter(Boolean).join(" · ");
+
+  return {
+    ...current,
+    connectionState: "connected",
+    inputReady: current.inputReady,
+    nativeRendererActive: true,
+    resolution: stats.resolution || current.resolution,
+    codec: stats.codec || current.codec,
+    hardwareAcceleration,
+    bitrateKbps: stats.bitrateKbps,
+    targetBitrateKbps: stats.targetBitrateKbps,
+    decodeFps: Math.round(stats.decodedFps),
+    renderFps: Math.round(stats.renderFps),
+    framesReceived: stats.framesDecoded,
+    framesDecoded: stats.framesDecoded,
+    framesDropped: sinkDropped,
+    packetLossPercent: dropPercent,
+    lagReason: dropPercent > 1 ? "render" : "stable",
+    lagReasonDetail: `Native bitrate ${stats.bitratePerformancePercent.toFixed(0)}% of target`,
+    decoderPressureActive: false,
   };
 }
 
@@ -914,6 +959,12 @@ export function App(): JSX.Element {
     posterSizeScale: 1,
     fps: 60,
     maxBitrateMbps: 75,
+    streamClientMode: "web",
+    nativeStreamerBackend: "gstreamer",
+    nativeStreamerExecutablePath: "",
+    nativeCloudGsyncMode: "auto",
+    nativeD3dFullscreenMode: "auto",
+    nativeExternalRenderer: true,
     codec: DEFAULT_STREAM_PREFERENCES.codec,
     decoderPreference: "auto",
     encoderPreference: "auto",
@@ -1020,6 +1071,7 @@ export function App(): JSX.Element {
   const codecTestPromiseRef = useRef<Promise<CodecTestResult[] | null> | null>(null);
   const codecStartupTestAttemptedRef = useRef(false);
   const navbarSessionActionInFlightRef = useRef<"resume" | "terminate" | null>(null);
+  const nativeStreamingRef = useRef(false);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
     setShowStatsOverlay(settings.showStatsOnLaunch);
@@ -1250,6 +1302,7 @@ export function App(): JSX.Element {
   const claimResumePromisesRef = useRef<Map<string, Promise<void>>>(new Map());
   const launchAbortRef = useRef(false);
   const streamStatusRef = useRef<StreamStatus>(streamStatus);
+  const nativeInputProtocolVersionRef = useRef<number | null>(null);
   const stableRecoveryResetTimerRef = useRef<number | null>(null);
   const remoteIceGraceTimerRef = useRef<number | null>(null);
   const remoteIceSeenForSessionRef = useRef<string | null>(null);
@@ -1514,6 +1567,7 @@ export function App(): JSX.Element {
     setRemoteStreamWarning(null);
     setLocalSessionTimerWarning(null);
     resetStatsOverlayToPreference();
+    nativeStreamingRef.current = false;
     diagnosticsStore.set(defaultDiagnostics());
 
     if (!options?.keepStreamingContext) {
@@ -1533,6 +1587,48 @@ export function App(): JSX.Element {
     clearRuntimeSnapshot();
   }, [diagnosticsStore, resetStatsOverlayToPreference, settings.discordRichPresence]);
 
+  const buildCurrentStreamSettings = useCallback((): StreamSettings => ({
+    resolution: settings.resolution,
+    fps: settings.fps,
+    maxBitrateMbps: settings.maxBitrateMbps,
+    codec: settings.codec,
+    colorQuality: settings.colorQuality,
+    keyboardLayout: settings.keyboardLayout,
+    gameLanguage: settings.gameLanguage,
+    enableL4S: settings.enableL4S,
+    enableCloudGsync: settings.enableCloudGsync,
+    clientMode: settings.streamClientMode,
+    nativeStreamerBackend: "gstreamer",
+    nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
+  }), [
+    settings.codec,
+    settings.colorQuality,
+    settings.enableCloudGsync,
+    settings.enableL4S,
+    settings.fps,
+    settings.gameLanguage,
+    settings.keyboardLayout,
+    settings.maxBitrateMbps,
+    settings.nativeCloudGsyncMode,
+    settings.resolution,
+    settings.streamClientMode,
+  ]);
+
+  const buildSignalingConnectRequest = useCallback((activeSession: SessionInfo): SignalingConnectRequest => {
+    const streamSettings = buildCurrentStreamSettings();
+    return {
+      sessionId: activeSession.sessionId,
+      signalingServer: activeSession.signalingServer,
+      signalingUrl: activeSession.signalingUrl,
+      nativeStreamer: {
+        session: activeSession,
+        settings: {
+          ...streamSettings,
+          enableCloudGsync: activeSession.negotiatedStreamProfile?.enableCloudGsync ?? streamSettings.enableCloudGsync,
+        },
+      },
+    };
+  }, [buildCurrentStreamSettings]);
   const resetSignalingRecoveryState = useCallback((options?: {
     keepExplicitShutdown?: boolean;
   }): void => {
@@ -2328,7 +2424,8 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     const isSessionConnecting = streamStatus === "connecting" || streamStatus === "streaming";
-    if (!settings.autoFullScreen || !isSessionConnecting) {
+    const isNativeStreamerSession = settings.streamClientMode === "native" || nativeStreamingRef.current;
+    if (!settings.autoFullScreen || !isSessionConnecting || isNativeStreamerSession) {
       autoFullscreenRequestedRef.current = false;
       return;
     }
@@ -2339,7 +2436,7 @@ export function App(): JSX.Element {
 
     autoFullscreenRequestedRef.current = true;
     void setSessionFullscreen(true);
-  }, [sessionFullscreen, setSessionFullscreen, settings.autoFullScreen, streamStatus]);
+  }, [sessionFullscreen, setSessionFullscreen, settings.autoFullScreen, settings.streamClientMode, streamStatus]);
 
   // Anti-AFK interval
   useEffect(() => {
@@ -2984,15 +3081,12 @@ export function App(): JSX.Element {
 
     setSession(claimed);
     sessionRef.current = claimed;
+    nativeInputProtocolVersionRef.current = null;
     setQueuePosition(undefined);
     setLaunchError(null);
     setStreamStatus("connecting");
-    await window.openNow.connectSignaling({
-      sessionId: claimed.sessionId,
-      signalingServer: claimed.signalingServer,
-      signalingUrl: claimed.signalingUrl,
-    });
-  }, [disconnectSignalingControlled, isRecoveryGenerationCurrent]);
+    await window.openNow.connectSignaling(buildSignalingConnectRequest(claimed));
+  }, [buildSignalingConnectRequest, disconnectSignalingControlled, isRecoveryGenerationCurrent]);
 
   const claimAndConnectSession = useCallback(async (existingSession: ActiveSessionInfo): Promise<void> => {
     const sid = existingSession.sessionId;
@@ -3036,17 +3130,7 @@ export function App(): JSX.Element {
           sessionId: existingSession.sessionId,
           ...resolveResumeIdentity(existingSession.sessionId),
           appId: resolveSessionClaimAppId(existingSession),
-          settings: {
-            resolution: settings.resolution,
-            fps: settings.fps,
-            maxBitrateMbps: settings.maxBitrateMbps,
-            codec: settings.codec,
-            colorQuality: settings.colorQuality,
-            keyboardLayout: settings.keyboardLayout,
-            gameLanguage: settings.gameLanguage,
-            enableL4S: settings.enableL4S,
-            enableCloudGsync: settings.enableCloudGsync,
-          },
+          settings: buildCurrentStreamSettings(),
         });
 
         await applyClaimedSessionAndConnect(claimed);
@@ -3061,7 +3145,7 @@ export function App(): JSX.Element {
 
     claimResumePromisesRef.current.set(sid, resumePromiseHolder.promise);
     await resumePromiseHolder.promise;
-  }, [applyClaimedSessionAndConnect, authSession, effectiveStreamingBaseUrl, findGameContextForSession, resolveResumeIdentity, resolveSessionClaimAppId, settings]);
+  }, [applyClaimedSessionAndConnect, authSession, buildCurrentStreamSettings, effectiveStreamingBaseUrl, findGameContextForSession, resolveResumeIdentity, resolveSessionClaimAppId]);
 
   const attemptSessionRecovery = useCallback(async (reason: string): Promise<boolean> => {
     const recoveryState = signalingRecoveryRef.current;
@@ -3196,17 +3280,7 @@ export function App(): JSX.Element {
             ...resolveResumeIdentity(candidate.sessionId),
             recoveryMode: true,
             appId: resolveSessionClaimAppId(candidate),
-            settings: {
-              resolution: settings.resolution,
-              fps: settings.fps,
-              maxBitrateMbps: settings.maxBitrateMbps,
-              codec: settings.codec,
-              colorQuality: settings.colorQuality,
-              keyboardLayout: settings.keyboardLayout,
-              gameLanguage: settings.gameLanguage,
-              enableL4S: settings.enableL4S,
-              enableCloudGsync: settings.enableCloudGsync,
-            },
+            settings: buildCurrentStreamSettings(),
           });
           if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
             console.log("[Recovery] Discarding claimed session due to stale recovery generation");
@@ -3256,11 +3330,114 @@ export function App(): JSX.Element {
     isRecoveryGenerationCurrent,
     resolveResumeIdentity,
     resolveSessionClaimAppId,
-    settings,
+    buildCurrentStreamSettings,
   ]);
 
   // Signaling events
   useEffect(() => {
+    const ensureWebRtcClient = (): GfnWebRtcClient | null => {
+      if (clientRef.current) {
+        return clientRef.current;
+      }
+      if (!videoRef.current || !audioRef.current) {
+        return null;
+      }
+
+      clientRef.current = new GfnWebRtcClient({
+        videoElement: videoRef.current,
+        audioElement: audioRef.current,
+        autoFullScreen: settings.autoFullScreen,
+        microphoneMode: settings.microphoneMode,
+        microphoneDeviceId: settings.microphoneDeviceId || undefined,
+        mouseSensitivity: settings.mouseSensitivity,
+        mouseAcceleration: settings.mouseAcceleration,
+        onLog: (line: string) => console.log(`[WebRTC] ${line}`),
+        onStats: (stats) => diagnosticsStore.set(stats),
+        onTimeWarning: (warning) => {
+          setRemoteStreamWarning({
+            code: warning.code,
+            message: warningMessage(warning.code),
+            tone: warningTone(warning.code),
+            secondsLeft: warning.secondsLeft,
+          });
+        },
+        onMicStateChange: (state) => {
+          console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
+        },
+        onIceConnectionStateChange: (iceState) => {
+          latestIceConnectionStateRef.current = iceState;
+          if (iceDisconnectedRecoveryTimerRef.current !== null) {
+            window.clearTimeout(iceDisconnectedRecoveryTimerRef.current);
+            iceDisconnectedRecoveryTimerRef.current = null;
+          }
+          if (appUnloadingRef.current) {
+            return;
+          }
+          if (streamStatusRef.current !== "streaming") {
+            return;
+          }
+          if (iceState === "failed") {
+            console.warn("[Recovery] ICE failed; attempting targeted recovery");
+            void attemptSessionRecovery("ICE failed").catch((error) => {
+              console.error("[Recovery] ICE-failed recovery failed:", error);
+            });
+            return;
+          }
+          if (iceState === "disconnected") {
+            iceDisconnectedRecoveryTimerRef.current = window.setTimeout(() => {
+              iceDisconnectedRecoveryTimerRef.current = null;
+              if (appUnloadingRef.current || streamStatusRef.current !== "streaming") {
+                return;
+              }
+              if (latestIceConnectionStateRef.current !== "disconnected") {
+                return;
+              }
+              console.warn("[Recovery] ICE remained disconnected; attempting targeted recovery");
+              void attemptSessionRecovery("ICE disconnected timeout").catch((error) => {
+                console.error("[Recovery] ICE-disconnected recovery failed:", error);
+              });
+            }, ICE_DISCONNECTED_RECOVERY_GRACE_MS);
+          }
+        },
+        onControllerMetaPress: () => {
+          handleControllerMetaToggle();
+        },
+      });
+      clientRef.current.inputPaused = controllerOverlayOpenRef.current;
+      clientRef.current.setOutputVolume(streamVolume);
+      clientRef.current.setMicrophoneLevel(streamMicLevel);
+      if (settings.microphoneMode !== "disabled") {
+        void clientRef.current.startMicrophone();
+      }
+      return clientRef.current;
+    };
+
+    const activateNativeInputForCurrentSession = (protocolVersion?: number): void => {
+      const activeSession = sessionRef.current;
+      if (!activeSession) {
+        console.warn("[App] Received native stream event but no active session in sessionRef!");
+        return;
+      }
+      const client = ensureWebRtcClient();
+      if (!client) {
+        console.warn("[App] Native stream event received before media elements were ready");
+        return;
+      }
+
+      nativeStreamingRef.current = true;
+      pendingControlledDisconnectsRef.current = 0;
+      client.activateNativeInput(protocolVersion, {
+        codec: settings.codec,
+        colorQuality: settings.colorQuality,
+        resolution: settings.resolution,
+        fps: settings.fps,
+        maxBitrateKbps: settings.maxBitrateMbps * 1000,
+      });
+      setLaunchError(null);
+      setStreamStatus("streaming");
+      scheduleStableRecoveryReset(activeSession.sessionId);
+    };
+
     const unsubscribe = window.openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {
       console.log(`[App] Signaling event: ${event.type}`, event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "", event.type === "remote-ice" ? event.candidate : "");
       try {
@@ -3313,77 +3490,10 @@ export function App(): JSX.Element {
             iceServersCount: activeSession.iceServers?.length,
           }));
 
-          if (!clientRef.current && videoRef.current && audioRef.current) {
-            clientRef.current = new GfnWebRtcClient({
-              videoElement: videoRef.current,
-              audioElement: audioRef.current,
-              autoFullScreen: settings.autoFullScreen,
-              microphoneMode: settings.microphoneMode,
-              microphoneDeviceId: settings.microphoneDeviceId || undefined,
-              mouseSensitivity: settings.mouseSensitivity,
-              mouseAcceleration: settings.mouseAcceleration,
-              onLog: (line: string) => console.log(`[WebRTC] ${line}`),
-              onStats: (stats) => diagnosticsStore.set(stats),
-              onTimeWarning: (warning) => {
-                setRemoteStreamWarning({
-                  code: warning.code,
-                  message: warningMessage(warning.code),
-                  tone: warningTone(warning.code),
-                  secondsLeft: warning.secondsLeft,
-                });
-              },
-              onMicStateChange: (state) => {
-                console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
-              },
-              onIceConnectionStateChange: (iceState) => {
-                latestIceConnectionStateRef.current = iceState;
-                if (iceDisconnectedRecoveryTimerRef.current !== null) {
-                  window.clearTimeout(iceDisconnectedRecoveryTimerRef.current);
-                  iceDisconnectedRecoveryTimerRef.current = null;
-                }
-                if (appUnloadingRef.current) {
-                  return;
-                }
-                if (streamStatusRef.current !== "streaming") {
-                  return;
-                }
-                if (iceState === "failed") {
-                  console.warn("[Recovery] ICE failed; attempting targeted recovery");
-                  void attemptSessionRecovery("ICE failed").catch((error) => {
-                    console.error("[Recovery] ICE-failed recovery failed:", error);
-                  });
-                  return;
-                }
-                if (iceState === "disconnected") {
-                  iceDisconnectedRecoveryTimerRef.current = window.setTimeout(() => {
-                    iceDisconnectedRecoveryTimerRef.current = null;
-                    if (appUnloadingRef.current || streamStatusRef.current !== "streaming") {
-                      return;
-                    }
-                    if (latestIceConnectionStateRef.current !== "disconnected") {
-                      return;
-                    }
-                    console.warn("[Recovery] ICE remained disconnected; attempting targeted recovery");
-                    void attemptSessionRecovery("ICE disconnected timeout").catch((error) => {
-                      console.error("[Recovery] ICE-disconnected recovery failed:", error);
-                    });
-                  }, ICE_DISCONNECTED_RECOVERY_GRACE_MS);
-                }
-              },
-              onControllerMetaPress: () => {
-                handleControllerMetaToggle();
-              },
-            });
-            clientRef.current.inputPaused = controllerOverlayOpenRef.current;
-            clientRef.current.setOutputVolume(streamVolume);
-            clientRef.current.setMicrophoneLevel(streamMicLevel);
-            if (settings.microphoneMode !== "disabled") {
-              void clientRef.current.startMicrophone();
-            }
-          }
+          const client = ensureWebRtcClient();
 
-          if (clientRef.current) {
-            await clientRef.current.handleOffer(event.sdp, activeSession, {
+          if (client) {
+            await client.handleOffer(event.sdp, activeSession, {
               codec: settings.codec,
               colorQuality: settings.colorQuality,
               resolution: settings.resolution,
@@ -3400,6 +3510,63 @@ export function App(): JSX.Element {
                 ? `${activeSession.mediaConnectionInfo.ip}:${activeSession.mediaConnectionInfo.port}`
                 : "n/a",
             );
+          }
+        } else if (event.type === "native-stream-started") {
+          console.log("[App] Native streamer started:", event.message ?? "");
+          activateNativeInputForCurrentSession(nativeInputProtocolVersionRef.current ?? undefined);
+        } else if (event.type === "native-input-ready") {
+          console.log("[App] Native input protocol ready:", event.protocolVersion);
+          nativeInputProtocolVersionRef.current = event.protocolVersion;
+          clientRef.current?.setNativeInputProtocolVersion(event.protocolVersion);
+          if (nativeStreamingRef.current || sessionRef.current) {
+            activateNativeInputForCurrentSession(event.protocolVersion);
+          }
+        } else if (event.type === "native-stream-stats") {
+          diagnosticsStore.set(mergeNativeStreamStats(
+            diagnosticsStore.getSnapshot(),
+            event.stats,
+          ));
+        } else if (event.type === "native-stream-stopped") {
+          const reason = event.reason ?? "Native streamer stopped";
+          console.warn("[App] Native streamer stopped:", reason);
+          nativeStreamingRef.current = false;
+          nativeInputProtocolVersionRef.current = null;
+          clientRef.current?.dispose();
+          clientRef.current = null;
+          launchInFlightRef.current = false;
+
+          if (appUnloadingRef.current) {
+            console.log("[Recovery] Ignoring native streamer stop during app shutdown");
+            return;
+          }
+          if (
+            signalingRecoveryRef.current.explicitShutdown
+            || !RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)
+          ) {
+            console.log("[Recovery] Ignoring native streamer stop after explicit shutdown or non-recoverable status");
+            return;
+          }
+
+          const recovered = await attemptSessionRecovery(reason).catch((error) => {
+            console.error("[Recovery] Native streamer recovery failed:", error);
+            return false;
+          });
+          if (!recovered) {
+            if (
+              signalingRecoveryRef.current.explicitShutdown
+              || !RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)
+            ) {
+              console.log("[Recovery] Ignoring native streamer stop after explicit shutdown or non-recoverable status");
+              return;
+            }
+            setLaunchError({
+              stage: streamStatusToLoadingStage(streamStatusRef.current),
+              title: "Native Streamer Stopped",
+              description: "The native streaming process stopped and could not be restored automatically. Try resuming the session again from the app.",
+            });
+            resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
+            void refreshNavbarActiveSession();
+            launchInFlightRef.current = false;
           }
         } else if (event.type === "remote-ice") {
           remoteIceSeenForSessionRef.current = sessionRef.current?.sessionId ?? null;
@@ -3506,7 +3673,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [attemptSessionRecovery, diagnosticsStore, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings]);
+  }, [attemptSessionRecovery, diagnosticsStore, handleControllerMetaToggle, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string }) => {
@@ -3653,17 +3820,7 @@ export function App(): JSX.Element {
         existingSessionStrategy,
         proxyUrl: sessionProxyUrl || undefined,
         zone: "prod",
-        settings: {
-          resolution: settings.resolution,
-          fps: settings.fps,
-          maxBitrateMbps: settings.maxBitrateMbps,
-          codec: settings.codec,
-          colorQuality: settings.colorQuality,
-          keyboardLayout: settings.keyboardLayout,
-          gameLanguage: settings.gameLanguage,
-          enableL4S: settings.enableL4S,
-          enableCloudGsync: settings.enableCloudGsync,
-        },
+        settings: buildCurrentStreamSettings(),
       });
 
       setSession(newSession);
@@ -3787,11 +3944,7 @@ export function App(): JSX.Element {
         status: sessionToConnect.status,
       });
 
-      await window.openNow.connectSignaling({
-        sessionId: sessionToConnect.sessionId,
-        signalingServer: sessionToConnect.signalingServer,
-        signalingUrl: sessionToConnect.signalingUrl,
-      });
+      await window.openNow.connectSignaling(buildSignalingConnectRequest(sessionToConnect));
     } catch (error) {
       if (launchAbortRef.current) {
         return;
@@ -3809,6 +3962,7 @@ export function App(): JSX.Element {
   }, [
     authSession,
     allKnownGames,
+    buildSignalingConnectRequest,
     claimAndConnectSession,
     effectiveStreamingBaseUrl,
     refreshNavbarActiveSession,

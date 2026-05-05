@@ -126,7 +126,7 @@ test("buildNvstSdp includes stream quality and partially reliable input paramete
     "a=vqos.bw.peakBitrateKbps:80000",
     "a=video.bitDepth:10",
     "a=vqos.drc.enable:0",
-    "a=vqos.dfc.enable:0",
+    "a=vqos.dfc.enable:1",
     "a=vqos.resControl.cpmRtc.enable:0",
     "a=ri.partialReliableThresholdMs:16",
     "a=ri.hidDeviceMask:128",

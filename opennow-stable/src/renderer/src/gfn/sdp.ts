@@ -4,6 +4,12 @@ import {
   PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
 } from "./inputProtocol";
 
+// Match the official web client's 240 FPS profile. Disabling split encode at
+// this frame rate can leave H265 streams smeared because the server/client
+// repair and frame-state assumptions no longer line up.
+const ENABLE_240_FPS_SPLIT_ENCODE = true;
+const ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES = true;
+
 interface IceCredentials {
   ufrag: string;
   pwd: string;
@@ -486,12 +492,27 @@ export function buildNvstSdp(params: NvstParams): string {
     "a=vqos.fec.repairMinPercent:5",
     "a=vqos.fec.repairPercent:5",
     "a=vqos.fec.repairMaxPercent:35",
-    // DRC — always disabled to allow full bitrate
+    // Official dynamicStreamingMode=0 path disables server resolution/FPS switching.
+    "a=vqos.dynamicStreamingMode:0",
     "a=vqos.drc.enable:0",
   ];
 
-  // Force-disable dynamic frame control to avoid server-side FPS/resolution adaptation.
-  lines.push("a=vqos.dfc.enable:0");
+  if (isHighFps) {
+    lines.push(
+      "a=vqos.dfc.enable:1",
+      "a=vqos.dfc.decodeFpsAdjPercent:85",
+      "a=vqos.dfc.targetDownCooldownMs:250",
+      `a=vqos.dfc.dfcAlgoVersion:${is120Fps || is240Fps ? 2 : 1}`,
+      `a=vqos.dfc.minTargetFps:${is120Fps || is240Fps ? 100 : 60}`,
+      "a=vqos.resControl.dfc.useClientFpsPerf:0",
+      "a=vqos.dfc.adjustResAndFps:0",
+    );
+  } else {
+    lines.push(
+      "a=vqos.dfc.enable:0",
+      "a=vqos.dfc.adjustResAndFps:0",
+    );
+  }
 
   // Video encoder settings
   lines.push(
@@ -525,12 +546,18 @@ export function buildNvstSdp(params: NvstParams): string {
     lines.push(
       "a=video.enableNextCaptureMode:1",
       "a=vqos.maxStreamFpsEstimate:240",
-      "a=video.videoSplitEncodeStripsPerFrame:3",
-      "a=video.updateSplitEncodeStateDynamically:1",
     );
+    if (ENABLE_240_FPS_SPLIT_ENCODE) {
+      lines.push(
+        "a=video.videoSplitEncodeStripsPerFrame:3",
+        `a=video.updateSplitEncodeStateDynamically:${ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES ? 1 : 0}`,
+        "a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535",
+        "a=vqos.rtcPreemptiveIdrSettings.minNackPacketCaptureAgeMs:65535",
+      );
+    }
   }
 
-  // Out-of-focus handling + disable ALL dynamic resolution control
+  // Out-of-focus handling + disable CPM-based resolution changes
   lines.push(
     "a=vqos.adjustStreamingFpsDuringOutOfFocus:1",
     "a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1",

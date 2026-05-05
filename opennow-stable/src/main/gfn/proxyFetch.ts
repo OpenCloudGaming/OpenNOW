@@ -1,5 +1,3 @@
-import { session as electronSession } from "electron";
-
 import { normalizeSessionProxyUrl, sessionProxyPartitionForUrl } from "./proxyUrl";
 
 type ElectronSessionWithFetch = Electron.Session & {
@@ -16,6 +14,7 @@ export async function fetchWithOptionalProxy(
     return fetch(input, init);
   }
 
+  const { session: electronSession } = await import("electron");
   const proxySession = electronSession.fromPartition(sessionProxyPartitionForUrl(normalizedProxyUrl), { cache: false }) as ElectronSessionWithFetch;
   await proxySession.setProxy({ proxyRules: normalizedProxyUrl });
 
