@@ -35,6 +35,8 @@ export interface Settings {
   colorQuality: ColorQuality;
   /** Preferred region URL (empty = auto) */
   region: string;
+  /** Optional proxy used only for Nvidia session creation and queue polling */
+  sessionProxyUrl: string;
   /** Enable clipboard paste into stream */
   clipboardPaste: boolean;
   /** Mouse sensitivity multiplier */
@@ -152,6 +154,7 @@ const DEFAULT_SETTINGS: Settings = {
   encoderPreference: "auto",
   colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
   region: "",
+  sessionProxyUrl: "",
   clipboardPaste: false,
   mouseSensitivity: 1,
   mouseAcceleration: 1,

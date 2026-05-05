@@ -51,7 +51,7 @@ type SettingsSearchScopeId =
   | "thanks";
 
 const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string[]> = {
-  "stream-region": ["stream", "region", "latency", "ping", "server", "route", "auto best"],
+  "stream-region": ["stream", "region", "latency", "ping", "server", "route", "auto best", "proxy", "vpn", "queue", "session"],
   "stream-video": [
     "stream",
     "video",
@@ -1832,6 +1832,25 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     value={settings.maxBitrateMbps}
                     onChange={(e) => handleChange("maxBitrateMbps", parseInt(e.target.value, 10))}
                   />
+                </div>
+
+                <div className="settings-row settings-row--column">
+                  <label className="settings-label settings-label--wrap">
+                    <span className="settings-label-title">
+                      Session proxy
+                      <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
+                    </span>
+                  </label>
+                  <input
+                    type="text"
+                    className="settings-text-input"
+                    placeholder="http://127.0.0.1:8080"
+                    value={settings.sessionProxyUrl}
+                    onChange={(e) => handleChange("sessionProxyUrl", e.target.value)}
+                  />
+                  <span className="settings-subtle-hint">
+                    Used only for Nvidia session creation and queue polling. Streaming/signaling traffic is not proxied.
+                  </span>
                 </div>
 
                 <div className="settings-row settings-row--column">

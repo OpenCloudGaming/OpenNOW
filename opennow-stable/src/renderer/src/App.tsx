@@ -919,6 +919,7 @@ export function App(): JSX.Element {
     encoderPreference: "auto",
     colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
     region: "",
+    sessionProxyUrl: "",
     clipboardPaste: false,
     mouseSensitivity: 1,
     mouseAcceleration: 1,
@@ -3647,6 +3648,7 @@ export function App(): JSX.Element {
         internalTitle: game.title,
         accountLinked: chooseAccountLinked(game, selectedVariant),
         existingSessionStrategy,
+        proxyUrl: settings.sessionProxyUrl || undefined,
         zone: "prod",
         settings: {
           resolution: settings.resolution,
@@ -3731,6 +3733,7 @@ export function App(): JSX.Element {
           sessionId: newSession.sessionId,
           clientId: newSession.clientId,
           deviceId: newSession.deviceId,
+          proxyUrl: settings.sessionProxyUrl || undefined,
         });
 
         if (launchAbortRef.current) {
