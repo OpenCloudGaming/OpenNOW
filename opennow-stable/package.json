@@ -20,8 +20,9 @@
     "preview": "electron-vite preview",
     "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
     "dist:signed": "npm run build && electron-builder",
+    "lint": "oxlint src",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test src/shared/gfn.test.ts src/shared/networkError.test.ts src/renderer/src/lib/launchOwnership.test.ts src/renderer/src/components/GameCard.test.ts src/renderer/src/gfn/inputProtocol.test.ts src/renderer/src/gfn/webrtcClient.test.ts"
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "discord-rpc": "^4.0.1",
@@ -42,6 +43,7 @@
     "electron": "^41.1.1",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
+    "oxlint": "^1.62.0",
     "react-scan": "^0.5.3",
     "tsx": "^4.20.6",
     "typescript": "^6.0.2",
