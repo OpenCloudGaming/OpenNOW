@@ -51,6 +51,11 @@ function brewPrefix() {
   return result.status === 0 ? result.stdout.trim() || null : null;
 }
 
+function brewPrefixForPackage(packageName) {
+  const result = spawnSync("brew", ["--prefix", packageName], { encoding: "utf8" });
+  return result.status === 0 ? result.stdout.trim() || null : null;
+}
+
 function configuredCandidate(root, source) {
   return root ? { root, source } : null;
 }
@@ -99,11 +104,15 @@ function configureGstreamerSdk(env) {
   }
 
   if (process.platform === "darwin") {
+    const homebrewRoot = brewPrefix();
+    const homebrewGStreamerRoot = brewPrefixForPackage("gstreamer");
     const candidates = existingConfiguredCandidates([
       configuredCandidate(env.GSTREAMER_1_0_ROOT_MACOS, "GSTREAMER_1_0_ROOT_MACOS"),
       configuredCandidate("/Library/Frameworks/GStreamer.framework/Versions/1.0", "GStreamer framework version 1.0"),
       configuredCandidate("/Library/Frameworks/GStreamer.framework/Versions/Current", "GStreamer framework current"),
-      configuredCandidate(brewPrefix(), "Homebrew prefix"),
+      configuredCandidate(homebrewGStreamerRoot, "Homebrew gstreamer prefix"),
+      configuredCandidate(homebrewRoot && join(homebrewRoot, "opt", "gstreamer"), "Homebrew opt gstreamer"),
+      configuredCandidate(homebrewRoot, "Homebrew prefix"),
       configuredCandidate("/opt/homebrew", "default Homebrew Apple Silicon prefix"),
       configuredCandidate("/usr/local", "default Homebrew Intel prefix"),
     ]);
