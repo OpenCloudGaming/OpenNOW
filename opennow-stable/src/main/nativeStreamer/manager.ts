@@ -893,6 +893,8 @@ export class NativeStreamerManager {
     }
 
     const tail = this.formatStderrTail();
+    const hadActiveSession = this.activeSessionId !== null;
+    const stoppedReason = `process ended (${reason})`;
     console.warn(`[NativeStreamer] Process ended (${reason})${tail}`);
     this.child = null;
     this.stdoutBuffer = "";
@@ -901,6 +903,11 @@ export class NativeStreamerManager {
     this.capabilities = null;
     this.clearQueuedRemoteIce();
     this.rejectPending(new Error(`Native streamer process ended (${reason}).${tail}`));
+
+    if (hadActiveSession) {
+      this.options.emit({ type: "native-stream-stopped", reason: stoppedReason });
+      this.options.emit({ type: "error", message: `Native streamer ${stoppedReason}.${tail}` });
+    }
   }
 
   private appendStderr(line: string): void {

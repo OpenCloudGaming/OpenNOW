@@ -1283,16 +1283,6 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
       enablePersistingInGameSettings: true,
       secureRTSPSupported: false,
       userAge: 26,
-      requestedStreamingFeatures: {
-        reflex: shouldRequestReflex(settings),
-        bitDepth: 0,
-        cloudGsync: settings.enableCloudGsync,
-        profile: 0,
-        fallbackToLogicalResolution: false,
-        chromaFormat: 0,
-        prefilterMode: 0,
-        hudStreamingMode: 0,
-      },
     },
     metaData: [],
   };
