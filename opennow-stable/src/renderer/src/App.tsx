@@ -4722,6 +4722,7 @@ export function App(): JSX.Element {
             audioRef={audioRef}
             diagnosticsStore={diagnosticsStore}
             showStats={showStatsOverlay}
+            gstreamerEnabled={settings.streamClientMode === "native"}
             shortcuts={{
               toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
               togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),
