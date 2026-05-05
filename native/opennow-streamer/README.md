@@ -8,7 +8,7 @@ When built with `--features gstreamer`, the `gstreamer` backend initializes GStr
 
 Incoming RTP video is linked through an explicit low-latency decoder path when the required platform plugins are installed:
 
-- Windows: D3D12, then D3D11, then software fallback.
+- Windows: D3D12 for high-FPS sessions, otherwise D3D11, then software fallback.
 - macOS: VideoToolbox, then software fallback.
 - Linux x64: VAAPI, then V4L2, then software fallback.
 - Raspberry Pi / Linux arm64: V4L2 stateless, then VAAPI, then software fallback.
