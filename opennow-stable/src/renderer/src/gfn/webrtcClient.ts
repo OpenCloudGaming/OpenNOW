@@ -1892,7 +1892,11 @@ export class GfnWebRtcClient {
     this.emitStats();
     this.detachInputCapture();
     this.inputPaused = false;
-    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller polling is handled by the native renderer.`);
+    // Restart the polling loop for Meta/Home button detection. Full gamepad
+    // state forwarding is suppressed inside pollGamepads() when nativeInputActive
+    // is true so the native renderer remains the sole source for controller input.
+    this.setupGamepadPolling();
+    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller meta detection active, gamepad forwarding handled by native renderer.`);
   }
 
   public setNativeInputProtocolVersion(protocolVersion: number): void {
@@ -2168,7 +2172,9 @@ export class GfnWebRtcClient {
         }
 
         // Read and encode gamepad state
-        if (streamInputBlocked) {
+        // Skip forwarding to the stream if input is blocked (dashboard open) or
+        // the native renderer is handling controller input directly.
+        if (streamInputBlocked || this.nativeInputActive) {
           continue;
         }
         const gamepadInput = this.readGamepadState(gamepad, i);
