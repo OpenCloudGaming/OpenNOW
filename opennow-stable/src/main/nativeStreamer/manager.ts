@@ -689,6 +689,17 @@ export class NativeStreamerManager {
   private resolveExecutablePath(): string {
     const exeName = nativeStreamerExecutableName();
     const platformKey = nativeStreamerPlatformKey();
+    const bundledCandidates = [
+      join(process.resourcesPath, "native", "opennow-streamer", platformKey, exeName),
+      join(process.resourcesPath, "native", "opennow-streamer", exeName),
+    ];
+    if (app.isPackaged) {
+      const bundled = bundledCandidates.find((candidate) => isExistingFile(candidate));
+      if (bundled) {
+        return bundled;
+      }
+    }
+
     const configuredPath = this.options.getExecutablePathOverride().trim();
     if (configuredPath) {
       if (isExistingFile(configuredPath)) {
@@ -706,8 +717,7 @@ export class NativeStreamerManager {
 
     const candidates = [
       process.env.OPENNOW_NATIVE_STREAMER,
-      join(process.resourcesPath, "native", "opennow-streamer", platformKey, exeName),
-      join(process.resourcesPath, "native", "opennow-streamer", exeName),
+      ...bundledCandidates,
       resolve(this.options.mainDir, "../../../native/opennow-streamer/bin", platformKey, exeName),
       resolve(this.options.mainDir, "../../../native/opennow-streamer/bin", exeName),
       resolve(this.options.mainDir, "../../../native/opennow-streamer/dist", platformKey, exeName),
