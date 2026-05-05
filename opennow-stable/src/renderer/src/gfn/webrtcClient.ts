@@ -1892,7 +1892,11 @@ export class GfnWebRtcClient {
     this.emitStats();
     this.detachInputCapture();
     this.inputPaused = false;
-    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller polling is handled by the native renderer.`);
+    // Restart the polling loop for Meta/Home button detection. Full gamepad
+    // state forwarding is suppressed inside pollGamepads() when nativeInputActive
+    // is true so the native renderer remains the sole source for controller input.
+    this.setupGamepadPolling();
+    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller meta detection active, gamepad forwarding handled by native renderer.`);
   }
 
   public setNativeInputProtocolVersion(protocolVersion: number): void {
@@ -2092,7 +2096,7 @@ export class GfnWebRtcClient {
   }
 
   private getGamepadPollIntervalMs(): number {
-    if (!this.shouldPollGamepads() || document.visibilityState !== "visible") {
+    if (!this.shouldPollGamepads()) {
       return 100;
     }
 
@@ -2100,13 +2104,15 @@ export class GfnWebRtcClient {
       return 100;
     }
 
-    return 4;
+    // Poll at reduced rate while input is paused (dashboard open) — fast enough
+    // to catch the Meta button release and next press, but not burning CPU at
+    // the full 4 ms stream-input rate.
+    return this.inputPaused ? 16 : 4;
   }
 
   private shouldPollGamepads(): boolean {
     return this.inputReady
-      && document.visibilityState === "visible"
-      && !this.inputPaused;
+      && document.visibilityState === "visible";
   }
 
   private gamepadSendCount = 0;
@@ -2166,7 +2172,9 @@ export class GfnWebRtcClient {
         }
 
         // Read and encode gamepad state
-        if (streamInputBlocked) {
+        // Skip forwarding to the stream if input is blocked (dashboard open) or
+        // the native renderer is handling controller input directly.
+        if (streamInputBlocked || this.nativeInputActive) {
           continue;
         }
         const gamepadInput = this.readGamepadState(gamepad, i);
