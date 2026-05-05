@@ -1596,6 +1596,7 @@ function registerIpcHandlers(): void {
               serverIp: launchingCandidate.serverIp!,
               zone: resolvedPayload.zone,
               sessionId: launchingCandidate.sessionId,
+              proxyUrl: payload.proxyUrl,
             });
           } catch (hydrateError) {
             console.warn(

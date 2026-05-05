@@ -970,6 +970,8 @@ export function App(): JSX.Element {
     encoderPreference: "auto",
     colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
     region: "",
+    sessionProxyEnabled: false,
+    sessionProxyUrl: "",
     clipboardPaste: false,
     mouseSensitivity: 1,
     mouseAcceleration: 1,
@@ -3525,12 +3527,47 @@ export function App(): JSX.Element {
             event.stats,
           ));
         } else if (event.type === "native-stream-stopped") {
-          console.warn("[App] Native streamer stopped:", event.reason ?? "stopped");
+          const reason = event.reason ?? "Native streamer stopped";
+          console.warn("[App] Native streamer stopped:", reason);
           nativeStreamingRef.current = false;
           nativeInputProtocolVersionRef.current = null;
           clientRef.current?.dispose();
           clientRef.current = null;
           launchInFlightRef.current = false;
+
+          if (appUnloadingRef.current) {
+            console.log("[Recovery] Ignoring native streamer stop during app shutdown");
+            return;
+          }
+          if (
+            signalingRecoveryRef.current.explicitShutdown
+            || !RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)
+          ) {
+            console.log("[Recovery] Ignoring native streamer stop after explicit shutdown or non-recoverable status");
+            return;
+          }
+
+          const recovered = await attemptSessionRecovery(reason).catch((error) => {
+            console.error("[Recovery] Native streamer recovery failed:", error);
+            return false;
+          });
+          if (!recovered) {
+            if (
+              signalingRecoveryRef.current.explicitShutdown
+              || !RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)
+            ) {
+              console.log("[Recovery] Ignoring native streamer stop after explicit shutdown or non-recoverable status");
+              return;
+            }
+            setLaunchError({
+              stage: streamStatusToLoadingStage(streamStatusRef.current),
+              title: "Native Streamer Stopped",
+              description: "The native streaming process stopped and could not be restored automatically. Try resuming the session again from the app.",
+            });
+            resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
+            void refreshNavbarActiveSession();
+            launchInFlightRef.current = false;
+          }
         } else if (event.type === "remote-ice") {
           remoteIceSeenForSessionRef.current = sessionRef.current?.sessionId ?? null;
           hasConfirmedRemoteIceRef.current = true;
@@ -3771,6 +3808,8 @@ export function App(): JSX.Element {
         }
       }
 
+      const sessionProxyUrl = settings.sessionProxyEnabled ? settings.sessionProxyUrl.trim() : "";
+
       // Create new session
       const newSession = await window.openNow.createSession({
         token: token || undefined,
@@ -3779,6 +3818,7 @@ export function App(): JSX.Element {
         internalTitle: game.title,
         accountLinked: chooseAccountLinked(game, selectedVariant),
         existingSessionStrategy,
+        proxyUrl: sessionProxyUrl || undefined,
         zone: "prod",
         settings: buildCurrentStreamSettings(),
       });
@@ -3853,6 +3893,7 @@ export function App(): JSX.Element {
           sessionId: newSession.sessionId,
           clientId: newSession.clientId,
           deviceId: newSession.deviceId,
+          proxyUrl: sessionProxyUrl || undefined,
         });
 
         if (launchAbortRef.current) {

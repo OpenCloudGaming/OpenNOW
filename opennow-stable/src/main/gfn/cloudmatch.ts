@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import dns from "node:dns";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { app } from "electron";
+import { createRequire } from "node:module";
 
 import type {
   ActiveSessionInfo,
@@ -31,6 +31,7 @@ import { DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR } from "@shared/cloudGsync";
 
 import type { CloudMatchRequest, CloudMatchResponse, GetSessionsResponse } from "./types";
 import { SessionError } from "./errorCodes";
+import { fetchWithOptionalProxy } from "./proxyFetch";
 
 const GFN_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
@@ -40,6 +41,15 @@ const READY_SESSION_STATUSES = new Set([2, 3]);
 const GFN_DEVICE_ID_FILENAME = "gfn-device-id.json";
 
 let cachedStableDeviceId: string | null = null;
+const require = createRequire(import.meta.url);
+
+function getElectronApp(): Electron.App | null {
+  try {
+    return require("electron").app ?? null;
+  } catch {
+    return null;
+  }
+}
 
 const AD_ACTION_CODES: Record<SessionAdAction, number> = {
   start: 1,
@@ -105,7 +115,11 @@ function getStableDeviceId(): string {
   }
 
   try {
-    const path = join(app.getPath("userData"), GFN_DEVICE_ID_FILENAME);
+    const electronApp = getElectronApp();
+    if (!electronApp) {
+      throw new Error("Electron app is unavailable outside the main process.");
+    }
+    const path = join(electronApp.getPath("userData"), GFN_DEVICE_ID_FILENAME);
     if (existsSync(path)) {
       const parsed = JSON.parse(readFileSync(path, "utf-8")) as { deviceId?: unknown };
       if (typeof parsed.deviceId === "string" && parsed.deviceId.length > 0) {
@@ -1008,11 +1022,11 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   const keyboardLayout = resolveGfnKeyboardLayout(input.settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);
   const languageCode = input.settings.gameLanguage ?? "en_US";
   const url = `${base}/v2/session?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`;
-  const response = await fetch(url, {
+  const response = await fetchWithOptionalProxy(url, {
     method: "POST",
     headers: requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: true }),
     body: JSON.stringify(body),
-  });
+  }, input.proxyUrl);
 
   const text = await response.text();
   if (!response.ok) {
@@ -1034,13 +1048,15 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   const deviceId = input.deviceId ?? crypto.randomUUID();
 
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
+  const baseHost = new URL(base).hostname;
+  const pollProxyUrl = isZoneHostname(baseHost) ? input.proxyUrl : undefined;
   const url = `${base}/v2/session/${input.sessionId}`;
   // Polling should NOT include Origin/Referer headers (matches claimSession polling pattern)
   const headers = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
-  const response = await fetch(url, {
+  const response = await fetchWithOptionalProxy(url, {
     method: "GET",
     headers,
-  });
+  }, pollProxyUrl);
 
   const text = await response.text();
   if (!response.ok) {
@@ -1048,7 +1064,6 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   }
 
   const payload = JSON.parse(text) as CloudMatchResponse;
-  const baseHost = new URL(base).hostname;
 
   // Match Rust behavior: if the poll was routed through the zone load balancer
   // and the response now contains a real server IP in connectionInfo, re-poll
@@ -1071,6 +1086,7 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
     const directBase = `https://${realServerIp}`;
     const directUrl = `${directBase}/v2/session/${input.sessionId}`;
     try {
+      // The ready-session direct real-IP re-poll intentionally bypasses the session proxy.
       const directResponse = await fetch(directUrl, {
         method: "GET",
         headers,
