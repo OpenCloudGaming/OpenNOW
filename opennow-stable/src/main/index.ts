@@ -805,8 +805,8 @@ async function cleanupNativeActiveRecordings(reason: string, abortNative = true)
 }
 
 function emitNativeStreamerEvent(event: MainToRendererSignalingEvent): void {
-  if (event.type === "native-stream-stopped" || event.type === "error") {
-    void cleanupNativeActiveRecordings(event.type === "native-stream-stopped" ? (event.reason ?? "native stream stopped") : event.message, false);
+  if (event.type === "native-stream-stopped") {
+    void cleanupNativeActiveRecordings(event.reason ?? "native stream stopped", false);
   }
   emitToRenderer(event);
 }
@@ -2214,11 +2214,10 @@ function registerIpcHandlers(): void {
     if (!rec) {
       throw new Error("Unknown recording id");
     }
-    activeRecordings.delete(input.recordingId);
-
     if (rec.backend === "native-gstreamer") {
       await getNativeStreamerManager().stopRecording(input.recordingId);
     } else if (rec.writeStream) {
+      activeRecordings.delete(input.recordingId);
       await new Promise<void>((resolve, reject) => {
         rec.writeStream?.end((err?: Error | null) => {
           if (err) reject(err);
@@ -2236,7 +2235,17 @@ function registerIpcHandlers(): void {
     const fileName = `${stamp}-${title}-${rand}${durSuffix}${ext}`;
     const finalPath = join(dir, fileName);
 
-    await rename(rec.tempPath, finalPath);
+    try {
+      await rename(rec.tempPath, finalPath);
+    } catch (error) {
+      if (rec.backend === "native-gstreamer") {
+        await getNativeStreamerManager().abortRecording(input.recordingId).catch(() => undefined);
+        activeRecordings.delete(input.recordingId);
+        await unlink(rec.tempPath).catch(() => undefined);
+      }
+      throw error;
+    }
+    activeRecordings.delete(input.recordingId);
 
     // Save thumbnail if provided
     let thumbnailDataUrl: string | undefined;
