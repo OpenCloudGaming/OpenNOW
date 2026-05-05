@@ -15,7 +15,7 @@
   "type": "module",
   "main": "dist-electron/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "node scripts/dev.mjs",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "dist": "npm run build && npm run native:build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",

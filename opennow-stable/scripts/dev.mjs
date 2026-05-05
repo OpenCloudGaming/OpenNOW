@@ -13,7 +13,7 @@ const nativeProfile = process.env.OPENNOW_NATIVE_STREAMER_DEV_PROFILE?.trim() ||
 const nativeFeatures =
   process.env.OPENNOW_NATIVE_STREAMER_DEV_FEATURES?.trim()
   ?? process.env.OPENNOW_NATIVE_STREAMER_FEATURES?.trim()
-  ?? "none";
+  ?? "gstreamer";
 const targetDir = nativeTarget
   ? join(crateRoot, "target", nativeTarget, nativeProfile)
   : join(crateRoot, "target", nativeProfile);
@@ -46,13 +46,16 @@ function runNativeBuild() {
 }
 
 function runElectronVite() {
+  const explicitStreamerBinary = process.env.OPENNOW_NATIVE_STREAMER?.trim() || streamerBinary;
+  console.log(`Using native streamer executable for dev: ${explicitStreamerBinary}`);
+
   const child = spawn("electron-vite", ["dev"], {
     cwd: packageRoot,
     stdio: "inherit",
     shell: process.platform === "win32",
     env: {
       ...process.env,
-      OPENNOW_NATIVE_STREAMER: process.env.OPENNOW_NATIVE_STREAMER?.trim() || streamerBinary,
+      OPENNOW_NATIVE_STREAMER: explicitStreamerBinary,
     },
   });
 

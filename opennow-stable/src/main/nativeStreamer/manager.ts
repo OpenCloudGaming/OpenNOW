@@ -777,12 +777,14 @@ export class NativeStreamerManager {
       candidates.push(candidate);
     };
 
-    bundledCandidates.forEach(addCandidate);
-    if (app.isPackaged && candidates.length > 0) {
-      const packagedBundledCandidates = candidates.filter((candidate) =>
-        hasBundledRuntimeNextToExecutable(candidate),
-      );
-      return packagedBundledCandidates.length > 0 ? packagedBundledCandidates : candidates;
+    if (app.isPackaged) {
+      bundledCandidates.forEach(addCandidate);
+      if (candidates.length > 0) {
+        const packagedBundledCandidates = candidates.filter((candidate) =>
+          hasBundledRuntimeNextToExecutable(candidate),
+        );
+        return packagedBundledCandidates.length > 0 ? packagedBundledCandidates : candidates;
+      }
     }
 
     const configuredPath = this.options.getExecutablePathOverride().trim();
@@ -801,9 +803,20 @@ export class NativeStreamerManager {
       }
     }
 
+    const explicitDevPath = process.env.OPENNOW_NATIVE_STREAMER?.trim();
+    if (!app.isPackaged) {
+      if (explicitDevPath) {
+        if (isExistingFile(explicitDevPath)) {
+          console.log("[NativeStreamer] Using explicit development native streamer:", explicitDevPath);
+          addCandidate(explicitDevPath);
+        } else {
+          throw new Error(`OPENNOW_NATIVE_STREAMER was set but the file was not found: ${explicitDevPath}`);
+        }
+      }
+      bundledCandidates.forEach(addCandidate);
+    }
+
     [
-      process.env.OPENNOW_NATIVE_STREAMER,
-      ...bundledCandidates,
       resolve(this.options.mainDir, "../../../native/opennow-streamer/bin", platformKey, exeName),
       resolve(this.options.mainDir, "../../../native/opennow-streamer/bin", exeName),
       resolve(this.options.mainDir, "../../../native/opennow-streamer/dist", platformKey, exeName),
