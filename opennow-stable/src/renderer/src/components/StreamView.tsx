@@ -20,6 +20,7 @@ interface StreamViewProps {
   audioRef: React.Ref<HTMLAudioElement>;
   diagnosticsStore: StreamDiagnosticsStore;
   showStats: boolean;
+  gstreamerEnabled: boolean;
   shortcuts: {
     toggleStats: string;
     togglePointerLock: string;
@@ -188,9 +189,11 @@ function isMicBadgeStateEqual(prev: MicBadgeState, next: MicBadgeState): boolean
 
 function StreamStatsHud({
   diagnosticsStore,
+  gstreamerEnabled,
   serverRegion,
 }: {
   diagnosticsStore: StreamDiagnosticsStore;
+  gstreamerEnabled: boolean;
   serverRegion?: string;
 }): JSX.Element {
   const stats = useStreamDiagnosticsStore(diagnosticsStore);
@@ -230,6 +233,9 @@ function StreamStatsHud({
   const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
   const partiallyReliableQueueText = `${(stats.partiallyReliableInputQueueBufferedBytes / 1024).toFixed(1)}KB`;
   const mouseResidualText = `${stats.mouseResidualMagnitude.toFixed(2)}px`;
+  const gstreamerStatusText = gstreamerEnabled
+    ? `GStreamer enabled · ${stats.nativeRendererActive ? "in use" : "not active"}`
+    : "GStreamer disabled · Chromium WebRTC";
 
   return (
     <div className="sv-stats">
@@ -293,6 +299,10 @@ function StreamStatsHud({
 
       <div className="sv-stats-foot">
         Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · PR peak {(stats.partiallyReliableInputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms · residual {mouseResidualText}
+      </div>
+
+      <div className="sv-stats-foot">
+        {gstreamerStatusText}
       </div>
 
       {(stats.hardwareAcceleration || stats.colorCodec) && (
@@ -614,6 +624,7 @@ export function StreamView({
   audioRef,
   diagnosticsStore,
   showStats,
+  gstreamerEnabled,
   shortcuts,
   serverRegion,
   antiAfkEnabled,
@@ -2059,7 +2070,11 @@ export function StreamView({
 
       {/* Stats HUD (top-right) */}
       {(showStatsHud || showStats) && !isConnecting && (
-        <StreamStatsHud diagnosticsStore={diagnosticsStore} serverRegion={serverRegion} />
+        <StreamStatsHud
+          diagnosticsStore={diagnosticsStore}
+          gstreamerEnabled={gstreamerEnabled}
+          serverRegion={serverRegion}
+        />
       )}
 
       {/* Controller indicator (top-left) */}
