@@ -417,6 +417,8 @@ function verifyGstreamerBinary(binaryPath, env) {
 const cargoArgs = ["build", "--manifest-path", manifestPath];
 if (nativeProfile === "release") {
   cargoArgs.push("--release");
+} else if (nativeProfile !== "debug") {
+  cargoArgs.push("--profile", nativeProfile);
 }
 if (nativeTarget) {
   cargoArgs.push("--target", nativeTarget);
