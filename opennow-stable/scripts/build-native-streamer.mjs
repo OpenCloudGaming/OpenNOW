@@ -10,6 +10,7 @@ const repoRoot = resolve(packageRoot, "..");
 const crateRoot = join(repoRoot, "native", "opennow-streamer");
 const manifestPath = join(crateRoot, "Cargo.toml");
 const exeName = process.platform === "win32" ? "opennow-streamer.exe" : "opennow-streamer";
+const nativeStreamerProtocolVersion = 2;
 const nativeTarget = process.env.OPENNOW_NATIVE_STREAMER_TARGET?.trim() || "";
 const platformKey = process.env.OPENNOW_NATIVE_STREAMER_PLATFORM_KEY?.trim() || `${process.platform}-${process.arch}`;
 const targetReleaseDir = nativeTarget
@@ -236,7 +237,7 @@ function buildBundledGstreamerEnv(baseEnv, binaryPath) {
 
 function verifyGstreamerBinary(binaryPath, env) {
   const result = spawnSync(binaryPath, {
-    input: `${JSON.stringify({ id: "verify", type: "hello", protocolVersion: 1 })}\n`,
+    input: `${JSON.stringify({ id: "verify", type: "hello", protocolVersion: nativeStreamerProtocolVersion })}\n`,
     encoding: "utf8",
     env: {
       ...env,

@@ -42,7 +42,7 @@ pub struct SessionInfo {
     pub server_ip: String,
     #[serde(default)]
     pub media_connection_info: Option<MediaConnectionInfo>,
-    #[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]
+    #[allow(dead_code)]
     #[serde(default)]
     pub negotiated_stream_profile: Option<NegotiatedStreamProfile>,
     #[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]

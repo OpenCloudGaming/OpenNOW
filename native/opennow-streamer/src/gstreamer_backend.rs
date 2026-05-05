@@ -708,6 +708,10 @@ impl VideoLivenessMonitor {
         self.state.set_rtp_video_src_pad(pad);
     }
 
+    fn set_post_decode_queue(&self, queue: gst::Element) {
+        self.state.set_post_decode_queue(queue);
+    }
+
     fn start(
         &self,
         pipeline: gst::Pipeline,
@@ -6364,7 +6368,7 @@ impl NativeStreamerBackend for GstreamerBackend {
         let d3d_fullscreen_sink = resolve_d3d_fullscreen_sink(context.settings.enable_cloud_gsync);
         pipeline.set_present_max_fps(present_max_fps);
         pipeline.set_d3d_fullscreen_sink(d3d_fullscreen_sink);
-        pipeline.configure_stats(context, prepared.nvst_params.max_bitrate_kbps);
+        pipeline.configure_stats(&context, prepared.nvst_params.max_bitrate_kbps);
         if present_max_fps > 0 {
             events.push(Event::Log {
                 level: "info",
@@ -6573,6 +6577,7 @@ impl NativeStreamerBackend for GstreamerBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::VideoCodec;
 
     #[test]
     fn builds_and_stops_webrtc_pipeline() {
