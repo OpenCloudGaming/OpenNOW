@@ -29,6 +29,7 @@ import type {
   NativeStreamStats,
   PrintedWasteQueueData,
   PrintedWasteServerMapping,
+  buildNativeStreamerSessionContext,
 } from "@shared/gfn";
 import {
   DEFAULT_KEYBOARD_LAYOUT,
@@ -539,6 +540,15 @@ function defaultDiagnostics(): StreamDiagnostics {
     decoderPressureActive: false,
     decoderRecoveryAttempts: 0,
     decoderRecoveryAction: "none",
+    nativeRequestedFps: undefined,
+    nativeCapsFramerate: undefined,
+    nativeQueueMode: undefined,
+    nativeFramesPendingToPresent: undefined,
+    nativePartialFlushCount: undefined,
+    nativeCompleteFlushCount: undefined,
+    nativeTransitionSummary: undefined,
+    nativeRequestedStreamingFeaturesSummary: undefined,
+    nativeFinalizedStreamingFeaturesSummary: undefined,
     micState: "uninitialized",
     micEnabled: false,
   };
@@ -577,8 +587,19 @@ function mergeNativeStreamStats(
     framesDropped: sinkDropped,
     packetLossPercent: dropPercent,
     lagReason: dropPercent > 1 ? "render" : "stable",
-    lagReasonDetail: `Native bitrate ${stats.bitratePerformancePercent.toFixed(0)}% of target`,
+    lagReasonDetail: stats.lastTransitionSummary
+      ? `Native bitrate ${stats.bitratePerformancePercent.toFixed(0)}% of target · ${stats.lastTransitionSummary}`
+      : `Native bitrate ${stats.bitratePerformancePercent.toFixed(0)}% of target`,
     decoderPressureActive: false,
+    nativeRequestedFps: stats.requestedFps,
+    nativeCapsFramerate: stats.capsFramerate,
+    nativeQueueMode: stats.queueMode,
+    nativeFramesPendingToPresent: stats.framesPendingToPresent,
+    nativePartialFlushCount: stats.partialFlushCount,
+    nativeCompleteFlushCount: stats.completeFlushCount,
+    nativeTransitionSummary: stats.lastTransitionSummary,
+    nativeRequestedStreamingFeaturesSummary: stats.requestedStreamingFeaturesSummary,
+    nativeFinalizedStreamingFeaturesSummary: stats.finalizedStreamingFeaturesSummary,
   };
 }
 
@@ -1600,6 +1621,7 @@ export function App(): JSX.Element {
     clientMode: settings.streamClientMode,
     nativeStreamerBackend: "gstreamer",
     nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
+    nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
   }), [
     settings.codec,
     settings.colorQuality,
@@ -1610,6 +1632,7 @@ export function App(): JSX.Element {
     settings.keyboardLayout,
     settings.maxBitrateMbps,
     settings.nativeCloudGsyncMode,
+    settings.nativeTransitionDiagnostics,
     settings.resolution,
     settings.streamClientMode,
   ]);
@@ -1620,13 +1643,7 @@ export function App(): JSX.Element {
       sessionId: activeSession.sessionId,
       signalingServer: activeSession.signalingServer,
       signalingUrl: activeSession.signalingUrl,
-      nativeStreamer: {
-        session: activeSession,
-        settings: {
-          ...streamSettings,
-          enableCloudGsync: activeSession.negotiatedStreamProfile?.enableCloudGsync ?? streamSettings.enableCloudGsync,
-        },
-      },
+      nativeStreamer: buildNativeStreamerSessionContext(activeSession, streamSettings),
     };
   }, [buildCurrentStreamSettings]);
   const resetSignalingRecoveryState = useCallback((options?: {
@@ -3499,6 +3516,7 @@ export function App(): JSX.Element {
               resolution: settings.resolution,
               fps: settings.fps,
               maxBitrateKbps: settings.maxBitrateMbps * 1000,
+              nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
             });
             setLaunchError(null);
             setStreamStatus("streaming");
@@ -3526,6 +3544,16 @@ export function App(): JSX.Element {
             diagnosticsStore.getSnapshot(),
             event.stats,
           ));
+        } else if (event.type === "native-stream-transition") {
+          diagnosticsStore.set({
+            ...diagnosticsStore.getSnapshot(),
+            nativeRendererActive: true,
+            nativeTransitionSummary: event.transition.summary,
+            nativeRequestedFps: event.transition.requestedFps,
+            nativeCapsFramerate: event.transition.capsFramerate,
+            nativeQueueMode: event.transition.queueMode,
+            lagReasonDetail: event.transition.summary ?? "Native video transition detected",
+          });
         } else if (event.type === "native-stream-stopped") {
           const reason = event.reason ?? "Native streamer stopped";
           console.warn("[App] Native streamer stopped:", reason);

@@ -9,6 +9,7 @@ import type {
   ColorQuality,
   NegotiatedStreamProfile,
   IceServer,
+  StreamingFeatures,
   SessionAdAction,
   SessionAdInfo,
   SessionAdReportRequest,
@@ -887,6 +888,40 @@ function toColorQuality(bitDepth?: number, chromaFormat?: number): ColorQuality 
   return chromaFormat === 2 ? "8bit_444" : "8bit_420";
 }
 
+function normalizeStreamingFeatures(
+  features:
+    | CloudMatchResponse["session"]["sessionRequestData"]["requestedStreamingFeatures"]
+    | CloudMatchResponse["session"]["finalizedStreamingFeatures"]
+    | undefined,
+): StreamingFeatures | undefined {
+  if (!features) {
+    return undefined;
+  }
+
+  const normalized: StreamingFeatures = {};
+
+  if (typeof features.reflex === "boolean") {
+    normalized.reflex = features.reflex;
+  }
+  if (typeof features.bitDepth === "number" && Number.isFinite(features.bitDepth)) {
+    normalized.bitDepth = Math.trunc(features.bitDepth);
+  }
+  if (typeof features.cloudGsync === "boolean") {
+    normalized.cloudGsync = features.cloudGsync;
+  }
+  if (typeof features.chromaFormat === "number" && Number.isFinite(features.chromaFormat)) {
+    normalized.chromaFormat = Math.trunc(features.chromaFormat);
+  }
+  if (typeof features.enabledL4S === "boolean") {
+    normalized.enabledL4S = features.enabledL4S;
+  }
+  if ("trueHdr" in features && typeof features.trueHdr === "boolean") {
+    normalized.trueHdr = features.trueHdr;
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
 function extractNegotiatedStreamProfile(payload: CloudMatchResponse): NegotiatedStreamProfile | undefined {
   const monitor = payload.session.sessionRequestData?.clientRequestMonitorSettings?.[0];
   const finalizedFeatures = payload.session.finalizedStreamingFeatures;
@@ -960,6 +995,12 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
   const seatSetupStep = extractSeatSetupStep(payload);
   const adState = extractAdState(payload);
   const negotiatedStreamProfile = extractNegotiatedStreamProfile(payload);
+  const requestedStreamingFeatures = normalizeStreamingFeatures(
+    payload.session.sessionRequestData?.requestedStreamingFeatures,
+  );
+  const finalizedStreamingFeatures = normalizeStreamingFeatures(
+    payload.session.finalizedStreamingFeatures,
+  );
 
   // Debug logging to trace signaling resolution
   const connections = payload.session.connectionInfo ?? [];
@@ -980,7 +1021,7 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     `connections=[${connectionSummary}]`,
   );
   console.log(
-    `[CloudMatch] negotiated streaming features: cloudGsync=${negotiatedStreamProfile?.enableCloudGsync ?? "n/a"}, reflex=${negotiatedStreamProfile?.enableReflex ?? "n/a"}, l4s=${negotiatedStreamProfile?.enableL4S ?? "n/a"}`,
+    `[CloudMatch] negotiated streaming features: requested=${JSON.stringify(requestedStreamingFeatures ?? {})} finalized=${JSON.stringify(finalizedStreamingFeatures ?? {})} cloudGsync=${negotiatedStreamProfile?.enableCloudGsync ?? "n/a"}, reflex=${negotiatedStreamProfile?.enableReflex ?? "n/a"}, l4s=${negotiatedStreamProfile?.enableL4S ?? "n/a"}`,
   );
 
   return {
@@ -998,6 +1039,8 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     iceServers: await normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,
     negotiatedStreamProfile,
+    requestedStreamingFeatures,
+    finalizedStreamingFeatures,
     clientId,
     deviceId,
   };
@@ -1531,8 +1574,14 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       const signaling = resolveSignaling(pollApiResponse);
       const queuePosition = extractQueuePosition(pollApiResponse);
       const negotiatedStreamProfile = extractNegotiatedStreamProfile(pollApiResponse);
+      const requestedStreamingFeatures = normalizeStreamingFeatures(
+        pollApiResponse.session.sessionRequestData?.requestedStreamingFeatures,
+      );
+      const finalizedStreamingFeatures = normalizeStreamingFeatures(
+        pollApiResponse.session.finalizedStreamingFeatures,
+      );
       console.log(
-        `[CloudMatch] claimed negotiated streaming features: cloudGsync=${negotiatedStreamProfile?.enableCloudGsync ?? "n/a"}, reflex=${negotiatedStreamProfile?.enableReflex ?? "n/a"}, l4s=${negotiatedStreamProfile?.enableL4S ?? "n/a"}`,
+        `[CloudMatch] claimed negotiated streaming features: requested=${JSON.stringify(requestedStreamingFeatures ?? {})} finalized=${JSON.stringify(finalizedStreamingFeatures ?? {})} cloudGsync=${negotiatedStreamProfile?.enableCloudGsync ?? "n/a"}, reflex=${negotiatedStreamProfile?.enableReflex ?? "n/a"}, l4s=${negotiatedStreamProfile?.enableL4S ?? "n/a"}`,
       );
 
       return {
@@ -1548,6 +1597,8 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
         iceServers: await normalizeIceServers(pollApiResponse),
         mediaConnectionInfo: signaling.mediaConnectionInfo,
         negotiatedStreamProfile: negotiatedStreamProfile ?? extractNegotiatedStreamProfile(pollApiResponse),
+        requestedStreamingFeatures,
+        finalizedStreamingFeatures,
         clientId,
         deviceId,
       };

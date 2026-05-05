@@ -54,6 +54,7 @@ export interface CloudMatchRequest {
       bitDepth: number;
       cloudGsync: boolean;
       enabledL4S: boolean;
+      trueHdr: boolean;
       mouseMovementFlags: number;
       trueHdr: boolean;
       supportedHidDevices: number;
@@ -164,6 +165,7 @@ export interface CloudMatchResponse {
         cloudGsync?: boolean;
         chromaFormat?: number;
         enabledL4S?: boolean;
+        trueHdr?: boolean;
       };
     };
     finalizedStreamingFeatures?: {
@@ -172,6 +174,7 @@ export interface CloudMatchResponse {
       cloudGsync?: boolean;
       chromaFormat?: number;
       enabledL4S?: boolean;
+      trueHdr?: boolean;
     };
     monitorSettings?: Array<{
       widthInPixels?: number;

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
 
-pub const PROTOCOL_VERSION: u64 = 1;
+pub const PROTOCOL_VERSION: u64 = 2;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +42,12 @@ pub struct SessionInfo {
     pub server_ip: String,
     #[serde(default)]
     pub media_connection_info: Option<MediaConnectionInfo>,
+    #[serde(default)]
+    pub negotiated_stream_profile: Option<NegotiatedStreamProfile>,
+    #[serde(default)]
+    pub requested_streaming_features: Option<StreamingFeatures>,
+    #[serde(default)]
+    pub finalized_streaming_features: Option<StreamingFeatures>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -62,6 +68,97 @@ pub struct StreamSettings {
     #[serde(default)]
     #[allow(dead_code)]
     pub enable_cloud_gsync: bool,
+    #[serde(default)]
+    pub native_transition_diagnostics: Option<NativeTransitionDiagnosticsSettings>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamingFeatures {
+    #[serde(default)]
+    pub reflex: Option<bool>,
+    #[serde(default)]
+    pub bit_depth: Option<u8>,
+    #[serde(default)]
+    pub cloud_gsync: Option<bool>,
+    #[serde(default)]
+    pub chroma_format: Option<u8>,
+    #[serde(default)]
+    pub enabled_l4s: Option<bool>,
+    #[serde(default)]
+    pub true_hdr: Option<bool>,
+}
+
+impl StreamingFeatures {
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(reflex) = self.reflex {
+            parts.push(format!("reflex={reflex}"));
+        }
+        if let Some(bit_depth) = self.bit_depth {
+            parts.push(format!("bitDepth={bit_depth}"));
+        }
+        if let Some(cloud_gsync) = self.cloud_gsync {
+            parts.push(format!("cloudGsync={cloud_gsync}"));
+        }
+        if let Some(chroma_format) = self.chroma_format {
+            parts.push(format!("chroma={chroma_format}"));
+        }
+        if let Some(enabled_l4s) = self.enabled_l4s {
+            parts.push(format!("l4s={enabled_l4s}"));
+        }
+        if let Some(true_hdr) = self.true_hdr {
+            parts.push(format!("trueHdr={true_hdr}"));
+        }
+        if parts.is_empty() {
+            "none".to_owned()
+        } else {
+            parts.join(", ")
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NegotiatedStreamProfile {
+    #[serde(default)]
+    pub resolution: Option<String>,
+    #[serde(default)]
+    pub fps: Option<u32>,
+    #[serde(default)]
+    pub codec: Option<VideoCodec>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NativeQueueMode {
+    #[default]
+    Auto,
+    Fixed,
+    Adaptive,
+    Vrr,
+}
+
+impl NativeQueueMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Fixed => "fixed",
+            Self::Adaptive => "adaptive",
+            Self::Vrr => "vrr",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTransitionDiagnosticsSettings {
+    #[serde(default)]
+    pub disable_dynamic_split_encode_updates: bool,
+    #[serde(default)]
+    pub force_queue_mode: Option<NativeQueueMode>,
+    #[serde(default)]
+    pub disable_transition_flush_escalation: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -271,9 +368,51 @@ pub struct VideoStallEvent {
     pub sink_dropped: Option<u64>,
     pub memory_mode: String,
     pub zero_copy: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_fps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caps_framerate: Option<String>,
+    pub queue_mode: String,
+    pub partial_flush_count: u32,
+    pub complete_flush_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_transition_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_transition_at_ms: Option<u64>,
+    pub requested_streaming_features_summary: String,
+    pub finalized_streaming_features_summary: String,
     pub zero_copy_d3d11: bool,
     pub zero_copy_d3d12: bool,
     pub recovery_attempt: u8,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoTransitionEvent {
+    pub transition_type: String,
+    pub source: String,
+    pub at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_caps: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_caps: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_framerate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_framerate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_memory_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_memory_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub render_gap_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_fps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caps_framerate: Option<String>,
+    pub high_fps_risk: bool,
+    pub queue_mode: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -282,6 +421,10 @@ pub struct NativeStatsEvent {
     pub codec: String,
     pub resolution: String,
     pub hardware_acceleration: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_fps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caps_framerate: Option<String>,
     pub bitrate_kbps: u32,
     pub target_bitrate_kbps: u32,
     pub bitrate_performance_percent: f64,
@@ -289,12 +432,26 @@ pub struct NativeStatsEvent {
     pub render_fps: f64,
     pub frames_decoded: u64,
     pub frames_rendered: u64,
+    pub frames_pending_to_present: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sink_rendered: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sink_dropped: Option<u64>,
     pub memory_mode: String,
     pub zero_copy: bool,
+    pub queue_mode: String,
+    pub queue_depth_changes: u32,
+    pub present_pacing_changes: u32,
+    pub partial_flush_count: u32,
+    pub complete_flush_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_transition_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_transition_at_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_transition_summary: Option<String>,
+    pub requested_streaming_features_summary: String,
+    pub finalized_streaming_features_summary: String,
     pub zero_copy_d3d11: bool,
     pub zero_copy_d3d12: bool,
 }
@@ -323,6 +480,10 @@ pub enum Event {
     },
     #[serde(rename = "video-stall")]
     VideoStall(VideoStallEvent),
+    #[serde(rename = "video-transition")]
+    VideoTransition {
+        transition: VideoTransitionEvent,
+    },
     #[serde(rename = "stats")]
     Stats { stats: NativeStatsEvent },
     #[serde(rename = "error")]
@@ -388,6 +549,15 @@ mod tests {
             sink_dropped: Some(1),
             memory_mode: "D3D11Memory".to_owned(),
             zero_copy: true,
+            requested_fps: Some(240),
+            caps_framerate: Some("60/1".to_owned()),
+            queue_mode: "adaptive".to_owned(),
+            partial_flush_count: 1,
+            complete_flush_count: 0,
+            last_transition_type: Some("high-fps-transition-risk".to_owned()),
+            last_transition_at_ms: Some(2_250),
+            requested_streaming_features_summary: "reflex=true, bitDepth=10".to_owned(),
+            finalized_streaming_features_summary: "reflex=true, bitDepth=8".to_owned(),
             zero_copy_d3d11: true,
             zero_copy_d3d12: false,
             recovery_attempt: 1,
@@ -400,5 +570,35 @@ mod tests {
         assert_eq!(value["likelyStage"], "video-output-stalled");
         assert_eq!(value["sinkRendered"], 42);
         assert_eq!(value["recoveryAttempt"], 1);
+        assert_eq!(value["queueMode"], "adaptive");
+        assert_eq!(value["lastTransitionType"], "high-fps-transition-risk");
+    }
+
+    #[test]
+    fn video_transition_event_serializes_as_nested_transition_payload() {
+        let event = Event::VideoTransition {
+            transition: VideoTransitionEvent {
+                transition_type: "sink-caps-change".to_owned(),
+                source: "sink".to_owned(),
+                at_ms: 3_100,
+                old_caps: Some("video/x-raw(memory:D3D11Memory),framerate=(fraction)240/1".to_owned()),
+                new_caps: Some("video/x-raw(memory:D3D11Memory),framerate=(fraction)60/1".to_owned()),
+                old_framerate: Some("240/1".to_owned()),
+                new_framerate: Some("60/1".to_owned()),
+                old_memory_mode: Some("D3D11Memory".to_owned()),
+                new_memory_mode: Some("D3D11Memory".to_owned()),
+                render_gap_ms: Some(900),
+                requested_fps: Some(240),
+                caps_framerate: Some("60/1".to_owned()),
+                high_fps_risk: true,
+                queue_mode: "adaptive".to_owned(),
+                summary: "sink caps moved from 240/1 to 60/1 while 240 FPS was requested".to_owned(),
+            },
+        };
+        let value = serde_json::to_value(event).expect("serializes");
+
+        assert_eq!(value["type"], "video-transition");
+        assert_eq!(value["transition"]["transitionType"], "sink-caps-change");
+        assert_eq!(value["transition"]["highFpsRisk"], true);
     }
 }

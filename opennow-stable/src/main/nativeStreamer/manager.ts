@@ -328,6 +328,22 @@ export class NativeStreamerManager {
     }
     this.prepareRemoteIceQueue(context.session.sessionId);
 
+    const negotiatedProfile = context.session.negotiatedStreamProfile;
+    console.log(
+      "[NativeStreamer] Session context:",
+      JSON.stringify({
+        sessionId: context.session.sessionId,
+        requestedResolution: context.settings.resolution,
+        requestedFps: context.settings.fps,
+        requestedCodec: context.settings.codec,
+        negotiatedResolution: negotiatedProfile?.resolution,
+        negotiatedFps: negotiatedProfile?.fps,
+        negotiatedCodec: negotiatedProfile?.codec ?? context.settings.codec,
+        requestedStreamingFeatures: context.session.requestedStreamingFeatures,
+        finalizedStreamingFeatures: context.session.finalizedStreamingFeatures,
+      }),
+    );
+
     await this.ensureProcess();
 
     if (!this.capabilities?.supportsOfferAnswer) {
@@ -632,6 +648,11 @@ export class NativeStreamerManager {
 
     this.capabilities = response.capabilities;
     console.log("[NativeStreamer] Capabilities:", response.capabilities);
+    if (response.capabilities.protocolVersion !== NATIVE_STREAMER_PROTOCOL_VERSION) {
+      throw new Error(
+        `Native streamer reported protocolVersion=${response.capabilities.protocolVersion}, expected ${NATIVE_STREAMER_PROTOCOL_VERSION}.`,
+      );
+    }
     this.assertBackendPreference(response.capabilities, backendPreference);
     await this.flushSurfaceUpdate();
   }
@@ -845,6 +866,12 @@ export class NativeStreamerManager {
         `encoded=${(message.encodedKbps ?? 0).toFixed(0)}kbps`,
         `decoded=${message.decodedFps.toFixed(1)}fps`,
         `sink=${message.sinkFps.toFixed(1)}fps`,
+        `requestedFps=${message.requestedFps ?? "n/a"}`,
+        `capsFramerate=${message.capsFramerate ?? "n/a"}`,
+        `queueMode=${message.queueMode ?? "unknown"}`,
+        `partialFlushes=${message.partialFlushCount ?? 0}`,
+        `completeFlushes=${message.completeFlushCount ?? 0}`,
+        `lastTransition=${message.lastTransitionType ?? "none"}`,
         `ages=encoded:${formatAge(message.encodedAgeMs)} decoded:${formatAge(message.decodedAgeMs)} sink:${formatAge(message.sinkAgeMs)}`,
         `rendered=${message.sinkRendered ?? "n/a"}`,
         `dropped=${message.sinkDropped ?? "n/a"}`,
@@ -868,7 +895,26 @@ export class NativeStreamerManager {
       return;
     }
 
+    if (message.type === "video-transition") {
+      const transition = message.transition;
+      const summary = transition.summary ?? `${transition.transitionType} @ ${transition.atMs}ms`;
+      console.warn(`[NativeStreamer] Video transition: ${summary}`);
+      this.options.emit({
+        type: "native-stream-transition",
+        transition,
+      });
+      this.options.emit({
+        type: "log",
+        message: `[NativeStreamer] Video transition: ${summary}`,
+      });
+      return;
+    }
+
     if (message.type === "stats") {
+      this.options.emit({
+        type: "native-stream-stats",
+        stats: message.stats,
+      });
       return;
     }
 

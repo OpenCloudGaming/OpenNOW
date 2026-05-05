@@ -6,6 +6,7 @@ export type StreamClientMode = "web" | "native";
 export type NativeStreamerBackend = "stub" | "gstreamer";
 export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
 export type NativeStreamerFeatureMode = "auto" | "disabled" | "forced";
+export type NativeQueueMode = "auto" | "fixed" | "adaptive" | "vrr";
 
 export function nativeStreamerFeatureModeToEnvValue(mode: NativeStreamerFeatureMode): "auto" | "0" | "1" {
   switch (mode) {
@@ -211,6 +212,21 @@ export interface NativeVideoBackendCapability {
   reason?: string;
 }
 
+export interface StreamingFeatures {
+  reflex?: boolean;
+  bitDepth?: number;
+  cloudGsync?: boolean;
+  chromaFormat?: number;
+  enabledL4S?: boolean;
+  trueHdr?: boolean;
+}
+
+export interface NativeTransitionDiagnostics {
+  disableDynamicSplitEncodeUpdates?: boolean;
+  forceQueueMode?: NativeQueueMode;
+  disableTransitionFlushEscalation?: boolean;
+}
+
 export interface Settings {
   resolution: string;
   aspectRatio: AspectRatio;
@@ -278,6 +294,8 @@ export interface Settings {
   enableL4S: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
   enableCloudGsync: boolean;
+  /** Hidden diagnostics for native transition recovery and 240 FPS server-side stream changes */
+  nativeTransitionDiagnostics?: NativeTransitionDiagnostics;
   /** Show the currently streaming game as Discord Rich Presence activity */
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
@@ -580,6 +598,8 @@ export interface StreamSettings {
   requestedCloudGsync?: boolean;
   /** Diagnostics from the main-process Cloud G-Sync resolver. */
   cloudGsyncResolution?: CloudGsyncResolution;
+  /** Hidden diagnostics for native transition recovery and 240 FPS server-side stream changes. */
+  nativeTransitionDiagnostics?: NativeTransitionDiagnostics;
 }
 
 export interface SessionCreateRequest {
@@ -649,6 +669,7 @@ export interface MediaConnectionInfo {
 export interface NegotiatedStreamProfile {
   resolution?: string;
   fps?: number;
+  codec?: VideoCodec;
   colorQuality?: ColorQuality;
   enableL4S?: boolean;
   enableCloudGsync?: boolean;
@@ -753,6 +774,8 @@ export interface SessionInfo {
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
   negotiatedStreamProfile?: NegotiatedStreamProfile;
+  requestedStreamingFeatures?: StreamingFeatures;
+  finalizedStreamingFeatures?: StreamingFeatures;
   clientId?: string;
   deviceId?: string;
 }
@@ -808,6 +831,48 @@ export interface NativeStreamerSessionContext {
   settings: StreamSettings;
 }
 
+export function buildNativeStreamerSessionContext(
+  session: SessionInfo,
+  settings: StreamSettings,
+): NativeStreamerSessionContext {
+  const negotiatedStreamProfile = session.negotiatedStreamProfile
+    ? {
+      ...session.negotiatedStreamProfile,
+      codec: session.negotiatedStreamProfile.codec ?? settings.codec,
+    }
+    : { codec: settings.codec };
+
+  return {
+    session: {
+      ...session,
+      negotiatedStreamProfile,
+    },
+    settings: {
+      ...settings,
+      enableCloudGsync:
+        session.negotiatedStreamProfile?.enableCloudGsync ?? settings.enableCloudGsync,
+    },
+  };
+}
+
+export interface NativeVideoTransition {
+  transitionType: string;
+  source: string;
+  atMs: number;
+  oldCaps?: string;
+  newCaps?: string;
+  oldFramerate?: string;
+  newFramerate?: string;
+  oldMemoryMode?: string;
+  newMemoryMode?: string;
+  renderGapMs?: number;
+  requestedFps?: number;
+  capsFramerate?: string;
+  highFpsRisk?: boolean;
+  queueMode?: NativeQueueMode;
+  summary?: string;
+}
+
 export interface NativeInputPacket {
   payload: ArrayBuffer | Uint8Array | number[];
   partiallyReliable?: boolean;
@@ -845,6 +910,7 @@ export type MainToRendererSignalingEvent =
   | { type: "native-stream-started"; message?: string }
   | { type: "native-stream-stopped"; reason?: string }
   | { type: "native-stream-stats"; stats: NativeStreamStats }
+  | { type: "native-stream-transition"; transition: NativeVideoTransition }
   | { type: "native-input-ready"; protocolVersion: number }
   | { type: "error"; message: string }
   | { type: "log"; message: string };
@@ -855,6 +921,8 @@ export interface NativeStreamStats {
   hardwareAcceleration: string;
   memoryMode?: string;
   zeroCopy?: boolean;
+  requestedFps?: number;
+  capsFramerate?: string;
   bitrateKbps: number;
   targetBitrateKbps: number;
   bitratePerformancePercent: number;
@@ -862,10 +930,21 @@ export interface NativeStreamStats {
   renderFps: number;
   framesDecoded: number;
   framesRendered: number;
+  framesPendingToPresent?: number;
   sinkRendered?: number;
   sinkDropped?: number;
   zeroCopyD3D11: boolean;
   zeroCopyD3D12: boolean;
+  queueMode?: NativeQueueMode;
+  queueDepthChanges?: number;
+  presentPacingChanges?: number;
+  partialFlushCount?: number;
+  completeFlushCount?: number;
+  lastTransitionType?: string;
+  lastTransitionAtMs?: number;
+  lastTransitionSummary?: string;
+  requestedStreamingFeaturesSummary?: string;
+  finalizedStreamingFeaturesSummary?: string;
 }
 
 /** Dialog result for session conflict resolution */

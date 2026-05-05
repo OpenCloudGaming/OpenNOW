@@ -136,3 +136,38 @@ test("buildNvstSdp includes stream quality and partially reliable input paramete
     assert.match(sdp, new RegExp(line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
 });
+
+test("buildNvstSdp keeps dynamic split encode updates enabled for 240 FPS by default", () => {
+  const defaultSdp = buildNvstSdp({
+    width: 1920,
+    height: 1080,
+    fps: 240,
+    maxBitrateKbps: 75000,
+    partialReliableThresholdMs: 16,
+    codec: "H265",
+    colorQuality: "10bit_420",
+    credentials: {
+      ufrag: "ufrag-test",
+      pwd: "password-test",
+      fingerprint: "AA:BB:CC",
+    },
+  });
+  const diagnosticOffSdp = buildNvstSdp({
+    width: 1920,
+    height: 1080,
+    fps: 240,
+    maxBitrateKbps: 75000,
+    partialReliableThresholdMs: 16,
+    codec: "H265",
+    colorQuality: "10bit_420",
+    credentials: {
+      ufrag: "ufrag-test",
+      pwd: "password-test",
+      fingerprint: "AA:BB:CC",
+    },
+    dynamicSplitEncodeUpdatesEnabled: false,
+  });
+
+  assert.match(defaultSdp, /a=video\.updateSplitEncodeStateDynamically:1/);
+  assert.match(diagnosticOffSdp, /a=video\.updateSplitEncodeStateDynamically:0/);
+});

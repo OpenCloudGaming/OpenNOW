@@ -307,6 +307,18 @@ function StreamStatsHud({
         </div>
       )}
 
+      {(stats.nativeTransitionSummary || stats.nativeQueueMode || stats.nativeCapsFramerate) && (
+        <div className="sv-stats-foot">
+          Native transition {stats.nativeTransitionSummary ?? "none"} · queue {stats.nativeQueueMode ?? "unknown"} · caps {stats.nativeCapsFramerate ?? "unknown"}{typeof stats.nativeRequestedFps === "number" ? ` · requested ${stats.nativeRequestedFps}fps` : ""}{typeof stats.nativeFramesPendingToPresent === "number" ? ` · pending ${stats.nativeFramesPendingToPresent}` : ""}{typeof stats.nativePartialFlushCount === "number" || typeof stats.nativeCompleteFlushCount === "number" ? ` · flush ${stats.nativePartialFlushCount ?? 0}/${stats.nativeCompleteFlushCount ?? 0}` : ""}
+        </div>
+      )}
+
+      {(stats.nativeRequestedStreamingFeaturesSummary || stats.nativeFinalizedStreamingFeaturesSummary) && (
+        <div className="sv-stats-foot">
+          Stream features requested {stats.nativeRequestedStreamingFeaturesSummary ?? "none"} · finalized {stats.nativeFinalizedStreamingFeaturesSummary ?? "none"}
+        </div>
+      )}
+
       {(stats.gpuType || regionLabel) && (
         <div className="sv-stats-foot">
           {[stats.gpuType, regionLabel].filter(Boolean).join(" · ")}

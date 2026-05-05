@@ -1745,6 +1745,17 @@ function registerIpcHandlers(): void {
       const nextKey = `${payload.sessionId}|${payload.signalingServer}|${payload.signalingUrl ?? ""}`;
       nativeStreamerContext = payload.nativeStreamer ?? null;
       nativeStreamerFallbackSessionId = null;
+      if (nativeStreamerContext) {
+        console.log("[NativeStreamer] Signaling connect context:", JSON.stringify({
+          sessionId: nativeStreamerContext.session.sessionId,
+          resolution: nativeStreamerContext.settings.resolution,
+          fps: nativeStreamerContext.settings.fps,
+          codec: nativeStreamerContext.settings.codec,
+          negotiatedStreamProfile: nativeStreamerContext.session.negotiatedStreamProfile,
+          requestedStreamingFeatures: nativeStreamerContext.session.requestedStreamingFeatures,
+          finalizedStreamingFeatures: nativeStreamerContext.session.finalizedStreamingFeatures,
+        }));
+      }
 
       if (signalingClient && signalingClientKey === nextKey) {
         console.log("[Signaling] Reuse existing signaling connection (duplicate connect request ignored)");

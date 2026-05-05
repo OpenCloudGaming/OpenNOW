@@ -4,11 +4,12 @@ import type {
   NativeStreamStats,
   NativeRenderSurface,
   NativeStreamerSessionContext,
+  NativeVideoTransition,
   NativeVideoBackendCapability,
   SendAnswerRequest,
 } from "./gfn";
 
-export const NATIVE_STREAMER_PROTOCOL_VERSION = 1;
+export const NATIVE_STREAMER_PROTOCOL_VERSION = 2;
 
 export type { NativeStreamerBackend };
 
@@ -127,9 +128,22 @@ export type NativeStreamerEvent =
       sinkDropped?: number;
       memoryMode?: string;
       zeroCopy?: boolean;
+      requestedFps?: number;
+      capsFramerate?: string;
+      queueMode?: string;
+      partialFlushCount?: number;
+      completeFlushCount?: number;
+      lastTransitionType?: string;
+      lastTransitionAtMs?: number;
+      requestedStreamingFeaturesSummary?: string;
+      finalizedStreamingFeaturesSummary?: string;
       zeroCopyD3D11: boolean;
       zeroCopyD3D12: boolean;
       recoveryAttempt: number;
+    }
+  | {
+      type: "video-transition";
+      transition: NativeVideoTransition;
     }
   | {
       type: "stats";

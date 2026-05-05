@@ -8,9 +8,10 @@ use crate::input::{
 };
 use crate::protocol::{
     missing_field, CommandEnvelope, Event, IceCandidatePayload, NativeRenderRect,
-    NativeRenderSurface, NativeStreamerCapabilities, NativeStreamerSessionContext,
-    NativeVideoBackendCapability, NativeVideoCodecCapability, Response, SendAnswerRequest,
-    StreamSettings, VideoStallEvent, PROTOCOL_VERSION,
+    NativeQueueMode, NativeRenderSurface, NativeStreamerCapabilities,
+    NativeStreamerSessionContext, NativeVideoBackendCapability, NativeVideoCodecCapability,
+    Response, SendAnswerRequest, StreamSettings, VideoStallEvent, VideoTransitionEvent,
+    PROTOCOL_VERSION,
 };
 use crate::sdp::{
     build_nvst_sdp_for_answer, extract_negotiated_video_codec, munge_answer_sdp, IceCredentials,
@@ -41,6 +42,10 @@ const VIDEO_SINK_RATE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 const VIDEO_STALL_WARNING_MS: u64 = 2_500;
 const VIDEO_STALL_SECOND_ATTEMPT_MS: u64 = 5_000;
 const VIDEO_STALL_RESYNC_MS: u64 = 8_000;
+const VIDEO_STALL_PARTIAL_FLUSH_MS: u64 = 12_000;
+const VIDEO_STALL_COMPLETE_FLUSH_MS: u64 = 16_000;
+const VIDEO_STALL_PIPELINE_RESTART_MS: u64 = 20_000;
+const VIDEO_STALL_FATAL_MS: u64 = 24_000;
 const VIDEO_STALL_MIN_KEYFRAME_REQUEST_MS: u64 = 2_000;
 const VIDEO_STARTUP_KEYFRAME_MS: u64 = 2_500;
 const VIDEO_STARTUP_RESYNC_MS: u64 = 5_000;
@@ -73,6 +78,10 @@ enum VideoStallAction {
     None,
     RequestKeyframe { attempt: u8, stall_ms: u64 },
     Resync { attempt: u8, stall_ms: u64 },
+    PartialFlush { attempt: u8, stall_ms: u64 },
+    CompleteFlush { attempt: u8, stall_ms: u64 },
+    RestartPipeline { attempt: u8, stall_ms: u64 },
+    Fatal { attempt: u8, stall_ms: u64 },
     Recovered { stall_ms: u64 },
 }
 
@@ -119,6 +128,10 @@ impl VideoStallTracker {
             1 => VIDEO_STALL_WARNING_MS,
             2 => VIDEO_STALL_SECOND_ATTEMPT_MS,
             3 => VIDEO_STALL_RESYNC_MS,
+            4 => VIDEO_STALL_PARTIAL_FLUSH_MS,
+            5 => VIDEO_STALL_COMPLETE_FLUSH_MS,
+            6 => VIDEO_STALL_PIPELINE_RESTART_MS,
+            7 => VIDEO_STALL_FATAL_MS,
             _ => return VideoStallAction::None,
         };
         if stall_ms < next_due_ms {
@@ -134,10 +147,79 @@ impl VideoStallTracker {
         let attempt = self.next_attempt;
         self.next_attempt = self.next_attempt.saturating_add(1);
         self.last_request_ms = Some(now_ms);
-        if attempt >= 3 {
-            VideoStallAction::Resync { attempt, stall_ms }
-        } else {
-            VideoStallAction::RequestKeyframe { attempt, stall_ms }
+        match attempt {
+            1 | 2 => VideoStallAction::RequestKeyframe { attempt, stall_ms },
+            3 => VideoStallAction::Resync { attempt, stall_ms },
+            4 => VideoStallAction::PartialFlush { attempt, stall_ms },
+            5 => VideoStallAction::CompleteFlush { attempt, stall_ms },
+            6 => VideoStallAction::RestartPipeline { attempt, stall_ms },
+            _ => VideoStallAction::Fatal { attempt, stall_ms },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TransitionSnapshot {
+    transition_type: String,
+    source: String,
+    at_ms: u64,
+    old_caps: Option<String>,
+    new_caps: Option<String>,
+    old_framerate: Option<String>,
+    new_framerate: Option<String>,
+    old_memory_mode: Option<String>,
+    new_memory_mode: Option<String>,
+    render_gap_ms: Option<u64>,
+    requested_fps: Option<u32>,
+    caps_framerate: Option<String>,
+    high_fps_risk: bool,
+    queue_mode: NativeQueueMode,
+    summary: String,
+}
+
+impl TransitionSnapshot {
+    fn to_event(&self) -> VideoTransitionEvent {
+        VideoTransitionEvent {
+            transition_type: self.transition_type.clone(),
+            source: self.source.clone(),
+            at_ms: self.at_ms,
+            old_caps: self.old_caps.clone(),
+            new_caps: self.new_caps.clone(),
+            old_framerate: self.old_framerate.clone(),
+            new_framerate: self.new_framerate.clone(),
+            old_memory_mode: self.old_memory_mode.clone(),
+            new_memory_mode: self.new_memory_mode.clone(),
+            render_gap_ms: self.render_gap_ms,
+            requested_fps: self.requested_fps,
+            caps_framerate: self.caps_framerate.clone(),
+            high_fps_risk: self.high_fps_risk,
+            queue_mode: self.queue_mode.as_str().to_owned(),
+            summary: self.summary.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TransitionTelemetry {
+    queue_mode: NativeQueueMode,
+    queue_depth: u32,
+    queue_depth_changes: u32,
+    present_pacing_changes: u32,
+    partial_flush_count: u32,
+    complete_flush_count: u32,
+    last_transition: Option<TransitionSnapshot>,
+}
+
+impl Default for TransitionTelemetry {
+    fn default() -> Self {
+        Self {
+            queue_mode: NativeQueueMode::Auto,
+            queue_depth: VIDEO_QUEUE_MAX_BUFFERS,
+            queue_depth_changes: 0,
+            present_pacing_changes: 0,
+            partial_flush_count: 0,
+            complete_flush_count: 0,
+            last_transition: None,
         }
     }
 }
@@ -149,7 +231,12 @@ struct VideoLivenessState {
     resolution: Mutex<String>,
     hardware_acceleration: Mutex<String>,
     memory_mode: Mutex<String>,
+    caps_framerate: Mutex<Option<String>>,
+    requested_streaming_features_summary: Mutex<String>,
+    finalized_streaming_features_summary: Mutex<String>,
+    transition_telemetry: Mutex<TransitionTelemetry>,
     stats_overlay: Mutex<Option<gst::Element>>,
+    post_decode_queue: Mutex<Option<gst::Element>>,
     stats_overlay_visible: AtomicBool,
     target_bitrate_kbps: AtomicU32,
     encoded_bytes_total: AtomicU64,
@@ -165,6 +252,7 @@ struct VideoLivenessState {
     rtp_video_src_pad: Mutex<Option<gst::Pad>>,
     requested_fps: AtomicU32,
     framerate_mismatch_warned: AtomicBool,
+    transition_flush_escalation_enabled: AtomicBool,
     first_encoded_logged: AtomicBool,
     startup_keyframe_requested: AtomicBool,
     startup_resync_requested: AtomicBool,
@@ -179,7 +267,12 @@ impl VideoLivenessState {
             resolution: Mutex::new(String::new()),
             hardware_acceleration: Mutex::new(String::new()),
             memory_mode: Mutex::new("system-memory".to_owned()),
+            caps_framerate: Mutex::new(None),
+            requested_streaming_features_summary: Mutex::new("none".to_owned()),
+            finalized_streaming_features_summary: Mutex::new("none".to_owned()),
+            transition_telemetry: Mutex::new(TransitionTelemetry::default()),
             stats_overlay: Mutex::new(None),
+            post_decode_queue: Mutex::new(None),
             stats_overlay_visible: AtomicBool::new(false),
             target_bitrate_kbps: AtomicU32::new(0),
             encoded_bytes_total: AtomicU64::new(0),
@@ -195,6 +288,7 @@ impl VideoLivenessState {
             rtp_video_src_pad: Mutex::new(None),
             requested_fps: AtomicU32::new(0),
             framerate_mismatch_warned: AtomicBool::new(false),
+            transition_flush_escalation_enabled: AtomicBool::new(true),
             first_encoded_logged: AtomicBool::new(false),
             startup_keyframe_requested: AtomicBool::new(false),
             startup_resync_requested: AtomicBool::new(false),
@@ -209,12 +303,41 @@ impl VideoLivenessState {
             .min(u128::from(u64::MAX)) as u64
     }
 
-    fn configure(&self, settings: &StreamSettings, target_bitrate_kbps: u32) {
+    fn configure(&self, context: &NativeStreamerSessionContext, target_bitrate_kbps: u32) {
+        let settings = &context.settings;
         if let Ok(mut codec) = self.codec.lock() {
             *codec = settings.codec.as_str().to_owned();
         }
         if let Ok(mut resolution) = self.resolution.lock() {
             *resolution = settings.resolution.clone();
+        }
+        if let Ok(mut caps_framerate) = self.caps_framerate.lock() {
+            *caps_framerate = None;
+        }
+        if let Ok(mut requested_summary) = self.requested_streaming_features_summary.lock() {
+            *requested_summary = context
+                .session
+                .requested_streaming_features
+                .as_ref()
+                .map(|features| features.summary())
+                .unwrap_or_else(|| "none".to_owned());
+        }
+        if let Ok(mut finalized_summary) = self.finalized_streaming_features_summary.lock() {
+            *finalized_summary = context
+                .session
+                .finalized_streaming_features
+                .as_ref()
+                .map(|features| features.summary())
+                .unwrap_or_else(|| "none".to_owned());
+        }
+        if let Ok(mut telemetry) = self.transition_telemetry.lock() {
+            telemetry.queue_mode = resolve_queue_mode(settings);
+            telemetry.queue_depth = VIDEO_QUEUE_MAX_BUFFERS;
+            telemetry.queue_depth_changes = 0;
+            telemetry.present_pacing_changes = 0;
+            telemetry.partial_flush_count = 0;
+            telemetry.complete_flush_count = 0;
+            telemetry.last_transition = None;
         }
         self.target_bitrate_kbps
             .store(target_bitrate_kbps, Ordering::Relaxed);
@@ -223,6 +346,14 @@ impl VideoLivenessState {
             .store(false, Ordering::Relaxed);
         self.first_encoded_logged.store(false, Ordering::Relaxed);
         self.first_startup_audio_ms.store(0, Ordering::Relaxed);
+        self.transition_flush_escalation_enabled.store(
+            settings
+                .native_transition_diagnostics
+                .as_ref()
+                .map(|diagnostics| !diagnostics.disable_transition_flush_escalation)
+                .unwrap_or(true),
+            Ordering::Relaxed,
+        );
         self.startup_keyframe_requested
             .store(false, Ordering::Relaxed);
         self.startup_resync_requested
@@ -306,6 +437,9 @@ impl VideoLivenessState {
         if let Ok(mut memory_mode) = self.memory_mode.lock() {
             *memory_mode = memory_mode_from_caps(caps).to_owned();
         }
+        if let Ok(mut caps_framerate) = self.caps_framerate.lock() {
+            *caps_framerate = caps_framerate_summary(caps);
+        }
     }
 
     fn zero_copy_d3d11(&self) -> bool {
@@ -338,6 +472,13 @@ impl VideoLivenessState {
         (fps > 0).then_some(fps)
     }
 
+    fn caps_framerate(&self) -> Option<String> {
+        self.caps_framerate
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+    }
+
     fn warn_framerate_mismatch_once(&self) -> bool {
         !self.framerate_mismatch_warned.swap(true, Ordering::Relaxed)
     }
@@ -347,6 +488,162 @@ impl VideoLivenessState {
             .lock()
             .ok()
             .and_then(|current| current.clone())
+    }
+
+    fn queue_mode(&self) -> NativeQueueMode {
+        self.transition_telemetry
+            .lock()
+            .map(|telemetry| telemetry.queue_mode)
+            .unwrap_or(NativeQueueMode::Auto)
+    }
+
+    fn set_post_decode_queue(&self, queue: gst::Element) {
+        if let Ok(mut current) = self.post_decode_queue.lock() {
+            *current = Some(queue);
+        }
+    }
+
+    fn set_queue_depth(
+        &self,
+        max_buffers: u32,
+        reason: &str,
+        event_sender: &Option<Sender<Event>>,
+    ) {
+        let queue = self
+            .post_decode_queue
+            .lock()
+            .ok()
+            .and_then(|current| current.clone());
+        if let Some(queue) = queue.as_ref() {
+            configure_queue(queue, max_buffers, true);
+        }
+
+        let mut should_log = false;
+        if let Ok(mut telemetry) = self.transition_telemetry.lock() {
+            if telemetry.queue_depth != max_buffers {
+                telemetry.queue_depth = max_buffers;
+                telemetry.queue_depth_changes = telemetry.queue_depth_changes.saturating_add(1);
+                should_log = true;
+            }
+        }
+
+        if should_log {
+            send_log(
+                event_sender,
+                "info",
+                format!("Adjusted native post-decode queue depth to {max_buffers} ({reason})."),
+            );
+        }
+    }
+
+    fn queue_depth(&self) -> u32 {
+        self.transition_telemetry
+            .lock()
+            .map(|telemetry| telemetry.queue_depth)
+            .unwrap_or(VIDEO_QUEUE_MAX_BUFFERS)
+    }
+
+    fn record_present_pacing_change(&self) {
+        if let Ok(mut telemetry) = self.transition_telemetry.lock() {
+            telemetry.present_pacing_changes =
+                telemetry.present_pacing_changes.saturating_add(1);
+        }
+    }
+
+    fn transition_flush_escalation_enabled(&self) -> bool {
+        self.transition_flush_escalation_enabled
+            .load(Ordering::Relaxed)
+    }
+
+    fn transition_telemetry_snapshot(&self) -> TransitionTelemetry {
+        self.transition_telemetry
+            .lock()
+            .map(|telemetry| telemetry.clone())
+            .unwrap_or_default()
+    }
+
+    fn requested_streaming_features_summary(&self) -> String {
+        self.requested_streaming_features_summary
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_else(|_| "none".to_owned())
+    }
+
+    fn finalized_streaming_features_summary(&self) -> String {
+        self.finalized_streaming_features_summary
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_else(|_| "none".to_owned())
+    }
+
+    fn record_transition(
+        &self,
+        transition_type: &str,
+        source: &str,
+        old_caps: Option<String>,
+        new_caps: Option<String>,
+        old_framerate: Option<String>,
+        new_framerate: Option<String>,
+        old_memory_mode: Option<String>,
+        new_memory_mode: Option<String>,
+        event_sender: &Option<Sender<Event>>,
+    ) {
+        let requested_fps = self.requested_fps();
+        let queue_mode = self.queue_mode();
+        let render_gap_ms = age_since_ms(self.now_ms(), self.last_sink_ms.load(Ordering::Relaxed));
+        let high_fps_risk = requested_fps
+            .is_some_and(|fps| fps >= 240)
+            && new_framerate
+                .as_deref()
+                .is_some_and(|value| value != format!("{}/1", requested_fps.unwrap_or_default()));
+        let summary = format_transition_summary(
+            transition_type,
+            source,
+            requested_fps,
+            old_framerate.as_deref(),
+            new_framerate.as_deref(),
+            high_fps_risk,
+        );
+        let snapshot = TransitionSnapshot {
+            transition_type: transition_type.to_owned(),
+            source: source.to_owned(),
+            at_ms: self.now_ms(),
+            old_caps,
+            new_caps,
+            old_framerate,
+            new_framerate: new_framerate.clone(),
+            old_memory_mode,
+            new_memory_mode,
+            render_gap_ms,
+            requested_fps,
+            caps_framerate: new_framerate,
+            high_fps_risk,
+            queue_mode,
+            summary: summary.clone(),
+        };
+
+        if let Ok(mut telemetry) = self.transition_telemetry.lock() {
+            telemetry.last_transition = Some(snapshot.clone());
+        }
+
+        send_log(event_sender, "warn", format!("Native video transition: {summary}"));
+        if let Some(event_sender) = event_sender {
+            let _ = event_sender.send(Event::VideoTransition {
+                transition: snapshot.to_event(),
+            });
+        }
+    }
+
+    fn increment_partial_flush_count(&self) {
+        if let Ok(mut telemetry) = self.transition_telemetry.lock() {
+            telemetry.partial_flush_count = telemetry.partial_flush_count.saturating_add(1);
+        }
+    }
+
+    fn increment_complete_flush_count(&self) {
+        if let Ok(mut telemetry) = self.transition_telemetry.lock() {
+            telemetry.complete_flush_count = telemetry.complete_flush_count.saturating_add(1);
+        }
     }
 }
 
@@ -370,8 +667,8 @@ impl Default for VideoLivenessMonitor {
 }
 
 impl VideoLivenessMonitor {
-    fn configure(&self, settings: &StreamSettings, target_bitrate_kbps: u32) {
-        self.state.configure(settings, target_bitrate_kbps);
+    fn configure(&self, context: &NativeStreamerSessionContext, target_bitrate_kbps: u32) {
+        self.state.configure(context, target_bitrate_kbps);
     }
 
     fn update_hardware_acceleration(&self, value: impl Into<String>) {
@@ -1298,6 +1595,7 @@ impl GstreamerPipeline {
             &pipeline,
             event_sender.clone(),
             video_liveness.stop.clone(),
+            video_liveness.clone(),
         );
         let present_max_fps = Arc::new(AtomicU32::new(0));
         let d3d_fullscreen_sink = Arc::new(AtomicBool::new(false));
@@ -1353,8 +1651,8 @@ impl GstreamerPipeline {
         self.d3d_fullscreen_sink.store(enabled, Ordering::SeqCst);
     }
 
-    fn configure_stats(&self, settings: &StreamSettings, target_bitrate_kbps: u32) {
-        self.video_liveness.configure(settings, target_bitrate_kbps);
+    fn configure_stats(&self, context: &NativeStreamerSessionContext, target_bitrate_kbps: u32) {
+        self.video_liveness.configure(context, target_bitrate_kbps);
     }
 
     fn ensure_input_data_channels(
@@ -1770,6 +2068,48 @@ fn configure_queue(element: &gst::Element, max_buffers: u32, leaky_downstream: b
     } else {
         set_property_from_str_if_supported(element, "leaky", "no");
     }
+}
+
+fn resolve_queue_mode(settings: &StreamSettings) -> NativeQueueMode {
+    if let Some(force_queue_mode) = settings
+        .native_transition_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.force_queue_mode)
+    {
+        return force_queue_mode;
+    }
+
+    if settings.enable_cloud_gsync {
+        return NativeQueueMode::Vrr;
+    }
+    if settings.fps >= 240 {
+        return NativeQueueMode::Adaptive;
+    }
+    NativeQueueMode::Fixed
+}
+
+fn format_transition_summary(
+    transition_type: &str,
+    source: &str,
+    requested_fps: Option<u32>,
+    old_framerate: Option<&str>,
+    new_framerate: Option<&str>,
+    high_fps_risk: bool,
+) -> String {
+    let fps_summary = match (old_framerate, new_framerate) {
+        (Some(old), Some(new)) if old != new => format!("framerate {old} -> {new}"),
+        (_, Some(new)) => format!("framerate {new}"),
+        _ => "framerate unchanged/unknown".to_owned(),
+    };
+    if high_fps_risk {
+        return format!(
+            "{transition_type} on {source}: {fps_summary} while requestedFps={} (high-fps transition risk).",
+            requested_fps
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_owned())
+        );
+    }
+    format!("{transition_type} on {source}: {fps_summary}.")
 }
 
 fn configure_sink_for_low_latency(element: &gst::Element) {
@@ -3495,6 +3835,15 @@ fn run_video_liveness_watchdog(
                 decoded_total,
                 sink_total,
             );
+            emit_native_stats_event(
+                &event_sender,
+                &sink,
+                &state,
+                rates.encoded_kbps.round() as u32,
+                rates,
+                decoded_total,
+                sink_total,
+            );
             last_encoded_bytes_total = encoded_bytes_total;
             last_decoded_total = decoded_total;
             last_sink_total = sink_total;
@@ -3507,7 +3856,15 @@ fn run_video_liveness_watchdog(
             continue;
         }
 
-        match tracker.evaluate(state.now_ms(), last_sink_ms) {
+        let now_ms = state.now_ms();
+        let encoded_age_ms = age_since_ms(now_ms, state.last_encoded_ms.load(Ordering::Relaxed));
+        let decoded_age_ms = age_since_ms(now_ms, state.last_decoded_ms.load(Ordering::Relaxed));
+        let sink_age_ms = age_since_ms(now_ms, last_sink_ms);
+        let likely_stage = classify_video_stall(encoded_age_ms, decoded_age_ms, sink_age_ms);
+        let transition_stall = likely_stage == "decode-chain-stalled"
+            && encoded_age_ms.is_some_and(|age| age <= 1_000);
+
+        match tracker.evaluate(now_ms, last_sink_ms) {
             VideoStallAction::None => {}
             VideoStallAction::RequestKeyframe { attempt, stall_ms } => {
                 request_upstream_key_unit(&state, &event_sender);
@@ -3547,7 +3904,99 @@ fn run_video_liveness_watchdog(
                     ),
                 }
             }
+            VideoStallAction::PartialFlush { attempt, stall_ms } => {
+                if transition_stall && state.transition_flush_escalation_enabled() {
+                    request_upstream_key_unit(&state, &event_sender);
+                    perform_transition_flush(
+                        &state,
+                        &event_sender,
+                        TransitionFlushKind::Partial,
+                    );
+                }
+                emit_video_stall_event(
+                    &event_sender,
+                    &sink,
+                    &state,
+                    rates,
+                    attempt,
+                    stall_ms,
+                    false,
+                );
+            }
+            VideoStallAction::CompleteFlush { attempt, stall_ms } => {
+                if transition_stall && state.transition_flush_escalation_enabled() {
+                    request_upstream_key_unit(&state, &event_sender);
+                    perform_transition_flush(
+                        &state,
+                        &event_sender,
+                        TransitionFlushKind::Complete,
+                    );
+                }
+                emit_video_stall_event(
+                    &event_sender,
+                    &sink,
+                    &state,
+                    rates,
+                    attempt,
+                    stall_ms,
+                    false,
+                );
+            }
+            VideoStallAction::RestartPipeline { attempt, stall_ms } => {
+                if transition_stall {
+                    request_upstream_key_unit(&state, &event_sender);
+                    restart_pipeline_for_video_recovery(
+                        &pipeline,
+                        &event_sender,
+                        "mid-stream transition stall recovery",
+                    );
+                }
+                emit_video_stall_event(
+                    &event_sender,
+                    &sink,
+                    &state,
+                    rates,
+                    attempt,
+                    stall_ms,
+                    false,
+                );
+            }
+            VideoStallAction::Fatal { attempt, stall_ms } => {
+                emit_video_stall_event(
+                    &event_sender,
+                    &sink,
+                    &state,
+                    rates,
+                    attempt,
+                    stall_ms,
+                    false,
+                );
+                send_log(
+                    &event_sender,
+                    "error",
+                    format!(
+                        "Native video stall recovery exhausted after {stall_ms}ms; stage={likely_stage} queueMode={} transitionFlushEscalation={}.",
+                        state.queue_mode().as_str(),
+                        state.transition_flush_escalation_enabled(),
+                    ),
+                );
+                if let Some(event_sender) = &event_sender {
+                    let _ = event_sender.send(Event::Error {
+                        code: "native-video-stall-fatal".to_owned(),
+                        message: format!(
+                            "Native video stall recovery exhausted after {stall_ms}ms ({likely_stage})."
+                        ),
+                    });
+                }
+            }
             VideoStallAction::Recovered { stall_ms } => {
+                if state.queue_depth() > VIDEO_QUEUE_MAX_BUFFERS {
+                    state.set_queue_depth(
+                        VIDEO_QUEUE_MAX_BUFFERS,
+                        "transition recovery completed",
+                        &event_sender,
+                    );
+                }
                 send_log(
                     &event_sender,
                     "info",
@@ -3631,30 +4080,93 @@ fn maybe_recover_video_startup(
             ),
         );
         request_upstream_key_unit(state, event_sender);
-        match pipeline.set_state(gst::State::Ready) {
-            Ok(_) => match pipeline.set_state(gst::State::Playing) {
-                Ok(_) => send_log(
-                    event_sender,
-                    "warn",
-                    "Restarted native GStreamer pipeline during video startup recovery.".to_owned(),
-                ),
-                Err(error) => send_log(
-                    event_sender,
-                    "warn",
-                    format!(
-                        "Failed to restore native GStreamer pipeline to Playing during video startup recovery: {error:?}."
-                    ),
-                ),
-            },
+        restart_pipeline_for_video_recovery(
+            pipeline,
+            event_sender,
+            "video startup recovery",
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransitionFlushKind {
+    Partial,
+    Complete,
+}
+
+fn restart_pipeline_for_video_recovery(
+    pipeline: &gst::Pipeline,
+    event_sender: &Option<Sender<Event>>,
+    reason: &str,
+) {
+    match pipeline.set_state(gst::State::Ready) {
+        Ok(_) => match pipeline.set_state(gst::State::Playing) {
+            Ok(_) => send_log(
+                event_sender,
+                "warn",
+                format!("Restarted native GStreamer pipeline during {reason}."),
+            ),
             Err(error) => send_log(
                 event_sender,
                 "warn",
                 format!(
-                    "Failed to set native GStreamer pipeline to Ready during video startup recovery: {error:?}."
+                    "Failed to restore native GStreamer pipeline to Playing during {reason}: {error:?}."
                 ),
             ),
+        },
+        Err(error) => send_log(
+            event_sender,
+            "warn",
+            format!(
+                "Failed to set native GStreamer pipeline to Ready during {reason}: {error:?}."
+            ),
+        ),
+    }
+}
+
+fn perform_transition_flush(
+    state: &VideoLivenessState,
+    event_sender: &Option<Sender<Event>>,
+    flush_kind: TransitionFlushKind,
+) {
+    let queue = state
+        .post_decode_queue
+        .lock()
+        .ok()
+        .and_then(|current| current.clone());
+    let Some(queue) = queue else {
+        send_log(
+            event_sender,
+            "warn",
+            "Cannot flush native transition queue because the post-decode queue is unavailable."
+                .to_owned(),
+        );
+        return;
+    };
+
+    let label = match flush_kind {
+        TransitionFlushKind::Partial => "partial",
+        TransitionFlushKind::Complete => "complete",
+    };
+    let _ = queue.send_event(gst::event::FlushStart::new());
+    let _ = queue.send_event(gst::event::FlushStop::new(false));
+
+    match flush_kind {
+        TransitionFlushKind::Partial => {
+            state.increment_partial_flush_count();
+            state.set_queue_depth(2, "transition partial flush", event_sender);
+        }
+        TransitionFlushKind::Complete => {
+            state.increment_complete_flush_count();
+            state.set_queue_depth(2, "transition complete flush", event_sender);
         }
     }
+
+    send_log(
+        event_sender,
+        "warn",
+        format!("Performed {label} native transition flush on the post-decode queue."),
+    );
 }
 
 fn request_upstream_key_unit(state: &VideoLivenessState, event_sender: &Option<Sender<Event>>) {
@@ -3688,6 +4200,86 @@ fn request_upstream_key_unit(state: &VideoLivenessState, event_sender: &Option<S
             "Upstream video key-unit request was not accepted by the RTP source pad.".to_owned(),
         );
     }
+}
+
+fn emit_native_stats_event(
+    event_sender: &Option<Sender<Event>>,
+    sink: &gst::Element,
+    state: &VideoLivenessState,
+    bitrate_kbps: u32,
+    rates: VideoRateSnapshot,
+    frames_decoded: u64,
+    frames_rendered: u64,
+) {
+    let Some(event_sender) = event_sender else {
+        return;
+    };
+
+    let target_bitrate_kbps = state.target_bitrate_kbps.load(Ordering::Relaxed);
+    let bitrate_performance_percent = if target_bitrate_kbps > 0 {
+        (f64::from(bitrate_kbps) / f64::from(target_bitrate_kbps)) * 100.0
+    } else {
+        0.0
+    };
+    let codec = state
+        .codec
+        .lock()
+        .map(|codec| codec.clone())
+        .unwrap_or_default();
+    let resolution = state
+        .resolution
+        .lock()
+        .map(|resolution| resolution.clone())
+        .unwrap_or_default();
+    let hardware_acceleration = state
+        .hardware_acceleration
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_default();
+    let sink_stats = read_sink_stats(sink);
+    let telemetry = state.transition_telemetry_snapshot();
+    let _ = event_sender.send(Event::Stats {
+        stats: crate::protocol::NativeStatsEvent {
+            codec,
+            resolution,
+            hardware_acceleration,
+            requested_fps: state.requested_fps(),
+            caps_framerate: state.caps_framerate(),
+            bitrate_kbps,
+            target_bitrate_kbps,
+            bitrate_performance_percent,
+            decoded_fps: rates.decoded_fps,
+            render_fps: rates.sink_fps,
+            frames_decoded,
+            frames_rendered,
+            frames_pending_to_present: frames_decoded.saturating_sub(frames_rendered),
+            sink_rendered: sink_stats.rendered,
+            sink_dropped: sink_stats.dropped,
+            memory_mode: state.memory_mode(),
+            zero_copy: state.zero_copy(),
+            queue_mode: telemetry.queue_mode.as_str().to_owned(),
+            queue_depth_changes: telemetry.queue_depth_changes,
+            present_pacing_changes: telemetry.present_pacing_changes,
+            partial_flush_count: telemetry.partial_flush_count,
+            complete_flush_count: telemetry.complete_flush_count,
+            last_transition_type: telemetry
+                .last_transition
+                .as_ref()
+                .map(|transition| transition.transition_type.clone()),
+            last_transition_at_ms: telemetry
+                .last_transition
+                .as_ref()
+                .map(|transition| transition.at_ms),
+            last_transition_summary: telemetry
+                .last_transition
+                .as_ref()
+                .map(|transition| transition.summary.clone()),
+            requested_streaming_features_summary: state.requested_streaming_features_summary(),
+            finalized_streaming_features_summary: state.finalized_streaming_features_summary(),
+            zero_copy_d3d11: state.zero_copy_d3d11(),
+            zero_copy_d3d12: state.zero_copy_d3d12(),
+        },
+    });
 }
 
 fn update_native_stats_overlay(
@@ -3775,6 +4367,7 @@ fn emit_video_stall_event(
     let likely_stage = classify_video_stall(encoded_age_ms, decoded_age_ms, sink_age_ms);
     let memory_mode = state.memory_mode();
     let zero_copy = state.zero_copy();
+    let telemetry = state.transition_telemetry_snapshot();
     let resync_suffix = if will_resync {
         " Requesting keyframe and resyncing GStreamer latency."
     } else {
@@ -3784,10 +4377,23 @@ fn emit_video_stall_event(
         event_sender,
         "warn",
         format!(
-            "Native video stall detected: stall={stall_ms}ms stage={likely_stage} encoded={:.0}kbps decoded={:.1}fps sink={:.1}fps ages=encoded:{} decoded:{} sink:{} rendered={} dropped={} memoryMode={} zeroCopy={} zeroCopyD3D11={} zeroCopyD3D12={}. If decoded/sink/rendered counters are still flowing but the visible frame is stale, suspect a transient D3D swapchain/present path freeze rather than RTP loss; it may recover after a keyframe/IDR or latency resync.{}",
+            "Native video stall detected: stall={stall_ms}ms stage={likely_stage} encoded={:.0}kbps decoded={:.1}fps sink={:.1}fps requestedFps={} capsFramerate={} queueMode={} partialFlushes={} completeFlushes={} lastTransition={} ages=encoded:{} decoded:{} sink:{} rendered={} dropped={} memoryMode={} zeroCopy={} zeroCopyD3D11={} zeroCopyD3D12={}. If decoded/sink/rendered counters are still flowing but the visible frame is stale, suspect a server-driven mid-stream transition the native decode/present chain failed to absorb rather than pure RTP loss.{}",
             rates.encoded_kbps,
             rates.decoded_fps,
             rates.sink_fps,
+            state
+                .requested_fps()
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_owned()),
+            state.caps_framerate().unwrap_or_else(|| "unknown".to_owned()),
+            telemetry.queue_mode.as_str(),
+            telemetry.partial_flush_count,
+            telemetry.complete_flush_count,
+            telemetry
+                .last_transition
+                .as_ref()
+                .map(|transition| transition.transition_type.as_str())
+                .unwrap_or("none"),
             format_age_ms(encoded_age_ms),
             format_age_ms(decoded_age_ms),
             format_age_ms(sink_age_ms),
@@ -3820,6 +4426,21 @@ fn emit_video_stall_event(
             sink_dropped: stats.dropped,
             memory_mode,
             zero_copy,
+            requested_fps: state.requested_fps(),
+            caps_framerate: state.caps_framerate(),
+            queue_mode: telemetry.queue_mode.as_str().to_owned(),
+            partial_flush_count: telemetry.partial_flush_count,
+            complete_flush_count: telemetry.complete_flush_count,
+            last_transition_type: telemetry
+                .last_transition
+                .as_ref()
+                .map(|transition| transition.transition_type.clone()),
+            last_transition_at_ms: telemetry
+                .last_transition
+                .as_ref()
+                .map(|transition| transition.at_ms),
+            requested_streaming_features_summary: state.requested_streaming_features_summary(),
+            finalized_streaming_features_summary: state.finalized_streaming_features_summary(),
             zero_copy_d3d11: state.zero_copy_d3d11(),
             zero_copy_d3d12: state.zero_copy_d3d12(),
             recovery_attempt,
@@ -3864,6 +4485,7 @@ fn start_gstreamer_bus_diagnostics(
     pipeline: &gst::Pipeline,
     event_sender: Option<Sender<Event>>,
     stop: Arc<AtomicBool>,
+    video_liveness: VideoLivenessMonitor,
 ) {
     let Some(bus) = pipeline.bus() else {
         send_log(
@@ -3943,6 +4565,17 @@ fn start_gstreamer_bus_diagnostics(
                                 state.current(),
                                 state.pending()
                             ),
+                        );
+                        video_liveness.state.record_transition(
+                            "pipeline-state-change",
+                            "pipeline",
+                            Some(format!("{:?}", state.old())),
+                            Some(format!("{:?}", state.current())),
+                            None,
+                            None,
+                            None,
+                            None,
+                            &event_sender,
                         );
                     }
                 }
@@ -4730,14 +5363,34 @@ fn link_rtp_video_pad(
                     (spec.role == RtpVideoChainRole::PostDecodeQueue).then_some(element)
                 })
         {
+            video_liveness.set_post_decode_queue(post_decode_queue.clone());
             watch_video_decoded_rate(
                 post_decode_queue,
                 event_sender,
                 Some(video_liveness.clone()),
             );
         }
+        if let Some(parser) = specs
+            .iter()
+            .zip(elements.iter())
+            .find_map(|(spec, element)| {
+                (spec.role == RtpVideoChainRole::Parser).then_some(element)
+            })
+        {
+            watch_video_caps_transitions(parser, "parser", event_sender, video_liveness.clone());
+        }
+        if let Some(decoder) = specs
+            .iter()
+            .zip(elements.iter())
+            .find_map(|(spec, element)| {
+                (spec.role == RtpVideoChainRole::Decoder).then_some(element)
+            })
+        {
+            watch_video_caps_transitions(decoder, "decoder", event_sender, video_liveness.clone());
+        }
         render_state.set_video_sink(sink.clone(), event_sender);
-        install_present_limiter(sink, present_max_fps, event_sender);
+        install_present_limiter(sink, present_max_fps, event_sender, Some(video_liveness.clone()));
+        watch_video_sink_caps_transitions(sink, event_sender, Some(video_liveness.clone()));
         watch_first_sink_buffer(sink, "video", event_sender, streaming_reported);
         watch_video_sink_rate(sink, event_sender, Some(video_liveness.clone()));
         video_liveness.start(pipeline.clone(), sink.clone(), event_sender.clone());
@@ -5116,16 +5769,153 @@ fn watch_video_decoded_rate(
     );
 }
 
+fn watch_video_caps_transitions(
+    element: &gst::Element,
+    source: &'static str,
+    event_sender: &Option<Sender<Event>>,
+    video_liveness: VideoLivenessMonitor,
+) {
+    let Some(src_pad) = element.static_pad("src") else {
+        return;
+    };
+    let sender = event_sender.clone();
+    let monitor = video_liveness.clone();
+    let last_caps = Arc::new(Mutex::new(None::<String>));
+    let last_framerate = Arc::new(Mutex::new(None::<String>));
+    let last_memory_mode = Arc::new(Mutex::new(None::<String>));
+    let last_caps_for_probe = last_caps.clone();
+    let last_framerate_for_probe = last_framerate.clone();
+    let last_memory_mode_for_probe = last_memory_mode.clone();
+
+    src_pad.add_probe(gst::PadProbeType::BUFFER, move |pad, _info| {
+        let caps = pad
+            .current_caps()
+            .map(|caps| caps.to_string())
+            .unwrap_or_else(|| "unknown caps".to_owned());
+        let framerate = caps_framerate_summary(&caps);
+        let memory_mode = Some(memory_mode_from_caps(&caps).to_owned());
+
+        let Ok(mut old_caps) = last_caps_for_probe.lock() else {
+            return gst::PadProbeReturn::Ok;
+        };
+        let Ok(mut old_framerate) = last_framerate_for_probe.lock() else {
+            return gst::PadProbeReturn::Ok;
+        };
+        let Ok(mut old_memory_mode) = last_memory_mode_for_probe.lock() else {
+            return gst::PadProbeReturn::Ok;
+        };
+
+        if old_caps.is_none() {
+            *old_caps = Some(caps);
+            *old_framerate = framerate;
+            *old_memory_mode = memory_mode;
+            return gst::PadProbeReturn::Ok;
+        }
+
+        let caps_changed = old_caps.as_ref() != Some(&caps);
+        let framerate_changed = *old_framerate != framerate;
+        let memory_changed = *old_memory_mode != memory_mode;
+        if caps_changed || framerate_changed || memory_changed {
+            monitor.state.record_transition(
+                &format!("{source}-caps-change"),
+                source,
+                old_caps.clone(),
+                Some(caps.clone()),
+                old_framerate.clone(),
+                framerate.clone(),
+                old_memory_mode.clone(),
+                memory_mode.clone(),
+                &sender,
+            );
+            *old_caps = Some(caps);
+            *old_framerate = framerate;
+            *old_memory_mode = memory_mode;
+        }
+
+        gst::PadProbeReturn::Ok
+    });
+}
+
+fn watch_video_sink_caps_transitions(
+    sink: &gst::Element,
+    event_sender: &Option<Sender<Event>>,
+    video_liveness: Option<VideoLivenessMonitor>,
+) {
+    let Some(monitor) = video_liveness else {
+        return;
+    };
+    let Some(sink_pad) = sink.static_pad("sink") else {
+        return;
+    };
+    let sender = event_sender.clone();
+    let last_caps = Arc::new(Mutex::new(None::<String>));
+    let last_framerate = Arc::new(Mutex::new(None::<String>));
+    let last_memory_mode = Arc::new(Mutex::new(None::<String>));
+    let last_caps_for_probe = last_caps.clone();
+    let last_framerate_for_probe = last_framerate.clone();
+    let last_memory_mode_for_probe = last_memory_mode.clone();
+
+    sink_pad.add_probe(gst::PadProbeType::BUFFER, move |pad, _info| {
+        let caps = pad
+            .current_caps()
+            .map(|caps| caps.to_string())
+            .unwrap_or_else(|| "unknown caps".to_owned());
+        let framerate = caps_framerate_summary(&caps);
+        let memory_mode = Some(memory_mode_from_caps(&caps).to_owned());
+
+        let Ok(mut old_caps) = last_caps_for_probe.lock() else {
+            return gst::PadProbeReturn::Ok;
+        };
+        let Ok(mut old_framerate) = last_framerate_for_probe.lock() else {
+            return gst::PadProbeReturn::Ok;
+        };
+        let Ok(mut old_memory_mode) = last_memory_mode_for_probe.lock() else {
+            return gst::PadProbeReturn::Ok;
+        };
+
+        if old_caps.is_none() {
+            *old_caps = Some(caps);
+            *old_framerate = framerate;
+            *old_memory_mode = memory_mode;
+            return gst::PadProbeReturn::Ok;
+        }
+
+        let caps_changed = old_caps.as_ref() != Some(&caps);
+        let framerate_changed = *old_framerate != framerate;
+        let memory_changed = *old_memory_mode != memory_mode;
+        if caps_changed || framerate_changed || memory_changed {
+            monitor.state.record_transition(
+                "sink-caps-change",
+                "sink",
+                old_caps.clone(),
+                Some(caps.clone()),
+                old_framerate.clone(),
+                framerate.clone(),
+                old_memory_mode.clone(),
+                memory_mode.clone(),
+                &sender,
+            );
+            *old_caps = Some(caps);
+            *old_framerate = framerate;
+            *old_memory_mode = memory_mode;
+        }
+
+        gst::PadProbeReturn::Ok
+    });
+}
+
 fn install_present_limiter(
     sink: &gst::Element,
     present_max_fps: Arc<AtomicU32>,
     event_sender: &Option<Sender<Event>>,
+    video_liveness: Option<VideoLivenessMonitor>,
 ) {
     let Some(sink_pad) = sink.static_pad("sink") else {
         return;
     };
 
     let sender = event_sender.clone();
+    let monitor = video_liveness.clone();
     let state = Arc::new(Mutex::new(PresentLimiterState {
         next_present_at: Instant::now(),
         last_log_at: Instant::now(),
@@ -5151,6 +5941,9 @@ fn install_present_limiter(
             state.last_log_at = now;
             state.passed = 0;
             state.dropped = 0;
+            if let Some(monitor) = &monitor {
+                monitor.state.record_present_pacing_change();
+            }
         }
 
         let frame_interval = Duration::from_secs_f64(1.0 / f64::from(target_fps.max(1)));
@@ -5252,6 +6045,17 @@ fn watch_video_pad_rate(
             ) {
                 let expected = format!("{requested_fps}/1");
                 if caps_framerate_value != expected && monitor.state.warn_framerate_mismatch_once() {
+                    monitor.state.record_transition(
+                        "high-fps-transition-risk",
+                        label,
+                        None,
+                        Some(caps.clone()),
+                        None,
+                        Some(caps_framerate_value.clone()),
+                        None,
+                        Some(memory_mode.to_owned()),
+                        &sender,
+                    );
                     send_log(
                         &sender,
                         "warn",
@@ -5568,7 +6372,7 @@ impl NativeStreamerBackend for GstreamerBackend {
         let d3d_fullscreen_sink = resolve_d3d_fullscreen_sink(context.settings.enable_cloud_gsync);
         pipeline.set_present_max_fps(present_max_fps);
         pipeline.set_d3d_fullscreen_sink(d3d_fullscreen_sink);
-        pipeline.configure_stats(&context.settings, prepared.nvst_params.max_bitrate_kbps);
+        pipeline.configure_stats(context, prepared.nvst_params.max_bitrate_kbps);
         if present_max_fps > 0 {
             events.push(Event::Log {
                 level: "info",
@@ -6070,7 +6874,27 @@ mod tests {
                 stall_ms: 8_000,
             },
         );
-        assert_eq!(tracker.evaluate(12_000, 0), VideoStallAction::None);
+        assert_eq!(
+            tracker.evaluate(12_000, 0),
+            VideoStallAction::PartialFlush {
+                attempt: 4,
+                stall_ms: 12_000,
+            },
+        );
+        assert_eq!(
+            tracker.evaluate(16_000, 0),
+            VideoStallAction::CompleteFlush {
+                attempt: 5,
+                stall_ms: 16_000,
+            },
+        );
+        assert_eq!(
+            tracker.evaluate(20_000, 0),
+            VideoStallAction::RestartPipeline {
+                attempt: 6,
+                stall_ms: 20_000,
+            },
+        );
     }
 
     #[test]
@@ -6096,6 +6920,31 @@ mod tests {
                 stall_ms: 2_500,
             },
         );
+    }
+
+    #[test]
+    fn resolve_queue_mode_prefers_adaptive_for_240_fps_and_vrr_for_cloud_gsync() {
+        let adaptive = resolve_queue_mode(&StreamSettings {
+            resolution: "2560x1440".to_owned(),
+            fps: 240,
+            max_bitrate_mbps: 75,
+            codec: VideoCodec::H265,
+            color_quality: crate::protocol::ColorQuality::TenBit420,
+            enable_cloud_gsync: false,
+            native_transition_diagnostics: None,
+        });
+        assert_eq!(adaptive, NativeQueueMode::Adaptive);
+
+        let vrr = resolve_queue_mode(&StreamSettings {
+            resolution: "2560x1440".to_owned(),
+            fps: 120,
+            max_bitrate_mbps: 75,
+            codec: VideoCodec::H265,
+            color_quality: crate::protocol::ColorQuality::TenBit420,
+            enable_cloud_gsync: true,
+            native_transition_diagnostics: None,
+        });
+        assert_eq!(vrr, NativeQueueMode::Vrr);
     }
 
     #[test]

@@ -416,6 +416,7 @@ interface NvstParams {
   hidDeviceMask?: number;
   enablePartiallyReliableTransferGamepad?: number;
   enablePartiallyReliableTransferHid?: number;
+  dynamicSplitEncodeUpdatesEnabled?: boolean;
 }
 
 /**
@@ -475,6 +476,7 @@ export function buildNvstSdp(params: NvstParams): string {
   const enablePartiallyReliableTransferGamepad = params.enablePartiallyReliableTransferGamepad
     ?? PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL;
   const enablePartiallyReliableTransferHid = params.enablePartiallyReliableTransferHid ?? hidDeviceMask;
+  const dynamicSplitEncodeUpdatesEnabled = params.dynamicSplitEncodeUpdatesEnabled ?? ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES;
 
   const lines: string[] = [
     "v=0",
@@ -550,7 +552,7 @@ export function buildNvstSdp(params: NvstParams): string {
     if (ENABLE_240_FPS_SPLIT_ENCODE) {
       lines.push(
         "a=video.videoSplitEncodeStripsPerFrame:3",
-        `a=video.updateSplitEncodeStateDynamically:${ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES ? 1 : 0}`,
+        `a=video.updateSplitEncodeStateDynamically:${dynamicSplitEncodeUpdatesEnabled ? 1 : 0}`,
         "a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535",
         "a=vqos.rtcPreemptiveIdrSettings.minNackPacketCaptureAgeMs:65535",
       );

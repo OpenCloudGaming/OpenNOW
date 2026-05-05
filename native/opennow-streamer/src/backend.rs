@@ -503,6 +503,9 @@ mod tests {
                     ip: "10.0.0.7".to_owned(),
                     port: 49003,
                 }),
+                negotiated_stream_profile: None,
+                requested_streaming_features: None,
+                finalized_streaming_features: None,
             },
             settings: StreamSettings {
                 resolution: resolution.to_owned(),
@@ -511,6 +514,7 @@ mod tests {
                 codec: VideoCodec::H265,
                 color_quality: ColorQuality::TenBit420,
                 enable_cloud_gsync: false,
+                native_transition_diagnostics: None,
             },
         }
     }

@@ -12,6 +12,7 @@ import type {
   StreamClientMode,
   NativeStreamerBackendPreference,
   NativeStreamerFeatureMode,
+  NativeTransitionDiagnostics,
   ControllerThemeRgb,
   ControllerThemeStyle,
 } from "@shared/gfn";
@@ -123,6 +124,8 @@ export interface Settings {
   enableL4S: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
   enableCloudGsync: boolean;
+  /** Hidden diagnostics for native transition recovery and 240 FPS server-side stream changes */
+  nativeTransitionDiagnostics?: NativeTransitionDiagnostics;
   /** Show the currently streaming game as Discord Rich Presence activity */
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
@@ -214,6 +217,7 @@ const DEFAULT_SETTINGS: Settings = {
   gameLanguage: "en_US",
   enableL4S: false,
   enableCloudGsync: false,
+  nativeTransitionDiagnostics: undefined,
   discordRichPresence: false,
   autoCheckForUpdates: true,
   allowEscapeToExitFullscreen: false,

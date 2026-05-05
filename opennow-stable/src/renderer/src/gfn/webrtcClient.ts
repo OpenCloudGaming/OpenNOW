@@ -5,6 +5,8 @@ import type {
   SessionInfo,
   VideoCodec,
   MicrophoneMode,
+  NativeTransitionDiagnostics,
+  NativeQueueMode,
 } from "@shared/gfn";
 
 import {
@@ -45,6 +47,7 @@ interface OfferSettings {
   resolution: string;
   fps: number;
   maxBitrateKbps: number;
+  nativeTransitionDiagnostics?: NativeTransitionDiagnostics;
 }
 
 interface RiInputCapabilities {
@@ -177,6 +180,15 @@ export interface StreamDiagnostics {
   decoderPressureActive: boolean;
   decoderRecoveryAttempts: number;
   decoderRecoveryAction: string;
+  nativeRequestedFps?: number;
+  nativeCapsFramerate?: string;
+  nativeQueueMode?: NativeQueueMode;
+  nativeFramesPendingToPresent?: number;
+  nativePartialFlushCount?: number;
+  nativeCompleteFlushCount?: number;
+  nativeTransitionSummary?: string;
+  nativeRequestedStreamingFeaturesSummary?: string;
+  nativeFinalizedStreamingFeaturesSummary?: string;
 
   // Microphone state
   micState: MicState;
@@ -767,6 +779,15 @@ export class GfnWebRtcClient {
     decoderPressureActive: false,
     decoderRecoveryAttempts: 0,
     decoderRecoveryAction: "none",
+    nativeRequestedFps: undefined,
+    nativeCapsFramerate: undefined,
+    nativeQueueMode: undefined,
+    nativeFramesPendingToPresent: undefined,
+    nativePartialFlushCount: undefined,
+    nativeCompleteFlushCount: undefined,
+    nativeTransitionSummary: undefined,
+    nativeRequestedStreamingFeaturesSummary: undefined,
+    nativeFinalizedStreamingFeaturesSummary: undefined,
     micState: "uninitialized",
     micEnabled: false,
   };
@@ -1015,6 +1036,15 @@ export class GfnWebRtcClient {
     this.diagnostics.decoderPressureActive = false;
     this.diagnostics.decoderRecoveryAttempts = 0;
     this.diagnostics.decoderRecoveryAction = "none";
+    this.diagnostics.nativeRequestedFps = undefined;
+    this.diagnostics.nativeCapsFramerate = undefined;
+    this.diagnostics.nativeQueueMode = undefined;
+    this.diagnostics.nativeFramesPendingToPresent = undefined;
+    this.diagnostics.nativePartialFlushCount = undefined;
+    this.diagnostics.nativeCompleteFlushCount = undefined;
+    this.diagnostics.nativeTransitionSummary = undefined;
+    this.diagnostics.nativeRequestedStreamingFeaturesSummary = undefined;
+    this.diagnostics.nativeFinalizedStreamingFeaturesSummary = undefined;
   }
 
   private resetDiagnostics(): void {
@@ -1069,6 +1099,15 @@ export class GfnWebRtcClient {
       decoderPressureActive: false,
       decoderRecoveryAttempts: 0,
       decoderRecoveryAction: "none",
+      nativeRequestedFps: undefined,
+      nativeCapsFramerate: undefined,
+      nativeQueueMode: undefined,
+      nativeFramesPendingToPresent: undefined,
+      nativePartialFlushCount: undefined,
+      nativeCompleteFlushCount: undefined,
+      nativeTransitionSummary: undefined,
+      nativeRequestedStreamingFeaturesSummary: undefined,
+      nativeFinalizedStreamingFeaturesSummary: undefined,
       micState: this.micState,
       micEnabled: this.micManager?.isEnabled() ?? false,
     };
@@ -4356,6 +4395,8 @@ export class GfnWebRtcClient {
       codec: effectiveCodec,
       colorQuality: settings.colorQuality,
       credentials,
+      dynamicSplitEncodeUpdatesEnabled:
+        settings.nativeTransitionDiagnostics?.disableDynamicSplitEncodeUpdates !== true,
     });
 
     await window.openNow.sendAnswer({
