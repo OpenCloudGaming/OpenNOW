@@ -17,6 +17,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "webos:build": "node ./scripts/build-webos.mjs",
+    "webos:package": "npm run webos:build && node ./scripts/package-webos.mjs",
     "preview": "electron-vite preview",
     "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
     "dist:signed": "npm run build && electron-builder",
@@ -42,6 +44,7 @@
     "electron": "^41.1.1",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
+    "esbuild": "^0.25.12",
     "react-scan": "^0.5.3",
     "tsx": "^4.20.6",
     "typescript": "^6.0.2",

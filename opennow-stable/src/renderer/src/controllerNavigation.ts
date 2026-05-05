@@ -296,6 +296,37 @@ export function useControllerNavigation({
   }, [controllerConnected, enabled]);
 
   useEffect(() => {
+    if (!enabled) return;
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented) return;
+      const key = event.key;
+      if (key === "ArrowUp" || key === "Up") {
+        event.preventDefault();
+        if (!onDirectionInput?.("up")) moveFocus("up");
+      } else if (key === "ArrowDown" || key === "Down") {
+        event.preventDefault();
+        if (!onDirectionInput?.("down")) moveFocus("down");
+      } else if (key === "ArrowLeft" || key === "Left") {
+        event.preventDefault();
+        if (!onDirectionInput?.("left")) moveFocus("left");
+      } else if (key === "ArrowRight" || key === "Right") {
+        event.preventDefault();
+        if (!onDirectionInput?.("right")) moveFocus("right");
+      } else if (key === "Enter" || key === "OK") {
+        event.preventDefault();
+        if (!onActivateInput?.()) activateFocusedElement();
+      } else if (key === "Escape" || key === "Backspace" || key === "BrowserBack" || key === "GoBack") {
+        event.preventDefault();
+        triggerBackAction(onBackAction);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
+  }, [enabled, onActivateInput, onBackAction, onDirectionInput]);
+
+  useEffect(() => {
     function updateConnected(next: boolean): void {
       if (connectedRef.current !== next) {
         connectedRef.current = next;

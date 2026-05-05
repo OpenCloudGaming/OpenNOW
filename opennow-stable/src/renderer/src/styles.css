@@ -286,6 +286,15 @@ body,
     linear-gradient(180deg, var(--bg-a), var(--bg-b));
 }
 
+body.webos-mode {
+  cursor: none;
+  overscroll-behavior: none;
+}
+
+.webos-shell {
+  min-width: 1280px;
+}
+
 .auth-refresh-notice {
   position: fixed;
   top: calc(var(--navbar-h) + 10px);

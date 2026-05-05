@@ -21,6 +21,8 @@
   },
   "include": [
     "electron.vite.config.ts",
+    "webos.vite.config.ts",
+    "webos/service-src",
     "src/main",
     "src/preload",
     "src/shared"

@@ -1,0 +1,20 @@
+{
+  "id": "com.zortos.opennow.stable",
+  "title": "OpenNOW",
+  "main": "index.html",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "type": "web",
+  "vendor": "OpenCloudGaming",
+  "version": "0.0.0",
+  "appDescription": "Open-source GeForce NOW client",
+  "resolution": "1920x1080",
+  "requiredMemory": 512,
+  "iconColor": "#101827",
+  "keepAlive": true,
+  "requiredPermissions": [
+    "applications.launch"
+  ],
+  "allowAudioCapture": true,
+  "useUnlimitedMediaPolicy": true
+}

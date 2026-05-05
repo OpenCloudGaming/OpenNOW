@@ -1,0 +1,8 @@
+{
+  "com.webos.applicationManager": [
+    "applications.launch"
+  ],
+  "com.webos.service.applicationmanager": [
+    "applications.launch"
+  ]
+}

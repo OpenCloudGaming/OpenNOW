@@ -1,5 +1,7 @@
 node_modules
 dist
 dist-electron
+dist-webos
 dist-release
+webos/services/com.zortos.opennow.stable.service/service.js
 *.log

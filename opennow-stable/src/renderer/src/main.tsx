@@ -4,10 +4,12 @@ import { scan } from "react-scan";
 
 import { initLogCapture } from "@shared/logger";
 import { App } from "./App";
+import { installWebOsRuntime } from "./platform/webos/runtime";
 import "./styles.css";
 
 // Initialize log capture for renderer process
 initLogCapture("renderer");
+installWebOsRuntime();
 
 if (import.meta.env.DEV) {
   scan();

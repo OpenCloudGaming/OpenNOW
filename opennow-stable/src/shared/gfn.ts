@@ -195,6 +195,66 @@ export function getDefaultStreamPreferences(): Pick<Settings, "codec" | "colorQu
   };
 }
 
+export const DEFAULT_SHORTCUTS = Object.freeze({
+  shortcutToggleStats: "F3",
+  shortcutTogglePointerLock: "F8",
+  shortcutToggleFullscreen: "F10",
+  shortcutStopStream: "Ctrl+Shift+Q",
+  shortcutToggleAntiAfk: "Ctrl+Shift+K",
+  shortcutToggleMicrophone: "Ctrl+Shift+M",
+  shortcutScreenshot: "F11",
+  shortcutToggleRecording: "F12",
+} satisfies Pick<
+  Settings,
+  | "shortcutToggleStats"
+  | "shortcutTogglePointerLock"
+  | "shortcutToggleFullscreen"
+  | "shortcutStopStream"
+  | "shortcutToggleAntiAfk"
+  | "shortcutToggleMicrophone"
+  | "shortcutScreenshot"
+  | "shortcutToggleRecording"
+>);
+
+export const DEFAULT_SETTINGS: Settings = Object.freeze({
+  resolution: "1920x1080",
+  aspectRatio: "16:9",
+  posterSizeScale: 1,
+  fps: 60,
+  maxBitrateMbps: 75,
+  codec: DEFAULT_STREAM_PREFERENCES.codec,
+  decoderPreference: "auto",
+  encoderPreference: "auto",
+  colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
+  region: "",
+  clipboardPaste: false,
+  mouseSensitivity: 1,
+  mouseAcceleration: 1,
+  ...DEFAULT_SHORTCUTS,
+  microphoneMode: "disabled",
+  microphoneDeviceId: "",
+  hideStreamButtons: false,
+  showAntiAfkIndicator: true,
+  showStatsOnLaunch: false,
+  controllerMode: false,
+  controllerUiSounds: false,
+  controllerBackgroundAnimations: false,
+  autoLoadControllerLibrary: false,
+  autoFullScreen: false,
+  favoriteGameIds: [],
+  sessionCounterEnabled: false,
+  sessionClockShowEveryMinutes: 60,
+  sessionClockShowDurationSeconds: 30,
+  windowWidth: 1400,
+  windowHeight: 900,
+  keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
+  gameLanguage: "en_US",
+  enableL4S: false,
+  enableCloudGsync: false,
+  discordRichPresence: false,
+  autoCheckForUpdates: true,
+});
+
 export interface LoginProvider {
   idpId: string;
   code: string;

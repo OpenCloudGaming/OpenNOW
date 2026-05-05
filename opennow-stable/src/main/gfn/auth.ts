@@ -5,8 +5,6 @@ import { dirname } from "node:path";
 import net from "node:net";
 import os from "node:os";
 
-import { shell } from "electron";
-
 import type {
   AuthLoginRequest,
   AuthSession,
@@ -77,6 +75,10 @@ interface ServerInfoResponse {
     key: string;
     value: string;
   }>;
+}
+
+export interface AuthServiceOptions {
+  openExternal?: (url: string) => Promise<void>;
 }
 
 function defaultProvider(): LoginProvider {
@@ -439,7 +441,10 @@ export class AuthService {
   private cachedSubscription: SubscriptionInfo | null = null;
   private cachedVpcId: string | null = null;
 
-  constructor(private readonly statePath: string) {}
+  constructor(
+    private readonly statePath: string,
+    private readonly options: AuthServiceOptions = {},
+  ) {}
 
   async initialize(): Promise<void> {
     try {
@@ -632,7 +637,10 @@ export class AuthService {
     const authUrl = buildAuthUrl(this.selectedProvider, challenge, port);
 
     const codePromise = waitForAuthorizationCode(port, 120000);
-    await shell.openExternal(authUrl);
+    if (!this.options.openExternal) {
+      throw new Error("No external browser launcher is configured for authentication.");
+    }
+    await this.options.openExternal(authUrl);
     const code = await codePromise;
 
     const initialTokens = await exchangeAuthorizationCode(code, verifier, port);

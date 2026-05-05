@@ -1,0 +1,10 @@
+{
+  "id": "com.zortos.opennow.stable.service",
+  "description": "OpenNOW webOS runtime service",
+  "services": [
+    {
+      "name": "com.zortos.opennow.stable.service",
+      "description": "OpenNOW webOS runtime service"
+    }
+  ]
+}
