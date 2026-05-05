@@ -43,12 +43,11 @@ const VIDEO_STALL_SECOND_ATTEMPT_MS: u64 = 5_000;
 const VIDEO_STALL_RESYNC_MS: u64 = 8_000;
 const VIDEO_STALL_PARTIAL_FLUSH_MS: u64 = 12_000;
 const VIDEO_STALL_COMPLETE_FLUSH_MS: u64 = 16_000;
-const VIDEO_STALL_PIPELINE_RESTART_MS: u64 = 20_000;
-const VIDEO_STALL_FATAL_MS: u64 = 24_000;
+const VIDEO_STALL_FATAL_MS: u64 = 20_000;
 const VIDEO_STALL_MIN_KEYFRAME_REQUEST_MS: u64 = 2_000;
 const VIDEO_STARTUP_KEYFRAME_MS: u64 = 2_500;
 const VIDEO_STARTUP_RESYNC_MS: u64 = 5_000;
-const VIDEO_STARTUP_PIPELINE_RESTART_MS: u64 = 8_000;
+const VIDEO_STARTUP_FATAL_MS: u64 = 8_000;
 const VIDEO_LIVENESS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 const HEARTBEAT_STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -81,7 +80,6 @@ enum VideoStallAction {
     Resync { attempt: u8, stall_ms: u64 },
     PartialFlush { attempt: u8, stall_ms: u64 },
     CompleteFlush { attempt: u8, stall_ms: u64 },
-    RestartPipeline { attempt: u8, stall_ms: u64 },
     Fatal { attempt: u8, stall_ms: u64 },
     Recovered { stall_ms: u64 },
 }
@@ -131,8 +129,7 @@ impl VideoStallTracker {
             3 => VIDEO_STALL_RESYNC_MS,
             4 => VIDEO_STALL_PARTIAL_FLUSH_MS,
             5 => VIDEO_STALL_COMPLETE_FLUSH_MS,
-            6 => VIDEO_STALL_PIPELINE_RESTART_MS,
-            7 => VIDEO_STALL_FATAL_MS,
+            6 => VIDEO_STALL_FATAL_MS,
             _ => return VideoStallAction::None,
         };
         if stall_ms < next_due_ms {
@@ -153,7 +150,6 @@ impl VideoStallTracker {
             3 => VideoStallAction::Resync { attempt, stall_ms },
             4 => VideoStallAction::PartialFlush { attempt, stall_ms },
             5 => VideoStallAction::CompleteFlush { attempt, stall_ms },
-            6 => VideoStallAction::RestartPipeline { attempt, stall_ms },
             _ => VideoStallAction::Fatal { attempt, stall_ms },
         }
     }
@@ -237,6 +233,8 @@ struct VideoLivenessState {
     finalized_streaming_features_summary: Mutex<String>,
     transition_telemetry: Mutex<TransitionTelemetry>,
     stats_overlay: Mutex<Option<gst::Element>>,
+    pre_decode_queue: Mutex<Option<gst::Element>>,
+    decoder: Mutex<Option<gst::Element>>,
     post_decode_queue: Mutex<Option<gst::Element>>,
     stats_overlay_visible: AtomicBool,
     target_bitrate_kbps: AtomicU32,
@@ -257,7 +255,7 @@ struct VideoLivenessState {
     first_encoded_logged: AtomicBool,
     startup_keyframe_requested: AtomicBool,
     startup_resync_requested: AtomicBool,
-    startup_pipeline_restart_requested: AtomicBool,
+    startup_fatal_reported: AtomicBool,
 }
 
 impl VideoLivenessState {
@@ -273,6 +271,8 @@ impl VideoLivenessState {
             finalized_streaming_features_summary: Mutex::new("none".to_owned()),
             transition_telemetry: Mutex::new(TransitionTelemetry::default()),
             stats_overlay: Mutex::new(None),
+            pre_decode_queue: Mutex::new(None),
+            decoder: Mutex::new(None),
             post_decode_queue: Mutex::new(None),
             stats_overlay_visible: AtomicBool::new(false),
             target_bitrate_kbps: AtomicU32::new(0),
@@ -293,7 +293,7 @@ impl VideoLivenessState {
             first_encoded_logged: AtomicBool::new(false),
             startup_keyframe_requested: AtomicBool::new(false),
             startup_resync_requested: AtomicBool::new(false),
-            startup_pipeline_restart_requested: AtomicBool::new(false),
+            startup_fatal_reported: AtomicBool::new(false),
         }
     }
 
@@ -359,8 +359,7 @@ impl VideoLivenessState {
             .store(false, Ordering::Relaxed);
         self.startup_resync_requested
             .store(false, Ordering::Relaxed);
-        self.startup_pipeline_restart_requested
-            .store(false, Ordering::Relaxed);
+        self.startup_fatal_reported.store(false, Ordering::Relaxed);
     }
 
     fn update_hardware_acceleration(&self, value: impl Into<String>) {
@@ -502,6 +501,29 @@ impl VideoLivenessState {
         if let Ok(mut current) = self.post_decode_queue.lock() {
             *current = Some(queue);
         }
+    }
+
+    fn set_pre_decode_queue(&self, queue: gst::Element) {
+        if let Ok(mut current) = self.pre_decode_queue.lock() {
+            *current = Some(queue);
+        }
+    }
+
+    fn set_decoder(&self, decoder: gst::Element) {
+        if let Ok(mut current) = self.decoder.lock() {
+            *current = Some(decoder);
+        }
+    }
+
+    fn pre_decode_queue(&self) -> Option<gst::Element> {
+        self.pre_decode_queue
+            .lock()
+            .ok()
+            .and_then(|current| current.clone())
+    }
+
+    fn decoder(&self) -> Option<gst::Element> {
+        self.decoder.lock().ok().and_then(|current| current.clone())
     }
 
     fn set_queue_depth(
@@ -712,6 +734,14 @@ impl VideoLivenessMonitor {
 
     fn set_post_decode_queue(&self, queue: gst::Element) {
         self.state.set_post_decode_queue(queue);
+    }
+
+    fn set_pre_decode_queue(&self, queue: gst::Element) {
+        self.state.set_pre_decode_queue(queue);
+    }
+
+    fn set_decoder(&self, decoder: gst::Element) {
+        self.state.set_decoder(decoder);
     }
 
     fn start(
@@ -4021,25 +4051,6 @@ fn run_video_liveness_watchdog(
                     false,
                 );
             }
-            VideoStallAction::RestartPipeline { attempt, stall_ms } => {
-                if transition_stall {
-                    request_upstream_key_unit(&state, &event_sender);
-                    restart_pipeline_for_video_recovery(
-                        &pipeline,
-                        &event_sender,
-                        "mid-stream transition stall recovery",
-                    );
-                }
-                emit_video_stall_event(
-                    &event_sender,
-                    &sink,
-                    &state,
-                    rates,
-                    attempt,
-                    stall_ms,
-                    false,
-                );
-            }
             VideoStallAction::Fatal { attempt, stall_ms } => {
                 emit_video_stall_event(
                     &event_sender,
@@ -4146,20 +4157,24 @@ fn maybe_recover_video_startup(
         }
     }
 
-    if audio_active_ms >= VIDEO_STARTUP_PIPELINE_RESTART_MS
-        && !state
-            .startup_pipeline_restart_requested
-            .swap(true, Ordering::Relaxed)
+    if audio_active_ms >= VIDEO_STARTUP_FATAL_MS
+        && !state.startup_fatal_reported.swap(true, Ordering::Relaxed)
     {
         send_log(
             event_sender,
-            "warn",
+            "error",
             format!(
-                "Native video startup still has no rendered frame after {audio_active_ms}ms of active audio; startupAge={now_ms}ms encodedAge={encoded_age} decoded={decoded_total} sink={sink_total}. Restarting the GStreamer pipeline to force video renegotiation."
+                "Native video startup still has no rendered frame after {audio_active_ms}ms of active audio; startupAge={now_ms}ms encodedAge={encoded_age} decoded={decoded_total} sink={sink_total}. Treating startup as failed instead of restarting the WebRTC pipeline."
             ),
         );
         request_upstream_key_unit(state, event_sender);
-        restart_pipeline_for_video_recovery(pipeline, event_sender, "video startup recovery");
+        if let Some(event_sender) = event_sender {
+            let _ = event_sender.send(Event::Error {
+                code: "native-video-startup-timeout".to_owned(),
+                message: "Native video startup timed out before the first rendered frame."
+                    .to_owned(),
+            });
+        }
     }
 }
 
@@ -4169,62 +4184,53 @@ enum TransitionFlushKind {
     Complete,
 }
 
-fn restart_pipeline_for_video_recovery(
-    pipeline: &gst::Pipeline,
-    event_sender: &Option<Sender<Event>>,
-    reason: &str,
-) {
-    match pipeline.set_state(gst::State::Ready) {
-        Ok(_) => match pipeline.set_state(gst::State::Playing) {
-            Ok(_) => send_log(
-                event_sender,
-                "warn",
-                format!("Restarted native GStreamer pipeline during {reason}."),
-            ),
-            Err(error) => send_log(
-                event_sender,
-                "warn",
-                format!(
-                    "Failed to restore native GStreamer pipeline to Playing during {reason}: {error:?}."
-                ),
-            ),
-        },
-        Err(error) => send_log(
-            event_sender,
-            "warn",
-            format!(
-                "Failed to set native GStreamer pipeline to Ready during {reason}: {error:?}."
-            ),
-        ),
-    }
-}
-
 fn perform_transition_flush(
     state: &VideoLivenessState,
     event_sender: &Option<Sender<Event>>,
     flush_kind: TransitionFlushKind,
 ) {
-    let queue = state
-        .post_decode_queue
-        .lock()
-        .ok()
-        .and_then(|current| current.clone());
-    let Some(queue) = queue else {
-        send_log(
-            event_sender,
-            "warn",
-            "Cannot flush native transition queue because the post-decode queue is unavailable."
-                .to_owned(),
-        );
-        return;
-    };
-
     let label = match flush_kind {
         TransitionFlushKind::Partial => "partial",
         TransitionFlushKind::Complete => "complete",
     };
-    let _ = queue.send_event(gst::event::FlushStart::new());
-    let _ = queue.send_event(gst::event::FlushStop::new(false));
+    let mut flushed = Vec::new();
+
+    if matches!(
+        flush_kind,
+        TransitionFlushKind::Partial | TransitionFlushKind::Complete
+    ) {
+        if let Some(queue) = state.pre_decode_queue() {
+            flush_element(&queue);
+            flushed.push("pre-decode queue");
+        }
+    }
+
+    if matches!(flush_kind, TransitionFlushKind::Complete) {
+        if let Some(decoder) = state.decoder() {
+            flush_element(&decoder);
+            flushed.push("decoder");
+        }
+    }
+
+    if let Some(queue) = state
+        .post_decode_queue
+        .lock()
+        .ok()
+        .and_then(|current| current.clone())
+    {
+        flush_element(&queue);
+        flushed.push("post-decode queue");
+    }
+
+    if flushed.is_empty() {
+        send_log(
+            event_sender,
+            "warn",
+            "Cannot flush native transition path because no video branch elements are registered."
+                .to_owned(),
+        );
+        return;
+    }
 
     match flush_kind {
         TransitionFlushKind::Partial => {
@@ -4240,8 +4246,16 @@ fn perform_transition_flush(
     send_log(
         event_sender,
         "warn",
-        format!("Performed {label} native transition flush on the post-decode queue."),
+        format!(
+            "Performed {label} native transition flush on {}.",
+            flushed.join(", ")
+        ),
     );
+}
+
+fn flush_element(element: &gst::Element) {
+    let _ = element.send_event(gst::event::FlushStart::new());
+    let _ = element.send_event(gst::event::FlushStop::new(false));
 }
 
 fn request_upstream_key_unit(state: &VideoLivenessState, event_sender: &Option<Sender<Event>>) {
@@ -5340,13 +5354,14 @@ fn zero_copy_modes_for_backend(video_api: RtpVideoApi) -> Vec<String> {
 fn configure_rtp_video_chain_element(
     element: &gst::Element,
     spec: RtpVideoChainSpec,
-    video_api: RtpVideoApi,
+    _video_api: RtpVideoApi,
     d3d_fullscreen_sink: bool,
 ) {
     match spec.role {
         RtpVideoChainRole::Depayloader => {
             set_property_if_supported(element, "request-keyframe", true);
-            set_property_if_supported(element, "wait-for-keyframe", true);
+            // Hard-waiting after packet loss can freeze the visible frame while RTP is still flowing.
+            set_property_if_supported(element, "wait-for-keyframe", false);
         }
         RtpVideoChainRole::Parser => {
             set_property_if_supported(element, "disable-passthrough", true);
@@ -5393,11 +5408,8 @@ fn configure_rtp_video_chain_element(
         }
         RtpVideoChainRole::Sink => {
             configure_sink_for_low_latency(element);
-            set_property_if_supported(
-                element,
-                "direct-swapchain",
-                matches!(video_api, RtpVideoApi::D3D12),
-            );
+            // Direct swapchain can turn a window/present stall into upstream decode backpressure.
+            set_property_if_supported(element, "direct-swapchain", false);
             set_property_if_supported(element, "error-on-closed", false);
             set_property_if_supported(element, "fullscreen", d3d_fullscreen_sink);
             set_property_if_supported(element, "fullscreen-on-alt-enter", false);
@@ -5533,6 +5545,16 @@ fn link_rtp_video_pad(
                 Some(video_liveness.clone()),
             );
         }
+        if let Some(pre_decode_queue) =
+            specs
+                .iter()
+                .zip(elements.iter())
+                .find_map(|(spec, element)| {
+                    (spec.role == RtpVideoChainRole::PreDecodeQueue).then_some(element)
+                })
+        {
+            video_liveness.set_pre_decode_queue(pre_decode_queue.clone());
+        }
         if let Some(parser) = specs
             .iter()
             .zip(elements.iter())
@@ -5547,6 +5569,7 @@ fn link_rtp_video_pad(
                 (spec.role == RtpVideoChainRole::Decoder).then_some(element)
             })
         {
+            video_liveness.set_decoder(decoder.clone());
             watch_video_caps_transitions(decoder, "decoder", event_sender, video_liveness.clone());
         }
         render_state.set_video_sink(sink.clone(), event_sender);
@@ -7103,7 +7126,7 @@ mod tests {
         );
         assert_eq!(
             tracker.evaluate(20_000, 0),
-            VideoStallAction::RestartPipeline {
+            VideoStallAction::Fatal {
                 attempt: 6,
                 stall_ms: 20_000,
             },
