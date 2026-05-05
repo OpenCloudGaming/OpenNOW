@@ -2092,7 +2092,7 @@ export class GfnWebRtcClient {
   }
 
   private getGamepadPollIntervalMs(): number {
-    if (!this.shouldPollGamepads() || document.visibilityState !== "visible") {
+    if (!this.shouldPollGamepads()) {
       return 100;
     }
 
@@ -2100,13 +2100,15 @@ export class GfnWebRtcClient {
       return 100;
     }
 
-    return 4;
+    // Poll at reduced rate while input is paused (dashboard open) — fast enough
+    // to catch the Meta button release and next press, but not burning CPU at
+    // the full 4 ms stream-input rate.
+    return this.inputPaused ? 16 : 4;
   }
 
   private shouldPollGamepads(): boolean {
     return this.inputReady
-      && document.visibilityState === "visible"
-      && !this.inputPaused;
+      && document.visibilityState === "visible";
   }
 
   private gamepadSendCount = 0;
