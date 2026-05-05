@@ -123,6 +123,8 @@ const api: OpenNowApi = {
   toggleFullscreen: () => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_FULLSCREEN),
   setFullscreen: (v: boolean) => ipcRenderer.invoke(IPC_CHANNELS.SET_FULLSCREEN, v),
   togglePointerLock: () => ipcRenderer.invoke(IPC_CHANNELS.TOGGLE_POINTER_LOCK),
+  setNativePointerCapture: async () => undefined,
+  onNativeMouseMove: () => () => undefined,
   getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET),
   setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) =>
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, key, value),

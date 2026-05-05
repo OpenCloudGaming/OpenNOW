@@ -1,5 +1,6 @@
 import { App as CapacitorApp } from "@capacitor/app";
 import { registerPlugin } from "@capacitor/core";
+import type { PluginListenerHandle } from "@capacitor/core";
 import { Device } from "@capacitor/device";
 import { Directory, Filesystem } from "@capacitor/filesystem";
 import { StatusBar, Style } from "@capacitor/status-bar";
@@ -23,6 +24,7 @@ import type {
   MainToRendererSignalingEvent,
   MediaListingResult,
   MicrophonePermissionResult,
+  NativeMouseMoveEvent,
   OpenNowApi,
   PingResult,
   RecordingAbortRequest,
@@ -129,6 +131,14 @@ interface LocalhostAuthPlugin {
 }
 
 const LocalhostAuth = registerPlugin<LocalhostAuthPlugin>("LocalhostAuth");
+
+interface OpenNowAndroidPlugin {
+  setImmersiveFullscreen(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
+  setPointerCapture(options: { enabled: boolean }): Promise<{ supported: boolean; enabled: boolean }>;
+  addListener(eventName: "nativeMouseMove", listener: (event: NativeMouseMoveEvent) => void): Promise<PluginListenerHandle>;
+}
+
+const OpenNowAndroid = registerPlugin<OpenNowAndroidPlugin>("OpenNowAndroid");
 
 interface PersistedAuthState { session: AuthSession | null; selectedProvider: LoginProvider | null; preferredGfnToken?: "id" | "access"; }
 interface TokenResponse { access_token: string; refresh_token?: string; id_token?: string; client_token?: string; expires_in?: number; }
@@ -1139,11 +1149,40 @@ async function cleanupRecordingDraft(state: RecordingDraft): Promise<void> { awa
 async function applyAndroidFullscreen(value: boolean): Promise<void> {
   document.body.dataset.androidFullscreen = value ? "true" : "false";
   if (value) {
+    await OpenNowAndroid.setImmersiveFullscreen({ enabled: true }).catch(() => undefined);
     await StatusBar.hide().catch(() => undefined);
     return;
   }
+  await OpenNowAndroid.setImmersiveFullscreen({ enabled: false }).catch(() => undefined);
   await StatusBar.show().catch(() => undefined);
   await StatusBar.setStyle({ style: Style.Dark }).catch(() => undefined);
+}
+
+async function setNativePointerCapture(enabled: boolean): Promise<void> {
+  await OpenNowAndroid.setPointerCapture({ enabled }).catch(() => undefined);
+}
+
+function onNativeMouseMove(listener: (event: NativeMouseMoveEvent) => void): () => void {
+  let active = true;
+  let handle: PluginListenerHandle | null = null;
+
+  void OpenNowAndroid.addListener("nativeMouseMove", listener)
+    .then((nextHandle) => {
+      if (!active) {
+        void nextHandle.remove();
+        return;
+      }
+      handle = nextHandle;
+    })
+    .catch(() => undefined);
+
+  return () => {
+    active = false;
+    if (handle) {
+      void handle.remove();
+      handle = null;
+    }
+  };
 }
 
 async function exitAndroidFullscreenState(): Promise<void> {
@@ -1194,6 +1233,8 @@ const api: OpenNowApi = {
   toggleFullscreen: async () => { const next = document.body.dataset.androidFullscreen !== "true"; await applyAndroidFullscreen(next); },
   setFullscreen: async (value: boolean) => { await applyAndroidFullscreen(value); },
   togglePointerLock: async () => unsupported("Pointer lock is not supported on Android."),
+  setNativePointerCapture,
+  onNativeMouseMove,
   getSettings: async () => getStoredSettings(),
   setSetting: async (key, value) => { const current = await getStoredSettings(); await saveSettings({ ...current, [key]: value }); },
   resetSettings: async () => { await saveSettings(DEFAULT_SETTINGS); return { ...DEFAULT_SETTINGS }; },

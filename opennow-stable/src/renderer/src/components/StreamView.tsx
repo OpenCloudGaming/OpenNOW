@@ -564,6 +564,7 @@ type AndroidTouchSettings = {
   opacity: number;
   placement: TouchPlacement;
   mousePad: boolean;
+  mouseCapture: boolean;
 };
 
 const ANDROID_TOUCH_SETTINGS_KEY = "opennow.android.touchControls.v1";
@@ -573,6 +574,7 @@ const DEFAULT_ANDROID_TOUCH_SETTINGS: AndroidTouchSettings = {
   opacity: 0.74,
   placement: "default",
   mousePad: true,
+  mouseCapture: true,
 };
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -602,6 +604,7 @@ function readAndroidTouchSettings(): AndroidTouchSettings {
         ? parsed.placement as TouchPlacement
         : DEFAULT_ANDROID_TOUCH_SETTINGS.placement,
       mousePad: parsed.mousePad ?? DEFAULT_ANDROID_TOUCH_SETTINGS.mousePad,
+      mouseCapture: parsed.mouseCapture ?? DEFAULT_ANDROID_TOUCH_SETTINGS.mouseCapture,
     };
   } catch {
     return DEFAULT_ANDROID_TOUCH_SETTINGS;
@@ -1130,6 +1133,15 @@ function AndroidStreamMenu({
             <span><MousePointer2 size={14} /> Finger mouse</span>
           </label>
 
+          <label className="sv-android-switch">
+            <input
+              type="checkbox"
+              checked={touchSettings.mouseCapture}
+              onChange={(event) => updateTouchSettings({ mouseCapture: event.target.checked })}
+            />
+            <span><MousePointer2 size={14} /> External mouse capture</span>
+          </label>
+
           <div className="sv-android-text-input">
             <label>
               <span><Keyboard size={14} /> Stream text</span>
@@ -1454,10 +1466,39 @@ export function StreamView({
       opacity: clampNumber(next.opacity, 0.25, 1),
       placement: next.placement,
       mousePad: next.mousePad,
+      mouseCapture: next.mouseCapture,
     };
     setAndroidTouchSettings(normalized);
     writeAndroidTouchSettings(normalized);
   }, []);
+
+  useEffect(() => {
+    if (
+      !platformCapabilities.isAndroid ||
+      !isStreaming ||
+      isConnecting ||
+      !androidTouchSettings.mouseCapture ||
+      !onTouchMouseMove
+    ) {
+      return;
+    }
+
+    const unsubscribe = openNow.onNativeMouseMove((event) => {
+      const dx = Number(event.dx);
+      const dy = Number(event.dy);
+      if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) {
+        return;
+      }
+      onTouchMouseMove({ dx, dy });
+    });
+
+    void openNow.setNativePointerCapture(true);
+
+    return () => {
+      unsubscribe();
+      void openNow.setNativePointerCapture(false);
+    };
+  }, [androidTouchSettings.mouseCapture, isConnecting, isStreaming, onTouchMouseMove]);
 
   const microphoneModes = useMemo(
     () => [

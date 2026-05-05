@@ -660,6 +660,11 @@ export type MainToRendererSignalingEvent =
   | { type: "error"; message: string }
   | { type: "log"; message: string };
 
+export interface NativeMouseMoveEvent {
+  dx: number;
+  dy: number;
+}
+
 /** Dialog result for session conflict resolution */
 export type SessionConflictChoice = "resume" | "new" | "cancel";
 
@@ -737,6 +742,8 @@ export interface OpenNowApi {
   setFullscreen(v: boolean): Promise<void>;
   toggleFullscreen(): Promise<void>;
   togglePointerLock(): Promise<void>;
+  setNativePointerCapture(enabled: boolean): Promise<void>;
+  onNativeMouseMove(listener: (event: NativeMouseMoveEvent) => void): () => void;
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
   resetSettings(): Promise<Settings>;

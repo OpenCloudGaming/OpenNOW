@@ -11,6 +11,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         SplashScreen.installSplashScreen(this);
         registerPlugin(LocalhostAuthPlugin.class);
+        registerPlugin(OpenNowAndroidPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }
