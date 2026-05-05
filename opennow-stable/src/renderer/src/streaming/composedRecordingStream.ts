@@ -5,7 +5,10 @@ export type ComposedRecordingResources = {
 };
 
 /**
- * Build the same video + mixed game/mic stream used for manual recording and instant replay.
+ * Destination-side capture for recording: video/audio from the local playback pipeline (video element +
+ * mixed audio), not from the upstream cloud encoder.
+ *
+ * Used for manual recording and instant replay.
  */
 export function buildComposedRecordingStream(input: {
   videoElement: HTMLVideoElement;

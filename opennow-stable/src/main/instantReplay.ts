@@ -1,8 +1,14 @@
 import { app } from "electron";
-import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { RecordingEntry } from "@shared/gfn";
+
+import { concatMediaFilesWithFfmpegCopy } from "./recordingConcat";
+import { finalizeInstantReplayFileInPlace, maybeRemuxRecordingInPlace } from "./recordingRemux";
+import { getSettingsManager } from "./settings";
+import { probeRecordingDurationOnDisk } from "./webmRecordingRepair";
 
 const RECORDING_LIMIT = 20;
 
@@ -83,19 +89,46 @@ async function trimRecordingsToLimit(): Promise<void> {
 }
 
 export interface InstantReplaySaveInput {
-  clipData: Buffer;
+  clipData?: Buffer;
+  clipParts?: Buffer[];
   mimeType: string;
   clipDurationMs: number;
   gameTitle?: string;
   thumbnailDataUrl?: string;
 }
 
-export async function instantReplaySave(input: InstantReplaySaveInput): Promise<RecordingEntry> {
-  const clipMs = Math.max(1000, Math.round(input.clipDurationMs));
-  const payload = input.clipData;
-  if (!payload || payload.byteLength === 0) {
+async function writeReplayPayloadToFile(
+  finalPath: string,
+  mimeType: string,
+  clipData?: Buffer,
+  clipParts?: Buffer[],
+): Promise<void> {
+  const parts = clipParts?.length ? clipParts : clipData ? [clipData] : [];
+  if (parts.length === 0 || parts.some((p) => !p || p.byteLength === 0)) {
     throw new Error("No instant replay data to save");
   }
+  if (parts.length === 1) {
+    await writeFile(finalPath, parts[0]!);
+    return;
+  }
+
+  const workDir = await mkdtemp(join(tmpdir(), "opennow-replay-parts-"));
+  const ext = mimeType.startsWith("video/mp4") ? ".mp4" : ".webm";
+  try {
+    const paths: string[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const p = join(workDir, `part_${i}${ext}`);
+      await writeFile(p, parts[i]!);
+      paths.push(p);
+    }
+    await concatMediaFilesWithFfmpegCopy(paths, finalPath);
+  } finally {
+    await rm(workDir, { recursive: true }).catch(() => undefined);
+  }
+}
+
+export async function instantReplaySave(input: InstantReplaySaveInput): Promise<RecordingEntry> {
+  const clipMs = Math.max(1000, Math.round(input.clipDurationMs));
 
   const dir = await ensureRecordingsDirectory();
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -105,13 +138,21 @@ export async function instantReplaySave(input: InstantReplaySaveInput): Promise<
   const ext = input.mimeType.startsWith("video/mp4") ? ".mp4" : ".webm";
   const fileName = `${stamp}-${title}-${rand}-replay${durSuffix}${ext}`;
   const finalPath = join(dir, fileName);
-  await writeFile(finalPath, payload);
+  await writeReplayPayloadToFile(finalPath, input.mimeType, input.clipData, input.clipParts);
+
+  const userRemux = getSettingsManager().get("recordingPostProcessRemux");
+  const finalized = await finalizeInstantReplayFileInPlace(finalPath, input.mimeType, userRemux);
+  if (!finalized) {
+    await maybeRemuxRecordingInPlace(finalPath, input.mimeType, userRemux);
+  }
+
+  const durationMs = await probeRecordingDurationOnDisk(finalPath, input.mimeType, clipMs);
 
   let thumbnailDataUrl: string | undefined;
   if (input.thumbnailDataUrl) {
     try {
       const { buffer } = dataUrlToBuffer(input.thumbnailDataUrl);
-      const stem = fileName.replace(/\.webm$/i, "");
+        const stem = fileName.replace(/\.(mp4|webm)$/i, "");
       const thumbPath = join(dir, `${stem}-thumb.jpg`);
       await writeFile(thumbPath, buffer);
       thumbnailDataUrl = input.thumbnailDataUrl;
@@ -130,7 +171,7 @@ export async function instantReplaySave(input: InstantReplaySaveInput): Promise<
     filePath: finalPath,
     createdAtMs: Date.now(),
     sizeBytes: fileStats.size,
-    durationMs: clipMs,
+    durationMs,
     gameTitle: input.gameTitle,
     thumbnailDataUrl,
   };

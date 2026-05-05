@@ -13,6 +13,7 @@ import type {
   ControllerThemeStyle,
 } from "@shared/gfn";
 import { DEFAULT_KEYBOARD_LAYOUT, getDefaultStreamPreferences, normalizeStreamPreferences } from "@shared/gfn";
+import { maxInstantReplaySaveSeconds } from "@shared/instantReplayDefinitions";
 
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
@@ -115,6 +116,7 @@ export interface Settings {
   autoCheckForUpdates: boolean;
   /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
   allowEscapeToExitFullscreen?: boolean;
+  recordingPostProcessRemux: boolean;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -199,6 +201,7 @@ const DEFAULT_SETTINGS: Settings = {
   discordRichPresence: false,
   autoCheckForUpdates: true,
   allowEscapeToExitFullscreen: false,
+  recordingPostProcessRemux: false,
 };
 
 export class SettingsManager {
@@ -217,6 +220,7 @@ export class SettingsManager {
     try {
       if (!existsSync(this.settingsPath)) {
         const defaults = { ...DEFAULT_SETTINGS };
+        this.normalizeInstantReplayFields(defaults);
         this.enforceCompatibility(defaults);
         return defaults;
       }
@@ -230,7 +234,8 @@ export class SettingsManager {
         ...parsed,
       };
 
-      let migrated = this.migrateLegacyShortcutDefaults(merged);
+      let migrated = this.normalizeInstantReplayFields(merged);
+      migrated = this.migrateLegacyShortcutDefaults(merged) || migrated;
       migrated = this.enforceCompatibility(merged) || migrated;
 
       const themeStyleBefore = merged.controllerThemeStyle;
@@ -261,9 +266,30 @@ export class SettingsManager {
     } catch (error) {
       console.error("Failed to load settings, using defaults:", error);
       const defaults = { ...DEFAULT_SETTINGS };
+      this.normalizeInstantReplayFields(defaults);
       this.enforceCompatibility(defaults);
       return defaults;
     }
+  }
+
+  private normalizeInstantReplayFields(settings: Settings): boolean {
+    let migrated = false;
+    let buf = Math.round(Number(settings.instantReplayBufferMinutes));
+    if (!Number.isFinite(buf)) buf = DEFAULT_SETTINGS.instantReplayBufferMinutes;
+    buf = Math.max(1, Math.min(10, buf));
+    if (settings.instantReplayBufferMinutes !== buf) {
+      settings.instantReplayBufferMinutes = buf;
+      migrated = true;
+    }
+    const maxSave = maxInstantReplaySaveSeconds(buf);
+    let save = Math.round(Number(settings.instantReplaySaveSeconds));
+    if (!Number.isFinite(save)) save = DEFAULT_SETTINGS.instantReplaySaveSeconds;
+    save = Math.max(5, Math.min(maxSave, save));
+    if (settings.instantReplaySaveSeconds !== save) {
+      settings.instantReplaySaveSeconds = save;
+      migrated = true;
+    }
+    return migrated;
   }
 
   private enforceCompatibility(settings: Settings): boolean {
@@ -335,6 +361,7 @@ export class SettingsManager {
    */
   set<K extends keyof Settings>(key: K, value: Settings[K]): void {
     this.settings[key] = value;
+    this.normalizeInstantReplayFields(this.settings);
     this.enforceCompatibility(this.settings);
     this.save();
   }
@@ -347,6 +374,7 @@ export class SettingsManager {
       ...this.settings,
       ...updates,
     };
+    this.normalizeInstantReplayFields(this.settings);
     this.enforceCompatibility(this.settings);
     this.save();
   }
@@ -356,6 +384,7 @@ export class SettingsManager {
    */
   reset(): Settings {
     this.settings = { ...DEFAULT_SETTINGS };
+    this.normalizeInstantReplayFields(this.settings);
     this.enforceCompatibility(this.settings);
     this.save();
     return { ...this.settings };
@@ -366,6 +395,7 @@ export class SettingsManager {
    */
   getDefaults(): Settings {
     const defaults = { ...DEFAULT_SETTINGS };
+    this.normalizeInstantReplayFields(defaults);
     this.enforceCompatibility(defaults);
     return defaults;
   }

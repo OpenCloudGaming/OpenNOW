@@ -12,7 +12,9 @@ import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSe
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { useMicMeter } from "../hooks/useMicMeter";
+import { pickSupportedRecordingMime } from "../lib/recordingMime";
 import { buildComposedRecordingStream } from "../streaming/composedRecordingStream";
+import { maxInstantReplaySaveSeconds } from "@shared/instantReplayDefinitions";
 import { INSTANT_REPLAY_TIMESLICE_MS, RollingInstantReplayController } from "../streaming/instantReplay/rollingInstantReplay";
 
 const SAVE_INSTANT_REPLAY_EVENT = "opennow:save-instant-replay";
@@ -666,6 +668,11 @@ export function StreamView({
   const [instantReplayShortcutInput, setInstantReplayShortcutInput] = useState(shortcuts.saveInstantReplay);
   const [instantReplayShortcutError, setInstantReplayShortcutError] = useState<string | null>(null);
   const instantReplayControllerRef = useRef<RollingInstantReplayController | null>(null);
+  /** Keep latest mic track without re-creating the rolling buffer when the track object updates. */
+  const instantReplayMicTrackRef = useRef(micTrack);
+  useEffect(() => {
+    instantReplayMicTrackRef.current = micTrack;
+  }, [micTrack]);
 
   const microphoneModes = useMemo(
     () => [
@@ -1231,8 +1238,8 @@ export function StreamView({
       setInstantReplayError("Stream is not ready.");
       return;
     }
-    const maxClipMs = instantReplayBufferMinutes * 60 * 1000;
-    const clipMs = Math.min(instantReplaySaveSeconds * 1000, maxClipMs);
+    const clipSec = Math.min(instantReplaySaveSeconds, maxInstantReplaySaveSeconds(instantReplayBufferMinutes));
+    const clipMs = clipSec * 1000;
     try {
       const entry = await ctrl.saveClip(gameTitle, clipMs);
       setRecordings((prev) => [entry, ...prev].slice(0, 20));
@@ -1255,12 +1262,13 @@ export function StreamView({
       instantReplayControllerRef.current = null;
       return;
     }
+    /** Oldest chunks older than this wall clock age are dropped from RAM; capture keeps running. */
     const bufferWindowMs = Math.max(INSTANT_REPLAY_TIMESLICE_MS, instantReplayBufferMinutes * 60_000);
     const ctrl = new RollingInstantReplayController({
       bufferWindowMs,
       getVideo: () => localVideoRef.current,
       getAudio: () => localAudioRef.current,
-      getMicTrack: () => micTrack ?? null,
+      getMicTrack: () => instantReplayMicTrackRef.current ?? null,
     });
     instantReplayControllerRef.current = ctrl;
     void ctrl.start();
@@ -1270,7 +1278,7 @@ export function StreamView({
         instantReplayControllerRef.current = null;
       }
     };
-  }, [instantReplayApiAvailable, instantReplayBufferMinutes, instantReplayEnabled, isStreaming, micTrack]);
+  }, [instantReplayApiAvailable, instantReplayBufferMinutes, instantReplayEnabled, isStreaming]);
 
   useEffect(() => {
     const onSaveReplay = (): void => {
@@ -1305,15 +1313,7 @@ export function StreamView({
       console.warn("[StreamView] Instant replay pause before manual record:", irErr);
     }
 
-    const mimeTypes = [
-      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-      "video/mp4;codecs=avc1",
-      "video/mp4",
-      "video/webm;codecs=h264",
-      "video/webm;codecs=vp8",
-      "video/webm",
-    ];
-    const mimeType = mimeTypes.find((m) => MediaRecorder.isTypeSupported(m)) ?? "video/webm";
+    const mimeType = pickSupportedRecordingMime();
     setUsedMimeType(mimeType);
 
     const built = buildComposedRecordingStream({
@@ -1891,7 +1891,7 @@ export function StreamView({
                         >
                           <Save size={14} />
                           <span>
-                            Save last {Math.min(instantReplaySaveSeconds, instantReplayBufferMinutes * 60)}s
+                            Save last {Math.min(instantReplaySaveSeconds, maxInstantReplaySaveSeconds(instantReplayBufferMinutes))}s
                           </span>
                         </button>
                       </div>

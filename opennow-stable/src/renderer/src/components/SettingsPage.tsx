@@ -24,6 +24,11 @@ import {
   USER_FACING_COLOR_QUALITY_OPTIONS,
   USER_FACING_VIDEO_CODEC_OPTIONS,
 } from "@shared/gfn";
+import {
+  INSTANT_REPLAY_DEFINITIONS,
+  INSTANT_REPLAY_MAX_SAVE_SECONDS,
+  maxInstantReplaySaveSeconds,
+} from "@shared/instantReplayDefinitions";
 import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { getCodecDecodeBadgeState, type CodecTestResult } from "../lib/codecDiagnostics";
 
@@ -65,6 +70,10 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "l4s",
     "cloud gsync",
     "video acceleration",
+    "recording",
+    "duration",
+    "remux",
+    "ffmpeg",
   ],
   "stream-codec-diagnostics": [
     "stream",
@@ -2170,12 +2179,18 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             </div>
             <div className="settings-rows">
               <div className="settings-row settings-row--column">
+                <span className="settings-subtle-hint">
+                  {INSTANT_REPLAY_DEFINITIONS.rollingBuffer} {INSTANT_REPLAY_DEFINITIONS.clientSideInterception}{" "}
+                  {INSTANT_REPLAY_DEFINITIONS.hardwareAcceleration}
+                </span>
+              </div>
+              <div className="settings-row settings-row--column">
                 <div className="settings-row-top">
                   <label className="settings-label">Instant replay</label>
                   <span className="settings-value-badge">{settings.instantReplayEnabled ? "On" : "Off"}</span>
                 </div>
                 <span className="settings-subtle-hint">
-                  Keeps a rolling buffer while streaming so you can save the last stretch after the fact (extra CPU/GPU and temp disk).
+                  While streaming, retain footage in RAM so you can save a clip afterward (uses CPU/GPU and memory).
                 </span>
                 <label className="settings-toggle" style={{ marginTop: 8 }}>
                   <input
@@ -2202,13 +2217,17 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   onChange={(e) => {
                     const buf = Math.max(1, Math.min(10, Math.round(Number(e.target.value) || 1)));
                     handleChange("instantReplayBufferMinutes", buf);
-                    const maxSave = buf * 60;
+                    const maxSave = maxInstantReplaySaveSeconds(buf);
                     if (settings.instantReplaySaveSeconds > maxSave) {
                       handleChange("instantReplaySaveSeconds", maxSave);
                     }
                   }}
                 />
-                <span className="settings-subtle-hint">Older footage is discarded beyond this window (1–10 minutes).</span>
+                <span className="settings-subtle-hint">
+                  {INSTANT_REPLAY_DEFINITIONS.rollingBuffer} About the last {settings.instantReplayBufferMinutes}{" "}
+                  {settings.instantReplayBufferMinutes === 1 ? "minute" : "minutes"} (1–10). Footage older than that is{" "}
+                  <strong>dropped from memory</strong> while capture continues (same recorder session).
+                </span>
               </div>
 
               <div className="settings-row settings-row--column">
@@ -2220,17 +2239,44 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   type="range"
                   className="settings-slider"
                   min={5}
-                  max={Math.min(120, settings.instantReplayBufferMinutes * 60)}
+                  max={maxInstantReplaySaveSeconds(settings.instantReplayBufferMinutes)}
                   step={1}
-                  value={Math.min(settings.instantReplaySaveSeconds, settings.instantReplayBufferMinutes * 60)}
+                  value={Math.min(
+                    settings.instantReplaySaveSeconds,
+                    maxInstantReplaySaveSeconds(settings.instantReplayBufferMinutes),
+                  )}
                   onChange={(e) => {
-                    const maxS = settings.instantReplayBufferMinutes * 60;
+                    const maxS = maxInstantReplaySaveSeconds(settings.instantReplayBufferMinutes);
                     const v = Math.max(5, Math.min(maxS, Math.round(Number(e.target.value) || 5)));
                     handleChange("instantReplaySaveSeconds", v);
                   }}
                 />
                 <span className="settings-subtle-hint">
-                  Clamped to the buffer window (max {settings.instantReplayBufferMinutes * 60}s).
+                  Max {maxInstantReplaySaveSeconds(settings.instantReplayBufferMinutes)}s (replay buffer wall, capped at{" "}
+                  {INSTANT_REPLAY_MAX_SAVE_SECONDS}s overall).
+                </span>
+              </div>
+
+              <div className="settings-row settings-row--column">
+                <div className="settings-row-top">
+                  <label className="settings-label">Saved recordings</label>
+                  <span className="settings-value-badge">{settings.recordingPostProcessRemux ? "Remux on" : "Remux off"}</span>
+                </div>
+                <span className="settings-subtle-hint">
+                  Clips and manual recordings show duration after the file is written (probed from the container). The optional
+                  “dur” segment in the filename is only a rough estimate from capture time.
+                </span>
+                <label className="settings-toggle" style={{ marginTop: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={settings.recordingPostProcessRemux}
+                    onChange={(e) => handleChange("recordingPostProcessRemux", e.target.checked)}
+                  />
+                  <span className="settings-toggle-track" />
+                </label>
+                <span className="settings-subtle-hint" style={{ marginTop: 6 }}>
+                  When enabled, OpenNOW runs an ffmpeg stream copy after save if ffmpeg is on your PATH, mainly to improve seek
+                  metadata for some WebM or MP4 outputs. Off by default (extra disk and CPU).
                 </span>
               </div>
             </div>

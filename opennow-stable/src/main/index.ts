@@ -86,6 +86,8 @@ import {
   instantReplayEndSession,
   instantReplaySave,
 } from "./instantReplay";
+import { maybeRemuxRecordingInPlace } from "./recordingRemux";
+import { probeRecordingDurationOnDisk } from "./webmRecordingRepair";
 
 import { createSession, pollSession, reportSessionAd, stopSession, getActiveSessions, claimSession } from "./gfn/cloudmatch";
 import { AuthService } from "./gfn/auth";
@@ -1806,6 +1808,14 @@ function registerIpcHandlers(): void {
 
     await rename(rec.tempPath, finalPath);
 
+    await maybeRemuxRecordingInPlace(
+      finalPath,
+      rec.mimeType,
+      settingsManager.get("recordingPostProcessRemux"),
+    );
+
+    const durationMs = await probeRecordingDurationOnDisk(finalPath, rec.mimeType, input.durationMs);
+
     // Save thumbnail if provided
     let thumbnailDataUrl: string | undefined;
     if (input.thumbnailDataUrl) {
@@ -1840,7 +1850,7 @@ function registerIpcHandlers(): void {
       filePath: finalPath,
       createdAtMs: Date.now(),
       sizeBytes: fileStats.size,
-      durationMs: input.durationMs,
+      durationMs,
       gameTitle: input.gameTitle,
       thumbnailDataUrl,
     };
@@ -1873,7 +1883,8 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.INSTANT_REPLAY_SAVE, async (_event, input: InstantReplaySaveRequest): Promise<RecordingEntry> => {
     return instantReplaySave({
-      clipData: Buffer.from(input.clip),
+      clipData: input.clip !== undefined ? Buffer.from(input.clip) : undefined,
+      clipParts: input.clipParts?.map((ab) => Buffer.from(ab)),
       mimeType: input.mimeType,
       clipDurationMs: input.clipDurationMs,
       gameTitle: input.gameTitle,

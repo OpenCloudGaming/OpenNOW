@@ -942,6 +942,7 @@ export function App(): JSX.Element {
     enableCloudGsync: false,
     discordRichPresence: false,
     autoCheckForUpdates: true,
+    recordingPostProcessRemux: false,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [codecResults, setCodecResults] = useState<CodecTestResult[] | null>(() => loadStoredCodecResults());

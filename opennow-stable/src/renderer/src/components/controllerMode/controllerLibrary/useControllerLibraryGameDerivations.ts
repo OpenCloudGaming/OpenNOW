@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import type { GameInfo } from "@shared/gfn";
+import { maxInstantReplaySaveSeconds } from "@shared/instantReplayDefinitions";
 import { PREVIEW_TILE_COUNT, SPOTLIGHT_RECENT_COUNT } from "./constants";
 import { sanitizeGenreName } from "./helpers";
 import type {
@@ -148,7 +149,7 @@ export function useControllerLibraryGameDerivations({
                 {
                   id: "saveInstantReplay",
                   label: "Save replay clip",
-                  value: `Last ${Math.min(instantReplaySaveSeconds, instantReplayBufferMinutes * 60)}s`,
+                  value: `Last ${Math.min(instantReplaySaveSeconds, maxInstantReplaySaveSeconds(instantReplayBufferMinutes))}s`,
                 },
               ]
             : []),

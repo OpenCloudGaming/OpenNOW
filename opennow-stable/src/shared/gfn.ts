@@ -159,9 +159,9 @@ export interface Settings {
   shortcutToggleRecording: string;
   /** Save instant replay clip (last N seconds from rolling buffer) */
   shortcutSaveInstantReplay: string;
-  /** When true, keep a rolling capture buffer while streaming (extra CPU/GPU) */
+  /** When true, keep a rolling capture buffer while streaming (destination-side capture; GPU encode when the browser selects it). */
   instantReplayEnabled: boolean;
-  /** How long to retain in the rolling buffer (1–10 minutes) */
+  /** Rolling-buffer retention N minutes (wall-clock window before encoded data is rolled; single continuous capture session). */
   instantReplayBufferMinutes: number;
   /** Default clip length when saving instant replay (seconds; clamped to buffer window) */
   instantReplaySaveSeconds: number;
@@ -208,6 +208,11 @@ export interface Settings {
   autoCheckForUpdates: boolean;
   /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
   allowEscapeToExitFullscreen?: boolean;
+  /**
+   * After saving a stream recording, run `ffmpeg -c copy` in place when `ffmpeg` is on PATH.
+   * Off by default (extra CPU/disk); can improve seekable metadata for some containers.
+   */
+  recordingPostProcessRemux: boolean;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
@@ -976,7 +981,10 @@ export interface InstantReplayAddSegmentRequest {
 }
 
 export interface InstantReplaySaveRequest {
-  clip: ArrayBuffer;
+  /** Single contiguous clip (use when the renderer assembled one blob). */
+  clip?: ArrayBuffer;
+  /** Multiple complete container fragments (same codec), merged in main with ffmpeg concat. */
+  clipParts?: ArrayBuffer[];
   mimeType: string;
   clipDurationMs: number;
   gameTitle?: string;

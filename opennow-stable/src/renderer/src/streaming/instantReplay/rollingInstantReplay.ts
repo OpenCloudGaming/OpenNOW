@@ -1,16 +1,20 @@
 import type { RecordingEntry } from "@shared/gfn";
+import { pickSupportedRecordingMime } from "../../lib/recordingMime";
 import { buildComposedRecordingStream, type ComposedRecordingResources } from "../composedRecordingStream";
 
 export const INSTANT_REPLAY_TIMESLICE_MS = 1000;
 
-const IR_MIME_CANDIDATES = ["video/webm;codecs=vp8,opus", "video/webm;codecs=vp8", "video/webm"];
-
 /** Leading `dataavailable` blobs can be tiny; merge until we have a plausible WebM prefix (EBML + segment start). */
 const MIN_INIT_ACCUM_BYTES = 512;
 
-function pickInstantReplayMimeType(): string {
-  return IR_MIME_CANDIDATES.find((m) => MediaRecorder.isTypeSupported(m)) ?? "video/webm";
-}
+/** Inline IPC payload limit — larger single clips use chunked recording IPC instead of one ArrayBuffer. */
+const SINGLE_CLIP_INLINE_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
+ * When slicing to a wall-clock start time, include one extra timeslice **before** that boundary so the
+ * first SimpleBlock is more likely to land on a decodable cluster (reduces frozen/garbled frames).
+ */
+const CHUNK_PREROLL_COUNT = 1;
 
 function makeThumbnailDataUrl(video: HTMLVideoElement): string | null {
   if (video.videoWidth <= 0 || video.videoHeight <= 0) return null;
@@ -48,8 +52,14 @@ type ReplayChunk = {
 };
 
 /**
- * Rolling buffer: one `MediaRecorder` emits timesliced blobs. Mutually exclusive with manual recording.
- * Saves concatenate `initChunk` + every retained blob (single WebM stream). Buffer trimming rolls the recorder.
+ * Rolling buffer: one continuous `MediaRecorder` session (`initChunk` + sequential `dataavailable` blobs).
+ *
+ * **Retention:** When the oldest chunk is outside `bufferWindowMs` (or the byte cap is exceeded), we
+ * **drop** those blobs from RAM and **keep recording** — same recorder, same stream; only the in-memory
+ * ring is trimmed. Saved clips still use `initChunk` plus the chunk tail (same pattern as slicing for
+ * “save last N seconds”).
+ *
+ * **Destination capture / MIME:** see `buildComposedRecordingStream` and `recordingMime.ts`.
  */
 export class RollingInstantReplayController {
   private readonly options: RollingInstantReplayOptions;
@@ -62,13 +72,8 @@ export class RollingInstantReplayController {
   private initChunk: Blob | null = null;
   private pendingInitParts: Blob[] = [];
   private pendingInitBytes = 0;
-  /** When true, `onstop` must not call `startRecorderIfPossible` (rolling restart or similar). */
-  private suppressAutoRestart = false;
-  private restartScheduled = false;
-  /** Wall time when the current recorder session started (`rec.start`); used for duration metadata. */
-  private bufferSessionStartMs: number | null = null;
   private readonly maxBufferBytes = 256 * 1024 * 1024; // 256MB safety cap
-  private readonly mimeType = pickInstantReplayMimeType();
+  private readonly mimeType = pickSupportedRecordingMime();
 
   constructor(options: RollingInstantReplayOptions) {
     this.options = options;
@@ -78,13 +83,14 @@ export class RollingInstantReplayController {
     return (
       typeof window.openNow?.beginRecording === "function" &&
       typeof window.openNow?.sendRecordingChunk === "function" &&
-      typeof window.openNow?.finishRecording === "function"
+      typeof window.openNow?.finishRecording === "function" &&
+      typeof window.openNow?.instantReplaySave === "function"
     );
   }
 
   async start(): Promise<void> {
     if (this.destroyed || !this.apiAvailable()) return;
-    this.clearBuffer();
+    this.clearBufferInternal();
     this.startRecorderIfPossible();
   }
 
@@ -108,48 +114,25 @@ export class RollingInstantReplayController {
     this.resources = null;
   }
 
-  /**
-   * WebM chunks from a single MediaRecorder are one continuous bitstream: dropping blobs from the
-   * middle/tail without a new init segment corrupts the file. When the buffer window or byte cap is
-   * exceeded, restart capture so `initChunk` + `chunks` stay contiguous.
-   */
-  private pruneOrRollAfterAppend(nowMs: number): void {
-    const cutoff = nowMs - Math.max(1_000, this.options.bufferWindowMs);
-    const overTime = this.chunks.length > 0 && this.chunks[0]!.endedAtMs < cutoff;
-    const overBytes = this.bytesInBuffer > this.maxBufferBytes;
-    if (overTime || overBytes) {
-      this.scheduleRollingRestart();
+  /** Drop oldest chunks that fall outside the replay window or byte budget; recorder keeps running. */
+  private trimBufferAfterAppend(nowMs: number): void {
+    const cutoff = nowMs - Math.max(INSTANT_REPLAY_TIMESLICE_MS, this.options.bufferWindowMs);
+    while (this.chunks.length > 0 && this.chunks[0]!.endedAtMs < cutoff) {
+      const removed = this.chunks.shift()!;
+      this.bytesInBuffer -= removed.blob.size;
+    }
+    while (this.bytesInBuffer > this.maxBufferBytes && this.chunks.length > 0) {
+      const removed = this.chunks.shift()!;
+      this.bytesInBuffer -= removed.blob.size;
     }
   }
 
-  private scheduleRollingRestart(): void {
-    if (this.restartScheduled || this.destroyed || this.manualHold) return;
-    this.restartScheduled = true;
-    queueMicrotask(() => {
-      this.restartScheduled = false;
-      void this.restartRollingCapture();
-    });
-  }
-
-  private async restartRollingCapture(): Promise<void> {
-    if (this.destroyed || this.manualHold) return;
-    this.suppressAutoRestart = true;
-    try {
-      await this.stopRecorder();
-      this.clearBuffer();
-    } finally {
-      this.suppressAutoRestart = false;
-    }
-    this.startRecorderIfPossible();
-  }
-
-  private clearBuffer(): void {
+  private clearBufferInternal(): void {
     this.chunks = [];
     this.bytesInBuffer = 0;
     this.initChunk = null;
     this.pendingInitParts = [];
     this.pendingInitBytes = 0;
-    this.bufferSessionStartMs = null;
   }
 
   private startRecorderIfPossible(): void {
@@ -174,20 +157,19 @@ export class RollingInstantReplayController {
       const nowMs = Date.now();
       this.chunks.push({ endedAtMs: nowMs, blob: e.data });
       this.bytesInBuffer += e.data.size;
-      this.pruneOrRollAfterAppend(nowMs);
+      this.trimBufferAfterAppend(nowMs);
     };
     rec.onerror = () => {
       this.mediaRecorder = null;
     };
     rec.onstop = () => {
       this.mediaRecorder = null;
-      if (!this.destroyed && !this.manualHold && !this.suppressAutoRestart) {
+      if (!this.destroyed && !this.manualHold) {
         this.startRecorderIfPossible();
       }
     };
     try {
       rec.start(INSTANT_REPLAY_TIMESLICE_MS);
-      this.bufferSessionStartMs = Date.now();
     } catch (err) {
       console.error("[InstantReplay] recorder.start failed:", err);
       this.mediaRecorder = null;
@@ -216,18 +198,13 @@ export class RollingInstantReplayController {
     });
   }
 
-  /**
-   * Stop instant replay capture so manual recording can use the same video tracks.
-   */
   async pauseForManualRecording(): Promise<void> {
     this.manualHold = true;
     await this.stopRecorder();
     this.disposeComposed();
-    // Recorder restart can change container initialization; start fresh after resume.
-    this.clearBuffer();
+    this.clearBufferInternal();
   }
 
-  /** Resume after manual recording stops. */
   async resumeAfterManualRecording(): Promise<void> {
     this.manualHold = false;
     if (this.destroyed || !this.apiAvailable()) return;
@@ -235,8 +212,14 @@ export class RollingInstantReplayController {
   }
 
   /**
-   * Save clip from recent in-memory chunks.
+   * First chunk index whose wall-clock end is at/after `cutoff`, minus optional preroll for decode stability.
    */
+  private clipStartChunkIndex(cutoff: number): number {
+    const firstKeep = this.chunks.findIndex((c) => c.endedAtMs >= cutoff);
+    if (firstKeep <= 0) return 0;
+    return Math.max(0, firstKeep - CHUNK_PREROLL_COUNT);
+  }
+
   async saveClip(gameTitle: string, clipDurationMs: number): Promise<RecordingEntry> {
     if (!this.apiAvailable()) throw new Error("Instant replay API unavailable.");
     if (this.manualHold) {
@@ -247,9 +230,9 @@ export class RollingInstantReplayController {
       try {
         rec.requestData();
       } catch {
-        // ignore - continue with available chunks
+        // ignore
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 30));
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
     }
 
     const video = this.options.getVideo();
@@ -259,24 +242,55 @@ export class RollingInstantReplayController {
       this.pendingInitParts = [];
       this.pendingInitBytes = 0;
     }
+
     const nowMs = Date.now();
-    const cutoff = nowMs - Math.max(1_000, clipDurationMs);
-    const hasRecentCoverage = this.chunks.some((chunk) => chunk.endedAtMs >= cutoff);
+    const windowMs = Math.max(INSTANT_REPLAY_TIMESLICE_MS, clipDurationMs);
+    const cutoff = nowMs - windowMs;
+    const hasRecentCoverage = this.chunks.some((c) => c.endedAtMs >= cutoff);
     if (!this.initChunk || this.chunks.length === 0 || !hasRecentCoverage) {
       throw new Error("No replay data available yet.");
     }
-    const mimeType = this.initChunk.type || this.chunks[0]?.blob.type || this.mimeType;
-    // Must concatenate every in-memory part: WebM is one stream; omitting chunks corrupts the file.
+
+    const startIdx = this.clipStartChunkIndex(cutoff);
+    const includedChunks = this.chunks.slice(startIdx);
+
+    const wallSpanMs =
+      includedChunks.length >= 2
+        ? includedChunks[includedChunks.length - 1]!.endedAtMs - includedChunks[0]!.endedAtMs
+        : 0;
+    const minimumWallSpanMs = Math.max(
+      INSTANT_REPLAY_TIMESLICE_MS,
+      windowMs - INSTANT_REPLAY_TIMESLICE_MS * 4,
+    );
+    if (wallSpanMs < minimumWallSpanMs) {
+      throw new Error(
+        `Replay buffer only has ~${Math.round(wallSpanMs / 1000)}s of continuous footage in memory — wait a few seconds while streaming, or increase replay buffer length in Settings.`,
+      );
+    }
+
+    const mimeType = this.initChunk.type || includedChunks[0]?.blob.type || this.mimeType;
     const clipBlob = new Blob(
-      [this.initChunk, ...this.chunks.map((chunk) => chunk.blob)],
+      [this.initChunk, ...includedChunks.map((c) => c.blob)],
       { type: mimeType },
     );
 
-    // Metadata for the library row: derive from timeslice count + session wall time (not chunk arrival deltas).
-    const fromSliceCount = (this.chunks.length + 1) * INSTANT_REPLAY_TIMESLICE_MS;
-    const fromSessionWall =
-      this.bufferSessionStartMs != null ? nowMs - this.bufferSessionStartMs : fromSliceCount;
-    const durationMs = Math.max(INSTANT_REPLAY_TIMESLICE_MS, fromSliceCount, fromSessionWall);
+    /** Matches requested clip length for probe fallback (main still probes the file). */
+    const durationHint = windowMs;
+
+    const saveMeta = {
+      mimeType,
+      clipDurationMs: windowMs,
+      gameTitle,
+      thumbnailDataUrl: thumb ?? undefined,
+    };
+
+    if (clipBlob.size <= SINGLE_CLIP_INLINE_MAX_BYTES) {
+      const entry = await window.openNow.instantReplaySave({
+        clip: await clipBlob.arrayBuffer(),
+        ...saveMeta,
+      });
+      return entry;
+    }
 
     const { recordingId } = await window.openNow.beginRecording({ mimeType });
     const bytes = await clipBlob.arrayBuffer();
@@ -289,12 +303,13 @@ export class RollingInstantReplayController {
       });
     }
 
-    return window.openNow.finishRecording({
+    const entry = await window.openNow.finishRecording({
       recordingId,
-      durationMs,
+      durationMs: durationHint,
       gameTitle,
       thumbnailDataUrl: thumb ?? undefined,
     });
+    return entry;
   }
 
   async destroy(): Promise<void> {
@@ -302,6 +317,6 @@ export class RollingInstantReplayController {
     this.manualHold = true;
     await this.stopRecorder();
     this.disposeComposed();
-    this.clearBuffer();
+    this.clearBufferInternal();
   }
 }
