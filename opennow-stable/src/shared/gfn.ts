@@ -146,6 +146,7 @@ export interface Settings {
   encoderPreference: VideoAccelerationPreference;
   colorQuality: ColorQuality;
   region: string;
+  sessionProxyEnabled: boolean;
   sessionProxyUrl: string;
   clipboardPaste: boolean;
   mouseSensitivity: number;

@@ -919,6 +919,7 @@ export function App(): JSX.Element {
     encoderPreference: "auto",
     colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
     region: "",
+    sessionProxyEnabled: false,
     sessionProxyUrl: "",
     clipboardPaste: false,
     mouseSensitivity: 1,
@@ -3640,6 +3641,8 @@ export function App(): JSX.Element {
         }
       }
 
+      const sessionProxyUrl = settings.sessionProxyEnabled ? settings.sessionProxyUrl.trim() : "";
+
       // Create new session
       const newSession = await window.openNow.createSession({
         token: token || undefined,
@@ -3648,7 +3651,7 @@ export function App(): JSX.Element {
         internalTitle: game.title,
         accountLinked: chooseAccountLinked(game, selectedVariant),
         existingSessionStrategy,
-        proxyUrl: settings.sessionProxyUrl || undefined,
+        proxyUrl: sessionProxyUrl || undefined,
         zone: "prod",
         settings: {
           resolution: settings.resolution,
@@ -3733,7 +3736,7 @@ export function App(): JSX.Element {
           sessionId: newSession.sessionId,
           clientId: newSession.clientId,
           deviceId: newSession.deviceId,
-          proxyUrl: settings.sessionProxyUrl || undefined,
+          proxyUrl: sessionProxyUrl || undefined,
         });
 
         if (launchAbortRef.current) {

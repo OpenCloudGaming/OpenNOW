@@ -51,7 +51,22 @@ type SettingsSearchScopeId =
   | "thanks";
 
 const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string[]> = {
-  "stream-region": ["stream", "region", "latency", "ping", "server", "route", "auto best", "proxy", "vpn", "queue", "session"],
+  "stream-region": [
+    "stream",
+    "region",
+    "latency",
+    "ping",
+    "server",
+    "route",
+    "auto best",
+    "proxy",
+    "vpn",
+    "queue",
+    "session",
+    "sponsor",
+    "github sponsor",
+    "supporter",
+  ],
   "stream-video": [
     "stream",
     "video",
@@ -1835,22 +1850,34 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
 
                 <div className="settings-row settings-row--column">
-                  <label className="settings-label settings-label--wrap">
-                    <span className="settings-label-title">
-                      Session proxy
-                      <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
-                    </span>
-                  </label>
-                  <input
-                    type="text"
-                    className="settings-text-input"
-                    placeholder="http://127.0.0.1:8080"
-                    value={settings.sessionProxyUrl}
-                    onChange={(e) => handleChange("sessionProxyUrl", e.target.value)}
-                  />
+                  <div className="settings-row-top settings-row-top--compact">
+                    <label className="settings-label settings-label--wrap">
+                      <span className="settings-label-title">
+                        Session proxy
+                        <span className="settings-inline-badge settings-inline-badge--beta">Beta</span>
+                      </span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.sessionProxyEnabled}
+                        onChange={(e) => handleChange("sessionProxyEnabled", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
                   <span className="settings-subtle-hint">
-                    Used only for Nvidia session creation and queue polling. Streaming/signaling traffic is not proxied.
+                    Used only for Nvidia session creation and queue polling. Streaming/signaling traffic is not proxied. Zortos provides a proxy for GitHub Sponsors/supporters.
                   </span>
+                  {settings.sessionProxyEnabled && (
+                    <input
+                      type="text"
+                      className="settings-text-input"
+                      placeholder="http://127.0.0.1:8080"
+                      value={settings.sessionProxyUrl}
+                      onChange={(e) => handleChange("sessionProxyUrl", e.target.value)}
+                    />
+                  )}
                 </div>
 
                 <div className="settings-row settings-row--column">
