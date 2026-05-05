@@ -64,7 +64,7 @@ const NATIVE_PRESENT_MAX_FPS_ENV: &str = "OPENNOW_NATIVE_PRESENT_MAX_FPS";
 const NATIVE_D3D_FULLSCREEN_ENV: &str = "OPENNOW_NATIVE_D3D_FULLSCREEN";
 const PRESENT_LIMITER_AUTO_SENTINEL: u32 = u32::MAX;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 static NATIVE_INPUT_STARTED_AT: OnceLock<Instant> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq)]
