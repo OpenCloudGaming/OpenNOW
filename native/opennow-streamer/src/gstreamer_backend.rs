@@ -950,6 +950,8 @@ impl RtpVideoChainSpec {
 #[derive(Clone)]
 struct GstreamerInputState {
     encoder: Arc<Mutex<InputEncoder>>,
+    #[cfg(target_os = "macos")]
+    channels: Arc<Mutex<Option<GstreamerInputChannels>>>,
     ready: Arc<AtomicBool>,
     heartbeat_stop: Arc<AtomicBool>,
     heartbeat_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -968,6 +970,8 @@ impl Default for GstreamerInputState {
     fn default() -> Self {
         Self {
             encoder: Arc::new(Mutex::new(InputEncoder::default())),
+            #[cfg(target_os = "macos")]
+            channels: Arc::new(Mutex::new(None)),
             ready: Arc::new(AtomicBool::new(false)),
             heartbeat_stop: Arc::new(AtomicBool::new(false)),
             heartbeat_thread: Arc::new(Mutex::new(None)),
@@ -978,10 +982,29 @@ impl Default for GstreamerInputState {
 impl GstreamerInputState {
     fn reset(&self) {
         self.ready.store(false, Ordering::SeqCst);
+        #[cfg(target_os = "macos")]
+        if let Ok(mut channels) = self.channels.lock() {
+            *channels = None;
+        }
         if let Ok(mut encoder) = self.encoder.lock() {
             encoder.set_protocol_version(2);
             encoder.reset_gamepad_sequences();
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_channels(&self, input_channels: GstreamerInputChannels) {
+        if let Ok(mut channels) = self.channels.lock() {
+            *channels = Some(input_channels);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn channels(&self) -> Option<GstreamerInputChannels> {
+        self.channels
+            .lock()
+            .ok()
+            .and_then(|channels| channels.clone())
     }
 
     fn stop_heartbeat(&self) {
@@ -1001,7 +1024,7 @@ impl GstreamerInputState {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 #[derive(Debug, Clone, Copy)]
 enum NativeWindowInputEvent {
     Key {
@@ -1025,6 +1048,14 @@ enum NativeWindowInputEvent {
         delta: i16,
         timestamp_us: u64,
     },
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, Default)]
+struct MacosNavigationInputState {
+    last_mouse_position: Arc<Mutex<Option<(f64, f64)>>>,
+    unhandled_keys: Arc<Mutex<HashSet<String>>>,
+    installed: Arc<AtomicBool>,
 }
 
 #[cfg(target_os = "windows")]
@@ -1279,7 +1310,7 @@ impl Drop for NativeWindowInputBridge {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn send_native_window_input_events(
     input_state: &GstreamerInputState,
     input_channels: &GstreamerInputChannels,
@@ -1315,7 +1346,7 @@ fn send_native_window_input_events(
     flush_pending_mouse_move(&encoder, input_channels, &mut pending_mouse_move);
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn flush_pending_mouse_move(
     encoder: &InputEncoder,
     input_channels: &GstreamerInputChannels,
@@ -1339,7 +1370,7 @@ fn flush_pending_mouse_move(
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn send_encoded_native_window_input_event(
     encoder: &InputEncoder,
     input_channels: &GstreamerInputChannels,
@@ -1407,6 +1438,413 @@ fn send_encoded_native_window_input_event(
     };
 
     let _ = input_channels.send_packet(&payload, partially_reliable);
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_navigation_input_probe(
+    sink: &gst::Element,
+    input_state: &GstreamerInputState,
+    navigation_state: &MacosNavigationInputState,
+    event_sender: &Option<Sender<Event>>,
+) {
+    if !use_external_renderer_window() || navigation_state.installed.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let Some(sink_pad) = sink.static_pad("sink") else {
+        send_log(
+            event_sender,
+            "warn",
+            "macOS external renderer input capture could not find the video sink pad.".to_owned(),
+        );
+        return;
+    };
+
+    let probe_input_state = input_state.clone();
+    let probe_navigation_state = navigation_state.clone();
+    let probe_sender = event_sender.clone();
+    sink_pad.add_probe(gst::PadProbeType::EVENT_UPSTREAM, move |_pad, info| {
+        let Some(gst::PadProbeData::Event(event)) = info.data.as_ref() else {
+            return gst::PadProbeReturn::Ok;
+        };
+        if event.type_() != gst::EventType::Navigation {
+            return gst::PadProbeReturn::Ok;
+        }
+        if let Ok(navigation_event) = gst_video::NavigationEvent::parse(event) {
+            handle_macos_navigation_event(
+                navigation_event,
+                &probe_input_state,
+                &probe_navigation_state,
+                &probe_sender,
+            );
+        }
+        gst::PadProbeReturn::Ok
+    });
+
+    send_log(
+        event_sender,
+        "info",
+        "macOS GStreamer navigation input capture active for the external renderer window."
+            .to_owned(),
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn handle_macos_navigation_event(
+    event: gst_video::NavigationEvent,
+    input_state: &GstreamerInputState,
+    navigation_state: &MacosNavigationInputState,
+    event_sender: &Option<Sender<Event>>,
+) {
+    let timestamp_us = native_input_timestamp_us();
+    match event {
+        gst_video::NavigationEvent::MouseMove { x, y, .. } => {
+            let Some((dx, dy)) = macos_navigation_mouse_delta(navigation_state, x, y) else {
+                return;
+            };
+            send_macos_navigation_event(
+                input_state,
+                NativeWindowInputEvent::MouseMove {
+                    dx,
+                    dy,
+                    timestamp_us,
+                },
+            );
+        }
+        gst_video::NavigationEvent::MouseButtonPress { button, x, y, .. } => {
+            let _ = macos_navigation_mouse_delta(navigation_state, x, y);
+            if let Some(button) = map_macos_navigation_mouse_button(button) {
+                send_macos_navigation_event(
+                    input_state,
+                    NativeWindowInputEvent::MouseButton {
+                        pressed: true,
+                        button,
+                        timestamp_us,
+                    },
+                );
+            }
+        }
+        gst_video::NavigationEvent::MouseButtonRelease { button, x, y, .. } => {
+            let _ = macos_navigation_mouse_delta(navigation_state, x, y);
+            if let Some(button) = map_macos_navigation_mouse_button(button) {
+                send_macos_navigation_event(
+                    input_state,
+                    NativeWindowInputEvent::MouseButton {
+                        pressed: false,
+                        button,
+                        timestamp_us,
+                    },
+                );
+            }
+        }
+        gst_video::NavigationEvent::MouseScroll { delta_y, .. } => {
+            let delta = (-delta_y * 120.0)
+                .round()
+                .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+            if delta != 0 {
+                send_macos_navigation_event(
+                    input_state,
+                    NativeWindowInputEvent::MouseWheel {
+                        delta,
+                        timestamp_us,
+                    },
+                );
+            }
+        }
+        gst_video::NavigationEvent::KeyPress { key, .. } => {
+            if let Some((keycode, scancode)) = map_macos_navigation_key(&key) {
+                send_macos_navigation_event(
+                    input_state,
+                    NativeWindowInputEvent::Key {
+                        pressed: true,
+                        keycode,
+                        scancode,
+                        modifiers: 0,
+                        timestamp_us,
+                    },
+                );
+            } else {
+                warn_unhandled_macos_navigation_key(navigation_state, event_sender, &key);
+            }
+        }
+        gst_video::NavigationEvent::KeyRelease { key, .. } => {
+            if let Some((keycode, scancode)) = map_macos_navigation_key(&key) {
+                send_macos_navigation_event(
+                    input_state,
+                    NativeWindowInputEvent::Key {
+                        pressed: false,
+                        keycode,
+                        scancode,
+                        modifiers: 0,
+                        timestamp_us,
+                    },
+                );
+            } else {
+                warn_unhandled_macos_navigation_key(navigation_state, event_sender, &key);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn send_macos_navigation_event(input_state: &GstreamerInputState, event: NativeWindowInputEvent) {
+    let Some(input_channels) = input_state.channels() else {
+        return;
+    };
+    send_native_window_input_events(input_state, &input_channels, &[event]);
+}
+
+#[cfg(target_os = "macos")]
+fn macos_navigation_mouse_delta(
+    navigation_state: &MacosNavigationInputState,
+    x: f64,
+    y: f64,
+) -> Option<(i16, i16)> {
+    let Ok(mut last_position) = navigation_state.last_mouse_position.lock() else {
+        return None;
+    };
+    let previous = last_position.replace((x, y))?;
+    let dx = (x - previous.0)
+        .round()
+        .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+    let dy = (y - previous.1)
+        .round()
+        .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+    ((dx != 0) || (dy != 0)).then_some((dx, dy))
+}
+
+#[cfg(target_os = "macos")]
+fn map_macos_navigation_mouse_button(button: i32) -> Option<u8> {
+    match button {
+        1 => Some(1),
+        2 => Some(2),
+        3 => Some(3),
+        8 => Some(4),
+        9 => Some(5),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn map_macos_navigation_key(key: &str) -> Option<(u16, u16)> {
+    let normalized = key.trim();
+    let code = match normalized {
+        "a" | "A" => "KeyA",
+        "b" | "B" => "KeyB",
+        "c" | "C" => "KeyC",
+        "d" | "D" => "KeyD",
+        "e" | "E" => "KeyE",
+        "f" | "F" => "KeyF",
+        "g" | "G" => "KeyG",
+        "h" | "H" => "KeyH",
+        "i" | "I" => "KeyI",
+        "j" | "J" => "KeyJ",
+        "k" | "K" => "KeyK",
+        "l" | "L" => "KeyL",
+        "m" | "M" => "KeyM",
+        "n" | "N" => "KeyN",
+        "o" | "O" => "KeyO",
+        "p" | "P" => "KeyP",
+        "q" | "Q" => "KeyQ",
+        "r" | "R" => "KeyR",
+        "s" | "S" => "KeyS",
+        "t" | "T" => "KeyT",
+        "u" | "U" => "KeyU",
+        "v" | "V" => "KeyV",
+        "w" | "W" => "KeyW",
+        "x" | "X" => "KeyX",
+        "y" | "Y" => "KeyY",
+        "z" | "Z" => "KeyZ",
+        "0" => "Digit0",
+        "1" => "Digit1",
+        "2" => "Digit2",
+        "3" => "Digit3",
+        "4" => "Digit4",
+        "5" => "Digit5",
+        "6" => "Digit6",
+        "7" => "Digit7",
+        "8" => "Digit8",
+        "9" => "Digit9",
+        " " | "space" | "Space" => "Space",
+        "Return" | "Enter" | "enter" => "Enter",
+        "Escape" | "Esc" | "escape" => "Escape",
+        "Tab" | "tab" => "Tab",
+        "BackSpace" | "Backspace" | "Delete" => "Backspace",
+        "Left" | "ArrowLeft" => "ArrowLeft",
+        "Right" | "ArrowRight" => "ArrowRight",
+        "Up" | "ArrowUp" => "ArrowUp",
+        "Down" | "ArrowDown" => "ArrowDown",
+        "Shift_L" | "Shift" => "ShiftLeft",
+        "Shift_R" => "ShiftRight",
+        "Control_L" | "Control" | "Ctrl" => "ControlLeft",
+        "Control_R" => "ControlRight",
+        "Alt_L" | "Alt" | "Option" => "AltLeft",
+        "Alt_R" => "AltRight",
+        "Meta_L" | "Meta" | "Command" | "Super_L" => "MetaLeft",
+        "Meta_R" | "Super_R" => "MetaRight",
+        "F1" => "F1",
+        "F2" => "F2",
+        "F3" => "F3",
+        "F4" => "F4",
+        "F5" => "F5",
+        "F6" => "F6",
+        "F7" => "F7",
+        "F8" => "F8",
+        "F9" => "F9",
+        "F10" => "F10",
+        "F11" => "F11",
+        "F12" => "F12",
+        "-" => "Minus",
+        "=" => "Equal",
+        "[" => "BracketLeft",
+        "]" => "BracketRight",
+        "\\" => "Backslash",
+        ";" => "Semicolon",
+        "'" => "Quote",
+        "`" => "Backquote",
+        "," => "Comma",
+        "." => "Period",
+        "/" => "Slash",
+        _ => return None,
+    };
+    key_mapping_for_code(code)
+}
+
+#[cfg(target_os = "macos")]
+fn key_mapping_for_code(code: &str) -> Option<(u16, u16)> {
+    let scancode = match code {
+        "KeyA" => 0x001e,
+        "KeyB" => 0x0030,
+        "KeyC" => 0x002e,
+        "KeyD" => 0x0020,
+        "KeyE" => 0x0012,
+        "KeyF" => 0x0021,
+        "KeyG" => 0x0022,
+        "KeyH" => 0x0023,
+        "KeyI" => 0x0017,
+        "KeyJ" => 0x0024,
+        "KeyK" => 0x0025,
+        "KeyL" => 0x0026,
+        "KeyM" => 0x0032,
+        "KeyN" => 0x0031,
+        "KeyO" => 0x0018,
+        "KeyP" => 0x0019,
+        "KeyQ" => 0x0010,
+        "KeyR" => 0x0013,
+        "KeyS" => 0x001f,
+        "KeyT" => 0x0014,
+        "KeyU" => 0x0016,
+        "KeyV" => 0x002f,
+        "KeyW" => 0x0011,
+        "KeyX" => 0x002d,
+        "KeyY" => 0x0015,
+        "KeyZ" => 0x002c,
+        "Digit1" => 0x0002,
+        "Digit2" => 0x0003,
+        "Digit3" => 0x0004,
+        "Digit4" => 0x0005,
+        "Digit5" => 0x0006,
+        "Digit6" => 0x0007,
+        "Digit7" => 0x0008,
+        "Digit8" => 0x0009,
+        "Digit9" => 0x000a,
+        "Digit0" => 0x000b,
+        "Enter" => 0x001c,
+        "Escape" => 0x0001,
+        "Backspace" => 0x000e,
+        "Tab" => 0x000f,
+        "Space" => 0x0039,
+        "Minus" => 0x000c,
+        "Equal" => 0x000d,
+        "BracketLeft" => 0x001a,
+        "BracketRight" => 0x001b,
+        "Backslash" => 0x002b,
+        "Semicolon" => 0x0027,
+        "Quote" => 0x0028,
+        "Backquote" => 0x0029,
+        "Comma" => 0x0033,
+        "Period" => 0x0034,
+        "Slash" => 0x0035,
+        "F1" => 0x003b,
+        "F2" => 0x003c,
+        "F3" => 0x003d,
+        "F4" => 0x003e,
+        "F5" => 0x003f,
+        "F6" => 0x0040,
+        "F7" => 0x0041,
+        "F8" => 0x0042,
+        "F9" => 0x0043,
+        "F10" => 0x0044,
+        "F11" => 0x0057,
+        "F12" => 0x0058,
+        "ArrowRight" => 0xe04d,
+        "ArrowLeft" => 0xe04b,
+        "ArrowDown" => 0xe050,
+        "ArrowUp" => 0xe048,
+        "ControlLeft" => 0x001d,
+        "ShiftLeft" => 0x002a,
+        "AltLeft" => 0x0038,
+        "MetaLeft" => 0xe05b,
+        "ControlRight" => 0xe01d,
+        "ShiftRight" => 0x0036,
+        "AltRight" => 0xe038,
+        "MetaRight" => 0xe05c,
+        _ => return None,
+    };
+    let keycode = match code {
+        code if code.starts_with("Key") => u16::from(code.as_bytes()[3].to_ascii_uppercase()),
+        code if code.starts_with("Digit") => u16::from(code.as_bytes()[5]),
+        "Enter" => 0x0d,
+        "Escape" => 0x1b,
+        "Backspace" => 0x08,
+        "Tab" => 0x09,
+        "Space" => 0x20,
+        "Minus" => 0xbd,
+        "Equal" => 0xbb,
+        "BracketLeft" => 0xdb,
+        "BracketRight" => 0xdd,
+        "Backslash" => 0xdc,
+        "Semicolon" => 0xba,
+        "Quote" => 0xde,
+        "Backquote" => 0xc0,
+        "Comma" => 0xbc,
+        "Period" => 0xbe,
+        "Slash" => 0xbf,
+        "ArrowRight" => 0x27,
+        "ArrowLeft" => 0x25,
+        "ArrowDown" => 0x28,
+        "ArrowUp" => 0x26,
+        "ControlLeft" => 0xa2,
+        "ShiftLeft" => 0xa0,
+        "AltLeft" => 0xa4,
+        "MetaLeft" => 0x5b,
+        "ControlRight" => 0xa3,
+        "ShiftRight" => 0xa1,
+        "AltRight" => 0xa5,
+        "MetaRight" => 0x5c,
+        code if code.starts_with('F') => 0x70 + code[1..].parse::<u16>().ok()? - 1,
+        _ => return None,
+    };
+    Some((keycode, scancode))
+}
+
+#[cfg(target_os = "macos")]
+fn warn_unhandled_macos_navigation_key(
+    navigation_state: &MacosNavigationInputState,
+    event_sender: &Option<Sender<Event>>,
+    key: &str,
+) {
+    let Ok(mut unhandled_keys) = navigation_state.unhandled_keys.lock() else {
+        return;
+    };
+    if unhandled_keys.insert(key.to_owned()) {
+        send_log(
+            event_sender,
+            "debug",
+            format!("Unhandled macOS GStreamer navigation key: {key}"),
+        );
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1554,7 +1992,7 @@ fn send_native_gamepad_snapshot(
     let _ = input_channels.send_packet(&payload, use_partially_reliable);
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn native_input_timestamp_us() -> u64 {
     NATIVE_INPUT_STARTED_AT
         .get_or_init(Instant::now)
@@ -1637,6 +2075,8 @@ struct GstreamerPipeline {
     input_channels: Option<GstreamerInputChannels>,
     #[cfg(target_os = "windows")]
     native_window_input_bridge: Option<NativeWindowInputBridge>,
+    #[cfg(target_os = "macos")]
+    macos_navigation_input_state: MacosNavigationInputState,
     render_state: GstreamerRenderState,
     present_max_fps: Arc<AtomicU32>,
     d3d_fullscreen_sink: Arc<AtomicBool>,
@@ -1659,6 +2099,8 @@ impl GstreamerPipeline {
         configure_webrtc_low_latency(&webrtc);
 
         let input_state = GstreamerInputState::default();
+        #[cfg(target_os = "macos")]
+        let macos_navigation_input_state = MacosNavigationInputState::default();
         let render_state = GstreamerRenderState::default();
         let video_liveness = VideoLivenessMonitor::default();
         wire_local_ice_events(&webrtc, event_sender.clone())?;
@@ -1669,6 +2111,10 @@ impl GstreamerPipeline {
             event_sender.clone(),
             video_liveness.stop.clone(),
             video_liveness.clone(),
+            #[cfg(target_os = "macos")]
+            input_state.clone(),
+            #[cfg(target_os = "macos")]
+            macos_navigation_input_state.clone(),
         );
         let present_max_fps = Arc::new(AtomicU32::new(0));
         let d3d_fullscreen_sink = Arc::new(AtomicBool::new(false));
@@ -1696,6 +2142,8 @@ impl GstreamerPipeline {
             input_channels: None,
             #[cfg(target_os = "windows")]
             native_window_input_bridge: None,
+            #[cfg(target_os = "macos")]
+            macos_navigation_input_state,
             render_state,
             present_max_fps,
             d3d_fullscreen_sink,
@@ -1744,6 +2192,8 @@ impl GstreamerPipeline {
             partial_reliable_threshold_ms,
         )?;
         let _ = channels.labels();
+        #[cfg(target_os = "macos")]
+        self.input_state.set_channels(channels.clone());
         self.input_channels = Some(channels);
         self.ensure_native_window_input_bridge();
         Ok(())
@@ -1767,6 +2217,15 @@ impl GstreamerPipeline {
 
     #[cfg(not(target_os = "windows"))]
     fn ensure_native_window_input_bridge(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            send_log(
+                &self.event_sender,
+                "info",
+                "macOS GStreamer navigation input capture is enabled for the external renderer window; Electron controller forwarding remains active.".to_owned(),
+            );
+            return;
+        }
         send_log(
             &self.event_sender,
             "warn",
@@ -4789,6 +5248,8 @@ fn wire_incoming_media_sink(
     present_max_fps: Arc<AtomicU32>,
     d3d_fullscreen_sink: Arc<AtomicBool>,
     video_liveness: VideoLivenessMonitor,
+    #[cfg(target_os = "macos")] input_state: GstreamerInputState,
+    #[cfg(target_os = "macos")] macos_navigation_input_state: MacosNavigationInputState,
 ) {
     let pipeline = pipeline.downgrade();
     let streaming_reported = Arc::new(AtomicBool::new(false));
@@ -4821,6 +5282,10 @@ fn wire_incoming_media_sink(
                 present_max_fps.clone(),
                 d3d_fullscreen_sink.load(Ordering::SeqCst),
                 video_liveness.clone(),
+                #[cfg(target_os = "macos")]
+                input_state.clone(),
+                #[cfg(target_os = "macos")]
+                macos_navigation_input_state.clone(),
             ) {
                 Ok(()) => return,
                 Err(error) => send_log(
@@ -4844,6 +5309,10 @@ fn wire_incoming_media_sink(
         let decode_render_state = render_state.clone();
         let decode_streaming_reported = streaming_reported.clone();
         let decode_video_liveness = video_liveness.clone();
+        #[cfg(target_os = "macos")]
+        let decode_input_state = input_state.clone();
+        #[cfg(target_os = "macos")]
+        let decode_macos_navigation_input_state = macos_navigation_input_state.clone();
         decodebin.connect_pad_added(move |_decodebin, decoded_pad| {
             let Some(pipeline) = decode_pipeline.upgrade() else {
                 return;
@@ -4856,6 +5325,10 @@ fn wire_incoming_media_sink(
                 &decode_sender,
                 &decode_streaming_reported,
                 &decode_video_liveness,
+                #[cfg(target_os = "macos")]
+                decode_input_state.clone(),
+                #[cfg(target_os = "macos")]
+                decode_macos_navigation_input_state.clone(),
             ) {
                 send_log(&decode_sender, "warn", error);
                 if let Err(fallback_error) =
@@ -5428,6 +5901,8 @@ fn link_rtp_video_pad(
     present_max_fps: Arc<AtomicU32>,
     d3d_fullscreen_sink: bool,
     video_liveness: VideoLivenessMonitor,
+    #[cfg(target_os = "macos")] input_state: GstreamerInputState,
+    #[cfg(target_os = "macos")] macos_navigation_input_state: MacosNavigationInputState,
 ) -> Result<(), String> {
     if src_pad.is_linked() {
         return Ok(());
@@ -5562,6 +6037,13 @@ fn link_rtp_video_pad(
             watch_video_caps_transitions(decoder, "decoder", event_sender, video_liveness.clone());
         }
         render_state.set_video_sink(sink.clone(), event_sender);
+        #[cfg(target_os = "macos")]
+        install_macos_navigation_input_probe(
+            sink,
+            &input_state,
+            &macos_navigation_input_state,
+            event_sender,
+        );
         install_present_limiter(
             sink,
             present_max_fps,
@@ -5690,6 +6172,8 @@ fn link_decoded_media_pad(
     event_sender: &Option<Sender<Event>>,
     streaming_reported: &Arc<AtomicBool>,
     video_liveness: &VideoLivenessMonitor,
+    #[cfg(target_os = "macos")] input_state: GstreamerInputState,
+    #[cfg(target_os = "macos")] macos_navigation_input_state: MacosNavigationInputState,
 ) -> Result<(), String> {
     if src_pad.is_linked() {
         return Ok(());
@@ -5705,6 +6189,10 @@ fn link_decoded_media_pad(
             event_sender,
             streaming_reported,
             Some(video_liveness),
+            #[cfg(target_os = "macos")]
+            input_state,
+            #[cfg(target_os = "macos")]
+            macos_navigation_input_state,
         ),
         DecodedMediaKind::Audio => link_media_chain(
             pipeline,
@@ -5720,6 +6208,10 @@ fn link_decoded_media_pad(
             event_sender,
             streaming_reported,
             None,
+            #[cfg(target_os = "macos")]
+            input_state,
+            #[cfg(target_os = "macos")]
+            macos_navigation_input_state,
         ),
         DecodedMediaKind::Unknown => Err(format!(
             "Unsupported decoded media caps {:?}; routing to fallback sink.",
@@ -5758,6 +6250,8 @@ fn link_media_chain(
     event_sender: &Option<Sender<Event>>,
     streaming_reported: &Arc<AtomicBool>,
     video_liveness: Option<&VideoLivenessMonitor>,
+    #[cfg(target_os = "macos")] input_state: GstreamerInputState,
+    #[cfg(target_os = "macos")] macos_navigation_input_state: MacosNavigationInputState,
 ) -> Result<(), String> {
     if media_label == "video" {
         if let Some(video_liveness) = video_liveness {
@@ -5822,6 +6316,13 @@ fn link_media_chain(
             if let Some(render_state) = render_state {
                 render_state.set_video_sink(sink.clone(), event_sender);
             }
+            #[cfg(target_os = "macos")]
+            install_macos_navigation_input_probe(
+                sink,
+                &input_state,
+                &macos_navigation_input_state,
+                event_sender,
+            );
         }
         watch_first_sink_buffer(sink, media_label, event_sender, streaming_reported);
         if media_label == "audio" {
