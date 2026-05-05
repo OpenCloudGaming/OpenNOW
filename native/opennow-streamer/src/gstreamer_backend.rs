@@ -1606,13 +1606,7 @@ impl GstreamerRenderState {
                 );
             }
             if !self.external_renderer_logged.swap(true, Ordering::SeqCst) {
-                send_log(
-                    event_sender,
-                    "info",
-                    format!(
-                        "Using external native GStreamer renderer window; set {EXTERNAL_RENDERER_ENV}=0 to retry Electron native surface embedding."
-                    ),
-                );
+                send_log(event_sender, "info", external_renderer_message());
             }
             return;
         }
@@ -2221,7 +2215,7 @@ fn configure_stats_overlay_element(element: &gst::Element) {
     set_property_if_supported(element, "outline-color", 0xD000_0000u32);
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(target_os = "windows")]
 fn parse_window_handle(value: &str) -> Result<usize, String> {
     let trimmed = value.trim();
     let hex = trimmed
@@ -2241,7 +2235,7 @@ fn parse_window_handle(value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(target_os = "windows")]
 fn normalized_render_rect(rect: Option<&NativeRenderRect>) -> NativeRenderRect {
     let Some(rect) = rect else {
         return NativeRenderRect {
@@ -2260,6 +2254,12 @@ fn normalized_render_rect(rect: Option<&NativeRenderRect>) -> NativeRenderRect {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn use_external_renderer_window() -> bool {
+    true
+}
+
+#[cfg(not(target_os = "macos"))]
 fn use_external_renderer_window() -> bool {
     std::env::var(EXTERNAL_RENDERER_ENV)
         .map(|value| {
@@ -2269,6 +2269,18 @@ fn use_external_renderer_window() -> bool {
             )
         })
         .unwrap_or(cfg!(target_os = "windows"))
+}
+
+#[cfg(target_os = "macos")]
+fn external_renderer_message() -> String {
+    "Using external native GStreamer renderer window on macOS because Electron Cocoa view handles are process-local and unsafe to embed from the native child process.".to_owned()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn external_renderer_message() -> String {
+    format!(
+        "Using external native GStreamer renderer window; set {EXTERNAL_RENDERER_ENV}=0 to retry Electron native surface embedding."
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -3333,7 +3345,7 @@ mod win32_renderer_window {
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(target_os = "windows")]
 fn apply_render_surface_to_video_sink(
     sink: &gst::Element,
     surface: &NativeRenderSurface,
@@ -3365,7 +3377,7 @@ fn apply_render_surface_to_video_sink(
     Ok(())
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(target_os = "windows"))]
 fn apply_render_surface_to_video_sink(
     _sink: &gst::Element,
     _surface: &NativeRenderSurface,
