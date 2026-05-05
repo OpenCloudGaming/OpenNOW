@@ -56,9 +56,13 @@ function shouldBundlePrivateGstreamerRuntime(nativeFeatures) {
   return true;
 }
 
+function prependEnvDirectory(env, key, directory) {
+  env[key] = env[key] ? `${directory}${delimiter}${env[key]}` : directory;
+}
+
 function prependEnvPath(env, directory) {
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
-  env[pathKey] = env[pathKey] ? `${directory}${delimiter}${env[pathKey]}` : directory;
+  prependEnvDirectory(env, pathKey, directory);
 }
 
 function appendEnvValue(env, key, value) {
@@ -80,6 +84,50 @@ function brewPrefix() {
 function brewPrefixForPackage(packageName) {
   const result = spawnSync("brew", ["--prefix", packageName], { encoding: "utf8" });
   return result.status === 0 ? result.stdout.trim() || null : null;
+}
+
+function configureHomebrewTransitiveDependencyPaths(env, sdkSource) {
+  if (!/^Homebrew/.test(sdkSource)) {
+    return;
+  }
+
+  const configured = [];
+  const missing = [];
+  for (const packageName of ["glib", "gettext", "libffi"]) {
+    const packageRoot = brewPrefixForPackage(packageName);
+    if (!packageRoot) {
+      if (packageName !== "libffi") missing.push(packageName);
+      continue;
+    }
+
+    let added = false;
+    const pkgConfigDir = join(packageRoot, "lib", "pkgconfig");
+    const libDir = join(packageRoot, "lib");
+    if (existsSync(pkgConfigDir)) {
+      prependEnvDirectory(env, "PKG_CONFIG_PATH", pkgConfigDir);
+      added = true;
+    }
+    if (existsSync(libDir)) {
+      prependEnvDirectory(env, "LIBRARY_PATH", libDir);
+      prependEnvDirectory(env, "DYLD_LIBRARY_PATH", libDir);
+      prependEnvDirectory(env, "DYLD_FALLBACK_LIBRARY_PATH", libDir);
+      added = true;
+    }
+    if (added) {
+      configured.push(packageName);
+    } else if (packageName !== "libffi") {
+      missing.push(packageName);
+    }
+  }
+
+  if (configured.length > 0) {
+    console.log(`Configured Homebrew transitive dependency paths: ${configured.join(", ")}.`);
+  }
+  if (missing.length > 0) {
+    console.warn(
+      `Homebrew GStreamer dependency path(s) not found for ${missing.join(", ")}; if linking fails, run \`brew reinstall glib gettext gstreamer\` or \`brew link --overwrite glib gettext gstreamer\`.`,
+    );
+  }
 }
 
 function configuredCandidate(root, source) {
@@ -163,6 +211,7 @@ function configureGstreamerSdk(env) {
     prependEnvPath(env, join(sdkRoot, "bin"));
     env.DYLD_LIBRARY_PATH = env.DYLD_LIBRARY_PATH ? `${join(sdkRoot, "lib")}${delimiter}${env.DYLD_LIBRARY_PATH}` : join(sdkRoot, "lib");
     env.DYLD_FALLBACK_LIBRARY_PATH = env.DYLD_FALLBACK_LIBRARY_PATH ? `${join(sdkRoot, "lib")}${delimiter}${env.DYLD_FALLBACK_LIBRARY_PATH}` : join(sdkRoot, "lib");
+    configureHomebrewTransitiveDependencyPaths(env, sdk.source);
     if (/apple-darwin$/.test(nativeTarget)) {
       env.PKG_CONFIG_ALLOW_CROSS = "1";
       env.PKG_CONFIG_SYSROOT_DIR = env.PKG_CONFIG_SYSROOT_DIR || "/";
