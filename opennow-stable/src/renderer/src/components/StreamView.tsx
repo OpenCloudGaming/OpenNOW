@@ -1138,15 +1138,19 @@ export function StreamView({
         try {
           const entry = await window.openNow.finishRecording({ recordingId: id, durationMs, gameTitle });
           setRecordings((prev) => [entry, ...prev].slice(0, 20));
-        } catch (err) {
-          console.error("[StreamView] Failed to finish native recording:", err);
-          setRecordingError("Native recording could not be saved.");
-        } finally {
           recordingIdRef.current = null;
           recordingBackendRef.current = null;
-          recordingStopInFlightRef.current = false;
           thumbnailDataUrlRef.current = null;
           setIsRecording(false);
+        } catch (err) {
+          console.error("[StreamView] Failed to finish native recording:", err);
+          setRecordingError("Native recording could not be saved. Try stopping again or end the stream to discard it.");
+          recordingTimerRef.current = window.setInterval(() => {
+            setRecordingDurationMs(Date.now() - recordingStartTimeRef.current);
+          }, 500);
+          setIsRecording(true);
+        } finally {
+          recordingStopInFlightRef.current = false;
         }
         return;
       }
