@@ -1,6 +1,6 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, systemPreferences, session } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, systemPreferences, session, protocol } from "electron";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve, relative } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { existsSync, readFileSync, createWriteStream } from "node:fs";
 import { copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile, realpath } from "node:fs/promises";
 import * as net from "node:net";
@@ -15,6 +15,11 @@ import { Buffer } from "node:buffer";
 // F8  - Toggle mouse/pointer lock (handled in main process via IPC)
 
 import { IPC_CHANNELS } from "@shared/ipc";
+import {
+  getTrustedVideoPlaybackFileUrl,
+  registerOpenNowMediaProtocol,
+  resolveTrustedOpenNowMediaPath,
+} from "./mediaPaths";
 import { initLogCapture, exportLogs } from "@shared/logger";
 import type { NativeStreamerInputPacket } from "@shared/nativeStreamer";
 import { cacheManager } from "./services/cacheManager";
@@ -77,6 +82,7 @@ import type {
 } from "@shared/gfn";
 import { serializeSessionErrorTransport } from "@shared/sessionError";
 import { normalizeCloudGsyncOverride, resolveCloudGsync } from "@shared/cloudGsync";
+import { enrichErrorForIpc, formatErrorChainForLog } from "@shared/networkError";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
 
@@ -233,7 +239,22 @@ app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 // Remove getUserMedia FPS cap (not strictly needed for receive-only but avoids potential limits)
 app.commandLine.appendSwitch("max-gum-fps", "999");
 
+// file:// in &lt;video&gt; is blocked by Chromium for renderer pages; use a privileged custom scheme.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "opennow-media",
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      corsEnabled: true,
+    },
+  },
+]);
+
 let mainWindow: BrowserWindow | null = null;
+let rendererControlledFullscreen = false;
 let signalingClient: GfnSignalingClient | null = null;
 let signalingClientKey: string | null = null;
 let nativeStreamerManager: NativeStreamerManager | null = null;
@@ -249,6 +270,9 @@ let isShutdownRequested = false;
 let isShutdownCleanupComplete = false;
 let isUpdaterInstallQuitInProgress = false;
 let explicitShutdownFallbackTimer: NodeJS.Timeout | null = null;
+
+// Runtime pointer-lock state (updated by renderer)
+let isPointerLockActiveRuntime = false;
 
 function clearExplicitShutdownFallback(): void {
   if (explicitShutdownFallbackTimer) {
@@ -266,7 +290,17 @@ function runShutdownCleanup(reason = "app-quit"): void {
   console.log(`[Main] Running shutdown cleanup (${reason})`);
 
   refreshScheduler.stop();
-  signalingClient?.disconnect();
+  // Parity with soft-reset behavior: on full app quit, let process teardown close
+  // signaling sockets naturally instead of emitting an explicit disconnect event
+  // into the renderer during shutdown.
+  const shouldSkipExplicitSignalingDisconnect =
+    reason === "renderer-explicit-exit" ||
+    reason === "app-quit" ||
+    reason === "before-quit" ||
+    reason === "window-all-closed";
+  if (!shouldSkipExplicitSignalingDisconnect) {
+    signalingClient?.disconnect();
+  }
   signalingClient = null;
   signalingClientKey = null;
   nativeStreamerManager?.dispose(reason);
@@ -333,6 +367,7 @@ class DiscordStatusMonitor {
   private timer: NodeJS.Timeout | null = null;
   private readonly intervalMs = 60 * 1000;
   private isSyncing = false;
+  private hasPerformedInitialSync = false;
 
   start(): void {
     if (this.timer) return;
@@ -362,29 +397,30 @@ class DiscordStatusMonitor {
         await connectDiscordRpc().catch(() => {});
       }
 
-      const token = await resolveJwt().catch(() => null);
-      if (!token) {
-        this.isSyncing = false;
-        return;
+      // On first run, always clear regardless of auth state — the app just started
+      // and any stale status from the previous session must be wiped.
+      if (!this.hasPerformedInitialSync) {
+        console.log("[DiscordRPC] Startup: clearing any stale Discord status.");
+        await clearActivity().catch(() => {});
+        this.hasPerformedInitialSync = true;
       }
+
+      const token = await resolveJwt().catch(() => null);
+      if (!token) return;
 
       const provider = authService.getSelectedProvider();
       const streamingBaseUrl = provider.streamingServiceUrl;
       const activeSessions = await getActiveSessions(token, streamingBaseUrl).catch(() => []);
-      
+
       const activeSession = activeSessions.find((s) => [1, 2, 3].includes(s.status));
       const currentActivity = getCurrentActivity();
 
       if (activeSession) {
         const sessionAppId = activeSession.appId.toString();
-        
+
         if (!currentActivity || currentActivity.appId !== sessionAppId) {
-          const title = (currentActivity?.appId === sessionAppId && currentActivity.gameName)
-            ? currentActivity.gameName 
-            : sessionAppId;
-          const startTime = (currentActivity?.appId === sessionAppId && currentActivity.startTimestamp)
-            ? currentActivity.startTimestamp
-            : new Date();
+          const title = sessionAppId;
+          const startTime = new Date();
           void setActivity(title, startTime, sessionAppId);
         }
       } else if (currentActivity) {
@@ -569,16 +605,63 @@ function md5(input: string): string {
   return createHash("md5").update(input).digest("hex");
 }
 
-async function generateVideoThumbnail(sourcePath: string, outPath: string): Promise<boolean> {
+/** Seconds; null if ffprobe missing or unreadable. */
+async function probeVideoDurationSeconds(sourcePath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const args = [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      sourcePath,
+    ];
+    const child = spawn("ffprobe", args, { stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      out += chunk.toString();
+    });
+    child.on("error", () => resolve(null));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        resolve(null);
+        return;
+      }
+      const n = Number.parseFloat(out.trim());
+      resolve(Number.isFinite(n) && n > 0 ? n : null);
+    });
+  });
+}
+
+function randomThumbnailSeekSeconds(durationSec: number | null): number {
+  if (durationSec !== null && durationSec > 0.2) {
+    const margin = Math.min(0.35, durationSec * 0.08);
+    const hi = Math.max(durationSec - margin, margin + 0.05);
+    const lo = Math.min(margin, hi * 0.5);
+    return lo + Math.random() * (hi - lo);
+  }
+  return 0.2 + Math.random() * 4.8;
+}
+
+function ffmpegExtractOneFrame(sourcePath: string, outPath: string, seekSec: number): Promise<boolean> {
+  const ss = seekSec.toFixed(3);
   return new Promise<boolean>((resolve) => {
-    // Try to run ffmpeg to extract a frame at 1s.
-    const args = ["-y", "-ss", "1", "-i", sourcePath, "-frames:v", "1", "-q:v", "2", outPath];
+    const args = ["-y", "-ss", ss, "-i", sourcePath, "-frames:v", "1", "-q:v", "2", outPath];
     const child = spawn("ffmpeg", args, { stdio: "ignore" });
     child.on("error", () => resolve(false));
     child.on("close", (code) => {
       resolve(code === 0);
     });
   });
+}
+
+async function generateVideoThumbnail(sourcePath: string, outPath: string): Promise<boolean> {
+  const durationSec = await probeVideoDurationSeconds(sourcePath);
+  const seekSec = randomThumbnailSeekSeconds(durationSec);
+  if (await ffmpegExtractOneFrame(sourcePath, outPath, seekSec)) return true;
+  if (seekSec > 0.02) return ffmpegExtractOneFrame(sourcePath, outPath, 0);
+  return false;
 }
 
 async function ensureThumbnailForMedia(filePath: string): Promise<string | null> {
@@ -650,7 +733,7 @@ async function listRecordings(): Promise<RecordingEntry[]> {
       const filePath = join(dir, fileName);
       try {
         const fileStats = await stat(filePath);
-        const stem = fileName.replace(/\.webm$/i, "");
+        const stem = fileName.replace(/\.(mp4|webm)$/i, "");
         const thumbName = `${stem}-thumb.jpg`;
         const thumbPath = join(dir, thumbName);
 
@@ -940,11 +1023,42 @@ async function createMainWindow(): Promise<void> {
     });
 
     mainWindow.webContents.on("leave-html-full-screen", () => {
+      if (rendererControlledFullscreen) {
+        return;
+      }
       if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()) {
         mainWindow.setFullScreen(false);
       }
     });
   }
+
+  // Track pointer-lock state from renderer; used to decide whether to swallow
+  // Escape at the native level (before Chromium handles it).
+  ipcMain.on(IPC_CHANNELS.POINTER_LOCK_CHANGE, (_ev, active: boolean) => {
+    isPointerLockActiveRuntime = Boolean(active);
+  });
+
+  // Intercept Escape early to avoid Chromium exiting fullscreen before the
+  // renderer can forward the key to the remote session. This is a best-effort
+  // interception and is gated by the user's `allowEscapeToExitFullscreen` setting.
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    try {
+      if (
+        input.type === "keyDown" &&
+        input.key === "Escape" &&
+        isPointerLockActiveRuntime &&
+        settingsManager &&
+        !settingsManager.get("allowEscapeToExitFullscreen")
+      ) {
+        event.preventDefault();
+        if (mainWindow && mainWindow.webContents) {
+          mainWindow.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
+        }
+      }
+    } catch (err) {
+      // ignore errors - interception is best-effort
+    }
+  });
 
   if (process.env.ELECTRON_RENDERER_URL) {
     await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -954,6 +1068,7 @@ async function createMainWindow(): Promise<void> {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    rendererControlledFullscreen = false;
   });
 }
 
@@ -1004,7 +1119,7 @@ function rethrowSerializedSessionError(error: unknown): never {
   if (error instanceof SessionError) {
     throw new Error(serializeSessionErrorTransport(error.toJSON()));
   }
-  throw error;
+  throw enrichErrorForIpc(error);
 }
 
 const AUTO_RESUME_SESSION_STATUSES = new Set([2, 3]);
@@ -1361,6 +1476,22 @@ function registerIpcHandlers(): void {
     await authService.logout();
   });
 
+  ipcMain.handle(IPC_CHANNELS.AUTH_LOGOUT_ALL, async () => {
+    await authService.logoutAll();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AUTH_GET_SAVED_ACCOUNTS, async () => {
+    return authService.getSavedAccounts();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AUTH_SWITCH_ACCOUNT, async (_event, userId: string) => {
+    return authService.switchAccount(userId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AUTH_REMOVE_ACCOUNT, async (_event, userId: string) => {
+    await authService.removeAccount(userId);
+  });
+
   ipcMain.handle(IPC_CHANNELS.SUBSCRIPTION_FETCH, async (_event, payload: SubscriptionFetchRequest) => {
     const token = await resolveJwt(payload?.token);
     const streamingBaseUrl =
@@ -1468,8 +1599,7 @@ function registerIpcHandlers(): void {
             });
           } catch (hydrateError) {
             console.warn(
-              `[CreateSession] Failed to hydrate launching session ${launchingCandidate.sessionId}; falling back to minimal handoff:`,
-              hydrateError,
+              `[CreateSession] Failed to hydrate launching session ${launchingCandidate.sessionId}; falling back to minimal handoff: ${formatErrorChainForLog(hydrateError)}`,
             );
             return {
               sessionId: launchingCandidate.sessionId,
@@ -1486,7 +1616,7 @@ function registerIpcHandlers(): void {
 
         return null;
       } catch (claimError) {
-        console.warn("[CreateSession] Failed to claim existing session:", claimError);
+        console.warn(`[CreateSession] Failed to claim existing session: ${formatErrorChainForLog(claimError)}`);
         return null;
       }
     };
@@ -1706,14 +1836,18 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.TOGGLE_FULLSCREEN, async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       const isFullScreen = mainWindow.isFullScreen();
-      mainWindow.setFullScreen(!isFullScreen);
+      const nextFullscreen = !isFullScreen;
+      mainWindow.setFullScreen(nextFullscreen);
+      rendererControlledFullscreen = nextFullscreen;
     }
   });
 
   ipcMain.handle(IPC_CHANNELS.SET_FULLSCREEN, async (_event, value: boolean) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       try {
-        mainWindow.setFullScreen(Boolean(value));
+        const nextFullscreen = Boolean(value);
+        mainWindow.setFullScreen(nextFullscreen);
+        rendererControlledFullscreen = nextFullscreen;
       } catch (err) {
         console.warn("Failed to set fullscreen:", err);
       }
@@ -2102,14 +2236,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.MEDIA_THUMBNAIL, async (_event, payload: { filePath: string }): Promise<string | null> => {
     const rawFp = payload?.filePath;
     if (typeof rawFp !== "string") return null;
-    if (rawFp.length > 4096) return null;
     try {
-      const allowedRoot = resolve(join(app.getPath("pictures"), "OpenNOW"));
-      const fpResolved = resolve(rawFp);
-      const allowedRootReal = await realpath(allowedRoot).catch(() => allowedRoot);
-      const fpReal = await realpath(fpResolved).catch(() => fpResolved);
-      const rel = relative(allowedRootReal, fpReal);
-      if (rel.startsWith("..")) return null;
+      const fpReal = await resolveTrustedOpenNowMediaPath(rawFp);
+      if (!fpReal) return null;
 
       const lower = fpReal.toLowerCase();
       if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
@@ -2154,17 +2283,88 @@ function registerIpcHandlers(): void {
     const rawFp = payload?.filePath;
     if (typeof rawFp !== "string") return;
     try {
-      const allowedRoot = resolve(join(app.getPath("pictures"), "OpenNOW"));
-      const fpResolved = resolve(rawFp);
-      const allowedRootReal = await realpath(allowedRoot).catch(() => allowedRoot);
-      const fpReal = await realpath(fpResolved).catch(() => fpResolved);
-      const rel = relative(allowedRootReal, fpReal);
-      if (rel.startsWith("..")) return;
+      const fpReal = await resolveTrustedOpenNowMediaPath(rawFp);
+      if (!fpReal) return;
       shell.showItemInFolder(fpReal);
     } catch {
       return;
     }
   });
+
+  ipcMain.handle(IPC_CHANNELS.MEDIA_PLAYBACK_URL, async (_event, payload: { filePath: string }): Promise<string | null> => {
+    const rawFp = payload?.filePath;
+    if (typeof rawFp !== "string") return null;
+    try {
+      return await getTrustedVideoPlaybackFileUrl(rawFp);
+    } catch (err) {
+      console.warn("MEDIA_PLAYBACK_URL error:", err);
+      return null;
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.MEDIA_DELETE_FILE, async (_event, payload: { filePath: string }): Promise<{ ok: boolean }> => {
+    const rawFp = payload?.filePath;
+    if (typeof rawFp !== "string") return { ok: false };
+    try {
+      const fpReal = await resolveTrustedOpenNowMediaPath(rawFp);
+      if (!fpReal) return { ok: false };
+      let st: Awaited<ReturnType<typeof stat>>;
+      try {
+        st = await stat(fpReal);
+      } catch {
+        return { ok: false };
+      }
+      const key = md5(`${fpReal}|${st.mtimeMs}`);
+      const cacheDir = await ensureThumbnailCacheDirectory();
+      await unlink(join(cacheDir, `${key}.jpg`)).catch(() => undefined);
+      const stem = fpReal.replace(/\.(mp4|webm|mkv|mov|png|jpg|jpeg|webp)$/i, "");
+      await unlink(`${stem}-thumb.jpg`).catch(() => undefined);
+      await unlink(fpReal);
+      return { ok: true };
+    } catch (err) {
+      console.warn("MEDIA_DELETE_FILE error:", err);
+      return { ok: false };
+    }
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.MEDIA_REGEN_THUMBNAIL,
+    async (_event, payload: { filePath: string }): Promise<{ ok: boolean; thumbnailDataUrl: string | null }> => {
+      const rawFp = payload?.filePath;
+      if (typeof rawFp !== "string") return { ok: false, thumbnailDataUrl: null };
+      try {
+        const fpReal = await resolveTrustedOpenNowMediaPath(rawFp);
+        if (!fpReal) return { ok: false, thumbnailDataUrl: null };
+        const st = await stat(fpReal);
+        const key = md5(`${fpReal}|${st.mtimeMs}`);
+        const cacheDir = await ensureThumbnailCacheDirectory();
+        await unlink(join(cacheDir, `${key}.jpg`)).catch(() => undefined);
+        if (/\.(mp4|webm|mkv|mov)$/i.test(fpReal)) {
+          const videoStem = fpReal.replace(/\.(mp4|webm|mkv|mov)$/i, "");
+          await unlink(`${videoStem}-thumb.jpg`).catch(() => undefined);
+        }
+        const genPath = await ensureThumbnailForMedia(fpReal);
+        if (!genPath) return { ok: false, thumbnailDataUrl: null };
+
+        if (/\.(mp4|webm|mkv|mov)$/i.test(fpReal)) {
+          const videoStem = fpReal.replace(/\.(mp4|webm|mkv|mov)$/i, "");
+          const sidecar = `${videoStem}-thumb.jpg`;
+          await copyFile(genPath, sidecar).catch((err) => {
+            console.warn("MEDIA_REGEN_THUMBNAIL sidecar copy:", err);
+          });
+        }
+
+        const b = await readFile(genPath);
+        return {
+          ok: true,
+          thumbnailDataUrl: `data:image/jpeg;base64,${b.toString("base64")}`,
+        };
+      } catch (err) {
+        console.warn("MEDIA_REGEN_THUMBNAIL error:", err);
+        return { ok: false, thumbnailDataUrl: null };
+      }
+    },
+  );
 
   ipcMain.handle(IPC_CHANNELS.CACHE_REFRESH_MANUAL, async (): Promise<void> => {
     await refreshScheduler.manualRefresh();
@@ -2472,6 +2672,7 @@ app.whenReady().then(async () => {
     return allowedPermissions.has(permission);
   });
 
+  registerOpenNowMediaProtocol();
   registerIpcHandlers();
 
   refreshScheduler.initialize(

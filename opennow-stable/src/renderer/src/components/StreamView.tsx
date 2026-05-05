@@ -11,6 +11,9 @@ import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
+import { useMicMeter } from "../hooks/useMicMeter";
+
+const ANTI_AFK_TOGGLE_ACK_MS = 5000;
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -30,11 +33,8 @@ interface StreamViewProps {
   hideStreamButtons?: boolean;
   serverRegion?: string;
   antiAfkEnabled: boolean;
+  antiAfkAckNonce: number;
   showAntiAfkIndicator: boolean;
-  escHoldReleaseIndicator: {
-    visible: boolean;
-    progress: number;
-  };
   exitPrompt: {
     open: boolean;
     gameTitle: string;
@@ -50,6 +50,7 @@ interface StreamViewProps {
     tone: "warn" | "critical";
     secondsLeft?: number;
   } | null;
+  isFullscreen: boolean;
   isConnecting: boolean;
   gameTitle: string;
   platformStore?: string;
@@ -71,6 +72,9 @@ interface StreamViewProps {
   subscriptionInfo: SubscriptionInfo | null;
   micTrack?: MediaStreamTrack | null;
   className?: string;
+  allowEscapeToExitFullscreen?: boolean;
+  /** When true, omit the in-player connecting overlay (controller mode uses ControllerStreamLoading instead). */
+  hideConnectingOverlay?: boolean;
 }
 
 function getRttColor(rttMs: number): string {
@@ -225,6 +229,7 @@ function StreamStatsHud({
   const inputQueueColor = getInputQueueColor(stats.inputQueueBufferedBytes, stats.inputQueueDropCount);
   const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
   const partiallyReliableQueueText = `${(stats.partiallyReliableInputQueueBufferedBytes / 1024).toFixed(1)}KB`;
+  const mouseResidualText = `${stats.mouseResidualMagnitude.toFixed(2)}px`;
 
   return (
     <div className="sv-stats">
@@ -274,6 +279,11 @@ function StreamStatsHud({
             {stats.partiallyReliableInputOpen ? `${stats.mouseMoveTransport === "partially_reliable" ? "mouse" : "open"} · ${partiallyReliableQueueText}` : "off"}
           </span>
         </span>
+        <span className="sv-stats-chip" title="Mouse flush cadence and packet rate">
+          MF <span className="sv-stats-chip-val" style={{ color: stats.mouseAdaptiveFlushActive ? "var(--warning)" : "var(--success)" }}>
+            {stats.mouseFlushIntervalMs.toFixed(0)}ms · {stats.mousePacketsPerSecond}/s
+          </span>
+        </span>
         {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
           <span className="sv-stats-chip" title={stats.lagReasonDetail}>
             Lag <span className="sv-stats-chip-val" style={{ color: getLagReasonColor(stats.lagReason) }}>{getLagReasonLabel(stats.lagReason)}</span>
@@ -282,7 +292,7 @@ function StreamStatsHud({
       </div>
 
       <div className="sv-stats-foot">
-        Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · PR peak {(stats.partiallyReliableInputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms
+        Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · PR peak {(stats.partiallyReliableInputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms · residual {mouseResidualText}
       </div>
 
       {(stats.hardwareAcceleration || stats.colorCodec) && (
@@ -323,13 +333,41 @@ function ControllerIndicator({
     diagnosticsStore,
     (stats) => stats.connectedGamepads,
   );
+  const [badgeVisible, setBadgeVisible] = useState(true);
+  const hideTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+    if (connectedGamepads > 0) {
+      setBadgeVisible(true);
+      hideTimerRef.current = window.setTimeout(() => {
+        setBadgeVisible(false);
+        hideTimerRef.current = null;
+      }, 5000);
+    } else {
+      setBadgeVisible(true);
+    }
+    return () => {
+      if (hideTimerRef.current !== null) {
+        window.clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+    };
+  }, [connectedGamepads]);
 
   if (isConnecting || connectedGamepads <= 0) {
     return null;
   }
 
   return (
-    <div className="sv-ctrl" title={`${connectedGamepads} controller(s) connected`}>
+    <div
+      className={`sv-ctrl${badgeVisible ? "" : " sv-ctrl--hidden"}`}
+      title={`${connectedGamepads} controller(s) connected`}
+      aria-hidden={!badgeVisible}
+    >
       <Gamepad2 size={18} />
       {connectedGamepads > 1 && <span className="sv-ctrl-n">{connectedGamepads}</span>}
     </div>
@@ -559,121 +597,6 @@ function VideoFocusOnReady({
   return null;
 }
 
-function useMicMeter(
-  canvasRef: React.RefObject<HTMLCanvasElement | null>,
-  track: MediaStreamTrack | null,
-  active: boolean,
-): void {
-  const pendingCloseRef = useRef<Promise<void> | null>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!active || !track || !canvas) return;
-
-    const ctx2d = canvas.getContext("2d");
-    if (!ctx2d) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(canvas.clientWidth * dpr);
-    canvas.height = Math.round(canvas.clientHeight * dpr);
-    const W = canvas.width;
-    const H = canvas.height;
-    if (W <= 0 || H <= 0) {
-      return;
-    }
-
-    let audioCtx: AudioContext | null = null;
-    let source: MediaStreamAudioSourceNode | null = null;
-    let analyser: AnalyserNode | null = null;
-    let tickTimer: number | null = null;
-    let dead = false;
-
-    const start = async () => {
-      if (pendingCloseRef.current) {
-        try {
-          await pendingCloseRef.current;
-        } catch {
-          // Ignore close errors from previous contexts.
-        }
-      }
-      if (dead) {
-        return;
-      }
-
-      try {
-        audioCtx = new AudioContext();
-        await audioCtx.resume().catch(() => undefined);
-        if (dead) {
-          return;
-        }
-
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.65;
-        source = audioCtx.createMediaStreamSource(new MediaStream([track]));
-        source.connect(analyser);
-
-        const buf = new Uint8Array(analyser.frequencyBinCount);
-        const SEG = 20;
-        const GAP = Math.round(2 * dpr);
-        const bw = (W - GAP * (SEG - 1)) / SEG;
-        const radius = Math.min(3 * dpr, bw / 2);
-        const frameIntervalMs = 33;
-
-        const frame = () => {
-          if (dead || !analyser) return;
-          tickTimer = window.setTimeout(frame, frameIntervalMs);
-          analyser.getByteTimeDomainData(buf);
-
-          let sum = 0;
-          for (let i = 0; i < buf.length; i++) {
-            const v = ((buf[i] ?? 128) - 128) / 128;
-            sum += v * v;
-          }
-          const rms = Math.sqrt(sum / buf.length);
-          const level = Math.min(1, rms * 5.5);
-          const filled = Math.round(level * SEG);
-
-          ctx2d.clearRect(0, 0, W, H);
-          for (let i = 0; i < SEG; i++) {
-            const x = i * (bw + GAP);
-            if (i < filled) {
-              ctx2d.fillStyle =
-                i < SEG * 0.7 ? "#58d98a" : i < SEG * 0.9 ? "#fbbf24" : "#f87171";
-            } else {
-              ctx2d.fillStyle = "rgba(255,255,255,0.07)";
-            }
-            ctx2d.beginPath();
-            ctx2d.roundRect(x, 0, Math.max(1, bw), H, radius);
-            ctx2d.fill();
-          }
-        };
-
-        frame();
-      } catch (e) {
-        console.warn("[MicMeter]", e);
-      }
-    };
-
-    void start();
-
-    return () => {
-      dead = true;
-      if (tickTimer !== null) {
-        window.clearTimeout(tickTimer);
-      }
-      source?.disconnect();
-      analyser?.disconnect();
-      if (audioCtx && audioCtx.state !== "closed") {
-        pendingCloseRef.current = audioCtx
-          .close()
-          .catch(() => undefined)
-          .then(() => undefined);
-      }
-    };
-  }, [track, active, canvasRef]);
-}
-
 export function StreamView({
   videoRef,
   audioRef,
@@ -682,8 +605,8 @@ export function StreamView({
   shortcuts,
   serverRegion,
   antiAfkEnabled,
+  antiAfkAckNonce,
   showAntiAfkIndicator,
-  escHoldReleaseIndicator,
   exitPrompt,
   sessionStartedAtMs,
   isStreaming,
@@ -691,6 +614,7 @@ export function StreamView({
   sessionClockShowEveryMinutes,
   sessionClockShowDurationSeconds,
   streamWarning,
+  isFullscreen,
   isConnecting,
   gameTitle,
   platformStore,
@@ -712,13 +636,17 @@ export function StreamView({
   subscriptionInfo,
   micTrack,
   hideStreamButtons = false,
+  allowEscapeToExitFullscreen,
+  hideConnectingOverlay = false,
   className,
 }: StreamViewProps): JSX.Element {
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
+  const [antiAfkToggleAck, setAntiAfkToggleAck] = useState<"on" | "off" | null>(null);
   const [showSideBar, setShowSideBar] = useState(false);
   const [isPointerLocked, setIsPointerLocked] = useState(false);
+  const [pointerLockHintVisible, setPointerLockHintVisible] = useState(false);
+  const pointerLockHintTimerRef = useRef<number | null>(null);
   const [screenshots, setScreenshots] = useState<ScreenshotEntry[]>([]);
   const [isSavingScreenshot, setIsSavingScreenshot] = useState(false);
   const [galleryError, setGalleryError] = useState<string | null>(null);
@@ -774,25 +702,21 @@ export function StreamView({
 
   const handlePointerLockToggle = useCallback(() => {
     if (isPointerLocked) {
+      if (onReleasePointerLock) {
+        onReleasePointerLock();
+        return;
+      }
       document.exitPointerLock();
       return;
     }
     if (onRequestPointerLock) {
       onRequestPointerLock();
     }
-  }, [isPointerLocked, onRequestPointerLock]);
+  }, [isPointerLocked, onReleasePointerLock, onRequestPointerLock]);
 
   useEffect(() => {
     const timer = setTimeout(() => setShowHints(false), 5000);
     return () => clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
   useEffect(() => {
@@ -843,14 +767,29 @@ export function StreamView({
     };
   }, [isConnecting, sessionClockShowDurationSeconds, sessionClockShowEveryMinutes, sessionCounterEnabled]);
 
-  const escHoldProgress = Math.max(0, Math.min(1, escHoldReleaseIndicator.progress));
-  const escHoldCountdownSeconds = Math.max(0, 5 * (1 - escHoldProgress));
-  const escHoldCountdownLabel = escHoldCountdownSeconds > 0
-    ? `${escHoldCountdownSeconds.toFixed(1)}s`
-    : "0.0s";
-  const escHoldRingRadius = 54;
-  const escHoldRingCircumference = 2 * Math.PI * escHoldRingRadius;
-  const escHoldRingOffset = escHoldRingCircumference * escHoldProgress;
+  useEffect(() => {
+    if (antiAfkAckNonce === 0 || isConnecting) {
+      setAntiAfkToggleAck(null);
+      return;
+    }
+
+    // Omit transient "on" message when persistent ANTI-AFK badge already shows it
+    if (antiAfkEnabled && showAntiAfkIndicator) {
+      setAntiAfkToggleAck(null);
+      return;
+    }
+
+    setAntiAfkToggleAck(antiAfkEnabled ? "on" : "off");
+
+    const hideTimer = window.setTimeout(() => {
+      setAntiAfkToggleAck(null);
+    }, ANTI_AFK_TOGGLE_ACK_MS);
+
+    return (): void => {
+      window.clearTimeout(hideTimer);
+    };
+  }, [antiAfkAckNonce, antiAfkEnabled, showAntiAfkIndicator, isConnecting]);
+
   const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
   const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
@@ -1464,6 +1403,32 @@ export function StreamView({
   }, []);
 
   useEffect(() => {
+    // Show a transient HUD hint when pointer lock is acquired
+    if (isPointerLocked) {
+      setPointerLockHintVisible(true);
+      if (pointerLockHintTimerRef.current) {
+        window.clearTimeout(pointerLockHintTimerRef.current);
+      }
+      pointerLockHintTimerRef.current = window.setTimeout(() => {
+        pointerLockHintTimerRef.current = null;
+        setPointerLockHintVisible(false);
+      }, 3000);
+    } else {
+      if (pointerLockHintTimerRef.current) {
+        window.clearTimeout(pointerLockHintTimerRef.current);
+        pointerLockHintTimerRef.current = null;
+      }
+      setPointerLockHintVisible(false);
+    }
+    return () => {
+      if (pointerLockHintTimerRef.current) {
+        window.clearTimeout(pointerLockHintTimerRef.current);
+        pointerLockHintTimerRef.current = null;
+      }
+    };
+  }, [isPointerLocked]);
+
+  useEffect(() => {
     if (showSideBar) {
       // Mark sidebar open so input auto-lock code can avoid re-requesting.
       try {
@@ -1578,6 +1543,17 @@ export function StreamView({
         isConnecting={isConnecting}
         videoRef={localVideoRef}
       />
+
+      {pointerLockHintVisible && (
+        <div className="sv-pointerlock-hint" role="status" aria-live="polite">
+          <div>Press {shortcuts.toggleFullscreen} to exit fullscreen & release mouse</div>
+          <div className="sv-pointerlock-hint-sub">
+            {allowEscapeToExitFullscreen
+              ? "Press Escape will also exit fullscreen per your settings."
+              : "Escape is forwarded to the game while pointer-locked (see Settings)."}
+          </div>
+        </div>
+      )}
 
       {showSideBar && (
         <>
@@ -1695,13 +1671,13 @@ export function StreamView({
                   {microphoneMode !== "disabled" && (
                     <div className="sidebar-row sidebar-row--column">
                       <div className="sidebar-row-top">
-                        <span className="sidebar-label">Input Level</span>
+                        <span className="sidebar-label">Send level</span>
                         <SidebarMicMutedBadge diagnosticsStore={diagnosticsStore} micTrack={micTrack} />
                       </div>
                       <canvas
                         ref={micMeterRef}
                         className="mic-meter-canvas"
-                        aria-label="Microphone input level"
+                        aria-label="Microphone send level (what others hear)"
                       />
                       {!micTrack && <span className="sidebar-hint">Mic not active — check mode and permissions.</span>}
                     </div>
@@ -2020,8 +1996,8 @@ export function StreamView({
       {/* Gradient background when no video */}
       <StreamEmptyState diagnosticsStore={diagnosticsStore} />
 
-      {/* Connecting overlay */}
-      {isConnecting && (
+      {/* Connecting overlay (desktop / non-controller; controller uses ControllerStreamLoading) */}
+      {isConnecting && !hideConnectingOverlay && (
         <div className="sv-connect">
           <div className="sv-connect-inner">
             <Loader2 className="sv-connect-spin" size={44} />
@@ -2062,8 +2038,15 @@ export function StreamView({
         </div>
       )}
 
-      {/* Stats HUD */}
-      {showStatsHud && (
+      {antiAfkToggleAck && !isConnecting && (
+        <div className={`sv-afk-ack sv-afk-ack--${antiAfkToggleAck}`} role="status" aria-live="polite">
+          <span className="sv-afk-ack-dot" aria-hidden />
+          <span>{antiAfkToggleAck === "on" ? "Anti-AFK on" : "Anti-AFK off"}</span>
+        </div>
+      )}
+
+      {/* Stats HUD (top-right) */}
+      {(showStatsHud || showStats) && !isConnecting && (
         <StreamStatsHud diagnosticsStore={diagnosticsStore} serverRegion={serverRegion} />
       )}
 
@@ -2097,42 +2080,6 @@ export function StreamView({
         onToggleMicrophone={onToggleMicrophone}
         recordingDurationMs={recordingDurationMs}
       />
-
-      {/* Hold-Esc release indicator */}
-      {escHoldReleaseIndicator.visible && !isConnecting && (
-        <>
-          <div className="sv-esc-hold-backdrop" />
-          <div
-            className="sv-esc-hold"
-            role="status"
-            aria-label="Hold Escape to release mouse lock. Keep holding until the timer reaches zero."
-            title="Keep holding Escape to release mouse lock"
-          >
-            <div className="sv-esc-hold-kicker">Mouse lock</div>
-            <div className="sv-esc-hold-ring" aria-hidden="true">
-              <svg className="sv-esc-hold-ring-svg" viewBox="0 0 140 140">
-                <circle className="sv-esc-hold-ring-track" cx="70" cy="70" r={escHoldRingRadius} />
-                <circle
-                  className="sv-esc-hold-ring-progress"
-                  cx="70"
-                  cy="70"
-                  r={escHoldRingRadius}
-                  style={{
-                    strokeDasharray: escHoldRingCircumference,
-                    strokeDashoffset: escHoldRingOffset,
-                  }}
-                />
-              </svg>
-              <div className="sv-esc-hold-ring-core">
-                <span className="sv-esc-hold-time">{escHoldCountdownLabel}</span>
-                <span className="sv-esc-hold-caption">to release</span>
-              </div>
-            </div>
-            <div className="sv-esc-hold-title">Hold Escape</div>
-            <p className="sv-esc-hold-text">Keep holding until the timer reaches zero.</p>
-          </div>
-        </>
-      )}
 
       {exitPrompt.open && !isConnecting && typeof document !== "undefined" && createPortal(
         <div className="sv-exit" role="dialog" aria-modal="true" aria-label="Exit stream confirmation">

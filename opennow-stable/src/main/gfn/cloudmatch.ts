@@ -1,5 +1,8 @@
 import crypto from "node:crypto";
 import dns from "node:dns";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { app } from "electron";
 
 import type {
   ActiveSessionInfo,
@@ -34,6 +37,9 @@ const GFN_USER_AGENT =
 const GFN_CLIENT_VERSION = "2.0.80.173";
 const SESSION_MODIFY_ACTION_AD_UPDATE = 6;
 const READY_SESSION_STATUSES = new Set([2, 3]);
+const GFN_DEVICE_ID_FILENAME = "gfn-device-id.json";
+
+let cachedStableDeviceId: string | null = null;
 
 const AD_ACTION_CODES: Record<SessionAdAction, number> = {
   start: 1,
@@ -91,6 +97,34 @@ export function shouldRequestReflex(settings: StreamSettings): boolean {
 
 function isReadySessionStatus(status: number): boolean {
   return READY_SESSION_STATUSES.has(status);
+}
+
+function getStableDeviceId(): string {
+  if (cachedStableDeviceId) {
+    return cachedStableDeviceId;
+  }
+
+  try {
+    const path = join(app.getPath("userData"), GFN_DEVICE_ID_FILENAME);
+    if (existsSync(path)) {
+      const parsed = JSON.parse(readFileSync(path, "utf-8")) as { deviceId?: unknown };
+      if (typeof parsed.deviceId === "string" && parsed.deviceId.length > 0) {
+        cachedStableDeviceId = parsed.deviceId;
+        return parsed.deviceId;
+      }
+    }
+
+    const deviceId = crypto.randomUUID();
+    writeFileSync(path, JSON.stringify({ deviceId }, null, 2), "utf-8");
+    cachedStableDeviceId = deviceId;
+    return deviceId;
+  } catch (error) {
+    // Fallback to in-memory UUID if disk read/write fails.
+    const fallback = crypto.randomUUID();
+    cachedStableDeviceId = fallback;
+    console.warn("[CloudMatch] Failed to load persisted device ID, using in-memory fallback:", error);
+    return fallback;
+  }
 }
 
 async function resolveHostnameWithFallback(hostname: string): Promise<string | null> {
@@ -507,7 +541,7 @@ function webRtcSessionMetadata(width: number, height: number): Array<{ key: stri
   ];
 }
 
-function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest {
+function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: string): CloudMatchRequest {
   const { width, height } = parseResolution(input.settings.resolution);
   const cq = input.settings.colorQuality;
   // IMPORTANT: hdrEnabled is a SEPARATE toggle from color quality.
@@ -528,7 +562,9 @@ function buildSessionRequestBody(input: SessionCreateRequest): CloudMatchRequest
       networkTestSessionId: null,
       parentSessionId: null,
       clientIdentification: "GFN-PC",
-      deviceHashId: crypto.randomUUID(),
+      // Keep device identity stable across create -> reconnect/resume flows.
+      // The official client preserves this identity, and resume reliability depends on it.
+      deviceHashId,
       clientVersion: "30.0",
       sdkVersion: "1.0",
       streamerVersion: 1,
@@ -964,9 +1000,9 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
 
   // Generate client/device IDs once for the entire session lifecycle
   const clientId = crypto.randomUUID();
-  const deviceId = crypto.randomUUID();
+  const deviceId = getStableDeviceId();
 
-  const body = buildSessionRequestBody(input);
+  const body = buildSessionRequestBody(input, deviceId);
 
   const base = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
   const keyboardLayout = resolveGfnKeyboardLayout(input.settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);
@@ -1248,8 +1284,8 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
   // The session is already configured on the server side. Sending different fps, resolution,
   // codec, etc. causes HTTP 400 from the server because those parameters are immutable for
   // an already-streaming session. Only send the action and minimal required fields.
-  const { width, height } = parseResolution(settings.resolution);
-  const deviceId = crypto.randomUUID();
+  const deviceId = getStableDeviceId();
+  const subSessionId = crypto.randomUUID();
   const timezoneMs = timezoneOffsetMs();
 
   return {
@@ -1266,7 +1302,14 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
       deviceHashId: deviceId,
       internalTitle: null,
       clientPlatformName: "windows",
-      metaData: webRtcSessionMetadata(width, height),
+      metaData: [
+        { key: "SubSessionId", value: subSessionId },
+        { key: "wssignaling", value: "1" },
+        { key: "GSStreamerType", value: "WebRTC" },
+        { key: "networkType", value: "Unknown" },
+        { key: "ClientImeSupport", value: "0" },
+        { key: "surroundAudioInfo", value: "2" },
+      ],
       surroundAudioInfo: 0,
       clientTimezoneOffset: timezoneMs,
       clientIdentification: "GFN-PC",
@@ -1297,8 +1340,8 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     throw new Error("Missing token for session claim");
   }
 
-  const deviceId = crypto.randomUUID();
-  const clientId = crypto.randomUUID();
+  const deviceId = input.deviceId ?? getStableDeviceId();
+  const clientId = input.clientId ?? crypto.randomUUID();
 
   // Provide default values for optional parameters
   const appId = input.appId ?? "0";
@@ -1357,6 +1400,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   // with SESSION_NOT_PAUSED. For these sessions we skip the claim PUT and poll directly.
   // Status 2/3 (ready/streaming) sessions are paused and can be RESUME'd normally.
   let preClaimStatus: number | null = null;
+  let shouldSendResumeClaim = true;
   try {
     const validationUrl = `https://${effectiveServerIp}/v2/session/${input.sessionId}`;
     const validationHeaders = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
@@ -1370,6 +1414,17 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       console.log(`[CloudMatch] claimSession: validation response (first 1000 chars): ${validationText.slice(0, 1000)}`);
       if (preClaimStatus === 1) {
         console.log(`[CloudMatch] claimSession: session is still launching (status=1), skipping RESUME claim — polling directly to ready state`);
+      } else if (
+        input.recoveryMode === true &&
+        (preClaimStatus === 2 || preClaimStatus === 3)
+      ) {
+        // Recovery parity: if the session is already ready/streaming, avoid sending
+        // another RESUME mutation. Repeated RESUME PUTs can rotate signaling hosts
+        // and push the session back into transient setup/cleanup states.
+        shouldSendResumeClaim = false;
+        console.log(
+          `[CloudMatch] claimSession: recoveryMode and session already ready (status=${preClaimStatus}); skipping redundant RESUME claim`,
+        );
       } else if (preClaimStatus !== 2 && preClaimStatus !== 3) {
         console.warn(`[CloudMatch] claimSession: session not in ready state (status=${preClaimStatus}), claim may fail`);
       }
@@ -1382,7 +1437,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
 
   // Only send the RESUME claim PUT if the session is in a paused state (status 2 or 3).
   // For status=1 (still launching) we bypass the claim and fall through to the polling loop.
-  if (preClaimStatus !== 1) {
+  if (preClaimStatus !== 1 && shouldSendResumeClaim) {
     const payload = buildClaimRequestBody(input.sessionId, appId, settings);
 
     const headers: Record<string, string> = {
@@ -1476,7 +1531,9 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
         gpuType: sessionData.gpuType,
         iceServers: await normalizeIceServers(pollApiResponse),
         mediaConnectionInfo: signaling.mediaConnectionInfo,
-        negotiatedStreamProfile,
+        negotiatedStreamProfile: negotiatedStreamProfile ?? extractNegotiatedStreamProfile(pollApiResponse),
+        clientId,
+        deviceId,
       };
     }
 

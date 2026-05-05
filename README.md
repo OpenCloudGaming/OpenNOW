@@ -60,6 +60,8 @@ OpenNOW is a community-built Electron app for playing GeForce NOW from an open-s
 
 The project aims to give players a transparent, customizable alternative to the official client without hiding the technical parts from contributors.
 
+An iOS SwiftUI prototype app is also available under [`ios/OpenNOWiOS/`](ios/OpenNOWiOS).
+
 ## Highlights
 
 - Open-source desktop client for Windows, macOS, and Linux
@@ -134,8 +136,6 @@ Then add the package to your configuration:
 }
 ```
 
-Windows ARM64 builds are published as release downloads. The Windows auto-update feed remains `latest.yml` for x64 releases, so ARM64 packages do not participate in in-app auto-update yet.
-
 ### Develop Locally
 
 From the repository root:
@@ -163,6 +163,7 @@ For a fuller setup guide, see [docs/development.md](docs/development.md).
 ```text
 .
 ├── opennow-stable/   Electron app workspace
+├── ios/OpenNOWiOS/   Native iOS SwiftUI app prototype
 ├── docs/             Local project documentation
 ├── .github/          Workflows, templates, contributing docs
 ├── logo.png          Project logo

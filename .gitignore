@@ -18,6 +18,11 @@ native/opennow-streamer/bin/*/gstreamer/
 *.swp
 *.swo
 .serena/
+*.xcuserstate
+xcuserdata/
+
+# Xcode build outputs
+DerivedData/
 
 # OS
 .DS_Store
@@ -47,3 +52,5 @@ release-notes.md
 
 # Nix
 result
+.deriveddata/
+.deriveddata-device/

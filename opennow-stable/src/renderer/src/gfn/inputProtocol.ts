@@ -6,6 +6,7 @@ export const INPUT_MOUSE_BUTTON_DOWN = 8;
 export const INPUT_MOUSE_BUTTON_UP = 9;
 export const INPUT_MOUSE_WHEEL = 10;
 export const INPUT_GAMEPAD = 12;
+export const INPUT_HAPTICS_ENABLED = 13;
 
 // Mouse button constants (1-based for GFN protocol)
 // GFN uses: 1=Left, 2=Middle, 3=Right, 4=Back, 5=Forward
@@ -690,6 +691,14 @@ export class InputEncoder {
     return wrapSingleEvent(bytes, this.protocolVersion);
   }
 
+  encodeHapticsEnabled(enabled: boolean): Uint8Array {
+    const bytes = new Uint8Array(6);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(0, INPUT_HAPTICS_ENABLED, true);
+    view.setUint16(4, enabled ? 1 : 0, false);
+    return wrapSingleEvent(bytes, this.protocolVersion);
+  }
+
   encodeGamepadState(payload: GamepadInput, bitmap: number, usePartiallyReliable: boolean): Uint8Array {
     const bytes = new Uint8Array(GAMEPAD_PACKET_SIZE);
     const view = new DataView(bytes.buffer);
@@ -708,9 +717,9 @@ export class InputEncoder {
     // Offset 0x06: Gamepad index (u16 LE)
     view.setUint16(6, payload.controllerId & 0x03, true);
     
-    // Offset 0x08: Bitmap (u16 LE) — NOT a simple connected flag!
-    // Official client uses a bitmask: bit i = gamepad i connected, bit (i+8) = additional state.
-    // Passed as the `ae` parameter in gl() from the gamepad manager's this.nu field.
+    // Offset 0x08: Bitmap (u16 LE) — official this.nu bitmask.
+    // Bit i = gamepad i connected; bit (i+8) = Xbox/xinput style device.
+    // The high bit likely advertises the XInput/haptics-capable variant.
     view.setUint16(8, bitmap, true);
     
     // Offset 0x0A: Inner payload size (u16 LE) = 20
