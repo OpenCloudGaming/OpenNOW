@@ -310,6 +310,8 @@ export class NativeStreamerManager {
   private inputBackpressureWarned = false;
   private answerInFlight = false;
   private queuedLocalIce: IceCandidatePayload[] = [];
+  private queuedRemoteIceSessionId: string | null = null;
+  private queuedRemoteIce: IceCandidatePayload[] = [];
   private lastSurface: NativeRenderSurface | null = null;
   private surfaceUpdateInFlight = false;
   private surfaceUpdateQueued = false;
@@ -324,6 +326,7 @@ export class NativeStreamerManager {
     if (this.activeSessionId && this.activeSessionId !== context.session.sessionId) {
       await this.stop("new native streamer session");
     }
+    this.prepareRemoteIceQueue(context.session.sessionId);
 
     await this.ensureProcess();
 
@@ -344,6 +347,7 @@ export class NativeStreamerManager {
         context,
       }, SESSION_START_TIMEOUT_MS);
       this.activeSessionId = context.session.sessionId;
+      await this.flushQueuedRemoteIce(context.session.sessionId);
     }
 
     this.answerInFlight = true;
@@ -442,15 +446,25 @@ export class NativeStreamerManager {
     }
   }
 
-  async addRemoteIce(candidate: IceCandidatePayload): Promise<void> {
-    if (!this.child || !this.activeSessionId) {
+  async addRemoteIce(candidate: IceCandidatePayload, context: NativeStreamerSessionContext): Promise<void> {
+    const sessionId = context.session.sessionId;
+    if (!this.child || this.activeSessionId !== sessionId) {
+      this.queueRemoteIce(sessionId, candidate);
       return;
     }
 
-    await this.request({
-      type: "remote-ice",
-      candidate,
-    }, CONTROL_TIMEOUT_MS);
+    await this.sendRemoteIce(candidate);
+  }
+
+  drainQueuedRemoteIce(sessionId: string): IceCandidatePayload[] {
+    if (this.queuedRemoteIceSessionId !== sessionId) {
+      return [];
+    }
+
+    const queued = this.queuedRemoteIce;
+    this.queuedRemoteIceSessionId = null;
+    this.queuedRemoteIce = [];
+    return queued;
   }
 
   sendInput(input: NativeStreamerInputPacket): void {
@@ -519,6 +533,7 @@ export class NativeStreamerManager {
     const child = this.child;
     this.activeSessionId = null;
     this.capabilities = null;
+    this.clearQueuedRemoteIce();
 
     if (!child) {
       return;
@@ -536,6 +551,7 @@ export class NativeStreamerManager {
   dispose(reason = "disposed"): void {
     this.activeSessionId = null;
     this.capabilities = null;
+    this.clearQueuedRemoteIce();
     this.rejectPending(new Error(`Native streamer ${reason}.`));
     this.terminateProcess();
   }
@@ -883,6 +899,7 @@ export class NativeStreamerManager {
     this.stderrTail = [];
     this.activeSessionId = null;
     this.capabilities = null;
+    this.clearQueuedRemoteIce();
     this.rejectPending(new Error(`Native streamer process ended (${reason}).${tail}`));
   }
 
@@ -910,6 +927,37 @@ export class NativeStreamerManager {
     for (const candidate of queued) {
       await this.forwardLocalIce(candidate);
     }
+  }
+
+  private prepareRemoteIceQueue(sessionId: string): void {
+    if (this.queuedRemoteIceSessionId !== null && this.queuedRemoteIceSessionId !== sessionId) {
+      this.clearQueuedRemoteIce();
+    }
+    this.queuedRemoteIceSessionId = sessionId;
+  }
+
+  private queueRemoteIce(sessionId: string, candidate: IceCandidatePayload): void {
+    this.prepareRemoteIceQueue(sessionId);
+    this.queuedRemoteIce.push(candidate);
+  }
+
+  private clearQueuedRemoteIce(): void {
+    this.queuedRemoteIceSessionId = null;
+    this.queuedRemoteIce = [];
+  }
+
+  private async flushQueuedRemoteIce(sessionId: string): Promise<void> {
+    const queued = this.drainQueuedRemoteIce(sessionId);
+    for (const candidate of queued) {
+      await this.sendRemoteIce(candidate);
+    }
+  }
+
+  private async sendRemoteIce(candidate: IceCandidatePayload): Promise<void> {
+    await this.request({
+      type: "remote-ice",
+      candidate,
+    }, CONTROL_TIMEOUT_MS);
   }
 
   private async forwardLocalIce(candidate: IceCandidatePayload): Promise<void> {

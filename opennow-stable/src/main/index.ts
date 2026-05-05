@@ -873,11 +873,9 @@ function routeSignalingEvent(event: MainToRendererSignalingEvent): void {
   }
 
   if (event.type === "remote-ice") {
-    if (nativeStreamerManager?.isRunning()) {
-      void nativeStreamerManager.addRemoteIce(event.candidate).catch((error) => {
-        emitToRenderer({ type: "error", message: `Native streamer ICE failed: ${String(error)}` });
-      });
-    }
+    void getNativeStreamerManager().addRemoteIce(event.candidate, context).catch((error) => {
+      emitToRenderer({ type: "error", message: `Native streamer ICE failed: ${String(error)}` });
+    });
     return;
   }
 
@@ -891,12 +889,16 @@ async function handleNativeStreamerOffer(sdp: string, context: NativeStreamerSes
     const message = error instanceof Error ? error.message : String(error);
     console.warn("[NativeStreamer] Falling back to web streamer:", message);
     nativeStreamerFallbackSessionId = context.session.sessionId;
+    const queuedRemoteIce = nativeStreamerManager?.drainQueuedRemoteIce(context.session.sessionId) ?? [];
     await nativeStreamerManager?.stop("native streamer fallback").catch(() => undefined);
     emitToRenderer({
       type: "error",
       message: `Native streamer failed: ${message}. Falling back to web streamer.`,
     });
     emitToRenderer({ type: "offer", sdp });
+    for (const candidate of queuedRemoteIce) {
+      emitToRenderer({ type: "remote-ice", candidate });
+    }
   }
 }
 
