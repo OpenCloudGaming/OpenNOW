@@ -51,28 +51,40 @@ function brewPrefix() {
   return result.status === 0 ? result.stdout.trim() || null : null;
 }
 
+function configuredCandidate(root, source) {
+  return root ? { root, source } : null;
+}
+
+function existingConfiguredCandidates(candidates) {
+  return candidates.filter(Boolean);
+}
+
+function formatCandidateSources(candidates) {
+  return candidates.map((candidate) => candidate.source).join(", ") || "none";
+}
+
 function configureGstreamerSdk(env) {
   if (process.platform === "win32") {
-    const candidates = [
-      env.GSTREAMER_1_0_ROOT_MSVC_X86_64,
-      "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64",
-      "C:\\gstreamer\\1.0\\msvc_x86_64",
-    ].filter(Boolean);
+    const candidates = existingConfiguredCandidates([
+      configuredCandidate(env.GSTREAMER_1_0_ROOT_MSVC_X86_64, "GSTREAMER_1_0_ROOT_MSVC_X86_64"),
+      configuredCandidate("C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64", "default Program Files"),
+      configuredCandidate("C:\\gstreamer\\1.0\\msvc_x86_64", "default C drive"),
+    ]);
     const sdk = candidates
-      .map((root) => {
-        const pkgConfigFile = join(root, "lib", "pkgconfig", "gstreamer-1.0.pc");
+      .map((candidate) => {
+        const pkgConfigFile = join(candidate.root, "lib", "pkgconfig", "gstreamer-1.0.pc");
         const pkgConfigBinary = ["pkg-config.exe", "pkgconf.exe"]
-          .map((name) => join(root, "bin", name))
+          .map((name) => join(candidate.root, "bin", name))
           .find((path) => existsSync(path));
-        return { root, pkgConfigBinary, pkgConfigFile };
+        return { ...candidate, pkgConfigBinary, pkgConfigFile };
       })
       .find((candidate) => candidate.pkgConfigBinary && existsSync(candidate.pkgConfigFile));
     if (!sdk) {
       console.warn(
         [
           "GStreamer SDK was not found automatically; relying on the current PKG_CONFIG environment.",
-          `Checked roots: ${candidates.join(", ") || "none"}`,
-          "Expected files: bin/pkg-config.exe or bin/pkgconf.exe, and lib/pkgconfig/gstreamer-1.0.pc",
+          `Checked ${candidates.length} candidate source(s): ${formatCandidateSources(candidates)}.`,
+          "Expected relative files: bin/pkg-config.exe or bin/pkgconf.exe, and lib/pkgconfig/gstreamer-1.0.pc.",
         ].join(" "),
       );
       return null;
@@ -81,28 +93,35 @@ function configureGstreamerSdk(env) {
     env.PKG_CONFIG = sdk.pkgConfigBinary;
     env.PKG_CONFIG_PATH = env.PKG_CONFIG_PATH ? `${pkgConfigDir}${delimiter}${env.PKG_CONFIG_PATH}` : pkgConfigDir;
     prependEnvPath(env, join(sdk.root, "bin"));
-    console.log(`Configured GStreamer SDK: ${sdk.root}`);
-    console.log(`Configured pkg-config executable: ${sdk.pkgConfigBinary}`);
+    console.log(`Configured GStreamer SDK from ${sdk.source}.`);
+    console.log("Configured pkg-config executable for GStreamer SDK.");
     return sdk.root;
   }
 
   if (process.platform === "darwin") {
-    const candidates = [
-      env.GSTREAMER_1_0_ROOT_MACOS,
-      "/Library/Frameworks/GStreamer.framework/Versions/1.0",
-      "/Library/Frameworks/GStreamer.framework/Versions/Current",
-      brewPrefix(),
-      "/opt/homebrew",
-      "/usr/local",
-    ].filter(Boolean);
-    const sdkRoot = candidates.find((candidate) =>
-      existsSync(join(candidate, "lib", "pkgconfig", "gstreamer-1.0.pc"))
-      && existsSync(join(candidate, "lib", "libgstreamer-1.0.dylib")),
+    const candidates = existingConfiguredCandidates([
+      configuredCandidate(env.GSTREAMER_1_0_ROOT_MACOS, "GSTREAMER_1_0_ROOT_MACOS"),
+      configuredCandidate("/Library/Frameworks/GStreamer.framework/Versions/1.0", "GStreamer framework version 1.0"),
+      configuredCandidate("/Library/Frameworks/GStreamer.framework/Versions/Current", "GStreamer framework current"),
+      configuredCandidate(brewPrefix(), "Homebrew prefix"),
+      configuredCandidate("/opt/homebrew", "default Homebrew Apple Silicon prefix"),
+      configuredCandidate("/usr/local", "default Homebrew Intel prefix"),
+    ]);
+    const sdk = candidates.find((candidate) =>
+      existsSync(join(candidate.root, "lib", "pkgconfig", "gstreamer-1.0.pc"))
+      && existsSync(join(candidate.root, "lib", "libgstreamer-1.0.dylib")),
     );
-    if (!sdkRoot) {
-      console.warn("GStreamer macOS SDK was not found automatically; relying on the current PKG_CONFIG environment.");
+    if (!sdk) {
+      console.warn(
+        [
+          "GStreamer macOS SDK was not found automatically; relying on the current PKG_CONFIG environment.",
+          `Checked ${candidates.length} candidate source(s): ${formatCandidateSources(candidates)}.`,
+          "Expected relative files: lib/pkgconfig/gstreamer-1.0.pc and lib/libgstreamer-1.0.dylib.",
+        ].join(" "),
+      );
       return null;
     }
+    const sdkRoot = sdk.root;
     const pkgConfigDir = join(sdkRoot, "lib", "pkgconfig");
     env.GSTREAMER_1_0_ROOT_MACOS = sdkRoot;
     env.PKG_CONFIG_PATH = env.PKG_CONFIG_PATH ? `${pkgConfigDir}${delimiter}${env.PKG_CONFIG_PATH}` : pkgConfigDir;
@@ -113,7 +132,7 @@ function configureGstreamerSdk(env) {
       env.PKG_CONFIG_ALLOW_CROSS = "1";
       env.PKG_CONFIG_SYSROOT_DIR = env.PKG_CONFIG_SYSROOT_DIR || "/";
     }
-    console.log(`Configured GStreamer SDK: ${sdkRoot}`);
+    console.log(`Configured GStreamer SDK from ${sdk.source}.`);
     return sdkRoot;
   }
 
