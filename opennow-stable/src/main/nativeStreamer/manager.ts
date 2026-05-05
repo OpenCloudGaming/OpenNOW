@@ -787,6 +787,18 @@ export class NativeStreamerManager {
       }
     }
 
+    const explicitDevPath = process.env.OPENNOW_NATIVE_STREAMER?.trim();
+    if (!app.isPackaged) {
+      if (explicitDevPath) {
+        if (isExistingFile(explicitDevPath)) {
+          console.log("[NativeStreamer] Using explicit development native streamer:", explicitDevPath);
+          addCandidate(explicitDevPath);
+        } else {
+          throw new Error(`OPENNOW_NATIVE_STREAMER was set but was not found: ${explicitDevPath}`);
+        }
+      }
+    }
+
     const configuredPath = this.options.getExecutablePathOverride().trim();
     if (configuredPath) {
       if (isExistingFile(configuredPath)) {
@@ -803,16 +815,7 @@ export class NativeStreamerManager {
       }
     }
 
-    const explicitDevPath = process.env.OPENNOW_NATIVE_STREAMER?.trim();
     if (!app.isPackaged) {
-      if (explicitDevPath) {
-        if (isExistingFile(explicitDevPath)) {
-          console.log("[NativeStreamer] Using explicit development native streamer:", explicitDevPath);
-          addCandidate(explicitDevPath);
-        } else {
-          throw new Error(`OPENNOW_NATIVE_STREAMER was set but the file was not found: ${explicitDevPath}`);
-        }
-      }
       bundledCandidates.forEach(addCandidate);
     }
 
