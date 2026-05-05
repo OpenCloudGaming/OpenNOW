@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
-import { dirname, resolve, join, delimiter } from "node:path";
+import { dirname, resolve, join, delimiter, sep } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import {
@@ -89,6 +89,21 @@ function isExistingDirectory(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+function normalizePathForComparison(path: string): string {
+  const resolvedPath = resolve(path);
+  return process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath;
+}
+
+function isPathInside(parent: string, child: string): boolean {
+  const normalizedParent = normalizePathForComparison(parent);
+  const normalizedChild = normalizePathForComparison(child);
+  return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}${sep}`);
+}
+
+function hasBundledRuntimeNextToExecutable(executablePath: string): boolean {
+  return isExistingDirectory(join(dirname(executablePath), "gstreamer"));
 }
 
 function prependEnvPath(env: NodeJS.ProcessEnv, key: string, directory: string): void {
@@ -677,9 +692,16 @@ export class NativeStreamerManager {
     const configuredPath = this.options.getExecutablePathOverride().trim();
     if (configuredPath) {
       if (isExistingFile(configuredPath)) {
-        return configuredPath;
+        if (!this.shouldIgnorePackagedExecutableOverride(configuredPath)) {
+          return configuredPath;
+        }
+        console.warn(
+          "[NativeStreamer] Ignoring packaged executable override without bundled runtime:",
+          configuredPath,
+        );
+      } else {
+        throw new Error(`Configured native streamer executable was not found: ${configuredPath}`);
       }
-      throw new Error(`Configured native streamer executable was not found: ${configuredPath}`);
     }
 
     const candidates = [
@@ -710,6 +732,21 @@ export class NativeStreamerManager {
     }
 
     throw new Error(`Native streamer binary not found. Checked: ${candidates.join(", ")}`);
+  }
+
+  private shouldIgnorePackagedExecutableOverride(configuredPath: string): boolean {
+    if (hasBundledRuntimeNextToExecutable(configuredPath)) {
+      return false;
+    }
+
+    const packagedRoots = [
+      join(process.resourcesPath, "native", "opennow-streamer"),
+      resolve(app.getAppPath(), "../native/opennow-streamer"),
+      resolve(this.options.mainDir, "../../../dist-release/win-unpacked/resources/native/opennow-streamer"),
+      resolve(this.options.mainDir, "../../../dist-release/win-unpacked/resources/app.asar.unpacked/native/opennow-streamer"),
+    ];
+
+    return packagedRoots.some((root) => isPathInside(root, configuredPath));
   }
 
   private request(input: NativeStreamerCommandInput, timeoutMs: number): Promise<NativeStreamerResponse> {

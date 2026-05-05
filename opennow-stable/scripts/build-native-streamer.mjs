@@ -30,6 +30,32 @@ function hasFeature(features, feature) {
     .includes(feature);
 }
 
+function isWindowsBuild() {
+  return process.platform === "win32" || /windows-msvc$/i.test(nativeTarget);
+}
+
+function isDarwinBuild() {
+  return process.platform === "darwin" || /apple-darwin$/i.test(nativeTarget);
+}
+
+function shouldBundlePrivateGstreamerRuntime(nativeFeatures) {
+  if (!hasFeature(nativeFeatures, "gstreamer")) {
+    return false;
+  }
+  if (!isWindowsBuild() && !isDarwinBuild()) {
+    return false;
+  }
+
+  const override = process.env.OPENNOW_BUNDLE_GSTREAMER_RUNTIME?.trim();
+  if (override === "0") {
+    return false;
+  }
+  if (override === "1") {
+    return true;
+  }
+  return true;
+}
+
 function prependEnvPath(env, directory) {
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
   env[pathKey] = env[pathKey] ? `${directory}${delimiter}${env[pathKey]}` : directory;
@@ -40,8 +66,7 @@ function appendEnvValue(env, key, value) {
 }
 
 function configureDarwinLinkerPadding(env, nativeFeatures) {
-  const isDarwinBuild = process.platform === "darwin" || /apple-darwin$/.test(nativeTarget);
-  if (!isDarwinBuild || !hasFeature(nativeFeatures, "gstreamer") || process.env.OPENNOW_BUNDLE_GSTREAMER_RUNTIME !== "1") {
+  if (!isDarwinBuild() || !shouldBundlePrivateGstreamerRuntime(nativeFeatures)) {
     return;
   }
   appendEnvValue(env, "RUSTFLAGS", "-C link-arg=-Wl,-headerpad_max_install_names");
@@ -149,8 +174,8 @@ function configureGstreamerSdk(env) {
   return null;
 }
 
-function bundleGstreamerRuntime(sdkRoot) {
-  if (process.env.OPENNOW_BUNDLE_GSTREAMER_RUNTIME !== "1") {
+function bundleGstreamerRuntime(sdkRoot, nativeFeatures) {
+  if (!shouldBundlePrivateGstreamerRuntime(nativeFeatures)) {
     return false;
   }
 
@@ -358,7 +383,7 @@ if (process.platform !== "win32") {
 
 if (hasFeature(nativeFeatures, "gstreamer")) {
   verifyGstreamerBinary(packageBinary, buildEnv);
-  if (bundleGstreamerRuntime(gstreamerSdkRoot)) {
+  if (bundleGstreamerRuntime(gstreamerSdkRoot, nativeFeatures)) {
     verifyGstreamerBinary(packagePlatformBinary, buildBundledGstreamerEnv(buildEnv, packagePlatformBinary));
   }
 }

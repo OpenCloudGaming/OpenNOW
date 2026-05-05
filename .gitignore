@@ -10,7 +10,10 @@ dist/
 target/
 target2/
 target3/
-native/opennow-streamer/bin/*/gstreamer/
+# Keep the packaged native streamer binary tracked, but ignore generated
+# platform runtime bundles and adjacent loader/runtime artifacts.
+native/opennow-streamer/bin/*/*
+!native/opennow-streamer/bin/*/opennow-streamer.exe
 
 # IDE
 .idea/
