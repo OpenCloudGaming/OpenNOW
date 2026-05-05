@@ -440,11 +440,6 @@ function sortLibraryGames(
     const ms = Date.parse(game.lastPlayed);
     return Number.isFinite(ms) ? ms : 0;
   };
-  const mostPopularScore = (gameId: string): number => {
-    const totalSeconds = Math.max(0, playtimeData[gameId]?.totalSeconds ?? 0);
-    const sessions = Math.max(0, playtimeData[gameId]?.sessionCount ?? 0);
-    return (totalSeconds * 1000) + sessions;
-  };
   if (sortId === "z_to_a") {
     return copy.sort((left, right) => right.title.localeCompare(left.title));
   }
@@ -465,8 +460,12 @@ function sortLibraryGames(
   }
   if (sortId === "most_popular") {
     return copy.sort((left, right) => {
-      const d = mostPopularScore(right.id) - mostPopularScore(left.id);
-      if (d !== 0) return d;
+      const leftSeconds = Math.max(0, playtimeData[left.id]?.totalSeconds ?? 0);
+      const rightSeconds = Math.max(0, playtimeData[right.id]?.totalSeconds ?? 0);
+      if (leftSeconds !== rightSeconds) return rightSeconds - leftSeconds;
+      const leftSessions = Math.max(0, playtimeData[left.id]?.sessionCount ?? 0);
+      const rightSessions = Math.max(0, playtimeData[right.id]?.sessionCount ?? 0);
+      if (leftSessions !== rightSessions) return rightSessions - leftSessions;
       return compareTitle(left, right);
     });
   }
