@@ -103,7 +103,7 @@ fn handle_command(
     Ok(true)
 }
 
-fn main() -> io::Result<()> {
+fn run_main() -> io::Result<()> {
     let stdin = io::stdin();
     let (event_sender, event_receiver) = mpsc::channel::<Event>();
     let event_writer = thread::spawn(move || {
@@ -147,4 +147,14 @@ fn main() -> io::Result<()> {
     drop(backend);
     let _ = event_writer.join();
     Ok(())
+}
+
+#[cfg(all(target_os = "macos", feature = "gstreamer"))]
+fn main() -> io::Result<()> {
+    gstreamer::macos_main(run_main)
+}
+
+#[cfg(not(all(target_os = "macos", feature = "gstreamer")))]
+fn main() -> io::Result<()> {
+    run_main()
 }
