@@ -4,10 +4,15 @@ const INVALID_PROXY_MESSAGE =
   "Invalid session proxy URL. Use http://host:port, https://host:port, socks4://host:port, or socks5://host:port.";
 const SUPPORTED_PROXY_PROTOCOLS = new Set(["http:", "https:", "socks4:", "socks5:"]);
 const CLOUDMATCH_PROXY_PARTITION_PREFIX = "opennow:gfn-session-proxy";
+const proxyPartitions = new Map<string, string>();
 
 export function sessionProxyPartitionForUrl(normalizedProxyUrl: string): string {
-  const hash = crypto.createHash("sha256").update(normalizedProxyUrl).digest("hex").slice(0, 32);
-  return `${CLOUDMATCH_PROXY_PARTITION_PREFIX}:${hash}`;
+  const existing = proxyPartitions.get(normalizedProxyUrl);
+  if (existing) return existing;
+
+  const partition = `${CLOUDMATCH_PROXY_PARTITION_PREFIX}:${crypto.randomUUID()}`;
+  proxyPartitions.set(normalizedProxyUrl, partition);
+  return partition;
 }
 
 export function normalizeSessionProxyUrl(raw?: string): string | null {

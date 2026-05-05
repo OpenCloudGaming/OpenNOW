@@ -22,14 +22,12 @@ test("rejects unsupported explicit session proxy schemes", () => {
   );
 });
 
-test("derives stable redacted proxy session partitions", () => {
+test("derives stable opaque proxy session partitions", () => {
   const withCredentials = sessionProxyPartitionForUrl("http://user:secret@proxy.example.com:8080");
   const sameProxy = sessionProxyPartitionForUrl("http://user:secret@proxy.example.com:8080");
   const differentProxy = sessionProxyPartitionForUrl("http://other.example.com:8080");
 
   assert.equal(withCredentials, sameProxy);
   assert.notEqual(withCredentials, differentProxy);
-  assert.match(withCredentials, /^opennow:gfn-session-proxy:[a-f0-9]{32}$/);
-  assert.equal(withCredentials.includes("proxy.example.com"), false);
-  assert.equal(withCredentials.includes("secret"), false);
+  assert.match(withCredentials, /^opennow:gfn-session-proxy:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
 });

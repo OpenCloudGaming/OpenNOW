@@ -983,13 +983,15 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   const deviceId = input.deviceId ?? crypto.randomUUID();
 
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
+  const baseHost = new URL(base).hostname;
+  const pollProxyUrl = isZoneHostname(baseHost) ? input.proxyUrl : undefined;
   const url = `${base}/v2/session/${input.sessionId}`;
   // Polling should NOT include Origin/Referer headers (matches claimSession polling pattern)
   const headers = requestHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
   const response = await fetchWithOptionalProxy(url, {
     method: "GET",
     headers,
-  }, input.proxyUrl);
+  }, pollProxyUrl);
 
   const text = await response.text();
   if (!response.ok) {
@@ -997,7 +999,6 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   }
 
   const payload = JSON.parse(text) as CloudMatchResponse;
-  const baseHost = new URL(base).hostname;
 
   // Match Rust behavior: if the poll was routed through the zone load balancer
   // and the response now contains a real server IP in connectionInfo, re-poll
